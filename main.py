@@ -103,11 +103,28 @@ def main() -> None:
 
     if dashboard_mode:
         import uvicorn
-        from dashboard.api import app
-        logger.info("Launching dashboard on http://localhost:8000")
-        uvicorn.run(app, host="0.0.0.0", port=8000)
+        from dashboard.state import LiveState
+        from dashboard.api import create_app
+
+        state = LiveState()
+        state.attach(trading_loop, platform_manager, connection_status)
+
+        if platform_manager.any_connected:
+            trading_loop.running = True
+            t = threading.Thread(target=_start_trading_loop, args=(trading_loop,), daemon=True)
+            t.start()
+            logger.info("Trading loop started in background thread")
+        else:
+            logger.warning("No platforms connected — dashboard will show empty data")
+
+        app = create_app(state)
+        logger.info("Launching dashboard on http://0.0.0.0:8000")
+        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
     else:
-        logger.info("Run with --dashboard to start the web dashboard")
+        if not platform_manager.any_connected:
+            logger.error("No platforms connected — cannot trade. Set DERIV_API_TOKEN and DERIV_APP_ID in .env")
+            return
+        trading_loop.run()
 
 
 if __name__ == "__main__":
