@@ -18,7 +18,7 @@ from platforms.base_connector import (
     TickData,
 )
 from platforms.mt5.mt5_connector import MT5Connector
-from platforms.deriv.deriv_connector import DerivConnector, _SYMBOL_MAP, _GRANULARITY_MAP
+from platforms.deriv.deriv_connector import DerivConnector, _GRANULARITY_MAP
 from platforms.platform_manager import PlatformManager
 from platforms.main_loop import ManagedPosition, TradingLoop
 
@@ -153,8 +153,9 @@ class TestDerivConnector:
 
     def test_symbol_map_coverage(self):
         synthetics = ["V10_1S", "V25_1S", "V50_1S", "V75_1S", "V100_1S"]
+        c = DerivConnector()
         for s in synthetics:
-            assert s in _SYMBOL_MAP
+            assert c.symbol_map(s) != s, f"{s} should map to a Deriv-specific name"
 
 
 # ═══════════════════════════════════════════════════════════════════════════
