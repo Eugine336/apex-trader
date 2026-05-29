@@ -165,8 +165,8 @@ class DerivConnector(BaseConnector):
                 if elapsed < 0.25:
                     _time.sleep(0.25 - elapsed)
                 self._last_history_request = _time.monotonic()
-            loop = _get_or_create_loop()
-            return loop.run_until_complete(self._send(payload))
+            future = asyncio.run_coroutine_threadsafe(self._send(payload), self._loop)
+            return future.result(timeout=_REQUEST_TIMEOUT + 5)
 
     # ── Account ──────────────────────────────────────────────────────────
 
