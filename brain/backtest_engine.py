@@ -6,7 +6,7 @@ before real capital is exposed.
 
 import asyncio
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
@@ -15,6 +15,7 @@ import pandas as pd
 
 from brain.mtf_orchestrator import MTFOrchestrator, TradeSetup
 from brain.trade_journal import TradeJournal, TradeRecord
+from loguru import logger
 
 
 @dataclass
@@ -33,6 +34,10 @@ class BacktestResult:
     worst_pair: Optional[str]
     best_session: Optional[str]
     equity_curve: list[float]
+    total_commission: float = 0.0
+    total_slippage_cost: float = 0.0
+    gross_profit_factor: float = 0.0
+    net_profit_factor: float = 0.0
 
 
 class DataLoader:
@@ -62,6 +67,135 @@ class DataLoader:
         return data
 
 
+class BrokerDataLoader:
+    """
+    Fetches historical OHLCV bars directly from connected broker platforms.
+    Falls back to CSV if broker is unavailable.
+    """
+
+    MT5_TF_MAP = {
+        "M1": "TIMEFRAME_M1", "M5": "TIMEFRAME_M5", "M15": "TIMEFRAME_M15",
+        "M30": "TIMEFRAME_M30", "H1": "TIMEFRAME_H1", "H4": "TIMEFRAME_H4",
+        "D1": "TIMEFRAME_D1",
+    }
+
+    DERIV_GRANULARITY = {
+        "M1": 60, "M5": 300, "M15": 900, "M30": 1800,
+        "H1": 3600, "H4": 14400, "D1": 86400,
+    }
+
+    def fetch_mt5(
+        self,
+        symbol: str,
+        timeframe: str,
+        bars: int = 5000,
+    ) -> pd.DataFrame:
+        try:
+            import MetaTrader5 as mt5
+
+            tf_const = getattr(mt5, self.MT5_TF_MAP[timeframe], None)
+            if tf_const is None:
+                raise ValueError(f"Unknown timeframe: {timeframe}")
+
+            rates = mt5.copy_rates_from_pos(symbol, tf_const, 0, bars)
+            if rates is None or len(rates) == 0:
+                raise RuntimeError(
+                    f"MT5 returned no data for {symbol} {timeframe}: "
+                    f"{mt5.last_error()}"
+                )
+
+            df = pd.DataFrame(rates)
+            df["time"] = pd.to_datetime(df["time"], unit="s", utc=True)
+            df = df.rename(columns={"tick_volume": "volume"})
+            df = df[["time", "open", "high", "low", "close", "volume"]]
+            df = df.sort_values("time").reset_index(drop=True)
+            logger.info(f"MT5: fetched {len(df)} bars for {symbol} {timeframe}")
+            return df
+
+        except ImportError:
+            raise RuntimeError("MetaTrader5 package not installed. Run: pip install MetaTrader5")
+
+    def fetch_deriv(
+        self,
+        symbol: str,
+        timeframe: str,
+        bars: int = 5000,
+        api_token: str = "",
+        app_id: str = "",
+    ) -> pd.DataFrame:
+        import json as _json
+        import websockets
+
+        from brain.symbol_mapper import SymbolMapper
+        mapper = SymbolMapper("deriv")
+        deriv_symbol = mapper.to_broker(symbol)
+
+        granularity = self.DERIV_GRANULARITY.get(timeframe)
+        if granularity is None:
+            raise ValueError(f"Unsupported Deriv timeframe: {timeframe}")
+
+        async def _fetch() -> list:
+            url = f"wss://ws.binaryws.com/websockets/v3?app_id={app_id or '1089'}"
+            async with websockets.connect(url) as ws:
+                if api_token:
+                    await ws.send(_json.dumps({"authorize": api_token}))
+                    auth = _json.loads(await ws.recv())
+                    if "error" in auth:
+                        raise RuntimeError(f"Deriv auth failed: {auth['error']}")
+
+                req = {
+                    "ticks_history": deriv_symbol,
+                    "end": "latest",
+                    "count": bars,
+                    "granularity": granularity,
+                    "style": "candles",
+                }
+                await ws.send(_json.dumps(req))
+                resp = _json.loads(await ws.recv())
+                if "error" in resp:
+                    raise RuntimeError(
+                        f"Deriv error for {deriv_symbol}: {resp['error'].get('message')}"
+                    )
+                return resp.get("candles", [])
+
+        candles = asyncio.run(_fetch())
+        if not candles:
+            raise RuntimeError(f"Deriv returned no candles for {deriv_symbol} {timeframe}")
+
+        rows = [
+            {
+                "time": pd.Timestamp(c["epoch"], unit="s", tz="UTC"),
+                "open": float(c["open"]),
+                "high": float(c["high"]),
+                "low": float(c["low"]),
+                "close": float(c["close"]),
+                "volume": 0.0,
+            }
+            for c in candles
+        ]
+        df = pd.DataFrame(rows).sort_values("time").reset_index(drop=True)
+        logger.info(f"Deriv: fetched {len(df)} bars for {deriv_symbol} {timeframe}")
+        return df
+
+    def fetch_all_timeframes(
+        self,
+        symbol: str,
+        timeframes: list[str],
+        platform: str = "mt5",
+        bars: int = 5000,
+        **kwargs,
+    ) -> dict[str, pd.DataFrame]:
+        data: dict[str, pd.DataFrame] = {}
+        for tf in timeframes:
+            if platform == "mt5":
+                data[tf] = self.fetch_mt5(symbol, tf, bars)
+            elif platform == "deriv":
+                data[tf] = self.fetch_deriv(symbol, tf, bars, **kwargs)
+            else:
+                raise ValueError(f"Unknown platform: {platform}")
+        return data
+
+
 class BacktestEngine:
     """
     Simulates setup generation and execution management over historical data.
@@ -75,6 +209,9 @@ class BacktestEngine:
         risk_per_trade: float = 0.02,
         min_history: int = 120,
         pip_size: float = 0.0001,
+        slippage_pips: float = 1.0,
+        commission_per_lot: float = 3.5,
+        broker_loader: Optional[BrokerDataLoader] = None,
     ):
         self.orchestrator = orchestrator or MTFOrchestrator(
             min_entry_score=85, pip_size=pip_size
@@ -84,6 +221,9 @@ class BacktestEngine:
         self.risk_per_trade = risk_per_trade
         self.min_history = min_history
         self.pip_size = pip_size
+        self.slippage_pips = slippage_pips
+        self.commission_per_lot = commission_per_lot
+        self.broker_loader = broker_loader or BrokerDataLoader()
 
     def run(
         self,
@@ -102,11 +242,14 @@ class BacktestEngine:
         balance = self.starting_balance
         equity_curve = [balance]
         trade_returns_r: list[float] = []
+        trade_returns_gross: list[float] = []
         hold_times: list[float] = []
         sessions: dict[str, list[float]] = {}
         open_trade: Optional[dict] = None
         consecutive_losses = 0
         max_consecutive_losses = 0
+        total_commission = 0.0
+        total_slippage_cost = 0.0
 
         for i in range(start_index, end_index + 1):
             candle = m1.iloc[i]
@@ -129,7 +272,11 @@ class BacktestEngine:
                 continue
 
             pnl_r = close_event["pnl_r"]
-            pnl_pct = pnl_r * self.risk_per_trade
+            trade_returns_gross.append(pnl_r)
+            commission_cost = self.commission_per_lot / balance if balance > 0 else 0
+            total_commission += self.commission_per_lot
+            total_slippage_cost += open_trade.get("slippage_cost", 0.0)
+            pnl_pct = pnl_r * self.risk_per_trade - commission_cost
             balance *= max(1.0 + pnl_pct, 0.01)
             equity_curve.append(balance)
             trade_returns_r.append(pnl_r)
@@ -169,6 +316,7 @@ class BacktestEngine:
         total = len(trade_returns_r)
         win_rate = (wins / total * 100.0) if total else 0.0
         profit_factor = self._profit_factor(trade_returns_r)
+        gross_pf = self._profit_factor(trade_returns_gross)
         sharpe = self._sharpe_ratio(trade_returns_r)
         max_dd = self._max_drawdown_pct(equity_curve)
         expectancy = float(np.mean(trade_returns_r)) if trade_returns_r else 0.0
@@ -192,6 +340,10 @@ class BacktestEngine:
             worst_pair=pair if total else None,
             best_session=best_session,
             equity_curve=[round(v, 4) for v in equity_curve],
+            total_commission=round(total_commission, 2),
+            total_slippage_cost=round(total_slippage_cost, 6),
+            gross_profit_factor=round(gross_pf, 4) if np.isfinite(gross_pf) else float("inf"),
+            net_profit_factor=round(profit_factor, 4) if np.isfinite(profit_factor) else float("inf"),
         )
 
     def walk_forward(
@@ -217,6 +369,25 @@ class BacktestEngine:
         )
 
         return {"train": train, "test": test}
+
+    def run_from_broker(
+        self,
+        pair: str,
+        platform: str = "mt5",
+        timeframes: list[str] = None,
+        bars: int = 5000,
+        **kwargs,
+    ) -> BacktestResult:
+        timeframes = timeframes or ["H4", "H1", "M15", "M5", "M1"]
+        logger.info(f"Fetching {bars} bars for {pair} from {platform}…")
+        data = self.broker_loader.fetch_all_timeframes(
+            symbol=pair,
+            timeframes=timeframes,
+            platform=platform,
+            bars=bars,
+            **kwargs,
+        )
+        return self.run(pair=pair, data_by_timeframe=data)
 
     def monte_carlo(
         self, trade_returns_r: list[float], iterations: int = 500
@@ -265,14 +436,20 @@ class BacktestEngine:
         return slices
 
     def _open_trade(self, setup: TradeSetup, now: datetime) -> dict:
-        risk = abs(setup.entry_price - setup.stop_loss)
+        slippage_distance = self.slippage_pips * self.pip_size
+        if setup.direction == "LONG":
+            actual_entry = setup.entry_price + slippage_distance
+        else:
+            actual_entry = setup.entry_price - slippage_distance
+
+        risk = abs(actual_entry - setup.stop_loss)
         if risk <= 0:
             risk = 8 * self.pip_size
 
         return {
             "setup": setup,
             "entry_time": now,
-            "entry_price": setup.entry_price,
+            "entry_price": actual_entry,
             "stop_loss": setup.stop_loss,
             "tp1": setup.tp1,
             "tp2": setup.tp2,
@@ -281,6 +458,7 @@ class BacktestEngine:
             "realized_r": 0.0,
             "session": self.orchestrator.session_engine.get_status(now).current_session,
             "entry_type": self._resolve_entry_type(setup),
+            "slippage_cost": slippage_distance,
         }
 
     def _evaluate_trade(self, trade: dict, candle: pd.Series) -> Optional[dict]:

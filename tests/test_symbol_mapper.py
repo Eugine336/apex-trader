@@ -108,6 +108,29 @@ class TestSymbolMapperICMarkets:
     def test_broker_property(self, mapper):
         assert mapper.broker == "icmarkets"
 
+    def test_xtiusd_maps_to_usousd(self, mapper):
+        assert mapper.to_broker("XTIUSD") == "USOUSD"
+
+    def test_us100_maps_to_nas100(self, mapper):
+        assert mapper.to_broker("US100") == "NAS100"
+
+    def test_us30_maps_to_dj30(self, mapper):
+        assert mapper.to_broker("US30") == "DJ30"
+
+    def test_xbrusd_maps_to_ukousd(self, mapper):
+        assert mapper.to_broker("XBRUSD") == "UKOUSD"
+
+    def test_jp225_maps_to_jpn225(self, mapper):
+        assert mapper.to_broker("JP225") == "JPN225"
+
+    def test_us500_maps_to_sp500(self, mapper):
+        assert mapper.to_broker("US500") == "SP500"
+
+    def test_reverse_icmarkets_override(self, mapper):
+        assert mapper.to_canonical("NAS100") == "US100"
+        assert mapper.to_canonical("USOUSD") == "XTIUSD"
+        assert mapper.to_canonical("DJ30") == "US30"
+
 
 class TestSymbolMapperUnknownBroker:
 

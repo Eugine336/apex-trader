@@ -4,7 +4,9 @@ Not all pairs are equal. I crush GBPUSD but struggle with NZDJPY.
 I learn my strengths and play to them.
 """
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, asdict
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -32,9 +34,11 @@ class PairLearner:
 
     MIN_TRADES = 20
     CONFIDENCE_FULL = 80
+    SAVE_PATH = "data/ml_pair_profiles.json"
 
     def __init__(self) -> None:
         self._profiles: dict[str, PairProfile] = {}
+        self._load()
 
     def learn(self, trades: list[dict]) -> dict[str, PairProfile]:
         grouped: dict[str, list[dict]] = {}
@@ -47,6 +51,7 @@ class PairLearner:
             profiles[pair] = self._build_profile(pair, group)
 
         self._profiles = profiles
+        self._save()
         return profiles
 
     def get_pair_multiplier(self, pair: str) -> float:
@@ -65,6 +70,28 @@ class PairLearner:
             key=lambda p: self._profiles[p].avg_pnl,
             reverse=True,
         )
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def _save(self) -> None:
+        p = Path(self.SAVE_PATH)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        data = {k: asdict(v) for k, v in self._profiles.items()}
+        p.write_text(json.dumps(data, indent=2, default=str))
+        logger.info(f"Pair profiles saved to {self.SAVE_PATH}")
+
+    def _load(self) -> None:
+        p = Path(self.SAVE_PATH)
+        if not p.exists():
+            return
+        try:
+            raw = json.loads(p.read_text())
+            self._profiles = {k: PairProfile(**v) for k, v in raw.items()}
+            logger.info(f"Pair profiles loaded from {self.SAVE_PATH}")
+        except Exception as exc:
+            logger.warning(f"PairLearner: could not load profiles: {exc}")
 
     # ------------------------------------------------------------------
     # Internal
