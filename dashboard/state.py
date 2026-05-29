@@ -187,7 +187,7 @@ class LiveState:
         if not hasattr(scanner, "last_report") or scanner.last_report is None:
             return []
         results: list[dict] = []
-        for r in scanner.last_report:
+        for r in scanner.last_report.results:
             results.append({
                 "pair": getattr(r, "pair", ""),
                 "score": getattr(r, "score", 0),
