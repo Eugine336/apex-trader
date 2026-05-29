@@ -33,6 +33,14 @@ apex-trader/
 │   ├── pair_ranker.py        # Tie-breaking & prioritization engine
 │   └── scan_scheduler.py     # Adaptive scan frequency controller
 │
+├── ml/                       # Phase 6 ✅ - ML Adapter (The Memory)
+│   ├── trade_analyzer.py     # PerformanceProfile — dissects every trade
+│   ├── score_optimizer.py    # Adaptive scoring weights (gradual, sums to 100)
+│   ├── regime_learner.py     # Regime-specific strategy adaptation
+│   ├── pair_learner.py       # Pair-specific confidence multipliers
+│   ├── session_learner.py    # Session aggression levels
+│   └── ml_adapter.py         # Master controller — coordinates all learners
+│
 ├── trigger/                  # Phase 3 🔄 - Entry Engine
 ├── management/               # Phase 4 🔄 - Trade Management
 ├── risk/                     # Phase 5 ✅ - Risk Engine
@@ -193,8 +201,8 @@ python main.py
 | 2 | Scanner — Multi-Pair Scanner | 🔄 In Progress |
 | 3 | Trigger — Entry Engine | 🔄 Pending |
 | 4 | Management — Trade Manager | 🔄 Pending |
-| 5 | Risk — Risk Engine | ✅ Complete |
-| 6 | ML — Adaptive Learning | 🔄 Pending |
+| 5 | Risk — Risk Engine | 🔄 Pending |
+| 6 | ML — Adaptive Learning | ✅ Complete |
 | 7 | Platforms — MT5 + Deriv | 🔄 Pending |
 | 8 | Dashboard — React UI | 🔄 Pending |
 
