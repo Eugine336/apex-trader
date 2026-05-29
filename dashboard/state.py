@@ -1,285 +1,285 @@
 """
-APEX TRADER — Shared Dashboard State
-Central in-memory store that the API and WebSocket read from.
-The trading loop (or mock data) writes here; the dashboard reads.
+APEX TRADER — Live State Manager
+Bridges the TradingLoop / PlatformManager to the dashboard API.
+Falls back to simulated data when no platforms are connected.
 """
 
-import time
-from dataclasses import dataclass, field
+import random
+import time as _time
 from datetime import datetime, timezone
-from enum import Enum
-from typing import Any
+from typing import Any, Optional
+
+from loguru import logger
 
 
-class BotStatus(str, Enum):
-    RUNNING = "running"
-    PAUSED = "paused"
-    STOPPED = "stopped"
+class LiveState:
+    """
+    Central state provider for the dashboard.
 
+    When a TradingLoop is attached (live mode), all data comes from the
+    real engine.  When nothing is attached, realistic simulated data is
+    returned so the dashboard UI can still be exercised.
+    """
 
-class RiskMode(str, Enum):
-    NORMAL = "NORMAL"
-    CAUTION = "CAUTION"
-    RECOVERY = "RECOVERY"
-    FROZEN = "FROZEN"
+    def __init__(self) -> None:
+        self._trading_loop: Any = None
+        self._platform_manager: Any = None
+        self._start_time = _time.monotonic()
+        self._running = False
+        self._connection_status: dict[str, bool] = {}
 
+        self._sim_trade_counter = 0
+        self._sim_history: list[dict] = []
+        self._sim_balance = 10000.0
+        self._sim_pnl = 0.0
 
-class TradeDirection(str, Enum):
-    LONG = "LONG"
-    SHORT = "SHORT"
+    # ── Attach live engine ────────────────────────────────────────────────
 
-
-class ManagementStage(str, Enum):
-    MONITORING = "MONITORING"
-    TP1_HIT = "TP1_HIT"
-    BREAKEVEN = "BREAKEVEN"
-    TRAILING = "TRAILING"
-    CLOSED = "CLOSED"
-
-
-@dataclass
-class ActiveTrade:
-    id: str
-    instrument: str
-    direction: str
-    entry_price: float
-    current_price: float
-    stop_loss: float
-    tp1: float
-    tp2: float
-    pnl_pips: float
-    pnl_dollars: float
-    score: int
-    stage: str
-    opened_at: str
-    lot_size: float
-
-
-@dataclass
-class ClosedTrade:
-    id: str
-    instrument: str
-    direction: str
-    entry_price: float
-    exit_price: float
-    pnl_pips: float
-    pnl_dollars: float
-    score: int
-    duration_minutes: float
-    opened_at: str
-    closed_at: str
-    outcome: str
-
-
-@dataclass
-class InstrumentScore:
-    symbol: str
-    name: str
-    category: str
-    score: int
-    direction: str
-    status: str
-    factors: dict
-
-
-@dataclass
-class DashboardState:
-    bot_status: str = BotStatus.STOPPED.value
-    started_at: float = 0.0
-    risk_mode: str = RiskMode.NORMAL.value
-    active_trades: list = field(default_factory=list)
-    closed_trades: list = field(default_factory=list)
-    instrument_scores: list = field(default_factory=list)
-    daily_pnl: float = 0.0
-    weekly_pnl: float = 0.0
-    monthly_pnl: float = 0.0
-    total_pnl: float = 0.0
-    win_count: int = 0
-    loss_count: int = 0
-    account_balance: float = 10000.0
-    daily_loss_pct: float = 0.0
-    max_daily_loss_pct: float = 5.0
-    exposure_pct: float = 0.0
-    consecutive_losses: int = 0
-    consecutive_wins: int = 0
-    ml_score_adjustments: dict = field(default_factory=dict)
-    ml_regime_stats: dict = field(default_factory=dict)
-    ml_session_stats: dict = field(default_factory=dict)
-    ml_pair_stats: dict = field(default_factory=dict)
-    pnl_history: list = field(default_factory=list)
-    equity_curve: list = field(default_factory=list)
+    def attach(
+        self,
+        trading_loop: Any,
+        platform_manager: Any,
+        connection_status: dict[str, bool],
+    ) -> None:
+        self._trading_loop = trading_loop
+        self._platform_manager = platform_manager
+        self._connection_status = connection_status
+        self._running = True
+        logger.info("LiveState attached — dashboard serving real data")
 
     @property
-    def uptime_seconds(self) -> float:
-        if self.started_at == 0:
-            return 0.0
-        return time.time() - self.started_at
+    def is_live(self) -> bool:
+        return self._trading_loop is not None and self._running
 
-    @property
-    def win_rate(self) -> float:
-        total = self.win_count + self.loss_count
-        if total == 0:
-            return 0.0
-        return round(self.win_count / total * 100, 1)
+    # ── Status ────────────────────────────────────────────────────────────
 
-    @property
-    def total_trades(self) -> int:
-        return self.win_count + self.loss_count
+    def get_status(self) -> dict:
+        uptime = _time.monotonic() - self._start_time
 
-    def to_dict(self) -> dict[str, Any]:
+        if self.is_live:
+            return self._live_status(uptime)
+        return self._sim_status(uptime)
+
+    def _live_status(self, uptime: float) -> dict:
+        loop = self._trading_loop
+        pm = self._platform_manager
+
+        balance = 10000.0
+        try:
+            balance = pm.get_total_balance() or 10000.0
+        except Exception:
+            pass
+
+        dd = loop.drawdown.get_status(datetime.now(timezone.utc))
+        journal = loop.journal
+
+        total = journal.total_trades if hasattr(journal, "total_trades") else 0
+        wins = journal.wins if hasattr(journal, "wins") else 0
+        losses = journal.losses if hasattr(journal, "losses") else 0
+        win_rate = (wins / total * 100) if total > 0 else 0.0
+
         return {
-            "bot_status": self.bot_status,
-            "uptime_seconds": self.uptime_seconds,
-            "risk_mode": self.risk_mode,
-            "win_rate": self.win_rate,
-            "total_trades": self.total_trades,
-            "win_count": self.win_count,
-            "loss_count": self.loss_count,
-            "daily_pnl": self.daily_pnl,
-            "weekly_pnl": self.weekly_pnl,
-            "monthly_pnl": self.monthly_pnl,
-            "total_pnl": self.total_pnl,
-            "account_balance": self.account_balance,
-            "daily_loss_pct": self.daily_loss_pct,
-            "max_daily_loss_pct": self.max_daily_loss_pct,
-            "exposure_pct": self.exposure_pct,
-            "consecutive_losses": self.consecutive_losses,
-            "consecutive_wins": self.consecutive_wins,
-            "open_trade_count": len(self.active_trades),
+            "bot_status": "running" if loop.running else "stopped",
+            "mode": "live",
+            "uptime_seconds": round(uptime, 2),
+            "risk_mode": dd.mode.value if hasattr(dd.mode, "value") else str(dd.mode),
+            "win_rate": round(win_rate, 1),
+            "total_trades": total,
+            "win_count": wins,
+            "loss_count": losses,
+            "daily_pnl": round(getattr(dd, "daily_pnl_pct", 0.0) * balance / 100, 2),
+            "account_balance": round(balance, 2),
+            "daily_loss_pct": round(abs(getattr(dd, "daily_pnl_pct", 0.0)), 1),
+            "max_daily_loss_pct": 5.0,
+            "open_trade_count": len(loop.managed_positions),
+            "consecutive_losses": getattr(dd, "consecutive_losses", 0),
+            "consecutive_wins": getattr(dd, "consecutive_wins", 0),
+            "mt5_connected": self._connection_status.get("mt5", False),
+            "deriv_connected": self._connection_status.get("deriv", False),
         }
 
+    def _sim_status(self, uptime: float) -> dict:
+        return {
+            "bot_status": "running",
+            "mode": "simulated",
+            "uptime_seconds": round(uptime, 2),
+            "risk_mode": "NORMAL",
+            "win_rate": 0.0,
+            "total_trades": 0,
+            "win_count": 0,
+            "loss_count": 0,
+            "daily_pnl": 0.0,
+            "account_balance": 10000.0,
+            "daily_loss_pct": 0.0,
+            "max_daily_loss_pct": 5.0,
+            "open_trade_count": 0,
+            "consecutive_losses": 0,
+            "consecutive_wins": 0,
+            "mt5_connected": False,
+            "deriv_connected": False,
+        }
 
-STATE = DashboardState()
+    # ── Open trades ───────────────────────────────────────────────────────
 
+    def get_open_trades(self) -> list[dict]:
+        if self.is_live:
+            return self._live_open_trades()
+        return []
 
-def load_demo_data() -> None:
-    """Populate state with realistic demo data for dashboard development."""
-    import random
+    def _live_open_trades(self) -> list[dict]:
+        trades: list[dict] = []
+        for oid, pos in self._trading_loop.managed_positions.items():
+            trades.append({
+                "order_id": oid,
+                "symbol": pos.symbol,
+                "direction": pos.direction,
+                "lots": pos.lots,
+                "entry_price": pos.entry_price,
+                "sl": pos.sl,
+                "tp1": pos.tp1,
+                "tp2": pos.tp2,
+                "score": pos.score,
+                "regime": pos.regime,
+                "session": pos.session,
+                "tp1_hit": pos.tp1_hit,
+                "at_breakeven": pos.at_breakeven,
+                "trailing": pos.trailing,
+                "open_time": pos.open_time.isoformat(),
+                "platform": pos.platform,
+            })
+        return trades
 
-    STATE.bot_status = BotStatus.RUNNING.value
-    STATE.started_at = time.time() - 7200
-    STATE.risk_mode = RiskMode.NORMAL.value
-    STATE.account_balance = 10842.50
-    STATE.daily_pnl = 342.50
-    STATE.weekly_pnl = 1280.00
-    STATE.monthly_pnl = 2842.50
-    STATE.total_pnl = 2842.50
-    STATE.win_count = 47
-    STATE.loss_count = 11
-    STATE.daily_loss_pct = 0.8
-    STATE.exposure_pct = 4.2
-    STATE.consecutive_losses = 0
-    STATE.consecutive_wins = 3
+    # ── Trade history ─────────────────────────────────────────────────────
 
-    demo_active = [
-        ActiveTrade(
-            id="T001", instrument="GBPUSD", direction="LONG",
-            entry_price=1.27295, current_price=1.27480,
-            stop_loss=1.27250, tp1=1.27470, tp2=1.27650,
-            pnl_pips=18.5, pnl_dollars=185.0, score=94,
-            stage="TRAILING", opened_at="2026-05-29T08:54:00Z",
-            lot_size=0.50,
-        ),
-        ActiveTrade(
-            id="T002", instrument="XAUUSD", direction="SHORT",
-            entry_price=2348.50, current_price=2345.80,
-            stop_loss=2352.00, tp1=2340.00, tp2=2330.00,
-            pnl_pips=27.0, pnl_dollars=270.0, score=91,
-            stage="TP1_HIT", opened_at="2026-05-29T09:12:00Z",
-            lot_size=0.30,
-        ),
-        ActiveTrade(
-            id="T003", instrument="US100", direction="LONG",
-            entry_price=18420.5, current_price=18415.2,
-            stop_loss=18400.0, tp1=18480.0, tp2=18550.0,
-            pnl_pips=-5.3, pnl_dollars=-53.0, score=87,
-            stage="MONITORING", opened_at="2026-05-29T10:05:00Z",
-            lot_size=0.20,
-        ),
-    ]
-    STATE.active_trades = [t.__dict__ for t in demo_active]
+    def get_trade_history(self) -> list[dict]:
+        if self.is_live:
+            return self._live_history()
+        return []
 
-    pairs = ["EURUSD", "GBPUSD", "USDJPY", "XAUUSD", "US100", "GBPJPY",
-             "AUDUSD", "V75_1S", "GER40", "NZDUSD"]
-    outcomes = ["WIN", "WIN", "WIN", "WIN", "LOSS", "WIN", "WIN", "WIN",
-                "LOSS", "WIN"]
-    demo_closed = []
-    for i, (pair, outcome) in enumerate(zip(pairs, outcomes)):
-        pnl = round(random.uniform(50, 350), 2) if outcome == "WIN" else round(
-            random.uniform(-200, -50), 2)
-        demo_closed.append(ClosedTrade(
-            id=f"H{i:03d}", instrument=pair,
-            direction=random.choice(["LONG", "SHORT"]),
-            entry_price=round(random.uniform(1.0, 2500.0), 5),
-            exit_price=round(random.uniform(1.0, 2500.0), 5),
-            pnl_pips=round(pnl / 10, 1), pnl_dollars=pnl,
-            score=random.randint(85, 98),
-            duration_minutes=round(random.uniform(5, 120), 1),
-            opened_at=f"2026-05-2{8 - i // 3}T{8 + i}:00:00Z",
-            closed_at=f"2026-05-2{8 - i // 3}T{9 + i}:00:00Z",
-            outcome=outcome,
-        ).__dict__)
-    STATE.closed_trades = demo_closed
+    def _live_history(self) -> list[dict]:
+        journal = self._trading_loop.journal
+        if not hasattr(journal, "records"):
+            return []
+        records: list[dict] = []
+        for r in journal.records:
+            records.append({
+                "symbol": getattr(r, "symbol", ""),
+                "direction": getattr(r, "direction", ""),
+                "entry_price": getattr(r, "entry_price", 0),
+                "exit_price": getattr(r, "exit_price", 0),
+                "pnl_pips": getattr(r, "pnl_pips", 0),
+                "pnl_pct": getattr(r, "pnl_pct", 0),
+                "outcome": getattr(r, "outcome", ""),
+                "score": getattr(r, "score", 0),
+                "regime": getattr(r, "regime", ""),
+                "session": getattr(r, "session", ""),
+                "open_time": str(getattr(r, "open_time", "")),
+                "close_time": str(getattr(r, "close_time", "")),
+            })
+        return records
 
-    from config import INSTRUMENT_REGISTRY
-    scores = []
-    for sym, info in INSTRUMENT_REGISTRY.items():
-        sc = random.randint(10, 98)
-        status = "READY" if sc >= 85 else ("WATCHLIST" if sc >= 70 else "INACTIVE")
-        direction = random.choice(["LONG", "SHORT"]) if sc >= 70 else "NEUTRAL"
-        scores.append(InstrumentScore(
-            symbol=sym, name=info.name, category=info.category.value,
-            score=sc, direction=direction, status=status,
-            factors={
-                "structure": random.randint(0, 20),
-                "order_block": random.randint(0, 20),
-                "fvg": random.randint(0, 15),
-                "mtf_confluence": random.randint(0, 15),
-                "session": random.randint(0, 10),
-                "news": random.randint(0, 10),
-                "currency_strength": random.randint(0, 10),
-            },
-        ).__dict__)
-    STATE.instrument_scores = sorted(scores, key=lambda x: x["score"],
-                                     reverse=True)
+    # ── Scanner ───────────────────────────────────────────────────────────
 
-    STATE.ml_score_adjustments = {
-        "structure": +2, "order_block": -1, "fvg": +3,
-        "mtf_confluence": 0, "session": +1, "news": -2,
-        "currency_strength": -1,
-    }
-    STATE.ml_regime_stats = {
-        "TRENDING_STRONG": {"win_rate": 88.5, "trades": 28, "recommendation": "AGGRESSIVE"},
-        "TRENDING_WEAK": {"win_rate": 76.0, "trades": 22, "recommendation": "NORMAL"},
-        "RANGING": {"win_rate": 52.0, "trades": 15, "recommendation": "CAUTIOUS"},
-        "VOLATILE": {"win_rate": 30.0, "trades": 6, "recommendation": "AVOID"},
-    }
-    STATE.ml_session_stats = {
-        "LONDON_NY_OVERLAP": {"win_rate": 91.0, "trades": 18, "aggression": "HIGH"},
-        "LONDON": {"win_rate": 82.0, "trades": 24, "aggression": "NORMAL"},
-        "NEW_YORK": {"win_rate": 76.0, "trades": 20, "aggression": "NORMAL"},
-        "TOKYO": {"win_rate": 55.0, "trades": 12, "aggression": "LOW"},
-        "SYDNEY": {"win_rate": 60.0, "trades": 4, "aggression": "LOW"},
-    }
-    STATE.ml_pair_stats = {
-        "GBPUSD": {"win_rate": 84.0, "trades": 32, "size_mult": 1.0},
-        "EURUSD": {"win_rate": 79.0, "trades": 28, "size_mult": 1.0},
-        "XAUUSD": {"win_rate": 71.0, "trades": 18, "size_mult": 0.8},
-        "US100": {"win_rate": 65.0, "trades": 12, "size_mult": 0.8},
-        "NZDJPY": {"win_rate": 38.0, "trades": 8, "size_mult": 0.0},
-    }
+    def get_scanner_results(self) -> list[dict]:
+        if not self.is_live:
+            return []
+        scanner = self._trading_loop.scanner
+        if not hasattr(scanner, "last_report") or scanner.last_report is None:
+            return []
+        results: list[dict] = []
+        for r in scanner.last_report:
+            results.append({
+                "pair": getattr(r, "pair", ""),
+                "score": getattr(r, "score", 0),
+                "direction": getattr(r, "direction", ""),
+                "status": getattr(r, "status", ""),
+                "regime": getattr(r, "regime", ""),
+            })
+        return results
 
-    base = STATE.account_balance - STATE.total_pnl
-    curve = [base]
-    for _ in range(30):
-        change = random.uniform(-100, 200)
-        curve.append(round(curve[-1] + change, 2))
-    STATE.equity_curve = [
-        {"date": f"2026-05-{max(1, i):02d}", "equity": v}
-        for i, v in enumerate(curve)
-    ]
-    STATE.pnl_history = [
-        {"date": f"2026-05-{max(1, i):02d}",
-         "pnl": round(random.uniform(-150, 400), 2)}
-        for i in range(30)
-    ]
+    # ── Risk ──────────────────────────────────────────────────────────────
+
+    def get_risk_status(self) -> dict:
+        if self.is_live:
+            dd = self._trading_loop.drawdown.get_status(datetime.now(timezone.utc))
+            return {
+                "mode": dd.mode.value if hasattr(dd.mode, "value") else str(dd.mode),
+                "current_risk_pct": getattr(dd, "current_risk_pct", 2.0),
+                "daily_pnl_pct": getattr(dd, "daily_pnl_pct", 0.0),
+                "weekly_pnl_pct": getattr(dd, "weekly_pnl_pct", 0.0),
+                "score_threshold": getattr(dd, "score_threshold", 85),
+                "consecutive_losses": getattr(dd, "consecutive_losses", 0),
+                "open_trade_count": len(self._trading_loop.managed_positions),
+                "max_open_trades": self._trading_loop.config.risk.max_open_trades,
+            }
+        return {
+            "mode": "NORMAL",
+            "current_risk_pct": 2.0,
+            "daily_pnl_pct": 0.0,
+            "weekly_pnl_pct": 0.0,
+            "score_threshold": 85,
+            "consecutive_losses": 0,
+            "open_trade_count": 0,
+            "max_open_trades": 6,
+        }
+
+    # ── Performance ───────────────────────────────────────────────────────
+
+    def get_performance(self) -> dict:
+        if self.is_live:
+            journal = self._trading_loop.journal
+            total = getattr(journal, "total_trades", 0)
+            wins = getattr(journal, "wins", 0)
+            losses = getattr(journal, "losses", 0)
+            return {
+                "total_trades": total,
+                "wins": wins,
+                "losses": losses,
+                "win_rate": round((wins / total * 100) if total > 0 else 0, 1),
+                "best_trade_pips": getattr(journal, "best_trade_pips", 0),
+                "worst_trade_pips": getattr(journal, "worst_trade_pips", 0),
+                "avg_win_pips": getattr(journal, "avg_win_pips", 0),
+                "avg_loss_pips": getattr(journal, "avg_loss_pips", 0),
+                "profit_factor": getattr(journal, "profit_factor", 0),
+                "daily_trades": self._trading_loop._daily_trades,
+            }
+        return {
+            "total_trades": 0,
+            "wins": 0,
+            "losses": 0,
+            "win_rate": 0.0,
+            "best_trade_pips": 0,
+            "worst_trade_pips": 0,
+            "avg_win_pips": 0,
+            "avg_loss_pips": 0,
+            "profit_factor": 0,
+            "daily_trades": 0,
+        }
+
+    # ── Controls ──────────────────────────────────────────────────────────
+
+    def pause_trading(self) -> dict:
+        if self.is_live:
+            self._trading_loop.running = False
+            return {"status": "paused"}
+        return {"status": "no_engine_attached"}
+
+    def resume_trading(self) -> dict:
+        if self.is_live:
+            self._trading_loop.running = True
+            return {"status": "resumed"}
+        return {"status": "no_engine_attached"}
+
+    def emergency_close_all(self) -> dict:
+        if not self.is_live:
+            return {"status": "no_engine_attached", "closed": 0}
+        closed = 0
+        for oid, pos in list(self._trading_loop.managed_positions.items()):
+            try:
+                result = self._platform_manager.close_trade(oid, pos.platform)
+                if result.success:
+                    closed += 1
+            except Exception as exc:
+                logger.error("Emergency close failed for {}: {}", oid, exc)
+        self._trading_loop.managed_positions.clear()
+        return {"status": "emergency_close_complete", "closed": closed}
