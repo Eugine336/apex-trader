@@ -14,6 +14,7 @@ from typing import Any, Optional
 import pandas as pd
 from loguru import logger
 
+from brain.symbol_mapper import SymbolMapper
 from config import get_pip_size
 from platforms.base_connector import (
     AccountInfo,
@@ -44,51 +45,9 @@ _GRANULARITY_MAP: dict[str, int] = {
     "D1": 86400,
 }
 
-_SYMBOL_MAP: dict[str, str] = {
-    "V10_1S": "1HZ10V",
-    "V25_1S": "1HZ25V",
-    "V50_1S": "1HZ50V",
-    "V75_1S": "1HZ75V",
-    "V100_1S": "1HZ100V",
-    "BOOM300": "BOOM300N",
-    "BOOM500": "BOOM500N",
-    "BOOM1000": "BOOM1000N",
-    "CRASH300": "CRASH300N",
-    "CRASH500": "CRASH500N",
-    "CRASH1000": "CRASH1000N",
-    "STPIDX": "stpRNG",
-    "RNGBULL": "RDBULL",
-    "RNGBEAR": "RDBEAR",
-    "JD10": "JD10",
-    "JD25": "JD25",
-    "JD50": "JD50",
-    "EURUSD": "frxEURUSD",
-    "GBPUSD": "frxGBPUSD",
-    "USDJPY": "frxUSDJPY",
-    "USDCHF": "frxUSDCHF",
-    "AUDUSD": "frxAUDUSD",
-    "NZDUSD": "frxNZDUSD",
-    "USDCAD": "frxUSDCAD",
-    "EURGBP": "frxEURGBP",
-    "EURJPY": "frxEURJPY",
-    "GBPJPY": "frxGBPJPY",
-    "AUDJPY": "frxAUDJPY",
-    "XAUUSD": "frxXAUUSD",
-    "XAGUSD": "frxXAGUSD",
-}
-
 _RECONNECT_DELAY = 5
 _REQUEST_TIMEOUT = 15
 _MAX_RECONNECT_ATTEMPTS = 5
-
-
-def _get_or_create_loop() -> asyncio.AbstractEventLoop:
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-    return loop
 
 
 class DerivConnector(BaseConnector):
@@ -107,6 +66,15 @@ class DerivConnector(BaseConnector):
         self._account_id: str = ""
         self._req_id = 0
         self._positions: dict[str, dict] = {}
+        self._mapper = SymbolMapper("deriv")
+
+        self._loop = asyncio.new_event_loop()
+        self._loop_thread = threading.Thread(
+            target=self._loop.run_forever,
+            daemon=True,
+            name="deriv-ws-loop",
+        )
+        self._loop_thread.start()
         self._lock = asyncio.Lock()
         self._thread_lock = threading.Lock()
         self._last_history_request: float = 0.0
@@ -121,8 +89,8 @@ class DerivConnector(BaseConnector):
             logger.error("Deriv app_id not provided")
             return False
         try:
-            loop = _get_or_create_loop()
-            return loop.run_until_complete(self._connect_async())
+            future = asyncio.run_coroutine_threadsafe(self._connect_async(), self._loop)
+            return future.result(timeout=30)
         except Exception as exc:
             logger.error("Deriv connect error: {}", exc)
             return False
@@ -156,8 +124,8 @@ class DerivConnector(BaseConnector):
     def disconnect(self) -> None:
         if self._ws is not None:
             try:
-                loop = _get_or_create_loop()
-                loop.run_until_complete(self._ws.close())
+                future = asyncio.run_coroutine_threadsafe(self._ws.close(), self._loop)
+                future.result(timeout=10)
             except Exception as exc:
                 logger.warning("Deriv disconnect error: {}", exc)
         self._connected = False
@@ -183,11 +151,12 @@ class DerivConnector(BaseConnector):
     # ── Low-level send/receive ───────────────────────────────────────────
 
     async def _send(self, payload: dict) -> dict:
-        self._req_id += 1
-        payload["req_id"] = self._req_id
-        await self._ws.send(json.dumps(payload))
-        raw = await asyncio.wait_for(self._ws.recv(), timeout=_REQUEST_TIMEOUT)
-        return json.loads(raw)
+        async with self._lock:
+            self._req_id += 1
+            payload["req_id"] = self._req_id
+            await self._ws.send(json.dumps(payload))
+            raw = await asyncio.wait_for(self._ws.recv(), timeout=_REQUEST_TIMEOUT)
+            return json.loads(raw)
 
     def _sync_send(self, payload: dict) -> dict:
         with self._thread_lock:
@@ -483,7 +452,7 @@ class DerivConnector(BaseConnector):
     # ── Mapping ──────────────────────────────────────────────────────────
 
     def symbol_map(self, apex_symbol: str) -> str:
-        return _SYMBOL_MAP.get(apex_symbol.upper(), apex_symbol)
+        return self._mapper.to_broker(apex_symbol)
 
     def timeframe_map(self, tf: str) -> int:
         return _GRANULARITY_MAP.get(tf.upper(), 3600)

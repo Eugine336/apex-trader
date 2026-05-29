@@ -1,0 +1,30 @@
+{
+  "name": "deriv",
+  "rules": {
+    "forex": {
+      "pattern": "frx{symbol}",
+      "description": "Deriv forex pairs use frx prefix"
+    }
+  },
+  "overrides": {
+    "V10_1S": "1HZ10V",
+    "V25_1S": "1HZ25V",
+    "V50_1S": "1HZ50V",
+    "V75_1S": "1HZ75V",
+    "V100_1S": "1HZ100V",
+    "BOOM300": "BOOM300N",
+    "BOOM500": "BOOM500N",
+    "BOOM1000": "BOOM1000N",
+    "CRASH300": "CRASH300N",
+    "CRASH500": "CRASH500N",
+    "CRASH1000": "CRASH1000N",
+    "STPIDX": "stpRNG",
+    "RNGBULL": "RDBULL",
+    "RNGBEAR": "RDBEAR",
+    "JD10": "JD10",
+    "JD25": "JD25",
+    "JD50": "JD50",
+    "XAUUSD": "frxXAUUSD",
+    "XAGUSD": "frxXAGUSD"
+  }
+}
