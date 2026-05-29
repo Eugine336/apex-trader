@@ -1,0 +1,55 @@
+# Environment & Secrets
+.env
+.env.local
+.env.production
+*.key
+secrets.json
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+venv/
+env/
+.venv/
+pip-log.txt
+
+# Data & Logs
+data/trades.db
+data/*.db
+data/*.csv
+logs/
+*.log
+
+# ML Models (too large for git — use releases)
+ml/models/*.pkl
+ml/models/*.h5
+ml/models/*.joblib
+
+# MT5
+platforms/mt5/*.ex5
+platforms/mt5/*.log
+
+# Node / Dashboard
+dashboard/node_modules/
+dashboard/build/
+dashboard/.env
+
+# OS
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# IDE
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
