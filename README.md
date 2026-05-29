@@ -179,6 +179,14 @@ Every instrument has its own pip size, spread, and margin category in the regist
 
 ---
 
+## Quickstart
+
+1. Copy `.env.example` to `.env` and fill in your credentials
+2. Install dependencies: `pip install -r requirements.txt`
+3. Run headless: `python main.py`
+4. Run with dashboard: `python main.py --dashboard`
+5. Dashboard available at: http://localhost:8000
+
 ## Setup
 
 ```bash
@@ -204,6 +212,57 @@ python main.py --dashboard
 # Or launch full dashboard (API + React frontend)
 bash dashboard/start.sh
 # API: http://localhost:8000  |  Frontend: http://localhost:3000
+
+# Run a backtest
+python scripts/run_backtest.py --pair EURUSD --platform mt5 --bars 10000
+
+# Smoke test (verify all modules load)
+python scripts/smoke_test.py
+```
+
+---
+
+## Configuration
+
+### Environment Variables
+
+| Variable | Required | Description |
+|---|---|---|
+| `MT5_LOGIN` | MT5 only | Your MT5 account number |
+| `MT5_PASSWORD` | MT5 only | Your MT5 account password |
+| `MT5_SERVER` | MT5 only | Broker server name (e.g. `ICMarketsSC-Demo`) |
+| `DERIV_API_TOKEN` | Deriv only | API token from app.deriv.com |
+| `DERIV_APP_ID` | Deriv only | App ID from app.deriv.com |
+| `APP_ENV` | No | `development` or `production` (default: `development`) |
+| `LOG_LEVEL` | No | `INFO`, `DEBUG`, `WARNING` (default: `INFO`) |
+
+### AppConfig (config.py)
+
+| Field | Default | Description |
+|---|---|---|
+| `enabled_categories` | `["forex"]` | Which instrument categories to trade |
+| `enabled_symbols_override` | 8 major pairs | Explicit symbol list (overrides categories) |
+| `scoring.min_entry_score` | `85` | Minimum confluence score to trigger entry |
+| `risk.risk_per_trade_pct` | `0.5` | Risk per trade as percentage of balance |
+| `risk.max_daily_drawdown_pct` | `3.0` | Daily loss limit before FROZEN mode |
+| `risk.max_open_trades` | `3` | Maximum simultaneous positions |
+| `risk.max_correlated_trades` | `1` | Max trades on correlated currencies |
+| `risk.max_spread_multiplier` | `2.0` | Block entry if spread > typical × this |
+| `scan_interval_seconds` | `10` | Seconds between scan cycles |
+
+### Broker Config (config/brokers/*.json)
+
+Each broker has a JSON file with symbol mapping rules:
+- `rules`: Category-based pattern mapping (e.g. forex → `frx{symbol}` for Deriv)
+- `overrides`: Explicit symbol-by-symbol mappings (highest priority)
+
+Example (`config/brokers/deriv.json`):
+```json
+{
+  "name": "deriv",
+  "rules": { "forex": { "pattern": "frx{symbol}" } },
+  "overrides": { "V75_1S": "1HZ75V", "BOOM1000": "BOOM1000N" }
+}
 ```
 
 ---

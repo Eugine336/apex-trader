@@ -209,14 +209,17 @@ class ScoringConfig:
 # Risk parameters
 # ---------------------------------------------------------------------------
 
+# NOTE: These are conservative defaults for the initial live validation phase.
+# Once the strategy has 200+ trades and shows positive expectancy, increase
+# risk_per_trade_pct to 1.0, then 2.0. Never increase before proving edge.
 @dataclass
 class RiskConfig:
-    risk_per_trade_pct: float = 2.0
-    max_daily_drawdown_pct: float = 5.0
-    max_open_trades: int = 6
-    max_correlated_trades: int = 2
+    risk_per_trade_pct: float = 0.5
+    max_daily_drawdown_pct: float = 3.0
+    max_open_trades: int = 3
+    max_correlated_trades: int = 1
     min_risk_reward: float = 1.5
-    max_spread_multiplier: float = 3.0
+    max_spread_multiplier: float = 2.0
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +229,13 @@ class RiskConfig:
 @dataclass
 class AppConfig:
     enabled_categories: list[str] = field(
-        default_factory=lambda: ["forex", "commodity", "index"]
+        default_factory=lambda: ["forex"]
+    )
+    enabled_symbols_override: list[str] = field(
+        default_factory=lambda: [
+            "EURUSD", "GBPUSD", "USDJPY", "USDCHF",
+            "AUDUSD", "NZDUSD", "USDCAD", "XAUUSD"
+        ]
     )
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
@@ -235,7 +244,9 @@ class AppConfig:
 
     @property
     def enabled_pairs(self) -> list[str]:
-        """All symbols from enabled categories."""
+        """All symbols from enabled categories, filtered by override if set."""
+        if self.enabled_symbols_override:
+            return self.enabled_symbols_override
         symbols: list[str] = []
         for cat in self.enabled_categories:
             symbols.extend(i.symbol for i in get_instruments_by_category(cat))

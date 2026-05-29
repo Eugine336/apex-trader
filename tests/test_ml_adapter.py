@@ -412,3 +412,35 @@ class TestMLAdapter:
         adj = adapter.get_trade_adjustments("UNKNOWN", "UNKNOWN", "UNKNOWN")
         assert adj.should_trade is True
         assert adj.position_size_multiplier == 0.8
+
+    def test_ml_persistence_after_optimization(self, tmp_path):
+        import ml.score_optimizer as so_mod
+        import ml.pair_learner as pl_mod
+        import ml.regime_learner as rl_mod
+        import ml.session_learner as sl_mod
+
+        old_so = so_mod.ScoreOptimizer.DEFAULT_PATH
+        old_pl = pl_mod.PairLearner.SAVE_PATH
+        old_rl = rl_mod.RegimeLearner.SAVE_PATH
+        old_sl = sl_mod.SessionLearner.SAVE_PATH
+
+        so_mod.ScoreOptimizer.DEFAULT_PATH = str(tmp_path / "scoring_weights.json")
+        pl_mod.PairLearner.SAVE_PATH = str(tmp_path / "ml_pair_profiles.json")
+        rl_mod.RegimeLearner.SAVE_PATH = str(tmp_path / "ml_regime_strategies.json")
+        sl_mod.SessionLearner.SAVE_PATH = str(tmp_path / "ml_session_profiles.json")
+
+        try:
+            random.seed(42)
+            trades = _generate_trades(n=120, win_rate=0.75)
+            adapter = MLAdapter()
+            adapter.run_optimization(trades)
+
+            assert Path(so_mod.ScoreOptimizer.DEFAULT_PATH).exists()
+            assert Path(pl_mod.PairLearner.SAVE_PATH).exists()
+            assert Path(rl_mod.RegimeLearner.SAVE_PATH).exists()
+            assert Path(sl_mod.SessionLearner.SAVE_PATH).exists()
+        finally:
+            so_mod.ScoreOptimizer.DEFAULT_PATH = old_so
+            pl_mod.PairLearner.SAVE_PATH = old_pl
+            rl_mod.RegimeLearner.SAVE_PATH = old_rl
+            sl_mod.SessionLearner.SAVE_PATH = old_sl

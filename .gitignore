@@ -1,5 +1,7 @@
 # Environment & Secrets
 .env
+*.env
+!.env.example
 .env.local
 .env.production
 *.key
@@ -20,11 +22,11 @@ venv/
 env/
 .venv/
 pip-log.txt
+.pytest_cache/
 
 # Data & Logs
-data/trades.db
-data/*.db
-data/*.csv
+data/
+!data/.gitkeep
 logs/
 *.log
 
