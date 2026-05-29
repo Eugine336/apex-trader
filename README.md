@@ -40,11 +40,24 @@ apex-trader/
 ├── platforms/                # Phase 7 🔄 - MT5 + Deriv Integration
 │   ├── mt5/                  # MQL5 Expert Advisor
 │   └── deriv/                # Python WebSocket bot
-├── dashboard/                # Phase 8 🔄 - React Dashboard
+├── dashboard/                # Phase 8 ✅ - Live Trading Dashboard
+│   ├── api.py                # FastAPI backend (9 endpoints + WebSocket)
+│   ├── state.py              # Shared dashboard state with demo data
+│   ├── start.sh              # Launch script for API + React
+│   ├── requirements.txt      # Dashboard-specific Python deps
+│   ├── frontend/             # React app
+│   │   ├── src/
+│   │   │   ├── pages/        # 8 pages: Overview, Trades, History, Scanner...
+│   │   │   ├── components/   # Layout, StatusBar, Charts, TradeCard, ScoreBar
+│   │   │   └── hooks/        # useApi, useWebSocket
+│   │   └── package.json
+│   └── tests/
+│       └── test_api.py       # 24 API endpoint tests
+│
 ├── data/                     # Trade logs and historical data
 ├── tests/                    # Unit tests
 ├── config.py                 # Full instrument registry + all settings
-├── main.py                   # Entry point
+├── main.py                   # Entry point (--dashboard flag for web UI)
 ├── requirements.txt
 └── .env.example              # Credentials template
 ```
@@ -141,8 +154,16 @@ pip install -r requirements.txt
 cp .env.example .env
 # Edit .env with your credentials
 
-# Run
+# Run the bot
 python main.py
+
+# Run with the web dashboard
+python main.py --dashboard
+# Then open http://localhost:8000
+
+# Or launch both API + React dev server
+cd dashboard && bash start.sh
+# API: http://localhost:8000  |  Frontend: http://localhost:3000
 ```
 
 ---
@@ -165,16 +186,14 @@ python main.py
 | Phase | Module | Status |
 |-------|--------|--------|
 | 1 | Brain — Market Reading Engine | ✅ Complete |
-| 2 | Scanner — Multi-Pair Scanner | ✅ Complete |
-| 1 | Brain — Core Market Reading Engine | ✅ Complete |
 | 1.5 | Brain — Intelligence & Validation Layer | ✅ Complete |
-| 2 | Scanner — Multi-Pair Scanner | 🔄 In Progress |
+| 2 | Scanner — Multi-Pair Scanner | ✅ Complete |
 | 3 | Trigger — Entry Engine | 🔄 Pending |
 | 4 | Management — Trade Manager | 🔄 Pending |
 | 5 | Risk — Risk Engine | 🔄 Pending |
 | 6 | ML — Adaptive Learning | 🔄 Pending |
 | 7 | Platforms — MT5 + Deriv | 🔄 Pending |
-| 8 | Dashboard — React UI | 🔄 Pending |
+| 8 | Dashboard — React UI | ✅ Complete |
 
 ---
 
