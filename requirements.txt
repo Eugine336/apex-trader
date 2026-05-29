@@ -26,6 +26,10 @@ aiosqlite==0.20.0
 apscheduler==3.10.4
 asyncio-throttle==1.0.2
 
+# Dashboard
+fastapi==0.111.0
+uvicorn==0.30.1
+
 # Logging & Monitoring
 loguru==0.7.2
 rich==13.7.1
