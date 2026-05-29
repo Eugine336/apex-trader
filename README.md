@@ -10,7 +10,7 @@ Sharp. Precise. Always watching. In and out like a sniper.
 
 ```
 apex-trader/
-├── brain/                    # Phase 1.5 ✅ - Market Reading + Intelligence Engine
+├── brain/                    # Phase 1 ✅ - Market Reading + Intelligence Engine (17 modules)
 │   ├── structure_engine.py   # Market structure: HH/HL/LH/LL, BOS, CHOCH
 │   ├── liquidity_mapper.py   # Where stops are resting — equal highs/lows
 │   ├── fvg_detector.py       # Fair Value Gaps — price imbalances
@@ -33,6 +33,24 @@ apex-trader/
 │   ├── pair_ranker.py        # Tie-breaking & prioritization engine
 │   └── scan_scheduler.py     # Adaptive scan frequency controller
 │
+├── trigger/                  # Phase 3 ✅ - Entry Engine
+│   ├── entry_engine.py       # Zone discovery, M1 CHOCH, SL/TP, position sizing
+│   ├── entry_patterns.py     # 5 M1 patterns: engulfing, pin bar, inside bar, wick, volume
+│   └── entry_validator.py    # 7 safety checks: spread, R:R, drawdown, expiry, max trades
+│
+├── management/               # Phase 4 ✅ - Trade Management
+│   ├── trade_manager.py      # Full trade lifecycle: SL → TP1 → breakeven → trail → TP2
+│   ├── trailing_stop.py      # Structure-based trailing stop (follows swing lows/highs)
+│   ├── partial_close.py      # 50% partial close at TP1 + breakeven calculation
+│   └── re_entry.py           # Re-entry logic after breakeven stops
+│
+├── risk/                     # Phase 5 ✅ - Risk Engine
+│   ├── risk_engine.py        # Central risk authority — the ultimate gate
+│   ├── position_sizer.py     # Dynamic position sizing with volatility adjust
+│   ├── daily_tracker.py      # Daily/weekly/monthly P&L tracking
+│   ├── spread_monitor.py     # Spread protection and alerting
+│   └── risk_reporter.py      # Risk dashboard data aggregation
+│
 ├── ml/                       # Phase 6 ✅ - ML Adapter (The Memory)
 │   ├── trade_analyzer.py     # PerformanceProfile — dissects every trade
 │   ├── score_optimizer.py    # Adaptive scoring weights (gradual, sums to 100)
@@ -40,16 +58,6 @@ apex-trader/
 │   ├── pair_learner.py       # Pair-specific confidence multipliers
 │   ├── session_learner.py    # Session aggression levels
 │   └── ml_adapter.py         # Master controller — coordinates all learners
-│
-├── trigger/                  # Phase 3 🔄 - Entry Engine
-├── management/               # Phase 4 🔄 - Trade Management
-├── risk/                     # Phase 5 ✅ - Risk Engine
-│   ├── risk_engine.py        # Central risk authority — the ultimate gate
-│   ├── position_sizer.py     # Dynamic position sizing with volatility adjust
-│   ├── daily_tracker.py      # Daily/weekly/monthly P&L tracking
-│   ├── spread_monitor.py     # Spread protection and alerting
-│   └── risk_reporter.py      # Risk dashboard data aggregation
-├── ml/                       # Phase 6 🔄 - ML Adapter
 │
 ├── platforms/                # Phase 7 ✅ - MT5 + Deriv Integration
 │   ├── base_connector.py     # Abstract interface all connectors share
@@ -60,11 +68,11 @@ apex-trader/
 │   └── deriv/
 │       └── deriv_connector.py# Deriv WebSocket API — synthetics 24/7
 │
-├── dashboard/                # Phase 8 🔄 - React Dashboard
+├── dashboard/                # Phase 8 🔜 - React Dashboard (not yet built)
 ├── data/                     # Trade logs and historical data
-├── tests/                    # Unit tests
-├── config.py                 # Full instrument registry + all settings
-├── main.py                   # Entry point
+├── tests/                    # Unit tests (214 passing)
+├── config.py                 # Full instrument registry (59 instruments) + all settings
+├── main.py                   # Entry point — boots all 7 phases
 ├── requirements.txt
 └── .env.example              # Credentials template
 ```
@@ -128,27 +136,25 @@ Every instrument has its own pip size, spread, and margin category in the regist
 - Liquidity sweep must be confirmed before entry
 - Multi-timeframe alignment (H4 → H1 → M5 → M1)
 - Enters at the midpoint of FVGs or Order Blocks
+- 5 M1 confirmation patterns: engulfing, pin bar, inside bar breakout, rejection wick, volume spike
+- 7 pre-entry safety checks: spread, R:R, drawdown, expiry, max trades, correlation, session
 
 **The Trade Manager protects every winner:**
 - 50% partial close at 1:1 R:R
 - Stop moved to breakeven after TP1
-- Structure-based trailing stop
-- Time-based exit if price stalls
-- Re-entry logic if stopped at breakeven
+- Structure-based trailing stop (follows M5 swing lows/highs)
+- Time-based exit if price stalls for 75 minutes
+- Re-entry logic if stopped at breakeven with 15-minute cooldown
 
-**Risk Engine protects the account:**
-- Dynamic position sizing — 2% normal, 1.5% caution, 1% recovery
-- Max 5% daily drawdown — bot FREEZES automatically
-- Max 8% weekly drawdown — enters RECOVERY mode
-- Correlation & exposure control across all open trades
-- Spread monitor — blocks wide/dangerous spreads
-- Daily/weekly/monthly P&L tracking with streak detection
-- Drawdown recovery: NORMAL → CAUTION → RECOVERY → FROZEN
-- Real-time risk reports for the dashboard
+**The ML Adapter gets smarter every day:**
+- Learns from your bot's own trade results (starts blank — zero bias)
+- Optimizes scoring weights gradually (max ±3 per cycle)
+- Profiles pairs, sessions, and regimes with confidence multipliers
+- Retrains every 50 trades or 7 days, whichever comes first
 
 ---
 
-## New in Phase 1.5
+## Brain Intelligence Modules
 
 - **Regime Detector**: ATR + directional strength model with ranging score caps and volatile freeze logic.
 - **Volume Analyzer**: Tick-volume ratio, divergence, climax detection, and point-of-control estimation.
@@ -167,7 +173,7 @@ Every instrument has its own pip size, spread, and margin category in the regist
 
 ```bash
 # Clone the repo
-git clone https://github.com/yourusername/apex-trader.git
+git clone https://github.com/Eugine336/apex-trader.git
 cd apex-trader
 
 # Install dependencies
@@ -200,19 +206,18 @@ python main.py
 
 | Phase | Module | Status |
 |-------|--------|--------|
-| 1 | Brain — Core Market Reading Engine | ✅ Complete |
-| 1.5 | Brain — Intelligence & Validation Layer | ✅ Complete |
+| 1 | Brain — Market Reading + Intelligence Engine (17 modules) | ✅ Complete |
 | 2 | Scanner — Multi-Pair Scanner | ✅ Complete |
-| 3 | Trigger — Entry Engine | 🔄 Pending |
-| 4 | Management — Trade Manager | 🔄 Pending |
-| 5 | Risk — Risk Engine | 🔄 Pending |
-| 6 | ML — Adaptive Learning | 🔄 Pending |
+| 3 | Trigger — Entry Engine | ✅ Complete |
+| 4 | Management — Trade Manager | ✅ Complete |
+| 5 | Risk — Risk Engine | ✅ Complete |
+| 6 | ML — Adaptive Learning | ✅ Complete |
 | 7 | Platforms — MT5 + Deriv Integration | ✅ Complete |
-| 8 | Dashboard — React UI | 🔄 Pending |
+| 8 | Dashboard — React UI | 🔜 Next |
 
 ---
 
-## New in Phase 7 — Platform Integration
+## Platform Integration (MT5 + Deriv)
 
 Two arms, one mind. MT5 for Forex/indices. Deriv for synthetics — 24/7.
 
