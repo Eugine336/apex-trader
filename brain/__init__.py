@@ -1,14 +1,26 @@
-
+"""
 APEX TRADER — Brain Package
-The complete market reading engine.
+The complete market reading and institutional decision engine.
 """
 
-from brain.structure_engine import StructureEngine, Trend, StructureEvent
-from brain.liquidity_mapper import LiquidityMapper, LiquidityZone, LiquidityMap
-from brain.fvg_detector import FVGDetector, FairValueGap, FVGStatus
-from brain.order_block import OrderBlockDetector, OrderBlock, OBStatus
-from brain.currency_strength import CurrencyStrengthMeter, CurrencyStrength
-from brain.session_engine import SessionEngine, NewsGuard, SessionStatus, NewsStatus
+from brain.backtest_engine import BacktestEngine, BacktestResult, DataLoader
+from brain.correlation_engine import CorrelationEngine, ExposureMap, OpenTrade
+from brain.currency_strength import CurrencyStrength, CurrencyStrengthMeter
+from brain.drawdown_guard import DrawdownGuard, DrawdownMode, DrawdownStatus
+from brain.execution_monitor import ExecutionMonitor, ExecutionStats
+from brain.fvg_detector import FairValueGap, FVGDetector, FVGStatus
+from brain.inducement_detector import InducementAnalysis, InducementDetector
+from brain.liquidity_mapper import LiquidityMap, LiquidityMapper, LiquidityZone
+from brain.mtf_orchestrator import Confluence, MTFOrchestrator, TradeSetup
+from brain.order_block import OBStatus, OrderBlock, OrderBlockDetector
+from brain.regime_detector import MarketRegime, RegimeAnalysis, RegimeDetector
+from brain.session_engine import (NewsGuard, NewsStatus, SessionEngine,
+                                  SessionStatus)
+from brain.structure_engine import StructureEngine, StructureEvent, Trend
+from brain.trade_journal import DecisionRecord, TradeJournal, TradeRecord
+from brain.volume_analyzer import (VolumeAnalysis, VolumeAnalyzer,
+                                   VolumeDivergence)
+from brain.wyckoff_engine import WyckoffAnalysis, WyckoffEngine, WyckoffPhase
 
 __all__ = [
     "StructureEngine", "Trend", "StructureEvent",
@@ -17,4 +29,14 @@ __all__ = [
     "OrderBlockDetector", "OrderBlock", "OBStatus",
     "CurrencyStrengthMeter", "CurrencyStrength",
     "SessionEngine", "NewsGuard", "SessionStatus", "NewsStatus",
+    "RegimeDetector", "MarketRegime", "RegimeAnalysis",
+    "VolumeAnalyzer", "VolumeAnalysis", "VolumeDivergence",
+    "InducementDetector", "InducementAnalysis",
+    "WyckoffEngine", "WyckoffAnalysis", "WyckoffPhase",
+    "MTFOrchestrator", "TradeSetup", "Confluence",
+    "TradeJournal", "TradeRecord", "DecisionRecord",
+    "DrawdownGuard", "DrawdownMode", "DrawdownStatus",
+    "ExecutionMonitor", "ExecutionStats",
+    "CorrelationEngine", "OpenTrade", "ExposureMap",
+    "BacktestEngine", "BacktestResult", "DataLoader",
 ]
