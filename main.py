@@ -3,6 +3,8 @@ APEX TRADER — Entry Point
 Sharp. Precise. Always watching.
 """
 
+import sys
+
 from loguru import logger
 from config import AppConfig, get_instruments_by_category, INSTRUMENT_REGISTRY
 
@@ -31,4 +33,12 @@ from scanner import PairScanner, PairRanker, ScanScheduler
 logger.info("Scanner module loaded — watching all instruments")
 
 logger.info("-" * 60)
-logger.info("System ready. Waiting for market data feed…")
+
+if "--dashboard" in sys.argv:
+    import uvicorn
+    from dashboard.api import app  # noqa: F811
+    logger.info("Launching dashboard on http://localhost:8000")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+else:
+    logger.info("APEX TRADER IS LIVE")
+    logger.info("Run with --dashboard to start the web dashboard")
