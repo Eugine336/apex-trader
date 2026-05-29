@@ -103,46 +103,12 @@ def main() -> None:
 
     if dashboard_mode:
         import uvicorn
-        from dashboard.state import LiveState
-        from dashboard.api import create_app
-
-        state = LiveState()
-        if platform_manager.any_connected:
-            trading_loop.running = True
-            state.attach(trading_loop, platform_manager, connection_status)
-            trade_thread = threading.Thread(
-                target=_start_trading_loop,
-                args=(trading_loop,),
-                daemon=True,
-                name="TradingLoop",
-            )
-            trade_thread.start()
-            logger.info("Trading loop started in background thread")
-        else:
-            logger.warning(
-                "No platforms connected — dashboard will show empty data. "
-                "Set DERIV_API_TOKEN and DERIV_APP_ID in .env to connect."
-            )
-            state.attach(trading_loop, platform_manager, connection_status)
-
-        app = create_app(state)
-        logger.info("Launching dashboard on http://0.0.0.0:8000")
-        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+        from dashboard.api import app
+        logger.info("Launching dashboard on http://localhost:8000")
+        uvicorn.run(app, host="0.0.0.0", port=8000)
     else:
-        if not platform_manager.any_connected:
-            logger.error(
-                "No platforms connected — cannot trade. "
-                "Set DERIV_API_TOKEN and DERIV_APP_ID in .env"
-            )
-            logger.info("Run with --dashboard to start the web dashboard anyway")
-            return
-        trading_loop.run()
+        logger.info("Run with --dashboard to start the web dashboard")
 
-if "--dashboard" in sys.argv:
-    import uvicorn
-    from dashboard.api import app  # noqa: F811
-    logger.info("Launching dashboard on http://localhost:8000")
-    uvicorn.run(app, host="0.0.0.0", port=8000)
-else:
-    logger.info("APEX TRADER IS LIVE")
-    logger.info("Run with --dashboard to start the web dashboard")
+
+if __name__ == "__main__":
+    main()
