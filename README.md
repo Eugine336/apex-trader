@@ -34,7 +34,11 @@ apex-trader/
 │   └── scan_scheduler.py     # Adaptive scan frequency controller
 │
 ├── trigger/                  # Phase 3 🔄 - Entry Engine
-├── management/               # Phase 4 🔄 - Trade Management
+├── management/               # Phase 4 ✅ - Trade Management Engine
+│   ├── trade_manager.py      # Core manager — TP1/breakeven/trail/stall
+│   ├── partial_close.py      # Partial close & breakeven calculator
+│   ├── trailing_stop.py      # Structure-based trailing stop
+│   └── re_entry.py           # Re-entry after breakeven stop
 ├── risk/                     # Phase 5 🔄 - Risk Engine
 ├── ml/                       # Phase 6 🔄 - ML Adapter
 ├── platforms/                # Phase 7 🔄 - MT5 + Deriv Integration
@@ -170,7 +174,7 @@ python main.py
 | 1.5 | Brain — Intelligence & Validation Layer | ✅ Complete |
 | 2 | Scanner — Multi-Pair Scanner | 🔄 In Progress |
 | 3 | Trigger — Entry Engine | 🔄 Pending |
-| 4 | Management — Trade Manager | 🔄 Pending |
+| 4 | Management — Trade Manager | ✅ Complete |
 | 5 | Risk — Risk Engine | 🔄 Pending |
 | 6 | ML — Adaptive Learning | 🔄 Pending |
 | 7 | Platforms — MT5 + Deriv | 🔄 Pending |
