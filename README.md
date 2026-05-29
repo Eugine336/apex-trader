@@ -68,11 +68,21 @@ apex-trader/
 │   └── deriv/
 │       └── deriv_connector.py# Deriv WebSocket API — synthetics 24/7
 │
-├── dashboard/                # Phase 8 🔜 - React Dashboard (not yet built)
+├── dashboard/                # Phase 8 ✅ - React Dashboard + FastAPI Backend
+│   ├── api.py                # FastAPI REST + WebSocket API (8 endpoints)
+│   ├── state.py              # Shared in-memory state store + demo data
+│   ├── start.sh              # One-command launcher (API + React)
+│   ├── requirements.txt      # Dashboard-specific Python deps (FastAPI, uvicorn)
+│   ├── tests/
+│   │   └── test_api.py       # API endpoint + WebSocket tests
+│   └── frontend/             # React app (dark theme)
+│       ├── src/pages/        # Overview, ActiveTrades, Scanner, Performance, Risk, ML, Controls, History
+│       ├── src/components/   # Charts, Layout, ScoreBar, StatusBar, TradeCard
+│       └── src/hooks/        # useApi, useWebSocket
 ├── data/                     # Trade logs and historical data
-├── tests/                    # Unit tests (214 passing)
+├── tests/                    # Unit tests (214+ passing)
 ├── config.py                 # Full instrument registry (59 instruments) + all settings
-├── main.py                   # Entry point — boots all 7 phases
+├── main.py                   # Entry point — boots all 8 phases, --dashboard flag
 ├── requirements.txt
 └── .env.example              # Credentials template
 ```
@@ -176,15 +186,24 @@ Every instrument has its own pip size, spread, and margin category in the regist
 git clone https://github.com/Eugine336/apex-trader.git
 cd apex-trader
 
-# Install dependencies
+# Install core dependencies
 pip install -r requirements.txt
 
 # Set up environment
 cp .env.example .env
 # Edit .env with your credentials
 
-# Run
+# Run the bot
 python main.py
+
+# Run with dashboard
+pip install -r dashboard/requirements.txt
+python main.py --dashboard
+# API: http://localhost:8000  |  Swagger: http://localhost:8000/docs
+
+# Or launch full dashboard (API + React frontend)
+bash dashboard/start.sh
+# API: http://localhost:8000  |  Frontend: http://localhost:3000
 ```
 
 ---
@@ -213,7 +232,7 @@ python main.py
 | 5 | Risk — Risk Engine | ✅ Complete |
 | 6 | ML — Adaptive Learning | ✅ Complete |
 | 7 | Platforms — MT5 + Deriv Integration | ✅ Complete |
-| 8 | Dashboard — React UI | 🔜 Next |
+| 8 | Dashboard — React UI + FastAPI Backend | ✅ Complete |
 
 ---
 

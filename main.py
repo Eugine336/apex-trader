@@ -4,6 +4,8 @@ Sharp. Precise. Always watching.
 Two arms, one mind. MT5 for Forex/indices. Deriv for synthetics — 24/7.
 """
 
+import sys
+
 from loguru import logger
 from config import AppConfig, get_instruments_by_category, INSTRUMENT_REGISTRY
 
@@ -48,9 +50,17 @@ def main() -> None:
     from platforms import PlatformManager, TradingLoop
     logger.info("Phase 7 — Platforms loaded (MT5 + Deriv connectors, trading loop)")
 
+    logger.info("Phase 8 — Dashboard available (--dashboard to launch)")
+
     logger.info("-" * 60)
     logger.info("APEX TRADER IS LIVE")
     logger.info("-" * 60)
+
+    if "--dashboard" in sys.argv:
+        import uvicorn
+        from dashboard.api import app
+        logger.info("Launching dashboard on http://localhost:8000")
+        uvicorn.run(app, host="0.0.0.0", port=8000)
 
 
 if __name__ == "__main__":
