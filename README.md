@@ -50,9 +50,16 @@ apex-trader/
 │   ├── spread_monitor.py     # Spread protection and alerting
 │   └── risk_reporter.py      # Risk dashboard data aggregation
 ├── ml/                       # Phase 6 🔄 - ML Adapter
-├── platforms/                # Phase 7 🔄 - MT5 + Deriv Integration
-│   ├── mt5/                  # MQL5 Expert Advisor
-│   └── deriv/                # Python WebSocket bot
+│
+├── platforms/                # Phase 7 ✅ - MT5 + Deriv Integration
+│   ├── base_connector.py     # Abstract interface all connectors share
+│   ├── platform_manager.py   # Unified routing — one interface, two arms
+│   ├── main_loop.py          # Master trading loop — scan→enter→manage→repeat
+│   ├── mt5/
+│   │   └── mt5_connector.py  # MetaTrader 5 via official Python package
+│   └── deriv/
+│       └── deriv_connector.py# Deriv WebSocket API — synthetics 24/7
+│
 ├── dashboard/                # Phase 8 🔄 - React Dashboard
 ├── data/                     # Trade logs and historical data
 ├── tests/                    # Unit tests
@@ -193,18 +200,27 @@ python main.py
 
 | Phase | Module | Status |
 |-------|--------|--------|
-| 1 | Brain — Market Reading Engine | ✅ Complete |
-| 2 | Scanner — Multi-Pair Scanner | ✅ Complete |
-| 3 | Trigger — Entry Engine | ✅ Complete |
 | 1 | Brain — Core Market Reading Engine | ✅ Complete |
 | 1.5 | Brain — Intelligence & Validation Layer | ✅ Complete |
-| 2 | Scanner — Multi-Pair Scanner | 🔄 In Progress |
+| 2 | Scanner — Multi-Pair Scanner | ✅ Complete |
 | 3 | Trigger — Entry Engine | 🔄 Pending |
 | 4 | Management — Trade Manager | 🔄 Pending |
 | 5 | Risk — Risk Engine | 🔄 Pending |
-| 6 | ML — Adaptive Learning | ✅ Complete |
-| 7 | Platforms — MT5 + Deriv | 🔄 Pending |
+| 6 | ML — Adaptive Learning | 🔄 Pending |
+| 7 | Platforms — MT5 + Deriv Integration | ✅ Complete |
 | 8 | Dashboard — React UI | 🔄 Pending |
+
+---
+
+## New in Phase 7 — Platform Integration
+
+Two arms, one mind. MT5 for Forex/indices. Deriv for synthetics — 24/7.
+
+- **BaseConnector**: Abstract interface — `connect`, `place_order`, `modify_order`, `close_order`, `get_ohlcv`, etc. Every platform speaks the same language.
+- **MT5Connector**: MetaTrader 5 via official Python package. Windows-only with auto-detection. Handles Forex, commodities, indices. Auto-discovers broker symbol suffixes (`m`, `.raw`, `#`).
+- **DerivConnector**: WebSocket API connector for Deriv. Handles all synthetics (V75, Boom/Crash, Step, Jump, Range Break) plus Forex via multiplier contracts. Auto-reconnect on drop.
+- **PlatformManager**: Routes every trade to the correct platform based on the instrument registry. Merges positions, balances, and market data from both platforms into a single view.
+- **TradingLoop**: The heartbeat — Scan → Entry → Manage → Repeat. Integrates scanner, orchestrator, drawdown guard, correlation engine, execution monitor, and trade journal into one continuous loop.
 
 ---
 
