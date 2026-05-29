@@ -33,7 +33,10 @@ apex-trader/
 │   ├── pair_ranker.py        # Tie-breaking & prioritization engine
 │   └── scan_scheduler.py     # Adaptive scan frequency controller
 │
-├── trigger/                  # Phase 3 🔄 - Entry Engine
+├── trigger/                  # Phase 3 ✅ - Entry Engine
+│   ├── entry_engine.py       # Core entry logic — precise price, SL, TP, sizing
+│   ├── entry_patterns.py     # M1 micro-pattern detection (engulfing, pin bar, etc.)
+│   └── entry_validator.py    # Pre-entry safety gate (spread, correlation, expiry)
 ├── management/               # Phase 4 🔄 - Trade Management
 ├── risk/                     # Phase 5 🔄 - Risk Engine
 ├── ml/                       # Phase 6 🔄 - ML Adapter
@@ -166,10 +169,11 @@ python main.py
 |-------|--------|--------|
 | 1 | Brain — Market Reading Engine | ✅ Complete |
 | 2 | Scanner — Multi-Pair Scanner | ✅ Complete |
+| 3 | Trigger — Entry Engine | ✅ Complete |
 | 1 | Brain — Core Market Reading Engine | ✅ Complete |
 | 1.5 | Brain — Intelligence & Validation Layer | ✅ Complete |
 | 2 | Scanner — Multi-Pair Scanner | 🔄 In Progress |
-| 3 | Trigger — Entry Engine | 🔄 Pending |
+| 3 | Trigger — Entry Engine | ✅ Complete |
 | 4 | Management — Trade Manager | 🔄 Pending |
 | 5 | Risk — Risk Engine | 🔄 Pending |
 | 6 | ML — Adaptive Learning | 🔄 Pending |

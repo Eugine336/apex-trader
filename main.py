@@ -30,5 +30,9 @@ from scanner import PairScanner, PairRanker, ScanScheduler
 
 logger.info("Scanner module loaded — watching all instruments")
 
+from trigger import EntryEngine, EntryValidator, EntryPatternDetector
+
+logger.info("Entry Engine loaded — trigger finger ready")
+
 logger.info("-" * 60)
 logger.info("System ready. Waiting for market data feed…")
