@@ -74,6 +74,7 @@ class PairScanner:
         self.strength_meter = CurrencyStrengthMeter()
         self.session = SessionEngine()
         self.news = NewsGuard()
+        self.last_report: Optional[ScanReport] = None
 
     # ------------------------------------------------------------------
     # Single-pair scan
@@ -262,7 +263,7 @@ class PairScanner:
         ready = [r for r in results if r.status == "READY"]
         watch = [r for r in results if r.status == "WATCHLIST"]
 
-        return ScanReport(
+        report = ScanReport(
             timestamp=utc_now,
             session=session_status.current_session,
             total_pairs_scanned=len(results),
@@ -272,6 +273,8 @@ class PairScanner:
             best_setup=ready[0] if ready else None,
             regime_distribution=regimes,
         )
+        self.last_report = report
+        return report
 
     # ------------------------------------------------------------------
     # Convenience filters
