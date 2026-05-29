@@ -1,163 +1,154 @@
 """
-APEX TRADER — Master Configuration
-All system-wide settings live here.
-Override sensitive values via .env
+APEX TRADER — Central Configuration
+This is the command center where risk, scoring, sessions, and
+execution defaults are defined before the sniper goes live.
 """
 
 import os
+from dataclasses import asdict, dataclass, field
+from typing import Any, Optional
+
 from dotenv import load_dotenv
 
 load_dotenv()
 
-# ============================================
-# PLATFORM CREDENTIALS
-# ============================================
-MT5 = {
-    "login": int(os.getenv("MT5_LOGIN", 0)),
-    "password": os.getenv("MT5_PASSWORD", ""),
-    "server": os.getenv("MT5_SERVER", ""),
-}
 
-DERIV = {
-    "api_token": os.getenv("DERIV_API_TOKEN", ""),
-    "app_id": os.getenv("DERIV_APP_ID", "1089"),
-    "websocket_url": "wss://ws.binaryws.com/websockets/v3",
-}
-
-# ============================================
-# PAIRS TO TRADE
-# ============================================
-FOREX_PAIRS = [
-    "EURUSD", "GBPUSD", "USDJPY", "USDCHF",
-    "AUDUSD", "NZDUSD", "USDCAD",
-    "EURGBP", "EURJPY", "GBPJPY",
-    "AUDJPY", "CADJPY", "CHFJPY",
-    "EURCHF", "EURAUD", "EURCAD",
-    "GBPAUD", "GBPCAD", "GBPCHF",
-    "AUDCAD", "AUDCHF", "AUDNZD",
+ALL_MAJOR_PAIRS = [
+    "EURUSD", "GBPUSD", "USDJPY", "USDCHF", "AUDUSD", "NZDUSD", "USDCAD",
+    "EURGBP", "EURJPY", "GBPJPY", "AUDJPY", "NZDJPY", "CADJPY", "CHFJPY",
+    "EURCHF", "EURAUD", "EURCAD", "EURNZD", "GBPAUD", "GBPCAD", "GBPCHF",
+    "GBPNZD", "AUDCAD", "AUDCHF", "AUDNZD", "NZDCAD", "NZDCHF", "CADCHF",
 ]
 
-DERIV_SYNTHETIC = [
-    "R_10",   # Volatility 10
-    "R_25",   # Volatility 25
-    "R_50",   # Volatility 50
-    "R_75",   # Volatility 75
-    "R_100",  # Volatility 100
-    "BOOM500",
-    "BOOM1000",
-    "CRASH500",
-    "CRASH1000",
-    "stpRNG", # Step Index
-]
 
-# ============================================
-# TIMEFRAMES
-# ============================================
-TIMEFRAMES = {
-    "bias":   "H4",   # Big picture direction
-    "structure": "H1", # Market structure
-    "entry":  "M5",   # Entry confirmation
-    "trigger": "M1",  # Precise trigger
-}
+@dataclass
+class RiskSettings:
+    risk_per_trade: float = 0.02
+    max_daily_drawdown: float = 0.05
+    max_open_trades: int = 6
+    max_correlated_trades: int = 3
+    max_currency_exposure: float = 0.04
 
-# ============================================
-# RISK MANAGEMENT
-# ============================================
-RISK = {
-    "risk_per_trade": float(os.getenv("RISK_PER_TRADE", 0.02)),     # 2% per trade
-    "max_daily_loss": float(os.getenv("MAX_DAILY_LOSS", 0.05)),      # 5% daily stop
-    "max_weekly_loss": 0.10,                                          # 10% weekly stop
-    "max_open_trades": int(os.getenv("MAX_OPEN_TRADES", 6)),         # Max simultaneous
-    "min_risk_reward": 1.5,                                           # Minimum R:R
-    "partial_close_pct": 0.50,                                        # Close 50% at TP1
-    "breakeven_trigger": 1.0,                                         # Move SL at 1:1
-    "max_spread_pips": 3.0,                                           # Skip if spread too wide
-    "max_correlated_pairs": 2,                                        # Max same-currency trades
-}
 
-# ============================================
-# ENTRY SCORING THRESHOLDS
-# ============================================
-SCORING = {
-    "min_score_watchlist": 65,   # Flag for watching
-    "min_score_entry": 85,       # Required to enter
-    "weights": {
-        "htf_structure":     20,  # H4 trend aligned
-        "currency_strength": 10,  # Strong vs weak
-        "session_timing":    10,  # Correct session
-        "liquidity_sweep":   20,  # Sweep confirmed
-        "fvg_present":       15,  # FVG as entry
-        "choch_confirmed":   15,  # Change of character
-        "candle_pattern":    10,  # Confirmation candle
-    }
-}
+@dataclass
+class ScoringSettings:
+    min_entry_score: int = 85
+    min_watchlist_score: int = 70
+    ranging_score_cap: int = 80
+    volatile_trade_freeze: bool = True
 
-# ============================================
-# SESSION TIMES (UTC)
-# ============================================
-SESSIONS = {
-    "tokyo":    {"open": "00:00", "close": "09:00"},
-    "london":   {"open": "07:00", "close": "16:00"},
-    "new_york": {"open": "12:00", "close": "21:00"},
-    "overlap":  {"open": "12:00", "close": "16:00"},  # Best session
-}
 
-PREFERRED_SESSIONS = ["overlap", "london", "new_york"]
+@dataclass
+class TimeframeSettings:
+    bias_timeframe: str = "H4"
+    confirmation_timeframe: str = "H1"
+    entry_timeframes: list[str] = field(default_factory=lambda: ["M15", "M5", "M1"])
 
-# ============================================
-# NEWS FILTER
-# ============================================
-NEWS = {
-    "pause_before_minutes": 2,   # Pause X min before high impact news
-    "pause_after_minutes":  2,   # Pause X min after high impact news
-    "impact_levels": ["HIGH"],   # Which impact levels to filter
-    "api_key": os.getenv("NEWS_API_KEY", ""),
-}
 
-# ============================================
-# TRADE MANAGEMENT
-# ============================================
-TRADE_MANAGEMENT = {
-    "max_candles_in_trade": 50,      # Time-based exit
-    "trail_activation_rr":  1.5,     # Start trailing at 1.5R
-    "trail_by_structure":   True,    # Trail using swing points
-    "reentry_allowed":      True,    # Re-enter if stopped at BE
-    "reentry_max_attempts": 2,       # Max re-entries per setup
-}
+@dataclass
+class SessionSettings:
+    enabled: bool = True
+    high_liquidity_sessions: list[str] = field(
+        default_factory=lambda: ["LONDON", "NEW_YORK", "OVERLAP_LONDON_NY"]
+    )
+    dead_zones_enabled: bool = True
+    require_active_session_for_entries: bool = True
 
-# ============================================
-# ML ADAPTER
-# ============================================
-ML = {
-    "enabled": True,
-    "min_trades_to_learn": 50,       # Min trades before ML kicks in
-    "retrain_every_trades": 20,      # Retrain model every N trades
-    "model_path": "ml/models/",
-    "feature_importance_threshold": 0.05,
-}
 
-# ============================================
-# DATABASE
-# ============================================
-DATABASE = {
-    "url": os.getenv("DATABASE_URL", "sqlite:///data/trades.db"),
-    "echo": False,
-}
+@dataclass
+class FVGSettings:
+    min_size_pips: float = 2.0
+    pip_size: float = 0.0001
+    confluence_overlap_pips: float = 5.0
 
-# ============================================
-# LOGGING
-# ============================================
-LOGGING = {
-    "level": "INFO",
-    "file": "logs/apex_trader.log",
-    "rotation": "1 day",
-    "retention": "30 days",
-}
 
-# ============================================
-# DASHBOARD
-# ============================================
-DASHBOARD = {
-    "port": int(os.getenv("DASHBOARD_PORT", 3000)),
-    "host": "localhost",
-}
+@dataclass
+class OrderBlockSettings:
+    min_impulse_pips: float = 10.0
+    lookback_candles: int = 50
+    pip_size: float = 0.0001
+
+
+@dataclass
+class LiquiditySettings:
+    equal_threshold_pips: float = 3.0
+    min_touches: int = 2
+    pip_size: float = 0.0001
+
+
+@dataclass
+class RegimeSettings:
+    atr_period: int = 14
+    atr_average_period: int = 20
+    range_ma_period: int = 20
+    range_threshold_pct: float = 0.006
+    strong_trend_strength: float = 0.55
+    weak_trend_strength: float = 0.35
+    volatile_ratio: float = 1.8
+
+
+@dataclass
+class NewsGuardSettings:
+    pause_before_mins: int = 2
+    pause_after_mins: int = 2
+    blocked_impacts: list[str] = field(default_factory=lambda: ["HIGH"])
+
+
+@dataclass
+class DrawdownRecoverySettings:
+    normal_risk: float = 0.02
+    caution_risk: float = 0.015
+    recovery_risk: float = 0.01
+    caution_score_threshold: int = 88
+    recovery_score_threshold: int = 92
+    freeze_daily_loss_threshold: float = 0.05
+    recovery_mode_daily_loss_threshold: float = 0.03
+    ramp_back_wins: int = 2
+    equity_slope_window_days: int = 5
+
+
+@dataclass
+class BacktestingDefaults:
+    starting_balance: float = 10_000.0
+    default_pair: str = "EURUSD"
+    walk_forward_train_ratio: float = 0.7
+    monte_carlo_iterations: int = 500
+    commission_per_lot: float = 0.0
+    slippage_pips: float = 0.1
+    spread_pips: float = 1.2
+
+
+@dataclass
+class PlatformSecrets:
+    mt5_login: Optional[str] = field(default_factory=lambda: os.getenv("MT5_LOGIN"))
+    mt5_password: Optional[str] = field(default_factory=lambda: os.getenv("MT5_PASSWORD"))
+    mt5_server: Optional[str] = field(default_factory=lambda: os.getenv("MT5_SERVER"))
+    deriv_api_token: Optional[str] = field(default_factory=lambda: os.getenv("DERIV_API_TOKEN"))
+    deriv_app_id: Optional[str] = field(default_factory=lambda: os.getenv("DERIV_APP_ID"))
+
+
+@dataclass
+class AppConfig:
+    risk: RiskSettings = field(default_factory=RiskSettings)
+    scoring: ScoringSettings = field(default_factory=ScoringSettings)
+    timeframes: TimeframeSettings = field(default_factory=TimeframeSettings)
+    sessions: SessionSettings = field(default_factory=SessionSettings)
+    pairs: list[str] = field(default_factory=lambda: list(ALL_MAJOR_PAIRS))
+    fvg: FVGSettings = field(default_factory=FVGSettings)
+    order_block: OrderBlockSettings = field(default_factory=OrderBlockSettings)
+    liquidity: LiquiditySettings = field(default_factory=LiquiditySettings)
+    regime: RegimeSettings = field(default_factory=RegimeSettings)
+    news_guard: NewsGuardSettings = field(default_factory=NewsGuardSettings)
+    drawdown_recovery: DrawdownRecoverySettings = field(default_factory=DrawdownRecoverySettings)
+    backtesting: BacktestingDefaults = field(default_factory=BacktestingDefaults)
+    secrets: PlatformSecrets = field(default_factory=PlatformSecrets)
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+
+CONFIG = AppConfig()
+
+
+def get_config() -> AppConfig:
+    return CONFIG
