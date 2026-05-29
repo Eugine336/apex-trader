@@ -2,15 +2,46 @@
 APEX TRADER — Entry Point
 Sharp. Precise. Always watching.
 Two arms, one mind. MT5 for Forex/indices. Deriv for synthetics — 24/7.
+
+Usage:
+    python main.py               # Start trading only (headless)
+    python main.py --dashboard   # Start trading + dashboard on port 8000
 """
 
+import os
 import sys
+import threading
 
+from dotenv import load_dotenv
 from loguru import logger
+
+load_dotenv()
+
 from config import AppConfig, get_instruments_by_category, INSTRUMENT_REGISTRY
 
 
+def _start_trading_loop(trading_loop) -> None:
+    """Run the TradingLoop cycle in a background thread.
+
+    Uses run_once() directly instead of run() to avoid double-connecting
+    platforms that were already connected in main().
+    """
+    import time as _time
+
+    try:
+        while trading_loop.running:
+            trading_loop._check_daily_reset()
+            trading_loop.run_once()
+            interval = trading_loop._get_sleep_interval()
+            _time.sleep(interval)
+    except Exception as exc:
+        logger.error("Trading loop crashed: {}", exc)
+        trading_loop.running = False
+
+
 def main() -> None:
+    dashboard_mode = "--dashboard" in sys.argv
+
     logger.info("=" * 60)
     logger.info("  APEX TRADER — Institutional-Grade Trading System")
     logger.info("=" * 60)
@@ -52,11 +83,25 @@ def main() -> None:
 
     logger.info("Phase 8 — Dashboard available (--dashboard to launch)")
 
+    trading_loop = TradingLoop(config)
+    platform_manager = trading_loop.platforms
+
+    logger.info("Connecting to platforms…")
+    connection_status = platform_manager.connect_all()
+
     logger.info("-" * 60)
     logger.info("APEX TRADER IS LIVE")
+    if connection_status.get("mt5"):
+        logger.info("  MT5   — ONLINE")
+    else:
+        logger.info("  MT5   — OFFLINE")
+    if connection_status.get("deriv"):
+        logger.info("  Deriv — ONLINE")
+    else:
+        logger.info("  Deriv — OFFLINE")
     logger.info("-" * 60)
 
-    if "--dashboard" in sys.argv:
+    if dashboard_mode:
         import uvicorn
         from dashboard.api import app
         logger.info("Launching dashboard on http://localhost:8000")
