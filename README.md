@@ -10,13 +10,23 @@ Sharp. Precise. Always watching. In and out like a sniper.
 
 ```
 apex-trader/
-├── brain/                    # Phase 1 ✅ - Market Reading Engine
+├── brain/                    # Phase 1.5 ✅ - Market Reading + Intelligence Engine
 │   ├── structure_engine.py   # Market structure: HH/HL/LH/LL, BOS, CHOCH
 │   ├── liquidity_mapper.py   # Where stops are resting — equal highs/lows
 │   ├── fvg_detector.py       # Fair Value Gaps — price imbalances
 │   ├── order_block.py        # Institutional order blocks & breakers
 │   ├── currency_strength.py  # Real-time 8-currency strength ranking
-│   └── session_engine.py     # Session timing + news guard
+│   ├── session_engine.py     # Session timing + news guard
+│   ├── regime_detector.py    # Regime classification + score caps
+│   ├── volume_analyzer.py    # Tick-volume spikes, divergence, PoC
+│   ├── inducement_detector.py# Manipulation and fake breakout traps
+│   ├── wyckoff_engine.py     # Wyckoff phases and spring/upthrust
+│   ├── mtf_orchestrator.py   # H4→H1→M15/M5→M1 setup cascade
+│   ├── trade_journal.py      # SQLite trade/decision auditing
+│   ├── drawdown_guard.py     # Dynamic recovery and freeze logic
+│   ├── execution_monitor.py  # Slippage, spread, and latency quality
+│   ├── correlation_engine.py # Cross-pair exposure and hedge checks
+│   └── backtest_engine.py    # Replay, walk-forward, Monte Carlo
 │
 ├── scanner/                  # Phase 2 ✅ - Multi-Pair Scanner
 │   ├── pair_scanner.py       # Core scanner — 7-factor confluence scoring
@@ -65,6 +75,14 @@ Every instrument has its own pip size, spread, and margin category in the regist
 - Ranks all 8 major currencies by real-time strength
 - Knows which session is active and which pairs are hottest
 - Guards against high-impact news events automatically
+- Classifies market regimes (trend, range, volatility, accumulation, distribution)
+- Confirms setups with tick-volume spikes, divergence, and climax behavior
+- Detects inducement, fake breakouts, stop hunts, and turtle soup traps
+- Reads Wyckoff phase transitions and highlights spring/upthrust entries
+- Coordinates the full H4/H1 bias-to-M1 trigger cascade
+- Logs all decisions and monitors execution quality and drawdown health
+- Prevents hidden correlation overexposure across open trades
+- Supports replay backtesting with walk-forward and Monte Carlo analysis
 
 **The Scanner watches everything simultaneously:**
 - Scans all 59 instruments every 10 seconds during active sessions
@@ -91,6 +109,21 @@ Every instrument has its own pip size, spread, and margin category in the regist
 - Max 5% daily drawdown — bot pauses
 - Max 6 correlated trades at once
 - Spread monitor — skips wide spreads
+
+---
+
+## New in Phase 1.5
+
+- **Regime Detector**: ATR + directional strength model with ranging score caps and volatile freeze logic.
+- **Volume Analyzer**: Tick-volume ratio, divergence, climax detection, and point-of-control estimation.
+- **Inducement Detector**: Stop hunts, fake breakouts, and trap-pattern recognition.
+- **Wyckoff Engine**: Phase A–E classification with spring and upthrust signaling.
+- **MTF Orchestrator**: Unified setup builder from higher-timeframe bias to lower-timeframe trigger.
+- **Trade Journal**: Async SQLite storage for taken trades and rejected setups.
+- **Drawdown Guard**: Normal/Caution/Recovery/Frozen mode transitions with risk adaptation.
+- **Execution Monitor**: Slippage, latency, spread, and requote quality scoring.
+- **Correlation Engine**: Currency exposure maps and synthetic hedge conflict checks.
+- **Backtest Engine**: Historical replay, walk-forward splits, and Monte Carlo robustness checks.
 
 ---
 
@@ -133,6 +166,9 @@ python main.py
 |-------|--------|--------|
 | 1 | Brain — Market Reading Engine | ✅ Complete |
 | 2 | Scanner — Multi-Pair Scanner | ✅ Complete |
+| 1 | Brain — Core Market Reading Engine | ✅ Complete |
+| 1.5 | Brain — Intelligence & Validation Layer | ✅ Complete |
+| 2 | Scanner — Multi-Pair Scanner | 🔄 In Progress |
 | 3 | Trigger — Entry Engine | 🔄 Pending |
 | 4 | Management — Trade Manager | 🔄 Pending |
 | 5 | Risk — Risk Engine | 🔄 Pending |
