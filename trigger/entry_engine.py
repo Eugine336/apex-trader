@@ -17,6 +17,7 @@ from brain.fvg_detector import FVGDetector, FairValueGap
 from brain.order_block import OrderBlockDetector, OrderBlock, OBStatus
 from brain.liquidity_mapper import LiquidityMapper
 from brain.drawdown_guard import DrawdownGuard, DrawdownMode
+from brain.session_engine import NewsGuard
 from trigger.entry_patterns import EntryPatternDetector
 
 
@@ -62,6 +63,7 @@ class EntryEngine:
         self.structure = StructureEngine()
         self.drawdown = DrawdownGuard()
         self.pattern_detector = EntryPatternDetector()
+        self.news_guard = NewsGuard()
 
     # ------------------------------------------------------------------
     # Main entry calculation
@@ -87,6 +89,24 @@ class EntryEngine:
         if not can_trade:
             logger.warning(f"[{pair}] Entry rejected — {reason}")
             return EntryRejection(pair=pair, reason=reason, score=score, timestamp=now)
+
+        news_status = self.news_guard.check([pair], now)
+        if not news_status.is_clear:
+            return EntryRejection(
+                pair=pair,
+                reason=f"NewsGuard: {news_status.warning_message}",
+                score=score,
+                timestamp=now,
+            )
+
+        upcoming = self.news_guard.check([pair], now + timedelta(minutes=15))
+        if not upcoming.is_clear:
+            return EntryRejection(
+                pair=pair,
+                reason="High-impact news in <15min — holding off",
+                score=score,
+                timestamp=now,
+            )
 
         status = self.drawdown.get_status(now)
         risk_pct = status.current_risk_pct

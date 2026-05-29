@@ -1,21 +1,49 @@
 """
 APEX TRADER — FastAPI Dashboard Backend
-REST endpoints serving live trading data to the frontend.
+REST endpoints + WebSocket serving live trading data to the frontend.
 """
 
+import asyncio
 import os
 from typing import Optional
 
-from fastapi import FastAPI
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from loguru import logger
 
 from dashboard.state import LiveState
 
 _state = LiveState()
 
 _FRONTEND_BUILD = os.path.join(os.path.dirname(__file__), "frontend", "build")
+
+
+class ConnectionManager:
+    def __init__(self):
+        self.active: list[WebSocket] = []
+
+    async def connect(self, ws: WebSocket):
+        await ws.accept()
+        self.active.append(ws)
+
+    def disconnect(self, ws: WebSocket):
+        if ws in self.active:
+            self.active.remove(ws)
+
+    async def broadcast(self, data: dict):
+        dead = []
+        for ws in self.active:
+            try:
+                await ws.send_json(data)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
+
+manager = ConnectionManager()
 
 
 def create_app(state: Optional[LiveState] = None) -> FastAPI:
@@ -89,6 +117,33 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
     @app.post("/api/control/emergency-close")
     def emergency_close():
         return _state.emergency_close_all()
+
+    @app.websocket("/ws")
+    async def websocket_endpoint(websocket: WebSocket):
+        await manager.connect(websocket)
+        try:
+            while True:
+                await websocket.receive_text()
+        except WebSocketDisconnect:
+            manager.disconnect(websocket)
+
+    @app.on_event("startup")
+    async def start_broadcast_loop():
+        async def _loop():
+            while True:
+                await asyncio.sleep(2)
+                if manager.active:
+                    try:
+                        payload = {
+                            "type": "state_update",
+                            "status": _state.get_status(),
+                            "open_trades": _state.get_open_trades(),
+                            "risk": _state.get_risk_status(),
+                        }
+                        await manager.broadcast(payload)
+                    except Exception as exc:
+                        logger.warning(f"WS broadcast error: {exc}")
+        asyncio.create_task(_loop())
 
     if os.path.exists(_FRONTEND_BUILD):
         _static_dir = os.path.join(_FRONTEND_BUILD, "static")

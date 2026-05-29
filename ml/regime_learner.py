@@ -5,7 +5,9 @@ I learn the optimal TP multiplier, SL buffer, and entry threshold
 for each regime separately. One size does NOT fit all.
 """
 
-from dataclasses import dataclass
+import json
+from dataclasses import dataclass, asdict
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -33,9 +35,11 @@ class RegimeLearner:
 
     MIN_SAMPLE = 30
     CONFIDENCE_FULL = 100
+    SAVE_PATH = "data/ml_regime_strategies.json"
 
     def __init__(self) -> None:
         self._strategies: dict[str, RegimeStrategy] = {}
+        self._load()
 
     def learn(self, trades: list[dict]) -> dict[str, RegimeStrategy]:
         grouped: dict[str, list[dict]] = {}
@@ -48,6 +52,7 @@ class RegimeLearner:
             strategies[regime] = self._learn_regime(regime, group)
 
         self._strategies = strategies
+        self._save()
         return strategies
 
     def get_strategy(self, regime: str) -> RegimeStrategy:
@@ -65,6 +70,28 @@ class RegimeLearner:
                 f"over {strat.sample_size} trades — avoiding"
             )
         return True, f"{regime} win rate {strat.win_rate:.0%} — tradeable"
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def _save(self) -> None:
+        p = Path(self.SAVE_PATH)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        data = {k: asdict(v) for k, v in self._strategies.items()}
+        p.write_text(json.dumps(data, indent=2, default=str))
+        logger.info(f"Regime strategies saved to {self.SAVE_PATH}")
+
+    def _load(self) -> None:
+        p = Path(self.SAVE_PATH)
+        if not p.exists():
+            return
+        try:
+            raw = json.loads(p.read_text())
+            self._strategies = {k: RegimeStrategy(**v) for k, v in raw.items()}
+            logger.info(f"Regime strategies loaded from {self.SAVE_PATH}")
+        except Exception as exc:
+            logger.warning(f"RegimeLearner: could not load strategies: {exc}")
 
     # ------------------------------------------------------------------
     # Internal

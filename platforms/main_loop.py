@@ -27,6 +27,7 @@ from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size
 from platforms.base_connector import OrderResult, PositionInfo
 from platforms.platform_manager import PlatformManager
 from scanner import PairScanner, PairRanker, ScanScheduler
+from trigger.entry_engine import EntryEngine, EntrySignal, EntryRejection
 
 
 class ManagedPosition:
@@ -75,6 +76,7 @@ class TradingLoop:
         self.ranker = PairRanker()
         self.scheduler = ScanScheduler()
         self.orchestrator = MTFOrchestrator(min_entry_score=self.config.scoring.min_entry_score)
+        self.entry_engine = EntryEngine(config=self.config)
         self.drawdown = DrawdownGuard()
         self.correlation = CorrelationEngine()
         self.execution_monitor = ExecutionMonitor()
@@ -217,9 +219,28 @@ class TradingLoop:
             self._log_rejection(pair, direction, result.score, "Insufficient TF data")
             return False
 
-        setup = self.orchestrator.build_setup(pair, data, now)
-        if setup is None:
-            self._log_rejection(pair, direction, result.score, "MTF orchestrator rejected")
+        m5_df = data.get("M5")
+        m1_df = data.get("M1")
+        h1_df = data.get("H1")
+
+        if m5_df is None or m1_df is None or h1_df is None:
+            self._log_rejection(pair, direction, result.score, "Missing M5/M1/H1 data")
+            return False
+
+        balance = self.platforms.get_total_balance() or 10_000.0
+
+        signal = self.entry_engine.calculate_entry(
+            pair=pair,
+            direction=direction,
+            m5_df=m5_df,
+            m1_df=m1_df,
+            h1_df=h1_df,
+            scan_result=result,
+            account_balance=balance,
+        )
+
+        if isinstance(signal, EntryRejection):
+            self._log_rejection(pair, direction, result.score, signal.reason)
             return False
 
         spread = 0.0
@@ -234,29 +255,19 @@ class TradingLoop:
             self._log_rejection(pair, direction, result.score, f"Spread too wide: {spread}")
             return False
 
-        dd_status = self.drawdown.get_status(now)
-        risk_pct = dd_status.current_risk_pct
-        balance = self.platforms.get_total_balance() or 10000
-        risk_pips = abs(setup.entry_price - setup.stop_loss) / pip_size
-        if risk_pips <= 0:
-            self._log_rejection(pair, direction, result.score, "Invalid SL distance")
-            return False
-
-        risk_amount = balance * risk_pct
-        pip_value = INSTRUMENT_REGISTRY_PIP_VALUE.get(pair, 10.0)
-        lots = round(risk_amount / (risk_pips * pip_value), 2)
-        lots = max(0.01, min(lots, 10.0))
-
         order = self.platforms.execute_entry(
-            pair, direction, lots, setup.stop_loss, setup.tp1,
-            comment=f"APEX|{result.score}|{session}",
+            pair, direction,
+            signal.position_size_lots,
+            signal.stop_loss,
+            signal.tp1,
+            comment=f"APEX|{signal.score}|{session}",
         )
 
         if not order.success:
             return False
 
         self.execution_monitor.record_execution(
-            requested_price=order.requested_price,
+            requested_price=signal.entry_price,
             filled_price=order.fill_price,
             signal_timestamp=now,
             fill_timestamp=datetime.now(timezone.utc),
@@ -265,17 +276,21 @@ class TradingLoop:
         )
 
         managed = ManagedPosition(
-            order=order, tp1=setup.tp1, tp2=setup.tp2,
-            score=setup.score, regime=setup.regime, session=session,
-            entry_type="MTF",
+            order=order,
+            tp1=signal.tp1,
+            tp2=signal.tp2,
+            score=signal.score,
+            regime=getattr(result, "regime", ""),
+            session=session,
+            entry_type=signal.entry_type,
         )
         self.managed_positions[order.order_id] = managed
         self._daily_trades += 1
 
         logger.info(
             "🎯 TRADE OPENED — {} {} {:.2f}lots @ {:.5f} | SL {:.5f} | TP1 {:.5f} | TP2 {:.5f} | Score {}",
-            direction, pair, lots, order.fill_price,
-            setup.stop_loss, setup.tp1, setup.tp2, setup.score,
+            direction, pair, signal.position_size_lots, order.fill_price,
+            signal.stop_loss, signal.tp1, signal.tp2, signal.score,
         )
         return True
 

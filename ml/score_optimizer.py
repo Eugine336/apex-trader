@@ -73,6 +73,7 @@ class ScoreOptimizer:
 
     def __init__(self) -> None:
         self.current_weights = ScoringWeights()
+        self.load_weights()
 
     def optimize(
         self, trades: list[dict], min_trades: int = 50
@@ -116,6 +117,7 @@ class ScoreOptimizer:
         )
 
         self.current_weights = new_weights
+        self.save_weights()
         logger.info(f"Weights optimised — total={new_weights.total}")
         return new_weights
 
@@ -140,15 +142,17 @@ class ScoreOptimizer:
     def save_weights(
         self,
         weights: Optional[ScoringWeights] = None,
-        filepath: str = DEFAULT_PATH,
+        filepath: Optional[str] = None,
     ) -> None:
+        filepath = filepath or self.DEFAULT_PATH
         weights = weights or self.current_weights
         p = Path(filepath)
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(json.dumps(asdict(weights), indent=2))
         logger.info(f"Weights saved to {filepath}")
 
-    def load_weights(self, filepath: str = DEFAULT_PATH) -> ScoringWeights:
+    def load_weights(self, filepath: Optional[str] = None) -> ScoringWeights:
+        filepath = filepath or self.DEFAULT_PATH
         p = Path(filepath)
         if not p.exists():
             logger.info("No saved weights found — using defaults")
