@@ -76,6 +76,8 @@ class DerivConnector(BaseConnector):
         )
         self._loop_thread.start()
         self._lock = asyncio.Lock()
+        self._thread_lock = threading.Lock()
+        self._last_history_request: float = 0.0
 
     # ── Connection ───────────────────────────────────────────────────────
 
@@ -157,8 +159,14 @@ class DerivConnector(BaseConnector):
             return json.loads(raw)
 
     def _sync_send(self, payload: dict) -> dict:
-        future = asyncio.run_coroutine_threadsafe(self._send(payload), self._loop)
-        return future.result(timeout=_REQUEST_TIMEOUT + 5)
+        with self._thread_lock:
+            if "ticks_history" in payload:
+                elapsed = _time.monotonic() - self._last_history_request
+                if elapsed < 0.25:
+                    _time.sleep(0.25 - elapsed)
+                self._last_history_request = _time.monotonic()
+            loop = _get_or_create_loop()
+            return loop.run_until_complete(self._send(payload))
 
     # ── Account ──────────────────────────────────────────────────────────
 

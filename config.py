@@ -104,20 +104,20 @@ _register("CADCHF", "Canadian Dollar / Swiss Franc",  _FX, _B, 0.0001, 10.0, 3.0
 # ── Commodities (4) ───────────────────────────────────────────────────────
 _COM = InstrumentCategory.COMMODITY
 _CMAR = MarginCategory.COMMODITY
+_M5 = Platform.MT5
 
 _register("XAUUSD", "Gold",       _COM, _B, 0.01,  10.0,  2.0, "24/5", _CMAR)
 _register("XAGUSD", "Silver",     _COM, _B, 0.001, 50.0,  3.0, "24/5", _CMAR)
-_register("XBRUSD", "Brent Crude", _COM, _B, 0.01,  10.0, 4.0, "specific", _CMAR)
-_register("XTIUSD", "WTI Crude",  _COM, _B, 0.01,  10.0,  4.0, "specific", _CMAR)
+_register("XBRUSD", "Brent Crude", _COM, _M5, 0.01,  10.0, 4.0, "specific", _CMAR)
+_register("XTIUSD", "WTI Crude",  _COM, _M5, 0.01,  10.0,  4.0, "specific", _CMAR)
 
 # ── Indices (10) ──────────────────────────────────────────────────────────
 _IDX = InstrumentCategory.INDEX
-_M5 = Platform.MT5
 _IMAR = MarginCategory.INDEX
 
-_register("US100",  "Nasdaq 100",   _IDX, _B, 0.1, 1.0, 1.5, "specific", _IMAR)
-_register("US30",   "Dow Jones 30", _IDX, _B, 0.1, 1.0, 2.0, "specific", _IMAR)
-_register("US500",  "S&P 500",      _IDX, _B, 0.1, 1.0, 0.5, "specific", _IMAR)
+_register("US100",  "Nasdaq 100",   _IDX, _M5, 0.1, 1.0, 1.5, "specific", _IMAR)
+_register("US30",   "Dow Jones 30", _IDX, _M5, 0.1, 1.0, 2.0, "specific", _IMAR)
+_register("US500",  "S&P 500",      _IDX, _M5, 0.1, 1.0, 0.5, "specific", _IMAR)
 _register("GER40",  "DAX 40",       _IDX, _M5, 0.1, 1.0, 1.5, "specific", _IMAR)
 _register("UK100",  "FTSE 100",     _IDX, _M5, 0.1, 1.0, 2.0, "specific", _IMAR)
 _register("JP225",  "Nikkei 225",   _IDX, _M5, 1.0, 0.5, 8.0, "specific", _IMAR)
