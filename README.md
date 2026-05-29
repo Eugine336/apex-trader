@@ -18,7 +18,11 @@ apex-trader/
 │   ├── currency_strength.py  # Real-time 8-currency strength ranking
 │   └── session_engine.py     # Session timing + news guard
 │
-├── scanner/                  # Phase 2 🔄 - Multi-Pair Scanner
+├── scanner/                  # Phase 2 ✅ - Multi-Pair Scanner
+│   ├── pair_scanner.py       # Core scanner — 7-factor confluence scoring
+│   ├── pair_ranker.py        # Tie-breaking & prioritization engine
+│   └── scan_scheduler.py     # Adaptive scan frequency controller
+│
 ├── trigger/                  # Phase 3 🔄 - Entry Engine
 ├── management/               # Phase 4 🔄 - Trade Management
 ├── risk/                     # Phase 5 🔄 - Risk Engine
@@ -29,10 +33,25 @@ apex-trader/
 ├── dashboard/                # Phase 8 🔄 - React Dashboard
 ├── data/                     # Trade logs and historical data
 ├── tests/                    # Unit tests
-├── config.py                 # All settings
+├── config.py                 # Full instrument registry + all settings
 ├── main.py                   # Entry point
-└── requirements.txt
+├── requirements.txt
+└── .env.example              # Credentials template
 ```
+
+---
+
+## Instruments Covered — 59 Total
+
+| Category | Count | Examples |
+|----------|-------|---------|
+| Forex Majors | 7 | EURUSD, GBPUSD, USDJPY, AUDUSD |
+| Forex Crosses | 21 | EURGBP, GBPJPY, EURAUD, NZDCAD |
+| Commodities | 4 | XAUUSD (Gold), XAGUSD (Silver), XBRUSD, XTIUSD |
+| Indices | 10 | US100, US30, GER40, UK100, JP225, HK50 |
+| Deriv Synthetics | 17 | V75_1S, BOOM500, CRASH1000, STPIDX |
+
+Every instrument has its own pip size, spread, and margin category in the registry.
 
 ---
 
@@ -46,6 +65,13 @@ apex-trader/
 - Ranks all 8 major currencies by real-time strength
 - Knows which session is active and which pairs are hottest
 - Guards against high-impact news events automatically
+
+**The Scanner watches everything simultaneously:**
+- Scans all 59 instruments every 10 seconds during active sessions
+- Scores every pair on 7 confluence factors (max 100)
+- READY (85+) → trigger fires. WATCHLIST (70+) → monitoring. Below → wait.
+- Ranks ties by regime, session, sweep, volume, and Wyckoff signals
+- Adapts scan frequency: 10s overlap, 60s quiet, 300s dead zones
 
 **The Entry System fires only on A+ setups:**
 - Minimum 85/100 confluence score required
@@ -106,7 +132,7 @@ python main.py
 | Phase | Module | Status |
 |-------|--------|--------|
 | 1 | Brain — Market Reading Engine | ✅ Complete |
-| 2 | Scanner — Multi-Pair Scanner | 🔄 In Progress |
+| 2 | Scanner — Multi-Pair Scanner | ✅ Complete |
 | 3 | Trigger — Entry Engine | 🔄 Pending |
 | 4 | Management — Trade Manager | 🔄 Pending |
 | 5 | Risk — Risk Engine | 🔄 Pending |
