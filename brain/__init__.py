@@ -3,7 +3,7 @@ APEX TRADER — Brain Package
 The complete market reading and institutional decision engine.
 """
 
-from brain.backtest_engine import BacktestEngine, BacktestResult, DataLoader
+from brain.backtest_engine import BacktestEngine, BacktestResult, BrokerDataLoader, DataLoader
 from brain.correlation_engine import CorrelationEngine, ExposureMap, OpenTrade
 from brain.currency_strength import CurrencyStrength, CurrencyStrengthMeter
 from brain.drawdown_guard import DrawdownGuard, DrawdownMode, DrawdownStatus
@@ -38,5 +38,5 @@ __all__ = [
     "DrawdownGuard", "DrawdownMode", "DrawdownStatus",
     "ExecutionMonitor", "ExecutionStats",
     "CorrelationEngine", "OpenTrade", "ExposureMap",
-    "BacktestEngine", "BacktestResult", "DataLoader",
+    "BacktestEngine", "BacktestResult", "BrokerDataLoader", "DataLoader",
 ]

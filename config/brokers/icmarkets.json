@@ -1,5 +1,25 @@
 {
   "name": "icmarkets",
-  "rules": {},
-  "overrides": {}
+  "rules": {
+    "forex": {
+      "pattern": "{symbol}",
+      "description": "ICMarkets forex: passthrough (EURUSD stays EURUSD)"
+    }
+  },
+  "overrides": {
+    "XAUUSD": "XAUUSD",
+    "XAGUSD": "XAGUSD",
+    "XBRUSD": "UKOUSD",
+    "XTIUSD": "USOUSD",
+    "US100": "NAS100",
+    "US30": "DJ30",
+    "US500": "SP500",
+    "GER40": "GER40",
+    "UK100": "UK100",
+    "JP225": "JPN225",
+    "AUS200": "AUS200",
+    "FRA40": "FRA40",
+    "ESP35": "ESP35",
+    "HK50": "HK50"
+  }
 }

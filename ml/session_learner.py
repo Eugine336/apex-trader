@@ -4,7 +4,9 @@ London overlap is my goldmine. Late Tokyo is a graveyard.
 I learn exactly when my edge is sharpest.
 """
 
-from dataclasses import dataclass, field
+import json
+from dataclasses import dataclass, field, asdict
+from pathlib import Path
 from typing import Optional
 
 import numpy as np
@@ -30,9 +32,11 @@ class SessionLearner:
     """
 
     MIN_TRADES = 15
+    SAVE_PATH = "data/ml_session_profiles.json"
 
     def __init__(self) -> None:
         self._profiles: dict[str, SessionProfile] = {}
+        self._load()
 
     def learn(self, trades: list[dict]) -> dict[str, SessionProfile]:
         grouped: dict[str, list[dict]] = {}
@@ -45,6 +49,7 @@ class SessionLearner:
             profiles[session] = self._build_profile(session, group)
 
         self._profiles = profiles
+        self._save()
         return profiles
 
     def get_session_aggression(self, session: str) -> str:
@@ -52,6 +57,28 @@ class SessionLearner:
         if profile is None:
             return "NORMAL"
         return profile.recommendation
+
+    # ------------------------------------------------------------------
+    # Persistence
+    # ------------------------------------------------------------------
+
+    def _save(self) -> None:
+        p = Path(self.SAVE_PATH)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        data = {k: asdict(v) for k, v in self._profiles.items()}
+        p.write_text(json.dumps(data, indent=2, default=str))
+        logger.info(f"Session profiles saved to {self.SAVE_PATH}")
+
+    def _load(self) -> None:
+        p = Path(self.SAVE_PATH)
+        if not p.exists():
+            return
+        try:
+            raw = json.loads(p.read_text())
+            self._profiles = {k: SessionProfile(**v) for k, v in raw.items()}
+            logger.info(f"Session profiles loaded from {self.SAVE_PATH}")
+        except Exception as exc:
+            logger.warning(f"SessionLearner: could not load profiles: {exc}")
 
     # ------------------------------------------------------------------
     # Internal
