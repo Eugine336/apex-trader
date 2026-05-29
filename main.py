@@ -1,68 +1,34 @@
 """
 APEX TRADER — Entry Point
-The sniper is awake, systems checked, and waiting for precision setups.
+Sharp. Precise. Always watching.
 """
 
-from datetime import datetime, timezone
-
 from loguru import logger
+from config import AppConfig, get_instruments_by_category, INSTRUMENT_REGISTRY
+
+logger.info("=" * 60)
+logger.info("  APEX TRADER — Institutional-Grade Trading System")
+logger.info("=" * 60)
+
+config = AppConfig()
+
+logger.info(f"Instrument registry loaded — {len(INSTRUMENT_REGISTRY)} instruments")
+for cat in config.enabled_categories:
+    instruments = get_instruments_by_category(cat)
+    logger.info(f"  {cat.upper()}: {len(instruments)} instruments enabled")
+
+logger.info(f"Total enabled instruments: {config.total_instruments}")
 
 from brain import (
-    CurrencyStrengthMeter,
-    FVGDetector,
-    LiquidityMapper,
-    OrderBlockDetector,
-    SessionEngine,
-    StructureEngine,
+    StructureEngine, LiquidityMapper, FVGDetector,
+    OrderBlockDetector, CurrencyStrengthMeter, SessionEngine, NewsGuard,
 )
-from config import get_config
 
+logger.info("Brain modules loaded — market reading engine online")
 
-def build_system_status() -> dict:
-    config = get_config()
-    utc_now = datetime.now(timezone.utc)
-    session_status = SessionEngine().get_status(utc_now)
+from scanner import PairScanner, PairRanker, ScanScheduler
 
-    return {
-        "timestamp_utc": utc_now.isoformat(),
-        "phase": "Phase 1 — Brain",
-        "modules_loaded": [
-            "StructureEngine",
-            "LiquidityMapper",
-            "FVGDetector",
-            "OrderBlockDetector",
-            "CurrencyStrengthMeter",
-            "SessionEngine",
-        ],
-        "risk_per_trade": config.risk.risk_per_trade,
-        "max_daily_drawdown": config.risk.max_daily_drawdown,
-        "min_entry_score": config.scoring.min_entry_score,
-        "session": session_status.current_session,
-        "session_tradeable": session_status.is_tradeable,
-        "ready_for_next_phases": True,
-    }
+logger.info("Scanner module loaded — watching all instruments")
 
-
-def main() -> None:
-    _ = StructureEngine()
-    _ = LiquidityMapper()
-    _ = FVGDetector()
-    _ = OrderBlockDetector()
-    _ = CurrencyStrengthMeter()
-
-    status = build_system_status()
-
-    logger.info("APEX TRADER BOOT COMPLETE")
-    logger.info(f"UTC: {status['timestamp_utc']}")
-    logger.info(f"Current session: {status['session']}")
-    logger.info(f"Session tradeable: {status['session_tradeable']}")
-    logger.info(f"Risk per trade: {status['risk_per_trade']:.2%}")
-    logger.info(f"Daily drawdown limit: {status['max_daily_drawdown']:.2%}")
-    logger.info(f"Minimum entry score: {status['min_entry_score']}")
-    logger.info(
-        "Brain modules are live. Scanner/Trigger/Execution phases are placeholders for now."
-    )
-
-
-if __name__ == "__main__":
-    main()
+logger.info("-" * 60)
+logger.info("System ready. Waiting for market data feed…")
