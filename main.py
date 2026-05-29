@@ -30,9 +30,9 @@ from scanner import PairScanner, PairRanker, ScanScheduler
 
 logger.info("Scanner module loaded — watching all instruments")
 
-from management import TradeManager, ReEntryManager, PartialCloseCalculator, StructureTrailingStop
+from risk import RiskEngine, PositionSizer, PnLTracker, SpreadMonitor, RiskReporter
 
-logger.info("Trade Manager loaded — protecting every winner")
+logger.info("Risk Engine loaded — the shield never sleeps")
 
 logger.info("-" * 60)
 logger.info("System ready. Waiting for market data feed…")
