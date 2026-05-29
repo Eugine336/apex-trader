@@ -6,6 +6,7 @@ Handles synthetics (V75, Boom/Crash) 24/7 and Forex on Deriv.
 
 import asyncio
 import json
+import threading
 import time as _time
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -107,6 +108,8 @@ class DerivConnector(BaseConnector):
         self._req_id = 0
         self._positions: dict[str, dict] = {}
         self._lock = asyncio.Lock()
+        self._thread_lock = threading.Lock()
+        self._last_history_request: float = 0.0
 
     # ── Connection ───────────────────────────────────────────────────────
 
@@ -187,8 +190,14 @@ class DerivConnector(BaseConnector):
         return json.loads(raw)
 
     def _sync_send(self, payload: dict) -> dict:
-        loop = _get_or_create_loop()
-        return loop.run_until_complete(self._send(payload))
+        with self._thread_lock:
+            if "ticks_history" in payload:
+                elapsed = _time.monotonic() - self._last_history_request
+                if elapsed < 0.25:
+                    _time.sleep(0.25 - elapsed)
+                self._last_history_request = _time.monotonic()
+            loop = _get_or_create_loop()
+            return loop.run_until_complete(self._send(payload))
 
     # ── Account ──────────────────────────────────────────────────────────
 
