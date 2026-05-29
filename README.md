@@ -33,9 +33,22 @@ apex-trader/
 │   ├── pair_ranker.py        # Tie-breaking & prioritization engine
 │   └── scan_scheduler.py     # Adaptive scan frequency controller
 │
+├── ml/                       # Phase 6 ✅ - ML Adapter (The Memory)
+│   ├── trade_analyzer.py     # PerformanceProfile — dissects every trade
+│   ├── score_optimizer.py    # Adaptive scoring weights (gradual, sums to 100)
+│   ├── regime_learner.py     # Regime-specific strategy adaptation
+│   ├── pair_learner.py       # Pair-specific confidence multipliers
+│   ├── session_learner.py    # Session aggression levels
+│   └── ml_adapter.py         # Master controller — coordinates all learners
+│
 ├── trigger/                  # Phase 3 🔄 - Entry Engine
 ├── management/               # Phase 4 🔄 - Trade Management
-├── risk/                     # Phase 5 🔄 - Risk Engine
+├── risk/                     # Phase 5 ✅ - Risk Engine
+│   ├── risk_engine.py        # Central risk authority — the ultimate gate
+│   ├── position_sizer.py     # Dynamic position sizing with volatility adjust
+│   ├── daily_tracker.py      # Daily/weekly/monthly P&L tracking
+│   ├── spread_monitor.py     # Spread protection and alerting
+│   └── risk_reporter.py      # Risk dashboard data aggregation
 ├── ml/                       # Phase 6 🔄 - ML Adapter
 │
 ├── platforms/                # Phase 7 ✅ - MT5 + Deriv Integration
@@ -91,6 +104,18 @@ Every instrument has its own pip size, spread, and margin category in the regist
 - Prevents hidden correlation overexposure across open trades
 - Supports replay backtesting with walk-forward and Monte Carlo analysis
 
+**The Risk Engine is the ultimate authority:**
+- Every trade must pass through RiskEngine.assess() — no exceptions
+- Dynamic sizing: 2% risk in NORMAL, 1.5% in CAUTION, 1% in RECOVERY, 0% in FROZEN
+- Daily P&L tracked to the dollar — breaches -5% → instant FROZEN mode
+- Weekly drawdown > 8% → automatic RECOVERY mode
+- Spread monitor blocks entries when spreads spike above 3× average
+- Correlation engine prevents hidden overexposure across currencies
+- No duplicate trades on same pair+direction
+- Position size auto-reduced when approaching daily loss limit
+- RiskReporter aggregates everything into a single health dashboard
+- Daily/weekly resets with graduated recovery (FROZEN → CAUTION, not straight to NORMAL)
+
 **The Scanner watches everything simultaneously:**
 - Scans all 59 instruments every 10 seconds during active sessions
 - Scores every pair on 7 confluence factors (max 100)
@@ -112,10 +137,14 @@ Every instrument has its own pip size, spread, and margin category in the regist
 - Re-entry logic if stopped at breakeven
 
 **Risk Engine protects the account:**
-- Fixed 2% risk per trade
-- Max 5% daily drawdown — bot pauses
-- Max 6 correlated trades at once
-- Spread monitor — skips wide spreads
+- Dynamic position sizing — 2% normal, 1.5% caution, 1% recovery
+- Max 5% daily drawdown — bot FREEZES automatically
+- Max 8% weekly drawdown — enters RECOVERY mode
+- Correlation & exposure control across all open trades
+- Spread monitor — blocks wide/dangerous spreads
+- Daily/weekly/monthly P&L tracking with streak detection
+- Drawdown recovery: NORMAL → CAUTION → RECOVERY → FROZEN
+- Real-time risk reports for the dashboard
 
 ---
 
