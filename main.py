@@ -30,5 +30,9 @@ from scanner import PairScanner, PairRanker, ScanScheduler
 
 logger.info("Scanner module loaded — watching all instruments")
 
+from ml import MLAdapter, ScoreOptimizer, TradeAnalyzer
+
+logger.info("ML Adapter loaded — learning from every trade")
+
 logger.info("-" * 60)
 logger.info("System ready. Waiting for market data feed…")
