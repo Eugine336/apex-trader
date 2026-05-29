@@ -62,6 +62,11 @@ def main() -> None:
         logger.info("Launching dashboard on http://localhost:8000")
         uvicorn.run(app, host="0.0.0.0", port=8000)
 
-
-if __name__ == "__main__":
-    main()
+if "--dashboard" in sys.argv:
+    import uvicorn
+    from dashboard.api import app  # noqa: F811
+    logger.info("Launching dashboard on http://localhost:8000")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
+else:
+    logger.info("APEX TRADER IS LIVE")
+    logger.info("Run with --dashboard to start the web dashboard")
