@@ -1,7 +1,7 @@
 
 APEX TRADER — Brain Package
-The complete market reading engine.
-"""
+The complete market reading engine
+
 
 from brain.structure_engine import StructureEngine, Trend, StructureEvent
 from brain.liquidity_mapper import LiquidityMapper, LiquidityZone, LiquidityMap
