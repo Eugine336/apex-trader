@@ -256,19 +256,111 @@ class LiveState:
             "daily_trades": 0,
         }
 
+    # ── ML Insights ───────────────────────────────────────────────────────
+
+    def get_ml_insights(self) -> dict:
+        if not self.is_live:
+            return {
+                "score_adjustments": {},
+                "regime_stats": {},
+                "session_stats": {},
+                "pair_stats": {},
+            }
+        ml = getattr(self._trading_loop, "ml", None)
+        if ml is None:
+            return {
+                "score_adjustments": {},
+                "regime_stats": {},
+                "session_stats": {},
+                "pair_stats": {},
+            }
+        try:
+            optimizer = getattr(ml, "score_optimizer", None)
+            regime_learner = getattr(ml, "regime_learner", None)
+            session_learner = getattr(ml, "session_learner", None)
+            pair_learner = getattr(ml, "pair_learner", None)
+
+            score_adjustments: dict = {}
+            if optimizer is not None:
+                defaults = getattr(optimizer, "_DEFAULT_WEIGHTS", {})
+                current = getattr(optimizer, "_weights", defaults)
+                for k, v in current.items():
+                    score_adjustments[k] = round(v - defaults.get(k, v), 1)
+
+            regime_stats: dict = {}
+            if regime_learner is not None and hasattr(regime_learner, "_strategies"):
+                for regime, strategy in regime_learner._strategies.items():
+                    regime_stats[regime] = {
+                        "win_rate": round(getattr(strategy, "win_rate", 0) * 100, 1),
+                        "trades": getattr(strategy, "trade_count", 0),
+                        "recommendation": "trade" if getattr(strategy, "should_trade", True) else "skip",
+                    }
+
+            session_stats: dict = {}
+            if session_learner is not None and hasattr(session_learner, "_profiles"):
+                for session, profile in session_learner._profiles.items():
+                    session_stats[session] = {
+                        "win_rate": round(getattr(profile, "win_rate", 0) * 100, 1),
+                        "trades": getattr(profile, "trade_count", 0),
+                        "aggression": getattr(profile, "aggression", "normal"),
+                    }
+
+            pair_stats: dict = {}
+            if pair_learner is not None and hasattr(pair_learner, "_profiles"):
+                for pair, profile in pair_learner._profiles.items():
+                    pair_stats[pair] = {
+                        "win_rate": round(getattr(profile, "win_rate", 0) * 100, 1),
+                        "trades": getattr(profile, "trade_count", 0),
+                        "size_mult": round(getattr(profile, "size_multiplier", 1.0), 2),
+                    }
+
+            return {
+                "score_adjustments": score_adjustments,
+                "regime_stats": regime_stats,
+                "session_stats": session_stats,
+                "pair_stats": pair_stats,
+            }
+        except Exception as exc:
+            logger.warning("ML insights error: {}", exc)
+            return {"score_adjustments": {}, "regime_stats": {}, "session_stats": {}, "pair_stats": {}}
+
     # ── Controls ──────────────────────────────────────────────────────────
+
+    def start_trading(self) -> dict:
+        if self.is_live:
+            self._trading_loop.running = True
+            return {"status": "started", "message": "Trading started"}
+        return {"status": "no_engine_attached", "message": "No engine attached"}
+
+    def stop_trading(self) -> dict:
+        if self.is_live:
+            self._trading_loop.running = False
+            return {"status": "stopped", "message": "Trading stopped"}
+        return {"status": "no_engine_attached", "message": "No engine attached"}
 
     def pause_trading(self) -> dict:
         if self.is_live:
             self._trading_loop.running = False
-            return {"status": "paused"}
-        return {"status": "no_engine_attached"}
+            return {"status": "paused", "message": "Trading paused"}
+        return {"status": "no_engine_attached", "message": "No engine attached"}
 
     def resume_trading(self) -> dict:
         if self.is_live:
             self._trading_loop.running = True
-            return {"status": "resumed"}
-        return {"status": "no_engine_attached"}
+            return {"status": "resumed", "message": "Trading resumed"}
+        return {"status": "no_engine_attached", "message": "No engine attached"}
+
+    def set_risk_mode(self, mode: Optional[str]) -> dict:
+        if not self.is_live or mode is None:
+            return {"status": "no_engine_attached", "message": "No engine attached"}
+        try:
+            dd = self._trading_loop.drawdown
+            from risk.risk_engine import DrawdownMode
+            dd_mode = DrawdownMode(mode.upper())
+            dd._mode = dd_mode
+            return {"status": "ok", "message": f"Risk mode set to {mode}", "mode": mode}
+        except Exception as exc:
+            return {"status": "error", "message": str(exc)}
 
     def emergency_close_all(self) -> dict:
         if not self.is_live:
@@ -282,4 +374,4 @@ class LiveState:
             except Exception as exc:
                 logger.error("Emergency close failed for {}: {}", oid, exc)
         self._trading_loop.managed_positions.clear()
-        return {"status": "emergency_close_complete", "closed": closed}
+        return {"status": "emergency_close_complete", "closed": closed, "message": f"Closed {closed} positions"}
