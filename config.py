@@ -123,6 +123,8 @@ _register("UK100",  "FTSE 100",     _IDX, _M5, 0.1, 1.0, 2.0, "specific", _IMAR)
 _register("JP225",  "Nikkei 225",   _IDX, _M5, 1.0, 0.5, 8.0, "specific", _IMAR)
 _register("AUS200", "ASX 200",      _IDX, _M5, 0.1, 1.0, 3.0, "specific", _IMAR)
 _register("FRA40",  "CAC 40",       _IDX, _M5, 0.1, 1.0, 2.0, "specific", _IMAR)
+# ESP35 is NOT available on metaquotes_ltd virtual — kept for real-account brokers.
+# Remove from enabled_symbols_override or leave it; the connector will skip it gracefully.
 _register("ESP35",  "IBEX 35",      _IDX, _M5, 0.1, 1.0, 5.0, "specific", _IMAR)
 _register("HK50",   "Hang Seng",    _IDX, _M5, 0.1, 1.0, 8.0, "specific", _IMAR)
 
@@ -148,6 +150,22 @@ _register("RNGBEAR",   "Range Break Bear",     _SYN, _DER, 0.01,  1.0, 1.0, "24/
 _register("JD10",      "Jump 10",             _SYN, _DER, 0.01,  1.0, 0.5, "24/7", _SMAR)
 _register("JD25",      "Jump 25",             _SYN, _DER, 0.01,  1.0, 0.5, "24/7", _SMAR)
 _register("JD50",      "Jump 50",             _SYN, _DER, 0.01,  1.0, 0.5, "24/7", _SMAR)
+
+# ── Crypto (24/7 — available on both MT5 CFD brokers and Deriv) ──────────
+# Pip sizes: 1.0 USD per pip for BTC-class, 0.01 for lower-price coins.
+# Typical spreads reflect CFD crypto; actual may vary by broker.
+_CRY = InstrumentCategory.SYNTHETIC   # reuse SYNTHETIC category for crypto (24/7 behaviour)
+_CRYMAR = MarginCategory.SYNTHETIC
+
+_register("BTCUSD",  "Bitcoin / US Dollar",      _CRY, _B, 1.0,   1.0, 50.0,  "24/7", _CRYMAR)
+_register("ETHUSD",  "Ethereum / US Dollar",     _CRY, _B, 0.1,   1.0, 3.0,   "24/7", _CRYMAR)
+_register("LTCUSD",  "Litecoin / US Dollar",     _CRY, _B, 0.01,  1.0, 0.5,   "24/7", _CRYMAR)
+_register("XRPUSD",  "Ripple / US Dollar",       _CRY, _B, 0.0001,1.0, 0.05,  "24/7", _CRYMAR)
+_register("BNBUSD",  "BNB / US Dollar",          _CRY, _B, 0.01,  1.0, 1.0,   "24/7", _CRYMAR)
+_register("SOLUSD",  "Solana / US Dollar",       _CRY, _B, 0.01,  1.0, 0.5,   "24/7", _CRYMAR)
+_register("ADAUSD",  "Cardano / US Dollar",      _CRY, _B, 0.0001,1.0, 0.01,  "24/7", _CRYMAR)
+_register("DOTUSD",  "Polkadot / US Dollar",     _CRY, _B, 0.001, 1.0, 0.1,   "24/7", _CRYMAR)
+_register("DOGEUSD", "Dogecoin / US Dollar",     _CRY, _B, 0.0001,1.0, 0.005, "24/7", _CRYMAR)
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +237,11 @@ class RiskConfig:
     max_open_trades: int = 3
     max_correlated_trades: int = 1
     min_risk_reward: float = 1.5
-    max_spread_multiplier: float = 2.0
+    # How many times the instrument's typical spread we allow before rejecting.
+    # 3.0 gives headroom for indices (US100 widens ~10 pts off-hours vs typical 1.5)
+    # and crypto (BTCUSD spreads balloon on thin liquidity).
+    # The validator uses: max_allowed = typical_spread * max_spread_multiplier
+    max_spread_multiplier: float = 3.0
 
 
 # ---------------------------------------------------------------------------
