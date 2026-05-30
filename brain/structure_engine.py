@@ -294,24 +294,39 @@ class StructureEngine:
     def get_bias(self, h4_df: pd.DataFrame, h1_df: pd.DataFrame) -> dict:
         """
         Combined H4 + H1 bias.
-        H4 gives direction. H1 gives precision.
-        Both must agree for high confidence bias.
+        H4 gives the big picture direction. H1 gives precision.
+        FIX: original code always used h4.trend as direction, so when H4 was
+        RANGING but H1 had a clear trend, the pair was marked RANGING + not
+        tradeable and scored 0 on structure — blocking perfectly valid setups.
+        Now: if H4 is ranging but H1 has a clear trend, use H1 direction at
+        MODERATE strength. This allows H1-driven entries which are valid.
         """
         h4 = self.analyze(h4_df)
         h1 = self.analyze(h1_df)
 
-        # Both timeframes agree = strong bias
+        # Both timeframes agree — strongest signal
         if h4.trend == h1.trend and h4.trend != Trend.RANGING:
             bias_strength = "STRONG"
+            direction = h4.trend
+        # H4 clear trend, H1 ranging — still tradeable (pullback entry)
         elif h4.trend != Trend.RANGING and h1.trend == Trend.RANGING:
             bias_strength = "MODERATE"
+            direction = h4.trend
+        # FIX: H4 ranging but H1 has clear trend — use H1 direction at MODERATE
+        # Previously this fell into CONFLICTED and returned direction=RANGING
+        elif h4.trend == Trend.RANGING and h1.trend != Trend.RANGING:
+            bias_strength = "MODERATE"
+            direction = h1.trend  # H1 is leading — respect it
+        # Both ranging or opposite trends
         elif h4.trend != h1.trend:
             bias_strength = "CONFLICTED"
+            direction = Trend.RANGING
         else:
             bias_strength = "NONE"
+            direction = Trend.RANGING
 
         return {
-            "direction": h4.trend.value,
+            "direction": direction.value,
             "h4_trend": h4.trend.value,
             "h1_trend": h1.trend.value,
             "strength": bias_strength,

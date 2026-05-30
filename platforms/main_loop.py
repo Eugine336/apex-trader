@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Optional
 
+import pandas as pd
 from loguru import logger
 
 from brain import (
@@ -214,7 +215,14 @@ class TradingLoop:
         if not market_data:
             return
 
-        report = self.scanner.scan_all(market_data, utc_now=now)
+        # Build currency_data for the strength meter — H1 data keyed by symbol
+        currency_data = {
+            pair: frames["H1"]
+            for pair, frames in market_data.items()
+            if "H1" in frames
+        }
+
+        report = self.scanner.scan_all(market_data, currency_data=currency_data, utc_now=now)
         ready = self.scanner.get_ready_setups(report)
 
         if not ready:
