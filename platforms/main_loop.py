@@ -33,8 +33,10 @@ from ml.ml_adapter import MLAdapter, TradeAdjustments
 from platforms.base_connector import OrderResult, PositionInfo
 from platforms.platform_manager import PlatformManager
 from risk.risk_engine import RiskEngine
+from risk.risk_reporter import RiskReporter
 from scanner import PairScanner, PairRanker, ScanScheduler
 from trigger.entry_engine import EntryEngine, EntrySignal, EntryRejection
+from trigger.entry_validator import EntryValidator, ValidationResult
 
 
 class ManagedPosition:
@@ -92,6 +94,12 @@ class TradingLoop:
         self.session_engine = SessionEngine()
         self.news_guard = NewsGuard()
         self.journal = TradeJournal()
+        self.validator = EntryValidator(
+            config=self.config,
+            drawdown=self.drawdown,
+            correlation=self.correlation,
+        )
+        self.risk_reporter = RiskReporter()
         self.ml = MLAdapter()
         self.re_entry = ReEntryManager()
         self._journal_loop = asyncio.new_event_loop()
@@ -266,6 +274,20 @@ class TradingLoop:
         except Exception:
             pass
 
+        validation = self.validator.validate(
+            signal=signal,
+            current_spread_pips=spread,
+            open_trades=[
+                {"pair": p.symbol, "direction": p.direction, "risk_pct": 0.02}
+                for p in self.managed_positions.values()
+            ],
+            utc_now=now,
+        )
+        if not validation.valid:
+            reasons = "; ".join(validation.checks_failed)
+            self._log_rejection(pair, direction, signal.score, f"Validator: {reasons}")
+            return False
+
         pip_size = get_pip_size(pair)
         typical = INSTRUMENT_REGISTRY_SPREAD.get(pair, 2.0)
         if spread > typical * self.config.risk.max_spread_multiplier:
@@ -323,6 +345,14 @@ class TradingLoop:
             spread=spread,
             requote=False,
         )
+
+        if self.execution_monitor.should_alert():
+            stats = self.execution_monitor.get_stats()
+            logger.warning(
+                "⚠️ EXECUTION QUALITY {} — avg slip {:.2f}pip, latency {:.0f}ms, spread {}",
+                stats.execution_quality, stats.avg_slippage_pips, stats.avg_latency_ms,
+                "WIDE" if stats.spread_is_wide else "OK",
+            )
 
         managed = ManagedPosition(
             order=order,
@@ -531,6 +561,16 @@ class TradingLoop:
         if self._last_reset_day != today:
             if self._last_reset_day is not None:
                 logger.info("📅 Daily reset — {} trades yesterday", self._daily_trades)
+                try:
+                    stats = self.execution_monitor.get_stats()
+                    if stats.avg_slippage_pips > 0:
+                        logger.info(
+                            "📊 Execution stats — quality: {}, avg slip: {:.2f}pip, avg latency: {:.0f}ms, requotes: {}",
+                            stats.execution_quality, stats.avg_slippage_pips,
+                            stats.avg_latency_ms, stats.requote_count,
+                        )
+                except Exception:
+                    pass
             self._daily_trades = 0
             self._last_reset_day = today
 

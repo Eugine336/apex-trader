@@ -32,10 +32,15 @@ class EntryValidator:
     If any critical check fails, the signal is blocked.
     """
 
-    def __init__(self, config: Optional[AppConfig] = None):
+    def __init__(
+        self,
+        config: Optional[AppConfig] = None,
+        drawdown: Optional[DrawdownGuard] = None,
+        correlation: Optional[CorrelationEngine] = None,
+    ):
         self.config = config or AppConfig()
-        self.drawdown = DrawdownGuard()
-        self.correlation = CorrelationEngine(
+        self.drawdown = drawdown or DrawdownGuard()
+        self.correlation = correlation or CorrelationEngine(
             max_single_currency_exposure=self.config.risk.max_spread_multiplier / 100,
             max_correlated_trades=self.config.risk.max_correlated_trades,
         )
