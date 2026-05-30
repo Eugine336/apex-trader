@@ -213,19 +213,34 @@ class DerivConnector(BaseConnector):
     def get_price(self, symbol: str) -> TickData:
         self._require_connection()
         mapped = self.symbol_map(symbol)
-        resp = self._sync_send({"ticks": mapped, "subscribe": 0})
+        # Deriv does not support subscribe=0 on the ticks endpoint.
+        # Use ticks_history with count=1 for a one-shot latest price instead.
+        resp = self._sync_send({
+            "ticks_history": mapped,
+            "count": 1,
+            "end": "latest",
+            "style": "ticks",
+            "adjust_start_time": 1,
+        })
         if resp.get("error"):
             raise RuntimeError(f"Deriv tick error: {resp['error'].get('message')}")
-        tick = resp.get("tick", {})
-        bid = float(tick.get("bid", tick.get("quote", 0)))
-        ask = float(tick.get("ask", bid))
+        history = resp.get("history", {})
+        prices = history.get("prices", [])
+        times  = history.get("times", [])
+        if not prices:
+            raise RuntimeError(f"No tick data from Deriv for {mapped}")
+        quote = float(prices[-1])
+        epoch = int(times[-1]) if times else 0
+        # ticks_history returns mid price only — bid/ask not available.
+        # Spread is effectively 0 from this endpoint; bootstrap uses it only
+        # for instruments where bid/ask are unavailable. For spread purposes
+        # the hardcoded registry fallback will be used for synthetics.
         pip_size = get_pip_size(symbol)
-        spread = round((ask - bid) / pip_size, 1) if ask > bid else 0.0
         return TickData(
-            bid=bid,
-            ask=ask,
-            spread=spread,
-            time=datetime.fromtimestamp(tick.get("epoch", 0), tz=timezone.utc),
+            bid=quote,
+            ask=quote,
+            spread=0.0,
+            time=datetime.fromtimestamp(epoch, tz=timezone.utc),
         )
 
     def get_tick(self, symbol: str) -> TickData:
@@ -288,9 +303,9 @@ class DerivConnector(BaseConnector):
         mapped = self.symbol_map(symbol)
         is_buy = direction.upper() in ("BUY", "LONG")
 
-        tick_resp = self._sync_send({"ticks": mapped, "subscribe": 0})
-        tick = tick_resp.get("tick", {})
-        price = float(tick.get("ask" if is_buy else "bid", tick.get("quote", 0)))
+        # Use get_price (ticks_history) — avoids subscribe:0 validation error
+        _tick = self.get_price(symbol)
+        price = _tick.ask if is_buy else _tick.bid
 
         contract_type = "MULTUP" if is_buy else "MULTDOWN"
 
