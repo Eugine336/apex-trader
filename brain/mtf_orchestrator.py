@@ -57,7 +57,7 @@ class MTFOrchestrator:
         regime_detector: Optional[RegimeDetector] = None,
         session_engine: Optional[SessionEngine] = None,
         news_guard: Optional[NewsGuard] = None,
-        min_entry_score: int = 85,
+        min_entry_score: int = 65,
         pip_size: float = 0.0001,
     ):
         self.structure_engine = structure_engine or StructureEngine(swing_lookback=2)
