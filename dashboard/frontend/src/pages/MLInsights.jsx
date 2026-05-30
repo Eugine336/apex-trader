@@ -1,83 +1,151 @@
 import React from 'react';
 import { useApi } from '../hooks/useApi';
+import { WeightAdjustmentChart } from '../components/Charts';
 
-function AdjustmentRow({ factor, adjustment }) {
-  const color = adjustment > 0 ? 'var(--green)' : adjustment < 0 ? 'var(--red)' : 'var(--text-muted)';
-  const prefix = adjustment > 0 ? '+' : '';
-  return (
-    <div style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 12px',
-                   background: 'var(--bg-hover)', borderRadius: '6px', fontSize: '13px' }}>
-      <span style={{ textTransform: 'capitalize' }}>{factor.replace('_', ' ')}</span>
-      <span className="mono" style={{ fontWeight: 600, color }}>{prefix}{adjustment}</span>
-    </div>
-  );
-}
-
-function StatTable({ title, stats, valueKey, labelKey, extraKey }) {
-  return (
-    <div className="card">
-      <div className="card-header"><span className="card-title">{title}</span></div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-        {Object.entries(stats).map(([key, val]) => {
-          const winRate = val.win_rate || val[valueKey] || 0;
-          const color = winRate >= 80 ? 'var(--green)' : winRate >= 60 ? 'var(--yellow)' : 'var(--red)';
-          return (
-            <div key={key} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center',
-                                     padding: '8px 12px', background: 'var(--bg-hover)', borderRadius: '6px' }}>
-              <div>
-                <div style={{ fontSize: '13px', fontWeight: 600 }}>{key.replace(/_/g, ' ')}</div>
-                <div style={{ fontSize: '11px', color: 'var(--text-muted)' }}>
-                  {val.trades} trades
-                  {val[extraKey] && ` · ${val[extraKey]}`}
-                  {val.aggression && ` · ${val.aggression}`}
-                  {val.recommendation && ` · ${val.recommendation}`}
-                  {val.size_mult !== undefined && ` · ${val.size_mult}x size`}
-                </div>
-              </div>
-              <div className="mono" style={{ fontSize: '16px', fontWeight: 700, color }}>
-                {winRate}%
-              </div>
-            </div>
-          );
-        })}
-      </div>
-    </div>
-  );
+function rating(wr) {
+  if (wr >= 70) return { text: 'STRONG', cls: 'badge-green' };
+  if (wr >= 55) return { text: 'MODERATE', cls: 'badge-yellow' };
+  return { text: 'WEAK', cls: 'badge-red' };
 }
 
 export default function MLInsights() {
-  const { data } = useApi('/api/ml', 5000);
+  const { data } = useApi('/api/ml', 10000);
 
-  if (!data) return <div style={{ color: 'var(--text-muted)' }}>Loading...</div>;
+  if (!data) {
+    return (
+      <div>
+        <div className="page-header"><h2>ML Insights</h2><p>Loading adaptive learner data...</p></div>
+        <div className="skeleton skeleton-block mb-20" />
+        <div className="grid-2 mb-20"><div className="skeleton skeleton-block" /><div className="skeleton skeleton-block" /></div>
+      </div>
+    );
+  }
+
+  const regimes = data.regime_stats ? Object.entries(data.regime_stats) : [];
+  const sessions = data.session_stats ? Object.entries(data.session_stats) : [];
+  const pairs = data.pair_stats
+    ? Object.entries(data.pair_stats).sort((a, b) => (b[1].win_rate || 0) - (a[1].win_rate || 0))
+    : [];
 
   return (
     <div>
       <div className="page-header">
         <h2>ML Insights</h2>
-        <p>What the adaptive learner has discovered</p>
+        <p>Adaptive learner adjustments and analytics</p>
       </div>
 
-      <div className="card mb-24">
-        <div className="card-header"><span className="card-title">Score Weight Adjustments</span></div>
-        <p style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '12px' }}>
-          How the ML has shifted scoring weights from defaults (positive = increased importance)
-        </p>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '6px' }}>
-          {Object.entries(data.score_adjustments || {}).map(([k, v]) => (
-            <AdjustmentRow key={k} factor={k} adjustment={v} />
-          ))}
+      <div className="card mb-20">
+        <div className="card-header">
+          <span className="card-title">Score Weight Adjustments</span>
+          <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>Positive = ML increased factor importance</span>
+        </div>
+        <WeightAdjustmentChart data={data.score_adjustments} />
+      </div>
+
+      <div className="grid-2 mb-20">
+        <div className="card">
+          <div className="card-header"><span className="card-title">Regime Performance</span></div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Regime</th>
+                  <th className="right">Trades</th>
+                  <th className="right">Win Rate</th>
+                  <th>Recommendation</th>
+                </tr>
+              </thead>
+              <tbody>
+                {regimes.length === 0 && <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-muted)' }}>No regime data</td></tr>}
+                {regimes.map(([name, s]) => (
+                  <tr key={name}>
+                    <td className="text-col" style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{name}</td>
+                    <td className="right">{s.trades || 0}</td>
+                    <td className="right" style={{ color: (s.win_rate || 0) >= 60 ? 'var(--green-bright)' : (s.win_rate || 0) >= 50 ? 'var(--yellow-bright)' : 'var(--red-bright)' }}>
+                      {(s.win_rate || 0).toFixed(1)}%
+                    </td>
+                    <td>
+                      <span className={`badge ${(s.recommendation || '').toLowerCase() === 'trade' ? 'badge-green' : 'badge-red'}`}>
+                        {(s.recommendation || 'N/A').toUpperCase()}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+        <div className="card">
+          <div className="card-header"><span className="card-title">Session Performance</span></div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Session</th>
+                  <th className="right">Trades</th>
+                  <th className="right">Win Rate</th>
+                  <th>Aggression</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sessions.length === 0 && <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-muted)' }}>No session data</td></tr>}
+                {sessions.map(([name, s]) => (
+                  <tr key={name}>
+                    <td className="text-col" style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{name}</td>
+                    <td className="right">{s.trades || 0}</td>
+                    <td className="right" style={{ color: (s.win_rate || 0) >= 60 ? 'var(--green-bright)' : (s.win_rate || 0) >= 50 ? 'var(--yellow-bright)' : 'var(--red-bright)' }}>
+                      {(s.win_rate || 0).toFixed(1)}%
+                    </td>
+                    <td>
+                      <span className={`badge ${(s.aggression || '').toLowerCase() === 'high' ? 'badge-yellow' : (s.aggression || '').toLowerCase() === 'low' ? 'badge-muted' : 'badge-green'}`}>
+                        {(s.aggression || 'N/A').toUpperCase()}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
         </div>
       </div>
 
-      <div className="grid-2 mb-24">
-        <StatTable title="Regime Performance" stats={data.regime_stats || {}}
-                   valueKey="win_rate" extraKey="recommendation" />
-        <StatTable title="Session Performance" stats={data.session_stats || {}}
-                   valueKey="win_rate" extraKey="aggression" />
+      <div className="card">
+        <div className="card-header"><span className="card-title">Pair Performance</span></div>
+        <div className="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Pair</th>
+                <th className="right">Trades</th>
+                <th className="right">Win Rate</th>
+                <th className="right">Size Multiplier</th>
+                <th>Rating</th>
+              </tr>
+            </thead>
+            <tbody>
+              {pairs.length === 0 && <tr><td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)' }}>No pair data</td></tr>}
+              {pairs.map(([name, s]) => {
+                const r = rating(s.win_rate || 0);
+                const mult = s.size_mult || 1;
+                return (
+                  <tr key={name}>
+                    <td style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{name}</td>
+                    <td className="right">{s.trades || 0}</td>
+                    <td className="right" style={{ color: (s.win_rate || 0) >= 60 ? 'var(--green-bright)' : (s.win_rate || 0) >= 50 ? 'var(--yellow-bright)' : 'var(--red-bright)' }}>
+                      {(s.win_rate || 0).toFixed(1)}%
+                    </td>
+                    <td className="right" style={{ color: mult >= 1 ? 'var(--green-bright)' : 'var(--red-bright)' }}>
+                      {mult.toFixed(1)}x
+                    </td>
+                    <td><span className={`badge ${r.cls}`}>{r.text}</span></td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
       </div>
-
-      <StatTable title="Pair Performance" stats={data.pair_stats || {}}
-                 valueKey="win_rate" />
     </div>
   );
 }

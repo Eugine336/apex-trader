@@ -1,81 +1,95 @@
 import React from 'react';
+import { useOutletContext } from 'react-router-dom';
 import { useApi } from '../hooks/useApi';
-import { EquityChart, PnLBarChart, WinRateDonut } from '../components/Charts';
+import { EquityChart, PnLBarChart, WinRateDonut, SessionBarChart, HorizontalBarChart } from '../components/Charts';
 
 export default function Performance() {
-  const { data } = useApi('/api/performance', 5000);
+  const { state } = useOutletContext();
+  const { data: perfData } = useApi('/api/performance', 10000);
+  const { data: mlData } = useApi('/api/ml', 10000);
 
-  if (!data) return <div style={{ color: 'var(--text-muted)' }}>Loading...</div>;
+  const p = perfData || state.performance || {};
+  const ml = mlData || {};
+
+  const sessionData = React.useMemo(() => {
+    if (!ml.session_stats) return [];
+    return Object.entries(ml.session_stats).map(([name, s]) => ({ name, win_rate: s.win_rate || 0, trades: s.trades || 0 }));
+  }, [ml.session_stats]);
+
+  const pairData = React.useMemo(() => {
+    if (!ml.pair_stats) return [];
+    return Object.entries(ml.pair_stats)
+      .map(([name, s]) => ({ name, trades: s.trades || 0, win_rate: s.win_rate || 0 }))
+      .sort((a, b) => b.trades - a.trades)
+      .slice(0, 10);
+  }, [ml.pair_stats]);
 
   return (
     <div>
       <div className="page-header">
         <h2>Performance</h2>
-        <p>Win rate, P&L, equity curve, and drawdown analysis</p>
+        <p>Analytics and statistics</p>
       </div>
 
-      <div className="stats-grid">
-        <div className="stat-card">
-          <div className="stat-label">Win Rate</div>
-          <div className={`stat-value ${data.win_rate >= 70 ? 'positive' : 'negative'}`}>
-            {data.win_rate}%
-          </div>
+      <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(8, 1fr)' }}>
+        <div className="stat-card"><div className="stat-label">Win Rate</div><div className="stat-value positive">{(p.win_rate || 0).toFixed(1)}%</div></div>
+        <div className="stat-card"><div className="stat-label">Total Trades</div><div className="stat-value neutral">{p.total_trades || 0}</div></div>
+        <div className="stat-card"><div className="stat-label">Profit Factor</div><div className="stat-value neutral">{(p.profit_factor || 0).toFixed(2)}</div></div>
+        <div className="stat-card"><div className="stat-label">Daily P&L</div><div className={`stat-value ${(p.daily_pnl || 0) >= 0 ? 'positive' : 'negative'}`}>${(p.daily_pnl || 0).toFixed(2)}</div></div>
+        <div className="stat-card"><div className="stat-label">Weekly P&L</div><div className={`stat-value ${(p.weekly_pnl || 0) >= 0 ? 'positive' : 'negative'}`}>${(p.weekly_pnl || 0).toFixed(2)}</div></div>
+        <div className="stat-card"><div className="stat-label">Monthly P&L</div><div className={`stat-value ${(p.monthly_pnl || 0) >= 0 ? 'positive' : 'negative'}`}>${(p.monthly_pnl || 0).toFixed(2)}</div></div>
+        <div className="stat-card"><div className="stat-label">Avg Win</div><div className="stat-value positive">{(p.avg_win_pips || 0).toFixed(1)} pips</div></div>
+        <div className="stat-card"><div className="stat-label">Avg Loss</div><div className="stat-value negative">{(p.avg_loss_pips || 0).toFixed(1)} pips</div></div>
+      </div>
+
+      <div className="grid-3 mb-20">
+        <div className="card">
+          <div className="card-header"><span className="card-title">Equity Curve</span></div>
+          <EquityChart data={p.equity_curve} />
         </div>
-        <div className="stat-card">
-          <div className="stat-label">Total Trades</div>
-          <div className="stat-value neutral">{data.total_trades}</div>
+        <div className="card">
+          <div className="card-header"><span className="card-title">Daily P&L</span></div>
+          <PnLBarChart data={p.pnl_history} />
         </div>
-        <div className="stat-card">
-          <div className="stat-label">Daily P&L</div>
-          <div className={`stat-value ${data.daily_pnl >= 0 ? 'positive' : 'negative'}`}>
-            ${data.daily_pnl?.toFixed(2)}
-          </div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Weekly P&L</div>
-          <div className={`stat-value ${data.weekly_pnl >= 0 ? 'positive' : 'negative'}`}>
-            ${data.weekly_pnl?.toFixed(2)}
-          </div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Monthly P&L</div>
-          <div className={`stat-value ${data.monthly_pnl >= 0 ? 'positive' : 'negative'}`}>
-            ${data.monthly_pnl?.toFixed(2)}
-          </div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Total P&L</div>
-          <div className={`stat-value ${data.total_pnl >= 0 ? 'positive' : 'negative'}`}>
-            ${data.total_pnl?.toFixed(2)}
-          </div>
+        <div className="card">
+          <div className="card-header"><span className="card-title">Win / Loss</span></div>
+          <WinRateDonut wins={p.win_count || p.wins || 0} losses={p.loss_count || p.losses || 0} />
         </div>
       </div>
 
-      <div className="grid-2 mb-24">
+      <div className="grid-2 mb-20">
         <div className="card">
-          <div className="card-header">
-            <span className="card-title">Equity Curve</span>
-          </div>
-          {data.equity_curve && <EquityChart data={data.equity_curve} />}
+          <div className="card-header"><span className="card-title">Win Rate by Session</span></div>
+          <SessionBarChart data={sessionData} />
         </div>
         <div className="card">
-          <div className="card-header">
-            <span className="card-title">Win / Loss Distribution</span>
-          </div>
-          <WinRateDonut wins={data.win_count} losses={data.loss_count} />
-          <div style={{ textAlign: 'center', marginTop: '12px', fontSize: '13px' }}>
-            <span style={{ color: 'var(--green)' }}>{data.win_count} wins</span>
-            {' · '}
-            <span style={{ color: 'var(--red)' }}>{data.loss_count} losses</span>
-          </div>
+          <div className="card-header"><span className="card-title">Trade Count by Instrument</span></div>
+          <HorizontalBarChart data={pairData} />
         </div>
       </div>
 
       <div className="card">
-        <div className="card-header">
-          <span className="card-title">Daily P&L</span>
+        <div className="card-header"><span className="card-title">Detailed Statistics</span></div>
+        <div className="table-wrap">
+          <table>
+            <tbody>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Total Trades</td><td className="right">{p.total_trades || 0}</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Wins / Losses</td><td className="right">{p.win_count || p.wins || 0} / {p.loss_count || p.losses || 0}</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Win Rate</td><td className="right">{(p.win_rate || 0).toFixed(1)}%</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Profit Factor</td><td className="right">{(p.profit_factor || 0).toFixed(2)}</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Best Trade</td><td className="right pnl-positive">{(p.best_trade_pips || 0).toFixed(1)} pips</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Worst Trade</td><td className="right pnl-negative">{(p.worst_trade_pips || 0).toFixed(1)} pips</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Avg Win</td><td className="right pnl-positive">{(p.avg_win_pips || 0).toFixed(1)} pips</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Avg Loss</td><td className="right pnl-negative">{(p.avg_loss_pips || 0).toFixed(1)} pips</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Daily P&L</td><td className="right">${(p.daily_pnl || 0).toFixed(2)}</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Weekly P&L</td><td className="right">${(p.weekly_pnl || 0).toFixed(2)}</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Monthly P&L</td><td className="right">${(p.monthly_pnl || 0).toFixed(2)}</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Total P&L</td><td className="right">${(p.total_pnl || 0).toFixed(2)}</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Daily Trades</td><td className="right">{p.daily_trades || 0}</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Avg R:R</td><td className="right">{p.avg_win_pips && p.avg_loss_pips ? (p.avg_win_pips / Math.abs(p.avg_loss_pips)).toFixed(2) : 'N/A'}</td></tr>
+            </tbody>
+          </table>
         </div>
-        {data.pnl_history && <PnLBarChart data={data.pnl_history} />}
       </div>
     </div>
   );

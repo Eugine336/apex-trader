@@ -1,16 +1,14 @@
 import React from 'react';
 
-export default function ScoreBar({ score, label }) {
-  const cls = score >= 85 ? 'high' : score >= 50 ? 'medium' : 'low';
-  const color = score >= 85 ? 'var(--green)' : score >= 50 ? 'var(--yellow)' : 'var(--red)';
-
+export default function ScoreBar({ score = 0, label }) {
+  const level = score >= 85 ? 'high' : score >= 50 ? 'medium' : 'low';
   return (
     <div className="score-bar-wrap">
-      {label && <span style={{ fontSize: '12px', color: 'var(--text-secondary)', minWidth: '60px' }}>{label}</span>}
+      {label && <span style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>{label}</span>}
       <div className="score-bar">
-        <div className={`score-bar-fill ${cls}`} style={{ width: `${score}%` }} />
+        <div className={`score-bar-fill ${level}`} style={{ width: `${Math.min(score, 100)}%` }} />
       </div>
-      <span className="score-num" style={{ color }}>{score}</span>
+      <span className="score-num">{score}</span>
     </div>
   );
 }

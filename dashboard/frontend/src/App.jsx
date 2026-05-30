@@ -13,18 +13,18 @@ import Controls from './pages/Controls';
 export default function App() {
   return (
     <BrowserRouter>
-      <Layout>
-        <Routes>
-          <Route path="/" element={<Overview />} />
-          <Route path="/trades" element={<ActiveTrades />} />
-          <Route path="/history" element={<TradeHistory />} />
-          <Route path="/scanner" element={<Scanner />} />
-          <Route path="/performance" element={<Performance />} />
-          <Route path="/risk" element={<RiskMonitor />} />
-          <Route path="/ml" element={<MLInsights />} />
-          <Route path="/controls" element={<Controls />} />
-        </Routes>
-      </Layout>
+      <Routes>
+        <Route element={<Layout />}>
+          <Route index element={<Overview />} />
+          <Route path="trades" element={<ActiveTrades />} />
+          <Route path="history" element={<TradeHistory />} />
+          <Route path="scanner" element={<Scanner />} />
+          <Route path="performance" element={<Performance />} />
+          <Route path="risk" element={<RiskMonitor />} />
+          <Route path="ml" element={<MLInsights />} />
+          <Route path="controls" element={<Controls />} />
+        </Route>
+      </Routes>
     </BrowserRouter>
   );
 }
