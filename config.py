@@ -192,8 +192,8 @@ def get_all_symbols() -> list[str]:
 
 @dataclass
 class ScoringConfig:
-    min_entry_score: int = 85
-    watchlist_score: int = 70
+    min_entry_score: int = 65
+    watchlist_score: int = 50
     structure_points: int = 20
     order_block_points: int = 20
     fvg_points: int = 15
