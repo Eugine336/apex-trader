@@ -3,6 +3,7 @@ APEX TRADER — Live State Manager
 Bridges TradingLoop / PlatformManager to dashboard API responses.
 """
 
+import asyncio
 import time as _time
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
@@ -28,7 +29,10 @@ class LiveState:
         self._start_time = _time.monotonic()
         self._running = False
         self._connection_status: dict[str, bool] = {}
-        self._last_scan_report: Any = None
+        # ── journal cache: populated by _refresh_journal_cache() ──────
+        self._journal_cache: list[dict] = []
+        self._journal_cache_ts: float = 0.0
+        self._journal_cache_ttl: float = 5.0   # seconds
 
     # ── Attach live engine ────────────────────────────────────────────────
 
@@ -42,44 +46,45 @@ class LiveState:
         self._platform_manager = platform_manager
         self._connection_status = connection_status
         self._running = True
-        self._patch_scanner_capture()
         logger.info("LiveState attached — dashboard serving real data")
 
     @property
     def is_live(self) -> bool:
         return self._trading_loop is not None and self._running
 
+    # ── Journal cache (bridges async SQLite → sync REST handlers) ─────────
+
+    def _refresh_journal_cache(self) -> list[dict]:
+        """
+        Read closed trades from the SQLite-backed journal.
+        Results are cached for _journal_cache_ttl seconds to avoid hammering
+        SQLite on every API call.
+        """
+        now = _time.monotonic()
+        if now - self._journal_cache_ts < self._journal_cache_ttl:
+            return self._journal_cache
+
+        journal = getattr(self._trading_loop, "journal", None) if self.is_live else None
+        if journal is None:
+            return self._journal_cache
+
+        try:
+            loop: asyncio.AbstractEventLoop = getattr(
+                self._trading_loop, "_journal_loop", None
+            )
+            if loop is None or loop.is_closed():
+                loop = asyncio.new_event_loop()
+            rows: list[dict] = loop.run_until_complete(
+                journal.get_all_trades_as_dicts()
+            )
+            self._journal_cache = rows
+            self._journal_cache_ts = now
+        except Exception as exc:
+            logger.warning("Journal cache refresh failed: {}", exc)
+
+        return self._journal_cache
+
     # ── Helpers ───────────────────────────────────────────────────────────
-
-    def _patch_scanner_capture(self) -> None:
-        """
-        Capture scan reports without modifying scanner code.
-        This keeps dashboard/state.py as the only changed file.
-        """
-        scanner = getattr(self._trading_loop, "scanner", None)
-        if scanner is None:
-            return
-        if getattr(scanner, "_dashboard_capture_patched", False):
-            existing = getattr(scanner, "last_report", None)
-            if existing is not None:
-                self._last_scan_report = existing
-            return
-
-        original_scan_all = getattr(scanner, "scan_all", None)
-        if not callable(original_scan_all):
-            return
-
-        def _scan_all_with_capture(*args, **kwargs):
-            report = original_scan_all(*args, **kwargs)
-            self._last_scan_report = report
-            try:
-                setattr(scanner, "last_report", report)
-            except Exception:
-                pass
-            return report
-
-        setattr(scanner, "scan_all", _scan_all_with_capture)
-        setattr(scanner, "_dashboard_capture_patched", True)
 
     @staticmethod
     def _value(obj: Any, *keys: str, default: Any = None) -> Any:
@@ -101,10 +106,6 @@ class LiveState:
 
     @staticmethod
     def _pct_to_fraction(value: Any) -> float:
-        """
-        Normalize percent-like values to fraction:
-        2.0 -> 0.02, 0.02 -> 0.02
-        """
         raw = LiveState._safe_float(value, 0.0)
         return raw / 100.0 if abs(raw) > 1 else raw
 
@@ -143,7 +144,6 @@ class LiveState:
     def _get_platform_balances(self) -> tuple[float, float]:
         if not self.is_live:
             return 0.0, 0.0
-
         try:
             summary = self._platform_manager.get_account_summary()
             mt5_info = summary.get("mt5")
@@ -154,20 +154,6 @@ class LiveState:
         except Exception:
             return 0.0, 0.0
 
-    def _get_journal_records(self) -> list[Any]:
-        if not self.is_live:
-            return []
-        journal = getattr(self._trading_loop, "journal", None)
-        if journal is None:
-            return []
-        records = getattr(journal, "records", None)
-        if records is None:
-            return []
-        try:
-            return list(records)
-        except Exception:
-            return []
-
     def _estimate_pip_value(self, symbol: str) -> float:
         try:
             return float(get_instrument(symbol).pip_value_per_lot)
@@ -175,92 +161,55 @@ class LiveState:
             return 10.0
 
     def _build_history_rows(self, balance: float) -> list[dict[str, Any]]:
+        """
+        Build normalised history rows from the journal SQLite DB.
+        TradeRecord fields: pair, direction, entry, exit, pnl, score,
+        confluences, regime, session, spread, slippage, entry_type,
+        time_to_tp1, time_to_exit, outcome, timestamp
+        """
+        raw_rows = self._refresh_journal_cache()
         rows: list[dict[str, Any]] = []
-        records = self._get_journal_records()
 
-        for i, record in enumerate(records):
-            symbol = str(
-                self._value(record, "symbol", "pair", "instrument", default="")
-            ).upper()
-            direction = self._normalize_direction(
-                self._value(record, "direction", default="")
-            )
-            entry_price = self._safe_float(
-                self._value(record, "entry_price", "entry", default=0.0)
-            )
-            exit_price = self._safe_float(
-                self._value(record, "exit_price", "exit", default=entry_price)
-            )
+        for i, record in enumerate(raw_rows):
+            # record is a plain dict from get_all_trades_as_dicts()
+            symbol = str(record.get("pair", "")).upper()
+            direction = self._normalize_direction(record.get("direction", ""))
+            entry_price = self._safe_float(record.get("entry", record.get("entry_price", 0.0)))
+            exit_price = self._safe_float(record.get("exit", record.get("exit_price", entry_price)))
 
-            pnl_pips = self._safe_float(
-                self._value(record, "pnl_pips", "pnl", default=0.0)
-            )
-            pnl_pct_raw = self._value(record, "pnl_pct", default=None)
-            lot_size = self._safe_float(
-                self._value(record, "lot_size", "lots", default=1.0), 1.0
-            )
+            pnl_raw = self._safe_float(record.get("pnl", 0.0))
+            # journal stores pnl as raw P&L in account currency (dollars)
+            pnl_dollars = pnl_raw
 
-            explicit_dollars = self._value(record, "pnl_dollars", default=None)
-            if explicit_dollars is not None:
-                pnl_dollars = self._safe_float(explicit_dollars, 0.0)
-            elif pnl_pct_raw is not None:
-                pnl_dollars = balance * (self._safe_float(pnl_pct_raw, 0.0) / 100.0)
-            else:
-                pnl_dollars = pnl_pips * self._estimate_pip_value(symbol) * lot_size
+            pip_size = self._safe_float(get_pip_size(symbol), 0.0001) or 0.0001
+            sl_distance = abs(exit_price - entry_price)
+            pnl_pips = sl_distance / pip_size if sl_distance > 0 else 0.0
+            if pnl_raw < 0:
+                pnl_pips = -pnl_pips
 
-            open_dt = self._parse_dt(
-                self._value(record, "open_time", "opened_at", "timestamp", default=None)
-            )
-            close_dt = self._parse_dt(
-                self._value(record, "close_time", "closed_at", default=None)
-            )
-            time_to_exit = self._value(record, "time_to_exit", default=None)
-            if close_dt is None and open_dt is not None and time_to_exit is not None:
-                try:
-                    close_dt = open_dt + timedelta(seconds=float(time_to_exit))
-                except Exception:
-                    pass
+            time_to_exit = self._safe_float(record.get("time_to_exit"), 0.0)
+            duration_minutes = time_to_exit / 60.0 if time_to_exit > 0 else 0.0
 
-            duration_raw = self._value(record, "duration_minutes", default=None)
-            if duration_raw is not None:
-                duration_minutes = self._safe_float(duration_raw, 0.0)
-            elif open_dt is not None and close_dt is not None:
-                duration_minutes = max(
-                    0.0, (close_dt - open_dt).total_seconds() / 60.0
-                )
-            elif time_to_exit is not None:
-                t = self._safe_float(time_to_exit, 0.0)
-                duration_minutes = t / 60.0 if t > 15 else t
-            else:
-                duration_minutes = 0.0
-
-            outcome = str(self._value(record, "outcome", default="")).upper()
+            outcome = str(record.get("outcome", "")).upper()
             if outcome not in {"WIN", "LOSS"}:
-                outcome = "WIN" if pnl_pips >= 0 else "LOSS"
+                outcome = "WIN" if pnl_raw >= 0 else "LOSS"
 
-            opened_at = (
-                open_dt.isoformat()
-                if open_dt is not None
-                else datetime.now(timezone.utc).isoformat()
-            )
+            ts = record.get("timestamp", datetime.now(timezone.utc).isoformat())
+            opened_at = str(ts) if ts else datetime.now(timezone.utc).isoformat()
 
-            rows.append(
-                {
-                    "id": str(self._value(record, "id", default=f"hist_{i}")),
-                    "instrument": symbol,
-                    "direction": direction,
-                    "entry_price": entry_price,
-                    "exit_price": exit_price,
-                    "pnl_pips": round(pnl_pips, 1),
-                    "pnl_dollars": round(pnl_dollars, 2),
-                    "duration_minutes": round(duration_minutes, 1),
-                    "score": int(
-                        round(self._safe_float(self._value(record, "score", default=0)))
-                    ),
-                    "outcome": outcome,
-                    "opened_at": opened_at,
-                }
-            )
+            rows.append({
+                "id": str(record.get("id", f"hist_{i}")),
+                "instrument": symbol,
+                "direction": direction,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "pnl_pips": round(pnl_pips, 1),
+                "pnl_dollars": round(pnl_dollars, 2),
+                "duration_minutes": round(duration_minutes, 1),
+                "score": int(round(self._safe_float(record.get("score", 0)))),
+                "outcome": outcome,
+                "opened_at": opened_at,
+            })
 
         return rows
 
@@ -316,20 +265,11 @@ class LiveState:
         mt5_balance, deriv_balance = self._get_platform_balances()
 
         dd = loop.drawdown.get_status(datetime.now(timezone.utc))
-        journal = getattr(loop, "journal", None)
         records = self._build_history_rows(balance)
 
-        total = int(getattr(journal, "total_trades", 0) or len(records))
-        wins = int(
-            getattr(journal, "wins", 0)
-            or sum(1 for r in records if r["outcome"] == "WIN")
-        )
-        losses = int(
-            getattr(journal, "losses", 0)
-            or sum(1 for r in records if r["outcome"] == "LOSS")
-        )
-        if total == 0:
-            total = wins + losses
+        wins = sum(1 for r in records if r["outcome"] == "WIN")
+        losses = sum(1 for r in records if r["outcome"] == "LOSS")
+        total = wins + losses
 
         win_rate = (wins / total * 100) if total > 0 else 0.0
         daily_frac = self._pct_to_fraction(getattr(dd, "daily_pnl_pct", 0.0))
@@ -430,23 +370,21 @@ class LiveState:
             pip_value = self._estimate_pip_value(symbol)
             pnl_dollars = pnl_pips * pip_value * lot_size
 
-            trades.append(
-                {
-                    "id": str(oid),
-                    "instrument": symbol,
-                    "direction": direction,
-                    "entry_price": round(entry_price, 5),
-                    "current_price": round(current_price, 5),
-                    "stop_loss": round(self._safe_float(getattr(pos, "sl", 0.0), 0.0), 5),
-                    "tp1": round(self._safe_float(getattr(pos, "tp1", 0.0), 0.0), 5),
-                    "tp2": round(self._safe_float(getattr(pos, "tp2", 0.0), 0.0), 5),
-                    "pnl_pips": round(pnl_pips, 1),
-                    "pnl_dollars": round(pnl_dollars, 2),
-                    "lot_size": round(lot_size, 2),
-                    "score": int(round(self._safe_float(getattr(pos, "score", 0), 0.0))),
-                    "stage": self._build_stage(pos),
-                }
-            )
+            trades.append({
+                "id": str(oid),
+                "instrument": symbol,
+                "direction": direction,
+                "entry_price": round(entry_price, 5),
+                "current_price": round(current_price, 5),
+                "stop_loss": round(self._safe_float(getattr(pos, "sl", 0.0), 0.0), 5),
+                "tp1": round(self._safe_float(getattr(pos, "tp1", 0.0), 0.0), 5),
+                "tp2": round(self._safe_float(getattr(pos, "tp2", 0.0), 0.0), 5),
+                "pnl_pips": round(pnl_pips, 1),
+                "pnl_dollars": round(pnl_dollars, 2),
+                "lot_size": round(lot_size, 2),
+                "score": int(round(self._safe_float(getattr(pos, "score", 0), 0.0))),
+                "stage": self._build_stage(pos),
+            })
 
         return {"trades": trades, "count": len(trades)}
 
@@ -472,13 +410,10 @@ class LiveState:
                 "total_count": 0,
             }
 
+        # Read directly from scanner.last_report — it's always up to date
         scanner = getattr(self._trading_loop, "scanner", None)
-        if scanner is not None:
-            report = getattr(scanner, "last_report", None)
-            if report is not None:
-                self._last_scan_report = report
+        report = getattr(scanner, "last_report", None) if scanner else None
 
-        report = self._last_scan_report
         results_raw: list[Any] = []
         ready_count = 0
         watchlist_count = 0
@@ -516,17 +451,15 @@ class LiveState:
                 self._value(result, "direction", default="NEUTRAL")
             )
 
-            instruments.append(
-                {
-                    "symbol": symbol,
-                    "name": name,
-                    "category": category,
-                    "direction": direction,
-                    "score": int(round(self._safe_float(self._value(result, "score", default=0), 0.0))),
-                    "status": status,
-                    "factors": self._scanner_factors(result),
-                }
-            )
+            instruments.append({
+                "symbol": symbol,
+                "name": name,
+                "category": category,
+                "direction": direction,
+                "score": int(round(self._safe_float(self._value(result, "score", default=0), 0.0))),
+                "status": status,
+                "factors": self._scanner_factors(result),
+            })
 
         if ready_count == 0 and watchlist_count == 0 and instruments:
             ready_count = sum(1 for i in instruments if i["status"] == "READY")
@@ -534,9 +467,9 @@ class LiveState:
 
         instruments.sort(key=lambda i: i["score"], reverse=True)
 
-        # Fallback when no report has been captured yet: provide full instrument list.
+        # Fallback before first scan completes
         if not instruments:
-            enabled_symbols = []
+            enabled_symbols: list[str] = []
             try:
                 enabled_symbols = list(getattr(self._trading_loop.config, "enabled_pairs", []))
             except Exception:
@@ -550,17 +483,15 @@ class LiveState:
                 except Exception:
                     name = symbol
                     category = "forex"
-                instruments.append(
-                    {
-                        "symbol": symbol,
-                        "name": name,
-                        "category": category,
-                        "direction": "NEUTRAL",
-                        "score": 0,
-                        "status": "WAITING",
-                        "factors": self._base_factor_set(),
-                    }
-                )
+                instruments.append({
+                    "symbol": symbol,
+                    "name": name,
+                    "category": category,
+                    "direction": "NEUTRAL",
+                    "score": 0,
+                    "status": "WAITING",
+                    "factors": self._base_factor_set(),
+                })
 
         if total_count == 0:
             total_count = len(instruments)
@@ -590,7 +521,7 @@ class LiveState:
             max_daily_loss = float(getattr(loop.config.risk, "max_daily_drawdown_pct", 5.0))
 
             mode = str(getattr(dd, "mode", "NORMAL"))
-            result = {
+            result: dict[str, Any] = {
                 "mode": mode,
                 "risk_mode": mode,
                 "current_risk_pct": round(risk_pct, 2),
@@ -693,18 +624,13 @@ class LiveState:
             }
 
         loop = self._trading_loop
-        journal = getattr(loop, "journal", None)
         balance = self._get_balance()
         dd = loop.drawdown.get_status(datetime.now(timezone.utc))
         rows = self._build_history_rows(balance)
 
-        wins_calc = sum(1 for r in rows if r["outcome"] == "WIN")
-        losses_calc = sum(1 for r in rows if r["outcome"] == "LOSS")
-        total_calc = len(rows)
-
-        wins = int(getattr(journal, "wins", 0) or wins_calc)
-        losses = int(getattr(journal, "losses", 0) or losses_calc)
-        total_trades = int(getattr(journal, "total_trades", 0) or (wins + losses) or total_calc)
+        wins = sum(1 for r in rows if r["outcome"] == "WIN")
+        losses = sum(1 for r in rows if r["outcome"] == "LOSS")
+        total_trades = wins + losses
 
         pnl_pips = [self._safe_float(r["pnl_pips"], 0.0) for r in rows]
         win_pips = [p for p in pnl_pips if p > 0]
@@ -769,14 +695,12 @@ class LiveState:
 
         if not equity_curve:
             today_key = today.isoformat()
-            equity_curve = [
-                {
-                    "date": today_key,
-                    "equity": round(balance, 2),
-                    "time": today_key,
-                    "value": round(balance, 2),
-                }
-            ]
+            equity_curve = [{
+                "date": today_key,
+                "equity": round(balance, 2),
+                "time": today_key,
+                "value": round(balance, 2),
+            }]
 
         pnl_history = [
             {"date": d, "pnl": round(v, 2)}
@@ -794,21 +718,11 @@ class LiveState:
             "weekly_pnl": round(weekly_pnl, 2),
             "monthly_pnl": round(monthly_pnl, 2),
             "total_pnl": round(total_pnl, 2),
-            "best_trade_pips": round(
-                self._safe_float(getattr(journal, "best_trade_pips", best_trade), best_trade), 1
-            ),
-            "worst_trade_pips": round(
-                self._safe_float(getattr(journal, "worst_trade_pips", worst_trade), worst_trade), 1
-            ),
-            "avg_win_pips": round(
-                self._safe_float(getattr(journal, "avg_win_pips", avg_win), avg_win), 1
-            ),
-            "avg_loss_pips": round(
-                self._safe_float(getattr(journal, "avg_loss_pips", avg_loss), avg_loss), 1
-            ),
-            "profit_factor": round(
-                self._safe_float(getattr(journal, "profit_factor", pf_calc), pf_calc), 2
-            ),
+            "best_trade_pips": round(best_trade, 1),
+            "worst_trade_pips": round(worst_trade, 1),
+            "avg_win_pips": round(avg_win, 1),
+            "avg_loss_pips": round(avg_loss, 1),
+            "profit_factor": round(pf_calc, 2),
             "daily_trades": int(getattr(loop, "_daily_trades", 0)),
             "equity_curve": equity_curve,
             "pnl_history": pnl_history,
