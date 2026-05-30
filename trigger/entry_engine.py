@@ -264,18 +264,29 @@ class EntryEngine:
         self, direction: str, m1_df: pd.DataFrame, entry_zone: dict, pip_size: float,
     ) -> tuple[bool, str]:
         if len(m1_df) < 3:
+            logger.debug(f"M1 confirm — not enough bars ({len(m1_df)})")
             return False, ""
 
         zone_top = entry_zone["top"]
         zone_bottom = entry_zone["bottom"]
 
+        logger.debug(
+            f"M1 confirm | direction={direction} | bars={len(m1_df)} | "
+            f"zone={zone_bottom:.3f}–{zone_top:.3f} | "
+            f"last_close={m1_df['close'].iloc[-1]:.3f} | "
+            f"last_low={m1_df['low'].iloc[-1]:.3f} | "
+            f"last_high={m1_df['high'].iloc[-1]:.3f}"
+        )
+
         pattern_name, pattern_desc = self.pattern_detector.get_best_pattern(
             m1_df, direction, zone_top, zone_bottom, pip_size,
         )
+        logger.debug(f"M1 pattern result — name='{pattern_name}' desc='{pattern_desc}'")
         if pattern_name:
             return True, pattern_desc
 
         choch = self._detect_m1_choch(m1_df, direction)
+        logger.debug(f"M1 CHoCH result — {choch}")
         if choch:
             return True, f"M1 Change of Character — {direction.lower()} shift"
 
@@ -369,14 +380,28 @@ class EntryEngine:
         structure = StructureEngine(swing_lookback=3)
         analysis = structure.analyze(df)
 
-        # Check last_event first (CHoCH just happened)
+        logger.debug(
+            f"M1 CHoCH check | direction={direction} | "
+            f"last_event={analysis.last_event.value} | "
+            f"trend={analysis.trend.value} | "
+            f"last_choch_level={analysis.last_choch_level}"
+        )
+
+        # CHoCH just happened — strongest confirmation
         if direction == "LONG" and analysis.last_event.value == "CHOCH_BULLISH":
             return True
         if direction == "SHORT" and analysis.last_event.value == "CHOCH_BEARISH":
             return True
 
-        # Also accept if a CHoCH level exists — means one occurred recently even
-        # if a subsequent BOS or swing event came after it and overwrote last_event
+        # BOS in trade direction — structure already broken, price retesting zone.
+        # This IS micro-confirmation. Waiting for a CHoCH here means waiting for
+        # something that has already happened one level up.
+        if direction == "SHORT" and analysis.last_event.value == "BOS_BEARISH":
+            return True
+        if direction == "LONG" and analysis.last_event.value == "BOS_BULLISH":
+            return True
+
+        # CHoCH level set but overwritten by subsequent event — still valid
         if direction == "LONG" and analysis.last_choch_level is not None:
             if analysis.trend.value in ("BULLISH", "RANGING"):
                 return True

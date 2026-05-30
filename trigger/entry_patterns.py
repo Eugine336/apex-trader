@@ -127,12 +127,12 @@ class EntryPatternDetector:
 
         if direction == "LONG":
             wick_pierced = c["low"] <= zone_top + buffer
-            closed_above = c["close"] > zone_top
+            closed_above = c["close"] >= zone_top
             if wick_pierced and closed_above:
                 return True, "Rejection wick into bullish zone — sharp reversal"
         else:
             wick_pierced = c["high"] >= zone_bottom - buffer
-            closed_below = c["close"] < zone_bottom
+            closed_below = c["close"] <= zone_bottom
             if wick_pierced and closed_below:
                 return True, "Rejection wick into bearish zone — sharp reversal"
 
