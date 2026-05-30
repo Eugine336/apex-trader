@@ -328,7 +328,6 @@ class DerivConnector(BaseConnector):
                 # lots here carries the risk_amount already encoded by the sizer,
                 # so we back-calculate: risk_amount = lots * risk_pips * pip_value
                 # For synthetics pip_value = 1.0 (from registry)
-                from config import get_pip_size
                 pip = get_pip_size(symbol)
                 risk_pips = sl_distance / pip if pip else sl_distance
                 risk_amount = lots * risk_pips * 1.0   # pip_value_per_lot = 1 for synthetics
