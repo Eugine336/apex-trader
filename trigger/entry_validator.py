@@ -102,7 +102,18 @@ class EntryValidator:
     ) -> tuple[bool, str]:
         try:
             info = get_instrument(pair)
-            max_spread = info.typical_spread_pips * self.config.risk.max_spread_multiplier
+            typical = info.typical_spread_pips
+            # Indices and crypto have wide off-hours spreads — give them an extra
+            # absolute cap instead of only a relative multiplier.
+            category = info.category.value  # "forex" / "commodity" / "index" / "synthetic"
+            if category in ("index", "synthetic"):
+                # Allow up to 5× typical OR a hard 30-pip ceiling, whichever is larger
+                max_spread = max(typical * self.config.risk.max_spread_multiplier, typical * 5.0)
+            elif category == "commodity":
+                # Commodities widen significantly at rollover / off-hours
+                max_spread = max(typical * self.config.risk.max_spread_multiplier, typical * 4.0)
+            else:
+                max_spread = typical * self.config.risk.max_spread_multiplier
         except KeyError:
             max_spread = 5.0 * self.config.risk.max_spread_multiplier
 
