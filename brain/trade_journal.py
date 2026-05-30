@@ -203,6 +203,32 @@ class TradeJournal:
             "avg_hold_time": round(avg_hold_time, 2),
         }
 
+    async def get_all_trades_as_dicts(self) -> list[dict]:
+        """Return all trades as plain dicts for ML consumption."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            cursor = await db.execute(
+                "SELECT pair, direction, pnl, score, confluences, regime, "
+                "session, spread, entry_type, time_to_exit, outcome FROM trades"
+            )
+            rows = await cursor.fetchall()
+        return [
+            {
+                "pair": r[0],
+                "direction": r[1],
+                "pnl": r[2],
+                "score": r[3],
+                "confluences_raw": json.loads(r[4]) if r[4] else [],
+                "regime": r[5],
+                "session": r[6],
+                "spread": r[7],
+                "entry_type": r[8],
+                "time_to_exit": r[9],
+                "outcome": r[10],
+            }
+            for r in rows
+        ]
+
     async def get_win_rate(self) -> float:
         stats = await self.get_performance_stats()
         return float(stats["win_rate"])
