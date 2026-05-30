@@ -46,8 +46,10 @@ _GRANULARITY_MAP: dict[str, int] = {
 }
 
 _RECONNECT_DELAY = 5
-_REQUEST_TIMEOUT = 15
-_MAX_RECONNECT_ATTEMPTS = 5
+_REQUEST_TIMEOUT = 20
+_MAX_RECONNECT_ATTEMPTS = 10
+_PING_INTERVAL = 20       # send keepalive ping every 20 s
+_PING_TIMEOUT  = 10       # fail if pong not received within 10 s
 
 
 class DerivConnector(BaseConnector):
@@ -98,7 +100,13 @@ class DerivConnector(BaseConnector):
     async def _connect_async(self) -> bool:
         url = _DERIV_WS_URL.format(app_id=self._app_id)
         try:
-            self._ws = await websockets.connect(url, ping_interval=30, close_timeout=10)
+            self._ws = await websockets.connect(
+                url,
+                ping_interval=_PING_INTERVAL,
+                ping_timeout=_PING_TIMEOUT,
+                close_timeout=10,
+                open_timeout=30,
+            )
         except Exception as exc:
             logger.error("Deriv WS connect failed: {}", exc)
             return False
@@ -136,7 +144,12 @@ class DerivConnector(BaseConnector):
     def is_connected(self) -> bool:
         if self._ws is None or not self._connected:
             return False
-        return self._ws.open
+        # websockets >= 10 uses .state; older versions expose .open
+        state = getattr(self._ws, "state", None)
+        if state is not None:
+            import websockets.connection as _wsc
+            return state == _wsc.State.OPEN
+        return bool(getattr(self._ws, "open", False))
 
     async def _reconnect(self) -> bool:
         for attempt in range(1, _MAX_RECONNECT_ATTEMPTS + 1):
@@ -154,9 +167,19 @@ class DerivConnector(BaseConnector):
         async with self._lock:
             self._req_id += 1
             payload["req_id"] = self._req_id
-            await self._ws.send(json.dumps(payload))
-            raw = await asyncio.wait_for(self._ws.recv(), timeout=_REQUEST_TIMEOUT)
-            return json.loads(raw)
+            for attempt in range(2):  # one retry after reconnect
+                try:
+                    await self._ws.send(json.dumps(payload))
+                    raw = await asyncio.wait_for(self._ws.recv(), timeout=_REQUEST_TIMEOUT)
+                    return json.loads(raw)
+                except Exception as exc:
+                    if attempt == 0:
+                        logger.warning("Deriv send error ({}), reconnecting…", exc)
+                        ok = await self._reconnect()
+                        if not ok:
+                            raise ConnectionError("Deriv reconnect failed") from exc
+                    else:
+                        raise
 
     def _sync_send(self, payload: dict) -> dict:
         with self._thread_lock:
