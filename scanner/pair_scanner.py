@@ -25,6 +25,7 @@ from brain.session_engine import SessionEngine, NewsGuard
 from brain.volume_analyzer import VolumeAnalyzer
 from brain.inducement_detector import InducementDetector
 from brain.wyckoff_engine import WyckoffEngine
+from brain.instrument_profile import get_profile
 
 
 @dataclass
@@ -98,6 +99,7 @@ class PairScanner:
         utc_now = utc_now or datetime.now(timezone.utc)
         pip_size = self._pip_size(pair)
         category = self._category(pair)
+        profile = get_profile(pair)
 
         # ── 1. Structure bias (H4 + H1) ──────────────────────────────
         bias = self.structure.get_bias(h4_df, h1_df)
@@ -113,7 +115,11 @@ class PairScanner:
             confluences.append(f"Structure aligned ({bias['strength']})")
 
         # ── 2a. H1 Order blocks (directional bias) ───────────────────
-        ob_det = OrderBlockDetector(pip_size=pip_size)
+        ob_det = OrderBlockDetector(
+            pip_size=pip_size,
+            min_impulse_pips=profile.ob_min_impulse_pips,
+            buffer_pips=profile.ob_buffer_pips,
+        )
         h1_obs = ob_det.detect(h1_df, timeframe="H1")
         has_h1_ob = False
         if trade_dir != "NEUTRAL":
@@ -138,7 +144,11 @@ class PairScanner:
         has_ob = has_h1_ob or has_m5_ob
 
         # ── 3. Fair value gaps (strength-based) ──────────────────────
-        fvg_det = FVGDetector(pip_size=pip_size)
+        fvg_det = FVGDetector(
+            pip_size=pip_size,
+            proximity_pips=profile.fvg_proximity_pips,
+            min_size_pips=profile.fvg_min_size_pips,
+        )
         m5_fvgs = fvg_det.detect(m5_df, timeframe="M5")
         m15_fvgs = fvg_det.detect(m15_df, timeframe="M15")
         has_fvg = False
@@ -158,6 +168,7 @@ class PairScanner:
         # ── 4. Multi-timeframe confluence ─────────────────────────────
         confluence = fvg_det.get_confluence_fvgs(
             m5_fvgs, m15_fvgs, trade_dir, m5_df["close"].iloc[-1], pip_size,
+            overlap_threshold_pips=profile.mtf_overlap_threshold_pips,
         )
         if confluence["has_confluence"]:
             score += scoring.mtf_confluence_points
@@ -179,13 +190,17 @@ class PairScanner:
 
         # ── 6. News filter ────────────────────────────────────────────
         news_status = self.news.check([pair], utc_now)
-        if news_status.is_clear:
+        if not profile.news_filter_enabled:
+            # Synthetics don't react to economic news — always grant news points
+            score += scoring.news_points
+            confluences.append("News filter N/A (synthetic)")
+        elif news_status.is_clear:
             score += scoring.news_points
             confluences.append("News clear")
 
         # ── 7. Currency strength alignment ────────────────────────────
         cs_aligned = False
-        if currency_data and pair in CURRENCY_PAIRS:
+        if profile.currency_strength_enabled and currency_data and pair in CURRENCY_PAIRS:
             strength = self.strength_meter.calculate(currency_data)
             alignment = self.strength_meter.get_pair_alignment(pair, strength, trade_dir)
             if alignment["aligned"]:
@@ -246,15 +261,18 @@ class PairScanner:
 
         # ── 10. Wyckoff phase ────────────────────────────────────────
         wyckoff_phase = "N/A"
-        try:
-            wyck = WyckoffEngine(pip_size=pip_size)
-            wyckoff_analysis = wyck.analyze(h1_df)
-            wyckoff_phase = wyckoff_analysis.phase
-            if wyckoff_analysis.sub_phase in ("SPRING", "UPTHRUST"):
-                score += 5
-                confluences.append(f"Wyckoff {wyckoff_analysis.sub_phase} (+5)")
-        except Exception as exc:
-            logger.debug(f"Wyckoff analysis error for {pair}: {exc}")
+        if profile.wyckoff_enabled:
+            try:
+                wyck = WyckoffEngine(pip_size=pip_size)
+                wyckoff_analysis = wyck.analyze(h1_df)
+                wyckoff_phase = wyckoff_analysis.phase
+                if wyckoff_analysis.sub_phase in ("SPRING", "UPTHRUST"):
+                    score += 5
+                    confluences.append(f"Wyckoff {wyckoff_analysis.sub_phase} (+5)")
+            except Exception as exc:
+                logger.debug(f"Wyckoff analysis error for {pair}: {exc}")
+        else:
+            logger.debug(f"{pair} — Wyckoff disabled for {category} instruments")
 
         # ── Regime caps ───────────────────────────────────────────────
         regime = bias["h4_trend"]
@@ -265,7 +283,10 @@ class PairScanner:
             score = max(score - 10, 0)
 
         # ── Status ────────────────────────────────────────────────────
-        if score >= scoring.min_entry_score:
+        # Use profile.min_entry_score — adjusts per category.
+        # Synthetics score lower (no Wyckoff/currency strength) so threshold drops.
+        effective_min_score = profile.min_entry_score
+        if score >= effective_min_score:
             status = "READY"
         elif score >= scoring.watchlist_score:
             status = "WATCHLIST"
