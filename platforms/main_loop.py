@@ -229,7 +229,7 @@ class TradingLoop:
             self._log_rejection(pair, direction, result.score, "Missing M5/M1/H1 data")
             return False
 
-        balance = self.platforms.get_total_balance() or 10_000.0
+        balance = self.platforms.get_platform_balance(pair) or 10_000.0
         self.risk_engine.balance = balance
 
         signal = self.entry_engine.calculate_entry(
@@ -419,7 +419,7 @@ class TradingLoop:
         pip_value = info.pip_value_per_lot if info else 10.0
         pnl_dollars = pnl_pips * pip_value * pos.lots
 
-        balance = self.platforms.get_total_balance() or 10_000.0
+        balance = self.platforms.get_platform_balance(pos.symbol) or 10_000.0
         pnl_pct = pnl_dollars / balance if balance > 0 else 0.0
 
         self.drawdown.register_trade_result(pnl_pct)
