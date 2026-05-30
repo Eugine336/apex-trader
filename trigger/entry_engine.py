@@ -12,6 +12,7 @@ from typing import Optional, Union
 from loguru import logger
 
 from config import AppConfig, get_instrument, get_pip_size, InstrumentCategory, spread_open_guard_applies
+from brain.instrument_profile import get_profile, InstrumentProfile
 from brain.structure_engine import StructureEngine
 from brain.fvg_detector import FVGDetector, FairValueGap
 from brain.order_block import OrderBlockDetector, OrderBlock, OBStatus
@@ -85,6 +86,7 @@ class EntryEngine:
         confluences = list(scan_result.confluences) if scan_result else []
         pip_size = self._pip_size(pair)
         category = self._category(pair)
+        profile = get_profile(pair)
 
         can_trade, reason = self.drawdown.can_trade(now)
         if not can_trade:
@@ -124,14 +126,14 @@ class EntryEngine:
         status = self.drawdown.get_status(now)
         risk_pct = status.current_risk_pct
 
-        zone = self.find_entry_zone(pair, direction, m5_df, pip_size)
+        zone = self.find_entry_zone(pair, direction, m5_df, pip_size, profile)
         if zone["type"] == "NONE":
             return EntryRejection(
                 pair=pair, reason="No valid entry zone (FVG or OB) found on M5",
                 score=score, timestamp=now,
             )
 
-        confirmed, pattern_desc = self.confirm_m1_entry(direction, m1_df, zone, pip_size)
+        confirmed, pattern_desc = self.confirm_m1_entry(direction, m1_df, zone, pip_size, profile)
         if not confirmed:
             # pattern_desc is empty string for both stale-feed and genuine rejection.
             # The stale guard logs "stale feed detected" at DEBUG; we use a clear reason here.
@@ -148,13 +150,20 @@ class EntryEngine:
             confluences.append("Liquidity sweep confirmed at entry zone")
 
         entry_price = zone["midpoint"]
-        stop_loss = self.calculate_stop_loss(direction, zone, pip_size)
+        stop_loss = self.calculate_stop_loss(direction, zone, pip_size, profile.sl_buffer_pips)
         tp1, tp2 = self.calculate_targets(pair, direction, entry_price, stop_loss, h1_df, pip_size)
 
         risk_distance = abs(entry_price - stop_loss)
+        min_risk_distance = profile.min_risk_pips * pip_size
         if risk_distance < pip_size:
             return EntryRejection(
                 pair=pair, reason="Risk distance too small — invalid zone",
+                score=score, timestamp=now,
+            )
+        if risk_distance < min_risk_distance:
+            return EntryRejection(
+                pair=pair,
+                reason=f"Risk distance {risk_distance/pip_size:.1f} pips below minimum {profile.min_risk_pips} for {category}",
                 score=score, timestamp=now,
             )
 
@@ -210,10 +219,21 @@ class EntryEngine:
 
     def find_entry_zone(
         self, pair: str, direction: str, m5_df: pd.DataFrame, pip_size: float,
+        profile: Optional["InstrumentProfile"] = None,
     ) -> dict:
+        from brain.instrument_profile import get_profile as _gp
+        profile = profile or _gp(pair)
         current_price = m5_df["close"].iloc[-1]
-        fvg_det = FVGDetector(pip_size=pip_size, proximity_pips=5.0)
-        ob_det = OrderBlockDetector(pip_size=pip_size)
+        fvg_det = FVGDetector(
+            pip_size=pip_size,
+            proximity_pips=profile.fvg_proximity_pips,
+            min_size_pips=profile.fvg_min_size_pips,
+        )
+        ob_det = OrderBlockDetector(
+            pip_size=pip_size,
+            min_impulse_pips=profile.ob_min_impulse_pips,
+            buffer_pips=profile.ob_buffer_pips,
+        )
 
         fvgs = fvg_det.detect(m5_df, timeframe="M5")
         obs = ob_det.detect(m5_df, timeframe="M5")
@@ -267,6 +287,7 @@ class EntryEngine:
 
     def confirm_m1_entry(
         self, direction: str, m1_df: pd.DataFrame, entry_zone: dict, pip_size: float,
+        profile: Optional["InstrumentProfile"] = None,
     ) -> tuple[bool, str]:
         if len(m1_df) < 3:
             logger.debug(f"M1 confirm — not enough bars ({len(m1_df)})")
@@ -299,7 +320,7 @@ class EntryEngine:
         if pattern_name:
             return True, pattern_desc
 
-        choch = self._detect_m1_choch(m1_df, direction)
+        choch = self._detect_m1_choch(m1_df, direction, profile=profile)
         logger.debug(f"M1 CHoCH result — {choch}")
         if choch:
             return True, f"M1 Change of Character — {direction.lower()} shift"
@@ -388,11 +409,17 @@ class EntryEngine:
                 return True
         return False
 
-    def _detect_m1_choch(self, df: pd.DataFrame, direction: str) -> bool:
+    def _detect_m1_choch(self, df: pd.DataFrame, direction: str,
+                          profile: Optional["InstrumentProfile"] = None) -> bool:
         if len(df) < 10:
             return False
-        structure = StructureEngine(swing_lookback=3)
-        analysis = structure.analyze(df)
+        # Use profile swing_lookback and limit bars to m1_confirmation_bars
+        lookback = profile.swing_lookback if profile else 3
+        bars = profile.m1_confirmation_bars if profile else 50
+        df_slice = df.iloc[-bars:] if len(df) > bars else df
+        pip_sz = profile.fvg_min_size_pips * 0.0001 if profile else 0.0003
+        structure = StructureEngine(swing_lookback=lookback)
+        analysis = structure.analyze(df_slice)
 
         logger.debug(
             f"M1 CHoCH check | direction={direction} | "
