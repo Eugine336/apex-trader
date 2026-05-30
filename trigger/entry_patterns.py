@@ -118,7 +118,12 @@ class EntryPatternDetector:
         if len(df) < 1:
             return False, ""
         c = df.iloc[-1]
-        buffer = 2 * pip_size
+
+        # Buffer scales to recent average candle range so it works across all
+        # instruments — Gold M1 ranges $0.50-$2.00, FX ranges 0.0005-0.0020.
+        # Using a fixed 2*pip_size was far too tight for Gold/indices.
+        recent_range = (df["high"] - df["low"]).iloc[-5:].mean() if len(df) >= 5 else (c["high"] - c["low"])
+        buffer = max(recent_range * 0.3, 2 * pip_size)
 
         if direction == "LONG":
             wick_pierced = c["low"] <= zone_top + buffer

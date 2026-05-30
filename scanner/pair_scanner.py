@@ -23,6 +23,8 @@ from brain.liquidity_mapper import LiquidityMapper
 from brain.currency_strength import CurrencyStrengthMeter, CURRENCY_PAIRS
 from brain.session_engine import SessionEngine, NewsGuard
 from brain.volume_analyzer import VolumeAnalyzer
+from brain.inducement_detector import InducementDetector
+from brain.wyckoff_engine import WyckoffEngine
 
 
 @dataclass
