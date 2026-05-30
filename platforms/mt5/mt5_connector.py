@@ -13,6 +13,7 @@ import pandas as pd
 from loguru import logger
 
 from config import get_instrument, get_pip_size
+from brain.symbol_mapper import SymbolMapper
 from platforms.base_connector import (
     AccountInfo,
     BaseConnector,
@@ -56,6 +57,7 @@ class MT5Connector(BaseConnector):
         server: str = "",
         deviation: int = 20,
         magic: int = 202500,
+        broker_name: str = "icmarkets",
     ):
         self._login = login
         self._password = password
@@ -64,6 +66,7 @@ class MT5Connector(BaseConnector):
         self._magic = magic
         self._connected = False
         self._symbol_cache: dict[str, str] = {}
+        self._mapper = SymbolMapper(broker_name)
 
     # ── Connection ───────────────────────────────────────────────────────
 
@@ -354,6 +357,19 @@ class MT5Connector(BaseConnector):
     def symbol_map(self, apex_symbol: str) -> str:
         if apex_symbol in self._symbol_cache:
             return self._symbol_cache[apex_symbol]
+
+        mapped = self._mapper.to_broker(apex_symbol)
+        if mapped != apex_symbol:
+            if _MT5_AVAILABLE and self._connected:
+                info = mt5.symbol_info(mapped)
+                if info is not None:
+                    if not info.visible:
+                        mt5.symbol_select(mapped, True)
+                    self._symbol_cache[apex_symbol] = mapped
+                    return mapped
+            else:
+                self._symbol_cache[apex_symbol] = mapped
+                return mapped
 
         if not _MT5_AVAILABLE or not self._connected:
             return apex_symbol

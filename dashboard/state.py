@@ -568,7 +568,7 @@ class LiveState:
             max_daily_loss = float(getattr(loop.config.risk, "max_daily_drawdown_pct", 5.0))
 
             mode = str(getattr(dd, "mode", "NORMAL"))
-            return {
+            result = {
                 "mode": mode,
                 "risk_mode": mode,
                 "current_risk_pct": round(risk_pct, 2),
@@ -584,6 +584,47 @@ class LiveState:
                 "exposure_pct": round(exposure_pct, 2),
                 "account_balance": round(balance, 2),
             }
+
+            exec_mon = getattr(loop, "execution_monitor", None)
+            if exec_mon is not None:
+                try:
+                    stats = exec_mon.get_stats()
+                    result["execution_quality"] = stats.execution_quality
+                    result["avg_slippage_pips"] = stats.avg_slippage_pips
+                    result["avg_latency_ms"] = stats.avg_latency_ms
+                    result["spread_is_wide"] = stats.spread_is_wide
+                    result["requote_count"] = stats.requote_count
+                except Exception:
+                    pass
+
+            reporter = getattr(loop, "risk_reporter", None)
+            if reporter is not None:
+                try:
+                    risk_engine = getattr(loop, "risk_engine", None)
+                    if risk_engine is not None:
+                        open_trades = [
+                            {"pair": p.symbol, "direction": p.direction, "risk_pct": 0.02}
+                            for p in loop.managed_positions.values()
+                        ]
+                        report = reporter.generate_report(
+                            risk_engine=risk_engine,
+                            pnl_tracker=risk_engine.pnl_tracker,
+                            spread_monitor=risk_engine.spread_monitor,
+                            open_trades=open_trades,
+                            account_balance=balance,
+                        )
+                        result["health"] = report.health
+                        result["warnings"] = report.warnings
+                        result["spread_alerts"] = report.spread_alerts
+                        result["currency_exposures"] = report.currency_exposures
+                        result["total_exposure_pct"] = report.total_exposure_pct
+                        result["win_rate_today"] = report.win_rate_today
+                        result["profit_factor"] = report.profit_factor
+                        result["max_drawdown_today"] = report.max_drawdown_today
+                except Exception:
+                    pass
+
+            return result
 
         return {
             "mode": "NORMAL",
