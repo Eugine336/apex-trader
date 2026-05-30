@@ -201,8 +201,8 @@ class ScoringConfig:
     session_points: int = 10
     news_points: int = 10
     currency_strength_points: int = 10
-    ranging_score_cap: int = 60
-    volatile_score_cap: int = 0
+    ranging_score_cap: int = 55  # Tighter cap — ranging pairs need stronger confluences
+    volatile_score_cap: int = 100  # FIX: was 0 — killed all volatile-regime trades
 
 
 # ---------------------------------------------------------------------------
@@ -228,14 +228,15 @@ class RiskConfig:
 
 @dataclass
 class AppConfig:
+    # All 4 categories enabled — forex, commodity, index, synthetic
     enabled_categories: list[str] = field(
-        default_factory=lambda: ["forex"]
+        default_factory=lambda: ["forex", "commodity", "index", "synthetic"]
     )
+    # Empty by default — scans ALL instruments in enabled_categories.
+    # Populate this ONLY to restrict to a subset during testing.
+    # e.g. ["EURUSD", "GBPUSD"] for a quick smoke test.
     enabled_symbols_override: list[str] = field(
-        default_factory=lambda: [
-            "EURUSD", "GBPUSD", "USDJPY", "USDCHF",
-            "AUDUSD", "NZDUSD", "USDCAD", "XAUUSD"
-        ]
+        default_factory=list  # <-- FIX: was hardcoded 8 pairs, now empty = scan everything
     )
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
