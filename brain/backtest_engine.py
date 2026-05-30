@@ -5,6 +5,7 @@ before real capital is exposed.
 """
 
 import asyncio
+import os
 import random
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -92,6 +93,33 @@ class BrokerDataLoader:
     ) -> pd.DataFrame:
         try:
             import MetaTrader5 as mt5
+
+            login_env = os.getenv("MT5_LOGIN", "").strip()
+            password = os.getenv("MT5_PASSWORD", "")
+            server = os.getenv("MT5_SERVER", "")
+
+            login = 0
+            if login_env:
+                try:
+                    login = int(login_env)
+                except ValueError:
+                    logger.warning(f"Invalid MT5_LOGIN value: {login_env}")
+
+            initialized = False
+            if login and password and server:
+                initialized = mt5.initialize(
+                    login=login, password=password, server=server
+                )
+            if not initialized:
+                initialized = mt5.initialize()
+            if not initialized:
+                raise RuntimeError(f"MT5 initialize failed: {mt5.last_error()}")
+
+            if login and password and server:
+                account = mt5.account_info()
+                if account is None or account.login != login:
+                    if not mt5.login(login, password=password, server=server):
+                        raise RuntimeError(f"MT5 login failed: {mt5.last_error()}")
 
             tf_const = getattr(mt5, self.MT5_TF_MAP[timeframe], None)
             if tf_const is None:

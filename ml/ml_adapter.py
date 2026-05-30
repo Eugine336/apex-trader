@@ -66,6 +66,7 @@ class MLAdapter:
 
         self._last_train_time: Optional[datetime] = None
         self._trades_since_train: int = 0
+        self._last_recommendations: list[str] = []
 
     def run_optimization(self, trades: list[dict]) -> OptimizationReport:
         n = len(trades)
@@ -165,8 +166,6 @@ class MLAdapter:
     # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
-
-    _last_recommendations: list[str] = []
 
     def _generate_recommendations(
         self,

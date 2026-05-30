@@ -6,6 +6,7 @@ Usage:
 """
 import argparse
 import csv
+import os
 import sys
 from pathlib import Path
 
@@ -34,6 +35,27 @@ def main():
                         help="CSV files instead of broker fetch. "
                              "Format: TF:path e.g. M1:data/eu_m1.csv H1:data/eu_h1.csv")
     args = parser.parse_args()
+
+    if args.platform == "mt5" and not args.csv:
+        import MetaTrader5 as mt5
+
+        if not mt5.initialize():
+            logger.error(f"MT5 failed to initialize: {mt5.last_error()}")
+            return
+
+        login = int(os.getenv("MT5_LOGIN", "0"))
+        password = os.getenv("MT5_PASSWORD", "")
+        server = os.getenv("MT5_SERVER", "")
+
+        if login:
+            if not mt5.login(login, password=password, server=server):
+                logger.error(f"MT5 login failed: {mt5.last_error()}")
+                mt5.shutdown()
+                return
+
+        account = mt5.account_info()
+        account_login = account.login if account else "unknown"
+        logger.info(f"MT5 initialized — account {account_login}")
 
     engine = BacktestEngine(
         starting_balance=args.balance,
