@@ -21,6 +21,8 @@ from brain.order_block import OrderBlockDetector, OBStatus
 from brain.liquidity_mapper import LiquidityMapper
 from brain.currency_strength import CurrencyStrengthMeter, CURRENCY_PAIRS
 from brain.session_engine import SessionEngine, NewsGuard
+from brain.inducement_detector import InducementDetector
+from brain.wyckoff_engine import WyckoffEngine
 
 
 @dataclass
@@ -107,18 +109,32 @@ class PairScanner:
             score += scoring.structure_points
             confluences.append(f"Structure aligned ({bias['strength']})")
 
-        # ── 2. Order blocks ───────────────────────────────────────────
+        # ── 2a. H1 Order blocks (directional bias) ───────────────────
         ob_det = OrderBlockDetector(pip_size=pip_size)
         h1_obs = ob_det.detect(h1_df, timeframe="H1")
-        has_ob = False
+        has_h1_ob = False
         if trade_dir != "NEUTRAL":
             entry_ob = ob_det.get_entry_ob(h1_obs, trade_dir, h1_df["close"].iloc[-1])
             if entry_ob and entry_ob.status in (OBStatus.FRESH, OBStatus.TESTED):
-                has_ob = True
-                score += scoring.order_block_points
-                confluences.append(f"Order block ({entry_ob.strength})")
+                has_h1_ob = True
+                h1_ob_pts = 10 if entry_ob.strength == "STRONG" else (7 if entry_ob.strength == "MODERATE" else 4)
+                score += h1_ob_pts
+                confluences.append(f"H1 OB bias ({entry_ob.strength}, +{h1_ob_pts})")
 
-        # ── 3. Fair value gaps ────────────────────────────────────────
+        # ── 2b. M5 Order blocks (entry zone) ─────────────────────────
+        m5_obs = ob_det.detect(m5_df, timeframe="M5")
+        has_m5_ob = False
+        if trade_dir != "NEUTRAL":
+            m5_entry_ob = ob_det.get_entry_ob(m5_obs, trade_dir, m5_df["close"].iloc[-1])
+            if m5_entry_ob and m5_entry_ob.status in (OBStatus.FRESH, OBStatus.TESTED):
+                has_m5_ob = True
+                m5_ob_pts = 10 if m5_entry_ob.strength == "STRONG" else (7 if m5_entry_ob.strength == "MODERATE" else 4)
+                score += m5_ob_pts
+                confluences.append(f"M5 OB entry zone ({m5_entry_ob.strength}, +{m5_ob_pts})")
+
+        has_ob = has_h1_ob or has_m5_ob
+
+        # ── 3. Fair value gaps (strength-based) ──────────────────────
         fvg_det = FVGDetector(pip_size=pip_size)
         m5_fvgs = fvg_det.detect(m5_df, timeframe="M5")
         m15_fvgs = fvg_det.detect(m15_df, timeframe="M15")
@@ -127,8 +143,14 @@ class PairScanner:
             entry_fvg = fvg_det.get_entry_fvg(m5_fvgs + m15_fvgs, trade_dir, m5_df["close"].iloc[-1])
             if entry_fvg:
                 has_fvg = True
-                score += scoring.fvg_points
-                confluences.append(f"FVG entry zone ({entry_fvg.strength})")
+                if entry_fvg.strength == "STRONG":
+                    fvg_pts = scoring.fvg_points
+                elif entry_fvg.strength == "MODERATE":
+                    fvg_pts = int(scoring.fvg_points * 0.7)
+                else:
+                    fvg_pts = int(scoring.fvg_points * 0.4)
+                score += fvg_pts
+                confluences.append(f"FVG entry zone ({entry_fvg.strength}, +{fvg_pts})")
 
         # ── 4. Multi-timeframe confluence ─────────────────────────────
         confluence = fvg_det.get_confluence_fvgs(
@@ -174,8 +196,33 @@ class PairScanner:
             for zone in targets[:3]:
                 if self.liquidity.detect_sweep(m5_df, zone, pip_size):
                     sweep = True
-                    confluences.append("Liquidity sweep detected")
+                    score += 8
+                    confluences.append("Liquidity sweep detected (+8)")
                     break
+
+        # ── 9. Inducement detection ──────────────────────────────────
+        inducement_detected = False
+        try:
+            ind_det = InducementDetector(pip_size=pip_size)
+            inducement_analysis = ind_det.analyze(m5_df)
+            if inducement_analysis.inducement_detected:
+                inducement_detected = True
+                score += 5
+                confluences.append(f"Inducement detected ({inducement_analysis.type}, +5)")
+        except Exception as exc:
+            logger.debug(f"Inducement detection error for {pair}: {exc}")
+
+        # ── 10. Wyckoff phase ────────────────────────────────────────
+        wyckoff_phase = "N/A"
+        try:
+            wyck = WyckoffEngine(pip_size=pip_size)
+            wyckoff_analysis = wyck.analyze(h1_df)
+            wyckoff_phase = wyckoff_analysis.phase
+            if wyckoff_analysis.sub_phase in ("SPRING", "UPTHRUST"):
+                score += 5
+                confluences.append(f"Wyckoff {wyckoff_analysis.sub_phase} (+5)")
+        except Exception as exc:
+            logger.debug(f"Wyckoff analysis error for {pair}: {exc}")
 
         # ── Regime caps ───────────────────────────────────────────────
         regime = bias["h4_trend"]
@@ -204,8 +251,8 @@ class PairScanner:
             has_order_block=has_ob,
             has_liquidity_target=has_liq,
             sweep_detected=sweep,
-            inducement_detected=False,
-            wyckoff_phase="N/A",
+            inducement_detected=inducement_detected,
+            wyckoff_phase=wyckoff_phase,
             volume_confirmation=False,
             session_active=session_active,
             currency_strength_aligned=cs_aligned,

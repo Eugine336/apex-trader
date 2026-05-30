@@ -17,7 +17,7 @@ from brain.fvg_detector import FVGDetector, FairValueGap
 from brain.order_block import OrderBlockDetector, OrderBlock, OBStatus
 from brain.liquidity_mapper import LiquidityMapper
 from brain.drawdown_guard import DrawdownGuard, DrawdownMode
-from brain.session_engine import NewsGuard
+from brain.session_engine import NewsGuard, SessionEngine
 from trigger.entry_patterns import EntryPatternDetector
 
 
@@ -64,6 +64,7 @@ class EntryEngine:
         self.drawdown = DrawdownGuard()
         self.pattern_detector = EntryPatternDetector()
         self.news_guard = NewsGuard()
+        self.session_engine = SessionEngine()
 
     # ------------------------------------------------------------------
     # Main entry calculation
@@ -104,6 +105,15 @@ class EntryEngine:
             return EntryRejection(
                 pair=pair,
                 reason="High-impact news in <15min — holding off",
+                score=score,
+                timestamp=now,
+            )
+
+        session_status = self.session_engine.get_status(now)
+        if session_status.current_session in ("LONDON", "NEW_YORK") and session_status.session_open_minutes <= 15:
+            return EntryRejection(
+                pair=pair,
+                reason=f"Session {session_status.current_session} just opened ({session_status.session_open_minutes}min) — waiting for spread stabilization",
                 score=score,
                 timestamp=now,
             )
