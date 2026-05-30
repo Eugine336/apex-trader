@@ -54,8 +54,10 @@ class StructureEngine:
     Identifies HH/HL/LH/LL, detects BOS and CHOCH events.
     """
 
-    def __init__(self, swing_lookback: int = 5):
+    def __init__(self, swing_lookback: int = 5, min_swing_size_pips: float = 3.0,
+                 pip_size: float = 0.0001):
         self.swing_lookback = swing_lookback  # candles each side to confirm swing
+        self.min_swing_size = min_swing_size_pips * pip_size
 
     def analyze(self, df: pd.DataFrame) -> StructureAnalysis:
         """
@@ -117,22 +119,27 @@ class StructureEngine:
             # Swing High: highest point in window
             window_highs = df["high"].iloc[i - lb: i + lb + 1]
             if df["high"].iloc[i] == window_highs.max():
-                swings.append({
-                    "index": i,
-                    "price": df["high"].iloc[i],
-                    "type": "HIGH",
-                    "timestamp": df["time"].iloc[i] if "time" in df.columns else pd.Timestamp.now()
-                })
+                # Filter out tiny swings that are just spread noise
+                swing_size = df["high"].iloc[i] - df["low"].iloc[i]
+                if swing_size >= self.min_swing_size:
+                    swings.append({
+                        "index": i,
+                        "price": df["high"].iloc[i],
+                        "type": "HIGH",
+                        "timestamp": df["time"].iloc[i] if "time" in df.columns else pd.Timestamp.now()
+                    })
 
             # Swing Low: lowest point in window
             window_lows = df["low"].iloc[i - lb: i + lb + 1]
             if df["low"].iloc[i] == window_lows.min():
-                swings.append({
-                    "index": i,
-                    "price": df["low"].iloc[i],
-                    "type": "LOW",
-                    "timestamp": df["time"].iloc[i] if "time" in df.columns else pd.Timestamp.now()
-                })
+                swing_size = df["high"].iloc[i] - df["low"].iloc[i]
+                if swing_size >= self.min_swing_size:
+                    swings.append({
+                        "index": i,
+                        "price": df["low"].iloc[i],
+                        "type": "LOW",
+                        "timestamp": df["time"].iloc[i] if "time" in df.columns else pd.Timestamp.now()
+                    })
 
         # Sort by index and remove duplicates
         swings = sorted(swings, key=lambda x: x["index"])
