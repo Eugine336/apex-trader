@@ -11,7 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Union
 from loguru import logger
 
-from config import AppConfig, get_instrument, get_pip_size, InstrumentCategory
+from config import AppConfig, get_instrument, get_pip_size, InstrumentCategory, spread_open_guard_applies
 from brain.structure_engine import StructureEngine
 from brain.fvg_detector import FVGDetector, FairValueGap
 from brain.order_block import OrderBlockDetector, OrderBlock, OBStatus
@@ -110,7 +110,10 @@ class EntryEngine:
             )
 
         session_status = self.session_engine.get_status(now)
-        if session_status.current_session in ("LONDON", "NEW_YORK") and session_status.session_open_minutes <= 15:
+        # Guard applies only to FX pairs — reads from instrument registry
+        if (spread_open_guard_applies(pair)
+                and session_status.current_session in ("LONDON", "NEW_YORK")
+                and session_status.session_open_minutes <= 15):
             return EntryRejection(
                 pair=pair,
                 reason=f"Session {session_status.current_session} just opened ({session_status.session_open_minutes}min) — waiting for spread stabilization",
@@ -204,7 +207,7 @@ class EntryEngine:
         self, pair: str, direction: str, m5_df: pd.DataFrame, pip_size: float,
     ) -> dict:
         current_price = m5_df["close"].iloc[-1]
-        fvg_det = FVGDetector(pip_size=pip_size)
+        fvg_det = FVGDetector(pip_size=pip_size, proximity_pips=5.0)
         ob_det = OrderBlockDetector(pip_size=pip_size)
 
         fvgs = fvg_det.detect(m5_df, timeframe="M5")

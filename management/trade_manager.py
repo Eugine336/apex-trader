@@ -19,7 +19,7 @@ import pandas as pd
 from loguru import logger
 
 from brain.structure_engine import StructureEngine, StructureEvent
-from config import get_pip_size
+from config import get_pip_size, get_instrument
 from management.trailing_stop import StructureTrailingStop
 from management.partial_close import PartialCloseCalculator
 
@@ -128,9 +128,8 @@ class TradeManager:
     def open_trade(self, signal: EntrySignal) -> ManagedTrade:
         trade_id = uuid.uuid4().hex[:12]
         pip_size = get_pip_size(signal.pair)
-        # Resolve pip_value from registry so Gold/indices use correct pip value
+        # Resolve pip_value from instrument registry — each instrument declares its own
         try:
-            from config import get_instrument
             pip_value_per_lot = get_instrument(signal.pair).pip_value_per_lot
         except KeyError:
             pip_value_per_lot = self.default_pip_value

@@ -255,3 +255,51 @@ class AppConfig:
     @property
     def total_instruments(self) -> int:
         return len(self.enabled_pairs)
+
+
+# ---------------------------------------------------------------------------
+# Instrument behaviour helpers — used by scanner, engine, validator, loop
+# These replace all hardcoded category checks so every instrument is treated
+# according to its own declared properties, not by guessing from category name.
+# ---------------------------------------------------------------------------
+
+def is_session_gated(symbol: str) -> bool:
+    """True if the instrument should only trade during specific FX sessions.
+    Forex pairs are session-gated (London, NY). Anything else trades freely
+    according to its own hours and should not be penalised by FX session gates."""
+    try:
+        info = get_instrument(symbol)
+        return info.category == InstrumentCategory.FOREX
+    except KeyError:
+        return True  # unknown instrument — treat conservatively as FX
+
+
+def get_trading_hours(symbol: str) -> str:
+    """Return the trading_hours string from the registry: '24/5', '24/7', or 'specific'."""
+    try:
+        return get_instrument(symbol).trading_hours
+    except KeyError:
+        return "24/5"
+
+
+def is_always_open(symbol: str) -> bool:
+    """True if the instrument trades continuously and should never be skipped
+    due to FX session timing. Covers 24/5 non-FX instruments and 24/7 synthetics."""
+    try:
+        info = get_instrument(symbol)
+        return info.category != InstrumentCategory.FOREX
+    except KeyError:
+        return False
+
+
+def session_score_floor(symbol: str) -> int:
+    """Minimum session score to apply for this instrument.
+    Non-FX instruments get a floor of 4 (earns partial session points) so
+    Asian/Transition hours don't zero out a valid commodity or synthetic setup."""
+    return 0 if is_session_gated(symbol) else 4
+
+
+def spread_open_guard_applies(symbol: str) -> bool:
+    """True if the instrument is subject to the London/NY open spread spike guard.
+    Only applies to FX pairs — commodity and index spreads don't spike at FX opens."""
+    return is_session_gated(symbol)
