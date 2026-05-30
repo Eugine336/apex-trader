@@ -8,6 +8,7 @@ Usage:
     python main.py --dashboard   # Start trading + dashboard on port 8000
 """
 
+import bootstrap.datadog_init  # noqa: F401
 import os
 import sys
 import threading
