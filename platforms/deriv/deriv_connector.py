@@ -278,6 +278,11 @@ class DerivConnector(BaseConnector):
         sl: float,
         tp: float,
         comment: str = "",
+        # ── Deriv-specific kwargs ──────────────────────────────────────────
+        # Pass stake_usd to bypass the lots→stake conversion entirely.
+        # PlatformManager sets this when routing a Deriv synthetic order.
+        stake_usd: Optional[float] = None,
+        multiplier: int = 100,
     ) -> OrderResult:
         self._require_connection()
         mapped = self.symbol_map(symbol)
@@ -288,7 +293,40 @@ class DerivConnector(BaseConnector):
         price = float(tick.get("ask" if is_buy else "bid", tick.get("quote", 0)))
 
         contract_type = "MULTUP" if is_buy else "MULTDOWN"
-        amount = round(lots * 100, 2)
+
+        # ── Stake calculation ──────────────────────────────────────────────
+        # Deriv Multipliers work on a USD stake, NOT on lots.
+        # Formula: stake = risk_amount / (sl_distance_pct * multiplier)
+        # where sl_distance_pct = |price - sl| / price
+        #
+        # If stake_usd is supplied directly (from RiskEngine), use it.
+        # Otherwise derive it from the SL distance so the risk stays correct.
+        if stake_usd is not None:
+            amount = round(max(1.0, stake_usd), 2)
+        else:
+            sl_distance = abs(price - sl)
+            if sl_distance > 0 and price > 0:
+                # Risk% of account that the SL represents at this multiplier:
+                # P&L = stake × multiplier × (Δprice / price)
+                # Max loss = stake × multiplier × (sl_distance / price)
+                # → stake = max_loss / (multiplier × sl_distance / price)
+                # lots here carries the risk_amount already encoded by the sizer,
+                # so we back-calculate: risk_amount = lots * risk_pips * pip_value
+                # For synthetics pip_value = 1.0 (from registry)
+                from config import get_pip_size
+                pip = get_pip_size(symbol)
+                risk_pips = sl_distance / pip if pip else sl_distance
+                risk_amount = lots * risk_pips * 1.0   # pip_value_per_lot = 1 for synthetics
+                stake = risk_amount / (multiplier * sl_distance / price)
+                amount = round(max(1.0, stake), 2)
+            else:
+                # Fallback: 1% of account proxy — will be overridden by stake_usd path
+                amount = round(max(1.0, lots * 10), 2)
+
+        logger.debug(
+            "Deriv stake — {} {} | price={} SL={} | stake=${} multiplier={}×",
+            direction, symbol, price, sl, amount, multiplier,
+        )
 
         t0 = _time.monotonic()
         resp = self._sync_send({
@@ -301,10 +339,10 @@ class DerivConnector(BaseConnector):
                 "currency": "USD",
                 "amount": amount,
                 "basis": "stake",
-                "multiplier": 100,
+                "multiplier": multiplier,
                 "limit_order": {
-                    "stop_loss": round(abs(price - sl) * lots * 100, 2),
-                    "take_profit": round(abs(tp - price) * lots * 100, 2),
+                    "stop_loss": round(abs(price - sl) / price * amount * multiplier, 2),
+                    "take_profit": round(abs(tp - price) / price * amount * multiplier, 2),
                 },
             },
         })
