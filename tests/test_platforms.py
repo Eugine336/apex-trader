@@ -259,6 +259,34 @@ class TestPlatformManager:
         assert "deriv" in summary
         assert mgr.get_total_balance() == 15000
 
+    def test_get_platform_balance_mt5_symbol(self):
+        mgr = self._make_manager()
+        mgr.mt5.get_account_info.return_value = AccountInfo(
+            balance=200, equity=200, margin=0, free_margin=200,
+            margin_level=0, currency="USD", leverage=1000, platform="mt5",
+        )
+
+        assert mgr.get_platform_balance("EURUSD") == 200.0
+        mgr.mt5.get_account_info.assert_called_once()
+        mgr.deriv.get_account_info.assert_not_called()
+
+    def test_get_platform_balance_deriv_symbol(self):
+        mgr = self._make_manager()
+        mgr.deriv.get_account_info.return_value = AccountInfo(
+            balance=10100.02, equity=10100.02, margin=0, free_margin=10100.02,
+            margin_level=0, currency="USD", leverage=1, platform="deriv",
+        )
+
+        assert mgr.get_platform_balance("V75_1S") == 10100.02
+        mgr.deriv.get_account_info.assert_called_once()
+        mgr.mt5.get_account_info.assert_not_called()
+
+    def test_get_platform_balance_returns_zero_on_routing_error(self):
+        mgr = self._make_manager()
+        mgr._mt5_connected = False
+        mgr._deriv_connected = False
+        assert mgr.get_platform_balance("EURUSD") == 0.0
+
     def test_modify_trade_routes(self):
         mgr = self._make_manager()
         mgr.mt5.modify_order.return_value = True
