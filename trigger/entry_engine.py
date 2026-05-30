@@ -133,8 +133,13 @@ class EntryEngine:
 
         confirmed, pattern_desc = self.confirm_m1_entry(direction, m1_df, zone, pip_size)
         if not confirmed:
+            # pattern_desc is empty string for both stale-feed and genuine rejection.
+            # The stale guard logs "stale feed detected" at DEBUG; we use a clear reason here.
+            recent_closes = m1_df["close"].iloc[-5:].values if len(m1_df) >= 5 else []
+            stale = len(recent_closes) > 0 and len(set(round(float(c), 5) for c in recent_closes)) == 1
+            reason = "Stale M1 feed — broker not sending new ticks" if stale else "No micro-confirmation on M1"
             return EntryRejection(
-                pair=pair, reason="No micro-confirmation on M1",
+                pair=pair, reason=reason,
                 score=score, timestamp=now,
             )
         confluences.append(f"M1 confirmed: {pattern_desc}")
@@ -265,6 +270,15 @@ class EntryEngine:
     ) -> tuple[bool, str]:
         if len(m1_df) < 3:
             logger.debug(f"M1 confirm — not enough bars ({len(m1_df)})")
+            return False, ""
+
+        # ── Stale data guard ────────────────────────────────────────────────
+        # If the last 5 closes are all identical the MT5/Deriv feed has frozen
+        # (common on demo accounts outside trading hours). Skip confirmation so
+        # we don't spin endlessly trying to detect structure on flat data.
+        recent_closes = m1_df["close"].iloc[-5:].values
+        if len(set(round(float(c), 5) for c in recent_closes)) == 1:
+            logger.debug("M1 confirm — stale feed detected (all closes identical), skipping")
             return False, ""
 
         zone_top = entry_zone["top"]
