@@ -5,8 +5,10 @@ Scan → Analyse → Trigger → Manage → Repeat.
 Always watching. Always ready. In and out like a sniper.
 """
 
+import asyncio
 import time as _time
 from datetime import datetime, timezone
+from types import SimpleNamespace
 from typing import Optional
 
 from loguru import logger
@@ -26,6 +28,8 @@ from brain import (
     DecisionRecord,
 )
 from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size
+from management.re_entry import ReEntryManager
+from ml.ml_adapter import MLAdapter, TradeAdjustments
 from platforms.base_connector import OrderResult, PositionInfo
 from platforms.platform_manager import PlatformManager
 from risk.risk_engine import RiskEngine
@@ -40,7 +44,7 @@ class ManagedPosition:
         "order_id", "platform", "symbol", "direction", "lots",
         "entry_price", "sl", "tp1", "tp2", "score", "regime",
         "session", "entry_type", "open_time", "tp1_hit",
-        "at_breakeven", "trailing", "last_update",
+        "at_breakeven", "trailing", "last_update", "re_entry_eligible",
     )
 
     def __init__(self, order: OrderResult, tp1: float, tp2: float,
@@ -64,6 +68,7 @@ class ManagedPosition:
         self.at_breakeven = False
         self.trailing = False
         self.last_update = datetime.now(timezone.utc)
+        self.re_entry_eligible = False
 
 
 class TradingLoop:
@@ -87,6 +92,9 @@ class TradingLoop:
         self.session_engine = SessionEngine()
         self.news_guard = NewsGuard()
         self.journal = TradeJournal()
+        self.ml = MLAdapter()
+        self.re_entry = ReEntryManager()
+        self._journal_loop = asyncio.new_event_loop()
 
         self.managed_positions: dict[str, ManagedPosition] = {}
         self.running = False
@@ -163,6 +171,10 @@ class TradingLoop:
             len(self.managed_positions), self._daily_trades,
         )
         self.platforms.disconnect_all()
+        try:
+            self._journal_loop.close()
+        except Exception:
+            pass
 
     # ── Scan → Entry pipeline ────────────────────────────────────────────
 
@@ -277,9 +289,24 @@ class TradingLoop:
             self._log_rejection(pair, direction, signal.score, f"RiskEngine: {reasons}")
             return False
 
+        try:
+            adjustments = self.ml.get_trade_adjustments(
+                pair=pair,
+                regime=getattr(result, "regime", ""),
+                session=session,
+            )
+            if not adjustments.should_trade:
+                self._log_rejection(pair, direction, result.score, f"ML: {adjustments.reason}")
+                return False
+            adjusted_lots = round(signal.position_size_lots * adjustments.position_size_multiplier, 2)
+            adjusted_lots = max(0.01, adjusted_lots)
+        except Exception as exc:
+            logger.debug("ML adjustments error: {}", exc)
+            adjusted_lots = signal.position_size_lots
+
         order = self.platforms.execute_entry(
             pair, direction,
-            signal.position_size_lots,
+            adjusted_lots,
             signal.stop_loss,
             signal.tp1,
             comment=f"APEX|{signal.score}|{session}",
@@ -340,6 +367,8 @@ class TradingLoop:
                     self._record_closed_trade(pos, result.close_price, "SL_HIT")
                     to_remove.append(oid)
                     closed_count += 1
+                    if pos.at_breakeven:
+                        self._check_re_entry(pos)
                 continue
 
             if not pos.tp1_hit and self._check_tp1(pos, current, is_buy):
@@ -465,8 +494,35 @@ class TradingLoop:
             pos.direction, pos.symbol, pnl_pips, outcome, hold_seconds,
         )
 
+        trade_record = TradeRecord(
+            pair=pos.symbol,
+            direction=pos.direction,
+            entry=pos.entry_price,
+            exit=close_price,
+            pnl=pnl_pips,
+            score=pos.score,
+            confluences=[],
+            regime=pos.regime,
+            session=pos.session,
+            spread=0.0,
+            slippage=0.0,
+            entry_type=pos.entry_type,
+            time_to_tp1=None,
+            time_to_exit=hold_seconds / 60.0,
+            outcome=outcome,
+        )
+        self._run_journal_async(self.journal.log_trade(trade_record))
+        self.ml.register_new_trade()
+
     def _log_rejection(self, pair: str, direction: str, score: int, reason: str) -> None:
         logger.debug("❌ REJECTED {} {} (score {}) — {}", direction, pair, score, reason)
+        decision = DecisionRecord(
+            pair=pair,
+            direction=direction,
+            score=score,
+            reason_rejected=reason,
+        )
+        self._run_journal_async(self.journal.log_decision(decision))
 
     # ── Daily reset ──────────────────────────────────────────────────────
 
@@ -478,11 +534,98 @@ class TradingLoop:
             self._daily_trades = 0
             self._last_reset_day = today
 
+        if self.ml.should_retrain():
+            self._run_ml_optimization()
+
     def _get_sleep_interval(self) -> float:
         now = datetime.now(timezone.utc)
         session_status = self.session_engine.get_status(now)
         news_status = self.news_guard.check(self.config.enabled_pairs, now)
         return self.scheduler.get_scan_interval(session_status, news_status)
+
+    # ── Async journal bridge ──────────────────────────────────────────
+
+    def _run_journal_async(self, coro) -> None:
+        """Run an async journal coroutine from the sync trading loop."""
+        try:
+            self._journal_loop.run_until_complete(coro)
+        except Exception as exc:
+            logger.warning("Journal async error: {}", exc)
+
+    # ── ML optimisation ───────────────────────────────────────────────
+
+    def _run_ml_optimization(self) -> None:
+        """Fetch all trades from the journal and run ML optimisation."""
+        try:
+            raw_trades = self._journal_loop.run_until_complete(
+                self.journal.get_all_trades_as_dicts()
+            )
+            if not raw_trades:
+                return
+            for t in raw_trades:
+                t["confluences_tags"] = _parse_confluence_tags(
+                    t.pop("confluences_raw", [])
+                )
+            report = self.ml.run_optimization(raw_trades)
+            logger.info(
+                "🧠 ML optimization — {} recommendations",
+                len(report.recommendations),
+            )
+            for rec in report.recommendations[:3]:
+                logger.info("  ML: {}", rec)
+        except Exception as exc:
+            logger.warning("ML retraining error: {}", exc)
+
+    # ── Re-entry evaluation ───────────────────────────────────────────
+
+    def _check_re_entry(self, pos: ManagedPosition) -> None:
+        """After a breakeven stop, check if the setup is still valid."""
+        try:
+            m5_data = self.platforms.fetch_market_data(pos.symbol, ["M5"], count=50)
+            m5_df = m5_data.get("M5")
+            if m5_df is None:
+                return
+            minutes_since = (
+                (datetime.now(timezone.utc) - pos.open_time).total_seconds() / 60
+            )
+            candles_since = int(minutes_since / 5)
+            trade_obj = SimpleNamespace(
+                pair=pos.symbol,
+                direction=pos.direction,
+                re_entry_eligible=True,
+                candles_since_entry=candles_since,
+                trade_id=pos.order_id,
+            )
+            opp = self.re_entry.check_re_entry(trade_obj, m5_df)
+            if opp.eligible:
+                logger.info(
+                    "🔄 RE-ENTRY eligible — {} {} — {}",
+                    pos.direction, pos.symbol, opp.new_entry_zone,
+                )
+        except Exception as exc:
+            logger.debug("Re-entry check error for {}: {}", pos.symbol, exc)
+
+
+_CONFLUENCE_TO_TAG = {
+    "Structure": "structure",
+    "Order block": "order_block",
+    "FVG": "fvg",
+    "Multi-TF": "mtf_confluence",
+    "Session": "session",
+    "News": "news",
+    "Currency strength": "currency_strength",
+}
+
+
+def _parse_confluence_tags(confluences: list) -> list[str]:
+    """Map display confluence strings to ML factor keys."""
+    tags: list[str] = []
+    for c in confluences:
+        for prefix, tag in _CONFLUENCE_TO_TAG.items():
+            if str(c).startswith(prefix):
+                tags.append(tag)
+                break
+    return tags
 
 
 def _build_instrument_lookups() -> tuple[dict[str, float], dict[str, float]]:

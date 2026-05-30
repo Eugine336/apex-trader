@@ -21,8 +21,7 @@ from brain.order_block import OrderBlockDetector, OBStatus
 from brain.liquidity_mapper import LiquidityMapper
 from brain.currency_strength import CurrencyStrengthMeter, CURRENCY_PAIRS
 from brain.session_engine import SessionEngine, NewsGuard
-from brain.inducement_detector import InducementDetector
-from brain.wyckoff_engine import WyckoffEngine
+from brain.volume_analyzer import VolumeAnalyzer
 
 
 @dataclass
@@ -76,6 +75,7 @@ class PairScanner:
         self.strength_meter = CurrencyStrengthMeter()
         self.session = SessionEngine()
         self.news = NewsGuard()
+        self.volume = VolumeAnalyzer()
         self.last_report: Optional[ScanReport] = None
 
     # ------------------------------------------------------------------
@@ -200,6 +200,28 @@ class PairScanner:
                     confluences.append("Liquidity sweep detected (+8)")
                     break
 
+        # ── 9. Volume confirmation ────────────────────────────────────
+        volume_confirmed = False
+        try:
+            vol_analysis = self.volume.analyze(m5_df)
+            if vol_analysis.has_spike and vol_analysis.confirmation_bias != "NEUTRAL":
+                if (
+                    (trade_dir == "LONG" and vol_analysis.confirmation_bias == "BULLISH")
+                    or (trade_dir == "SHORT" and vol_analysis.confirmation_bias == "BEARISH")
+                ):
+                    volume_confirmed = True
+                    score += 5
+                    confluences.append(
+                        f"Volume confirmed ({vol_analysis.confirmation_bias}, "
+                        f"ratio={vol_analysis.volume_ratio:.1f}x)"
+                    )
+                elif vol_analysis.climax_detected:
+                    score = max(score - 5, 0)
+                    confluences.append(
+                        f"Volume climax WARNING ({vol_analysis.divergence_type})"
+                    )
+        except Exception as exc:
+            logger.debug(f"Volume analysis error for {pair}: {exc}")
         # ── 9. Inducement detection ──────────────────────────────────
         inducement_detected = False
         try:
@@ -251,6 +273,9 @@ class PairScanner:
             has_order_block=has_ob,
             has_liquidity_target=has_liq,
             sweep_detected=sweep,
+            inducement_detected=False,
+            wyckoff_phase="N/A",
+            volume_confirmation=volume_confirmed,
             inducement_detected=inducement_detected,
             wyckoff_phase=wyckoff_phase,
             volume_confirmation=False,
