@@ -82,9 +82,15 @@ class MT5Connector(BaseConnector):
         self._deviation = deviation
         self._magic = magic
         self._connected = False
-        self._symbol_cache: dict[str, str] = {}
+        self._symbol_cache: dict[str, Optional[str]] = {}  # None = confirmed not on broker
+        self._not_found_warned: set[str] = set()  # warn once then silent
         self._broker_name = broker_name
-        self._mapper = SymbolMapper(broker_name)  # updated after connect() if auto
+        # Defer SymbolMapper creation when broker_name is "auto".
+        # connect() will detect the real broker name and create the mapper then.
+        # Creating it now with "auto" would trigger a "no config" warning.
+        self._mapper: Optional[SymbolMapper] = (
+            None if broker_name == "auto" else SymbolMapper(broker_name)
+        )
 
     # ── Connection ───────────────────────────────────────────────────────
 
@@ -198,6 +204,9 @@ class MT5Connector(BaseConnector):
     ) -> pd.DataFrame:
         self._require_connection()
         mapped = self.symbol_map(symbol)
+        # None means already confirmed not on this broker — skip immediately
+        if self._symbol_cache.get(symbol) is None and symbol in self._symbol_cache:
+            raise RuntimeError(f"Symbol '{symbol}' not available on broker '{self._broker_name}'")
         tf_const = self.timeframe_map(timeframe)
         rates = mt5.copy_rates_from_pos(mapped, tf_const, 0, count)
         if rates is None or len(rates) == 0:
@@ -388,7 +397,11 @@ class MT5Connector(BaseConnector):
         if apex_symbol in self._symbol_cache:
             return self._symbol_cache[apex_symbol]
 
-        mapped = self._mapper.to_broker(apex_symbol)
+        if self._mapper is None:
+            # Mapper not ready yet — connect() not called yet, passthrough
+            mapped = apex_symbol
+        else:
+            mapped = self._mapper.to_broker(apex_symbol)
         if mapped != apex_symbol:
             if _MT5_AVAILABLE and self._connected:
                 info = mt5.symbol_info(mapped)
@@ -432,7 +445,15 @@ class MT5Connector(BaseConnector):
             "to find the correct name and add it to config/brokers/YOUR_BROKER.json",
             apex_symbol,
         )
-        self._symbol_cache[apex_symbol] = apex_symbol
+        # Confirmed not on this broker — cache None, warn once, skip silently after
+        if apex_symbol not in self._not_found_warned:
+            logger.warning(
+                "Symbol '{}' not found on broker '{}' — will be skipped silently from now on. "
+                "Run scripts/discover_symbols.py to find the correct name.",
+                apex_symbol, self._broker_name,
+            )
+            self._not_found_warned.add(apex_symbol)
+        self._symbol_cache[apex_symbol] = None
         return apex_symbol
 
     def timeframe_map(self, tf: str) -> Any:

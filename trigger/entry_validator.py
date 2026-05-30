@@ -166,11 +166,13 @@ class EntryValidator:
         self, pair: str, utc_now: datetime,
     ) -> tuple[bool, str]:
         status = self.session.get_status(utc_now)
-        # Instrument registry decides session gating — not hardcoded category names
+        # 24/7 synthetics (Deriv) — NEVER block on weekend or session
+        # is_always_open() = True means the instrument runs continuously
         if is_always_open(pair):
-            if status.current_session in ("WEEKEND", "DEAD"):
-                return False, f"Market closed ({status.current_session})"
-            return True, f"Session active ({status.current_session})"
+            return True, "24/7 instrument — always tradeable"
+        # FX, commodities, indices — respect sessions and weekend
+        if status.current_session in ("WEEKEND", "DEAD"):
+            return False, f"Market closed ({status.current_session})"
         if not status.is_tradeable:
             return False, f"Session not active ({status.current_session})"
         return True, f"Session active ({status.current_session})"

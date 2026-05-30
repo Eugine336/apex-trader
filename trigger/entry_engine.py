@@ -409,6 +409,52 @@ class EntryEngine:
             if analysis.trend.value in ("BEARISH", "RANGING"):
                 return True
 
+        # ── Momentum fallback ────────────────────────────────────────────────
+        # When structure engine doesn't fire an event (common on M1 with few
+        # candles), use raw price momentum as micro-confirmation.
+        # A professional trader reading a 1-minute chart sees this instantly:
+        # 3 consecutive candles closing in the trade direction = momentum shift.
+        return self._detect_momentum_confirmation(df, direction)
+
+    def _detect_momentum_confirmation(self, df: pd.DataFrame, direction: str) -> bool:
+        """
+        Fallback micro-confirmation using momentum candles.
+        Looks at the last 3-5 candles on M1 for directional momentum.
+        Also checks for a bullish/bearish close sequence after a wick.
+        """
+        if len(df) < 5:
+            return False
+
+        recent = df.iloc[-5:]
+        closes = recent["close"].values
+        opens  = recent["open"].values
+
+        if direction == "LONG":
+            # At least 3 of last 5 candles are bullish (close > open)
+            bullish_count = sum(1 for c, o in zip(closes, opens) if c > o)
+            if bullish_count >= 3:
+                return True
+            # Last 2 candles both bullish and each closing higher
+            if closes[-1] > opens[-1] and closes[-2] > opens[-2] and closes[-1] > closes[-2]:
+                return True
+            # Price made a higher low in the last 3 candles (micro HH/HL)
+            lows = recent["low"].values
+            if lows[-1] > lows[-3] and closes[-1] > closes[-3]:
+                return True
+
+        elif direction == "SHORT":
+            # At least 3 of last 5 candles are bearish (close < open)
+            bearish_count = sum(1 for c, o in zip(closes, opens) if c < o)
+            if bearish_count >= 3:
+                return True
+            # Last 2 candles both bearish and each closing lower
+            if closes[-1] < opens[-1] and closes[-2] < opens[-2] and closes[-1] < closes[-2]:
+                return True
+            # Price made a lower high in the last 3 candles (micro LH/LL)
+            highs = recent["high"].values
+            if highs[-1] < highs[-3] and closes[-1] < closes[-3]:
+                return True
+
         return False
 
     def _pip_size(self, symbol: str) -> float:
