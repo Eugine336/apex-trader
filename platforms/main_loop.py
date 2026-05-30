@@ -21,14 +21,18 @@ from brain import (
     OpenTrade,
     SessionEngine,
     NewsGuard,
-    StructureEngine,
-    StructureEvent,
     TradeJournal,
     TradeRecord,
     DecisionRecord,
 )
 from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size
 from management.re_entry import ReEntryManager
+from management.trade_manager import (
+    TradeManager,
+    TradeStatus,
+    TERMINAL_STATUSES,
+    EntrySignal as TMEntrySignal,
+)
 from ml.ml_adapter import MLAdapter, TradeAdjustments
 from platforms.base_connector import OrderResult, PositionInfo
 from platforms.platform_manager import PlatformManager
@@ -47,6 +51,7 @@ class ManagedPosition:
         "entry_price", "sl", "tp1", "tp2", "score", "regime",
         "session", "entry_type", "open_time", "tp1_hit",
         "at_breakeven", "trailing", "last_update", "re_entry_eligible",
+        "tm_trade_id",
     )
 
     def __init__(self, order: OrderResult, tp1: float, tp2: float,
@@ -71,6 +76,7 @@ class ManagedPosition:
         self.trailing = False
         self.last_update = datetime.now(timezone.utc)
         self.re_entry_eligible = False
+        self.tm_trade_id = ""
 
 
 class TradingLoop:
@@ -102,6 +108,10 @@ class TradingLoop:
         self.risk_reporter = RiskReporter()
         self.ml = MLAdapter()
         self.re_entry = ReEntryManager()
+        self.trade_manager = TradeManager(
+            partial_close_ratio=0.5,
+            breakeven_buffer_pips=2.0,
+        )
         self._journal_loop = asyncio.new_event_loop()
 
         self.managed_positions: dict[str, ManagedPosition] = {}
@@ -363,6 +373,24 @@ class TradingLoop:
             session=session,
             entry_type=signal.entry_type,
         )
+
+        tm_signal = TMEntrySignal(
+            pair=pair,
+            direction=direction,
+            entry_price=order.fill_price,
+            stop_loss=signal.stop_loss,
+            tp1=signal.tp1,
+            tp2=signal.tp2,
+            risk_reward_1=signal.risk_reward_1,
+            risk_reward_2=signal.risk_reward_2,
+            position_size_lots=adjusted_lots,
+            score=signal.score,
+            confluences=list(signal.confluences),
+            entry_zone=signal.entry_zone,
+        )
+        tm_trade = self.trade_manager.open_trade(tm_signal)
+        managed.tm_trade_id = tm_trade.trade_id
+
         self.managed_positions[order.order_id] = managed
         self._daily_trades += 1
 
@@ -385,114 +413,62 @@ class TradingLoop:
             except Exception:
                 continue
 
-            current = tick.bid if pos.direction == "BUY" else tick.ask
-            pip_size = get_pip_size(pos.symbol)
-
             is_buy = pos.direction == "BUY"
-            pnl_pips = (current - pos.entry_price) / pip_size if is_buy else (pos.entry_price - current) / pip_size
+            current = tick.bid if is_buy else tick.ask
 
-            if self._check_sl(pos, current, is_buy):
+            tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+            if tm_trade is None:
+                logger.warning("No TradeManager entry for {} — skipping", pos.symbol)
+                continue
+
+            m5_df = None
+            stall_minutes = (datetime.now(timezone.utc) - pos.open_time).total_seconds() / 60
+            if pos.at_breakeven or (not pos.tp1_hit and stall_minutes > 30):
+                try:
+                    m5_data = self.platforms.fetch_market_data(pos.symbol, ["M5"])
+                    m5_df = m5_data.get("M5")
+                except Exception:
+                    pass
+
+            prev_sl = tm_trade.stop_loss
+            was_partial = tm_trade.partial_closed
+
+            tm_trade = self.trade_manager.update(tm_trade, current, m5_df)
+
+            if tm_trade.status in TERMINAL_STATUSES:
                 result = self.platforms.close_trade(oid, pos.platform)
                 if result.success:
-                    self._record_closed_trade(pos, result.close_price, "SL_HIT")
+                    self._record_closed_trade(pos, result.close_price, tm_trade.close_reason or "CLOSED")
                     to_remove.append(oid)
                     closed_count += 1
-                    if pos.at_breakeven:
+                    if tm_trade.re_entry_eligible:
                         self._check_re_entry(pos)
                 continue
 
-            if not pos.tp1_hit and self._check_tp1(pos, current, is_buy):
+            if tm_trade.partial_closed and not was_partial:
                 partial_lots = round(pos.lots * 0.5, 2)
                 partial_lots = max(0.01, partial_lots)
                 result = self.platforms.close_trade(oid, pos.platform, partial_lots)
                 if result.success:
                     pos.tp1_hit = True
                     pos.lots = round(pos.lots - partial_lots, 2)
-                    be_price = pos.entry_price + (2 * pip_size if is_buy else -2 * pip_size)
-                    self.platforms.modify_trade(oid, pos.platform, new_sl=be_price)
-                    pos.sl = be_price
+                    logger.info("✅ TP1 HIT — {} {} | 50% closed", pos.direction, pos.symbol)
+
+            if tm_trade.stop_loss != prev_sl:
+                self.platforms.modify_trade(oid, pos.platform, new_sl=tm_trade.stop_loss)
+                pos.sl = tm_trade.stop_loss
+                if tm_trade.breakeven_active and not pos.at_breakeven:
                     pos.at_breakeven = True
-                    logger.info("✅ TP1 HIT — {} {} | 50% closed, SL→BE", pos.direction, pos.symbol)
+                    logger.info("✅ BREAKEVEN — {} {} | SL→{:.5f}", pos.direction, pos.symbol, tm_trade.stop_loss)
 
-            if pos.tp1_hit and self._check_tp2(pos, current, is_buy):
-                result = self.platforms.close_trade(oid, pos.platform)
-                if result.success:
-                    self._record_closed_trade(pos, result.close_price, "TP2_HIT")
-                    to_remove.append(oid)
-                    closed_count += 1
-                    logger.info("🏆 TP2 HIT — {} {} | FULL CLOSE", pos.direction, pos.symbol)
-                continue
-
-            if pos.at_breakeven and not pos.trailing:
-                tp1_dist = abs(pos.tp1 - pos.entry_price)
-                progress = abs(current - pos.entry_price)
-                if progress > tp1_dist * 1.2:
-                    pos.trailing = True
-
-            if pos.trailing:
-                trail_dist = abs(pos.tp1 - pos.entry_price) * 0.4
-                new_sl = (current - trail_dist) if is_buy else (current + trail_dist)
-                if (is_buy and new_sl > pos.sl) or (not is_buy and new_sl < pos.sl):
-                    self.platforms.modify_trade(oid, pos.platform, new_sl=new_sl)
-                    pos.sl = new_sl
-
-            stall_minutes = (datetime.now(timezone.utc) - pos.open_time).total_seconds() / 60
-
-            if not pos.tp1_hit and stall_minutes > 30:
-                try:
-                    m5_data = self.platforms.fetch_market_data(pos.symbol, ["M5"])
-                    m5_df = m5_data.get("M5")
-                    if m5_df is not None and len(m5_df) >= 10:
-                        struct = StructureEngine(swing_lookback=3)
-                        analysis = struct.analyze(m5_df)
-                        if is_buy and analysis.last_event in (StructureEvent.CHOCH_BEARISH, StructureEvent.BOS_BEARISH):
-                            result = self.platforms.close_trade(oid, pos.platform)
-                            if result.success:
-                                self._record_closed_trade(pos, result.close_price, "STRUCTURE_EXIT")
-                                to_remove.append(oid)
-                                closed_count += 1
-                                logger.info("🔄 STRUCTURE EXIT — {} {} | bearish shift after {:.0f}min", pos.direction, pos.symbol, stall_minutes)
-                                continue
-                        elif not is_buy and analysis.last_event in (StructureEvent.CHOCH_BULLISH, StructureEvent.BOS_BULLISH):
-                            result = self.platforms.close_trade(oid, pos.platform)
-                            if result.success:
-                                self._record_closed_trade(pos, result.close_price, "STRUCTURE_EXIT")
-                                to_remove.append(oid)
-                                closed_count += 1
-                                logger.info("🔄 STRUCTURE EXIT — {} {} | bullish shift after {:.0f}min", pos.direction, pos.symbol, stall_minutes)
-                                continue
-                except Exception as exc:
-                    logger.debug("Structure stall check error for {}: {}", pos.symbol, exc)
-
-            if stall_minutes > 75 and abs(pnl_pips) < 5 and not pos.tp1_hit:
-                result = self.platforms.close_trade(oid, pos.platform)
-                if result.success:
-                    self._record_closed_trade(pos, result.close_price, "STALL_EXIT")
-                    to_remove.append(oid)
-                    closed_count += 1
-                    logger.info("⏱ STALL EXIT — {} {} | {:.0f}min, {:.1f}pip", pos.direction, pos.symbol, stall_minutes, pnl_pips)
-
+            pos.trailing = tm_trade.status == TradeStatus.TRAILING
+            pos.re_entry_eligible = tm_trade.re_entry_eligible
             pos.last_update = datetime.now(timezone.utc)
 
         for oid in to_remove:
             del self.managed_positions[oid]
 
         return closed_count
-
-    def _check_sl(self, pos: ManagedPosition, price: float, is_buy: bool) -> bool:
-        if is_buy:
-            return price <= pos.sl
-        return price >= pos.sl
-
-    def _check_tp1(self, pos: ManagedPosition, price: float, is_buy: bool) -> bool:
-        if is_buy:
-            return price >= pos.tp1
-        return price <= pos.tp1
-
-    def _check_tp2(self, pos: ManagedPosition, price: float, is_buy: bool) -> bool:
-        if is_buy:
-            return price >= pos.tp2
-        return price <= pos.tp2
 
     # ── Logging & journal ────────────────────────────────────────────────
 
