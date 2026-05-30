@@ -254,7 +254,12 @@ class TradingLoop:
         pair = result.pair
         direction = result.direction
 
-        data = self.platforms.fetch_market_data(pair, ["H4", "H1", "M15", "M5", "M1"])
+        # Fetch more M1 bars than other timeframes — CHoCH detection needs
+        # sufficient swing structure. 200 M1 bars = 3.3hrs, too few for Gold.
+        # Fetch H4/H1/M15/M5 at 200, M1 at 400 (6.5hrs of micro structure).
+        base_data = self.platforms.fetch_market_data(pair, ["H4", "H1", "M15", "M5"])
+        m1_data = self.platforms.fetch_market_data(pair, ["M1"], count=400)
+        data = {**base_data, **m1_data}
         if len(data) < 4:
             self._log_rejection(pair, direction, result.score, "Insufficient TF data")
             return False
