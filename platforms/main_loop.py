@@ -21,6 +21,8 @@ from brain import (
     OpenTrade,
     SessionEngine,
     NewsGuard,
+    StructureEngine,
+    StructureEvent,
     TradeJournal,
     TradeRecord,
     DecisionRecord,
@@ -241,7 +243,7 @@ class TradingLoop:
             self._log_rejection(pair, direction, result.score, "Missing M5/M1/H1 data")
             return False
 
-        balance = self.platforms.get_total_balance() or 10_000.0
+        balance = self.platforms.get_platform_balance(pair) or 10_000.0
         self.risk_engine.balance = balance
 
         signal = self.entry_engine.calculate_entry(
@@ -405,6 +407,33 @@ class TradingLoop:
                     pos.sl = new_sl
 
             stall_minutes = (datetime.now(timezone.utc) - pos.open_time).total_seconds() / 60
+
+            if not pos.tp1_hit and stall_minutes > 30:
+                try:
+                    m5_data = self.platforms.fetch_market_data(pos.symbol, ["M5"])
+                    m5_df = m5_data.get("M5")
+                    if m5_df is not None and len(m5_df) >= 10:
+                        struct = StructureEngine(swing_lookback=3)
+                        analysis = struct.analyze(m5_df)
+                        if is_buy and analysis.last_event in (StructureEvent.CHOCH_BEARISH, StructureEvent.BOS_BEARISH):
+                            result = self.platforms.close_trade(oid, pos.platform)
+                            if result.success:
+                                self._record_closed_trade(pos, result.close_price, "STRUCTURE_EXIT")
+                                to_remove.append(oid)
+                                closed_count += 1
+                                logger.info("🔄 STRUCTURE EXIT — {} {} | bearish shift after {:.0f}min", pos.direction, pos.symbol, stall_minutes)
+                                continue
+                        elif not is_buy and analysis.last_event in (StructureEvent.CHOCH_BULLISH, StructureEvent.BOS_BULLISH):
+                            result = self.platforms.close_trade(oid, pos.platform)
+                            if result.success:
+                                self._record_closed_trade(pos, result.close_price, "STRUCTURE_EXIT")
+                                to_remove.append(oid)
+                                closed_count += 1
+                                logger.info("🔄 STRUCTURE EXIT — {} {} | bullish shift after {:.0f}min", pos.direction, pos.symbol, stall_minutes)
+                                continue
+                except Exception as exc:
+                    logger.debug("Structure stall check error for {}: {}", pos.symbol, exc)
+
             if stall_minutes > 75 and abs(pnl_pips) < 5 and not pos.tp1_hit:
                 result = self.platforms.close_trade(oid, pos.platform)
                 if result.success:
@@ -448,7 +477,7 @@ class TradingLoop:
         pip_value = info.pip_value_per_lot if info else 10.0
         pnl_dollars = pnl_pips * pip_value * pos.lots
 
-        balance = self.platforms.get_total_balance() or 10_000.0
+        balance = self.platforms.get_platform_balance(pos.symbol) or 10_000.0
         pnl_pct = pnl_dollars / balance if balance > 0 else 0.0
 
         self.drawdown.register_trade_result(pnl_pct)
