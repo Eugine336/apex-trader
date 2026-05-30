@@ -133,12 +133,19 @@ class PlatformManager:
         sl: float,
         tp: float,
         comment: str = "",
+        stake_usd: Optional[float] = None,  # Deriv only — risk amount in USD
     ) -> OrderResult:
         connector = self.get_connector(symbol)
         platform = "mt5" if isinstance(connector, MT5Connector) else "deriv"
 
         t0 = _time.monotonic()
-        result = connector.place_order(symbol, direction, lots, sl, tp, comment)
+        if isinstance(connector, DerivConnector):
+            result = connector.place_order(
+                symbol, direction, lots, sl, tp, comment,
+                stake_usd=stake_usd,
+            )
+        else:
+            result = connector.place_order(symbol, direction, lots, sl, tp, comment)
         latency_ms = (_time.monotonic() - t0) * 1000
 
         if result.success:
