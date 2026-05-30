@@ -1,375 +1,376 @@
 """
-APEX TRADER — Pair Scanner
-The Eyes. Scans every instrument, runs all brain modules, scores each
-setup on 7 confluence factors, and classifies it as READY / WATCHLIST / WAITING.
-
-Pip sizes come from the instrument registry — NEVER hardcoded.
+APEX TRADER — Entry Engine
+The sniper's trigger finger. Takes a READY scan result and computes
+the exact entry price, stop loss, TP1, TP2, and position size.
+Fires only when all micro-confirmations align on M1.
 """
 
 import pandas as pd
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Optional
+from datetime import datetime, timedelta, timezone
+from typing import Optional, Union
 from loguru import logger
 
-from config import (
-    AppConfig, get_instrument, get_pip_size, INSTRUMENT_REGISTRY,
-)
-from brain.structure_engine import StructureEngine, Trend
-from brain.fvg_detector import FVGDetector
-from brain.order_block import OrderBlockDetector, OBStatus
+from config import AppConfig, get_instrument, get_pip_size, InstrumentCategory
+from brain.structure_engine import StructureEngine
+from brain.fvg_detector import FVGDetector, FairValueGap
+from brain.order_block import OrderBlockDetector, OrderBlock, OBStatus
 from brain.liquidity_mapper import LiquidityMapper
-from brain.currency_strength import CurrencyStrengthMeter, CURRENCY_PAIRS
-from brain.session_engine import SessionEngine, NewsGuard
-from brain.volume_analyzer import VolumeAnalyzer
+from brain.drawdown_guard import DrawdownGuard, DrawdownMode
+from brain.session_engine import NewsGuard, SessionEngine
+from trigger.entry_patterns import EntryPatternDetector
 
 
 @dataclass
-class PairScanResult:
+class EntrySignal:
     pair: str
-    direction: str                  # "LONG", "SHORT", "NEUTRAL"
-    score: int                      # 0–100
-    regime: str                     # market regime from bias engine
-    trend_h4: str
-    trend_h1: str
-    bias_strength: str              # "STRONG", "MODERATE", "CONFLICTED", "NONE"
-    has_fvg: bool
-    has_order_block: bool
-    has_liquidity_target: bool
-    sweep_detected: bool
-    inducement_detected: bool       # reserved for Phase 1.5 module
-    wyckoff_phase: str              # reserved for Phase 1.5 module
-    volume_confirmation: bool       # reserved for Phase 1.5 module
-    session_active: bool
-    currency_strength_aligned: bool
-    status: str                     # "READY", "WATCHLIST", "WAITING"
-    timestamp: datetime
+    direction: str                      # "LONG" or "SHORT"
+    entry_type: str                     # "FVG_MIDPOINT", "OB_MIDPOINT", "FVG_OB_OVERLAP", "SWEEP_REVERSAL"
+    entry_price: float
+    stop_loss: float
+    tp1: float
+    tp2: float
+    risk_reward_1: float
+    risk_reward_2: float
+    risk_pips: float
+    position_size_lots: float
+    score: int
     confluences: list[str] = field(default_factory=list)
+    entry_zone: str = ""
+    micro_confirmation: str = ""
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    valid_until: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     instrument_category: str = "forex"
 
 
 @dataclass
-class ScanReport:
-    timestamp: datetime
-    session: str
-    total_pairs_scanned: int
-    ready_count: int
-    watchlist_count: int
-    results: list[PairScanResult]
-    best_setup: Optional[PairScanResult]
-    regime_distribution: dict[str, int] = field(default_factory=dict)
+class EntryRejection:
+    pair: str
+    reason: str
+    score: int
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-class PairScanner:
+class EntryEngine:
     """
-    Always watching. Scans every enabled instrument, runs the full brain
-    stack, and surfaces only the setups worth pulling the trigger on.
+    APEX TRADER — The Trigger.
+    Takes READY scan results and computes precise entries.
+    Only fires when every micro-confirmation aligns on M1.
     """
 
     def __init__(self, config: Optional[AppConfig] = None):
         self.config = config or AppConfig()
         self.structure = StructureEngine()
-        self.fvg_detector = FVGDetector()
-        self.ob_detector = OrderBlockDetector()
-        self.liquidity = LiquidityMapper()
-        self.strength_meter = CurrencyStrengthMeter()
-        self.session = SessionEngine()
-        self.news = NewsGuard()
-        self.volume = VolumeAnalyzer()
-        self.last_report: Optional[ScanReport] = None
+        self.drawdown = DrawdownGuard()
+        self.pattern_detector = EntryPatternDetector()
+        self.news_guard = NewsGuard()
+        self.session_engine = SessionEngine()
 
     # ------------------------------------------------------------------
-    # Single-pair scan
+    # Main entry calculation
     # ------------------------------------------------------------------
 
-    def scan_pair(
+    def calculate_entry(
         self,
         pair: str,
-        h4_df: pd.DataFrame,
-        h1_df: pd.DataFrame,
-        m15_df: pd.DataFrame,
+        direction: str,
         m5_df: pd.DataFrame,
-        currency_data: Optional[dict[str, pd.DataFrame]] = None,
-        utc_now: Optional[datetime] = None,
-    ) -> PairScanResult:
-        utc_now = utc_now or datetime.now(timezone.utc)
+        m1_df: pd.DataFrame,
+        h1_df: pd.DataFrame,
+        scan_result=None,
+        account_balance: float = 10000.0,
+    ) -> Union[EntrySignal, EntryRejection]:
+        now = datetime.now(timezone.utc)
+        score = scan_result.score if scan_result else 85
+        confluences = list(scan_result.confluences) if scan_result else []
         pip_size = self._pip_size(pair)
         category = self._category(pair)
 
-        # ── 1. Structure bias (H4 + H1) ──────────────────────────────
-        bias = self.structure.get_bias(h4_df, h1_df)
-        direction = bias["direction"]       # "BULLISH" / "BEARISH" / "RANGING"
-        trade_dir = {"BULLISH": "LONG", "BEARISH": "SHORT"}.get(direction, "NEUTRAL")
+        can_trade, reason = self.drawdown.can_trade(now)
+        if not can_trade:
+            logger.warning(f"[{pair}] Entry rejected — {reason}")
+            return EntryRejection(pair=pair, reason=reason, score=score, timestamp=now)
 
-        score = 0
-        confluences: list[str] = []
-        scoring = self.config.scoring
-
-        if bias["tradeable"]:
-            score += scoring.structure_points
-            confluences.append(f"Structure aligned ({bias['strength']})")
-
-        # ── 2a. H1 Order blocks (directional bias) ───────────────────
-        ob_det = OrderBlockDetector(pip_size=pip_size)
-        h1_obs = ob_det.detect(h1_df, timeframe="H1")
-        has_h1_ob = False
-        if trade_dir != "NEUTRAL":
-            entry_ob = ob_det.get_entry_ob(h1_obs, trade_dir, h1_df["close"].iloc[-1])
-            if entry_ob and entry_ob.status in (OBStatus.FRESH, OBStatus.TESTED):
-                has_h1_ob = True
-                h1_ob_pts = 10 if entry_ob.strength == "STRONG" else (7 if entry_ob.strength == "MODERATE" else 4)
-                score += h1_ob_pts
-                confluences.append(f"H1 OB bias ({entry_ob.strength}, +{h1_ob_pts})")
-
-        # ── 2b. M5 Order blocks (entry zone) ─────────────────────────
-        m5_obs = ob_det.detect(m5_df, timeframe="M5")
-        has_m5_ob = False
-        if trade_dir != "NEUTRAL":
-            m5_entry_ob = ob_det.get_entry_ob(m5_obs, trade_dir, m5_df["close"].iloc[-1])
-            if m5_entry_ob and m5_entry_ob.status in (OBStatus.FRESH, OBStatus.TESTED):
-                has_m5_ob = True
-                m5_ob_pts = 10 if m5_entry_ob.strength == "STRONG" else (7 if m5_entry_ob.strength == "MODERATE" else 4)
-                score += m5_ob_pts
-                confluences.append(f"M5 OB entry zone ({m5_entry_ob.strength}, +{m5_ob_pts})")
-
-        has_ob = has_h1_ob or has_m5_ob
-
-        # ── 3. Fair value gaps (strength-based) ──────────────────────
-        fvg_det = FVGDetector(pip_size=pip_size)
-        m5_fvgs = fvg_det.detect(m5_df, timeframe="M5")
-        m15_fvgs = fvg_det.detect(m15_df, timeframe="M15")
-        has_fvg = False
-        if trade_dir != "NEUTRAL":
-            entry_fvg = fvg_det.get_entry_fvg(m5_fvgs + m15_fvgs, trade_dir, m5_df["close"].iloc[-1])
-            if entry_fvg:
-                has_fvg = True
-                if entry_fvg.strength == "STRONG":
-                    fvg_pts = scoring.fvg_points
-                elif entry_fvg.strength == "MODERATE":
-                    fvg_pts = int(scoring.fvg_points * 0.7)
-                else:
-                    fvg_pts = int(scoring.fvg_points * 0.4)
-                score += fvg_pts
-                confluences.append(f"FVG entry zone ({entry_fvg.strength}, +{fvg_pts})")
-
-        # ── 4. Multi-timeframe confluence ─────────────────────────────
-        confluence = fvg_det.get_confluence_fvgs(
-            m5_fvgs, m15_fvgs, trade_dir, m5_df["close"].iloc[-1], pip_size,
-        )
-        if confluence["has_confluence"]:
-            score += scoring.mtf_confluence_points
-            confluences.append("Multi-TF FVG confluence")
-
-        # ── 5. Session timing ─────────────────────────────────────────
-        session_status = self.session.get_status(utc_now)
-
-        # Commodities (e.g. XAUUSD) trade 24/5 — they are not session-gated
-        # the same way FX pairs are. Treat any non-DEAD, non-WEEKEND window
-        # as tradeable for commodities so we don't zero out their session score.
-        is_commodity = category in ("commodity", "synthetic")
-        if is_commodity:
-            session_active = session_status.current_session not in ("DEAD", "WEEKEND")
-        else:
-            session_active = session_status.is_tradeable
-
-        if session_active:
-            score += scoring.session_points
-            confluences.append(f"Session active ({session_status.current_session})")
-
-        # ── 6. News filter ────────────────────────────────────────────
-        news_status = self.news.check([pair], utc_now)
-        if news_status.is_clear:
-            score += scoring.news_points
-            confluences.append("News clear")
-
-        # ── 7. Currency strength alignment ────────────────────────────
-        cs_aligned = False
-        if currency_data and pair in CURRENCY_PAIRS:
-            strength = self.strength_meter.calculate(currency_data)
-            alignment = self.strength_meter.get_pair_alignment(pair, strength, trade_dir)
-            if alignment["aligned"]:
-                cs_aligned = True
-                score += scoring.currency_strength_points
-                confluences.append(f"Currency strength ({alignment['reason']})")
-
-        # ── 8. Liquidity ──────────────────────────────────────────────
-        liq_map = self.liquidity.map(h1_df, pip_size)
-        has_liq = liq_map.nearest_buy_liq is not None or liq_map.nearest_sell_liq is not None
-
-        sweep = False
-        if has_liq and trade_dir != "NEUTRAL":
-            targets = (
-                liq_map.sell_side_liquidity if trade_dir == "LONG"
-                else liq_map.buy_side_liquidity
+        news_status = self.news_guard.check([pair], now)
+        if not news_status.is_clear:
+            return EntryRejection(
+                pair=pair,
+                reason=f"NewsGuard: {news_status.warning_message}",
+                score=score,
+                timestamp=now,
             )
-            for zone in targets[:3]:
-                if self.liquidity.detect_sweep(m5_df, zone, pip_size):
-                    sweep = True
-                    score += 8
-                    confluences.append("Liquidity sweep detected (+8)")
-                    break
 
-        # ── 9. Volume confirmation ────────────────────────────────────
-        volume_confirmed = False
-        try:
-            vol_analysis = self.volume.analyze(m5_df)
-            if vol_analysis.has_spike and vol_analysis.confirmation_bias != "NEUTRAL":
-                if (
-                    (trade_dir == "LONG" and vol_analysis.confirmation_bias == "BULLISH")
-                    or (trade_dir == "SHORT" and vol_analysis.confirmation_bias == "BEARISH")
-                ):
-                    volume_confirmed = True
-                    score += 5
-                    confluences.append(
-                        f"Volume confirmed ({vol_analysis.confirmation_bias}, "
-                        f"ratio={vol_analysis.volume_ratio:.1f}x)"
-                    )
-                elif vol_analysis.climax_detected:
-                    score = max(score - 5, 0)
-                    confluences.append(
-                        f"Volume climax WARNING ({vol_analysis.divergence_type})"
-                    )
-        except Exception as exc:
-            logger.debug(f"Volume analysis error for {pair}: {exc}")
-        # ── 9. Inducement detection ──────────────────────────────────
-        inducement_detected = False
-        try:
-            ind_det = InducementDetector(pip_size=pip_size)
-            inducement_analysis = ind_det.analyze(m5_df)
-            if inducement_analysis.inducement_detected:
-                inducement_detected = True
-                score += 5
-                confluences.append(f"Inducement detected ({inducement_analysis.type}, +5)")
-        except Exception as exc:
-            logger.debug(f"Inducement detection error for {pair}: {exc}")
+        upcoming = self.news_guard.check([pair], now + timedelta(minutes=15))
+        if not upcoming.is_clear:
+            return EntryRejection(
+                pair=pair,
+                reason="High-impact news in <15min — holding off",
+                score=score,
+                timestamp=now,
+            )
 
-        # ── 10. Wyckoff phase ────────────────────────────────────────
-        wyckoff_phase = "N/A"
-        try:
-            wyck = WyckoffEngine(pip_size=pip_size)
-            wyckoff_analysis = wyck.analyze(h1_df)
-            wyckoff_phase = wyckoff_analysis.phase
-            if wyckoff_analysis.sub_phase in ("SPRING", "UPTHRUST"):
-                score += 5
-                confluences.append(f"Wyckoff {wyckoff_analysis.sub_phase} (+5)")
-        except Exception as exc:
-            logger.debug(f"Wyckoff analysis error for {pair}: {exc}")
+        session_status = self.session_engine.get_status(now)
+        if session_status.current_session in ("LONDON", "NEW_YORK") and session_status.session_open_minutes <= 15:
+            return EntryRejection(
+                pair=pair,
+                reason=f"Session {session_status.current_session} just opened ({session_status.session_open_minutes}min) — waiting for spread stabilization",
+                score=score,
+                timestamp=now,
+            )
 
-        # ── Regime caps ───────────────────────────────────────────────
-        regime = bias["h4_trend"]
-        if regime == "RANGING":
-            score = min(score, scoring.ranging_score_cap)
-        # Off-session penalty only applies to FX pairs — commodities are 24/5
-        if not session_active and score > 0 and not is_commodity:
-            score = max(score - 10, 0)
+        status = self.drawdown.get_status(now)
+        risk_pct = status.current_risk_pct
 
-        # ── Status ────────────────────────────────────────────────────
-        if score >= scoring.min_entry_score:
-            status = "READY"
-        elif score >= scoring.watchlist_score:
-            status = "WATCHLIST"
-        else:
-            status = "WAITING"
+        zone = self.find_entry_zone(pair, direction, m5_df, pip_size)
+        if zone["type"] == "NONE":
+            return EntryRejection(
+                pair=pair, reason="No valid entry zone (FVG or OB) found on M5",
+                score=score, timestamp=now,
+            )
 
-        return PairScanResult(
+        confirmed, pattern_desc = self.confirm_m1_entry(direction, m1_df, zone, pip_size)
+        if not confirmed:
+            return EntryRejection(
+                pair=pair, reason="No micro-confirmation on M1",
+                score=score, timestamp=now,
+            )
+        confluences.append(f"M1 confirmed: {pattern_desc}")
+
+        if zone.get("has_sweep"):
+            confluences.append("Liquidity sweep confirmed at entry zone")
+
+        entry_price = zone["midpoint"]
+        stop_loss = self.calculate_stop_loss(direction, zone, pip_size)
+        tp1, tp2 = self.calculate_targets(pair, direction, entry_price, stop_loss, h1_df, pip_size)
+
+        risk_distance = abs(entry_price - stop_loss)
+        if risk_distance < pip_size:
+            return EntryRejection(
+                pair=pair, reason="Risk distance too small — invalid zone",
+                score=score, timestamp=now,
+            )
+
+        rr1 = abs(tp1 - entry_price) / risk_distance
+        rr2 = abs(tp2 - entry_price) / risk_distance
+
+        if rr1 < 1.0:
+            return EntryRejection(
+                pair=pair, reason=f"Insufficient reward — R:R to TP1 is {rr1:.2f}",
+                score=score, timestamp=now,
+            )
+
+        risk_pips = risk_distance / pip_size
+        position_size = self.calculate_position_size(
+            entry_price, stop_loss, risk_pct, account_balance, pip_size, pair,
+        )
+
+        zone_desc = self._describe_zone(zone, pip_size)
+        valid_until = now + timedelta(minutes=25)
+
+        signal = EntrySignal(
             pair=pair,
-            direction=trade_dir,
+            direction=direction,
+            entry_type=zone["type"],
+            entry_price=round(entry_price, 5),
+            stop_loss=round(stop_loss, 5),
+            tp1=round(tp1, 5),
+            tp2=round(tp2, 5),
+            risk_reward_1=round(rr1, 2),
+            risk_reward_2=round(rr2, 2),
+            risk_pips=round(risk_pips, 1),
+            position_size_lots=round(position_size, 2),
             score=score,
-            regime=regime,
-            trend_h4=bias["h4_trend"],
-            trend_h1=bias["h1_trend"],
-            bias_strength=bias["strength"],
-            has_fvg=has_fvg,
-            has_order_block=has_ob,
-            has_liquidity_target=has_liq,
-            sweep_detected=sweep,
-            inducement_detected=inducement_detected,
-            wyckoff_phase=wyckoff_phase,
-            volume_confirmation=volume_confirmed,
-            session_active=session_active,
-            currency_strength_aligned=cs_aligned,
-            status=status,
-            timestamp=utc_now,
             confluences=confluences,
+            entry_zone=zone_desc,
+            micro_confirmation=pattern_desc,
+            timestamp=now,
+            valid_until=valid_until,
             instrument_category=category,
         )
 
-    # ------------------------------------------------------------------
-    # Full scan — all enabled instruments
-    # ------------------------------------------------------------------
-
-    def scan_all(
-        self,
-        market_data: dict[str, dict[str, pd.DataFrame]],
-        currency_data: Optional[dict[str, pd.DataFrame]] = None,
-        utc_now: Optional[datetime] = None,
-    ) -> ScanReport:
-        """
-        Scan every instrument in *market_data*.
-
-        market_data structure::
-
-            {
-                "EURUSD": {"H4": df, "H1": df, "M15": df, "M5": df},
-                "XAUUSD": {"H4": df, "H1": df, "M15": df, "M5": df},
-                ...
-            }
-        """
-        utc_now = utc_now or datetime.now(timezone.utc)
-        session_status = self.session.get_status(utc_now)
-
-        results: list[PairScanResult] = []
-        regimes: dict[str, int] = {}
-
-        for pair, frames in market_data.items():
-            try:
-                h4 = frames.get("H4")
-                h1 = frames.get("H1")
-                m15 = frames.get("M15")
-                m5 = frames.get("M5")
-                if h4 is None or h1 is None or m15 is None or m5 is None:
-                    logger.warning(f"Skipping {pair} — missing timeframe data")
-                    continue
-
-                result = self.scan_pair(pair, h4, h1, m15, m5, currency_data, utc_now)
-                results.append(result)
-                regimes[result.regime] = regimes.get(result.regime, 0) + 1
-            except Exception as exc:
-                logger.error(f"Error scanning {pair}: {exc}")
-
-        results.sort(key=lambda r: r.score, reverse=True)
-
-        ready = [r for r in results if r.status == "READY"]
-        watch = [r for r in results if r.status == "WATCHLIST"]
-
-        report = ScanReport(
-            timestamp=utc_now,
-            session=session_status.current_session,
-            total_pairs_scanned=len(results),
-            ready_count=len(ready),
-            watchlist_count=len(watch),
-            results=results,
-            best_setup=ready[0] if ready else None,
-            regime_distribution=regimes,
+        logger.info(
+            f"[{pair}] ENTRY SIGNAL — {direction} @ {signal.entry_price} | "
+            f"SL {signal.stop_loss} | TP1 {signal.tp1} | TP2 {signal.tp2} | "
+            f"R:R {signal.risk_reward_1}/{signal.risk_reward_2} | "
+            f"{signal.position_size_lots} lots | Score {score}"
         )
-        self.last_report = report
-        return report
+        return signal
 
     # ------------------------------------------------------------------
-    # Convenience filters
+    # Entry zone discovery on M5
     # ------------------------------------------------------------------
 
-    @staticmethod
-    def get_ready_setups(report: ScanReport) -> list[PairScanResult]:
-        return [r for r in report.results if r.status == "READY"]
+    def find_entry_zone(
+        self, pair: str, direction: str, m5_df: pd.DataFrame, pip_size: float,
+    ) -> dict:
+        current_price = m5_df["close"].iloc[-1]
+        fvg_det = FVGDetector(pip_size=pip_size)
+        ob_det = OrderBlockDetector(pip_size=pip_size)
 
-    @staticmethod
-    def get_watchlist(report: ScanReport) -> list[PairScanResult]:
-        return [r for r in report.results if r.status == "WATCHLIST"]
+        fvgs = fvg_det.detect(m5_df, timeframe="M5")
+        obs = ob_det.detect(m5_df, timeframe="M5")
+
+        entry_fvg = fvg_det.get_entry_fvg(fvgs, direction, current_price)
+        entry_ob = ob_det.get_entry_ob(obs, direction, current_price)
+
+        has_sweep = self._check_sweep_near_zone(m5_df, entry_fvg, entry_ob, pip_size)
+
+        if entry_fvg and entry_ob:
+            if ob_det.get_confluence_with_fvg(entry_ob, entry_fvg, pip_size):
+                overlap_top = min(entry_fvg.top, entry_ob.top)
+                overlap_bottom = max(entry_fvg.bottom, entry_ob.bottom)
+                return {
+                    "type": "FVG_OB_OVERLAP",
+                    "top": overlap_top,
+                    "bottom": overlap_bottom,
+                    "midpoint": (overlap_top + overlap_bottom) / 2,
+                    "fvg": entry_fvg,
+                    "ob": entry_ob,
+                    "has_sweep": has_sweep,
+                }
+
+        if entry_fvg:
+            return {
+                "type": "FVG_MIDPOINT",
+                "top": entry_fvg.top,
+                "bottom": entry_fvg.bottom,
+                "midpoint": entry_fvg.midpoint,
+                "fvg": entry_fvg,
+                "ob": None,
+                "has_sweep": has_sweep,
+            }
+
+        if entry_ob and entry_ob.status in (OBStatus.FRESH, OBStatus.TESTED):
+            return {
+                "type": "OB_MIDPOINT",
+                "top": entry_ob.top,
+                "bottom": entry_ob.bottom,
+                "midpoint": entry_ob.midpoint,
+                "fvg": None,
+                "ob": entry_ob,
+                "has_sweep": has_sweep,
+            }
+
+        return {"type": "NONE", "top": 0, "bottom": 0, "midpoint": 0, "fvg": None, "ob": None, "has_sweep": False}
+
+    # ------------------------------------------------------------------
+    # M1 micro-confirmation
+    # ------------------------------------------------------------------
+
+    def confirm_m1_entry(
+        self, direction: str, m1_df: pd.DataFrame, entry_zone: dict, pip_size: float,
+    ) -> tuple[bool, str]:
+        if len(m1_df) < 3:
+            return False, ""
+
+        zone_top = entry_zone["top"]
+        zone_bottom = entry_zone["bottom"]
+
+        pattern_name, pattern_desc = self.pattern_detector.get_best_pattern(
+            m1_df, direction, zone_top, zone_bottom, pip_size,
+        )
+        if pattern_name:
+            return True, pattern_desc
+
+        choch = self._detect_m1_choch(m1_df, direction)
+        if choch:
+            return True, f"M1 Change of Character — {direction.lower()} shift"
+
+        return False, ""
+
+    # ------------------------------------------------------------------
+    # Stop loss, targets, position sizing
+    # ------------------------------------------------------------------
+
+    def calculate_stop_loss(
+        self, direction: str, entry_zone: dict, pip_size: float, buffer_pips: float = 2.0,
+    ) -> float:
+        buffer = buffer_pips * pip_size
+        if direction == "LONG":
+            return entry_zone["bottom"] - buffer
+        else:
+            return entry_zone["top"] + buffer
+
+    def calculate_targets(
+        self,
+        pair: str,
+        direction: str,
+        entry_price: float,
+        stop_loss: float,
+        h1_df: pd.DataFrame,
+        pip_size: float,
+    ) -> tuple[float, float]:
+        risk = abs(entry_price - stop_loss)
+
+        liq = LiquidityMapper()
+        liq_map = liq.map(h1_df, pip_size)
+
+        if direction == "LONG":
+            tp1_liq = liq_map.nearest_buy_liq
+            tp1 = tp1_liq.price if tp1_liq else entry_price + risk * 1.5
+            if tp1 - entry_price < risk:
+                tp1 = entry_price + risk * 1.5
+
+            structure = self.structure.analyze(h1_df)
+            tp2 = structure.swing_high if structure.swing_high and structure.swing_high > tp1 else entry_price + risk * 2.5
+        else:
+            tp1_liq = liq_map.nearest_sell_liq
+            tp1 = tp1_liq.price if tp1_liq else entry_price - risk * 1.5
+            if entry_price - tp1 < risk:
+                tp1 = entry_price - risk * 1.5
+
+            structure = self.structure.analyze(h1_df)
+            tp2 = structure.swing_low if structure.swing_low and structure.swing_low < tp1 else entry_price - risk * 2.5
+
+        return tp1, tp2
+
+    def calculate_position_size(
+        self,
+        entry_price: float,
+        stop_loss: float,
+        risk_pct: float,
+        account_balance: float,
+        pip_size: float,
+        pair: str = "",
+    ) -> float:
+        risk_amount = account_balance * risk_pct
+        risk_pips = abs(entry_price - stop_loss) / pip_size
+        if risk_pips <= 0:
+            return 0.01
+
+        pip_value = self._pip_value(pair, pip_size)
+        lots = risk_amount / (risk_pips * pip_value)
+        return max(0.01, min(lots, 10.0))
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
+
+    def _check_sweep_near_zone(
+        self, df: pd.DataFrame, fvg: Optional[FairValueGap], ob: Optional[OrderBlock], pip_size: float,
+    ) -> bool:
+        if len(df) < 3:
+            return False
+        liq = LiquidityMapper()
+        liq_map = liq.map(df, pip_size)
+
+        zones = liq_map.sell_side_liquidity[:3] + liq_map.buy_side_liquidity[:3]
+        for zone in zones:
+            if liq.detect_sweep(df, zone, pip_size):
+                return True
+        return False
+
+    def _detect_m1_choch(self, df: pd.DataFrame, direction: str) -> bool:
+        if len(df) < 10:
+            return False
+        structure = StructureEngine(swing_lookback=3)
+        analysis = structure.analyze(df)
+
+        if direction == "LONG" and analysis.last_event.value == "CHOCH_BULLISH":
+            return True
+        if direction == "SHORT" and analysis.last_event.value == "CHOCH_BEARISH":
+            return True
+        return False
 
     def _pip_size(self, symbol: str) -> float:
         try:
@@ -382,3 +383,17 @@ class PairScanner:
             return get_instrument(symbol).category.value
         except KeyError:
             return "forex"
+
+    def _pip_value(self, pair: str, pip_size: float) -> float:
+        try:
+            return get_instrument(pair).pip_value_per_lot
+        except KeyError:
+            return 10.0
+
+    def _describe_zone(self, zone: dict, pip_size: float) -> str:
+        kind = zone["type"]
+        top = zone["top"]
+        bottom = zone["bottom"]
+        mid = zone["midpoint"]
+        size_pips = round((top - bottom) / pip_size, 1)
+        return f"{kind} {bottom:.5f}–{top:.5f}, midpoint {mid:.5f} ({size_pips} pips)"
