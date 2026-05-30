@@ -5,7 +5,7 @@
   "rules": {
     "forex": {
       "pattern": "{symbol}",
-      "description": "Passthrough \u2014 auto-discovery handles everything"
+      "description": "Passthrough — auto-discovery handles everything"
     }
   },
   "overrides": {
@@ -57,6 +57,16 @@
     "AUS200": "AUS200",
     "HK50": "HK50",
     "CHINA50": "CHINA50",
-    "SGP30": "SSTI.NAS"
+    "SGP30": "SSTI.NAS",
+    "_note_ESP35": "ESP35 is NOT available on metaquotes_ltd virtual accounts — omitted intentionally",
+    "BTCUSD": "BTCUSD",
+    "ETHUSD": "ETHUSD",
+    "LTCUSD": "LTCUSD",
+    "XRPUSD": "XRPUSD",
+    "BNBUSD": "BNBUSD",
+    "SOLUSD": "SOLUSD",
+    "ADAUSD": "ADAUSD",
+    "DOTUSD": "DOTUSD",
+    "DOGEUSD": "DOGEUSD"
   }
 }
