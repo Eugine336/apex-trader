@@ -270,11 +270,28 @@ class PlatformManager:
             timeframes = ["H4", "H1", "M15", "M5"]
         connector = self.get_connector(symbol)
         data: dict[str, pd.DataFrame] = {}
+
+        # Track symbols confirmed unavailable on the broker so we only log once.
+        if not hasattr(self, "_unavailable_symbols"):
+            self._unavailable_symbols: set = set()
+
         for tf in timeframes:
             try:
                 data[tf] = connector.get_ohlcv(symbol, tf, count)
             except Exception as exc:
-                logger.warning("Data fetch failed — {} {}: {}", symbol, tf, exc)
+                exc_str = str(exc)
+                # "not available on broker" → permanent skip; log once only.
+                if "not available on broker" in exc_str or "not found" in exc_str.lower():
+                    if symbol not in self._unavailable_symbols:
+                        logger.warning(
+                            "Symbol '{}' not available on broker — skipping permanently. "
+                            "Remove it from enabled_symbols_override or add a broker mapping.",
+                            symbol,
+                        )
+                        self._unavailable_symbols.add(symbol)
+                    break  # no point trying other timeframes for this symbol
+                else:
+                    logger.warning("Data fetch failed — {} {}: {}", symbol, tf, exc)
         return data
 
     def fetch_all_market_data(
@@ -291,6 +308,9 @@ class PlatformManager:
 
         all_data: dict[str, dict[str, pd.DataFrame]] = {}
         for symbol in symbols:
+            # Skip symbols already confirmed as broker-unavailable (log only once)
+            if hasattr(self, "_unavailable_symbols") and symbol in self._unavailable_symbols:
+                continue
             try:
                 data = self.fetch_market_data(symbol, timeframes, count)
                 if data:
