@@ -56,11 +56,14 @@ class OrderBlockDetector:
         self,
         min_impulse_pips: float = 10.0,
         pip_size: float = 0.0001,
-        lookback: int = 50
+        lookback: int = 50,
+        buffer_pips: float = 2.0,
     ):
         self.min_impulse = min_impulse_pips * pip_size
         self.pip_size = pip_size
         self.lookback = lookback
+        # buffer_pips supplied by InstrumentProfile — wider for indices/synthetics
+        self.buffer = buffer_pips * pip_size
 
     def detect(self, df: pd.DataFrame, timeframe: str = "H1") -> list[OrderBlock]:
         """
@@ -270,8 +273,8 @@ class OrderBlockDetector:
 
     def is_price_at_ob(self, price: float, ob: OrderBlock, pip_size: float = 0.0001) -> bool:
         """Check if price is currently at/inside an order block."""
-        buffer = 2 * pip_size
-        return (ob.bottom - buffer) <= price <= (ob.top + buffer)
+        # Uses self.buffer set from InstrumentProfile.ob_buffer_pips at construction
+        return (ob.bottom - self.buffer) <= price <= (ob.top + self.buffer)
 
     def get_confluence_with_fvg(
         self,
