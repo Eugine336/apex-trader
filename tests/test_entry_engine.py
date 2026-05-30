@@ -260,7 +260,7 @@ class TestEntryEngine:
 class TestEntryValidator:
     def setup_method(self):
         self.validator = EntryValidator()
-        self.now = datetime.now(timezone.utc)
+        self.now = datetime(2025, 6, 2, 10, 30, tzinfo=timezone.utc)  # Monday 10:30 UTC — London session
         self.signal = EntrySignal(
             pair="EURUSD",
             direction="LONG",
