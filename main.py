@@ -54,6 +54,15 @@ def main() -> None:
         logger.info(f"  {cat.upper()}: {len(instruments)} instruments enabled")
     logger.info(f"Total enabled instruments: {config.total_instruments}")
 
+    # ── Auto-discover broker symbols — runs silently if config is fresh ──
+    logger.info("Running broker symbol auto-discovery ...")
+    try:
+        from brain.broker_autodiscovery import run_autodiscovery
+        run_autodiscovery(mt5_broker_name="auto", force=False)
+        logger.info("Broker auto-discovery complete")
+    except Exception as exc:
+        logger.warning("Auto-discovery skipped: {}", exc)
+
     from brain import (
         StructureEngine, LiquidityMapper, FVGDetector,
         OrderBlockDetector, CurrencyStrengthMeter, SessionEngine, NewsGuard,

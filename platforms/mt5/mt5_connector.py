@@ -44,7 +44,24 @@ if _MT5_AVAILABLE:
         "D1": mt5.TIMEFRAME_D1,
     }
 
-_COMMON_SUFFIXES = ("", "m", ".raw", "#", ".ecn", ".stp", "_SB", ".pro")
+_COMMON_SUFFIXES = ("", "m", ".raw", "#", ".ecn", ".stp", "_SB", ".pro", ".cash", "cash", "_i", "!")
+
+# Fallback alias map — tried ONLY if broker JSON has no override and suffix scan fails.
+# Covers the most common broker renaming patterns for indices and commodities.
+_FALLBACK_ALIASES: dict[str, list[str]] = {
+    "US100":  ["NAS100", "NASDAQ", "USTEC", "NDX100", "USTECH", "US100.cash"],
+    "US30":   ["DJ30", "DOW30", "DOWJONES", "WALL30", "US30.cash"],
+    "US500":  ["SP500", "SPX500", "S&P500", "US500.cash"],
+    "GER40":  ["DAX40", "DAX", "DE40", "GER30", "GER40.cash", "DAX40.cash"],
+    "UK100":  ["FTSE100", "FTSE", "UK100.cash"],
+    "FRA40":  ["CAC40", "CAC", "FRA40.cash"],
+    "ESP35":  ["IBEX35", "IBEX", "ESP35.cash"],
+    "JP225":  ["JPN225", "NIKKEI", "N225", "JP225.cash"],
+    "AUS200": ["ASX200", "AUS200.cash"],
+    "HK50":   ["HSI50", "HANGSENG", "HK50.cash"],
+    "XTIUSD": ["USOUSD", "USOIL", "WTI", "OIL"],
+    "XBRUSD": ["UKOUSD", "UKOIL", "BRENT", "OIL.UK"],
+}
 
 
 class MT5Connector(BaseConnector):
@@ -57,7 +74,7 @@ class MT5Connector(BaseConnector):
         server: str = "",
         deviation: int = 20,
         magic: int = 202500,
-        broker_name: str = "icmarkets",
+        broker_name: str = "auto",  # "auto" = detect from terminal info on connect
     ):
         self._login = login
         self._password = password
@@ -66,7 +83,8 @@ class MT5Connector(BaseConnector):
         self._magic = magic
         self._connected = False
         self._symbol_cache: dict[str, str] = {}
-        self._mapper = SymbolMapper(broker_name)
+        self._broker_name = broker_name
+        self._mapper = SymbolMapper(broker_name)  # updated after connect() if auto
 
     # ── Connection ───────────────────────────────────────────────────────
 
@@ -105,6 +123,18 @@ class MT5Connector(BaseConnector):
                 info.balance,
                 info.currency,
             )
+
+            # Auto-detect broker name from terminal and reload symbol mapper
+            if self._broker_name == "auto":
+                import re as _re
+                term = mt5.terminal_info()
+                raw = getattr(term, "company", "") if term else ""
+                slug = _re.sub(r"[^a-z0-9]", "_", raw.lower()).strip("_")
+                slug = _re.sub(r"_+", "_", slug) or "mt5_broker"
+                self._broker_name = slug
+                self._mapper = SymbolMapper(slug)
+                logger.info("MT5 broker identified: '{}' → config slug: '{}'", raw, slug)
+
             return True
         except Exception as exc:
             logger.error("MT5 connect error: {}", exc)
@@ -383,6 +413,25 @@ class MT5Connector(BaseConnector):
                 self._symbol_cache[apex_symbol] = candidate
                 return candidate
 
+        # Try broker-agnostic fallback aliases for indices/commodities
+        for alias in _FALLBACK_ALIASES.get(apex_symbol, []):
+            info = mt5.symbol_info(alias)
+            if info is not None:
+                if not info.visible:
+                    mt5.symbol_select(alias, True)
+                logger.info(
+                    "Symbol fallback: {} → {} (add to broker JSON to avoid this scan)",
+                    apex_symbol, alias,
+                )
+                self._symbol_cache[apex_symbol] = alias
+                return alias
+
+        # Nothing found — log once and skip gracefully
+        logger.warning(
+            "Symbol {} not found on broker. Run scripts/discover_symbols.py "
+            "to find the correct name and add it to config/brokers/YOUR_BROKER.json",
+            apex_symbol,
+        )
         self._symbol_cache[apex_symbol] = apex_symbol
         return apex_symbol
 
