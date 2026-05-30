@@ -64,8 +64,7 @@ class SessionEngine:
 
     # Dead zones — avoid trading here
     DEAD_ZONES = [
-        {"start": time(20, 0), "end": time(23, 59), "reason": "End of NY, before Sydney"},
-        {"start": time(9, 0),  "end": time(12, 0),  "reason": "Between Tokyo close and NY open"},
+        {"start": time(20, 0), "end": time(23, 59), "reason": "End of NY, low liquidity pre-Asia"},
     ]
 
     def get_status(self, utc_now: Optional[datetime] = None) -> SessionStatus:
@@ -86,18 +85,6 @@ class SessionEngine:
                 minutes_to_next_session=self._minutes_to_monday(utc_now),
                 session_open_minutes=0,
             )
-
-        # Check dead zones first
-        for dz in self.DEAD_ZONES:
-            if self._time_in_range(current_time, dz["start"], dz["end"]):
-                return SessionStatus(
-                    current_session="DEAD",
-                    is_tradeable=False,
-                    liquidity="DEAD",
-                    best_pairs=[],
-                    minutes_to_next_session=self._minutes_until(current_time, time(12, 0)),
-                    session_open_minutes=0,
-                )
 
         # Check for overlap first (highest priority)
         for name, overlap in self.OVERLAP_SESSIONS.items():
@@ -126,6 +113,18 @@ class SessionEngine:
                     best_pairs=session["pairs"],
                     minutes_to_next_session=self._minutes_until(current_time, session["close"]),
                     session_open_minutes=open_mins,
+                )
+
+        # Dead zones only if no active overlap/session matched.
+        for dz in self.DEAD_ZONES:
+            if self._time_in_range(current_time, dz["start"], dz["end"]):
+                return SessionStatus(
+                    current_session="DEAD",
+                    is_tradeable=False,
+                    liquidity="DEAD",
+                    best_pairs=[],
+                    minutes_to_next_session=self._minutes_until(current_time, time(0, 0)),
+                    session_open_minutes=0,
                 )
 
         return SessionStatus(
@@ -192,11 +191,11 @@ class SessionEngine:
 class NewsGuard:
     """
     Monitors economic calendar for high-impact news events.
-    The bot FREEZES trading 2 minutes before and after
+    The bot FREEZES trading 15 minutes before and 5 minutes after
     any HIGH impact news that affects the pairs we're trading.
     """
 
-    def __init__(self, pause_before: int = 2, pause_after: int = 2):
+    def __init__(self, pause_before: int = 15, pause_after: int = 5):
         self.pause_before = pause_before
         self.pause_after = pause_after
         self._cache = []

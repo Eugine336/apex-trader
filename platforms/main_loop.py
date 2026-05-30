@@ -26,6 +26,7 @@ from brain import (
 from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size
 from platforms.base_connector import OrderResult, PositionInfo
 from platforms.platform_manager import PlatformManager
+from risk.risk_engine import RiskEngine
 from scanner import PairScanner, PairRanker, ScanScheduler
 from trigger.entry_engine import EntryEngine, EntrySignal, EntryRejection
 
@@ -79,6 +80,7 @@ class TradingLoop:
         self.entry_engine = EntryEngine(config=self.config)
         self.drawdown = DrawdownGuard()
         self.correlation = CorrelationEngine()
+        self.risk_engine = RiskEngine(config=self.config)
         self.execution_monitor = ExecutionMonitor()
         self.session_engine = SessionEngine()
         self.news_guard = NewsGuard()
@@ -228,6 +230,7 @@ class TradingLoop:
             return False
 
         balance = self.platforms.get_total_balance() or 10_000.0
+        self.risk_engine.balance = balance
 
         signal = self.entry_engine.calculate_entry(
             pair=pair,
@@ -253,6 +256,23 @@ class TradingLoop:
         typical = INSTRUMENT_REGISTRY_SPREAD.get(pair, 2.0)
         if spread > typical * self.config.risk.max_spread_multiplier:
             self._log_rejection(pair, direction, result.score, f"Spread too wide: {spread}")
+            return False
+
+        assessment = self.risk_engine.assess(
+            pair=pair,
+            direction=direction,
+            entry_price=signal.entry_price,
+            stop_loss=signal.stop_loss,
+            open_trades=[
+                {"pair": p.symbol, "direction": p.direction, "risk_pct": 0.02}
+                for p in self.managed_positions.values()
+            ],
+            account_balance=balance,
+            current_spread_pips=spread if spread > 0 else None,
+        )
+        if not assessment.approved:
+            reasons = "; ".join(assessment.rejections)
+            self._log_rejection(pair, direction, signal.score, f"RiskEngine: {reasons}")
             return False
 
         order = self.platforms.execute_entry(
@@ -394,9 +414,21 @@ class TradingLoop:
         pip_size = get_pip_size(pos.symbol)
         is_buy = pos.direction == "BUY"
         pnl_pips = (close_price - pos.entry_price) / pip_size if is_buy else (pos.entry_price - close_price) / pip_size
-        pnl_pct = pnl_pips * 0.0002
+
+        info = INSTRUMENT_REGISTRY.get(pos.symbol.upper())
+        pip_value = info.pip_value_per_lot if info else 10.0
+        pnl_dollars = pnl_pips * pip_value * pos.lots
+
+        balance = self.platforms.get_total_balance() or 10_000.0
+        pnl_pct = pnl_dollars / balance if balance > 0 else 0.0
 
         self.drawdown.register_trade_result(pnl_pct)
+        self.risk_engine.record_trade_result(
+            pnl_dollars=pnl_dollars,
+            pnl_pips=pnl_pips,
+            pair=pos.symbol,
+            direction=pos.direction,
+        )
 
         hold_seconds = (datetime.now(timezone.utc) - pos.open_time).total_seconds()
         logger.info(
