@@ -318,7 +318,8 @@ class TradingLoop:
             return False
 
         pip_size = get_pip_size(pair)
-        typical = INSTRUMENT_REGISTRY_SPREAD.get(pair, 2.0)
+        _reg_info = INSTRUMENT_REGISTRY.get(pair)
+        typical = _reg_info.typical_spread_pips if _reg_info else INSTRUMENT_REGISTRY_SPREAD.get(pair, 2.0)
         if spread > typical * self.config.risk.max_spread_multiplier:
             self._log_rejection(pair, direction, result.score, f"Spread too wide: {spread}")
             return False
