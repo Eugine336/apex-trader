@@ -51,9 +51,8 @@ class FVGDetector:
         self.min_size_pips = min_size_pips
         self.pip_size = pip_size
         self.min_size = min_size_pips * pip_size
-        # How close (in price) price can be to a zone and still be considered
-        # "approaching" it — prevents the engine missing zones where price is
-        # sitting right at the edge of the gap (common on Gold/indices).
+        # proximity_pips is supplied by InstrumentProfile — different per category.
+        # Forex: 3.0 | Commodity: 8.0 | Index: 15.0 | Synthetic: 8.0
         self.proximity = proximity_pips * pip_size
     def detect(self, df: pd.DataFrame, timeframe: str = "M5") -> list[FairValueGap]:
         """
@@ -210,13 +209,15 @@ class FVGDetector:
         m15_fvgs: list[FairValueGap],
         direction: str,
         current_price: float,
-        pip_size: float = 0.0001
+        pip_size: float = 0.0001,
+        overlap_threshold_pips: float = 5.0,
     ) -> dict:
         """
         Check if M5 and M15 FVGs overlap — this is extremely high confluence.
         Overlapping FVGs from multiple timeframes = institutional zone.
+        overlap_threshold_pips supplied by InstrumentProfile.mtf_overlap_threshold_pips.
         """
-        overlap_threshold = 5 * pip_size
+        overlap_threshold = overlap_threshold_pips * pip_size
 
         m5_entry  = self.get_entry_fvg(m5_fvgs, direction, current_price)
         m15_entry = self.get_entry_fvg(m15_fvgs, direction, current_price)
