@@ -308,13 +308,24 @@ class PlatformManager:
         count: int = 200,
     ) -> dict[str, dict[str, pd.DataFrame]]:
         """Fetch OHLCV for every enabled symbol across timeframes."""
+        from datetime import timezone
+        import datetime as _dt
+        from config import is_always_open
+
         if symbols is None:
             symbols = self.config.enabled_pairs
         if timeframes is None:
             timeframes = ["H4", "H1", "M15", "M5"]
 
+        # On weekends skip non-24/7 instruments (forex, indices, commodities are closed)
+        now_utc = _dt.datetime.now(timezone.utc)
+        is_weekend = now_utc.weekday() >= 5  # 5=Saturday, 6=Sunday
+
         all_data: dict[str, dict[str, pd.DataFrame]] = {}
         for symbol in symbols:
+            # Skip closed instruments on weekends
+            if is_weekend and not is_always_open(symbol):
+                continue
             # Skip symbols already confirmed as broker-unavailable (log only once)
             if hasattr(self, "_unavailable_symbols") and symbol in self._unavailable_symbols:
                 continue
