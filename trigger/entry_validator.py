@@ -166,6 +166,16 @@ class EntryValidator:
         self, pair: str, utc_now: datetime,
     ) -> tuple[bool, str]:
         status = self.session.get_status(utc_now)
+        # Commodities and synthetics trade 24/5 — only hard-block on WEEKEND/DEAD
+        try:
+            category = get_instrument(pair).category.value
+        except KeyError:
+            category = "forex"
+        is_commodity = category in ("commodity", "synthetic")
+        if is_commodity:
+            if status.current_session in ("WEEKEND", "DEAD"):
+                return False, f"Market closed for {category} ({status.current_session})"
+            return True, f"Session active for {category} ({status.current_session})"
         if not status.is_tradeable:
             return False, f"Session not active ({status.current_session})"
         return True, f"Session active ({status.current_session})"
