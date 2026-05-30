@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from loguru import logger
 
-from config import AppConfig, get_instrument, INSTRUMENT_REGISTRY
+from config import AppConfig, get_instrument, INSTRUMENT_REGISTRY, is_always_open
 from brain.drawdown_guard import DrawdownGuard, DrawdownMode
 from brain.correlation_engine import CorrelationEngine, OpenTrade
 from brain.session_engine import SessionEngine
@@ -166,16 +166,11 @@ class EntryValidator:
         self, pair: str, utc_now: datetime,
     ) -> tuple[bool, str]:
         status = self.session.get_status(utc_now)
-        # Commodities and synthetics trade 24/5 — only hard-block on WEEKEND/DEAD
-        try:
-            category = get_instrument(pair).category.value
-        except KeyError:
-            category = "forex"
-        is_commodity = category in ("commodity", "synthetic")
-        if is_commodity:
+        # Instrument registry decides session gating — not hardcoded category names
+        if is_always_open(pair):
             if status.current_session in ("WEEKEND", "DEAD"):
-                return False, f"Market closed for {category} ({status.current_session})"
-            return True, f"Session active for {category} ({status.current_session})"
+                return False, f"Market closed ({status.current_session})"
+            return True, f"Session active ({status.current_session})"
         if not status.is_tradeable:
             return False, f"Session not active ({status.current_session})"
         return True, f"Session active ({status.current_session})"

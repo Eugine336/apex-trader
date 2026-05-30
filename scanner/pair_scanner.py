@@ -14,6 +14,7 @@ from loguru import logger
 
 from config import (
     AppConfig, get_instrument, get_pip_size, INSTRUMENT_REGISTRY,
+    is_always_open, is_session_gated,
 )
 from brain.structure_engine import StructureEngine, Trend
 from brain.fvg_detector import FVGDetector
@@ -163,11 +164,9 @@ class PairScanner:
         # ── 5. Session timing ─────────────────────────────────────────
         session_status = self.session.get_status(utc_now)
 
-        # Commodities (e.g. XAUUSD) trade 24/5 — they are not session-gated
-        # the same way FX pairs are. Treat any non-DEAD, non-WEEKEND window
-        # as tradeable for commodities so we don't zero out their session score.
-        is_commodity = category in ("commodity", "synthetic")
-        if is_commodity:
+        # Use registry to decide session gating — FX pairs are gated,
+        # everything else (commodities, indices, synthetics) trades freely.
+        if is_always_open(pair):
             session_active = session_status.current_session not in ("DEAD", "WEEKEND")
         else:
             session_active = session_status.is_tradeable
@@ -259,8 +258,8 @@ class PairScanner:
         regime = bias["h4_trend"]
         if regime == "RANGING":
             score = min(score, scoring.ranging_score_cap)
-        # Off-session penalty only applies to FX pairs — commodities are 24/5
-        if not session_active and score > 0 and not is_commodity:
+        # Off-session penalty only applies to instruments that are FX session-gated
+        if not session_active and score > 0 and is_session_gated(pair):
             score = max(score - 10, 0)
 
         # ── Status ────────────────────────────────────────────────────
