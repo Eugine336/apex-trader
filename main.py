@@ -6,6 +6,7 @@ Two arms, one mind. MT5 for Forex/indices. Deriv for synthetics — 24/7.
 Usage:
     python main.py               # Start trading only (headless)
     python main.py --dashboard   # Start trading + dashboard on port 8000
+    python main.py --rediscover  # Force broker symbol re-discovery then trade
 """
 
 import bootstrap.datadog_init  # noqa: F401
@@ -41,7 +42,8 @@ def _start_trading_loop(trading_loop) -> None:
 
 
 def main() -> None:
-    dashboard_mode = "--dashboard" in sys.argv
+    dashboard_mode   = "--dashboard"   in sys.argv
+    force_rediscover = "--rediscover"  in sys.argv  # force broker symbol re-discovery and overwrite JSONs
 
     logger.info("=" * 60)
     logger.info("  APEX TRADER — Institutional-Grade Trading System")
@@ -59,7 +61,7 @@ def main() -> None:
     logger.info("Running broker symbol auto-discovery ...")
     try:
         from brain.broker_autodiscovery import run_autodiscovery
-        run_autodiscovery(mt5_broker_name="auto", force=False)
+        run_autodiscovery(mt5_broker_name="auto", force=force_rediscover)
         logger.info("Broker auto-discovery complete")
     except Exception as exc:
         logger.warning("Auto-discovery skipped: {}", exc)

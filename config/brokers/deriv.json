@@ -1,6 +1,7 @@
 {
   "name": "deriv",
-  "_note": "Auto-managed. BOOM300/CRASH300 excluded — not available on virtual accounts.",
+  "_auto_discovered": true,
+  "_note": "Auto-generated on startup.",
   "rules": {
     "forex": {
       "pattern": "frx{symbol}",
@@ -8,22 +9,26 @@
     }
   },
   "overrides": {
-    "V10_1S":    "1HZ10V",
-    "V25_1S":    "1HZ25V",
-    "V50_1S":    "1HZ50V",
-    "V75_1S":    "1HZ75V",
-    "V100_1S":   "1HZ100V",
-    "BOOM500":   "BOOM500",
-    "BOOM1000":  "BOOM1000",
-    "CRASH500":  "CRASH500",
+    "V10_1S": "1HZ10V",
+    "V25_1S": "1HZ25V",
+    "V50_1S": "1HZ50V",
+    "V75_1S": "1HZ75V",
+    "V100_1S": "1HZ100V",
+    "BOOM300": "BOOM300N",
+    "BOOM500": "BOOM500",
+    "BOOM1000": "BOOM1000",
+    "CRASH300": "CRASH300N",
+    "CRASH500": "CRASH500",
     "CRASH1000": "CRASH1000",
-    "STPIDX":   "stpRNG",
-    "RNGBULL":  "RDBULL",
-    "RNGBEAR":  "RDBEAR",
-    "JD10":     "JD10",
-    "JD25":     "JD25",
-    "JD50":     "JD50",
-    "XAUUSD":   "frxXAUUSD",
-    "XAGUSD":   "frxXAGUSD"
+    "STPIDX": "stpRNG",
+    "RNGBULL": "RDBULL",
+    "RNGBEAR": "RDBEAR",
+    "JD10": "JD10",
+    "JD25": "JD25",
+    "JD50": "JD50",
+    "JD75": "JD75",
+    "JD100": "JD100",
+    "XAUUSD": "frxXAUUSD",
+    "XAGUSD": "frxXAGUSD"
   }
 }
