@@ -360,6 +360,9 @@ class LiveState:
             "consecutive_wins": int(getattr(dd, "consecutive_wins", 0)),
             "mt5_connected": self._connection_status.get("mt5", False),
             "deriv_connected": self._connection_status.get("deriv", False),
+            "trade_manager_trades": len(
+                getattr(getattr(loop, "trade_manager", None), "_trades", {})
+            ),
         }
 
     def _sim_status(self, uptime: float) -> dict:

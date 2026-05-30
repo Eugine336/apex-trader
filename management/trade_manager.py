@@ -18,7 +18,7 @@ from typing import Optional
 import pandas as pd
 from loguru import logger
 
-from brain.structure_engine import StructureEngine
+from brain.structure_engine import StructureEngine, StructureEvent
 from config import get_pip_size
 from management.trailing_stop import StructureTrailingStop
 from management.partial_close import PartialCloseCalculator
@@ -116,6 +116,11 @@ class TradeManager:
         self.partial_calc = PartialCloseCalculator()
         self._trades: dict[str, ManagedTrade] = {}
 
+    @staticmethod
+    def _is_long(direction: str) -> bool:
+        """Treat BUY/LONG as long, SELL/SHORT as short."""
+        return direction.upper() in ("LONG", "BUY")
+
     # ------------------------------------------------------------------
     # Open
     # ------------------------------------------------------------------
@@ -193,6 +198,8 @@ class TradeManager:
             self._update_trailing(trade, current_df_m5)
         if self._check_tp2(trade):
             return trade
+        if current_df_m5 is not None and self._check_structure_exit(trade, current_df_m5):
+            return trade
         if self._check_stall(trade):
             return trade
 
@@ -258,7 +265,7 @@ class TradeManager:
     # ------------------------------------------------------------------
 
     def _update_pnl(self, trade: ManagedTrade) -> None:
-        if trade.direction == "LONG":
+        if self._is_long(trade.direction):
             raw_pips = (trade.current_price - trade.entry_price) / trade.pip_size
         else:
             raw_pips = (trade.entry_price - trade.current_price) / trade.pip_size
@@ -274,9 +281,10 @@ class TradeManager:
             trade.lowest_price_since_entry = trade.current_price
 
     def _check_stop_loss(self, trade: ManagedTrade) -> bool:
+        is_long = self._is_long(trade.direction)
         hit = (
-            (trade.direction == "LONG" and trade.current_price <= trade.stop_loss)
-            or (trade.direction == "SHORT" and trade.current_price >= trade.stop_loss)
+            (is_long and trade.current_price <= trade.stop_loss)
+            or (not is_long and trade.current_price >= trade.stop_loss)
         )
         if hit:
             reason = "Stop loss hit"
@@ -289,9 +297,10 @@ class TradeManager:
     def _check_tp1(self, trade: ManagedTrade) -> bool:
         if trade.partial_closed:
             return False
+        is_long = self._is_long(trade.direction)
         hit = (
-            (trade.direction == "LONG" and trade.current_price >= trade.tp1)
-            or (trade.direction == "SHORT" and trade.current_price <= trade.tp1)
+            (is_long and trade.current_price >= trade.tp1)
+            or (not is_long and trade.current_price <= trade.tp1)
         )
         if hit:
             lots_close, lots_remain = self.partial_calc.calculate_partial(
@@ -308,9 +317,10 @@ class TradeManager:
         return hit
 
     def _activate_breakeven(self, trade: ManagedTrade) -> None:
+        direction = "LONG" if self._is_long(trade.direction) else "SHORT"
         be_level = self.partial_calc.calculate_breakeven_level(
             trade.entry_price,
-            trade.direction,
+            direction,
             self.breakeven_buffer_pips,
             trade.pip_size,
         )
@@ -322,8 +332,9 @@ class TradeManager:
     def _update_trailing(
         self, trade: ManagedTrade, df_m5: pd.DataFrame,
     ) -> None:
+        direction = "LONG" if self._is_long(trade.direction) else "SHORT"
         new_sl = self.trailing.calculate_trail(
-            trade.direction, trade.stop_loss, df_m5, trade.pip_size,
+            direction, trade.stop_loss, df_m5, trade.pip_size,
         )
         if new_sl is not None:
             trade.stop_loss = new_sl
@@ -334,23 +345,56 @@ class TradeManager:
             )
 
     def _check_tp2(self, trade: ManagedTrade) -> bool:
+        is_long = self._is_long(trade.direction)
         hit = (
-            (trade.direction == "LONG" and trade.current_price >= trade.tp2)
-            or (trade.direction == "SHORT" and trade.current_price <= trade.tp2)
+            (is_long and trade.current_price >= trade.tp2)
+            or (not is_long and trade.current_price <= trade.tp2)
         )
         if hit:
             self.close_trade(trade, "TP2 hit", trade.current_price, TradeStatus.CLOSED)
         return hit
 
-    def _check_stall(self, trade: ManagedTrade) -> bool:
-        stall_pips = 5.0
-        if (
-            trade.candles_since_entry > self.max_stall_candles
-            and abs(trade.pnl_pips) < stall_pips
-        ):
+    def _check_structure_exit(
+        self, trade: ManagedTrade, df_m5: pd.DataFrame,
+    ) -> bool:
+        """Exit if M5 structure shifts against the trade direction."""
+        if trade.partial_closed:
+            return False
+        stall_minutes = (datetime.now(timezone.utc) - trade.entry_time).total_seconds() / 60
+        if stall_minutes < 30:
+            return False
+        if len(df_m5) < 10:
+            return False
+        struct = StructureEngine(swing_lookback=3)
+        analysis = struct.analyze(df_m5)
+        is_long = self._is_long(trade.direction)
+        if is_long and analysis.last_event in (StructureEvent.CHOCH_BEARISH, StructureEvent.BOS_BEARISH):
             self.close_trade(
                 trade,
-                f"Price stalled for {trade.candles_since_entry} candles",
+                f"Structure exit — bearish shift after {stall_minutes:.0f}min",
+                trade.current_price,
+                TradeStatus.TIME_EXIT,
+            )
+            return True
+        if not is_long and analysis.last_event in (StructureEvent.CHOCH_BULLISH, StructureEvent.BOS_BULLISH):
+            self.close_trade(
+                trade,
+                f"Structure exit — bullish shift after {stall_minutes:.0f}min",
+                trade.current_price,
+                TradeStatus.TIME_EXIT,
+            )
+            return True
+        return False
+
+    def _check_stall(self, trade: ManagedTrade) -> bool:
+        """Time-based stall exit — 75 minutes with <5 pip movement."""
+        if trade.partial_closed:
+            return False
+        stall_minutes = (datetime.now(timezone.utc) - trade.entry_time).total_seconds() / 60
+        if stall_minutes > 75 and abs(trade.pnl_pips) < 5.0:
+            self.close_trade(
+                trade,
+                f"Stall exit — {stall_minutes:.0f}min, {trade.pnl_pips:.1f}pip",
                 trade.current_price,
                 TradeStatus.TIME_EXIT,
             )

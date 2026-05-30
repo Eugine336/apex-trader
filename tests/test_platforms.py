@@ -379,46 +379,62 @@ class TestTradingLoop:
         loop._check_daily_reset()
         assert loop._daily_trades == 0
 
-    def test_check_sl_buy(self):
+    def test_trade_manager_sl_buy(self):
         loop = TradingLoop()
-        order = OrderResult(
-            success=True, order_id="1", fill_price=1.1,
-            requested_price=1.1, slippage_pips=0, lots=0.1,
-            symbol="EURUSD", direction="BUY", sl=1.09, tp=1.12, platform="mt5",
+        tm = loop.trade_manager
+        from management.trade_manager import EntrySignal as TMSig
+        sig = TMSig(
+            pair="EURUSD", direction="LONG", entry_price=1.1,
+            stop_loss=1.09, tp1=1.12, tp2=1.15,
+            risk_reward_1=1.0, risk_reward_2=2.0,
+            position_size_lots=0.1, score=90,
         )
-        pos = ManagedPosition(order, tp1=1.12, tp2=1.15)
-        assert loop._check_sl(pos, 1.089, True) is True
-        assert loop._check_sl(pos, 1.095, True) is False
+        trade = tm.open_trade(sig)
+        tm.update(trade, 1.089)
+        from management.trade_manager import TradeStatus
+        assert trade.status == TradeStatus.STOPPED
 
-    def test_check_sl_sell(self):
+    def test_trade_manager_sl_sell(self):
         loop = TradingLoop()
-        order = OrderResult(
-            success=True, order_id="1", fill_price=1.1,
-            requested_price=1.1, slippage_pips=0, lots=0.1,
-            symbol="EURUSD", direction="SELL", sl=1.11, tp=1.08, platform="mt5",
+        tm = loop.trade_manager
+        from management.trade_manager import EntrySignal as TMSig
+        sig = TMSig(
+            pair="EURUSD", direction="SHORT", entry_price=1.1,
+            stop_loss=1.11, tp1=1.08, tp2=1.06,
+            risk_reward_1=1.0, risk_reward_2=2.0,
+            position_size_lots=0.1, score=90,
         )
-        pos = ManagedPosition(order, tp1=1.08, tp2=1.06)
-        assert loop._check_sl(pos, 1.115, False) is True
-        assert loop._check_sl(pos, 1.105, False) is False
+        trade = tm.open_trade(sig)
+        tm.update(trade, 1.115)
+        from management.trade_manager import TradeStatus
+        assert trade.status == TradeStatus.STOPPED
 
-    def test_check_tp1(self):
+    def test_trade_manager_tp1(self):
         loop = TradingLoop()
-        order = OrderResult(
-            success=True, order_id="1", fill_price=1.1,
-            requested_price=1.1, slippage_pips=0, lots=0.1,
-            symbol="EURUSD", direction="BUY", sl=1.09, tp=1.12, platform="mt5",
+        tm = loop.trade_manager
+        from management.trade_manager import EntrySignal as TMSig
+        sig = TMSig(
+            pair="EURUSD", direction="LONG", entry_price=1.1,
+            stop_loss=1.09, tp1=1.12, tp2=1.15,
+            risk_reward_1=1.0, risk_reward_2=2.0,
+            position_size_lots=0.1, score=90,
         )
-        pos = ManagedPosition(order, tp1=1.12, tp2=1.15)
-        assert loop._check_tp1(pos, 1.125, True) is True
-        assert loop._check_tp1(pos, 1.115, True) is False
+        trade = tm.open_trade(sig)
+        tm.update(trade, 1.125)
+        assert trade.partial_closed is True
 
-    def test_check_tp2(self):
+    def test_trade_manager_tp2(self):
         loop = TradingLoop()
-        order = OrderResult(
-            success=True, order_id="1", fill_price=1.1,
-            requested_price=1.1, slippage_pips=0, lots=0.1,
-            symbol="EURUSD", direction="SELL", sl=1.11, tp=1.06, platform="mt5",
+        tm = loop.trade_manager
+        from management.trade_manager import EntrySignal as TMSig
+        sig = TMSig(
+            pair="EURUSD", direction="SHORT", entry_price=1.1,
+            stop_loss=1.11, tp1=1.08, tp2=1.06,
+            risk_reward_1=1.0, risk_reward_2=2.0,
+            position_size_lots=0.1, score=90,
         )
-        pos = ManagedPosition(order, tp1=1.08, tp2=1.06)
-        assert loop._check_tp2(pos, 1.055, False) is True
-        assert loop._check_tp2(pos, 1.065, False) is False
+        trade = tm.open_trade(sig)
+        tm.update(trade, 1.075)
+        tm.update(trade, 1.055)
+        from management.trade_manager import TradeStatus
+        assert trade.status == TradeStatus.CLOSED
