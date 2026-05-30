@@ -140,6 +140,20 @@ class LiveState:
         except Exception:
             return 10000.0
 
+    def _get_platform_balances(self) -> tuple[float, float]:
+        if not self.is_live:
+            return 0.0, 0.0
+
+        try:
+            summary = self._platform_manager.get_account_summary()
+            mt5_info = summary.get("mt5")
+            deriv_info = summary.get("deriv")
+            mt5_balance = self._safe_float(getattr(mt5_info, "balance", 0.0), 0.0)
+            deriv_balance = self._safe_float(getattr(deriv_info, "balance", 0.0), 0.0)
+            return round(mt5_balance, 2), round(deriv_balance, 2)
+        except Exception:
+            return 0.0, 0.0
+
     def _get_journal_records(self) -> list[Any]:
         if not self.is_live:
             return []
@@ -299,6 +313,7 @@ class LiveState:
     def _live_status(self, uptime: float) -> dict:
         loop = self._trading_loop
         balance = self._get_balance()
+        mt5_balance, deriv_balance = self._get_platform_balances()
 
         dd = loop.drawdown.get_status(datetime.now(timezone.utc))
         journal = getattr(loop, "journal", None)
@@ -332,6 +347,8 @@ class LiveState:
             "daily_pnl": round(daily_frac * balance, 2),
             "total_pnl": total_pnl,
             "account_balance": round(balance, 2),
+            "mt5_balance": mt5_balance,
+            "deriv_balance": deriv_balance,
             "daily_loss_pct": round(abs(min(daily_frac, 0.0)) * 100, 2),
             "max_daily_loss_pct": float(
                 getattr(getattr(loop, "config", None), "risk", None).max_daily_drawdown_pct
@@ -358,6 +375,8 @@ class LiveState:
             "daily_pnl": 0.0,
             "total_pnl": 0.0,
             "account_balance": 10000.0,
+            "mt5_balance": 0.0,
+            "deriv_balance": 0.0,
             "daily_loss_pct": 0.0,
             "max_daily_loss_pct": 5.0,
             "open_trade_count": 0,

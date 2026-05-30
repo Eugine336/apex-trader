@@ -211,6 +211,46 @@ class PlatformManager:
             total += info.balance
         return total
 
+    def get_platform_balance(self, symbol: str) -> float:
+        """Get balance for the specific platform that handles this symbol."""
+        try:
+            connector = self.get_connector(symbol)
+        except Exception as exc:
+            logger.warning("Balance lookup failed for {}: {}", symbol, exc)
+            return 0.0
+
+        platform_name = "mt5" if isinstance(connector, MT5Connector) else "deriv"
+
+        if isinstance(connector, MT5Connector) and self._mt5_connected:
+            try:
+                balance = float(self.mt5.get_account_info().balance)
+                logger.debug(
+                    "Balance for {} → {} platform: ${:.2f}",
+                    symbol,
+                    platform_name,
+                    balance,
+                )
+                return balance
+            except Exception as exc:
+                logger.warning("MT5 balance fetch error for {}: {}", symbol, exc)
+                return 0.0
+
+        if isinstance(connector, DerivConnector) and self._deriv_connected:
+            try:
+                balance = float(self.deriv.get_account_info().balance)
+                logger.debug(
+                    "Balance for {} → {} platform: ${:.2f}",
+                    symbol,
+                    platform_name,
+                    balance,
+                )
+                return balance
+            except Exception as exc:
+                logger.warning("Deriv balance fetch error for {}: {}", symbol, exc)
+                return 0.0
+
+        return 0.0
+
     def get_total_equity(self) -> float:
         total = 0.0
         for info in self.get_account_summary().values():
