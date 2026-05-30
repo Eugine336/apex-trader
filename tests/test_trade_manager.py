@@ -7,7 +7,7 @@ TP2 full close, time-based exit, re-entry eligibility, partial close math.
 import pandas as pd
 import numpy as np
 import pytest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from management.trade_manager import (
     EntrySignal,
@@ -238,18 +238,27 @@ class TestTP2:
 
 class TestTimeExit:
     def test_stall_exit(self):
-        tm = TradeManager(max_stall_candles=5)
+        tm = TradeManager()
         trade = tm.open_trade(_signal())
-        for _ in range(7):
-            tm.update(trade, 1.10001)
+        trade.entry_time = datetime.now(timezone.utc) - timedelta(minutes=80)
+        tm.update(trade, 1.10001)
         assert trade.status == TradeStatus.TIME_EXIT
-        assert "stalled" in trade.close_reason.lower()
+        assert "stall" in trade.close_reason.lower()
 
     def test_no_stall_if_profit(self):
-        tm = TradeManager(max_stall_candles=5)
+        tm = TradeManager()
         trade = tm.open_trade(_signal())
-        for _ in range(7):
-            tm.update(trade, 1.10100)
+        trade.entry_time = datetime.now(timezone.utc) - timedelta(minutes=80)
+        tm.update(trade, 1.10100)
+        assert trade.status != TradeStatus.TIME_EXIT
+
+    def test_no_stall_if_tp1_hit(self):
+        tm = TradeManager()
+        trade = tm.open_trade(_signal())
+        tm.update(trade, 1.10200)
+        assert trade.partial_closed
+        trade.entry_time = datetime.now(timezone.utc) - timedelta(minutes=80)
+        tm.update(trade, 1.10001)
         assert trade.status != TradeStatus.TIME_EXIT
 
 
