@@ -46,11 +46,15 @@ class FVGDetector:
     The midpoint of the FVG is the optimal entry zone.
     """
 
-    def __init__(self, min_size_pips: float = 2.0, pip_size: float = 0.0001):
+    def __init__(self, min_size_pips: float = 2.0, pip_size: float = 0.0001,
+                 proximity_pips: float = 5.0):
         self.min_size_pips = min_size_pips
         self.pip_size = pip_size
         self.min_size = min_size_pips * pip_size
-
+        # How close (in price) price can be to a zone and still be considered
+        # "approaching" it — prevents the engine missing zones where price is
+        # sitting right at the edge of the gap (common on Gold/indices).
+        self.proximity = proximity_pips * pip_size
     def detect(self, df: pd.DataFrame, timeframe: str = "M5") -> list[FairValueGap]:
         """
         Detect all open FVGs on the given dataframe.
@@ -178,11 +182,13 @@ class FVGDetector:
                 continue
 
             if direction == "LONG" and fvg.kind == "BULLISH":
-                if fvg.top < current_price:  # FVG is below us — waiting to be tapped
+                # FVG is below us (or price just entering from top) — allow proximity window
+                if fvg.top < current_price + self.proximity:
                     candidates.append(fvg)
 
             elif direction == "SHORT" and fvg.kind == "BEARISH":
-                if fvg.bottom > current_price:  # FVG is above us — waiting to be tapped
+                # FVG is above us (or price just entering from bottom) — allow proximity window
+                if fvg.bottom > current_price - self.proximity:
                     candidates.append(fvg)
 
         if not candidates:

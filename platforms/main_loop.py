@@ -171,7 +171,7 @@ class TradingLoop:
             self._last_scan_time, session_status, news_status
         )
 
-        if should_scan and session_status.is_tradeable:
+        if should_scan and (session_status.is_tradeable or self._has_active_commodities()):
             cycle["scanned"] = True
             self._scan_and_enter(session_status, news_status, now, cycle)
             self._last_scan_time = now
@@ -195,6 +195,19 @@ class TradingLoop:
             pass
 
     # ── Scan → Entry pipeline ────────────────────────────────────────────
+
+    def _has_active_commodities(self) -> bool:
+        """True if any enabled symbol is a commodity/synthetic (trades 24/5).
+        Keeps the scan loop alive during FX dead zones so Gold etc. are never skipped."""
+        from config import get_instrument, InstrumentCategory
+        for pair in self.config.enabled_pairs:
+            try:
+                cat = get_instrument(pair).category
+                if cat in (InstrumentCategory.COMMODITY, InstrumentCategory.SYNTHETIC):
+                    return True
+            except KeyError:
+                pass
+        return False
 
     def _scan_and_enter(
         self, session_status, news_status, now: datetime, cycle: dict

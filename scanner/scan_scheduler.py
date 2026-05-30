@@ -38,7 +38,9 @@ class ScanScheduler:
             return self.INTERVALS["active"]
         if session in ("DEAD", "WEEKEND"):
             return self.INTERVALS[session.lower()]
-        return self.INTERVALS["quiet"]
+        # TOKYO, SYDNEY, TRANSITION — commodities (Gold, indices) are active here.
+        # Scan at "active" pace so we never miss a Gold entry during Asian hours.
+        return self.INTERVALS["active"]
 
     def should_scan_now(
         self,

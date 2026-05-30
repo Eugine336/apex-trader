@@ -128,6 +128,16 @@ class MTFOrchestrator:
             return None
 
         session_score = self.session_engine.get_session_score(utc_now)
+        # Commodities (gold, indices, synthetics) trade 24/5 — don't zero their
+        # session score during Asian/Transition hours. Treat any non-dead window
+        # as at least a medium-quality session (score=4) for commodities.
+        try:
+            from config import get_instrument
+            _cat = get_instrument(pair).category.value
+        except (KeyError, Exception):
+            _cat = "forex"
+        if _cat in ("commodity", "synthetic"):
+            session_score = max(session_score, 4)
         session_points = 10 if session_score >= 7 else (5 if session_score >= 4 else 0)
         score += session_points
         confluences.append(

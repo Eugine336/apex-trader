@@ -128,6 +128,12 @@ class TradeManager:
     def open_trade(self, signal: EntrySignal) -> ManagedTrade:
         trade_id = uuid.uuid4().hex[:12]
         pip_size = get_pip_size(signal.pair)
+        # Resolve pip_value from registry so Gold/indices use correct pip value
+        try:
+            from config import get_instrument
+            pip_value_per_lot = get_instrument(signal.pair).pip_value_per_lot
+        except KeyError:
+            pip_value_per_lot = self.default_pip_value
 
         trade = ManagedTrade(
             trade_id=trade_id,
@@ -157,7 +163,7 @@ class TradeManager:
             re_entry_eligible=False,
             score=signal.score,
             pip_size=pip_size,
-            pip_value_per_lot=self.default_pip_value,
+            pip_value_per_lot=pip_value_per_lot,
             confluences=list(signal.confluences),
             entry_zone=signal.entry_zone,
         )
