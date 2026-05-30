@@ -119,7 +119,15 @@ class BrokerAutoDiscovery:
     def run(self, force: bool = False) -> dict:
         """
         Main entry point. Returns the resolved overrides dict.
-        Skips scan if JSON is fresh unless force=True.
+
+        Always runs (and overwrites) when:
+          - JSON file does not exist
+          - JSON has no overrides (empty/corrupt)
+          - force=True (manual trigger or --rediscover flag)
+          - JSON is older than 7 days (broker may have added/removed symbols)
+
+        Skips only when JSON is fresh, non-empty, and force=False.
+        Always overwrites the file when it does run — that is the point.
         """
         if not force and self._is_fresh():
             logger.info(
@@ -128,8 +136,14 @@ class BrokerAutoDiscovery:
             )
             return self._load_existing()
 
+        reason = "forced" if force else (
+            "file missing" if not self.config_path.exists() else
+            "file empty/corrupt" if not self._load_existing() else
+            "config stale (7+ days)"
+        )
         logger.info(
-            "Running broker auto-discovery for '{}' ...", self.broker_name
+            "Running broker auto-discovery for '{}' — reason: {} ...",
+            self.broker_name, reason,
         )
 
         try:
@@ -257,10 +271,23 @@ class BrokerAutoDiscovery:
     # ── JSON management ───────────────────────────────────────────────────
 
     def _is_fresh(self) -> bool:
-        """JSON is fresh if it exists and was written in the last 7 days."""
+        """
+        JSON is fresh only if ALL of these are true:
+          1. File exists
+          2. File has actual overrides (not empty/corrupt)
+          3. File is less than 7 days old
+        If any condition fails — return False so discovery runs and overwrites.
+        """
         if not self.config_path.exists():
             return False
         import time
+        try:
+            with open(self.config_path) as f:
+                data = json.load(f)
+            if not data.get("overrides"):
+                return False  # Empty overrides — must re-run
+        except Exception:
+            return False  # Corrupt file — must re-run
         age_days = (time.time() - self.config_path.stat().st_mtime) / 86400
         return age_days < 7
 
@@ -273,10 +300,14 @@ class BrokerAutoDiscovery:
             return {}
 
     def _write_json(self, overrides: dict) -> None:
-        """Write the broker JSON — preserves Deriv rules, updates overrides."""
+        """
+        Write the broker JSON — always overwrites when called.
+        Preserves manually-added overrides that auto-discovery didn't find,
+        but auto-discovered symbols always win (broker is the source of truth).
+        """
         _BROKERS_DIR.mkdir(parents=True, exist_ok=True)
 
-        # Load existing to preserve any manual entries and rules
+        # Load existing to preserve manual-only entries and rules section
         existing: dict = {}
         if self.config_path.exists():
             try:
