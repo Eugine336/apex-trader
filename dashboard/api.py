@@ -129,7 +129,8 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
 
     @app.on_event("startup")
     async def start_broadcast_loop():
-        async def _loop():
+        # fast channel: status + trades + risk every 2s
+        async def _fast_loop():
             while True:
                 await asyncio.sleep(2)
                 if manager.active:
@@ -143,7 +144,24 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
                         await manager.broadcast(payload)
                     except Exception as exc:
                         logger.warning(f"WS broadcast error: {exc}")
-        asyncio.create_task(_loop())
+
+        # slow channel: scanner + performance every 5s
+        async def _slow_loop():
+            while True:
+                await asyncio.sleep(5)
+                if manager.active:
+                    try:
+                        payload = {
+                            "type": "scanner_update",
+                            "scanner": _state.get_scanner_results(),
+                            "performance": _state.get_performance(),
+                        }
+                        await manager.broadcast(payload)
+                    except Exception as exc:
+                        logger.warning(f"WS slow broadcast error: {exc}")
+
+        asyncio.create_task(_fast_loop())
+        asyncio.create_task(_slow_loop())
 
     if os.path.exists(_FRONTEND_BUILD):
         _static_dir = os.path.join(_FRONTEND_BUILD, "static")
