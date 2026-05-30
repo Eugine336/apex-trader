@@ -355,12 +355,19 @@ class TradingLoop:
             logger.debug("ML adjustments error: {}", exc)
             adjusted_lots = signal.position_size_lots
 
+        # For Deriv synthetics, pass the exact risk amount so the connector
+        # can compute a proper stake instead of guessing from lots.
+        stake_usd: float | None = None
+        if self.platforms.get_platform_name(pair) == "deriv":
+            stake_usd = assessment.max_loss_dollars
+
         order = self.platforms.execute_entry(
             pair, direction,
             adjusted_lots,
             signal.stop_loss,
             signal.tp1,
             comment=f"APEX|{signal.score}|{session}",
+            stake_usd=stake_usd,
         )
 
         if not order.success:
