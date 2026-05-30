@@ -75,6 +75,7 @@ def _sample_spread(connector, symbol: str, retries: int) -> float | None:
             tick = connector.get_tick(symbol)
             if tick and tick.spread > 0:
                 samples.append(tick.spread)
+            # spread=0.0 means bid==ask (ticks_history mid-only) — not a real spread
         except Exception as exc:
             logger.debug("Spread sample failed for {}: {}", symbol, exc)
 
