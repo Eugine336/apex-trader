@@ -101,6 +101,17 @@ def main() -> None:
     logger.info("Connecting to platforms…")
     connection_status = platform_manager.connect_all()
 
+    # Bootstrap real spreads from live brokers — patches INSTRUMENT_REGISTRY
+    # so every symbol uses actual observed spreads, not hardcoded guesses.
+    try:
+        from risk.spread_bootstrap import bootstrap_spreads
+        bootstrap_spreads(
+            mt5_connector=platform_manager.mt5 if connection_status.get("mt5") else None,
+            deriv_connector=platform_manager.deriv if connection_status.get("deriv") else None,
+        )
+    except Exception as exc:
+        logger.warning("Spread bootstrap failed (hardcoded values used): {}", exc)
+
     logger.info("-" * 60)
     logger.info("APEX TRADER IS LIVE")
     if connection_status.get("mt5"):
