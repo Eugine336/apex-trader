@@ -369,10 +369,21 @@ class EntryEngine:
         structure = StructureEngine(swing_lookback=3)
         analysis = structure.analyze(df)
 
+        # Check last_event first (CHoCH just happened)
         if direction == "LONG" and analysis.last_event.value == "CHOCH_BULLISH":
             return True
         if direction == "SHORT" and analysis.last_event.value == "CHOCH_BEARISH":
             return True
+
+        # Also accept if a CHoCH level exists — means one occurred recently even
+        # if a subsequent BOS or swing event came after it and overwrote last_event
+        if direction == "LONG" and analysis.last_choch_level is not None:
+            if analysis.trend.value in ("BULLISH", "RANGING"):
+                return True
+        if direction == "SHORT" and analysis.last_choch_level is not None:
+            if analysis.trend.value in ("BEARISH", "RANGING"):
+                return True
+
         return False
 
     def _pip_size(self, symbol: str) -> float:
