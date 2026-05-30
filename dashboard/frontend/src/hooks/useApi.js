@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 
-const BASE = process.env.REACT_APP_API_URL || '';
+const BASE = import.meta.env.VITE_API_URL || '';
 
 export function useApi(endpoint, interval = 5000) {
   const [data, setData] = useState(null);
@@ -11,8 +11,7 @@ export function useApi(endpoint, interval = 5000) {
     try {
       const res = await fetch(`${BASE}${endpoint}`);
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const json = await res.json();
-      setData(json);
+      setData(await res.json());
       setError(null);
     } catch (err) {
       setError(err.message);
@@ -24,8 +23,8 @@ export function useApi(endpoint, interval = 5000) {
   useEffect(() => {
     fetchData();
     if (interval > 0) {
-      const timer = setInterval(fetchData, interval);
-      return () => clearInterval(timer);
+      const t = setInterval(fetchData, interval);
+      return () => clearInterval(t);
     }
   }, [fetchData, interval]);
 
