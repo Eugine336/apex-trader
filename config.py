@@ -306,11 +306,12 @@ def get_trading_hours(symbol: str) -> str:
 
 
 def is_always_open(symbol: str) -> bool:
-    """True if the instrument trades continuously and should never be skipped
-    due to FX session timing. Covers 24/5 non-FX instruments and 24/7 synthetics."""
+    """True if the instrument trades 24/7 and should never be skipped on weekends.
+    Only Deriv synthetics qualify — forex, commodities and indices are all 24/5
+    and are closed on weekends."""
     try:
         info = get_instrument(symbol)
-        return info.category != InstrumentCategory.FOREX
+        return info.trading_hours == "24/7"
     except KeyError:
         return False
 
