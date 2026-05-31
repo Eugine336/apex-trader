@@ -12,6 +12,7 @@ const NAV = [
   { to: '/performance', icon: '📈', label: 'Performance' },
   { to: '/risk', icon: '🛡', label: 'Risk Monitor' },
   { to: '/ml', icon: '🧠', label: 'ML Insights' },
+  { to: '/activity', icon: '🔔', label: 'Activity' },
   { to: '/controls', icon: '⚙', label: 'Controls' },
 ];
 
