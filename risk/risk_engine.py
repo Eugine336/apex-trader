@@ -24,7 +24,7 @@ from risk.daily_tracker import PnLTracker
 from risk.position_sizer import PositionSizer
 from risk.spread_monitor import SpreadMonitor
 from platform_context import PlatformContext, build_context_for_symbol
-from ml.ev_estimator import EVEstimator
+from adaptive.ev_estimator import EVEstimator
 
 
 @dataclass
