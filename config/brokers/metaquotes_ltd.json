@@ -66,8 +66,7 @@
     "BNBUSD": "BNBUSD",
     "SOLUSD": "SOLUSD",
     "ADAUSD": "ADAUSD",
-    "DOTUSD": "DOTUSD",
-    "DOGEUSD": "DOGEUSD"
+    "DOTUSD": "DOTUSD"
   },
   "symbol_constraints": {
     "EURUSD": {
