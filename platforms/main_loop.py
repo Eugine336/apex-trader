@@ -37,6 +37,7 @@ from management.trade_manager import (
 from ml.ml_adapter import MLAdapter, TradeAdjustments
 from platforms.base_connector import OrderResult, PositionInfo
 from platforms.platform_manager import PlatformManager
+from platforms.platform_context import PlatformContext, build_context_for_symbol
 from risk.risk_engine import RiskEngine
 from risk.risk_reporter import RiskReporter
 from scanner import PairScanner, PairRanker, ScanScheduler
@@ -283,6 +284,14 @@ class TradingLoop:
         balance = self.platforms.get_platform_balance(pair) or 10_000.0
         self.risk_engine.balance = balance
 
+        # Build the platform context for this symbol — used by every downstream module
+        broker = self.platforms.get_broker_name(pair)
+        ctx: PlatformContext = build_context_for_symbol(
+            pair,
+            broker=broker,
+            typical_spreads=self.platforms.get_typical_spreads(pair),
+        )
+
         signal = self.entry_engine.calculate_entry(
             pair=pair,
             direction=direction,
@@ -318,10 +327,12 @@ class TradingLoop:
             return False
 
         pip_size = get_pip_size(pair)
-        _reg_info = INSTRUMENT_REGISTRY.get(pair)
-        typical = _reg_info.typical_spread_pips if _reg_info else INSTRUMENT_REGISTRY_SPREAD.get(pair, 2.0)
+        # Use the broker-specific spread baseline from the context instead of a
+        # global registry lookup — prevents Exness trades being rejected on
+        # ICMarkets thresholds (and vice-versa).
+        typical = ctx.typical_spread(pair, fallback=2.0)
         if spread > typical * self.config.risk.max_spread_multiplier:
-            self._log_rejection(pair, direction, result.score, f"Spread too wide: {spread}")
+            self._log_rejection(pair, direction, result.score, f"Spread too wide: {spread} (typical={typical})")
             return False
 
         assessment = self.risk_engine.assess(
@@ -334,6 +345,7 @@ class TradingLoop:
                 for p in self.managed_positions.values()
             ],
             account_balance=balance,
+            context=ctx,
             current_spread_pips=spread if spread > 0 else None,
         )
         if not assessment.approved:
@@ -356,11 +368,10 @@ class TradingLoop:
             logger.debug("ML adjustments error: {}", exc)
             adjusted_lots = signal.position_size_lots
 
-        # For Deriv synthetics, pass the exact risk amount so the connector
-        # can compute a proper stake instead of guessing from lots.
+        # Use the context to decide sizing path — no more string comparison
         stake_usd: float | None = None
-        if self.platforms.get_platform_name(pair) == "deriv":
-            stake_usd = assessment.max_loss_dollars
+        if ctx.uses_stake:
+            stake_usd = assessment.stake_usd or assessment.max_loss_dollars
 
         order = self.platforms.execute_entry(
             pair, direction,
@@ -473,20 +484,65 @@ class TradingLoop:
                 continue
 
             if tm_trade.partial_closed and not was_partial:
-                partial_lots = round(pos.lots * 0.5, 2)
-                partial_lots = max(0.01, partial_lots)
-                result = self.platforms.close_trade(oid, pos.platform, partial_lots)
-                if result.success:
-                    pos.tp1_hit = True
-                    pos.lots = round(pos.lots - partial_lots, 2)
-                    logger.info("✅ TP1 HIT — {} {} | 50% closed", pos.direction, pos.symbol)
+                pos_ctx = build_context_for_symbol(pos.symbol)
+                if pos_ctx.supports_partial_close:
+                    # MT5: native partial close
+                    partial_lots = round(pos.lots * 0.5, 2)
+                    partial_lots = max(0.01, partial_lots)
+                    result = self.platforms.close_trade(oid, pos.platform, partial_lots)
+                    if result.success:
+                        pos.tp1_hit = True
+                        pos.lots = round(pos.lots - partial_lots, 2)
+                        logger.info("✅ TP1 HIT (MT5 partial) — {} {} | 50% closed", pos.direction, pos.symbol)
+                else:
+                    # Deriv: partial close is not supported — close the full contract
+                    # and immediately open a fresh smaller one to simulate TP1 management.
+                    result = self.platforms.close_trade(oid, pos.platform)
+                    if result.success:
+                        pos.tp1_hit = True
+                        self._record_closed_trade(pos, result.close_price, "TP1_FULL_CLOSE_REOPEN")
+                        to_remove.append(oid)
+                        closed_count += 1
+                        # Attempt re-open at half stake (50% of original risk)
+                        try:
+                            half_stake = (tm_trade.pip_value_per_lot or 0.0) * 0.5  # fallback
+                            reopen_order = self.platforms.execute_entry(
+                                pos.symbol, pos.direction,
+                                0.0,            # lots unused on Deriv
+                                tm_trade.stop_loss,
+                                tm_trade.tp2,
+                                comment=f"APEX|TP1_REOPEN|{pos.score}",
+                                stake_usd=half_stake if half_stake > 0 else None,
+                            )
+                            if reopen_order.success:
+                                logger.info(
+                                    "✅ TP1 HIT (Deriv reopen) — {} {} | full close + reopen at half stake",
+                                    pos.direction, pos.symbol,
+                                )
+                        except Exception as reopen_err:
+                            logger.warning("Deriv TP1 reopen failed: {}", reopen_err)
+                    continue
 
             if tm_trade.stop_loss != prev_sl:
-                self.platforms.modify_trade(oid, pos.platform, new_sl=tm_trade.stop_loss)
-                pos.sl = tm_trade.stop_loss
-                if tm_trade.breakeven_active and not pos.at_breakeven:
-                    pos.at_breakeven = True
-                    logger.info("✅ BREAKEVEN — {} {} | SL→{:.5f}", pos.direction, pos.symbol, tm_trade.stop_loss)
+                pos_ctx = build_context_for_symbol(pos.symbol)
+                if pos_ctx.supports_modify:
+                    # MT5: modify the existing order with a new price-level SL
+                    self.platforms.modify_trade(oid, pos.platform, new_sl=tm_trade.stop_loss)
+                    pos.sl = tm_trade.stop_loss
+                    if tm_trade.breakeven_active and not pos.at_breakeven:
+                        pos.at_breakeven = True
+                        logger.info("✅ BREAKEVEN (MT5 modify) — {} {} | SL→{:.5f}", pos.direction, pos.symbol, tm_trade.stop_loss)
+                else:
+                    # Deriv: SL modify is not supported on multiplier contracts.
+                    # The connector accepted a dollar-amount SL at entry; any
+                    # change here would require closing and reopening the contract,
+                    # which only makes sense at TP1 (handled above).
+                    # For trailing purposes we track it locally only.
+                    pos.sl = tm_trade.stop_loss
+                    logger.debug(
+                        "SL update for Deriv {} {} tracked locally only (modify not supported)",
+                        pos.direction, pos.symbol,
+                    )
 
             pos.trailing = tm_trade.status == TradeStatus.TRAILING
             pos.re_entry_eligible = tm_trade.re_entry_eligible
