@@ -488,6 +488,37 @@ class DerivConnector(BaseConnector):
                     err = None  # retry succeeded
                 else:
                     err = resp["error"].get("message", "Unknown error")
+            _mult_match = _re.search(r"Multiplier is not in acceptable range.*?Accepts\s+([\d,]+)", err or "")
+            if _mult_match:
+                valid = sorted(int(x) for x in _mult_match.group(1).split(","))
+                corrected = min(valid, key=lambda x: abs(x - multiplier))
+                logger.warning(
+                    "Deriv multiplier {} rejected for {} — retrying with {} (valid: {}). "
+                    "Update config/brokers/deriv.json!",
+                    multiplier, mapped, corrected, valid,
+                )
+                multiplier = corrected
+                resp = self._sync_send({
+                    "buy": 1,
+                    "subscribe": 1,
+                    "price": amount,
+                    "parameters": {
+                        "contract_type": contract_type,
+                        "symbol": mapped,
+                        "currency": "USD",
+                        "amount": amount,
+                        "basis": "stake",
+                        "multiplier": corrected,
+                        "limit_order": {
+                            "stop_loss": round(abs(price - sl) / price * amount * corrected, 2),
+                            "take_profit": round(abs(tp - price) / price * amount * corrected, 2),
+                        },
+                    },
+                })
+                if not resp.get("error"):
+                    err = None
+                else:
+                    err = resp["error"].get("message", "Unknown error")
             if err:
                 logger.error("Deriv order failed — {} {} {}: {}", direction, mapped, lots, err)
                 return OrderResult(
