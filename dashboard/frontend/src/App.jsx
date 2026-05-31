@@ -9,6 +9,7 @@ import Performance from './pages/Performance';
 import RiskMonitor from './pages/RiskMonitor';
 import MLInsights from './pages/MLInsights';
 import Controls from './pages/Controls';
+import Activity from './pages/Activity';
 
 export default function App() {
   return (
@@ -23,6 +24,7 @@ export default function App() {
           <Route path="risk" element={<RiskMonitor />} />
           <Route path="ml" element={<MLInsights />} />
           <Route path="controls" element={<Controls />} />
+          <Route path="activity" element={<Activity />} />
         </Route>
       </Routes>
     </BrowserRouter>
