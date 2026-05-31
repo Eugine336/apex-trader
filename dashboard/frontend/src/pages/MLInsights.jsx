@@ -9,7 +9,7 @@ function rating(wr) {
 }
 
 export default function MLInsights() {
-  const { data } = useApi('/api/ml', 10000);
+  const { data } = useApi('/api/ml', 0);
 
   if (!data) {
     return (
