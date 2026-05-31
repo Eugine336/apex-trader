@@ -5,8 +5,8 @@ import { EquityChart, PnLBarChart, WinRateDonut, SessionBarChart, HorizontalBarC
 
 export default function Performance() {
   const { state } = useOutletContext();
-  const { data: perfData } = useApi('/api/performance', 10000);
-  const { data: mlData } = useApi('/api/ml', 10000);
+  const { data: perfData } = useApi('/api/performance', 0);
+  const { data: mlData } = useApi('/api/ml', 0);
 
   const p = perfData || state.performance || {};
   const ml = mlData || {};
