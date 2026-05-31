@@ -406,6 +406,9 @@ class PlatformManager:
         if not hasattr(self, "_unavailable_symbols"):
             self._unavailable_symbols: set = set()
 
+        if not hasattr(self, "_failed_timeframes"):
+            self._failed_timeframes: set[tuple[str, str]] = set()
+
         for tf in timeframes:
             try:
                 data[tf] = connector.get_ohlcv(symbol, tf, count)
@@ -425,6 +428,13 @@ class PlatformManager:
                     # Broker is mid-reconnect — skip all timeframes silently
                     logger.debug("Skipping {} {} — broker reconnecting", symbol, tf)
                     break
+                elif "No candle data" in exc_str:
+                    key = (symbol, tf)
+                    if key not in self._failed_timeframes:
+                        logger.warning("Data fetch failed — {} {}: {}", symbol, tf, exc)
+                        self._failed_timeframes.add(key)
+                    else:
+                        logger.debug("Data fetch failed — {} {}: {}", symbol, tf, exc)
                 else:
                     logger.warning("Data fetch failed — {} {}: {}", symbol, tf, exc)
         return data
