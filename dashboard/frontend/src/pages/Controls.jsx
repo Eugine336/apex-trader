@@ -18,7 +18,7 @@ function fmtUptime(sec) {
 
 export default function Controls() {
   const { state } = useOutletContext();
-  const { data: restData } = useApi('/api/status', 5000);
+  const { data: restData } = useApi('/api/status', 10000);
   const s = state.status || restData || {};
 
   const [feedback, setFeedback] = useState(null);
