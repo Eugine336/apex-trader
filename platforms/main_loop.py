@@ -171,7 +171,8 @@ class TradingLoop:
             return cycle
 
         should_scan = self.scheduler.should_scan_now(
-            self._last_scan_time, session_status, news_status
+            self._last_scan_time, session_status, news_status,
+            has_active_positions=len(self.managed_positions) > 0,
         )
 
         if should_scan and (session_status.is_tradeable or self._has_always_open_instruments()):
@@ -427,6 +428,7 @@ class TradingLoop:
             score=signal.score,
             confluences=list(signal.confluences),
             entry_zone=signal.entry_zone,
+            entry_timeframe=signal.entry_timeframe,
         )
         tm_trade = self.trade_manager.open_trade(tm_signal)
         managed.tm_trade_id = tm_trade.trade_id
@@ -652,7 +654,10 @@ class TradingLoop:
         now = datetime.now(timezone.utc)
         session_status = self.session_engine.get_status(now)
         news_status = self.news_guard.check(self.config.enabled_pairs, now)
-        return self.scheduler.get_scan_interval(session_status, news_status)
+        return self.scheduler.get_scan_interval(
+            session_status, news_status,
+            has_active_positions=len(self.managed_positions) > 0,
+        )
 
     # ── Async journal bridge ──────────────────────────────────────────
 

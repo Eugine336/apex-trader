@@ -67,13 +67,13 @@ class TestInstrumentRegistry:
             get_pip_size("FAKEPAIR")
 
     def test_total_instruments(self):
-        assert len(INSTRUMENT_REGISTRY) == 59
+        assert len(INSTRUMENT_REGISTRY) == 66
 
     def test_category_counts(self):
         assert len(get_instruments_by_category("forex")) == 28
         assert len(get_instruments_by_category("commodity")) == 4
         assert len(get_instruments_by_category("index")) == 10
-        assert len(get_instruments_by_category("synthetic")) == 17
+        assert len(get_instruments_by_category("synthetic")) == 15
 
     def test_platform_filter(self):
         mt5 = get_instruments_by_platform("mt5")
