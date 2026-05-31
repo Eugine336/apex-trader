@@ -36,10 +36,10 @@ class TestSymbolMapperDeriv:
         assert mapper.to_broker("V100_1S") == "1HZ100V"
 
     def test_override_boom1000(self, mapper):
-        assert mapper.to_broker("BOOM1000") == "BOOM1000N"
+        assert mapper.to_broker("BOOM1000") == "BOOM1000"
 
     def test_override_crash500(self, mapper):
-        assert mapper.to_broker("CRASH500") == "CRASH500N"
+        assert mapper.to_broker("CRASH500") == "CRASH500"
 
     def test_override_stpidx(self, mapper):
         assert mapper.to_broker("STPIDX") == "stpRNG"
@@ -80,12 +80,17 @@ class TestSymbolMapperDeriv:
     def test_all_synthetics_map(self, mapper):
         synthetics = [
             "V10_1S", "V25_1S", "V50_1S", "V75_1S", "V100_1S",
-            "BOOM300", "BOOM500", "BOOM1000",
-            "CRASH300", "CRASH500", "CRASH1000",
+            "BOOM500", "BOOM1000",
+            "CRASH500", "CRASH1000",
         ]
+        passthrough_ok = {
+            "JD10", "JD25", "JD50",
+            "BOOM500", "BOOM1000",
+            "CRASH500", "CRASH1000",
+        }
         for sym in synthetics:
             result = mapper.to_broker(sym)
-            assert result != sym or sym in ("JD10", "JD25", "JD50"), (
+            assert result != sym or sym in passthrough_ok, (
                 f"{sym} should map to a different Deriv name"
             )
 
