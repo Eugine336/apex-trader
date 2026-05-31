@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Optional
 
 from loguru import logger
 
@@ -23,6 +23,7 @@ from config import (
 from risk.daily_tracker import PnLTracker
 from risk.position_sizer import PositionSizer
 from risk.spread_monitor import SpreadMonitor
+from platforms.platform_context import PlatformContext, build_context_for_symbol
 
 
 @dataclass
@@ -38,6 +39,8 @@ class RiskAssessment:
     weekly_pnl_pct: float = 0.0
     open_trade_count: int = 0
     total_exposure_pct: float = 0.0
+    stake_usd: float = 0.0          # Deriv only; 0.0 for MT5
+    sizing_mode: str = "lots"       # "lots" | "stake"
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -102,6 +105,7 @@ class RiskEngine:
         open_trades: list[dict[str, Any]] | None = None,
         account_balance: float | None = None,
         current_spread_pips: float | None = None,
+        context: Optional[PlatformContext] = None,
     ) -> RiskAssessment:
         now = datetime.now(timezone.utc)
         balance = account_balance or self.balance
@@ -183,48 +187,75 @@ class RiskEngine:
                 )
         checks.append("No duplicate pair+direction")
 
+        # Build context if not supplied — auto-detect from instrument registry
+        if context is None:
+            context = build_context_for_symbol(pair)
+
         info = INSTRUMENT_REGISTRY.get(pair.upper())
         pip_size = info.pip_size if info else 0.0001
         pip_value = info.pip_value_per_lot if info else 10.0
 
-        size_result = self.position_sizer.calculate(
-            account_balance=balance,
-            risk_pct=risk_pct_decimal,
-            entry_price=entry_price,
-            stop_loss=stop_loss,
-            pip_size=pip_size,
-            pip_value_per_lot=pip_value,
-        )
-
-        remaining_daily = (daily_loss_limit / 100.0 * balance) + pnl_snap.daily_total
-        if remaining_daily < size_result.max_loss and remaining_daily > 0:
-            reduced_risk = remaining_daily / balance
+        if context.uses_stake:
+            # Deriv path: max_loss = stake = risk_amount; no lots
+            size_result = self.position_sizer.calculate_stake(
+                account_balance=balance,
+                risk_pct=risk_pct_decimal,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+            )
+            checks.append(
+                f"[{context.platform}/{context.broker}] Stake sized: "
+                f"${size_result.stake_usd:.2f} (stake-based), max_loss=${size_result.max_loss:.2f}"
+            )
+        else:
+            # MT5 path: size in lots
             size_result = self.position_sizer.calculate(
                 account_balance=balance,
-                risk_pct=reduced_risk,
+                risk_pct=risk_pct_decimal,
                 entry_price=entry_price,
                 stop_loss=stop_loss,
                 pip_size=pip_size,
                 pip_value_per_lot=pip_value,
+                context=context,
             )
             checks.append(
-                f"Position reduced to fit daily limit — {reduced_risk:.3%} risk"
+                f"[{context.platform}/{context.broker}] Position sized: "
+                f"{size_result.lots} lots, max_loss=${size_result.max_loss:.2f}"
             )
-        elif remaining_daily <= 0:
+
+        # Daily budget enforcement — reduce size if approaching daily limit
+        remaining_daily = (daily_loss_limit / 100.0 * balance) + pnl_snap.daily_total
+        if remaining_daily <= 0:
             rejections.append("No daily loss budget remaining")
             return self._build_assessment(
                 False, 0.0, 0.0, 0.0, checks, rejections, mode,
                 dd_status, len(trades), now,
             )
-        checks.append(
-            f"Position sized: {size_result.lots} lots, "
-            f"max loss=${size_result.max_loss:.2f}"
-        )
+        if remaining_daily < size_result.max_loss:
+            reduced_risk = remaining_daily / balance
+            if context.uses_stake:
+                size_result = self.position_sizer.calculate_stake(
+                    account_balance=balance,
+                    risk_pct=reduced_risk,
+                    entry_price=entry_price,
+                    stop_loss=stop_loss,
+                )
+            else:
+                size_result = self.position_sizer.calculate(
+                    account_balance=balance,
+                    risk_pct=reduced_risk,
+                    entry_price=entry_price,
+                    stop_loss=stop_loss,
+                    pip_size=pip_size,
+                    pip_value_per_lot=pip_value,
+                    context=context,
+                )
+            checks.append(f"Size reduced to fit daily limit — {reduced_risk:.3%} risk")
 
         risk_pips = size_result.risk_pips
         if risk_pips > 0:
             tp_distance = risk_pips * self.risk_cfg.min_risk_reward
-            checks.append(f"Min R:R {self.risk_cfg.min_risk_reward}:1 requires {tp_distance:.1f} pip target")
+            checks.append(f"Min R:R {self.risk_cfg.min_risk_reward}:1 requires {tp_distance:.5g} pip target")
 
         if current_spread_pips is not None:
             safe, spread_reason = self.spread_monitor.is_spread_safe(
@@ -243,16 +274,25 @@ class RiskEngine:
             corr_trades + [OpenTrade(pair=pair.upper(), direction=direction.upper(), risk_pct=risk_pct_decimal)]
         )
 
-        logger.info(
-            f"[RiskEngine] APPROVED {direction.upper()} {pair.upper()} — "
-            f"{size_result.lots} lots, risk={risk_pct_decimal:.2%}, "
-            f"mode={mode}"
-        )
+        if context.uses_stake:
+            logger.info(
+                f"[RiskEngine] APPROVED {direction.upper()} {pair.upper()} — "
+                f"stake=${size_result.stake_usd:.2f}, risk={risk_pct_decimal:.2%}, "
+                f"platform={context.platform}/{context.broker}, mode={mode}"
+            )
+        else:
+            logger.info(
+                f"[RiskEngine] APPROVED {direction.upper()} {pair.upper()} — "
+                f"{size_result.lots} lots, risk={risk_pct_decimal:.2%}, "
+                f"platform={context.platform}/{context.broker}, mode={mode}"
+            )
 
         return self._build_assessment(
             True, risk_pct_decimal, size_result.lots, size_result.max_loss,
             checks, rejections, mode, dd_status, len(trades), now,
             exposure_pct=exposure_map.max_single_currency_exposure,
+            stake_usd=size_result.stake_usd,
+            sizing_mode=size_result.sizing_mode,
         )
 
     def record_trade_result(
@@ -344,6 +384,8 @@ class RiskEngine:
         open_count: int,
         now: datetime,
         exposure_pct: float = 0.0,
+        stake_usd: float = 0.0,
+        sizing_mode: str = "lots",
     ) -> RiskAssessment:
         pnl_snap = self.pnl_tracker.get_snapshot(account_balance=self.balance, timestamp=now)
         return RiskAssessment(
@@ -358,6 +400,8 @@ class RiskEngine:
             weekly_pnl_pct=pnl_snap.weekly_total_pct,
             open_trade_count=open_count,
             total_exposure_pct=round(exposure_pct * 100, 2),
+            stake_usd=stake_usd,
+            sizing_mode=sizing_mode,
             timestamp=now,
         )
 
