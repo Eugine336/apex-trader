@@ -42,6 +42,7 @@ class EntrySignal:
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     valid_until: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     instrument_category: str = "forex"
+    entry_timeframe: str = "M5"
 
 
 @dataclass
@@ -182,7 +183,12 @@ class EntryEngine:
         )
 
         zone_desc = self._describe_zone(zone, pip_size)
-        valid_until = now + timedelta(minutes=25)
+        entry_timeframe = self._determine_entry_timeframe(zone)
+
+        expiry_minutes = {
+            "M1": 10, "M5": 20, "M15": 45, "H1": 120, "H4": 240,
+        }.get(entry_timeframe, 25)
+        valid_until = now + timedelta(minutes=expiry_minutes)
 
         signal = EntrySignal(
             pair=pair,
@@ -203,6 +209,7 @@ class EntryEngine:
             timestamp=now,
             valid_until=valid_until,
             instrument_category=category,
+            entry_timeframe=entry_timeframe,
         )
 
         logger.info(
@@ -320,7 +327,8 @@ class EntryEngine:
         if pattern_name:
             return True, pattern_desc
 
-        choch = self._detect_m1_choch(m1_df, direction, profile=profile)
+        choch = self._detect_m1_choch(m1_df, direction, profile=profile,
+                                      entry_zone=entry_zone, pip_size=pip_size)
         logger.debug(f"M1 CHoCH result — {choch}")
         if choch:
             return True, f"M1 Change of Character — {direction.lower()} shift"
@@ -424,7 +432,9 @@ class EntryEngine:
         return False
 
     def _detect_m1_choch(self, df: pd.DataFrame, direction: str,
-                          profile: Optional["InstrumentProfile"] = None) -> bool:
+                          profile: Optional["InstrumentProfile"] = None,
+                          entry_zone: Optional[dict] = None,
+                          pip_size: float = 0.0001) -> bool:
         if len(df) < 10:
             return False
         # Use profile swing_lookback and limit bars to m1_confirmation_bars
@@ -469,43 +479,77 @@ class EntryEngine:
         # candles), use raw price momentum as micro-confirmation.
         # A professional trader reading a 1-minute chart sees this instantly:
         # 3 consecutive candles closing in the trade direction = momentum shift.
-        return self._detect_momentum_confirmation(df, direction)
+        return self._detect_momentum_confirmation(df, direction, entry_zone, pip_size)
 
-    def _detect_momentum_confirmation(self, df: pd.DataFrame, direction: str) -> bool:
+    def _detect_momentum_confirmation(self, df: pd.DataFrame, direction: str,
+                                       entry_zone: Optional[dict] = None,
+                                       pip_size: float = 0.0001) -> bool:
         """
         Fallback micro-confirmation using momentum candles.
-        Looks at the last 3-5 candles on M1 for directional momentum.
-        Also checks for a bullish/bearish close sequence after a wick.
+        Requires price to be near the entry zone (zone proximity gate)
+        and at least one momentum candle backed by above-average volume.
         """
         if len(df) < 5:
             return False
+
+        # ── Zone proximity gate ──────────────────────────────────────────
+        # Momentum far from any entry zone is noise — real momentum that
+        # matters happens AT or NEAR the zone.
+        if entry_zone and entry_zone.get("type", "NONE") != "NONE":
+            zone_top = entry_zone["top"]
+            zone_bottom = entry_zone["bottom"]
+            last_close = float(df["close"].iloc[-1])
+            last_low = float(df["low"].iloc[-1])
+            last_high = float(df["high"].iloc[-1])
+            proximity = 3.0 * pip_size
+
+            if direction == "LONG":
+                if last_low > zone_top + proximity:
+                    return False
+            elif direction == "SHORT":
+                if last_high < zone_bottom - proximity:
+                    return False
 
         recent = df.iloc[-5:]
         closes = recent["close"].values
         opens  = recent["open"].values
 
+        # ── Volume filter ────────────────────────────────────────────────
+        # At least one of the momentum candles should have tick_volume above
+        # the 20-bar average — real momentum is backed by participation.
+        volume_ok = True
+        if "tick_volume" in df.columns and len(df) >= 20:
+            avg_vol = float(df["tick_volume"].iloc[-20:].mean())
+            recent_vols = recent["tick_volume"].values
+            if direction == "LONG":
+                momentum_mask = [c > o for c, o in zip(closes, opens)]
+            else:
+                momentum_mask = [c < o for c, o in zip(closes, opens)]
+            has_vol_candle = any(
+                m and float(v) > avg_vol
+                for m, v in zip(momentum_mask, recent_vols)
+            )
+            volume_ok = has_vol_candle
+
+        if not volume_ok:
+            return False
+
         if direction == "LONG":
-            # At least 3 of last 5 candles are bullish (close > open)
             bullish_count = sum(1 for c, o in zip(closes, opens) if c > o)
             if bullish_count >= 3:
                 return True
-            # Last 2 candles both bullish and each closing higher
             if closes[-1] > opens[-1] and closes[-2] > opens[-2] and closes[-1] > closes[-2]:
                 return True
-            # Price made a higher low in the last 3 candles (micro HH/HL)
             lows = recent["low"].values
             if lows[-1] > lows[-3] and closes[-1] > closes[-3]:
                 return True
 
         elif direction == "SHORT":
-            # At least 3 of last 5 candles are bearish (close < open)
             bearish_count = sum(1 for c, o in zip(closes, opens) if c < o)
             if bearish_count >= 3:
                 return True
-            # Last 2 candles both bearish and each closing lower
             if closes[-1] < opens[-1] and closes[-2] < opens[-2] and closes[-1] < closes[-2]:
                 return True
-            # Price made a lower high in the last 3 candles (micro LH/LL)
             highs = recent["high"].values
             if highs[-1] < highs[-3] and closes[-1] < closes[-3]:
                 return True
@@ -537,3 +581,14 @@ class EntryEngine:
         mid = zone["midpoint"]
         size_pips = round((top - bottom) / pip_size, 1)
         return f"{kind} {bottom:.5f}–{top:.5f}, midpoint {mid:.5f} ({size_pips} pips)"
+
+    @staticmethod
+    def _determine_entry_timeframe(zone: dict) -> str:
+        """Derive entry timeframe from the zone's FVG or OB origin."""
+        fvg = zone.get("fvg")
+        if fvg and hasattr(fvg, "timeframe") and fvg.timeframe:
+            return fvg.timeframe
+        ob = zone.get("ob")
+        if ob and hasattr(ob, "timeframe") and ob.timeframe:
+            return ob.timeframe
+        return "M5"

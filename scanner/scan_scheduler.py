@@ -13,6 +13,8 @@ class ScanScheduler:
     """
     A sharp sniper doesn't look away during the action.
     Scan frequency adapts to market conditions.
+    When positions are open, never goes slower than 15s — active positions
+    deserve active monitoring regardless of session.
     """
 
     INTERVALS = {
@@ -24,31 +26,42 @@ class ScanScheduler:
         "news":     120,
     }
 
+    MAX_INTERVAL_WITH_POSITIONS = 15
+
     def get_scan_interval(
         self,
         session_status: SessionStatus,
         news_status: NewsStatus,
+        has_active_positions: bool = False,
     ) -> int:
         if not news_status.is_clear:
-            return self.INTERVALS["news"]
-        session = session_status.current_session.upper()
-        if "OVERLAP" in session:
-            return self.INTERVALS["overlap"]
-        if session in ("LONDON", "NEW_YORK"):
-            return self.INTERVALS["active"]
-        if session in ("DEAD", "WEEKEND"):
-            return self.INTERVALS[session.lower()]
-        # TOKYO, SYDNEY, TRANSITION — commodities (Gold, indices) are active here.
-        # Scan at "active" pace so we never miss a Gold entry during Asian hours.
-        return self.INTERVALS["active"]
+            base = self.INTERVALS["news"]
+        else:
+            session = session_status.current_session.upper()
+            if "OVERLAP" in session:
+                base = self.INTERVALS["overlap"]
+            elif session in ("LONDON", "NEW_YORK"):
+                base = self.INTERVALS["active"]
+            elif session in ("DEAD", "WEEKEND"):
+                base = self.INTERVALS[session.lower()]
+            else:
+                base = self.INTERVALS["active"]
+
+        if has_active_positions:
+            return min(base, self.MAX_INTERVAL_WITH_POSITIONS)
+        return base
 
     def should_scan_now(
         self,
         last_scan_time: Optional[datetime],
         session_status: SessionStatus,
         news_status: NewsStatus,
+        has_active_positions: bool = False,
     ) -> bool:
         if last_scan_time is None:
             return True
         elapsed = (datetime.now(timezone.utc) - last_scan_time).total_seconds()
-        return elapsed >= self.get_scan_interval(session_status, news_status)
+        return elapsed >= self.get_scan_interval(
+            session_status, news_status,
+            has_active_positions=has_active_positions,
+        )
