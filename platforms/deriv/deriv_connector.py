@@ -466,127 +466,90 @@ class DerivConnector(BaseConnector):
         })
         latency = (_time.monotonic() - t0) * 1000
 
-        if resp.get("error"):
-            err = resp["error"].get("message", "Unknown error")
-            # Auto-retry: parse max allowed stake from Deriv error and retry once
-            import re as _re
+        # ── Auto-retry loop ────────────────────────────────────────────────
+        # Deriv can reject an order for two independent reasons that interact:
+        #   1. Wrong multiplier  → fix multiplier, rescale stake to preserve risk
+        #   2. Stake cap         → floor stake to Deriv's cap for this symbol/price
+        #
+        # The old nested-if approach fired cap-check BEFORE multiplier-check, so
+        # when both were wrong it chased a moving cap at the wrong multiplier.
+        # This loop handles them in the correct order (multiplier first) and re-runs
+        # up to MAX_RETRIES times so a cap that shifts between requests is caught.
+        import re as _re
+        import math as _math
+
+        MAX_RETRIES = 4
+        err: Optional[str] = resp["error"].get("message", "Unknown error") if resp.get("error") else None
+
+        for _attempt in range(MAX_RETRIES):
+            if err is None:
+                break  # success
+
+            # ── 1. Multiplier correction (always fix this first) ───────────
+            _mult_match = _re.search(
+                r"Multiplier is not in acceptable range.*?Accepts\s+([\d,\s]+)", err
+            )
+            if _mult_match:
+                valid = sorted(int(x.strip()) for x in _mult_match.group(1).split(",") if x.strip().isdigit())
+                if valid:
+                    corrected = min(valid, key=lambda x: abs(x - multiplier))
+                    logger.warning(
+                        "Deriv multiplier {} rejected for {} — retrying with {} (valid: {}). "
+                        "Update config/brokers/deriv.json!",
+                        multiplier, mapped, corrected, valid,
+                    )
+                    # Rescale stake so max-loss in dollars stays constant:
+                    # max_loss = stake × mult × sl_pct  →  new_stake = stake × old_mult / new_mult
+                    if corrected > 0:
+                        amount = round(max(1.0, amount * multiplier / corrected), 2)
+                        logger.debug(
+                            "Deriv stake rescaled for {}× → {}×: ${:.2f}",
+                            multiplier, corrected, amount,
+                        )
+                    multiplier = corrected
+
+            # ── 2. Stake cap ───────────────────────────────────────────────
             _cap_match = _re.search(r"equal to or lower than ([\d]+(?:\.[\d]+)?)", err)
             if _cap_match:
                 max_stake = float(_cap_match.group(1))
-                # Floor to whole dollar — a percentage margin (e.g. 0.99×) is not
-                # enough because Deriv's cap is price-sensitive and shifts between
-                # requests, causing the retry to chase a moving target. A full-dollar
-                # floor gives stable clearance regardless of cap precision.
-                import math as _math
+                # Floor to cent — keeps us cleanly under the cap without
+                # giving up more than $0.01 of stake.
                 capped = max(1.0, float(_math.floor(max_stake * 100)) / 100)
-                logger.warning(
-                    "Deriv stake capped — retrying {} {} with ${} (max ${})",
-                    direction, symbol, capped, max_stake,
-                )
-                resp = self._sync_send({
-                    "buy": 1,
-                    "subscribe": 1,
-                    "price": capped,
-                    "parameters": {
-                        "contract_type": contract_type,
-                        "symbol": mapped,
-                        "currency": "USD",
-                        "amount": capped,
-                        "basis": "stake",
-                        "multiplier": multiplier,
-                        "limit_order": {
-                            "stop_loss": round(abs(price - sl) / price * capped * multiplier, 2),
-                            "take_profit": round(abs(tp - price) / price * capped * multiplier, 2),
-                        },
-                    },
-                })
-                if not resp.get("error"):
-                    err = None  # retry succeeded
-                else:
-                    err = resp["error"].get("message", "Unknown error")
-            _mult_match = _re.search(r"Multiplier is not in acceptable range.*?Accepts\s+([\d,]+)", err or "")
-            if _mult_match:
-                valid = sorted(int(x) for x in _mult_match.group(1).split(","))
-                corrected = min(valid, key=lambda x: abs(x - multiplier))
-                logger.warning(
-                    "Deriv multiplier {} rejected for {} — retrying with {} (valid: {}). "
-                    "Update config/brokers/deriv.json!",
-                    multiplier, mapped, corrected, valid,
-                )
-                # Recalculate stake to preserve the same max-loss in dollars.
-                # max_loss = stake × multiplier × sl_pct  (constant)
-                # new_stake = stake × original_mult / corrected_mult
-                original_mult = multiplier
-                multiplier = corrected
-                if corrected > 0 and original_mult > 0:
-                    amount = round(amount * original_mult / corrected, 2)
-                    amount = max(1.0, amount)
-                    logger.debug(
-                        "Deriv stake recalculated for {}× → {}×: ${:.2f}",
-                        original_mult, corrected, amount,
+                if capped < amount:
+                    logger.warning(
+                        "Deriv stake capped — retrying {} {} with ${:.2f} (cap ${:.2f}), attempt {}/{}",
+                        direction, symbol, capped, max_stake, _attempt + 1, MAX_RETRIES,
                     )
-                resp = self._sync_send({
-                    "buy": 1,
-                    "subscribe": 1,
-                    "price": amount,
-                    "parameters": {
-                        "contract_type": contract_type,
-                        "symbol": mapped,
-                        "currency": "USD",
-                        "amount": amount,
-                        "basis": "stake",
-                        "multiplier": corrected,
-                        "limit_order": {
-                            "stop_loss": round(abs(price - sl) / price * amount * corrected, 2),
-                            "take_profit": round(abs(tp - price) / price * amount * corrected, 2),
-                        },
+                    amount = capped
+
+            # ── 3. Retry with updated multiplier + amount ──────────────────
+            resp = self._sync_send({
+                "buy": 1,
+                "subscribe": 1,
+                "price": amount,
+                "parameters": {
+                    "contract_type": contract_type,
+                    "symbol": mapped,
+                    "currency": "USD",
+                    "amount": amount,
+                    "basis": "stake",
+                    "multiplier": multiplier,
+                    "limit_order": {
+                        "stop_loss": round(abs(price - sl) / price * amount * multiplier, 2),
+                        "take_profit": round(abs(tp - price) / price * amount * multiplier, 2),
                     },
-                })
-                if not resp.get("error"):
-                    err = None
-                else:
-                    err = resp["error"].get("message", "Unknown error")
-                    # The recalculated stake may now exceed Deriv's per-symbol cap —
-                    # retry once more with the capped amount.
-                    _cap_match2 = _re.search(r"equal to or lower than ([\d]+(?:\.[\d]+)?)", err or "")
-                    if _cap_match2:
-                        max_stake2 = float(_cap_match2.group(1))
-                        import math as _math
-                        capped2 = max(1.0, float(_math.floor(max_stake2 * 100)) / 100)
-                        logger.warning(
-                            "Deriv stake capped after multiplier correction — retrying {} {} "
-                            "with ${} (max ${})",
-                            direction, symbol, capped2, max_stake2,
-                        )
-                        resp = self._sync_send({
-                            "buy": 1,
-                            "subscribe": 1,
-                            "price": capped2,
-                            "parameters": {
-                                "contract_type": contract_type,
-                                "symbol": mapped,
-                                "currency": "USD",
-                                "amount": capped2,
-                                "basis": "stake",
-                                "multiplier": corrected,
-                                "limit_order": {
-                                    "stop_loss": round(abs(price - sl) / price * capped2 * corrected, 2),
-                                    "take_profit": round(abs(tp - price) / price * capped2 * corrected, 2),
-                                },
-                            },
-                        })
-                        if not resp.get("error"):
-                            err = None
-                        else:
-                            err = resp["error"].get("message", "Unknown error")
-            if err:
-                logger.error("Deriv order failed — {} {} {}: {}", direction, mapped, lots, err)
-                return OrderResult(
-                    success=False, order_id="", fill_price=0.0,
-                    requested_price=price, slippage_pips=0.0, lots=lots,
-                    symbol=symbol, direction=direction.upper(), sl=sl, tp=tp,
-                    platform="deriv", error=err,
-                )
+                },
+            })
+            err = resp["error"].get("message", "Unknown error") if resp.get("error") else None
+
+        if err:
+            logger.error("Deriv order failed — {} {} {}: {}", direction, mapped, lots, err)
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0,
+                requested_price=price, slippage_pips=0.0, lots=lots,
+                symbol=symbol, direction=direction.upper(), sl=sl, tp=tp,
+                platform="deriv", error=err,
+            )
 
         buy_resp = resp.get("buy", {})
         contract_id = str(buy_resp.get("contract_id", ""))
