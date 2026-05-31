@@ -151,6 +151,32 @@ class TradeJournal:
             )
             await db.commit()
 
+    async def get_recent_decisions(self, limit: int = 50) -> list[dict]:
+        """Return the most recent rejected decisions for dashboard display."""
+        await self.initialize()
+        async with aiosqlite.connect(self.db_path) as db:
+            db.row_factory = aiosqlite.Row
+            async with db.execute(
+                """
+                SELECT pair, direction, score, reason_rejected, timestamp
+                FROM decisions
+                ORDER BY id DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ) as cursor:
+                rows = await cursor.fetchall()
+        return [
+            {
+                "pair": row["pair"],
+                "direction": row["direction"],
+                "score": row["score"],
+                "reason": row["reason_rejected"] or "",
+                "timestamp": row["timestamp"],
+            }
+            for row in rows
+        ]
+
     async def get_performance_stats(self) -> dict[str, Any]:
         await self.initialize()
         async with aiosqlite.connect(self.db_path) as db:
