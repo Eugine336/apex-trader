@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from brain.drawdown_guard import DrawdownGuard, DrawdownMode, DrawdownStatus
 from risk.position_sizer import PositionSizer, SizeResult
 from risk.risk_engine import RiskEngine
-from ml.ev_estimator import EVEstimator, EVEstimate
+from adaptive.ev_estimator import EVEstimator, EVEstimate
 from scanner.pair_ranker import PairRanker
 from scanner.pair_scanner import PairScanResult
 

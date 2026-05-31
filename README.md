@@ -1,8 +1,9 @@
 # APEX TRADER
-### Institutional-Grade Automated Trading System
+### Automated Multi-Platform Trading System
 
-A professional multi-platform trading bot built with the mindset of a 100-year veteran trader.
-Sharp. Precise. Always watching. In and out like a sniper.
+A fully automated trading system for MetaTrader 5 and Deriv WebSocket API covering 66 instruments across forex, commodities, indices, synthetics, and crypto.
+
+APEX TRADER is a capital allocation engine. It identifies opportunities, measures risk, deploys capital, and protects capital. It carries no label — not scalper, not day trader, not swing trader. The market determines the holding period. Risk is the final, non-negotiable authority.
 
 ---
 
@@ -10,9 +11,9 @@ Sharp. Precise. Always watching. In and out like a sniper.
 
 ```
 apex-trader/
-├── brain/                    # Phase 1 ✅ - Market Reading + Intelligence Engine (17 modules)
+├── brain/                    # Market intelligence engine (17 modules)
 │   ├── structure_engine.py   # Market structure: HH/HL/LH/LL, BOS, CHOCH
-│   ├── liquidity_mapper.py   # Where stops are resting — equal highs/lows
+│   ├── liquidity_mapper.py   # Institutional stop clusters — equal highs/lows
 │   ├── fvg_detector.py       # Fair Value Gaps — price imbalances
 │   ├── order_block.py        # Institutional order blocks & breakers
 │   ├── currency_strength.py  # Real-time 8-currency strength ranking
@@ -23,201 +24,158 @@ apex-trader/
 │   ├── wyckoff_engine.py     # Wyckoff phases and spring/upthrust
 │   ├── mtf_orchestrator.py   # H4→H1→M15/M5→M1 setup cascade
 │   ├── trade_journal.py      # SQLite trade/decision auditing
-│   ├── drawdown_guard.py     # Dynamic recovery and freeze logic
+│   ├── drawdown_guard.py     # NORMAL/CAUTION/RECOVERY/FROZEN mode transitions
 │   ├── execution_monitor.py  # Slippage, spread, and latency quality
 │   ├── correlation_engine.py # Cross-pair exposure and hedge checks
 │   └── backtest_engine.py    # Replay, walk-forward, Monte Carlo
 │
-├── scanner/                  # Phase 2 ✅ - Multi-Pair Scanner
-│   ├── pair_scanner.py       # Core scanner — 7-factor confluence scoring
-│   ├── pair_ranker.py        # Tie-breaking & prioritization engine
-│   └── scan_scheduler.py     # Adaptive scan frequency controller
+├── scanner/                  # Multi-pair scanner
+│   ├── pair_scanner.py       # 10-factor confluence scoring (max 100)
+│   ├── pair_ranker.py        # Opportunity ranking by EV × score × pair_multiplier
+│   └── scan_scheduler.py     # Adaptive frequency: 10s overlap, 60s quiet, 15s with positions
 │
-├── trigger/                  # Phase 3 ✅ - Entry Engine
-│   ├── entry_engine.py       # Zone discovery, M1 CHOCH, SL/TP, position sizing
+├── trigger/                  # Entry engine
+│   ├── entry_engine.py       # Zone discovery, M1 confirmation, SL/TP, sizing
 │   ├── entry_patterns.py     # 5 M1 patterns: engulfing, pin bar, inside bar, wick, volume
 │   └── entry_validator.py    # 7 safety checks: spread, R:R, drawdown, expiry, max trades
 │
-├── management/               # Phase 4 ✅ - Trade Management
-│   ├── trade_manager.py      # Full trade lifecycle: SL → TP1 → breakeven → trail → TP2
-│   ├── trailing_stop.py      # Structure-based trailing stop (follows swing lows/highs)
-│   ├── partial_close.py      # 50% partial close at TP1 + breakeven calculation
-│   └── re_entry.py           # Re-entry logic after breakeven stops
+├── management/               # Trade lifecycle
+│   ├── trade_manager.py      # SL → TP1 → breakeven → trail → TP2, timeframe-aware stall
+│   ├── trailing_stop.py      # Structure-based trailing (M5 swing lows/highs)
+│   ├── partial_close.py      # 50% partial at TP1 + breakeven
+│   └── re_entry.py           # Re-entry after breakeven stops (15-min cooldown)
 │
-├── risk/                     # Phase 5 ✅ - Risk Engine
-│   ├── risk_engine.py        # Central risk authority — the ultimate gate
-│   ├── position_sizer.py     # Dynamic position sizing with volatility adjust
+├── risk/                     # Risk engine — the ultimate authority
+│   ├── risk_engine.py        # Multi-stage gate: drawdown, correlation, EV, sizing
+│   ├── position_sizer.py     # Dynamic sizing with micro account support ($5+)
 │   ├── daily_tracker.py      # Daily/weekly/monthly P&L tracking
-│   ├── spread_monitor.py     # Spread protection and alerting
-│   └── risk_reporter.py      # Risk dashboard data aggregation
+│   ├── spread_monitor.py     # Spread spike protection
+│   └── risk_reporter.py      # Aggregated risk health reporting
 │
-├── ml/                       # Phase 6 ✅ - ML Adapter (The Memory)
+├── adaptive/                 # Adaptive optimizer (statistical heuristics)
+│   ├── optimizer.py          # Master controller — coordinates all learners
 │   ├── trade_analyzer.py     # PerformanceProfile — dissects every trade
 │   ├── score_optimizer.py    # Adaptive scoring weights (gradual, sums to 100)
 │   ├── regime_learner.py     # Regime-specific strategy adaptation
 │   ├── pair_learner.py       # Pair-specific confidence multipliers
 │   ├── session_learner.py    # Session aggression levels
-│   └── ml_adapter.py         # Master controller — coordinates all learners
+│   └── ev_estimator.py       # Expected value estimation per pair/regime/session
 │
-├── platforms/                # Phase 7 ✅ - MT5 + Deriv Integration
-│   ├── base_connector.py     # Abstract interface all connectors share
-│   ├── platform_manager.py   # Unified routing — one interface, two arms
-│   ├── main_loop.py          # Master trading loop — scan→enter→manage→repeat
+├── platforms/                # MT5 + Deriv integration
+│   ├── base_connector.py     # Abstract connector interface
+│   ├── platform_manager.py   # Unified routing — one interface, two brokers
+│   ├── main_loop.py          # Trading loop: scan → enter → manage → repeat
 │   ├── mt5/
-│   │   └── mt5_connector.py  # MetaTrader 5 via official Python package
+│   │   └── mt5_connector.py  # MetaTrader 5 connector
 │   └── deriv/
-│       └── deriv_connector.py# Deriv WebSocket API — synthetics 24/7
+│       └── deriv_connector.py# Deriv WebSocket API connector
 │
-├── dashboard/                # Phase 8 ✅ - React Dashboard + FastAPI Backend
-│   ├── api.py                # FastAPI REST + WebSocket API (8 endpoints)
-│   ├── state.py              # Shared in-memory state store + demo data
-│   ├── start.sh              # One-command launcher (API + React)
-│   ├── requirements.txt      # Dashboard-specific Python deps (FastAPI, uvicorn)
-│   ├── tests/
-│   │   └── test_api.py       # API endpoint + WebSocket tests
+├── persistence/              # Crash recovery
+│   └── position_store.py     # SQLite WAL position persistence + reconciliation
+│
+├── dashboard/                # React + FastAPI UI
+│   ├── api.py                # REST + WebSocket API with API key auth
+│   ├── state.py              # LiveState orchestrator (delegates to mixins)
+│   ├── state_helpers.py      # Shared utilities
+│   ├── state_status.py       # Bot status endpoint
+│   ├── state_trades.py       # Open trades endpoint
+│   ├── state_history.py      # Trade history endpoint
+│   ├── state_scanner.py      # Scanner results endpoint
+│   ├── state_risk.py         # Risk status endpoint
+│   ├── state_performance.py  # Performance metrics endpoint
+│   ├── state_ml.py           # Adaptive optimizer insights endpoint
+│   ├── state_controls.py     # Start/stop/pause controls
 │   └── frontend/             # React app (dark theme)
-│       ├── src/pages/        # Overview, ActiveTrades, Scanner, Performance, Risk, ML, Controls, History
-│       ├── src/components/   # Charts, Layout, ScoreBar, StatusBar, TradeCard
-│       └── src/hooks/        # useApi, useWebSocket
-├── data/                     # Trade logs and historical data
-├── tests/                    # Unit tests (214+ passing)
-├── config.py                 # Full instrument registry (59 instruments) + all settings
-├── main.py                   # Entry point — boots all 8 phases, --dashboard flag
-├── requirements.txt
-└── .env.example              # Credentials template
+│
+├── ml/                       # Backward-compatibility shims → adaptive/
+├── config.py                 # 66-instrument registry + all settings
+├── main.py                   # Entry point — boots all phases, --dashboard flag
+├── pyproject.toml            # Ruff + pytest config
+├── requirements.txt          # Python dependencies
+├── .github/workflows/ci.yml  # CI pipeline (pytest + ruff on push/PR)
+└── docker-compose.yml        # Docker + Datadog Agent sidecar
 ```
 
 ---
 
-## Instruments Covered — 59 Total
+## Instruments — 66 Total
 
 | Category | Count | Examples |
 |----------|-------|---------|
-| Forex Majors | 7 | EURUSD, GBPUSD, USDJPY, AUDUSD |
-| Forex Crosses | 21 | EURGBP, GBPJPY, EURAUD, NZDCAD |
+| Forex Majors | 7 | EURUSD, GBPUSD, USDJPY, AUDUSD, NZDUSD, USDCAD, USDCHF |
+| Forex Crosses | 21 | EURGBP, GBPJPY, EURAUD, NZDCAD, GBPNZD |
 | Commodities | 4 | XAUUSD (Gold), XAGUSD (Silver), XBRUSD, XTIUSD |
-| Indices | 10 | US100, US30, GER40, UK100, JP225, HK50 |
-| Deriv Synthetics | 17 | V75_1S, BOOM500, CRASH1000, STPIDX |
+| Indices | 10 | US100, US30, US500, GER40, UK100, JP225, HK50 |
+| Synthetics | 15 | V75_1S, V100_1S, BOOM500, CRASH1000, STPIDX |
+| Crypto | 9 | BTCUSD, ETHUSD, SOLUSD, XRPUSD, ADAUSD |
 
-Every instrument has its own pip size, spread, and margin category in the registry.
-
----
-
-## What This System Does
-
-**The Brain reads the market like a professional:**
-- Identifies market structure (HH/HL trend or LH/LL downtrend)
-- Maps exactly where institutional stop clusters are resting
-- Detects Fair Value Gaps — imbalances price must return to fill
-- Finds Order Blocks — where institutions placed their large orders
-- Ranks all 8 major currencies by real-time strength
-- Knows which session is active and which pairs are hottest
-- Guards against high-impact news events automatically
-- Classifies market regimes (trend, range, volatility, accumulation, distribution)
-- Confirms setups with tick-volume spikes, divergence, and climax behavior
-- Detects inducement, fake breakouts, stop hunts, and turtle soup traps
-- Reads Wyckoff phase transitions and highlights spring/upthrust entries
-- Coordinates the full H4/H1 bias-to-M1 trigger cascade
-- Logs all decisions and monitors execution quality and drawdown health
-- Prevents hidden correlation overexposure across open trades
-- Supports replay backtesting with walk-forward and Monte Carlo analysis
-
-**The Risk Engine is the ultimate authority:**
-- Every trade must pass through RiskEngine.assess() — no exceptions
-- Dynamic sizing: 2% risk in NORMAL, 1.5% in CAUTION, 1% in RECOVERY, 0% in FROZEN
-- Daily P&L tracked to the dollar — breaches -5% → instant FROZEN mode
-- Weekly drawdown > 8% → automatic RECOVERY mode
-- Spread monitor blocks entries when spreads spike above 3× average
-- Correlation engine prevents hidden overexposure across currencies
-- No duplicate trades on same pair+direction
-- Position size auto-reduced when approaching daily loss limit
-- RiskReporter aggregates everything into a single health dashboard
-- Daily/weekly resets with graduated recovery (FROZEN → CAUTION, not straight to NORMAL)
-
-**The Scanner watches everything simultaneously:**
-- Scans all 59 instruments every 10 seconds during active sessions
-- Scores every pair on 7 confluence factors (max 100)
-- READY (85+) → trigger fires. WATCHLIST (70+) → monitoring. Below → wait.
-- Ranks ties by regime, session, sweep, volume, and Wyckoff signals
-- Adapts scan frequency: 10s overlap, 60s quiet, 300s dead zones
-
-**The Entry System fires only on A+ setups:**
-- Minimum 85/100 confluence score required
-- Liquidity sweep must be confirmed before entry
-- Multi-timeframe alignment (H4 → H1 → M5 → M1)
-- Enters at the midpoint of FVGs or Order Blocks
-- 5 M1 confirmation patterns: engulfing, pin bar, inside bar breakout, rejection wick, volume spike
-- 7 pre-entry safety checks: spread, R:R, drawdown, expiry, max trades, correlation, session
-
-**The Trade Manager protects every winner:**
-- 50% partial close at 1:1 R:R
-- Stop moved to breakeven after TP1
-- Structure-based trailing stop (follows M5 swing lows/highs)
-- Time-based exit if price stalls for 75 minutes
-- Re-entry logic if stopped at breakeven with 15-minute cooldown
-
-**The ML Adapter gets smarter every day:**
-- Learns from your bot's own trade results (starts blank — zero bias)
-- Optimizes scoring weights gradually (max ±3 per cycle)
-- Profiles pairs, sessions, and regimes with confidence multipliers
-- Retrains every 50 trades or 7 days, whichever comes first
+Each instrument has its own pip size, spread baseline, pip value, margin category, trading hours, and platform routing.
 
 ---
 
-## Brain Intelligence Modules
+## How It Works
 
-- **Regime Detector**: ATR + directional strength model with ranging score caps and volatile freeze logic.
-- **Volume Analyzer**: Tick-volume ratio, divergence, climax detection, and point-of-control estimation.
-- **Inducement Detector**: Stop hunts, fake breakouts, and trap-pattern recognition.
-- **Wyckoff Engine**: Phase A–E classification with spring and upthrust signaling.
-- **MTF Orchestrator**: Unified setup builder from higher-timeframe bias to lower-timeframe trigger.
-- **Trade Journal**: Async SQLite storage for taken trades and rejected setups.
-- **Drawdown Guard**: Normal/Caution/Recovery/Frozen mode transitions with risk adaptation.
-- **Execution Monitor**: Slippage, latency, spread, and requote quality scoring.
-- **Correlation Engine**: Currency exposure maps and synthetic hedge conflict checks.
-- **Backtest Engine**: Historical replay, walk-forward splits, and Monte Carlo robustness checks.
+1. **Scan** — All 66 instruments scored on 10 confluence factors every 10 seconds during active sessions
+2. **Analyse** — Structure, FVG, order blocks, liquidity, currency strength, volume, Wyckoff, regime, session, inducement
+3. **Trigger** — M1 confirmation at entry zones with dynamic signal expiry per timeframe
+4. **Risk** — Multi-stage gate: drawdown mode, daily P&L, correlation, EV estimate, score-based sizing, micro account awareness
+5. **Execute** — Routes to MT5 or Deriv via PlatformManager
+6. **Manage** — TP1 partial → breakeven → structure trailing → TP2, with timeframe-aware stall exits
+7. **Persist** — SQLite WAL position store with crash recovery and broker reconciliation
+8. **Learn** — Adaptive optimizer profiles pairs, regimes, and sessions from trade outcomes
 
 ---
 
-## Quickstart
+## Key Features
 
-1. Copy `.env.example` to `.env` and fill in your credentials
-2. Install dependencies: `pip install -r requirements.txt`
-3. Run headless: `python main.py`
-4. Run with dashboard: `python main.py --dashboard`
-5. Dashboard available at: http://localhost:8000
+- **10-factor confluence scoring** with configurable entry threshold
+- **Multi-stage risk engine** (NORMAL → CAUTION → RECOVERY → FROZEN)
+- **Dual-platform** MT5 + Deriv WebSocket with unified routing
+- **Position persistence** with crash recovery and broker reconciliation
+- **Dashboard with API key authentication** (DD_DASHBOARD_API_KEY)
+- **Adaptive optimizer** — statistical heuristics that learn from trade outcomes
+- **High-water mark tracking** with equity curve awareness
+- **Micro account support** ($5+) with dynamic minimum viable trade detection
+- **Expected value gate** — blocks only proven losers, permissive by default
+- **Score-based dynamic risk scaling** — higher conviction = more capital
+- **Opportunity cost ranking** — EV × score × pair_multiplier
+- **Timeframe-aware stall exits** — M5 entry stalls at 60 min, H1 at 180 min
+- **Dynamic signal expiry** — scales with the timeframe that generated the setup
+- **Datadog APM integration** via ddtrace
+- **CI pipeline** — pytest + ruff on every push/PR
 
-## Setup
+---
+
+## Quick Start
 
 ```bash
-# Clone the repo
-git clone https://github.com/Eugine336/apex-trader.git
+# Clone
+git clone https://github.com/eugine336/apex-trader.git
 cd apex-trader
 
-# Install core dependencies
+# Install dependencies
 pip install -r requirements.txt
 
-# Set up environment
+# Configure
 cp .env.example .env
-# Edit .env with your credentials
+# Edit .env with your broker credentials
 
-# Run the bot
+# Run headless
 python main.py
 
 # Run with dashboard
 pip install -r dashboard/requirements.txt
 python main.py --dashboard
-# API: http://localhost:8000  |  Swagger: http://localhost:8000/docs
+# Dashboard: http://localhost:8000
 
-# Or launch full dashboard (API + React frontend)
-bash dashboard/start.sh
-# API: http://localhost:8000  |  Frontend: http://localhost:3000
+# Run tests
+python -m pytest tests/ -v
+```
 
-# Run a backtest
-python scripts/run_backtest.py --pair EURUSD --platform mt5 --bars 10000
+### Docker
 
-# Smoke test (verify all modules load)
-python scripts/smoke_test.py
+```bash
+docker-compose up -d
 ```
 
 ---
@@ -228,86 +186,50 @@ python scripts/smoke_test.py
 
 | Variable | Required | Description |
 |---|---|---|
-| `MT5_LOGIN` | MT5 only | Your MT5 account number |
-| `MT5_PASSWORD` | MT5 only | Your MT5 account password |
-| `MT5_SERVER` | MT5 only | Broker server name (e.g. `ICMarketsSC-Demo`) |
+| `MT5_LOGIN` | MT5 only | MT5 account number |
+| `MT5_PASSWORD` | MT5 only | MT5 account password |
+| `MT5_SERVER` | MT5 only | Broker server name |
 | `DERIV_API_TOKEN` | Deriv only | API token from app.deriv.com |
 | `DERIV_APP_ID` | Deriv only | App ID from app.deriv.com |
-| `APP_ENV` | No | `development` or `production` (default: `development`) |
-| `LOG_LEVEL` | No | `INFO`, `DEBUG`, `WARNING` (default: `INFO`) |
+| `DD_DASHBOARD_API_KEY` | No | API key for dashboard authentication |
+| `DD_API_KEY` | No | Datadog API key for APM |
+| `APP_ENV` | No | development or production (default: development) |
 
-### AppConfig (config.py)
+### Key Settings (config.py)
 
-| Field | Default | Description |
+| Setting | Default | Description |
 |---|---|---|
-| `enabled_categories` | `["forex"]` | Which instrument categories to trade |
-| `enabled_symbols_override` | 8 major pairs | Explicit symbol list (overrides categories) |
-| `scoring.min_entry_score` | `85` | Minimum confluence score to trigger entry |
-| `risk.risk_per_trade_pct` | `0.5` | Risk per trade as percentage of balance |
-| `risk.max_daily_drawdown_pct` | `3.0` | Daily loss limit before FROZEN mode |
-| `risk.max_open_trades` | `3` | Maximum simultaneous positions |
-| `risk.max_correlated_trades` | `1` | Max trades on correlated currencies |
-| `risk.max_spread_multiplier` | `2.0` | Block entry if spread > typical × this |
-| `scan_interval_seconds` | `10` | Seconds between scan cycles |
+| `scoring.min_entry_score` | 85 | Minimum confluence to trigger entry |
+| `risk.risk_per_trade_pct` | 0.5 | Base risk per trade (%) |
+| `risk.max_daily_drawdown_pct` | 3.0 | Daily loss limit before FROZEN |
+| `risk.max_open_trades` | 3 | Maximum simultaneous positions |
+| `risk.max_spread_multiplier` | 2.0 | Block entry if spread > typical × this |
+| `risk.ev_threshold` | -0.1 | Minimum expected value (blocks proven losers) |
 
-### Broker Config (config/brokers/*.json)
+---
 
-Each broker has a JSON file with symbol mapping rules:
-- `rules`: Category-based pattern mapping (e.g. forex → `frx{symbol}` for Deriv)
-- `overrides`: Explicit symbol-by-symbol mappings (highest priority)
+## Testing
 
-Example (`config/brokers/deriv.json`):
-```json
-{
-  "name": "deriv",
-  "rules": { "forex": { "pattern": "frx{symbol}" } },
-  "overrides": { "V75_1S": "1HZ75V", "BOOM1000": "BOOM1000N" }
-}
+```bash
+python -m pytest tests/ -v
 ```
 
----
+Currently: 390+ tests across 16 test files covering risk engine, trade manager, entry engine, pair scanner, structure engine, FVG detector, session engine, symbol mapper, platforms, position store, dashboard auth, adaptive optimizer, capital context, intelligence (Phase 2), and full integration pipeline.
 
-## Target Performance
-
-| Metric | Target |
-|--------|--------|
-| Win Rate | 80%+ |
-| Risk per Trade | 2% |
-| Min R:R | 1:1.5 |
-| Daily Trades | 10–30 |
-| Monthly Return | 10–25% |
-| Max Daily Loss | 5% |
+CI runs automatically on every push to main and every pull request.
 
 ---
 
-## Build Status
+## What This Is NOT
 
-| Phase | Module | Status |
-|-------|--------|--------|
-| 1 | Brain — Market Reading + Intelligence Engine (17 modules) | ✅ Complete |
-| 2 | Scanner — Multi-Pair Scanner | ✅ Complete |
-| 3 | Trigger — Entry Engine | ✅ Complete |
-| 4 | Management — Trade Manager | ✅ Complete |
-| 5 | Risk — Risk Engine | ✅ Complete |
-| 6 | ML — Adaptive Learning | ✅ Complete |
-| 7 | Platforms — MT5 + Deriv Integration | ✅ Complete |
-| 8 | Dashboard — React UI + FastAPI Backend | ✅ Complete |
+- Not a scalper, day trader, or swing trader — it identifies opportunities
+- Not machine learning — the adaptive optimizer uses statistical heuristics
+- Timeframe-agnostic — the market decides holding period (3 seconds to 3 days)
+- Not institutional-grade — lacks FIX protocol, HA, compliance infrastructure
 
 ---
 
-## Platform Integration (MT5 + Deriv)
-
-Two arms, one mind. MT5 for Forex/indices. Deriv for synthetics — 24/7.
-
-- **BaseConnector**: Abstract interface — `connect`, `place_order`, `modify_order`, `close_order`, `get_ohlcv`, etc. Every platform speaks the same language.
-- **MT5Connector**: MetaTrader 5 via official Python package. Windows-only with auto-detection. Handles Forex, commodities, indices. Auto-discovers broker symbol suffixes (`m`, `.raw`, `#`).
-- **DerivConnector**: WebSocket API connector for Deriv. Handles all synthetics (V75, Boom/Crash, Step, Jump, Range Break) plus Forex via multiplier contracts. Auto-reconnect on drop.
-- **PlatformManager**: Routes every trade to the correct platform based on the instrument registry. Merges positions, balances, and market data from both platforms into a single view.
-- **TradingLoop**: The heartbeat — Scan → Entry → Manage → Repeat. Integrates scanner, orchestrator, drawdown guard, correlation engine, execution monitor, and trade journal into one continuous loop.
-
----
-
-## ⚠️ Disclaimer
+## Disclaimer
 
 This software is for educational and personal use.
 Trading involves significant risk. Past performance does not guarantee future results.

@@ -35,8 +35,8 @@ def main():
     from risk import RiskEngine, PositionSizer, PnLTracker, SpreadMonitor, RiskReporter
     print("  ✅ 5 modules loaded")
 
-    print("Phase 6 — ML…")
-    from ml import MLAdapter, TradeAnalyzer, ScoreOptimizer, RegimeLearner, PairLearner, SessionLearner
+    print("Phase 6 — Adaptive Optimizer…")
+    from adaptive import AdaptiveOptimizer, TradeAnalyzer, ScoreOptimizer, RegimeLearner, PairLearner, SessionLearner
     print("  ✅ 6 modules loaded")
 
     print("Phase 7 — Platforms…")
