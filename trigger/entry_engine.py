@@ -156,6 +156,30 @@ class EntryEngine:
 
         risk_distance = abs(entry_price - stop_loss)
         min_risk_distance = profile.min_risk_pips * pip_size
+
+        # Percentage-based SL floor for synthetics and crypto.
+        # A fixed pip minimum fails on instruments with very small pip sizes
+        # (e.g. V100 pip=0.01 but price=857 — "8 pips" = 0.08 pts = 0.009%).
+        # At 400x multiplier a 0.009% SL is noise — you will be stopped out
+        # constantly before the trade has a chance to work.
+        # Minimum 0.3% of entry price for synthetics, 0.15% for crypto.
+        if category == "synthetic":
+            pct_floor = entry_price * 0.003   # 0.3%
+            if risk_distance < pct_floor:
+                stop_loss = (
+                    entry_price - pct_floor if direction == "LONG"
+                    else entry_price + pct_floor
+                )
+                risk_distance = pct_floor
+        elif category == "crypto":
+            pct_floor = entry_price * 0.0015  # 0.15%
+            if risk_distance < pct_floor:
+                stop_loss = (
+                    entry_price - pct_floor if direction == "LONG"
+                    else entry_price + pct_floor
+                )
+                risk_distance = pct_floor
+
         if risk_distance < pip_size:
             return EntryRejection(
                 pair=pair, reason="Risk distance too small — invalid zone",
