@@ -123,6 +123,31 @@ class PlatformManager:
         connector = self.get_connector(symbol)
         return "mt5" if isinstance(connector, MT5Connector) else "deriv"
 
+    def get_broker_name(self, symbol: str) -> str:
+        """Return a human-readable broker identifier for the platform serving this symbol."""
+        connector = self.get_connector(symbol)
+        if isinstance(connector, MT5Connector):
+            # Extract broker name from the server string (e.g. "ICMarkets-Live" → "icmarkets")
+            server = getattr(connector, "_server", "") or ""
+            broker = server.split("-")[0].lower() if server else "mt5"
+            return broker
+        return "deriv"
+
+    def get_typical_spreads(self, symbol: str) -> dict[str, float]:
+        """
+        Return per-symbol typical spread baselines keyed by symbol (upper-case).
+        Falls back to the instrument registry's typical_spread_pips field.
+        This is broker-specific because the same instrument trades tighter on
+        Exness than on ICMarkets.
+        """
+        from config import INSTRUMENT_REGISTRY
+        result: dict[str, float] = {}
+        for sym, info in INSTRUMENT_REGISTRY.items():
+            spread = getattr(info, "typical_spread_pips", 0.0)
+            if spread > 0:
+                result[sym.upper()] = spread
+        return result
+
     # ── Trade execution ──────────────────────────────────────────────────
 
     def execute_entry(
