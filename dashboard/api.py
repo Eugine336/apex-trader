@@ -113,6 +113,11 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
     def ml_insights():
         return _state.get_ml_insights()
 
+    @app.get("/api/activity")
+    def activity():
+        """Live feed of rejections, warnings, and system events."""
+        return _state.get_activity()
+
     @app.post("/api/control")
     async def control(body: dict):
         action = body.get("action", "")
@@ -165,6 +170,7 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
                             "status": _state.get_status(),
                             "open_trades": _state.get_open_trades(),
                             "risk": _state.get_risk_status(),
+                            "activity": _state.get_activity(),
                         }
                         await manager.broadcast(payload)
                     except Exception as exc:
