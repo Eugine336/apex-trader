@@ -297,6 +297,10 @@ class PlatformManager:
                         )
                         self._unavailable_symbols.add(symbol)
                     break  # no point trying other timeframes for this symbol
+                elif "reconnecting" in exc_str.lower() or "not connected" in exc_str.lower():
+                    # Broker is mid-reconnect — skip all timeframes silently
+                    logger.debug("Skipping {} {} — broker reconnecting", symbol, tf)
+                    break
                 else:
                     logger.warning("Data fetch failed — {} {}: {}", symbol, tf, exc)
         return data
