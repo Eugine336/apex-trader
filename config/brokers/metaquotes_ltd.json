@@ -5,7 +5,7 @@
   "rules": {
     "forex": {
       "pattern": "{symbol}",
-      "description": "Passthrough — auto-discovery handles everything"
+      "description": "Passthrough \u00e2\u20ac\u201d auto-discovery handles everything"
     }
   },
   "overrides": {
@@ -58,7 +58,7 @@
     "HK50": "HK50",
     "CHINA50": "CHINA50",
     "SGP30": "SSTI.NAS",
-    "_note_ESP35": "ESP35 is NOT available on metaquotes_ltd virtual accounts — omitted intentionally",
+    "_note_ESP35": "ESP35 is NOT available on metaquotes_ltd virtual accounts \u00e2\u20ac\u201d omitted intentionally",
     "BTCUSD": "BTCUSD",
     "ETHUSD": "ETHUSD",
     "LTCUSD": "LTCUSD",
@@ -68,5 +68,448 @@
     "ADAUSD": "ADAUSD",
     "DOTUSD": "DOTUSD",
     "DOGEUSD": "DOGEUSD"
+  },
+  "symbol_constraints": {
+    "EURUSD": {
+      "volume_min": 0.01,
+      "volume_max": 200.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "GBPUSD": {
+      "volume_min": 0.01,
+      "volume_max": 200.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "USDJPY": {
+      "volume_min": 0.01,
+      "volume_max": 200.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 3,
+      "point": 0.001,
+      "contract_size": 100000.0
+    },
+    "USDCHF": {
+      "volume_min": 0.01,
+      "volume_max": 200.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "AUDUSD": {
+      "volume_min": 0.01,
+      "volume_max": 200.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "NZDUSD": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "USDCAD": {
+      "volume_min": 0.01,
+      "volume_max": 200.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "EURGBP": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "EURJPY": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 3,
+      "point": 0.001,
+      "contract_size": 100000.0
+    },
+    "GBPJPY": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 3,
+      "point": 0.001,
+      "contract_size": 100000.0
+    },
+    "AUDJPY": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 3,
+      "point": 0.001,
+      "contract_size": 100000.0
+    },
+    "CADJPY": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 3,
+      "point": 0.001,
+      "contract_size": 100000.0
+    },
+    "CHFJPY": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 3,
+      "point": 0.001,
+      "contract_size": 100000.0
+    },
+    "NZDJPY": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 3,
+      "point": 0.001,
+      "contract_size": 100000.0
+    },
+    "EURCHF": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "EURAUD": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "EURCAD": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "EURNZD": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "GBPAUD": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "GBPCAD": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "GBPCHF": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "GBPNZD": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "AUDCAD": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "AUDCHF": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "AUDNZD": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "NZDCAD": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "NZDCHF": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "CADCHF": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 5,
+      "point": 1e-05,
+      "contract_size": 100000.0
+    },
+    "XAUUSD": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 2,
+      "point": 0.01,
+      "contract_size": 100.0
+    },
+    "XAGUSD": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 3,
+      "point": 0.001,
+      "contract_size": 1000.0
+    },
+    "XPTUSD": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 2,
+      "point": 0.01,
+      "contract_size": 100.0
+    },
+    "XPDUSD": {
+      "volume_min": 0.01,
+      "volume_max": 100.0,
+      "volume_step": 0.01,
+      "stops_level": 0,
+      "digits": 2,
+      "point": 0.01,
+      "contract_size": 100.0
+    },
+    "XTIUSD": {
+      "volume_min": 0.5,
+      "volume_max": 50.0,
+      "volume_step": 0.5,
+      "stops_level": 0,
+      "digits": 2,
+      "point": 0.01,
+      "contract_size": 100.0
+    },
+    "XBRUSD": {
+      "volume_min": 0.5,
+      "volume_max": 50.0,
+      "volume_step": 0.5,
+      "stops_level": 0,
+      "digits": 2,
+      "point": 0.01,
+      "contract_size": 100.0
+    },
+    "USTEC": {
+      "volume_min": 0.1,
+      "volume_max": 250.0,
+      "volume_step": 0.1,
+      "stops_level": 0,
+      "digits": 2,
+      "point": 0.01,
+      "contract_size": 1.0
+    },
+    "US30": {
+      "volume_min": 0.1,
+      "volume_max": 250.0,
+      "volume_step": 0.1,
+      "stops_level": 0,
+      "digits": 2,
+      "point": 0.01,
+      "contract_size": 1.0
+    },
+    "US500": {
+      "volume_min": 0.1,
+      "volume_max": 250.0,
+      "volume_step": 0.1,
+      "stops_level": 0,
+      "digits": 2,
+      "point": 0.01,
+      "contract_size": 1.0
+    },
+    "US2000": {
+      "volume_min": 1.0,
+      "volume_max": 250.0,
+      "volume_step": 1.0,
+      "stops_level": 0,
+      "digits": 2,
+      "point": 0.01,
+      "contract_size": 1.0
+    },
+    "DE40": {
+      "volume_min": 0.1,
+      "volume_max": 250.0,
+      "volume_step": 0.1,
+      "stops_level": 0,
+      "digits": 2,
+      "point": 0.01,
+      "contract_size": 1.0
+    },
+    "UK100": {
+      "volume_min": 0.1,
+      "volume_max": 250.0,
+      "volume_step": 0.1,
+      "stops_level": 0,
+      "digits": 2,
+      "point": 0.01,
+      "contract_size": 1.0
+    },
+    "CACC.NAS": {
+      "volume_min": 0.1,
+      "volume_max": 1000.0,
+      "volume_step": 0.1,
+      "stops_level": 0,
+      "digits": 2,
+      "point": 0.01,
+      "contract_size": 1.0
+    },
+    "STOXX50": {
+      "volume_min": 0.1,
+      "volume_max": 250.0,
+      "volume_step": 0.1,
+      "stops_level": 0,
+      "digits": 2,
+      "point": 0.01,
+      "contract_size": 1.0
+    },
+    "IT40": {
+      "volume_min": 0.1,
+      "volume_max": 250.0,
+      "volume_step": 0.1,
+      "stops_level": 0,
+      "digits": 2,
+      "point": 0.01,
+      "contract_size": 1.0
+    },
+    "SWI20": {
+      "volume_min": 1.0,
+      "volume_max": 250.0,
+      "volume_step": 1.0,
+      "stops_level": 0,
+      "digits": 2,
+      "point": 0.01,
+      "contract_size": 1.0
+    },
+    "JP225": {
+      "volume_min": 1.0,
+      "volume_max": 250.0,
+      "volume_step": 1.0,
+      "stops_level": 0,
+      "digits": 2,
+      "point": 0.01,
+      "contract_size": 1.0
+    },
+    "AUS200": {
+      "volume_min": 0.1,
+      "volume_max": 250.0,
+      "volume_step": 0.1,
+      "stops_level": 0,
+      "digits": 2,
+      "point": 0.01,
+      "contract_size": 1.0
+    },
+    "HK50": {
+      "volume_min": 0.1,
+      "volume_max": 250.0,
+      "volume_step": 0.1,
+      "stops_level": 0,
+      "digits": 2,
+      "point": 0.01,
+      "contract_size": 1.0
+    },
+    "CHINA50": {
+      "volume_min": 0.1,
+      "volume_max": 250.0,
+      "volume_step": 0.1,
+      "stops_level": 0,
+      "digits": 2,
+      "point": 0.01,
+      "contract_size": 1.0
+    },
+    "SSTI.NAS": {
+      "volume_min": 0.1,
+      "volume_max": 1000.0,
+      "volume_step": 0.1,
+      "stops_level": 0,
+      "digits": 3,
+      "point": 0.001,
+      "contract_size": 1.0
+    }
   }
 }

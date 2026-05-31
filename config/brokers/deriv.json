@@ -30,5 +30,6 @@
     "JD100": "JD100",
     "XAUUSD": "frxXAUUSD",
     "XAGUSD": "frxXAGUSD"
-  }
+  },
+  "multipliers": {}
 }
