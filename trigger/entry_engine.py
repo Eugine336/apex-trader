@@ -398,15 +398,14 @@ class EntryEngine:
             structure = StructureEngine(pip_size=pip_size)
             h1_analysis = structure.analyze(h1_df)
             tp2_candidate = h1_analysis.swing_high
-            if tp2_candidate and tp2_candidate > tp1:
-                # Ensure TP2 gives at least 2.0R — if structure swing is too close, use 2.5R fallback
-                if (tp2_candidate - entry_price) / risk >= 2.0:
-                    tp2 = tp2_candidate
-                else:
-                    tp2 = entry_price + risk * 2.5
+            if (tp2_candidate
+                    and tp2_candidate > tp1                          # must be beyond TP1
+                    and (tp2_candidate - entry_price) / risk >= 2.5): # must give at least 2.5R
+                tp2 = tp2_candidate
             else:
-                tp2 = entry_price + risk * 2.5
-        else:
+                tp2 = entry_price + risk * 3.0   # guaranteed 3R fallback
+
+        else:  # SHORT
             tp1_liq = liq_map.nearest_sell_liq
             tp1 = tp1_liq.price if tp1_liq else entry_price - risk * 1.5
             if entry_price - tp1 < risk:
@@ -415,13 +414,12 @@ class EntryEngine:
             structure = StructureEngine(pip_size=pip_size)
             h1_analysis = structure.analyze(h1_df)
             tp2_candidate = h1_analysis.swing_low
-            if tp2_candidate and tp2_candidate < tp1:
-                if (entry_price - tp2_candidate) / risk >= 2.0:
-                    tp2 = tp2_candidate
-                else:
-                    tp2 = entry_price - risk * 2.5
+            if (tp2_candidate
+                    and tp2_candidate < tp1                          # must be beyond TP1
+                    and (entry_price - tp2_candidate) / risk >= 2.5): # must give at least 2.5R
+                tp2 = tp2_candidate
             else:
-                tp2 = entry_price - risk * 2.5
+                tp2 = entry_price - risk * 3.0   # guaranteed 3R fallback
 
         return tp1, tp2
 
