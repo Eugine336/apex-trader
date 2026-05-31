@@ -473,16 +473,33 @@ class TradingLoop:
             return
 
         open_pairs = [p.symbol for p in self.managed_positions.values()]
+        # Build pair multiplier map from ML learner for opportunity ranking
+        pair_mult_map = {}
+        try:
+            for r in ready:
+                pair_mult_map[r.pair] = self.ml.pair_learner.get_pair_multiplier(r.pair)
+        except Exception:
+            pass
+
         ranked = self.ranker.rank(ready, open_pairs)
-        top = self.ranker.get_top_n(ranked, n=3)
+        # Re-rank by opportunity score using pair learner and EV estimate
+        ready_results = [s.result for s in ranked]
+        reranked = self.ranker.rank_opportunities(ready_results, pair_mult_map)
+        # Rebuild ranked list preserving RankedSetup structure
+        rank_map = {s.result.pair: s for s in ranked}
+        top_results = reranked[:3]
+        top = [rank_map[r.pair] for r in top_results if r.pair in rank_map]
 
         for setup in top:
             result = setup.result
             if result.pair in open_pairs:
                 continue
 
+            _current_risk = self.risk_engine.drawdown_guard.risk_map.get(
+                self.risk_engine.drawdown_guard.mode, 0.005
+            )
             open_trades = [
-                OpenTrade(pair=p.symbol, direction=p.direction, risk_pct=0.02)
+                OpenTrade(pair=p.symbol, direction=p.direction, risk_pct=_current_risk)
                 for p in self.managed_positions.values()
             ]
             can_open, corr_reason = self.correlation.can_open_trade(
@@ -967,6 +984,12 @@ class TradingLoop:
             )
             for rec in report.recommendations[:3]:
                 logger.info("  ML: {}", rec)
+
+            # Feed trade history into scanner so EVEstimator has live data
+            try:
+                self.scanner.scanner._trade_history = raw_trades
+            except Exception:
+                pass
         except Exception as exc:
             logger.warning("ML retraining error: {}", exc)
 
