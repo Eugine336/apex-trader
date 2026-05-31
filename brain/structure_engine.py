@@ -230,11 +230,17 @@ class StructureEngine:
         Detect the most recent BOS or CHOCH.
         BOS = continuation of trend breaking the last swing point
         CHOCH = counter-trend break signaling potential reversal
+
+        Requires body confirmation: the bar's full body (open AND close)
+        must be beyond the level, OR the previous bar also closed beyond it.
+        Single-bar wicks that spike through a level and reverse are filtered.
         """
         if len(labeled) < 3:
             return StructureEvent.NONE, None
 
-        last_close = df["close"].iloc[-1]
+        last_close = float(df["close"].iloc[-1])
+        last_open = float(df["open"].iloc[-1])
+        prev_close = float(df["close"].iloc[-2]) if len(df) >= 2 else None
         recent_highs = [s for s in labeled if s.kind in ["HH", "LH"]]
         recent_lows  = [s for s in labeled if s.kind in ["HL", "LL"]]
 
@@ -244,19 +250,29 @@ class StructureEngine:
         last_high = recent_highs[-1]
         last_low  = recent_lows[-1]
 
-        # Check bullish break
+        # Check bullish break — close above swing high with body confirmation
         if last_close > last_high.price:
-            if trend == Trend.BULLISH:
-                return StructureEvent.BOS_BULLISH, last_high.price
-            else:
-                return StructureEvent.CHOCH_BULLISH, last_high.price
+            body_confirmed = (
+                last_open > last_high.price
+                or (prev_close is not None and prev_close > last_high.price)
+            )
+            if body_confirmed:
+                if trend == Trend.BULLISH:
+                    return StructureEvent.BOS_BULLISH, last_high.price
+                else:
+                    return StructureEvent.CHOCH_BULLISH, last_high.price
 
-        # Check bearish break
+        # Check bearish break — close below swing low with body confirmation
         if last_close < last_low.price:
-            if trend == Trend.BEARISH:
-                return StructureEvent.BOS_BEARISH, last_low.price
-            else:
-                return StructureEvent.CHOCH_BEARISH, last_low.price
+            body_confirmed = (
+                last_open < last_low.price
+                or (prev_close is not None and prev_close < last_low.price)
+            )
+            if body_confirmed:
+                if trend == Trend.BEARISH:
+                    return StructureEvent.BOS_BEARISH, last_low.price
+                else:
+                    return StructureEvent.CHOCH_BEARISH, last_low.price
 
         return StructureEvent.NONE, None
 

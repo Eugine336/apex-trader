@@ -53,6 +53,7 @@ class EntrySignal:
     confluences: list[str] = field(default_factory=list)
     entry_zone: str = ""
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    entry_timeframe: str = "M5"
 
 
 @dataclass
@@ -87,6 +88,7 @@ class ManagedTrade:
     pip_value_per_lot: float
     confluences: list[str] = field(default_factory=list)
     entry_zone: str = ""
+    entry_timeframe: str = "M5"
 
 
 class TradeManager:
@@ -165,6 +167,7 @@ class TradeManager:
             pip_value_per_lot=pip_value_per_lot,
             confluences=list(signal.confluences),
             entry_zone=signal.entry_zone,
+            entry_timeframe=getattr(signal, "entry_timeframe", "M5"),
         )
         self._trades[trade_id] = trade
         logger.info(
@@ -392,14 +395,16 @@ class TradeManager:
         return False
 
     def _check_stall(self, trade: ManagedTrade) -> bool:
-        """Time-based stall exit — 75 minutes with <5 pip movement."""
+        """Time-based stall exit — scales with entry timeframe."""
         if trade.partial_closed:
             return False
+        stall_limits = {"M1": 30, "M5": 60, "M15": 90, "H1": 180, "H4": 360}
+        stall_limit = stall_limits.get(trade.entry_timeframe, 75)
         stall_minutes = (datetime.now(timezone.utc) - trade.entry_time).total_seconds() / 60
-        if stall_minutes > 75 and abs(trade.pnl_pips) < 5.0:
+        if stall_minutes > stall_limit and abs(trade.pnl_pips) < 5.0:
             self.close_trade(
                 trade,
-                f"Stall exit — {stall_minutes:.0f}min, {trade.pnl_pips:.1f}pip",
+                f"Stall exit — {stall_minutes:.0f}min (limit {stall_limit}), {trade.pnl_pips:.1f}pip",
                 trade.current_price,
                 TradeStatus.TIME_EXIT,
             )
