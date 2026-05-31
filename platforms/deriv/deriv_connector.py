@@ -470,7 +470,7 @@ class DerivConnector(BaseConnector):
             err = resp["error"].get("message", "Unknown error")
             # Auto-retry: parse max allowed stake from Deriv error and retry once
             import re as _re
-            _cap_match = _re.search(r"equal to or lower than ([\d.]+)", err)
+            _cap_match = _re.search(r"equal to or lower than ([\d]+(?:\.[\d]+)?)", err)
             if _cap_match:
                 max_stake = float(_cap_match.group(1))
                 capped = round(max_stake * 0.99, 2)  # 1% below cap to be safe
@@ -543,7 +543,7 @@ class DerivConnector(BaseConnector):
                     err = resp["error"].get("message", "Unknown error")
                     # The recalculated stake may now exceed Deriv's per-symbol cap —
                     # retry once more with the capped amount.
-                    _cap_match2 = _re.search(r"equal to or lower than ([\d.]+)", err or "")
+                    _cap_match2 = _re.search(r"equal to or lower than ([\d]+(?:\.[\d]+)?)", err or "")
                     if _cap_match2:
                         max_stake2 = float(_cap_match2.group(1))
                         capped2 = round(max_stake2 * 0.99, 2)
