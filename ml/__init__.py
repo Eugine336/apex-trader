@@ -1,15 +1,28 @@
 """
-APEX TRADER — ML Package
-The Memory. Learns from every trade, adapts weights,
-profiles pairs, sessions, and regimes. Gets smarter every day.
+APEX TRADER — ML Package (backward-compatibility shim)
+All modules have moved to ``adaptive/``.  This package re-exports
+every public name so existing ``from ml import …`` statements
+continue to work.
 """
 
-from ml.trade_analyzer import PerformanceProfile, TradeAnalyzer
-from ml.score_optimizer import ScoreOptimizer, ScoringWeights
-from ml.regime_learner import RegimeLearner, RegimeStrategy
-from ml.pair_learner import PairLearner, PairProfile
-from ml.session_learner import SessionLearner, SessionProfile
-from ml.ml_adapter import MLAdapter, OptimizationReport, TradeAdjustments
+from adaptive import (  # noqa: F401
+    AdaptiveOptimizer,
+    EVEstimate,
+    EVEstimator,
+    MLAdapter,
+    OptimizationReport,
+    PairLearner,
+    PairProfile,
+    PerformanceProfile,
+    RegimeLearner,
+    RegimeStrategy,
+    ScoreOptimizer,
+    ScoringWeights,
+    SessionLearner,
+    SessionProfile,
+    TradeAdjustments,
+    TradeAnalyzer,
+)
 
 __all__ = [
     "TradeAnalyzer", "PerformanceProfile",
@@ -17,5 +30,6 @@ __all__ = [
     "RegimeLearner", "RegimeStrategy",
     "PairLearner", "PairProfile",
     "SessionLearner", "SessionProfile",
-    "MLAdapter", "OptimizationReport", "TradeAdjustments",
+    "AdaptiveOptimizer", "MLAdapter", "OptimizationReport", "TradeAdjustments",
+    "EVEstimator", "EVEstimate",
 ]

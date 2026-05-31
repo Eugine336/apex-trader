@@ -87,8 +87,9 @@ def main() -> None:
     from risk import RiskEngine, PositionSizer, PnLTracker, SpreadMonitor, RiskReporter
     logger.info("Phase 5 — Risk loaded (risk engine, position sizer, P&L tracker, spread, reporter)")
 
-    from ml import MLAdapter, TradeAnalyzer, ScoreOptimizer, RegimeLearner, PairLearner, SessionLearner
-    logger.info("Phase 6 — ML loaded (adapter, analyzer, optimizers, learners)")
+    from adaptive import AdaptiveOptimizer, TradeAnalyzer, ScoreOptimizer, RegimeLearner, PairLearner, SessionLearner
+    MLAdapter = AdaptiveOptimizer
+    logger.info("Phase 6 — Adaptive Optimizer loaded (analyzer, optimizers, learners)")
 
     from platforms import PlatformManager, TradingLoop
     logger.info("Phase 7 — Platforms loaded (MT5 + Deriv connectors, trading loop)")

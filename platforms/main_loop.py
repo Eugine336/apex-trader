@@ -41,7 +41,7 @@ from management.trade_manager import (
     TERMINAL_STATUSES,
     EntrySignal as TMEntrySignal,
 )
-from ml.ml_adapter import MLAdapter, TradeAdjustments
+from adaptive.optimizer import AdaptiveOptimizer as MLAdapter, TradeAdjustments
 from platforms.base_connector import OrderResult, PositionInfo
 from platforms.deriv.deriv_connector import DerivConnector
 from platforms.platform_manager import PlatformManager
