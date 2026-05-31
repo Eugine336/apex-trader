@@ -64,6 +64,7 @@ class DerivConnector(BaseConnector):
         self._app_id = app_id
         self._ws: Any = None
         self._connected = False
+        self._reconnecting = False
         self._authorized = False
         self._account_id: str = ""
         self._req_id = 0
@@ -137,6 +138,7 @@ class DerivConnector(BaseConnector):
             except Exception as exc:
                 logger.warning("Deriv disconnect error: {}", exc)
         self._connected = False
+        self._reconnecting = False
         self._authorized = False
         self._ws = None
         logger.info("Deriv disconnected")
@@ -152,14 +154,19 @@ class DerivConnector(BaseConnector):
         return bool(getattr(self._ws, "open", False))
 
     async def _reconnect(self) -> bool:
-        for attempt in range(1, _MAX_RECONNECT_ATTEMPTS + 1):
-            logger.warning("Deriv reconnect attempt {}/{}", attempt, _MAX_RECONNECT_ATTEMPTS)
-            ok = await self._connect_async()
-            if ok:
-                return True
-            await asyncio.sleep(_RECONNECT_DELAY * attempt)
-        logger.error("Deriv reconnect failed after {} attempts", _MAX_RECONNECT_ATTEMPTS)
-        return False
+        self._reconnecting = True
+        self._connected = False
+        try:
+            for attempt in range(1, _MAX_RECONNECT_ATTEMPTS + 1):
+                logger.warning("Deriv reconnect attempt {}/{}", attempt, _MAX_RECONNECT_ATTEMPTS)
+                ok = await self._connect_async()
+                if ok:
+                    return True
+                await asyncio.sleep(_RECONNECT_DELAY * attempt)
+            logger.error("Deriv reconnect failed after {} attempts", _MAX_RECONNECT_ATTEMPTS)
+            return False
+        finally:
+            self._reconnecting = False
 
     # ── Low-level send/receive ───────────────────────────────────────────
 
@@ -185,8 +192,9 @@ class DerivConnector(BaseConnector):
         with self._thread_lock:
             if "ticks_history" in payload:
                 elapsed = _time.monotonic() - self._last_history_request
-                if elapsed < 0.25:
-                    _time.sleep(0.25 - elapsed)
+                # 0.5s between candle/tick requests — Deriv rate limit is ~3 req/s
+                if elapsed < 0.5:
+                    _time.sleep(0.5 - elapsed)
                 self._last_history_request = _time.monotonic()
             future = asyncio.run_coroutine_threadsafe(self._send(payload), self._loop)
             return future.result(timeout=_REQUEST_TIMEOUT + 5)
@@ -554,5 +562,7 @@ class DerivConnector(BaseConnector):
     # ── Private helpers ──────────────────────────────────────────────────
 
     def _require_connection(self) -> None:
+        if self._reconnecting:
+            raise ConnectionError("Deriv is reconnecting — request blocked")
         if not self._connected or self._ws is None:
             raise ConnectionError("Deriv is not connected")
