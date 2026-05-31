@@ -22,7 +22,7 @@ class ScanScheduler:
         "active":   10,
         "quiet":    60,
         "dead":     300,
-        "weekend":  300,
+        "weekend":  300,   # Sat 00:00 – Sun 21:59 UTC only; Sun 22:00+ is LIVE
         "news":     120,
     }
 
