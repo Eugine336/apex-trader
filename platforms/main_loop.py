@@ -639,14 +639,15 @@ class TradingLoop:
 
         self._execution_breaker.record_success()
 
-        self.execution_monitor.record_execution(
-            requested_price=signal.entry_price,
-            filled_price=order.fill_price,
-            signal_timestamp=now,
-            fill_timestamp=datetime.now(timezone.utc),
-            spread=spread,
-            requote=False,
-        )
+        if not ctx.uses_stake:
+            self.execution_monitor.record_execution(
+                requested_price=signal.entry_price,
+                filled_price=order.fill_price,
+                signal_timestamp=now,
+                fill_timestamp=datetime.now(timezone.utc),
+                spread=spread,
+                requote=False,
+            )
 
         if self.execution_monitor.should_alert():
             stats = self.execution_monitor.get_stats()
