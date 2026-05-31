@@ -75,14 +75,19 @@ class SessionEngine:
         current_time = utc_now.time()
         weekday = utc_now.weekday()  # 0=Monday, 6=Sunday
 
-        # Weekend check — markets closed
-        if weekday >= 5:  # Saturday or Sunday
+        # Weekend check — FX closed Sat 00:00 UTC through Sun 21:59 UTC.
+        # Sunday >= 22:00 UTC the market is live — do NOT treat as weekend.
+        fx_weekend = (
+            weekday == 5                              # Saturday — always closed
+            or (weekday == 6 and utc_now.hour < 22)  # Sunday before 22:00 UTC open
+        )
+        if fx_weekend:
             return SessionStatus(
                 current_session="WEEKEND",
                 is_tradeable=False,
                 liquidity="DEAD",
                 best_pairs=[],
-                minutes_to_next_session=self._minutes_to_monday(utc_now),
+                minutes_to_next_session=self._minutes_to_fx_open(utc_now),
                 session_open_minutes=0,
             )
 
@@ -182,10 +187,18 @@ class SessionEngine:
             diff += 24 * 60
         return diff
 
-    def _minutes_to_monday(self, utc_now: datetime) -> int:
-        """Minutes until next Monday open."""
-        days_until = (7 - utc_now.weekday()) % 7 or 7
-        return days_until * 24 * 60
+    def _minutes_to_fx_open(self, utc_now: datetime) -> int:
+        """Minutes until FX opens (Sunday 22:00 UTC).
+        Replaces _minutes_to_monday — FX opens Sunday evening, not Monday morning."""
+        wd = utc_now.weekday()
+        current_mins = utc_now.hour * 60 + utc_now.minute
+        open_mins = 22 * 60  # 22:00 UTC
+
+        if wd == 5:  # Saturday — next open is Sunday 22:00
+            return (24 * 60 - current_mins) + open_mins
+        if wd == 6 and current_mins < open_mins:  # Sunday before open
+            return open_mins - current_mins
+        return 0  # Market already open
 
 
 class NewsGuard:
