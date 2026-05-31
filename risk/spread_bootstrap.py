@@ -15,35 +15,52 @@ import config as _cfg
 
 
 def bootstrap_spreads(
-    mt5_connector=None,
+    mt5_connector=None,       # legacy single-connector path (still accepted)
     deriv_connector=None,
+    mt5_connectors=None,      # preferred: list of MT5Connector for multi-broker support
     sample_retries: int = 3,
 ) -> None:
     """
     Query live bid/ask for every registered symbol and update
     INSTRUMENT_REGISTRY with the observed spread as typical_spread_pips.
 
+    Accepts either mt5_connectors (list) or the legacy mt5_connector (single).
+    For BOTH-platform symbols, tries each MT5 broker in turn until one
+    returns a valid spread, then falls back to Deriv.
+
     Only updates symbols that can actually be priced right now.
     Symbols that fail (market closed, not available on connector)
     keep their hardcoded fallback — they won't be traded anyway.
     """
+    # Normalise to a list regardless of which arg was passed
+    if mt5_connectors is None:
+        mt5_connectors = [mt5_connector] if mt5_connector is not None else []
+
     updated = 0
     failed = 0
 
     for symbol, info in list(_cfg.INSTRUMENT_REGISTRY.items()):
-        # Pick the right connector
+        spread = None
+
         if info.platform == _cfg.Platform.DERIV:
-            connector = deriv_connector
+            if deriv_connector is not None:
+                spread = _sample_spread(deriv_connector, symbol, sample_retries)
+
         elif info.platform == _cfg.Platform.MT5:
-            connector = mt5_connector
+            for conn in mt5_connectors:
+                spread = _sample_spread(conn, symbol, sample_retries)
+                if spread is not None:
+                    break
+
         else:
-            # Platform.BOTH — prefer MT5 for spread reference
-            connector = mt5_connector or deriv_connector
+            # Platform.BOTH — try each MT5 broker first, then Deriv
+            for conn in mt5_connectors:
+                spread = _sample_spread(conn, symbol, sample_retries)
+                if spread is not None:
+                    break
+            if spread is None and deriv_connector is not None:
+                spread = _sample_spread(deriv_connector, symbol, sample_retries)
 
-        if connector is None:
-            continue
-
-        spread = _sample_spread(connector, symbol, sample_retries)
         if spread is None:
             failed += 1
             continue
