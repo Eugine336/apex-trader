@@ -50,6 +50,8 @@ class PairScanResult:
     timestamp: datetime
     confluences: list[str] = field(default_factory=list)
     instrument_category: str = "forex"
+    ev_estimate: float = 0.0
+    opportunity_score: float = 0.0
 
 
 @dataclass

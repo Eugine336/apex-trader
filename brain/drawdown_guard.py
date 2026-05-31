@@ -28,6 +28,8 @@ class DrawdownStatus:
     daily_pnl_pct: float
     weekly_pnl_pct: float
     equity_slope: float
+    high_water_mark: float = 0.0
+    drawdown_from_peak_pct: float = 0.0
 
 
 class DrawdownGuard:
@@ -47,6 +49,8 @@ class DrawdownGuard:
         self.weekly_pnl_history: dict[str, float] = {}
         self.equity_points: list[tuple[str, float]] = []
         self.last_trade_day: str | None = None
+        self.high_water_mark: float = 0.0
+        self.hwm_timestamp: str | None = None
 
         self.risk_map = {
             DrawdownMode.NORMAL: 0.02,
@@ -85,9 +89,35 @@ class DrawdownGuard:
 
         equity = (self.equity_points[-1][1] if self.equity_points else 0.0) + pnl_pct
         self.equity_points.append((day_key, equity))
+        self.update_hwm(equity, timestamp)
 
         self._update_mode(day_key)
         return self.get_status(timestamp)
+
+    def update_hwm(self, equity: float, timestamp: datetime | None = None) -> dict:
+        timestamp = timestamp or datetime.now(timezone.utc)
+        ts_str = timestamp.strftime("%Y-%m-%d %H:%M:%S")
+
+        if equity > self.high_water_mark:
+            self.high_water_mark = equity
+            self.hwm_timestamp = ts_str
+
+        if self.high_water_mark > 0:
+            drawdown_from_peak = (self.high_water_mark - equity) / self.high_water_mark
+        else:
+            drawdown_from_peak = 0.0
+
+        is_at_peak = equity >= self.high_water_mark and self.high_water_mark > 0
+        prev_equity = self.equity_points[-2][1] if len(self.equity_points) >= 2 else 0.0
+        is_recovering = equity < self.high_water_mark and equity > prev_equity
+
+        return {
+            "hwm": self.high_water_mark,
+            "current_equity": equity,
+            "drawdown_from_peak_pct": round(drawdown_from_peak, 6),
+            "is_at_peak": is_at_peak,
+            "is_recovering": is_recovering,
+        }
 
     def can_trade(self, timestamp: datetime | None = None) -> tuple[bool, str]:
         status = self.get_status(timestamp)
@@ -105,6 +135,13 @@ class DrawdownGuard:
         daily_pnl = self.daily_pnl_history.get(day_key, 0.0)
         weekly_pnl = self.weekly_pnl_history.get(week_key, 0.0)
         slope = self._equity_slope()
+
+        current_equity = self.equity_points[-1][1] if self.equity_points else 0.0
+        if self.high_water_mark > 0:
+            dd_from_peak = (self.high_water_mark - current_equity) / self.high_water_mark
+        else:
+            dd_from_peak = 0.0
+
         return DrawdownStatus(
             mode=self.mode.value,
             current_risk_pct=self.risk_map[self.mode],
@@ -114,6 +151,8 @@ class DrawdownGuard:
             daily_pnl_pct=round(daily_pnl, 4),
             weekly_pnl_pct=round(weekly_pnl, 4),
             equity_slope=round(slope, 6),
+            high_water_mark=round(self.high_water_mark, 6),
+            drawdown_from_peak_pct=round(dd_from_peak, 6),
         )
 
     def _roll_day_if_needed(self, day_key: str) -> None:
