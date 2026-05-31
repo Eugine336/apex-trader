@@ -388,7 +388,7 @@ class EntryEngine:
           entry_engine → platforms/__init__ → main_loop → entry_engine
         """
         # Lazy import — must stay inside the function, not at module level
-        from platforms.platform_context import build_context_for_symbol  # noqa: PLC0415
+        from platform_context import build_context_for_symbol  # noqa: PLC0415
         ctx = build_context_for_symbol(pair)
         if ctx.uses_stake:
             # Deriv: sizing is handled downstream by RiskEngine.calculate_stake()
