@@ -23,7 +23,7 @@ from config import (
 from risk.daily_tracker import PnLTracker
 from risk.position_sizer import PositionSizer
 from risk.spread_monitor import SpreadMonitor
-from platforms.platform_context import PlatformContext, build_context_for_symbol
+from platform_context import PlatformContext, build_context_for_symbol
 
 
 @dataclass
