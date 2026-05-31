@@ -189,6 +189,10 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
         asyncio.create_task(_slow_loop())
 
     if os.path.exists(_FRONTEND_BUILD):
+        # Vite outputs to build/assets/, CRA outputs to build/static/
+        _assets_dir = os.path.join(_FRONTEND_BUILD, "assets")
+        if os.path.exists(_assets_dir):
+            app.mount("/assets", StaticFiles(directory=_assets_dir), name="assets")
         _static_dir = os.path.join(_FRONTEND_BUILD, "static")
         if os.path.exists(_static_dir):
             app.mount("/static", StaticFiles(directory=_static_dir), name="static")
@@ -200,6 +204,6 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
             index = os.path.join(_FRONTEND_BUILD, "index.html")
             if os.path.exists(index):
                 return FileResponse(index)
-            return JSONResponse({"error": "frontend not built"}, status_code=404)
+            return JSONResponse({"error": "frontend not built — run: cd dashboard/frontend && npm run build"}, status_code=404)
 
     return app
