@@ -20,7 +20,6 @@ from brain.liquidity_mapper import LiquidityMapper
 from brain.drawdown_guard import DrawdownGuard, DrawdownMode
 from brain.session_engine import NewsGuard, SessionEngine
 from trigger.entry_patterns import EntryPatternDetector
-from platforms.platform_context import build_context_for_symbol
 
 
 @dataclass
@@ -385,10 +384,11 @@ class EntryEngine:
     ) -> float:
         """
         Returns lot size for MT5, or 0.0 for Deriv (stake is sized by RiskEngine).
-        entry_engine must not attempt lot sizing for Deriv — that produces the
-        $204 stake / $24 profit bug.  The correct stake travels via
-        assessment.stake_usd → execute_entry(stake_usd=...).
+        Lazy-imports build_context_for_symbol to avoid the circular import:
+          entry_engine → platforms/__init__ → main_loop → entry_engine
         """
+        # Lazy import — must stay inside the function, not at module level
+        from platforms.platform_context import build_context_for_symbol  # noqa: PLC0415
         ctx = build_context_for_symbol(pair)
         if ctx.uses_stake:
             # Deriv: sizing is handled downstream by RiskEngine.calculate_stake()
