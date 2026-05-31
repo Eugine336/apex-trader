@@ -20,6 +20,7 @@ from brain.liquidity_mapper import LiquidityMapper
 from brain.drawdown_guard import DrawdownGuard, DrawdownMode
 from brain.session_engine import NewsGuard, SessionEngine
 from trigger.entry_patterns import EntryPatternDetector
+from platforms.platform_context import build_context_for_symbol
 
 
 @dataclass
@@ -382,6 +383,19 @@ class EntryEngine:
         pip_size: float,
         pair: str = "",
     ) -> float:
+        """
+        Returns lot size for MT5, or 0.0 for Deriv (stake is sized by RiskEngine).
+        entry_engine must not attempt lot sizing for Deriv — that produces the
+        $204 stake / $24 profit bug.  The correct stake travels via
+        assessment.stake_usd → execute_entry(stake_usd=...).
+        """
+        ctx = build_context_for_symbol(pair)
+        if ctx.uses_stake:
+            # Deriv: sizing is handled downstream by RiskEngine.calculate_stake()
+            # Return 0.0 so the signal carries a clear sentinel — main_loop
+            # ignores position_size_lots for Deriv and uses assessment.stake_usd.
+            return 0.0
+
         risk_amount = account_balance * risk_pct
         risk_pips = abs(entry_price - stop_loss) / pip_size
         if risk_pips <= 0:
