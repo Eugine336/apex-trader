@@ -10,8 +10,11 @@ import time as _time
 from datetime import datetime, timezone
 from typing import Optional
 
+from loguru import logger as _pm_logger
+
 import pandas as pd
-from loguru import logger
+
+logger = _pm_logger
 
 from config import (
     INSTRUMENT_REGISTRY,
@@ -54,6 +57,14 @@ class PlatformManager:
         self._mt5_connected = False
         self._deriv_connected = False
 
+        self._mt5_was_connected = False
+        self._deriv_was_connected = False
+        self._reconnect_delays = [5, 10, 20, 40, 60]
+        self._mt5_reconnect_attempt = 0
+        self._deriv_reconnect_attempt = 0
+        self._mt5_next_reconnect: float = 0.0
+        self._deriv_next_reconnect: float = 0.0
+
     # ── Connection management ────────────────────────────────────────────
 
     def connect_all(self) -> dict[str, bool]:
@@ -77,6 +88,9 @@ class PlatformManager:
 
         if not any(results.values()):
             logger.error("No platforms connected — trading disabled")
+
+        self._mt5_was_connected = self._mt5_connected
+        self._deriv_was_connected = self._deriv_connected
         return results
 
     def disconnect_all(self) -> None:
@@ -85,6 +99,91 @@ class PlatformManager:
         self._mt5_connected = False
         self._deriv_connected = False
         logger.info("All platforms disconnected")
+
+    def check_connections(self) -> dict[str, bool]:
+        """Return live connection state for each platform."""
+        mt5_live = False
+        if self._mt5_connected:
+            try:
+                mt5_live = self.mt5.is_connected()
+            except Exception:
+                mt5_live = False
+            if not mt5_live:
+                self._mt5_connected = False
+
+        deriv_live = False
+        if self._deriv_connected:
+            try:
+                deriv_live = self.deriv.is_connected()
+            except Exception:
+                deriv_live = False
+            if not deriv_live:
+                self._deriv_connected = False
+
+        return {"mt5": mt5_live, "deriv": deriv_live}
+
+    def reconnect_platform(self, platform: str) -> bool:
+        """Attempt to reconnect a single platform with exponential backoff."""
+        delays = self._reconnect_delays
+        max_attempts = len(delays)
+
+        if platform == "mt5":
+            attempt = self._mt5_reconnect_attempt
+        else:
+            attempt = self._deriv_reconnect_attempt
+
+        if attempt >= max_attempts:
+            logger.error("{} reconnect exhausted after {} attempts", platform.upper(), max_attempts)
+            return False
+
+        delay = delays[attempt]
+        logger.warning(
+            "{} reconnect attempt {}/{} (backoff {}s)",
+            platform.upper(), attempt + 1, max_attempts, delay,
+        )
+
+        connector = self.mt5 if platform == "mt5" else self.deriv
+        try:
+            success = connector.connect()
+        except Exception as exc:
+            logger.error("{} reconnect error: {}", platform.upper(), exc)
+            success = False
+
+        if success:
+            if platform == "mt5":
+                self._mt5_connected = True
+                self._mt5_reconnect_attempt = 0
+                self._mt5_next_reconnect = 0.0
+            else:
+                self._deriv_connected = True
+                self._deriv_reconnect_attempt = 0
+                self._deriv_next_reconnect = 0.0
+            logger.info("{} RECONNECTED", platform.upper())
+            return True
+
+        if platform == "mt5":
+            self._mt5_reconnect_attempt = attempt + 1
+            self._mt5_next_reconnect = _time.monotonic() + delay
+        else:
+            self._deriv_reconnect_attempt = attempt + 1
+            self._deriv_next_reconnect = _time.monotonic() + delay
+        return False
+
+    def should_attempt_reconnect(self, platform: str) -> bool:
+        """Check if enough time has passed to attempt reconnection (non-blocking)."""
+        now = _time.monotonic()
+        if platform == "mt5":
+            if self._mt5_connected:
+                return False
+            if not self._mt5_was_connected:
+                return False
+            return now >= self._mt5_next_reconnect
+        else:
+            if self._deriv_connected:
+                return False
+            if not self._deriv_was_connected:
+                return False
+            return now >= self._deriv_next_reconnect
 
     @property
     def any_connected(self) -> bool:
