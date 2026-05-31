@@ -497,7 +497,18 @@ class DerivConnector(BaseConnector):
                     "Update config/brokers/deriv.json!",
                     multiplier, mapped, corrected, valid,
                 )
+                # Recalculate stake to preserve the same max-loss in dollars.
+                # max_loss = stake × multiplier × sl_pct  (constant)
+                # new_stake = stake × original_mult / corrected_mult
+                original_mult = multiplier
                 multiplier = corrected
+                if corrected > 0 and original_mult > 0:
+                    amount = round(amount * original_mult / corrected, 2)
+                    amount = max(1.0, amount)
+                    logger.debug(
+                        "Deriv stake recalculated for {}× → {}×: ${:.2f}",
+                        original_mult, corrected, amount,
+                    )
                 resp = self._sync_send({
                     "buy": 1,
                     "subscribe": 1,
