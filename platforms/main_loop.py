@@ -138,6 +138,11 @@ class TradingLoop:
         self._execution_breaker = CircuitBreaker("execution", failure_threshold=3, cooldown_seconds=600)
         self._health_check_interval = 10
 
+        # In-memory activity feed — surfaced in dashboard /api/activity
+        # Capped at 200 entries; newest first.
+        self.system_warnings: list[dict] = []
+        self._MAX_WARNINGS = 200
+
         self.managed_positions: dict[str, ManagedPosition] = {}
         self.running = False
         self._last_scan_time: Optional[datetime] = None
@@ -955,8 +960,26 @@ class TradingLoop:
         self._run_journal_async(self.journal.log_trade(trade_record))
         self.ml.register_new_trade()
 
+    def _add_warning(self, level: str, message: str, symbol: str = "") -> None:
+        """Append a system event to the in-memory activity feed for the dashboard."""
+        from datetime import datetime, timezone
+        entry = {
+            "level": level,           # "warning" | "rejection" | "info"
+            "symbol": symbol,
+            "message": message,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        self.system_warnings.insert(0, entry)
+        if len(self.system_warnings) > self._MAX_WARNINGS:
+            self.system_warnings = self.system_warnings[:self._MAX_WARNINGS]
+
     def _log_rejection(self, pair: str, direction: str, score: int, reason: str) -> None:
         logger.debug("❌ REJECTED {} {} (score {}) — {}", direction, pair, score, reason)
+        self._add_warning(
+            level="rejection",
+            symbol=pair,
+            message=f"REJECTED {direction} (score {score}) — {reason}",
+        )
         decision = DecisionRecord(
             pair=pair,
             direction=direction,
