@@ -41,7 +41,15 @@ class DrawdownGuard:
     - FROZEN: no trading until next day
     """
 
-    def __init__(self):
+    def __init__(self, base_risk_pct: float = 0.005):
+        """
+        base_risk_pct: matches config.risk_per_trade_pct (default 0.5%)
+        Risk map scales DOWN from base in adverse conditions — never up.
+        NORMAL   = base_risk_pct          (e.g. 0.5%)
+        CAUTION  = base_risk_pct * 0.75   (e.g. 0.375%)
+        RECOVERY = base_risk_pct * 0.5    (e.g. 0.25%)
+        FROZEN   = 0
+        """
         self.mode = DrawdownMode.NORMAL
         self.consecutive_losses = 0
         self.consecutive_wins = 0
@@ -53,15 +61,15 @@ class DrawdownGuard:
         self.hwm_timestamp: str | None = None
 
         self.risk_map = {
-            DrawdownMode.NORMAL: 0.02,
-            DrawdownMode.CAUTION: 0.015,
-            DrawdownMode.RECOVERY: 0.01,
-            DrawdownMode.FROZEN: 0.0,
+            DrawdownMode.NORMAL:   round(base_risk_pct, 4),
+            DrawdownMode.CAUTION:  round(base_risk_pct * 0.75, 4),
+            DrawdownMode.RECOVERY: round(base_risk_pct * 0.50, 4),
+            DrawdownMode.FROZEN:   0.0,
         }
         self.score_map = {
-            DrawdownMode.NORMAL: 85,
-            DrawdownMode.CAUTION: 88,
-            DrawdownMode.RECOVERY: 92,
+            DrawdownMode.NORMAL: 65,
+            DrawdownMode.CAUTION: 70,
+            DrawdownMode.RECOVERY: 75,
             DrawdownMode.FROZEN: 999,
         }
 
