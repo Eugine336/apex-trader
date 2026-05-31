@@ -392,16 +392,36 @@ class EntryEngine:
             if tp1 - entry_price < risk:
                 tp1 = entry_price + risk * 1.5
 
-            structure = self.structure.analyze(h1_df)
-            tp2 = structure.swing_high if structure.swing_high and structure.swing_high > tp1 else entry_price + risk * 2.5
+            # Use correct pip_size so min_swing_size filters out noise swings.
+            # Default pip_size=0.0001 on synthetics/indices gives near-zero threshold
+            # and returns tiny intracandle highs as "swing highs" → TP2 too close.
+            structure = StructureEngine(pip_size=pip_size)
+            h1_analysis = structure.analyze(h1_df)
+            tp2_candidate = h1_analysis.swing_high
+            if tp2_candidate and tp2_candidate > tp1:
+                # Ensure TP2 gives at least 2.0R — if structure swing is too close, use 2.5R fallback
+                if (tp2_candidate - entry_price) / risk >= 2.0:
+                    tp2 = tp2_candidate
+                else:
+                    tp2 = entry_price + risk * 2.5
+            else:
+                tp2 = entry_price + risk * 2.5
         else:
             tp1_liq = liq_map.nearest_sell_liq
             tp1 = tp1_liq.price if tp1_liq else entry_price - risk * 1.5
             if entry_price - tp1 < risk:
                 tp1 = entry_price - risk * 1.5
 
-            structure = self.structure.analyze(h1_df)
-            tp2 = structure.swing_low if structure.swing_low and structure.swing_low < tp1 else entry_price - risk * 2.5
+            structure = StructureEngine(pip_size=pip_size)
+            h1_analysis = structure.analyze(h1_df)
+            tp2_candidate = h1_analysis.swing_low
+            if tp2_candidate and tp2_candidate < tp1:
+                if (entry_price - tp2_candidate) / risk >= 2.0:
+                    tp2 = tp2_candidate
+                else:
+                    tp2 = entry_price - risk * 2.5
+            else:
+                tp2 = entry_price - risk * 2.5
 
         return tp1, tp2
 
@@ -461,15 +481,22 @@ class EntryEngine:
                           pip_size: float = 0.0001) -> bool:
         if len(df) < 10:
             return False
-        # Use profile swing_lookback and limit bars to m1_confirmation_bars
-        lookback = profile.swing_lookback if profile else 3
+        # M1 CHoCH uses a FIXED small lookback regardless of instrument category.
+        # profile.swing_lookback (8–10) is calibrated for H4/H1 scanner use —
+        # applying it to M1 with 30–50 bars leaves almost no pivot candidates
+        # (each needs to be the extreme in a 21-bar window on only 30 bars).
+        # M1 structure needs lookback=3 (7-bar window) to surface enough swings.
+        M1_SWING_LOOKBACK = 3
         bars = profile.m1_confirmation_bars if profile else 50
+        # Use more bars for structure engine — 100 gives richer swing history
+        # while still being recent enough to be relevant.
+        bars = max(bars, 100)
         df_slice = df.iloc[-bars:] if len(df) > bars else df
         # Use the actual instrument pip_size — never fabricate it from fvg_min_size_pips.
         # Synthetics/indices have pip_size >> 0.0001; wrong pip_size → min_swing_size
         # is near-zero so StructureEngine detects no events on M1.
         pip_sz = pip_size if pip_size > 0 else 0.0001
-        structure = StructureEngine(swing_lookback=lookback, pip_size=pip_sz)
+        structure = StructureEngine(swing_lookback=M1_SWING_LOOKBACK, pip_size=pip_sz)
         analysis = structure.analyze(df_slice)
 
         logger.debug(
