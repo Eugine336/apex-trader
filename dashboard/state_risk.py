@@ -59,8 +59,11 @@ class RiskMixin(HelpersMixin):
                 try:
                     risk_engine = getattr(loop, "risk_engine", None)
                     if risk_engine is not None:
+                        _dash_risk = risk_engine.drawdown_guard.risk_map.get(
+                            risk_engine.drawdown_guard.mode, 0.005
+                        )
                         open_trades = [
-                            {"pair": p.symbol, "direction": p.direction, "risk_pct": 0.02}
+                            {"pair": p.symbol, "direction": p.direction, "risk_pct": _dash_risk}
                             for p in loop.managed_positions.values()
                         ]
                         report = reporter.generate_report(
@@ -80,6 +83,24 @@ class RiskMixin(HelpersMixin):
                         result["max_drawdown_today"] = report.max_drawdown_today
                 except Exception:
                     pass
+
+            # Opportunity density
+            density_tracker = getattr(loop, "density_tracker", None)
+            if density_tracker is not None:
+                snap = density_tracker.get_snapshot()
+                if snap is not None:
+                    result["opportunity_density_tier"] = snap.tier
+                    result["opportunity_density_1h"] = snap.ready_count_1h
+                    result["opportunity_size_mult"] = snap.size_multiplier
+
+            # System-wide volatility state
+            vol_monitor = getattr(loop, "vol_monitor", None)
+            if vol_monitor is not None:
+                vs = vol_monitor.get_state()
+                if vs is not None:
+                    result["system_vol_state"] = vs.state
+                    result["system_vol_mult"] = vs.size_multiplier
+                    result["system_vol_note"] = vs.note
 
             return result
 
