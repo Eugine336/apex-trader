@@ -21,6 +21,8 @@ from brain.trade_journal import DecisionRecord, TradeJournal, TradeRecord
 from brain.volume_analyzer import (VolumeAnalysis, VolumeAnalyzer,
                                    VolumeDivergence)
 from brain.wyckoff_engine import WyckoffAnalysis, WyckoffEngine, WyckoffPhase
+from brain.opportunity_density import OpportunityDensityTracker, DensitySnapshot
+from brain.regime_detector import SystemVolatilityMonitor, SystemVolatilityState
 
 __all__ = [
     "StructureEngine", "Trend", "StructureEvent",
@@ -39,4 +41,6 @@ __all__ = [
     "ExecutionMonitor", "ExecutionStats",
     "CorrelationEngine", "OpenTrade", "ExposureMap",
     "BacktestEngine", "BacktestResult", "BrokerDataLoader", "DataLoader",
+    "OpportunityDensityTracker", "DensitySnapshot",
+    "SystemVolatilityMonitor", "SystemVolatilityState",
 ]
