@@ -118,6 +118,7 @@ class TestDerivConnector:
     def test_symbol_map_synthetics(self):
         c = DerivConnector()
         assert c.symbol_map("V75_1S") == "1HZ75V"
+        assert c.symbol_map("BOOM500") == "BOOM500"
         assert c.symbol_map("CRASH1000") == "CRASH1000"
         assert c.symbol_map("STPIDX") == "stpRNG"
 
