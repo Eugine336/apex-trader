@@ -589,6 +589,8 @@ class PlatformManager:
             self._unavailable_symbols: set = set()
         if not hasattr(self, "_failed_timeframes"):
             self._failed_timeframes: set[tuple[str, str]] = set()
+        if not hasattr(self, "system_warnings"):
+            self.system_warnings: list[dict] = []
 
         for tf in timeframes:
             try:
@@ -597,12 +599,13 @@ class PlatformManager:
                 exc_str = str(exc)
                 if "not available on broker" in exc_str or "not found" in exc_str.lower():
                     if symbol not in self._unavailable_symbols:
-                        logger.warning(
-                            "Symbol '{}' not available on broker — skipping permanently. "
-                            "Remove it from enabled_symbols_override or add a broker mapping.",
-                            symbol,
+                        msg = (
+                            f"Symbol '{symbol}' not available on broker — skipping permanently. "
+                            "Remove it from enabled_symbols_override or add a broker mapping."
                         )
+                        logger.warning(msg)
                         self._unavailable_symbols.add(symbol)
+                        self._add_platform_warning("warning", msg, symbol)
                     break
                 elif "reconnecting" in exc_str.lower() or "not connected" in exc_str.lower():
                     logger.debug("Skipping {} {} — broker reconnecting", symbol, tf)
@@ -629,6 +632,21 @@ class PlatformManager:
         if wd == 6 and now_utc.hour < 22:   # Sunday before 22:00 UTC open
             return True
         return False
+
+    def _add_platform_warning(self, level: str, message: str, symbol: str = "") -> None:
+        """Append a system warning to the in-memory feed read by the dashboard."""
+        from datetime import datetime, timezone
+        if not hasattr(self, "system_warnings"):
+            self.system_warnings: list[dict] = []
+        entry = {
+            "level": level,
+            "symbol": symbol,
+            "message": message,
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+        }
+        self.system_warnings.insert(0, entry)
+        if len(self.system_warnings) > 200:
+            self.system_warnings = self.system_warnings[:200]
 
     def fetch_all_market_data(
         self,
