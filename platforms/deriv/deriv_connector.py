@@ -294,7 +294,11 @@ class DerivConnector(BaseConnector):
     # ── Order execution ──────────────────────────────────────────────────
 
     def _get_multiplier(self, mapped_symbol: str) -> int:
-        """Look up the correct multiplier for a Deriv symbol from broker config."""
+        """Look up the correct multiplier for a Deriv symbol from broker config.
+        Snaps the default value to the nearest accepted multiplier so Deriv
+        never rejects the order with 'Multiplier is not in acceptable range'.
+        """
+        _FALLBACK_ACCEPTED = [80, 200, 400, 600, 800, 1000, 2000, 4000]
         try:
             cfg_path = __file__.replace(
                 "platforms/deriv/deriv_connector.py",
@@ -304,9 +308,15 @@ class DerivConnector(BaseConnector):
                 cfg = json.load(f)
             mult_map = cfg.get("multipliers", {})
             entry = mult_map.get(mapped_symbol) or mult_map.get("_default", {})
-            return int(entry.get("default", 100))
+            desired  = int(entry.get("default", 1000))
+            accepted = [int(x) for x in entry.get("accepted", _FALLBACK_ACCEPTED)]
+            if not accepted:
+                accepted = _FALLBACK_ACCEPTED
+            # Snap to nearest accepted value
+            nearest = min(accepted, key=lambda x: abs(x - desired))
+            return nearest
         except Exception:
-            return 100
+            return 1000
 
     def place_order(
         self,
