@@ -3,8 +3,8 @@ import { useApi } from '../hooks/useApi';
 import { EquityChart, WinRateDonut } from '../components/Charts';
 
 export default function TradeHistory() {
-  const { data: histData } = useApi('/api/history', 10000);
-  const { data: perfData } = useApi('/api/performance', 10000);
+  const { data: histData } = useApi('/api/history', 0);
+  const { data: perfData } = useApi('/api/performance', 0);
   const [filter, setFilter] = useState('ALL');
   const [search, setSearch] = useState('');
   const [sortCol, setSortCol] = useState(null);
