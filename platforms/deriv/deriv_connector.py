@@ -401,13 +401,45 @@ class DerivConnector(BaseConnector):
 
         if resp.get("error"):
             err = resp["error"].get("message", "Unknown error")
-            logger.error("Deriv order failed — {} {} {}: {}", direction, mapped, lots, err)
-            return OrderResult(
-                success=False, order_id="", fill_price=0.0,
-                requested_price=price, slippage_pips=0.0, lots=lots,
-                symbol=symbol, direction=direction.upper(), sl=sl, tp=tp,
-                platform="deriv", error=err,
-            )
+            # Auto-retry: parse max allowed stake from Deriv error and retry once
+            import re as _re
+            _cap_match = _re.search(r"equal to or lower than ([\d.]+)", err)
+            if _cap_match:
+                max_stake = float(_cap_match.group(1))
+                capped = round(max_stake * 0.99, 2)  # 1% below cap to be safe
+                logger.warning(
+                    "Deriv stake capped — retrying {} {} with ${} (max ${})",
+                    direction, symbol, capped, max_stake,
+                )
+                resp = self._sync_send({
+                    "buy": 1,
+                    "subscribe": 1,
+                    "price": capped,
+                    "parameters": {
+                        "contract_type": contract_type,
+                        "symbol": mapped,
+                        "currency": "USD",
+                        "amount": capped,
+                        "basis": "stake",
+                        "multiplier": multiplier,
+                        "limit_order": {
+                            "stop_loss": round(abs(price - sl) / price * capped * multiplier, 2),
+                            "take_profit": round(abs(tp - price) / price * capped * multiplier, 2),
+                        },
+                    },
+                })
+                if not resp.get("error"):
+                    err = None  # retry succeeded
+                else:
+                    err = resp["error"].get("message", "Unknown error")
+            if err:
+                logger.error("Deriv order failed — {} {} {}: {}", direction, mapped, lots, err)
+                return OrderResult(
+                    success=False, order_id="", fill_price=0.0,
+                    requested_price=price, slippage_pips=0.0, lots=lots,
+                    symbol=symbol, direction=direction.upper(), sl=sl, tp=tp,
+                    platform="deriv", error=err,
+                )
 
         buy_resp = resp.get("buy", {})
         contract_id = str(buy_resp.get("contract_id", ""))
