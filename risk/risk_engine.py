@@ -24,6 +24,7 @@ from risk.daily_tracker import PnLTracker
 from risk.position_sizer import PositionSizer
 from risk.spread_monitor import SpreadMonitor
 from platform_context import PlatformContext, build_context_for_symbol
+from ml.ev_estimator import EVEstimator
 
 
 @dataclass
@@ -41,6 +42,8 @@ class RiskAssessment:
     total_exposure_pct: float = 0.0
     stake_usd: float = 0.0          # Deriv only; 0.0 for MT5
     sizing_mode: str = "lots"       # "lots" | "stake"
+    ev_estimate: float = 0.0
+    ev_confidence: str = "unknown"
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -89,6 +92,7 @@ class RiskEngine:
         self.spread_monitor = SpreadMonitor(
             max_multiplier=self.risk_cfg.max_spread_multiplier,
         )
+        self.ev_estimator = EVEstimator()
 
         logger.info(
             f"RiskEngine initialized — balance=${starting_balance:,.2f}, "
@@ -106,6 +110,10 @@ class RiskEngine:
         account_balance: float | None = None,
         current_spread_pips: float | None = None,
         context: Optional[PlatformContext] = None,
+        score: int = 0,
+        trade_history: list[dict] | None = None,
+        regime: str = "",
+        session: str = "",
     ) -> RiskAssessment:
         now = datetime.now(timezone.utc)
         balance = account_balance or self.balance
@@ -187,6 +195,41 @@ class RiskEngine:
                 )
         checks.append("No duplicate pair+direction")
 
+        ev_est = None
+        if trade_history:
+            ev_est = self.ev_estimator.estimate(pair, regime, session, trade_history)
+            checks.append(
+                f"EV estimate: {ev_est.expected_value:+.4f} "
+                f"(WR={ev_est.win_rate:.0%}, n={ev_est.sample_size}, "
+                f"confidence={ev_est.confidence}, source={ev_est.source})"
+            )
+            if (
+                ev_est.expected_value < self.risk_cfg.ev_threshold
+                and ev_est.confidence in ("high", "medium")
+            ):
+                rejections.append(
+                    f"Negative EV: {ev_est.expected_value:+.4f} "
+                    f"({ev_est.confidence} confidence, {ev_est.sample_size} trades) — "
+                    f"below threshold {self.risk_cfg.ev_threshold}"
+                )
+                logger.warning(f"[RiskEngine] REJECTED {pair}: negative EV ({ev_est.expected_value:+.4f})")
+                return self._build_assessment(
+                    False, 0.0, 0.0, 0.0, checks, rejections, mode,
+                    dd_status, len(trades), now,
+                    ev_estimate=ev_est.expected_value,
+                    ev_confidence=ev_est.confidence,
+                )
+
+        if score > 0:
+            hwm_state = {
+                "is_at_peak": dd_status.drawdown_from_peak_pct <= 0,
+                "drawdown_from_peak_pct": dd_status.drawdown_from_peak_pct,
+            }
+            risk_pct_decimal = self._scale_risk_by_score(
+                risk_pct_decimal, score, hwm_state,
+            )
+            checks.append(f"Risk scaled by score {score}: {risk_pct_decimal:.3%}")
+
         # Build context if not supplied — auto-detect from instrument registry
         if context is None:
             context = build_context_for_symbol(pair)
@@ -221,6 +264,14 @@ class RiskEngine:
             checks.append(
                 f"[{context.platform}/{context.broker}] Position sized: "
                 f"{size_result.lots} lots, max_loss=${size_result.max_loss:.2f}"
+            )
+
+        if size_result.sizing_mode.endswith("_skip_micro"):
+            rejections.append("Account too small for this trade — position size below minimum")
+            logger.warning(f"[RiskEngine] REJECTED {pair}: micro account skip ({size_result.sizing_mode})")
+            return self._build_assessment(
+                False, 0.0, 0.0, 0.0, checks, rejections, mode,
+                dd_status, len(trades), now,
             )
 
         # Daily budget enforcement — reduce size if approaching daily limit
@@ -293,6 +344,8 @@ class RiskEngine:
             exposure_pct=exposure_map.max_single_currency_exposure,
             stake_usd=size_result.stake_usd,
             sizing_mode=size_result.sizing_mode,
+            ev_estimate=ev_est.expected_value if ev_est else 0.0,
+            ev_confidence=ev_est.confidence if ev_est else "unknown",
         )
 
     def record_trade_result(
@@ -371,6 +424,29 @@ class RiskEngine:
         self.pnl_tracker.reset_weekly(now)
         logger.info("[RiskEngine] NEW WEEK: Weekly P&L reset")
 
+    def _scale_risk_by_score(
+        self, base_risk_pct: float, score: int, hwm_state: dict,
+    ) -> float:
+        if score >= 92:
+            factor = 1.0
+        elif score >= 88:
+            factor = 0.85
+        elif score >= 85:
+            factor = 0.7
+        else:
+            factor = 0.5
+
+        scaled = base_risk_pct * factor
+
+        if hwm_state.get("is_at_peak") and score >= 90:
+            scaled *= 1.1
+        dd_pct = hwm_state.get("drawdown_from_peak_pct", 0)
+        if dd_pct > 0.10:
+            scaled *= 0.85
+
+        scaled = min(scaled, 0.025)
+        return round(scaled, 6)
+
     def _build_assessment(
         self,
         approved: bool,
@@ -386,6 +462,8 @@ class RiskEngine:
         exposure_pct: float = 0.0,
         stake_usd: float = 0.0,
         sizing_mode: str = "lots",
+        ev_estimate: float = 0.0,
+        ev_confidence: str = "unknown",
     ) -> RiskAssessment:
         pnl_snap = self.pnl_tracker.get_snapshot(account_balance=self.balance, timestamp=now)
         return RiskAssessment(
@@ -402,6 +480,8 @@ class RiskEngine:
             total_exposure_pct=round(exposure_pct * 100, 2),
             stake_usd=stake_usd,
             sizing_mode=sizing_mode,
+            ev_estimate=ev_estimate,
+            ev_confidence=ev_confidence,
             timestamp=now,
         )
 

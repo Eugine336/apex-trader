@@ -38,6 +38,8 @@ class PositionSizer:
 
     MIN_LOT = 0.01
     MAX_LOT = 100.0
+    MICRO_THRESHOLD = 100.0
+    DERIV_MIN_STAKE = 0.35
 
     # ── MT5 lot-based sizing ─────────────────────────────────────────────
 
@@ -85,15 +87,19 @@ class PositionSizer:
         max_loss = lots * risk_pips * pip_value_per_lot
         margin_estimate = self.calculate_margin(lots, entry_price, leverage)
 
+        lots, sizing_mode = self._adjust_for_account_size(
+            lots, account_balance, risk_amount, max_loss,
+        )
+
         return SizeResult(
             lots=lots,
             stake_usd=0.0,
             risk_amount=round(risk_amount, 2),
             risk_pips=round(risk_pips, 2),
             pip_value=pip_value_per_lot,
-            max_loss=round(max_loss, 2),
-            margin_estimate=round(margin_estimate, 2),
-            sizing_mode="lots",
+            max_loss=round(max_loss, 2) if lots > 0 else 0.0,
+            margin_estimate=round(margin_estimate, 2) if lots > 0 else 0.0,
+            sizing_mode=sizing_mode,
         )
 
     # ── Deriv stake-based sizing ─────────────────────────────────────────
@@ -116,6 +122,21 @@ class PositionSizer:
         risk_distance = abs(entry_price - stop_loss)
         stake = round(risk_amount, 2)
 
+        if account_balance < self.MICRO_THRESHOLD and stake < self.DERIV_MIN_STAKE:
+            logger.warning(
+                f"Micro account skip: stake ${stake:.2f} below Deriv minimum ${self.DERIV_MIN_STAKE}"
+            )
+            return SizeResult(
+                lots=0.0,
+                stake_usd=0.0,
+                risk_amount=round(risk_amount, 2),
+                risk_pips=round(risk_distance, 5),
+                pip_value=0.0,
+                max_loss=0.0,
+                margin_estimate=0.0,
+                sizing_mode="stake_skip_micro",
+            )
+
         return SizeResult(
             lots=0.0,           # meaningless for Deriv
             stake_usd=stake,
@@ -126,6 +147,25 @@ class PositionSizer:
             margin_estimate=stake,
             sizing_mode="stake",
         )
+
+    # ── Micro account adjustment ────────────────────────────────────────
+
+    def _adjust_for_account_size(
+        self,
+        lots: float,
+        account_balance: float,
+        risk_amount: float,
+        max_loss: float,
+    ) -> tuple[float, str]:
+        if account_balance >= self.MICRO_THRESHOLD:
+            return lots, "lots"
+        if max_loss > risk_amount * 1.5:
+            logger.warning(
+                f"Micro account skip: max_loss ${max_loss:.2f} exceeds "
+                f"1.5× risk_amount ${risk_amount:.2f} (clamped lot too large)"
+            )
+            return 0.0, "lots_skip_micro"
+        return lots, "lots"
 
     # ── Instrument-aware sizing ─────────────────────────────────────────
 
