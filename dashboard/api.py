@@ -7,7 +7,7 @@ import asyncio
 import os
 from typing import Optional
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
@@ -18,6 +18,7 @@ from dashboard.state import LiveState
 _state = LiveState()
 
 _FRONTEND_BUILD = os.path.join(os.path.dirname(__file__), "frontend", "build")
+_API_KEY = os.getenv("DD_DASHBOARD_API_KEY", "")
 
 
 class ConnectionManager:
@@ -59,6 +60,30 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    if _API_KEY:
+        logger.info("Dashboard API key authentication ENABLED")
+    else:
+        logger.warning("Dashboard running without authentication — set DD_DASHBOARD_API_KEY")
+
+    @app.middleware("http")
+    async def api_key_auth(request: Request, call_next):
+        if not _API_KEY:
+            return await call_next(request)
+        path = request.url.path
+        if path == "/api/health" or not path.startswith("/api/"):
+            return await call_next(request)
+        provided = request.headers.get("X-API-Key", "")
+        if provided != _API_KEY:
+            return JSONResponse(
+                {"error": "Invalid or missing API key"},
+                status_code=401,
+            )
+        return await call_next(request)
+
+    @app.get("/api/health")
+    def health():
+        return {"status": "ok"}
 
     @app.get("/api/status")
     def status():
