@@ -209,3 +209,122 @@ class RegimeDetector:
             )
 
         return MarketRegime.RANGING, 0.5
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# System-wide Volatility State
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dataclass
+class SystemVolatilityState:
+    """
+    Aggregated cross-instrument volatility state.
+    When the market is in a SPIKE, ALL position sizes are reduced regardless
+    of individual pair scores — news shocks and correlated vol events can
+    invalidate any single-pair analysis instantly.
+    """
+    state: str               # "NORMAL", "ELEVATED", "SPIKE"
+    avg_volatility_ratio: float
+    spike_pair_count: int
+    total_pairs_checked: int
+    size_multiplier: float   # apply to all position sizes when != 1.0
+    note: str
+
+
+class SystemVolatilityMonitor:
+    """
+    Consumes a list of RegimeAnalysis objects (one per scanned pair) and
+    computes a system-wide volatility state.
+
+    Integration point: call `update(analyses)` after each full scan.
+    Use `get_size_multiplier()` as an additional sizing gate alongside
+    OpportunityDensityTracker.
+
+    Thresholds:
+      SPIKE    — ≥30% of pairs have volatility_ratio > 1.8 → size × 0.60
+      ELEVATED — ≥15% of pairs have volatility_ratio > 1.4 → size × 0.80
+      NORMAL   — everything else                          → size × 1.00
+    """
+
+    SPIKE_RATIO_THRESHOLD    = 1.8
+    ELEVATED_RATIO_THRESHOLD = 1.4
+    SPIKE_PCT_THRESHOLD      = 0.30   # 30% of pairs
+    ELEVATED_PCT_THRESHOLD   = 0.15   # 15% of pairs
+
+    SPIKE_MULTIPLIER    = 0.60
+    ELEVATED_MULTIPLIER = 0.80
+    NORMAL_MULTIPLIER   = 1.00
+
+    def __init__(self) -> None:
+        self._last_state: SystemVolatilityState | None = None
+
+    def update(self, analyses: list[RegimeAnalysis]) -> SystemVolatilityState:
+        """
+        Call with the list of RegimeAnalysis results from the most recent
+        full scan (one analysis per pair/instrument).
+        """
+        if not analyses:
+            state = SystemVolatilityState(
+                state="NORMAL",
+                avg_volatility_ratio=1.0,
+                spike_pair_count=0,
+                total_pairs_checked=0,
+                size_multiplier=self.NORMAL_MULTIPLIER,
+                note="No analyses provided — defaulting to NORMAL",
+            )
+            self._last_state = state
+            return state
+
+        n = len(analyses)
+        ratios = [a.volatility_ratio for a in analyses]
+        avg_ratio = sum(ratios) / n
+        spike_count = sum(1 for r in ratios if r > self.SPIKE_RATIO_THRESHOLD)
+        elevated_count = sum(1 for r in ratios if r > self.ELEVATED_RATIO_THRESHOLD)
+
+        spike_pct    = spike_count / n
+        elevated_pct = elevated_count / n
+
+        if spike_pct >= self.SPIKE_PCT_THRESHOLD:
+            state_str = "SPIKE"
+            mult = self.SPIKE_MULTIPLIER
+            note = (
+                f"{spike_count}/{n} pairs with vol_ratio > {self.SPIKE_RATIO_THRESHOLD} "
+                f"({spike_pct:.0%}) — all sizes cut to {mult:.0%}"
+            )
+        elif elevated_pct >= self.ELEVATED_PCT_THRESHOLD:
+            state_str = "ELEVATED"
+            mult = self.ELEVATED_MULTIPLIER
+            note = (
+                f"{elevated_count}/{n} pairs with vol_ratio > {self.ELEVATED_RATIO_THRESHOLD} "
+                f"({elevated_pct:.0%}) — all sizes cut to {mult:.0%}"
+            )
+        else:
+            state_str = "NORMAL"
+            mult = self.NORMAL_MULTIPLIER
+            note = f"avg vol_ratio={avg_ratio:.2f} — no adjustment"
+
+        result = SystemVolatilityState(
+            state=state_str,
+            avg_volatility_ratio=round(avg_ratio, 4),
+            spike_pair_count=spike_count,
+            total_pairs_checked=n,
+            size_multiplier=mult,
+            note=note,
+        )
+        self._last_state = result
+
+        import logging
+        logging.getLogger("apex").debug(
+            "SystemVol — %s (avg_ratio=%.2f, spike=%d/%d, mult=%.2f)",
+            state_str, avg_ratio, spike_count, n, mult,
+        )
+        return result
+
+    def get_size_multiplier(self) -> float:
+        """Return the most recent system-wide size multiplier (1.0 if no data)."""
+        if self._last_state is None:
+            return self.NORMAL_MULTIPLIER
+        return self._last_state.size_multiplier
+
+    def get_state(self) -> SystemVolatilityState | None:
+        return self._last_state
