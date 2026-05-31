@@ -285,6 +285,21 @@ class DerivConnector(BaseConnector):
 
     # ── Order execution ──────────────────────────────────────────────────
 
+    def _get_multiplier(self, mapped_symbol: str) -> int:
+        """Look up the correct multiplier for a Deriv symbol from broker config."""
+        try:
+            cfg_path = __file__.replace(
+                "platforms/deriv/deriv_connector.py",
+                "config/brokers/deriv.json"
+            )
+            with open(cfg_path) as f:
+                cfg = json.load(f)
+            mult_map = cfg.get("multipliers", {})
+            entry = mult_map.get(mapped_symbol) or mult_map.get("_default", {})
+            return int(entry.get("default", 100))
+        except Exception:
+            return 100
+
     def place_order(
         self,
         symbol: str,
@@ -297,11 +312,15 @@ class DerivConnector(BaseConnector):
         # Pass stake_usd to bypass the lots→stake conversion entirely.
         # PlatformManager sets this when routing a Deriv synthetic order.
         stake_usd: Optional[float] = None,
-        multiplier: int = 100,
+        multiplier: Optional[int] = None,
     ) -> OrderResult:
         self._require_connection()
         mapped = self.symbol_map(symbol)
         is_buy = direction.upper() in ("BUY", "LONG")
+
+        # Resolve multiplier from broker config if not explicitly passed
+        if multiplier is None:
+            multiplier = self._get_multiplier(mapped)
 
         # Use get_price (ticks_history) — avoids subscribe:0 validation error
         _tick = self.get_price(symbol)
