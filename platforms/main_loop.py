@@ -33,6 +33,8 @@ from brain import (
     TradeRecord,
     DecisionRecord,
 )
+from brain.opportunity_density import OpportunityDensityTracker
+from brain.regime_detector import SystemVolatilityMonitor
 from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size
 from management.re_entry import ReEntryManager
 from management.trade_manager import (
@@ -121,6 +123,8 @@ class TradingLoop:
         self.risk_reporter = RiskReporter()
         self.ml = MLAdapter()
         self.re_entry = ReEntryManager()
+        self.density_tracker = OpportunityDensityTracker(window_minutes=60)
+        self.vol_monitor = SystemVolatilityMonitor()
         self.trade_manager = TradeManager(
             partial_close_ratio=0.5,
             breakeven_buffer_pips=2.0,
@@ -469,6 +473,31 @@ class TradingLoop:
         report = self.scanner.scan_all(market_data, currency_data=currency_data, utc_now=now)
         ready = self.scanner.get_ready_setups(report)
 
+        # Track opportunity density — feeds into position sizing
+        density = self.density_tracker.record_scan(len(ready), utc_now=now)
+
+        # Update system-wide volatility state — reduce all sizes during market vol spikes
+        try:
+            from brain.regime_detector import RegimeDetector
+            _regime_det = RegimeDetector()
+            _vol_analyses = []
+            for pair, frames in market_data.items():
+                h4 = frames.get("H4")
+                if h4 is not None and len(h4) >= 50:
+                    try:
+                        _vol_analyses.append(_regime_det.analyze(h4))
+                    except Exception:
+                        pass
+            if _vol_analyses:
+                _vol_state = self.vol_monitor.update(_vol_analyses)
+                if _vol_state.state != "NORMAL":
+                    logger.warning(
+                        "⚡ SYSTEM VOL {} — {} — all sizes ×{:.2f}",
+                        _vol_state.state, _vol_state.note, _vol_state.size_multiplier,
+                    )
+        except Exception as _exc:
+            logger.debug("Vol monitor update error: {}", _exc)
+
         if not ready:
             return
 
@@ -544,6 +573,11 @@ class TradingLoop:
         balance = self.platforms.get_platform_balance(pair) or 10_000.0
         self.risk_engine.balance = balance
 
+        # Resolve actual risk % from current drawdown mode — never hardcode 0.02
+        _exec_risk = self.risk_engine.drawdown_guard.risk_map.get(
+            self.risk_engine.drawdown_guard.mode, 0.005
+        )
+
         # Build the platform context for this symbol — used by every downstream module
         broker = self.platforms.get_broker_name(pair)
         ctx: PlatformContext = build_context_for_symbol(
@@ -576,7 +610,7 @@ class TradingLoop:
             signal=signal,
             current_spread_pips=spread,
             open_trades=[
-                {"pair": p.symbol, "direction": p.direction, "risk_pct": 0.02}
+                {"pair": p.symbol, "direction": p.direction, "risk_pct": _exec_risk}
                 for p in self.managed_positions.values()
             ],
             utc_now=now,
@@ -601,7 +635,7 @@ class TradingLoop:
             entry_price=signal.entry_price,
             stop_loss=signal.stop_loss,
             open_trades=[
-                {"pair": p.symbol, "direction": p.direction, "risk_pct": 0.02}
+                {"pair": p.symbol, "direction": p.direction, "risk_pct": _exec_risk}
                 for p in self.managed_positions.values()
             ],
             account_balance=balance,
@@ -613,6 +647,26 @@ class TradingLoop:
             self._log_rejection(pair, direction, signal.score, f"RiskEngine: {reasons}")
             return False
 
+        # ── EV gate — skip when historical EV is negative at medium+ confidence ──
+        # ev_estimate=0.0 means insufficient data (new pair) — always allow.
+        # Only block when the system has enough history to be confident it's a loser.
+        ev_val = getattr(result, "ev_estimate", 0.0)
+        if ev_val < 0.0:
+            # Determine confidence from EVEstimator sample size indirectly via score
+            # We gate on negative EV only when pair_mult is also below 1.0 (i.e. learner
+            # has marked this pair as REDUCE_SIZE or worse) — belt + braces gate.
+            pair_mult = pair_mult_map = 1.0
+            try:
+                pair_mult = self.ml.pair_learner.get_pair_multiplier(pair)
+            except Exception:
+                pass
+            if pair_mult < 1.0:
+                self._log_rejection(
+                    pair, direction, result.score,
+                    f"EV gate: negative EV ({ev_val:.4f}) + pair_mult={pair_mult:.2f}"
+                )
+                return False
+
         try:
             adjustments = self.ml.get_trade_adjustments(
                 pair=pair,
@@ -622,7 +676,15 @@ class TradingLoop:
             if not adjustments.should_trade:
                 self._log_rejection(pair, direction, result.score, f"ML: {adjustments.reason}")
                 return False
-            adjusted_lots = round(signal.position_size_lots * adjustments.position_size_multiplier, 2)
+            density_mult = self.density_tracker.get_size_multiplier()
+            vol_mult = self.vol_monitor.get_size_multiplier()
+            adjusted_lots = round(
+                signal.position_size_lots
+                * adjustments.position_size_multiplier
+                * density_mult
+                * vol_mult,
+                2,
+            )
             adjusted_lots = max(0.01, adjusted_lots)
         except Exception as exc:
             logger.debug("ML adjustments error: {}", exc)
@@ -987,7 +1049,7 @@ class TradingLoop:
 
             # Feed trade history into scanner so EVEstimator has live data
             try:
-                self.scanner.scanner._trade_history = raw_trades
+                self.scanner._trade_history = raw_trades
             except Exception:
                 pass
         except Exception as exc:
