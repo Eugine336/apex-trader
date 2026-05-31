@@ -137,18 +137,23 @@ _SYNTHETIC_PROFILE = InstrumentProfile(
     # Structure: synthetics spike randomly — larger lookback avoids false swings
     swing_lookback=10,
     min_swing_size_pips=5.0,
-    # FVG: synthetics move fast and leave larger gaps
-    fvg_proximity_pips=8.0,
-    fvg_min_size_pips=3.0,
-    # OB: synthetics hunt stops aggressively — wider buffer essential
-    ob_buffer_pips=6.0,
-    ob_min_impulse_pips=15.0,
-    # Entry: wide SL buffer, synthetics will wick through tight stops
-    sl_buffer_pips=6.0,
-    min_risk_pips=8.0,
-    m1_confirmation_bars=30,    # Synthetic M1 bars are faster — less history needed
+    # FVG: synthetics move fast — wider proximity and bigger minimum gap
+    fvg_proximity_pips=15.0,
+    fvg_min_size_pips=5.0,
+    # OB: synthetics hunt stops very aggressively — wide buffer mandatory
+    ob_buffer_pips=10.0,
+    ob_min_impulse_pips=20.0,
+    # Entry: SL must be meaningful relative to instrument price.
+    # Synthetics trade at 100–100,000+ points. A fixed pip minimum is useless.
+    # min_risk_pips here acts as a MINIMUM percentage floor:
+    # the entry_engine multiplies this by pip_size to get minimum SL distance.
+    # For V100 (price ~857, pip=0.01): min_risk_pips=50 → min SL = 0.5 pts (0.06%)
+    # This is intentionally wide — synthetics at 400x multiplier need room to breathe.
+    # Rule of thumb: SL distance should be >= 0.3% of instrument price.
+    sl_buffer_pips=15.0,
+    min_risk_pips=50.0,
+    m1_confirmation_bars=30,
     # Scoring: no Wyckoff (no real volume), no currency strength, no news
-    # Lower threshold because fewer confluences are achievable
     min_entry_score=58,
     wyckoff_enabled=False,
     currency_strength_enabled=False,
