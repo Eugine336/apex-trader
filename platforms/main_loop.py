@@ -6,6 +6,7 @@ Always watching. Always ready. In and out like a sniper.
 """
 
 import asyncio
+import signal
 import time as _time
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -13,6 +14,8 @@ from typing import Optional
 
 import pandas as pd
 from loguru import logger
+
+from persistence.position_store import PositionStore
 
 from brain import (
     CorrelationEngine,
@@ -36,6 +39,7 @@ from management.trade_manager import (
 )
 from ml.ml_adapter import MLAdapter, TradeAdjustments
 from platforms.base_connector import OrderResult, PositionInfo
+from platforms.deriv.deriv_connector import DerivConnector
 from platforms.platform_manager import PlatformManager
 from platform_context import PlatformContext, build_context_for_symbol
 from risk.risk_engine import RiskEngine
@@ -53,12 +57,13 @@ class ManagedPosition:
         "entry_price", "sl", "tp1", "tp2", "score", "regime",
         "session", "entry_type", "open_time", "tp1_hit",
         "at_breakeven", "trailing", "last_update", "re_entry_eligible",
-        "tm_trade_id", "stake_usd",
+        "tm_trade_id", "stake_usd", "multiplier",
     )
 
     def __init__(self, order: OrderResult, tp1: float, tp2: float,
                  score: int = 0, regime: str = "", session: str = "",
-                 entry_type: str = "", stake_usd: float = 0.0):
+                 entry_type: str = "", stake_usd: float = 0.0,
+                 multiplier: int = 100):
         self.order_id = order.order_id
         self.platform = order.platform
         self.symbol = order.symbol
@@ -80,6 +85,7 @@ class ManagedPosition:
         self.re_entry_eligible = False
         self.tm_trade_id = ""
         self.stake_usd = stake_usd  # Deriv only; 0.0 for MT5
+        self.multiplier = multiplier  # Deriv contract multiplier; 100 default
 
 
 class TradingLoop:
@@ -116,6 +122,7 @@ class TradingLoop:
             breakeven_buffer_pips=2.0,
         )
         self._journal_loop = asyncio.new_event_loop()
+        self.position_store = PositionStore()
 
         self.managed_positions: dict[str, ManagedPosition] = {}
         self.running = False
@@ -136,6 +143,11 @@ class TradingLoop:
             return
 
         logger.info("Platforms: MT5={} | Deriv={}", connection_status["mt5"], connection_status["deriv"])
+
+        self._install_signal_handlers()
+        self._restore_positions()
+        self._reconcile_positions()
+
         self.running = True
 
         try:
@@ -187,15 +199,182 @@ class TradingLoop:
 
     def stop(self) -> None:
         self.running = False
+        n_positions = len(self.managed_positions)
+        for pos in self.managed_positions.values():
+            self.position_store.save_position(pos)
         logger.info(
-            "APEX TRADER SHUTTING DOWN — {} positions open, {} trades today",
-            len(self.managed_positions), self._daily_trades,
+            "APEX TRADER SHUTTING DOWN — {} positions persisted for restart recovery, {} trades today",
+            n_positions, self._daily_trades,
         )
+        self.position_store.close()
         self.platforms.disconnect_all()
         try:
             self._journal_loop.close()
         except Exception:
             pass
+
+    # ── Startup & recovery ───────────────────────────────────────────────
+
+    def _install_signal_handlers(self) -> None:
+        """Register SIGTERM/SIGINT so the trading loop shuts down cleanly."""
+        def _handle_signal(signum, frame):
+            sig_name = signal.Signals(signum).name
+            logger.info("Received {} — initiating graceful shutdown", sig_name)
+            self.running = False
+
+        try:
+            signal.signal(signal.SIGTERM, _handle_signal)
+            signal.signal(signal.SIGINT, _handle_signal)
+        except (OSError, ValueError):
+            logger.debug("Signal handlers not installed (not main thread)")
+
+    def _restore_positions(self) -> None:
+        """Reload positions persisted before the last shutdown/crash."""
+        rows = self.position_store.load_all_positions()
+        if not rows:
+            logger.info("Position store — no persisted positions to restore")
+            return
+        for row in rows:
+            try:
+                dummy_order = OrderResult(
+                    success=True,
+                    order_id=row["order_id"],
+                    fill_price=row["entry_price"],
+                    requested_price=row["entry_price"],
+                    slippage_pips=0.0,
+                    lots=row["lots"],
+                    symbol=row["symbol"],
+                    direction=row["direction"],
+                    sl=row["sl"],
+                    tp=row["tp1"],
+                    platform=row["platform"],
+                )
+                pos = ManagedPosition(
+                    order=dummy_order,
+                    tp1=row["tp1"],
+                    tp2=row["tp2"],
+                    score=row["score"],
+                    regime=row["regime"],
+                    session=row["session"],
+                    entry_type=row["entry_type"],
+                    stake_usd=row["stake_usd"],
+                    multiplier=row.get("multiplier", 100),
+                )
+                pos.open_time = datetime.fromisoformat(row["open_time"])
+                pos.tp1_hit = bool(row["tp1_hit"])
+                pos.at_breakeven = bool(row["at_breakeven"])
+                pos.trailing = bool(row["trailing"])
+                pos.tm_trade_id = row["tm_trade_id"]
+                pos.last_update = datetime.fromisoformat(row["last_update"])
+
+                tm_signal = TMEntrySignal(
+                    pair=pos.symbol,
+                    direction=pos.direction,
+                    entry_price=pos.entry_price,
+                    stop_loss=pos.sl,
+                    tp1=pos.tp1,
+                    tp2=pos.tp2,
+                    risk_reward_1=1.0,
+                    risk_reward_2=2.0,
+                    position_size_lots=pos.lots,
+                    score=pos.score,
+                )
+                tm_trade = self.trade_manager.open_trade(tm_signal)
+                if pos.tp1_hit:
+                    tm_trade.partial_closed = True
+                    tm_trade.breakeven_active = True
+                pos.tm_trade_id = tm_trade.trade_id
+                self.managed_positions[pos.order_id] = pos
+                logger.info(
+                    "🔄 RESTORED — {} {} | lots={} | SL={:.5f} | tp1_hit={}",
+                    pos.direction, pos.symbol, pos.lots, pos.sl, pos.tp1_hit,
+                )
+            except Exception as exc:
+                logger.error("Failed to restore position {}: {}", row.get("order_id"), exc)
+        logger.info("Position store — {} positions restored from disk", len(self.managed_positions))
+
+    def _reconcile_positions(self) -> None:
+        """Compare persisted positions with broker's live positions on startup."""
+        broker_positions: list[PositionInfo] = []
+        try:
+            broker_positions = self.platforms.get_all_open_positions()
+        except Exception as exc:
+            logger.warning("Broker position query failed during reconciliation: {}", exc)
+            return
+
+        broker_by_id: dict[str, PositionInfo] = {
+            p.order_id: p for p in broker_positions
+        }
+        persisted_ids = set(self.managed_positions.keys())
+        broker_ids = set(broker_by_id.keys())
+
+        for oid in persisted_ids - broker_ids:
+            pos = self.managed_positions[oid]
+            logger.info(
+                "📋 RECONCILE — {} {} was closed externally while offline — removing",
+                pos.direction, pos.symbol,
+            )
+            del self.managed_positions[oid]
+            self.position_store.remove_position(oid)
+
+        for oid in broker_ids - persisted_ids:
+            bp = broker_by_id[oid]
+            logger.warning(
+                "⚠️ RECONCILE — Orphaned position found: {} {} {:.2f} lots — adopting",
+                bp.direction, bp.symbol, bp.lots,
+            )
+            dummy_order = OrderResult(
+                success=True,
+                order_id=bp.order_id,
+                fill_price=bp.open_price,
+                requested_price=bp.open_price,
+                slippage_pips=0.0,
+                lots=bp.lots,
+                symbol=bp.symbol,
+                direction=bp.direction,
+                sl=bp.sl,
+                tp=bp.tp,
+                platform=bp.platform,
+            )
+            managed = ManagedPosition(
+                order=dummy_order,
+                tp1=bp.tp,
+                tp2=0.0,
+                score=0,
+                regime="UNKNOWN",
+                session="UNKNOWN",
+                entry_type="ORPHAN_ADOPTED",
+            )
+            tm_signal = TMEntrySignal(
+                pair=bp.symbol,
+                direction=bp.direction,
+                entry_price=bp.open_price,
+                stop_loss=bp.sl,
+                tp1=bp.tp,
+                tp2=0.0,
+                risk_reward_1=1.0,
+                risk_reward_2=1.0,
+                position_size_lots=bp.lots,
+                score=0,
+            )
+            tm_trade = self.trade_manager.open_trade(tm_signal)
+            managed.tm_trade_id = tm_trade.trade_id
+            self.managed_positions[oid] = managed
+            self.position_store.save_position(managed)
+
+        for oid in persisted_ids & broker_ids:
+            bp = broker_by_id[oid]
+            pos = self.managed_positions[oid]
+            if abs(bp.sl - pos.sl) > 1e-8:
+                logger.debug("RECONCILE — {} SL updated from broker: {:.5f} → {:.5f}", pos.symbol, pos.sl, bp.sl)
+                pos.sl = bp.sl
+                self.position_store.update_position(oid, sl=bp.sl)
+
+        logger.info(
+            "Reconciliation complete — {} managed, {} on broker, {} adopted, {} removed",
+            len(self.managed_positions), len(broker_positions),
+            len(broker_ids - persisted_ids), len(persisted_ids - broker_ids),
+        )
 
     # ── Scan → Entry pipeline ────────────────────────────────────────────
 
@@ -412,6 +591,7 @@ class TradingLoop:
             session=session,
             entry_type=signal.entry_type,
             stake_usd=stake_usd or 0.0,
+            multiplier=self._get_deriv_multiplier(pair) if ctx.uses_stake else 100,
         )
 
         tm_signal = TMEntrySignal(
@@ -432,6 +612,7 @@ class TradingLoop:
         managed.tm_trade_id = tm_trade.trade_id
 
         self.managed_positions[order.order_id] = managed
+        self.position_store.save_position(managed)
         self._daily_trades += 1
 
         logger.info(
@@ -495,6 +676,7 @@ class TradingLoop:
                     if result.success:
                         pos.tp1_hit = True
                         pos.lots = round(pos.lots - partial_lots, 2)
+                        self.position_store.update_position(oid, tp1_hit=True, lots=pos.lots)
                         logger.info("✅ TP1 HIT (MT5 partial) — {} {} | 50% closed", pos.direction, pos.symbol)
                 else:
                     # Deriv: partial close is not supported — close the full contract
@@ -528,19 +710,21 @@ class TradingLoop:
             if tm_trade.stop_loss != prev_sl:
                 pos_ctx = build_context_for_symbol(pos.symbol)
                 if pos_ctx.supports_modify:
-                    # MT5: modify the existing order with a new price-level SL
                     self.platforms.modify_trade(oid, pos.platform, new_sl=tm_trade.stop_loss)
                     pos.sl = tm_trade.stop_loss
                     if tm_trade.breakeven_active and not pos.at_breakeven:
                         pos.at_breakeven = True
+                        self.position_store.update_position(oid, sl=pos.sl, at_breakeven=True)
                         logger.info("✅ BREAKEVEN (MT5 modify) — {} {} | SL→{:.5f}", pos.direction, pos.symbol, tm_trade.stop_loss)
+                    else:
+                        self.position_store.update_position(oid, sl=pos.sl)
                 else:
-                    # Deriv: SL modify is not supported on multiplier contracts.
-                    # The connector accepted a dollar-amount SL at entry; any
-                    # change here would require closing and reopening the contract,
-                    # which only makes sense at TP1 (handled above).
-                    # For trailing purposes we track it locally only.
                     pos.sl = tm_trade.stop_loss
+                    if tm_trade.breakeven_active and not pos.at_breakeven:
+                        pos.at_breakeven = True
+                        self.position_store.update_position(oid, sl=pos.sl, at_breakeven=True)
+                    else:
+                        self.position_store.update_position(oid, sl=pos.sl)
                     logger.debug(
                         "SL update for Deriv {} {} tracked locally only (modify not supported)",
                         pos.direction, pos.symbol,
@@ -552,6 +736,7 @@ class TradingLoop:
 
         for oid in to_remove:
             del self.managed_positions[oid]
+            self.position_store.remove_position(oid)
 
         return closed_count
 
@@ -572,7 +757,7 @@ class TradingLoop:
             price_move_pct = abs(close_price - pos.entry_price) / pos.entry_price if pos.entry_price > 0 else 0.0
             # Win/loss sign based on direction
             signed_move = price_move_pct if is_buy == (close_price >= pos.entry_price) else -price_move_pct
-            pnl_dollars = round(pos.stake_usd * signed_move * 100, 2)  # ×100 = default multiplier proxy
+            pnl_dollars = round(pos.stake_usd * signed_move * pos.multiplier, 2)
         else:
             info = INSTRUMENT_REGISTRY.get(pos.symbol.upper())
             pip_value = info.pip_value_per_lot if info else 10.0
@@ -624,6 +809,18 @@ class TradingLoop:
             reason_rejected=reason,
         )
         self._run_journal_async(self.journal.log_decision(decision))
+
+    # ── Deriv multiplier lookup ──────────────────────────────────────────
+
+    def _get_deriv_multiplier(self, symbol: str) -> int:
+        """Retrieve the Deriv contract multiplier for a symbol via the connector."""
+        try:
+            if isinstance(self.platforms.deriv, DerivConnector):
+                mapped = self.platforms.deriv.symbol_map(symbol)
+                return self.platforms.deriv._get_multiplier(mapped)
+        except Exception as exc:
+            logger.debug("Deriv multiplier lookup failed for {} — using default 100: {}", symbol, exc)
+        return 100
 
     # ── Daily reset ──────────────────────────────────────────────────────
 
