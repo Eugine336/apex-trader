@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from loguru import logger
 
-from config import AppConfig, get_instrument, INSTRUMENT_REGISTRY, is_always_open
+from config import AppConfig, get_instrument, INSTRUMENT_REGISTRY, is_always_open, is_session_gated
 from brain.drawdown_guard import DrawdownGuard, DrawdownMode
 from brain.correlation_engine import CorrelationEngine, OpenTrade
 from brain.session_engine import SessionEngine
@@ -177,13 +177,25 @@ class EntryValidator:
         self, pair: str, utc_now: datetime,
     ) -> tuple[bool, str]:
         status = self.session.get_status(utc_now)
-        # 24/7 synthetics (Deriv) — NEVER block on weekend or session
-        # is_always_open() = True means the instrument runs continuously
+
+        # 24/7 synthetics (Deriv) — never block on session or weekend
         if is_always_open(pair):
             return True, "24/7 instrument — always tradeable"
-        # FX, commodities, indices — respect sessions and weekend
-        if status.current_session in ("WEEKEND", "DEAD"):
+
+        # Market-wide weekend/closure block — applies to everything 24/5
+        if status.current_session == "WEEKEND":
+            return False, f"Market closed ({status.current_session})"
+
+        # Non-FX instruments (commodities, indices, crypto) trade on their own
+        # schedules — do NOT gate them against FX sessions like SYDNEY, DEAD, etc.
+        # XAUUSD being rejected because "Session not active (SYDNEY)" is wrong.
+        if not is_session_gated(pair):
+            return True, f"Non-FX instrument — session unrestricted ({status.current_session})"
+
+        # FX pairs only — respect FX session activity
+        if status.current_session == "DEAD":
             return False, f"Market closed ({status.current_session})"
         if not status.is_tradeable:
             return False, f"Session not active ({status.current_session})"
+
         return True, f"Session active ({status.current_session})"
