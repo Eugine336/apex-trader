@@ -136,16 +136,14 @@ class StartupCheck:
         t0 = _time.monotonic()
         try:
             from persistence.position_store import PositionStore
-            import tempfile
-            with tempfile.NamedTemporaryFile(suffix=".db", delete=True) as tmp:
-                store = PositionStore(db_path=tmp.name)
-                count = store.count()
-                store.close()
+            store = PositionStore()
+            count = store.count()
+            store.close()
             elapsed = (_time.monotonic() - t0) * 1000
             return CheckResult(
                 name="database",
                 passed=True,
-                message="SQLite accessible, schema valid",
+                message=f"SQLite OK — {count} persisted positions",
                 duration_ms=elapsed,
             )
         except Exception as exc:
