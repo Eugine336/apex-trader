@@ -92,6 +92,25 @@ class PairRanker:
     def get_top_n(ranked: list[RankedSetup], n: int = 3) -> list[RankedSetup]:
         return ranked[:n]
 
+    def rank_opportunities(
+        self,
+        results: list[PairScanResult],
+        pair_learner_data: Optional[dict[str, float]] = None,
+    ) -> list[PairScanResult]:
+        learner = pair_learner_data or {}
+        for r in results:
+            if r.status != "READY":
+                continue
+            pair_mult = learner.get(r.pair, 1.0)
+            ev_factor = 1 + r.ev_estimate
+            r.opportunity_score = round(r.score * pair_mult * ev_factor, 2)
+
+        ready = [r for r in results if r.status == "READY"]
+        ready.sort(key=lambda r: r.opportunity_score, reverse=True)
+
+        others = [r for r in results if r.status != "READY"]
+        return ready + others
+
     # ------------------------------------------------------------------
     @staticmethod
     def _has_correlation_conflict(pair: str, open_trades: list[str]) -> bool:
