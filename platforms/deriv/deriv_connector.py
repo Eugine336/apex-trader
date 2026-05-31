@@ -473,7 +473,12 @@ class DerivConnector(BaseConnector):
             _cap_match = _re.search(r"equal to or lower than ([\d]+(?:\.[\d]+)?)", err)
             if _cap_match:
                 max_stake = float(_cap_match.group(1))
-                capped = round(max_stake * 0.99, 2)  # 1% below cap to be safe
+                # Floor to whole dollar — a percentage margin (e.g. 0.99×) is not
+                # enough because Deriv's cap is price-sensitive and shifts between
+                # requests, causing the retry to chase a moving target. A full-dollar
+                # floor gives stable clearance regardless of cap precision.
+                import math as _math
+                capped = max(1.0, float(_math.floor(max_stake)) - 1.0)
                 logger.warning(
                     "Deriv stake capped — retrying {} {} with ${} (max ${})",
                     direction, symbol, capped, max_stake,
@@ -546,7 +551,8 @@ class DerivConnector(BaseConnector):
                     _cap_match2 = _re.search(r"equal to or lower than ([\d]+(?:\.[\d]+)?)", err or "")
                     if _cap_match2:
                         max_stake2 = float(_cap_match2.group(1))
-                        capped2 = round(max_stake2 * 0.99, 2)
+                        import math as _math
+                        capped2 = max(1.0, float(_math.floor(max_stake2)) - 1.0)
                         logger.warning(
                             "Deriv stake capped after multiplier correction — retrying {} {} "
                             "with ${} (max ${})",
