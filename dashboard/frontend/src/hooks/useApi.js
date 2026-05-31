@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 
 const BASE = import.meta.env.VITE_API_URL || '';
 
@@ -6,6 +6,7 @@ export function useApi(endpoint, interval = 5000) {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
+  const intervalRef = useRef(interval);
 
   const fetchData = useCallback(async () => {
     try {
@@ -18,15 +19,16 @@ export function useApi(endpoint, interval = 5000) {
     } finally {
       setLoading(false);
     }
-  }, [endpoint]);
+  }, [endpoint]); // interval intentionally excluded — never changes per hook call
 
   useEffect(() => {
     fetchData();
-    if (interval > 0) {
-      const t = setInterval(fetchData, interval);
+    const ms = intervalRef.current;
+    if (ms > 0) {
+      const t = setInterval(fetchData, ms);
       return () => clearInterval(t);
     }
-  }, [fetchData, interval]);
+  }, [fetchData]); // stable: fetchData only changes if endpoint changes
 
   return { data, loading, error, refetch: fetchData };
 }
