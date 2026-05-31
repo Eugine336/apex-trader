@@ -15,7 +15,7 @@ function factorColor(v) {
 
 export default function Scanner() {
   const { state } = useOutletContext();
-  const { data: restData } = useApi('/api/scanner', 10000);
+  const { data: restData } = useApi('/api/scanner', 0);
   const [catFilter, setCatFilter] = useState('ALL');
 
   const sc = state.scanner || restData || {};
