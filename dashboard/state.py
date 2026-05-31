@@ -62,6 +62,35 @@ class LiveState(
         self._running = True
         logger.info("LiveState attached — dashboard serving real data")
 
+    def get_activity(self) -> dict:
+        """
+        Returns merged activity feed for the dashboard:
+        - Recent rejections (in-memory from TradingLoop + PlatformManager)
+        - System warnings (broker errors, unavailable symbols, etc.)
+        Sorted newest-first, capped at 100 entries.
+        """
+        events: list[dict] = []
+
+        # Rejections + warnings from TradingLoop
+        loop_warnings = getattr(self._trading_loop, "system_warnings", []) if self._trading_loop else []
+        events.extend(loop_warnings)
+
+        # Warnings from PlatformManager (broker errors, unavailable symbols)
+        pm_warnings = getattr(self._platform_manager, "system_warnings", []) if self._platform_manager else []
+        events.extend(pm_warnings)
+
+        # Sort newest-first and cap
+        try:
+            events.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
+        except Exception:
+            pass
+        events = events[:100]
+
+        return {
+            "events": events,
+            "total": len(events),
+        }
+
     @property
     def is_live(self) -> bool:
         return self._trading_loop is not None and self._running
