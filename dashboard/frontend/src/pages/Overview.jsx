@@ -21,8 +21,8 @@ export default function Overview() {
   const perf = state.performance || {};
   const scanner = state.scanner || {};
 
-  const { data: perfData } = useApi('/api/performance', 10000);
-  const { data: scanData } = useApi('/api/scanner', 10000);
+  const { data: perfData } = useApi('/api/performance', 0);
+  const { data: scanData } = useApi('/api/scanner', 0);
 
   const p = perfData || perf;
   const sc = scanData || scanner;
