@@ -71,6 +71,8 @@ class DerivConnector(BaseConnector):
         self._positions: dict[str, dict] = {}
         self._mapper = SymbolMapper("deriv")
 
+        self._discovered_multipliers: dict[str, list[int]] = {}
+
         self._loop = asyncio.new_event_loop()
         self._loop_thread = threading.Thread(
             target=self._loop.run_forever,
@@ -128,7 +130,51 @@ class DerivConnector(BaseConnector):
                 auth.get("currency", "USD"),
             )
         self._connected = True
+
+        await self._discover_multipliers()
         return True
+
+    async def _discover_multipliers(self) -> None:
+        """Query Deriv contracts_for API to discover valid multipliers per symbol."""
+        try:
+            cfg_path = __file__.replace(
+                "platforms/deriv/deriv_connector.py",
+                "config/brokers/deriv.json",
+            )
+            with open(cfg_path) as f:
+                cfg = json.load(f)
+            symbols = list(cfg.get("multipliers", {}).keys())
+        except Exception:
+            symbols = []
+
+        for sym in symbols:
+            if sym.startswith("_"):
+                continue
+            try:
+                resp = await self._send(
+                    {"contracts_for": sym, "currency": "USD", "product_type": "basic"}
+                )
+                if resp.get("error"):
+                    continue
+                available = resp.get("contracts_for", {}).get("available", [])
+                mults: set[int] = set()
+                for contract in available:
+                    ctype = contract.get("contract_type", "")
+                    if ctype not in ("MULTUP", "MULTDOWN"):
+                        continue
+                    if "multiplier_range" in contract:
+                        mrange = contract["multiplier_range"]
+                        for v in mrange:
+                            mults.add(int(v))
+                    if "multipliers" in contract:
+                        for v in contract["multipliers"]:
+                            mults.add(int(v))
+                if mults:
+                    sorted_mults = sorted(mults)
+                    self._discovered_multipliers[sym] = sorted_mults
+                    logger.info("Deriv multipliers discovered — {}: {}", sym, sorted_mults)
+            except Exception as exc:
+                logger.debug("Multiplier discovery failed for {}: {}", sym, exc)
 
     def disconnect(self) -> None:
         if self._ws is not None:
@@ -294,11 +340,18 @@ class DerivConnector(BaseConnector):
     # ── Order execution ──────────────────────────────────────────────────
 
     def _get_multiplier(self, mapped_symbol: str) -> int:
-        """Look up the correct multiplier for a Deriv symbol from broker config.
+        """Look up the correct multiplier for a Deriv symbol.
+        Prefers runtime-discovered values over static JSON config.
         Snaps the default value to the nearest accepted multiplier so Deriv
         never rejects the order with 'Multiplier is not in acceptable range'.
         """
         _FALLBACK_ACCEPTED = [80, 200, 400, 600, 800, 1000, 2000, 4000]
+
+        if mapped_symbol in self._discovered_multipliers:
+            accepted = self._discovered_multipliers[mapped_symbol]
+        else:
+            accepted = None
+
         try:
             cfg_path = __file__.replace(
                 "platforms/deriv/deriv_connector.py",
@@ -308,15 +361,18 @@ class DerivConnector(BaseConnector):
                 cfg = json.load(f)
             mult_map = cfg.get("multipliers", {})
             entry = mult_map.get(mapped_symbol) or mult_map.get("_default", {})
-            desired  = int(entry.get("default", 1000))
-            accepted = [int(x) for x in entry.get("accepted", _FALLBACK_ACCEPTED)]
-            if not accepted:
-                accepted = _FALLBACK_ACCEPTED
-            # Snap to nearest accepted value
-            nearest = min(accepted, key=lambda x: abs(x - desired))
-            return nearest
+            desired = int(entry.get("default", 1000))
+            if accepted is None:
+                accepted = [int(x) for x in entry.get("accepted", _FALLBACK_ACCEPTED)]
         except Exception:
-            return 1000
+            desired = 1000
+            if accepted is None:
+                accepted = _FALLBACK_ACCEPTED
+
+        if not accepted:
+            accepted = _FALLBACK_ACCEPTED
+        nearest = min(accepted, key=lambda x: abs(x - desired))
+        return nearest
 
     def place_order(
         self,
@@ -443,9 +499,6 @@ class DerivConnector(BaseConnector):
 
         buy_resp = resp.get("buy", {})
         contract_id = str(buy_resp.get("contract_id", ""))
-        fill = float(buy_resp.get("buy_price", price))
-        pip_size = get_pip_size(symbol)
-        slippage = abs(fill - price) / pip_size if pip_size else 0.0
 
         self._positions[contract_id] = {
             "symbol": symbol, "direction": direction.upper(),
@@ -454,14 +507,14 @@ class DerivConnector(BaseConnector):
 
         logger.info(
             "Deriv order filled — {} {} {} lots @ {} ({:.0f}ms)",
-            direction, mapped, lots, fill, latency,
+            direction, mapped, lots, amount, latency,
         )
         return OrderResult(
             success=True,
             order_id=contract_id,
-            fill_price=fill,
+            fill_price=price,
             requested_price=price,
-            slippage_pips=round(slippage, 2),
+            slippage_pips=0.0,
             lots=lots,
             symbol=symbol,
             direction=direction.upper(),
