@@ -80,7 +80,13 @@ class DerivConnector(BaseConnector):
             name="deriv-ws-loop",
         )
         self._loop_thread.start()
-        self._lock = asyncio.Lock()
+        # asyncio.Lock must be created on self._loop (not the main thread's loop).
+        # Creating it in __init__ on the wrong loop causes silent failures in
+        # _discover_multipliers, leaving _discovered_multipliers empty and forcing
+        # fallback to hardcoded multipliers (often 1000) that Deriv rejects.
+        self._lock: asyncio.Lock = asyncio.run_coroutine_threadsafe(
+            self._make_lock(), self._loop
+        ).result(timeout=5)
         self._thread_lock = threading.Lock()
         self._last_history_request: float = 0.0
 
@@ -133,6 +139,11 @@ class DerivConnector(BaseConnector):
 
         await self._discover_multipliers()
         return True
+
+    @staticmethod
+    async def _make_lock() -> asyncio.Lock:
+        """Create an asyncio.Lock bound to the running loop (self._loop)."""
+        return asyncio.Lock()
 
     async def _discover_multipliers(self) -> None:
         """Query Deriv contracts_for API to discover valid multipliers per symbol."""
@@ -530,6 +541,38 @@ class DerivConnector(BaseConnector):
                     err = None
                 else:
                     err = resp["error"].get("message", "Unknown error")
+                    # The recalculated stake may now exceed Deriv's per-symbol cap —
+                    # retry once more with the capped amount.
+                    _cap_match2 = _re.search(r"equal to or lower than ([\d.]+)", err or "")
+                    if _cap_match2:
+                        max_stake2 = float(_cap_match2.group(1))
+                        capped2 = round(max_stake2 * 0.99, 2)
+                        logger.warning(
+                            "Deriv stake capped after multiplier correction — retrying {} {} "
+                            "with ${} (max ${})",
+                            direction, symbol, capped2, max_stake2,
+                        )
+                        resp = self._sync_send({
+                            "buy": 1,
+                            "subscribe": 1,
+                            "price": capped2,
+                            "parameters": {
+                                "contract_type": contract_type,
+                                "symbol": mapped,
+                                "currency": "USD",
+                                "amount": capped2,
+                                "basis": "stake",
+                                "multiplier": corrected,
+                                "limit_order": {
+                                    "stop_loss": round(abs(price - sl) / price * capped2 * corrected, 2),
+                                    "take_profit": round(abs(tp - price) / price * capped2 * corrected, 2),
+                                },
+                            },
+                        })
+                        if not resp.get("error"):
+                            err = None
+                        else:
+                            err = resp["error"].get("message", "Unknown error")
             if err:
                 logger.error("Deriv order failed — {} {} {}: {}", direction, mapped, lots, err)
                 return OrderResult(
