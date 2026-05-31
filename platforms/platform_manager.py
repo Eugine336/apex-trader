@@ -618,11 +618,24 @@ class PlatformManager:
                     logger.warning("Data fetch failed — {} {}: {}", symbol, tf, exc)
         return data
 
+    @staticmethod
+    def _is_fx_weekend(now_utc) -> bool:
+        """FX market is closed from Saturday 00:00 UTC through Sunday 21:59 UTC.
+        weekday() >= 5 alone is wrong — it treats Sunday after 22:00 UTC as
+        weekend even though FX has already opened for the new week."""
+        wd = now_utc.weekday()
+        if wd == 5:                          # Saturday — always closed
+            return True
+        if wd == 6 and now_utc.hour < 22:   # Sunday before 22:00 UTC open
+            return True
+        return False
+
     def fetch_all_market_data(
         self,
         symbols: Optional[list[str]] = None,
         timeframes: Optional[list[str]] = None,
         count: int = 200,
+        now_utc=None,
     ) -> dict[str, dict[str, pd.DataFrame]]:
         """Fetch OHLCV for every enabled symbol across timeframes."""
         import datetime as _dt
@@ -633,8 +646,9 @@ class PlatformManager:
         if timeframes is None:
             timeframes = ["H4", "H1", "M15", "M5"]
 
-        now_utc = _dt.datetime.now(timezone.utc)
-        is_weekend = now_utc.weekday() >= 5
+        if now_utc is None:
+            now_utc = _dt.datetime.now(timezone.utc)
+        is_weekend = self._is_fx_weekend(now_utc)
 
         all_data: dict[str, dict[str, pd.DataFrame]] = {}
         for symbol in symbols:
