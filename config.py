@@ -166,7 +166,7 @@ _register("BNBUSD",  "BNB / US Dollar",          _CRY, _B, 0.01,  1.0, 1.0,   "2
 _register("SOLUSD",  "Solana / US Dollar",       _CRY, _B, 0.01,  1.0, 0.5,   "24/7", _CRYMAR)
 _register("ADAUSD",  "Cardano / US Dollar",      _CRY, _B, 0.0001,1.0, 0.01,  "24/7", _CRYMAR)
 _register("DOTUSD",  "Polkadot / US Dollar",     _CRY, _B, 0.001, 1.0, 0.1,   "24/7", _CRYMAR)
-_register("DOGEUSD", "Dogecoin / US Dollar",     _CRY, _B, 0.0001,1.0, 0.005, "24/7", _CRYMAR)
+# DOGEUSD removed — not available on MetaQuotes MT5 or Deriv (confirmed 2026-05-31)
 
 
 # ---------------------------------------------------------------------------
