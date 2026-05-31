@@ -170,9 +170,31 @@ class BrokerAutoDiscovery:
         )
 
         overrides = self._match_all(broker_symbol_names)
+
+        # ── Discover symbol constraints (stops_level, volume) per symbol ──
+        constraints: dict[str, dict] = {}
+        for apex_name, broker_symbol in overrides.items():
+            info = mt5.symbol_info(broker_symbol)
+            if info is not None:
+                constraints[broker_symbol] = {
+                    "volume_min":    round(info.volume_min, 8),
+                    "volume_max":    round(info.volume_max, 2),
+                    "volume_step":   round(info.volume_step, 8),
+                    "stops_level":   int(info.trade_stops_level),
+                    "digits":        int(info.digits),
+                    "point":         float(info.point),
+                    "contract_size": float(info.trade_contract_size),
+                }
+
         mt5.shutdown()
 
-        self._write_json(overrides)
+        if constraints:
+            logger.info(
+                "MT5 symbol constraints discovered — {} symbols",
+                len(constraints),
+            )
+
+        self._write_json(overrides, constraints)
 
         matched = len(overrides)
         total = len(APEX_ALIASES)
@@ -299,11 +321,12 @@ class BrokerAutoDiscovery:
         except Exception:
             return {}
 
-    def _write_json(self, overrides: dict) -> None:
+    def _write_json(self, overrides: dict, constraints: dict | None = None) -> None:
         """
         Write the broker JSON — always overwrites when called.
         Preserves manually-added overrides that auto-discovery didn't find,
         but auto-discovered symbols always win (broker is the source of truth).
+        Also writes per-symbol constraints (stops_level, volume) discovered live.
         """
         _BROKERS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -319,6 +342,9 @@ class BrokerAutoDiscovery:
         # Merge: auto-discovered overrides win, but manual-only keys are kept
         merged_overrides = {**existing.get("overrides", {}), **overrides}
 
+        # Merge constraints: newly discovered win over stale cached values
+        merged_constraints = {**existing.get("symbol_constraints", {}), **(constraints or {})}
+
         config = {
             "name": self.broker_name,
             "_auto_discovered": True,
@@ -330,14 +356,15 @@ class BrokerAutoDiscovery:
                 }
             }),
             "overrides": merged_overrides,
+            "symbol_constraints": merged_constraints,
         }
 
         with open(self.config_path, "w") as f:
             json.dump(config, f, indent=2)
 
         logger.info(
-            "Broker config written → {} ({} overrides)",
-            self.config_path, len(merged_overrides),
+            "Broker config written → {} ({} overrides, {} constraints)",
+            self.config_path, len(merged_overrides), len(merged_constraints),
         )
 
 
@@ -433,6 +460,37 @@ class DerivAutoDiscovery:
                     if k.startswith("X") or k in ("XAUUSD", "XAGUSD"):
                         overrides[k] = v
 
+                # ── Discover multiplier constraints per symbol ──────────────
+                multipliers: dict[str, dict] = {}
+                for apex_name, broker_symbol in overrides.items():
+                    try:
+                        await ws.send(_json.dumps({
+                            "contracts_for": broker_symbol,
+                            "currency": "USD",
+                            "product_type": "basic",
+                        }))
+                        cfor = _json.loads(await ws.recv())
+                        available = cfor.get("contracts_for", {}).get("available", [])
+                        for contract in available:
+                            if contract.get("contract_type") in ("MULTUP", "MULTDOWN"):
+                                mult_list = contract.get("multiplier_range", [])
+                                if mult_list:
+                                    valid = sorted(int(m) for m in mult_list)
+                                    multipliers[broker_symbol] = {
+                                        "valid": valid,
+                                        "default": valid[0],  # most conservative
+                                    }
+                                break
+                    except Exception as exc:
+                        logger.debug("Could not fetch contracts_for {}: {}", broker_symbol, exc)
+
+                if multipliers:
+                    multipliers["_default"] = {"valid": [100], "default": 100}
+                    logger.info(
+                        "Deriv multiplier constraints discovered — {} symbols",
+                        len(multipliers) - 1,
+                    )
+
                 config = {
                     "name": "deriv",
                     "_auto_discovered": True,
@@ -444,6 +502,7 @@ class DerivAutoDiscovery:
                         }
                     },
                     "overrides": overrides,
+                    "multipliers": multipliers,
                 }
 
                 _BROKERS_DIR.mkdir(parents=True, exist_ok=True)
