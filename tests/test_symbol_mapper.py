@@ -82,6 +82,11 @@ class TestSymbolMapperDeriv:
             "V10_1S", "V25_1S", "V50_1S", "V75_1S", "V100_1S",
             "STPIDX", "RNGBULL", "RNGBEAR",
         ]
+        passthrough_ok = {
+            "JD10", "JD25", "JD50",
+            "BOOM500", "BOOM1000",
+            "CRASH500", "CRASH1000",
+        }
         for sym in synthetics:
             result = mapper.to_broker(sym)
             assert result != sym, (
