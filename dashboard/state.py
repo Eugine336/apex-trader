@@ -59,6 +59,9 @@ class LiveState:
         Read closed trades from the SQLite-backed journal.
         Results are cached for _journal_cache_ttl seconds to avoid hammering
         SQLite on every API call.
+
+        Uses the trading loop's dedicated _journal_loop (a separate thread's
+        event loop) so we never conflict with FastAPI's async event loop.
         """
         now = _time.monotonic()
         if now - self._journal_cache_ts < self._journal_cache_ttl:
@@ -69,14 +72,28 @@ class LiveState:
             return self._journal_cache
 
         try:
+            # Use the trading loop's dedicated journal event loop (runs in its
+            # own thread — safe to call run_until_complete from any context).
             loop: asyncio.AbstractEventLoop = getattr(
                 self._trading_loop, "_journal_loop", None
             )
-            if loop is None or loop.is_closed():
-                loop = asyncio.new_event_loop()
-            rows: list[dict] = loop.run_until_complete(
-                journal.get_all_trades_as_dicts()
-            )
+            # Always run on a dedicated thread to avoid conflicting with
+            # FastAPI/uvicorn's event loop which owns the current thread.
+            import concurrent.futures
+
+            def _run_in_thread():
+                thread_loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(thread_loop)
+                try:
+                    return thread_loop.run_until_complete(
+                        journal.get_all_trades_as_dicts()
+                    )
+                finally:
+                    thread_loop.close()
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                rows: list[dict] = ex.submit(_run_in_thread).result(timeout=5.0)
+
             self._journal_cache = rows
             self._journal_cache_ts = now
         except Exception as exc:
