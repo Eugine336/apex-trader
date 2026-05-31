@@ -174,6 +174,9 @@ class BrokerAutoDiscovery:
         # ── Discover symbol constraints (stops_level, volume) per symbol ──
         constraints: dict[str, dict] = {}
         for apex_name, broker_symbol in overrides.items():
+            # symbol_info() returns None if the symbol isn't selected in
+            # Market Watch — call symbol_select() first to force it visible.
+            mt5.symbol_select(broker_symbol, True)
             info = mt5.symbol_info(broker_symbol)
             if info is not None:
                 constraints[broker_symbol] = {
