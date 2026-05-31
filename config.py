@@ -243,6 +243,7 @@ class RiskConfig:
     # and crypto (BTCUSD spreads balloon on thin liquidity).
     # The validator uses: max_allowed = typical_spread * max_spread_multiplier
     max_spread_multiplier: float = 3.0
+    ev_threshold: float = -0.1
 
 
 # ---------------------------------------------------------------------------
