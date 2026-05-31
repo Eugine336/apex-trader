@@ -25,7 +25,7 @@ class InstrumentProfile:
     """
 
     # ── Identity ──────────────────────────────────────────────────────
-    category: str                       # "forex" / "commodity" / "index" / "synthetic"
+    category: str                       # "forex" / "commodity" / "index" / "synthetic" / "crypto"
 
     # ── Structure Engine ──────────────────────────────────────────────
     swing_lookback: int                 # Candles each side to confirm a swing point
@@ -157,12 +157,41 @@ _SYNTHETIC_PROFILE = InstrumentProfile(
     mtf_overlap_threshold_pips=5.0,
 )
 
+_CRYPTO_PROFILE = InstrumentProfile(
+    category="crypto",
+    # Structure: crypto trends strongly but has violent wicks and fast reversals.
+    # Larger lookback avoids false swing labels on spike candles.
+    swing_lookback=8,
+    min_swing_size_pips=10.0,
+    # FVG: crypto moves in large dollar increments — proximity must be wide.
+    # BTC gaps of $50-200 are common and valid entry zones.
+    fvg_proximity_pips=20.0,
+    fvg_min_size_pips=8.0,
+    # OB: crypto respects order blocks but with wide wicks — buffer essential.
+    ob_buffer_pips=12.0,
+    ob_min_impulse_pips=25.0,
+    # Entry: wide SL buffer — crypto wicks through tight stops constantly.
+    # min_risk_pips high because crypto pip values are large ($1+ per pip on BTC).
+    sl_buffer_pips=10.0,
+    min_risk_pips=20.0,
+    m1_confirmation_bars=50,
+    # Scoring: Wyckoff valid (real volume), no currency strength, news matters.
+    # Lower threshold — currency strength and some session points not available.
+    min_entry_score=60,
+    wyckoff_enabled=True,               # Crypto follows Wyckoff accumulation/distribution
+    currency_strength_enabled=False,    # Crypto vs USD — currency strength not relevant
+    news_filter_enabled=True,           # CPI, FOMC, BTC ETF news moves crypto hard
+    session_score_contribution=False,   # 24/7 — sessions irrelevant
+    mtf_overlap_threshold_pips=10.0,
+)
+
 # Map category → profile
 _PROFILE_MAP: dict[str, InstrumentProfile] = {
     "forex":     _FOREX_PROFILE,
     "commodity": _COMMODITY_PROFILE,
     "index":     _INDEX_PROFILE,
     "synthetic": _SYNTHETIC_PROFILE,
+    "crypto":    _CRYPTO_PROFILE,
 }
 
 
