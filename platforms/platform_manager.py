@@ -2,9 +2,16 @@
 APEX TRADER — Unified Platform Manager
 One interface to rule them all.
 Routes trades to the right platform based on instrument type.
-Two arms, one mind. MT5 for Forex/indices. Deriv for synthetics — 24/7.
+
+MT5: supports multiple simultaneous broker accounts via MT5_BROKERS in .env.
+     Each broker gets its own MT5Connector and handles whatever symbols its
+     broker config covers. Symbol routing tries brokers in order, picking the
+     first one that has the symbol available.
+
+Deriv: single connection (WebSocket API is account-scoped).
 """
 
+import json
 import os
 import time as _time
 from datetime import datetime, timezone
@@ -38,45 +45,115 @@ from platforms.deriv.deriv_connector import DerivConnector
 from platforms.mt5.mt5_connector import MT5Connector
 
 
+def _load_mt5_configs() -> list[dict]:
+    """
+    Load MT5 broker credentials from environment variables.
+
+    Supports two formats:
+
+    1. Multi-broker JSON array (MT5_BROKERS):
+       MT5_BROKERS='[{"login":12345,"password":"pw","server":"Broker-Live"},
+                     {"login":67890,"password":"pw2","server":"OtherBroker-Live"}]'
+
+    2. Single-broker legacy vars (MT5_LOGIN / MT5_PASSWORD / MT5_SERVER):
+       MT5_LOGIN=12345
+       MT5_PASSWORD=pw
+       MT5_SERVER=Broker-Live
+
+    MT5_BROKERS takes priority if both are set.
+    Returns a list of dicts with keys: login (int), password (str), server (str).
+    """
+    raw = os.getenv("MT5_BROKERS", "").strip()
+    if raw:
+        try:
+            brokers = json.loads(raw)
+            if isinstance(brokers, list) and brokers:
+                return [
+                    {
+                        "login": int(b.get("login", 0)),
+                        "password": str(b.get("password", "")),
+                        "server": str(b.get("server", "")),
+                    }
+                    for b in brokers
+                ]
+        except Exception as exc:
+            logger.error("MT5_BROKERS JSON parse failed — falling back to MT5_LOGIN: {}", exc)
+
+    # Legacy single-broker vars
+    login = int(os.getenv("MT5_LOGIN", "0"))
+    password = os.getenv("MT5_PASSWORD", "")
+    server = os.getenv("MT5_SERVER", "")
+    return [{"login": login, "password": password, "server": server}]
+
+
 class PlatformManager:
     """Routes every operation to the correct platform connector."""
 
     def __init__(self, config: Optional[AppConfig] = None):
         self.config = config or AppConfig()
 
-        self.mt5 = MT5Connector(
-            login=int(os.getenv("MT5_LOGIN", "0")),
-            password=os.getenv("MT5_PASSWORD", ""),
-            server=os.getenv("MT5_SERVER", ""),
-        )
+        # ── MT5: one connector per broker account ────────────────────────
+        mt5_configs = _load_mt5_configs()
+        self.mt5_connectors: list[MT5Connector] = [
+            MT5Connector(
+                login=cfg["login"],
+                password=cfg["password"],
+                server=cfg["server"],
+            )
+            for cfg in mt5_configs
+        ]
+        # Backwards-compat: self.mt5 points to the first (primary) connector.
+        # Existing code that does `manager.mt5.something` keeps working.
+        self.mt5: MT5Connector = self.mt5_connectors[0]
+
+        # ── Deriv: single WebSocket connection ───────────────────────────
         self.deriv = DerivConnector(
             api_token=os.getenv("DERIV_API_TOKEN", ""),
             app_id=os.getenv("DERIV_APP_ID", ""),
         )
 
-        self._mt5_connected = False
+        self._mt5_connected_flags: list[bool] = [False] * len(self.mt5_connectors)
         self._deriv_connected = False
 
-        self._mt5_was_connected = False
+        self._mt5_was_connected: list[bool] = [False] * len(self.mt5_connectors)
         self._deriv_was_connected = False
         self._reconnect_delays = [5, 10, 20, 40, 60]
-        self._mt5_reconnect_attempt = 0
+        self._mt5_reconnect_attempts: list[int] = [0] * len(self.mt5_connectors)
         self._deriv_reconnect_attempt = 0
-        self._mt5_next_reconnect: float = 0.0
+        self._mt5_next_reconnects: list[float] = [0.0] * len(self.mt5_connectors)
         self._deriv_next_reconnect: float = 0.0
+
+    # ── Convenience properties ───────────────────────────────────────────
+
+    @property
+    def _mt5_connected(self) -> bool:
+        """True if at least one MT5 broker is online."""
+        return any(self._mt5_connected_flags)
+
+    @_mt5_connected.setter
+    def _mt5_connected(self, value: bool) -> None:
+        """Legacy setter — sets all brokers to the same state (used by tests)."""
+        self._mt5_connected_flags = [value] * len(self.mt5_connectors)
 
     # ── Connection management ────────────────────────────────────────────
 
     def connect_all(self) -> dict[str, bool]:
         results: dict[str, bool] = {}
 
-        logger.info("Connecting to MT5…")
-        self._mt5_connected = self.mt5.connect()
+        for i, connector in enumerate(self.mt5_connectors):
+            label = f"MT5[{i}]" if len(self.mt5_connectors) > 1 else "MT5"
+            logger.info("Connecting to {}…", label)
+            ok = connector.connect()
+            self._mt5_connected_flags[i] = ok
+            self._mt5_was_connected[i] = ok
+            results[f"mt5_{i}"] = ok
+            if ok:
+                logger.info("{} — ONLINE ({})", label, getattr(connector, "_broker_name", ""))
+            else:
+                logger.warning("{} — OFFLINE (non-Windows or credentials missing)", label)
+
+        # Legacy key so callers checking results.get("mt5") still work
         results["mt5"] = self._mt5_connected
-        if self._mt5_connected:
-            logger.info("MT5 — ONLINE")
-        else:
-            logger.warning("MT5 — OFFLINE (non-Windows or credentials missing)")
 
         logger.info("Connecting to Deriv…")
         self._deriv_connected = self.deriv.connect()
@@ -89,27 +166,29 @@ class PlatformManager:
         if not any(results.values()):
             logger.error("No platforms connected — trading disabled")
 
-        self._mt5_was_connected = self._mt5_connected
         self._deriv_was_connected = self._deriv_connected
         return results
 
     def disconnect_all(self) -> None:
-        self.mt5.disconnect()
+        for connector in self.mt5_connectors:
+            connector.disconnect()
         self.deriv.disconnect()
-        self._mt5_connected = False
+        self._mt5_connected_flags = [False] * len(self.mt5_connectors)
         self._deriv_connected = False
         logger.info("All platforms disconnected")
 
     def check_connections(self) -> dict[str, bool]:
         """Return live connection state for each platform."""
         mt5_live = False
-        if self._mt5_connected:
-            try:
-                mt5_live = self.mt5.is_connected()
-            except Exception:
-                mt5_live = False
-            if not mt5_live:
-                self._mt5_connected = False
+        for i, connector in enumerate(self.mt5_connectors):
+            if self._mt5_connected_flags[i]:
+                try:
+                    alive = connector.is_connected()
+                except Exception:
+                    alive = False
+                self._mt5_connected_flags[i] = alive
+                if alive:
+                    mt5_live = True
 
         deriv_live = False
         if self._deriv_connected:
@@ -123,61 +202,93 @@ class PlatformManager:
         return {"mt5": mt5_live, "deriv": deriv_live}
 
     def reconnect_platform(self, platform: str) -> bool:
-        """Attempt to reconnect a single platform with exponential backoff."""
+        """Attempt to reconnect a platform with exponential backoff.
+
+        platform can be "mt5" (reconnects all offline MT5 brokers),
+        "mt5_0", "mt5_1" etc. (reconnects a specific broker), or "deriv".
+        """
         delays = self._reconnect_delays
         max_attempts = len(delays)
 
-        if platform == "mt5":
-            attempt = self._mt5_reconnect_attempt
-        else:
-            attempt = self._deriv_reconnect_attempt
-
-        if attempt >= max_attempts:
-            logger.error("{} reconnect exhausted after {} attempts", platform.upper(), max_attempts)
-            return False
-
-        delay = delays[attempt]
-        logger.warning(
-            "{} reconnect attempt {}/{} (backoff {}s)",
-            platform.upper(), attempt + 1, max_attempts, delay,
-        )
-
-        connector = self.mt5 if platform == "mt5" else self.deriv
-        try:
-            success = connector.connect()
-        except Exception as exc:
-            logger.error("{} reconnect error: {}", platform.upper(), exc)
-            success = False
-
-        if success:
-            if platform == "mt5":
-                self._mt5_connected = True
-                self._mt5_reconnect_attempt = 0
-                self._mt5_next_reconnect = 0.0
+        if platform.startswith("mt5"):
+            # Determine which broker indices to reconnect
+            if "_" in platform and platform != "mt5":
+                try:
+                    indices = [int(platform.split("_")[1])]
+                except (IndexError, ValueError):
+                    indices = list(range(len(self.mt5_connectors)))
             else:
+                indices = list(range(len(self.mt5_connectors)))
+
+            any_success = False
+            for i in indices:
+                if self._mt5_connected_flags[i]:
+                    continue  # already up
+                attempt = self._mt5_reconnect_attempts[i]
+                if attempt >= max_attempts:
+                    logger.error(
+                        "MT5[{}] reconnect exhausted after {} attempts", i, max_attempts
+                    )
+                    continue
+                delay = delays[attempt]
+                label = f"MT5[{i}]" if len(self.mt5_connectors) > 1 else "MT5"
+                logger.warning(
+                    "{} reconnect attempt {}/{} (backoff {}s)",
+                    label, attempt + 1, max_attempts, delay,
+                )
+                try:
+                    success = self.mt5_connectors[i].connect()
+                except Exception as exc:
+                    logger.error("{} reconnect error: {}", label, exc)
+                    success = False
+
+                if success:
+                    self._mt5_connected_flags[i] = True
+                    self._mt5_reconnect_attempts[i] = 0
+                    self._mt5_next_reconnects[i] = 0.0
+                    logger.info("{} RECONNECTED", label)
+                    any_success = True
+                else:
+                    self._mt5_reconnect_attempts[i] = attempt + 1
+                    self._mt5_next_reconnects[i] = _time.monotonic() + delay
+            return any_success
+
+        else:  # deriv
+            attempt = self._deriv_reconnect_attempt
+            if attempt >= max_attempts:
+                logger.error("DERIV reconnect exhausted after {} attempts", max_attempts)
+                return False
+            delay = delays[attempt]
+            logger.warning(
+                "DERIV reconnect attempt {}/{} (backoff {}s)",
+                attempt + 1, max_attempts, delay,
+            )
+            try:
+                success = self.deriv.connect()
+            except Exception as exc:
+                logger.error("DERIV reconnect error: {}", exc)
+                success = False
+
+            if success:
                 self._deriv_connected = True
                 self._deriv_reconnect_attempt = 0
                 self._deriv_next_reconnect = 0.0
-            logger.info("{} RECONNECTED", platform.upper())
-            return True
+                logger.info("DERIV RECONNECTED")
+                return True
 
-        if platform == "mt5":
-            self._mt5_reconnect_attempt = attempt + 1
-            self._mt5_next_reconnect = _time.monotonic() + delay
-        else:
             self._deriv_reconnect_attempt = attempt + 1
             self._deriv_next_reconnect = _time.monotonic() + delay
-        return False
+            return False
 
     def should_attempt_reconnect(self, platform: str) -> bool:
         """Check if enough time has passed to attempt reconnection (non-blocking)."""
         now = _time.monotonic()
-        if platform == "mt5":
+        if platform.startswith("mt5"):
             if self._mt5_connected:
                 return False
-            if not self._mt5_was_connected:
+            if not any(self._mt5_was_connected):
                 return False
-            return now >= self._mt5_next_reconnect
+            return now >= min(self._mt5_next_reconnects)
         else:
             if self._deriv_connected:
                 return False
@@ -192,12 +303,18 @@ class PlatformManager:
     # ── Routing ──────────────────────────────────────────────────────────
 
     def get_connector(self, symbol: str) -> BaseConnector:
-        """Route a symbol to the correct platform connector."""
+        """Route a symbol to the correct platform connector.
+
+        For MT5 symbols, tries each connected broker in order and returns
+        the first one whose broker config has a mapping for the symbol.
+        Falls back to any connected MT5 if none have an explicit mapping.
+        """
         try:
             info = get_instrument(symbol)
         except KeyError:
+            # Unknown symbol — fall back to first available
             if self._mt5_connected:
-                return self.mt5
+                return self._first_connected_mt5()
             if self._deriv_connected:
                 return self.deriv
             raise ConnectionError(f"No platform available for {symbol}")
@@ -208,15 +325,62 @@ class PlatformManager:
             raise ConnectionError(f"Deriv not connected for {symbol}")
 
         if info.platform == Platform.MT5:
-            if self._mt5_connected:
-                return self.mt5
-            raise ConnectionError(f"MT5 not connected for {symbol}")
+            connector = self._route_mt5_symbol(symbol)
+            if connector:
+                return connector
+            raise ConnectionError(f"No MT5 broker connected for {symbol}")
 
-        if self._mt5_connected:
-            return self.mt5
+        # Platform.BOTH — prefer MT5, fall back to Deriv
+        connector = self._route_mt5_symbol(symbol)
+        if connector:
+            return connector
         if self._deriv_connected:
             return self.deriv
         raise ConnectionError(f"No platform connected for {symbol}")
+
+    def _route_mt5_symbol(self, symbol: str) -> Optional[MT5Connector]:
+        """Return the best connected MT5 connector for a symbol.
+
+        Preference order:
+        1. A connected broker that has an explicit mapping for the symbol
+        2. Any connected broker (first one wins)
+        """
+        from pathlib import Path
+        import re as _re
+
+        fallback: Optional[MT5Connector] = None
+
+        for i, connector in enumerate(self.mt5_connectors):
+            if not self._mt5_connected_flags[i]:
+                continue
+            if fallback is None:
+                fallback = connector
+
+            # Check if broker config has an explicit mapping for this symbol
+            broker_name = getattr(connector, "_broker_name", "")
+            if not broker_name or broker_name == "auto":
+                continue
+            cfg_path = (
+                Path(__file__).parent.parent / "config" / "brokers" / f"{broker_name}.json"
+            )
+            if not cfg_path.exists():
+                continue
+            try:
+                with open(cfg_path) as f:
+                    cfg = json.load(f)
+                overrides = cfg.get("overrides", {})
+                if symbol in overrides or symbol.upper() in overrides:
+                    return connector
+            except Exception:
+                continue
+
+        return fallback  # None if no MT5 brokers connected
+
+    def _first_connected_mt5(self) -> MT5Connector:
+        for i, connector in enumerate(self.mt5_connectors):
+            if self._mt5_connected_flags[i]:
+                return connector
+        raise ConnectionError("No MT5 broker connected")
 
     def get_platform_name(self, symbol: str) -> str:
         connector = self.get_connector(symbol)
@@ -226,19 +390,14 @@ class PlatformManager:
         """Return a human-readable broker identifier for the platform serving this symbol."""
         connector = self.get_connector(symbol)
         if isinstance(connector, MT5Connector):
-            # Extract broker name from the server string (e.g. "ICMarkets-Live" → "icmarkets")
+            broker_name = getattr(connector, "_broker_name", "")
+            if broker_name and broker_name != "auto":
+                return broker_name
             server = getattr(connector, "_server", "") or ""
-            broker = server.split("-")[0].lower() if server else "mt5"
-            return broker
+            return server.split("-")[0].lower() if server else "mt5"
         return "deriv"
 
     def get_typical_spreads(self, symbol: str) -> dict[str, float]:
-        """
-        Return per-symbol typical spread baselines keyed by symbol (upper-case).
-        Falls back to the instrument registry's typical_spread_pips field.
-        This is broker-specific because the same instrument trades tighter on
-        Exness than on ICMarkets.
-        """
         from config import INSTRUMENT_REGISTRY
         result: dict[str, float] = {}
         for sym, info in INSTRUMENT_REGISTRY.items():
@@ -292,7 +451,8 @@ class PlatformManager:
         new_sl: Optional[float] = None,
         new_tp: Optional[float] = None,
     ) -> bool:
-        connector = self.mt5 if platform == "mt5" else self.deriv
+        # platform string may be "mt5", "mt5_0", "mt5_1", or "deriv"
+        connector = self._connector_by_platform_str(platform)
         return connector.modify_order(order_id, new_sl, new_tp)
 
     def close_trade(
@@ -301,18 +461,34 @@ class PlatformManager:
         platform: str,
         lots: Optional[float] = None,
     ) -> CloseResult:
-        connector = self.mt5 if platform == "mt5" else self.deriv
+        connector = self._connector_by_platform_str(platform)
         return connector.close_order(order_id, lots)
+
+    def _connector_by_platform_str(self, platform: str) -> BaseConnector:
+        """Resolve "mt5", "mt5_0", "mt5_1", "deriv" to the right connector."""
+        if platform == "deriv":
+            return self.deriv
+        if platform.startswith("mt5"):
+            if "_" in platform and platform != "mt5":
+                try:
+                    idx = int(platform.split("_")[1])
+                    return self.mt5_connectors[idx]
+                except (IndexError, ValueError):
+                    pass
+            return self._first_connected_mt5()
+        return self.deriv
 
     # ── Positions ────────────────────────────────────────────────────────
 
     def get_all_open_positions(self) -> list[PositionInfo]:
         positions: list[PositionInfo] = []
-        if self._mt5_connected:
-            try:
-                positions.extend(self.mt5.get_open_positions())
-            except Exception as exc:
-                logger.warning("MT5 positions fetch error: {}", exc)
+        for i, connector in enumerate(self.mt5_connectors):
+            if self._mt5_connected_flags[i]:
+                try:
+                    positions.extend(connector.get_open_positions())
+                except Exception as exc:
+                    label = f"MT5[{i}]" if len(self.mt5_connectors) > 1 else "MT5"
+                    logger.warning("{} positions fetch error: {}", label, exc)
         if self._deriv_connected:
             try:
                 positions.extend(self.deriv.get_open_positions())
@@ -324,11 +500,14 @@ class PlatformManager:
 
     def get_account_summary(self) -> dict[str, AccountInfo]:
         summary: dict[str, AccountInfo] = {}
-        if self._mt5_connected:
-            try:
-                summary["mt5"] = self.mt5.get_account_info()
-            except Exception as exc:
-                logger.warning("MT5 account info error: {}", exc)
+        for i, connector in enumerate(self.mt5_connectors):
+            if self._mt5_connected_flags[i]:
+                key = f"mt5_{i}" if len(self.mt5_connectors) > 1 else "mt5"
+                try:
+                    summary[key] = connector.get_account_info()
+                except Exception as exc:
+                    label = f"MT5[{i}]" if len(self.mt5_connectors) > 1 else "MT5"
+                    logger.warning("{} account info error: {}", label, exc)
         if self._deriv_connected:
             try:
                 summary["deriv"] = self.deriv.get_account_info()
@@ -352,33 +531,30 @@ class PlatformManager:
 
         platform_name = "mt5" if isinstance(connector, MT5Connector) else "deriv"
 
-        if isinstance(connector, MT5Connector) and self._mt5_connected:
-            try:
-                balance = float(self.mt5.get_account_info().balance)
-                logger.debug(
-                    "Balance for {} → {} platform: ${:.2f}",
-                    symbol,
-                    platform_name,
-                    balance,
-                )
-                return balance
-            except Exception as exc:
-                logger.warning("MT5 balance fetch error for {}: {}", symbol, exc)
-                return 0.0
+        if isinstance(connector, MT5Connector):
+            idx = self._connector_index(connector)
+            if idx is not None and self._mt5_connected_flags[idx]:
+                try:
+                    balance = float(connector.get_account_info().balance)
+                    logger.debug(
+                        "Balance for {} → {} platform: ${:.2f}",
+                        symbol, platform_name, balance,
+                    )
+                    return balance
+                except Exception as exc:
+                    logger.warning("MT5 balance fetch error for {}: {}", symbol, exc)
+            return 0.0
 
         if isinstance(connector, DerivConnector) and self._deriv_connected:
             try:
                 balance = float(self.deriv.get_account_info().balance)
                 logger.debug(
                     "Balance for {} → {} platform: ${:.2f}",
-                    symbol,
-                    platform_name,
-                    balance,
+                    symbol, platform_name, balance,
                 )
                 return balance
             except Exception as exc:
                 logger.warning("Deriv balance fetch error for {}: {}", symbol, exc)
-                return 0.0
 
         return 0.0
 
@@ -387,6 +563,13 @@ class PlatformManager:
         for info in self.get_account_summary().values():
             total += info.equity
         return total
+
+    def _connector_index(self, connector: MT5Connector) -> Optional[int]:
+        """Return the list index of a connector, or None if not found."""
+        for i, c in enumerate(self.mt5_connectors):
+            if c is connector:
+                return i
+        return None
 
     # ── Market data ──────────────────────────────────────────────────────
 
@@ -402,10 +585,8 @@ class PlatformManager:
         connector = self.get_connector(symbol)
         data: dict[str, pd.DataFrame] = {}
 
-        # Track symbols confirmed unavailable on the broker so we only log once.
         if not hasattr(self, "_unavailable_symbols"):
             self._unavailable_symbols: set = set()
-
         if not hasattr(self, "_failed_timeframes"):
             self._failed_timeframes: set[tuple[str, str]] = set()
 
@@ -414,7 +595,6 @@ class PlatformManager:
                 data[tf] = connector.get_ohlcv(symbol, tf, count)
             except Exception as exc:
                 exc_str = str(exc)
-                # "not available on broker" → permanent skip; log once only.
                 if "not available on broker" in exc_str or "not found" in exc_str.lower():
                     if symbol not in self._unavailable_symbols:
                         logger.warning(
@@ -423,9 +603,8 @@ class PlatformManager:
                             symbol,
                         )
                         self._unavailable_symbols.add(symbol)
-                    break  # no point trying other timeframes for this symbol
+                    break
                 elif "reconnecting" in exc_str.lower() or "not connected" in exc_str.lower():
-                    # Broker is mid-reconnect — skip all timeframes silently
                     logger.debug("Skipping {} {} — broker reconnecting", symbol, tf)
                     break
                 elif "No candle data" in exc_str:
@@ -446,7 +625,6 @@ class PlatformManager:
         count: int = 200,
     ) -> dict[str, dict[str, pd.DataFrame]]:
         """Fetch OHLCV for every enabled symbol across timeframes."""
-        from datetime import timezone
         import datetime as _dt
         from config import is_always_open
 
@@ -455,16 +633,13 @@ class PlatformManager:
         if timeframes is None:
             timeframes = ["H4", "H1", "M15", "M5"]
 
-        # On weekends skip non-24/7 instruments (forex, indices, commodities are closed)
         now_utc = _dt.datetime.now(timezone.utc)
-        is_weekend = now_utc.weekday() >= 5  # 5=Saturday, 6=Sunday
+        is_weekend = now_utc.weekday() >= 5
 
         all_data: dict[str, dict[str, pd.DataFrame]] = {}
         for symbol in symbols:
-            # Skip closed instruments on weekends
             if is_weekend and not is_always_open(symbol):
                 continue
-            # Skip symbols already confirmed as broker-unavailable (log only once)
             if hasattr(self, "_unavailable_symbols") and symbol in self._unavailable_symbols:
                 continue
             try:
