@@ -22,6 +22,7 @@ from brain.order_block import OrderBlockDetector, OBStatus
 from brain.liquidity_mapper import LiquidityMapper
 from brain.currency_strength import CurrencyStrengthMeter, CURRENCY_PAIRS
 from brain.session_engine import SessionEngine, NewsGuard
+from adaptive.ev_estimator import EVEstimator
 from brain.volume_analyzer import VolumeAnalyzer
 from brain.inducement_detector import InducementDetector
 from brain.wyckoff_engine import WyckoffEngine
@@ -80,6 +81,10 @@ class PairScanner:
         self.liquidity = LiquidityMapper()
         self.strength_meter = CurrencyStrengthMeter()
         self.session = SessionEngine()
+        self._ev_estimator = EVEstimator()
+        self._trade_history: list[dict] = []  # updated by main loop after each closed trade
+        self._ev_estimator = EVEstimator()
+        self._trade_history: list[dict] = []  # fed by main loop after each closed trade
         self.news = NewsGuard()
         self.volume = VolumeAnalyzer()
         self.last_report: Optional[ScanReport] = None
@@ -284,6 +289,20 @@ class PairScanner:
         if not session_active and score > 0 and is_session_gated(pair):
             score = max(score - 10, 0)
 
+        # ── Expected Value estimate ──────────────────────────────────────
+        # Estimates EV from historical trade data for this pair/regime/session.
+        # Feeds into PairRanker.rank_opportunities() for opportunity priority.
+        try:
+            ev_est = self._ev_estimator.estimate(
+                pair=pair,
+                regime=regime,
+                session=session_status.current_session if hasattr(session_status, "current_session") else "UNKNOWN",
+                trade_history=self._trade_history,
+            )
+            ev_estimate = ev_est.expected_value
+        except Exception:
+            ev_estimate = 0.0
+
         # ── Status ────────────────────────────────────────────────────
         # Use profile.min_entry_score — adjusts per category.
         # Synthetics score lower (no Wyckoff/currency strength) so threshold drops.
@@ -300,6 +319,7 @@ class PairScanner:
             direction=trade_dir,
             score=score,
             regime=regime,
+            ev_estimate=ev_estimate,
             trend_h4=bias["h4_trend"],
             trend_h1=bias["h1_trend"],
             bias_strength=bias["strength"],
