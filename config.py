@@ -14,6 +14,7 @@ class InstrumentCategory(Enum):
     COMMODITY = "commodity"
     INDEX = "index"
     SYNTHETIC = "synthetic"
+    CRYPTO = "crypto"
 
 
 class Platform(Enum):
@@ -154,7 +155,7 @@ _register("JD50",      "Jump 50",             _SYN, _DER, 0.01,  1.0, 0.5, "24/7
 # ── Crypto (24/7 — available on both MT5 CFD brokers and Deriv) ──────────
 # Pip sizes: 1.0 USD per pip for BTC-class, 0.01 for lower-price coins.
 # Typical spreads reflect CFD crypto; actual may vary by broker.
-_CRY = InstrumentCategory.SYNTHETIC   # reuse SYNTHETIC category for crypto (24/7 behaviour)
+_CRY = InstrumentCategory.CRYPTO  # proper CRYPTO category — 24/7, on MT5
 _CRYMAR = MarginCategory.SYNTHETIC
 
 _register("BTCUSD",  "Bitcoin / US Dollar",      _CRY, _B, 1.0,   1.0, 50.0,  "24/7", _CRYMAR)
@@ -252,7 +253,7 @@ class RiskConfig:
 class AppConfig:
     # All 4 categories enabled — forex, commodity, index, synthetic
     enabled_categories: list[str] = field(
-        default_factory=lambda: ["forex", "commodity", "index", "synthetic"]
+        default_factory=lambda: ["forex", "commodity", "index", "synthetic", "crypto"]
     )
     # Empty by default — scans ALL instruments in enabled_categories.
     # Populate this ONLY to restrict to a subset during testing.

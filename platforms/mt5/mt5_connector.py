@@ -225,10 +225,16 @@ class MT5Connector(BaseConnector):
 
     def _get_symbol_constraints(self, broker_symbol: str) -> dict:
         """
-        Read symbol constraints (volume, stops) from the broker config file.
-        These are written by auto-discovery at startup so we never need to
-        query symbol_info live on every order. Returns empty dict if not cached.
+        Read symbol constraints from broker JSON, with in-memory cache.
+        Falls back to empty dict — place_order() then fetches live via symbol_info().
         """
+        # In-memory cache — avoids reading JSON on every order
+        if not hasattr(self, "_constraints_cache"):
+            self._constraints_cache: dict = {}
+
+        if broker_symbol in self._constraints_cache:
+            return self._constraints_cache[broker_symbol]
+
         try:
             import json as _json
             from pathlib import Path
@@ -237,7 +243,10 @@ class MT5Connector(BaseConnector):
                 return {}
             with open(cfg_path) as f:
                 cfg = _json.load(f)
-            return cfg.get("symbol_constraints", {}).get(broker_symbol, {})
+            all_constraints = cfg.get("symbol_constraints", {})
+            # Cache entire file contents for this session
+            self._constraints_cache.update(all_constraints)
+            return self._constraints_cache.get(broker_symbol, {})
         except Exception:
             return {}
 
@@ -289,6 +298,9 @@ class MT5Connector(BaseConnector):
             digits      = cached.get("digits", 5)
             point       = cached.get("point", 0.00001)
         else:
+            # Always select symbol first — ensures it's visible in Market Watch
+            # so symbol_info() can return data (especially for crypto/exotic pairs)
+            mt5.symbol_select(mapped, True)
             sym_info = mt5.symbol_info(mapped)
             if sym_info is not None:
                 vol_min     = sym_info.volume_min
@@ -297,7 +309,12 @@ class MT5Connector(BaseConnector):
                 stops_level = sym_info.trade_stops_level
                 digits      = sym_info.digits
                 point       = sym_info.point
+                logger.debug(
+                    "Live constraints for {} — stops={} digits={} point={} vol_min={}",
+                    mapped, stops_level, digits, point, vol_min,
+                )
             else:
+                logger.warning("Could not fetch constraints for {} — using safe defaults", mapped)
                 vol_min, vol_max, vol_step = 0.01, 100.0, 0.01
                 stops_level, digits, point = 0, 5, 0.00001
 
