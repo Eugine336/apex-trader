@@ -223,6 +223,24 @@ class MT5Connector(BaseConnector):
     def get_spread(self, symbol: str) -> float:
         return self.get_price(symbol).spread
 
+    def _get_symbol_constraints(self, broker_symbol: str) -> dict:
+        """
+        Read symbol constraints (volume, stops) from the broker config file.
+        These are written by auto-discovery at startup so we never need to
+        query symbol_info live on every order. Returns empty dict if not cached.
+        """
+        try:
+            import json as _json
+            from pathlib import Path
+            cfg_path = Path(__file__).parent.parent.parent / "config" / "brokers" / f"{self._broker_name}.json"
+            if not cfg_path.exists():
+                return {}
+            with open(cfg_path) as f:
+                cfg = _json.load(f)
+            return cfg.get("symbol_constraints", {}).get(broker_symbol, {})
+        except Exception:
+            return {}
+
     # ── Order execution ──────────────────────────────────────────────────
 
     def place_order(
@@ -258,6 +276,59 @@ class MT5Connector(BaseConnector):
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
+
+        # ── Broker symbol constraints (volume + stops) ─────────────────────
+        # Prefer constraints cached in broker config (discovered at startup).
+        # Fall back to live symbol_info query only if not yet cached.
+        cached = self._get_symbol_constraints(mapped)
+        if cached:
+            vol_min     = cached.get("volume_min", 0.01)
+            vol_max     = cached.get("volume_max", 100.0)
+            vol_step    = cached.get("volume_step", 0.01)
+            stops_level = cached.get("stops_level", 0)
+            digits      = cached.get("digits", 5)
+            point       = cached.get("point", 0.00001)
+        else:
+            sym_info = mt5.symbol_info(mapped)
+            if sym_info is not None:
+                vol_min     = sym_info.volume_min
+                vol_max     = sym_info.volume_max
+                vol_step    = sym_info.volume_step
+                stops_level = sym_info.trade_stops_level
+                digits      = sym_info.digits
+                point       = sym_info.point
+            else:
+                vol_min, vol_max, vol_step = 0.01, 100.0, 0.01
+                stops_level, digits, point = 0, 5, 0.00001
+
+        # Volume: clamp and round to broker's volume_min/max/step
+        if vol_step > 0:
+            lots = round(round(lots / vol_step) * vol_step, 10)
+        lots = max(vol_min, min(vol_max, lots))
+        lots = round(lots, 2)
+        request["volume"] = float(lots)
+
+        # Stops: enforce minimum SL/TP distance from entry price
+        if stops_level > 0:
+            min_distance = stops_level * point
+            sl_distance = abs(price - sl)
+            tp_distance = abs(tp - price)
+            if sl_distance < min_distance:
+                new_sl = (price - min_distance) if is_buy else (price + min_distance)
+                logger.warning(
+                    "SL too close for {} (min {:.5f}, got {:.5f}) — adjusting to {:.5f}",
+                    mapped, min_distance, sl_distance, new_sl,
+                )
+                sl = round(new_sl, digits)
+                request["sl"] = sl
+            if tp_distance > 0 and tp_distance < min_distance:
+                new_tp = (price + min_distance) if is_buy else (price - min_distance)
+                logger.warning(
+                    "TP too close for {} (min {:.5f}, got {:.5f}) — adjusting to {:.5f}",
+                    mapped, min_distance, tp_distance, new_tp,
+                )
+                tp = round(new_tp, digits)
+                request["tp"] = tp
 
         t0 = _time.monotonic()
         result = mt5.order_send(request)
