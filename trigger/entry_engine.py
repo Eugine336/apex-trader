@@ -465,8 +465,11 @@ class EntryEngine:
         lookback = profile.swing_lookback if profile else 3
         bars = profile.m1_confirmation_bars if profile else 50
         df_slice = df.iloc[-bars:] if len(df) > bars else df
-        pip_sz = profile.fvg_min_size_pips * 0.0001 if profile else 0.0003
-        structure = StructureEngine(swing_lookback=lookback)
+        # Use the actual instrument pip_size — never fabricate it from fvg_min_size_pips.
+        # Synthetics/indices have pip_size >> 0.0001; wrong pip_size → min_swing_size
+        # is near-zero so StructureEngine detects no events on M1.
+        pip_sz = pip_size if pip_size > 0 else 0.0001
+        structure = StructureEngine(swing_lookback=lookback, pip_size=pip_sz)
         analysis = structure.analyze(df_slice)
 
         logger.debug(
@@ -503,11 +506,12 @@ class EntryEngine:
         # candles), use raw price momentum as micro-confirmation.
         # A professional trader reading a 1-minute chart sees this instantly:
         # 3 consecutive candles closing in the trade direction = momentum shift.
-        return self._detect_momentum_confirmation(df, direction, entry_zone, pip_size)
+        return self._detect_momentum_confirmation(df, direction, entry_zone, pip_size, profile=profile)
 
     def _detect_momentum_confirmation(self, df: pd.DataFrame, direction: str,
                                        entry_zone: Optional[dict] = None,
-                                       pip_size: float = 0.0001) -> bool:
+                                       pip_size: float = 0.0001,
+                                       profile: Optional["InstrumentProfile"] = None) -> bool:
         """
         Fallback micro-confirmation using momentum candles.
         Requires price to be near the entry zone (zone proximity gate)
@@ -525,7 +529,10 @@ class EntryEngine:
             last_close = float(df["close"].iloc[-1])
             last_low = float(df["low"].iloc[-1])
             last_high = float(df["high"].iloc[-1])
-            proximity = 3.0 * pip_size
+            # Use profile proximity pips — synthetics/indices need much wider
+            # windows than forex (15–20 pips vs 3 pips).
+            proximity_pips = profile.fvg_proximity_pips if profile else 3.0
+            proximity = proximity_pips * pip_size
 
             if direction == "LONG":
                 if last_low > zone_top + proximity:
