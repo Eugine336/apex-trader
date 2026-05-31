@@ -53,12 +53,12 @@ class ManagedPosition:
         "entry_price", "sl", "tp1", "tp2", "score", "regime",
         "session", "entry_type", "open_time", "tp1_hit",
         "at_breakeven", "trailing", "last_update", "re_entry_eligible",
-        "tm_trade_id",
+        "tm_trade_id", "stake_usd",
     )
 
     def __init__(self, order: OrderResult, tp1: float, tp2: float,
                  score: int = 0, regime: str = "", session: str = "",
-                 entry_type: str = ""):
+                 entry_type: str = "", stake_usd: float = 0.0):
         self.order_id = order.order_id
         self.platform = order.platform
         self.symbol = order.symbol
@@ -79,6 +79,7 @@ class ManagedPosition:
         self.last_update = datetime.now(timezone.utc)
         self.re_entry_eligible = False
         self.tm_trade_id = ""
+        self.stake_usd = stake_usd  # Deriv only; 0.0 for MT5
 
 
 class TradingLoop:
@@ -410,6 +411,7 @@ class TradingLoop:
             regime=getattr(result, "regime", ""),
             session=session,
             entry_type=signal.entry_type,
+            stake_usd=stake_usd or 0.0,
         )
 
         tm_signal = TMEntrySignal(
@@ -505,7 +507,7 @@ class TradingLoop:
                         closed_count += 1
                         # Attempt re-open at half stake (50% of original risk)
                         try:
-                            half_stake = (tm_trade.pip_value_per_lot or 0.0) * 0.5  # fallback
+                            half_stake = round(pos.stake_usd * 0.5, 2) if pos.stake_usd > 0 else None
                             reopen_order = self.platforms.execute_entry(
                                 pos.symbol, pos.direction,
                                 0.0,            # lots unused on Deriv
@@ -562,9 +564,19 @@ class TradingLoop:
         is_buy = pos.direction == "BUY"
         pnl_pips = (close_price - pos.entry_price) / pip_size if is_buy else (pos.entry_price - close_price) / pip_size
 
-        info = INSTRUMENT_REGISTRY.get(pos.symbol.upper())
-        pip_value = info.pip_value_per_lot if info else 10.0
-        pnl_dollars = pnl_pips * pip_value * pos.lots
+        pos_ctx = build_context_for_symbol(pos.symbol)
+        if pos_ctx.uses_stake:
+            # Deriv: pnl is returned directly by the connector in close_result.pnl
+            # We approximate here using stake × price_movement% × multiplier.
+            # The connector's pnl field is authoritative when available.
+            price_move_pct = abs(close_price - pos.entry_price) / pos.entry_price if pos.entry_price > 0 else 0.0
+            # Win/loss sign based on direction
+            signed_move = price_move_pct if is_buy == (close_price >= pos.entry_price) else -price_move_pct
+            pnl_dollars = round(pos.stake_usd * signed_move * 100, 2)  # ×100 = default multiplier proxy
+        else:
+            info = INSTRUMENT_REGISTRY.get(pos.symbol.upper())
+            pip_value = info.pip_value_per_lot if info else 10.0
+            pnl_dollars = round(pnl_pips * pip_value * pos.lots, 2)
 
         balance = self.platforms.get_platform_balance(pos.symbol) or 10_000.0
         pnl_pct = pnl_dollars / balance if balance > 0 else 0.0
