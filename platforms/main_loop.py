@@ -16,6 +16,10 @@ import pandas as pd
 from loguru import logger
 
 from persistence.position_store import PositionStore
+from platforms.circuit_breaker import CircuitBreaker
+from platforms.health_watchdog import HealthWatchdog
+from platforms.maintenance import DailyMaintenance
+from platforms.startup_check import StartupCheck
 
 from brain import (
     CorrelationEngine,
@@ -124,6 +128,12 @@ class TradingLoop:
         self._journal_loop = asyncio.new_event_loop()
         self.position_store = PositionStore()
 
+        self.watchdog = HealthWatchdog()
+        self.maintenance = DailyMaintenance()
+        self._scan_breaker = CircuitBreaker("scan", failure_threshold=5, cooldown_seconds=300)
+        self._execution_breaker = CircuitBreaker("execution", failure_threshold=3, cooldown_seconds=600)
+        self._health_check_interval = 10
+
         self.managed_positions: dict[str, ManagedPosition] = {}
         self.running = False
         self._last_scan_time: Optional[datetime] = None
@@ -136,6 +146,14 @@ class TradingLoop:
         logger.info("=" * 60)
         logger.info("  APEX TRADER — GOING LIVE")
         logger.info("=" * 60)
+
+        passed, results = StartupCheck().run_all()
+        for r in results:
+            lvl = "INFO" if r.passed else "ERROR"
+            logger.log(lvl, "  [{}] {} — {} ({:.0f}ms)", "✅" if r.passed else "❌", r.name, r.message, r.duration_ms)
+        if not passed:
+            logger.error("Startup self-test FAILED — aborting to protect capital")
+            return
 
         connection_status = self.platforms.connect_all()
         if not self.platforms.any_connected:
@@ -173,6 +191,15 @@ class TradingLoop:
             "positions_closed": 0,
         }
 
+        self.watchdog.record_cycle()
+        self._check_and_reconnect()
+
+        if self.watchdog._cycles % self._health_check_interval == 0:
+            report = self.watchdog.check_health()
+            if not report.is_healthy:
+                for w in report.warnings:
+                    logger.warning("⚠️ HEALTH: {}", w)
+
         session_status = self.session_engine.get_status(now)
         news_status = self.news_guard.check(self.config.enabled_pairs, now)
 
@@ -188,11 +215,32 @@ class TradingLoop:
         )
 
         if should_scan and (session_status.is_tradeable or self._has_always_open_instruments()):
-            cycle["scanned"] = True
-            self._scan_and_enter(session_status, news_status, now, cycle)
-            self._last_scan_time = now
+            if self._scan_breaker.can_execute():
+                cycle["scanned"] = True
+                try:
+                    self._scan_and_enter(session_status, news_status, now, cycle)
+                    self._scan_breaker.record_success()
+                    self.watchdog.record_scan_success()
+                except Exception as exc:
+                    logger.error("Scan cycle error: {}", exc)
+                    self._scan_breaker.record_failure()
+                    self.watchdog.record_scan_failure()
+                self._last_scan_time = now
+            else:
+                status = self._scan_breaker.get_status()
+                logger.debug(
+                    "Scan circuit OPEN — cooldown {:.0f}s remaining",
+                    status.cooldown_remaining_seconds,
+                )
 
-        closed_count = self._update_positions()
+        try:
+            closed_count = self._update_positions()
+            self.watchdog.record_trade_check_success()
+        except Exception as exc:
+            logger.error("Position update error: {}", exc)
+            closed_count = 0
+            self.watchdog.record_trade_check_failure()
+
         cycle["positions_updated"] = len(self.managed_positions)
         cycle["positions_closed"] = closed_count
 
@@ -377,6 +425,20 @@ class TradingLoop:
             len(broker_ids - persisted_ids), len(persisted_ids - broker_ids),
         )
 
+    # ── Auto-reconnect ─────────────────────────────────────────────────
+
+    def _check_and_reconnect(self) -> None:
+        """Non-blocking reconnect check — attempts only when backoff timer allows."""
+        for platform in ("mt5", "deriv"):
+            if self.platforms.should_attempt_reconnect(platform):
+                success = self.platforms.reconnect_platform(platform)
+                if success:
+                    logger.info("🔄 {} recovered — reconciling positions", platform.upper())
+                    try:
+                        self._reconcile_positions()
+                    except Exception as exc:
+                        logger.warning("Post-reconnect reconciliation error: {}", exc)
+
     # ── Scan → Entry pipeline ────────────────────────────────────────────
 
     def _has_always_open_instruments(self) -> bool:
@@ -554,6 +616,14 @@ class TradingLoop:
         if ctx.uses_stake:
             stake_usd = assessment.stake_usd or assessment.max_loss_dollars
 
+        if not self._execution_breaker.can_execute():
+            status = self._execution_breaker.get_status()
+            logger.debug(
+                "Execution circuit OPEN — cooldown {:.0f}s remaining",
+                status.cooldown_remaining_seconds,
+            )
+            return False
+
         order = self.platforms.execute_entry(
             pair, direction,
             adjusted_lots,
@@ -564,7 +634,10 @@ class TradingLoop:
         )
 
         if not order.success:
+            self._execution_breaker.record_failure()
             return False
+
+        self._execution_breaker.record_success()
 
         self.execution_monitor.record_execution(
             requested_price=signal.entry_price,
@@ -843,6 +916,13 @@ class TradingLoop:
                     pass
             self._daily_trades = 0
             self._last_reset_day = today
+
+            if self.maintenance.should_run():
+                try:
+                    maint_result = self.maintenance.run()
+                    logger.info("🧹 Daily maintenance — {}", maint_result)
+                except Exception as exc:
+                    logger.warning("Maintenance error: {}", exc)
 
         if self.ml.should_retrain():
             self._run_ml_optimization()
