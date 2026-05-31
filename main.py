@@ -107,7 +107,10 @@ def main() -> None:
     try:
         from risk.spread_bootstrap import bootstrap_spreads
         bootstrap_spreads(
-            mt5_connector=platform_manager.mt5 if connection_status.get("mt5") else None,
+            mt5_connectors=[
+                c for i, c in enumerate(platform_manager.mt5_connectors)
+                if platform_manager._mt5_connected_flags[i]
+            ] if connection_status.get("mt5") else [],
             deriv_connector=platform_manager.deriv if connection_status.get("deriv") else None,
         )
     except Exception as exc:
