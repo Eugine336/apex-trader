@@ -455,7 +455,7 @@ class TradingLoop:
         self, session_status, news_status, now: datetime, cycle: dict
     ) -> None:
         try:
-            market_data = self.platforms.fetch_all_market_data()
+            market_data = self.platforms.fetch_all_market_data(now_utc=now)
         except Exception as exc:
             logger.error("Market data fetch failed: {}", exc)
             return
@@ -1116,4 +1116,4 @@ def _build_instrument_lookups() -> tuple[dict[str, float], dict[str, float]]:
     return spreads, pip_values
 
 
-INSTRUMENT_REGISTRY_SPREAD, INSTRUMENT_REGISTRY_PIP_VALUE = _build_instrument_lookups()
+INSTRUMENT_REGISTRY_SPREAD, INSTRUMENT_REGISTRY_PIP_VALUE = _build_instrument_lookups(
