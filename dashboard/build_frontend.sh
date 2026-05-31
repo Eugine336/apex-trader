@@ -10,7 +10,7 @@ if [ ! -d "node_modules" ]; then
 fi
 
 echo "[*] Building React frontend..."
-REACT_APP_API_URL="" npm run build
+VITE_API_URL="" npm run build
 
 echo "[✓] Frontend built at $DIR/frontend/build/"
 echo "[✓] Restart the bot — dashboard will be served at http://0.0.0.0:8000"
