@@ -478,7 +478,7 @@ class DerivConnector(BaseConnector):
                 # requests, causing the retry to chase a moving target. A full-dollar
                 # floor gives stable clearance regardless of cap precision.
                 import math as _math
-                capped = max(1.0, float(_math.floor(max_stake)) - 1.0)
+                capped = max(1.0, float(_math.floor(max_stake * 100)) / 100)
                 logger.warning(
                     "Deriv stake capped — retrying {} {} with ${} (max ${})",
                     direction, symbol, capped, max_stake,
@@ -552,7 +552,7 @@ class DerivConnector(BaseConnector):
                     if _cap_match2:
                         max_stake2 = float(_cap_match2.group(1))
                         import math as _math
-                        capped2 = max(1.0, float(_math.floor(max_stake2)) - 1.0)
+                        capped2 = max(1.0, float(_math.floor(max_stake2 * 100)) / 100)
                         logger.warning(
                             "Deriv stake capped after multiplier correction — retrying {} {} "
                             "with ${} (max ${})",
