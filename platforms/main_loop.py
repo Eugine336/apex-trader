@@ -37,7 +37,7 @@ from management.trade_manager import (
 from ml.ml_adapter import MLAdapter, TradeAdjustments
 from platforms.base_connector import OrderResult, PositionInfo
 from platforms.platform_manager import PlatformManager
-from platforms.platform_context import PlatformContext, build_context_for_symbol
+from platform_context import PlatformContext, build_context_for_symbol
 from risk.risk_engine import RiskEngine
 from risk.risk_reporter import RiskReporter
 from scanner import PairScanner, PairRanker, ScanScheduler
