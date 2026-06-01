@@ -183,7 +183,7 @@ class TradingLoop:
 
         self.managed_positions: dict[str, ManagedPosition] = {}
         self._pending_orders: dict[str, dict] = {}
-        self._weekend_protected_oids: set[str] = {}
+        self._weekend_protected_oids: set[str] = set()
         self.running = False
         self._last_scan_time: Optional[datetime] = None
         self._daily_trades = 0
