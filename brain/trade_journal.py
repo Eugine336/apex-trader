@@ -191,6 +191,7 @@ class TradeJournal:
                 """
                 SELECT pair, session, pnl, time_to_exit, outcome, pnl_dollars
                 FROM trades
+                WHERE outcome != 'LEGACY'
                 ORDER BY timestamp ASC
                 """
             )
