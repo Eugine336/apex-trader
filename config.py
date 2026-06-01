@@ -244,6 +244,9 @@ class RiskConfig:
     # The validator uses: max_allowed = typical_spread * max_spread_multiplier
     max_spread_multiplier: float = 3.0
     ev_threshold: float = -0.1
+    tp_adjust_enabled: bool = False
+    pending_orders_enabled: bool = False
+    pending_max_wait_minutes: int = 30
 
 
 # ---------------------------------------------------------------------------

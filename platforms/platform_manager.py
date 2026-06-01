@@ -444,6 +444,31 @@ class PlatformManager:
             )
         return result
 
+    def place_pending_entry(
+        self,
+        symbol: str,
+        order_kind: str,
+        entry_price: float,
+        lots: float,
+        sl: float,
+        tp: float,
+        comment: str = "",
+    ) -> OrderResult:
+        connector = self.get_connector(symbol)
+        platform = "mt5" if isinstance(connector, MT5Connector) else "deriv"
+        result = connector.place_pending_order(symbol, order_kind, entry_price, lots, sl, tp, comment)
+        if result.success:
+            logger.info(
+                "[{}] PENDING {} {} {:.2f} lots @ {:.5f}",
+                platform.upper(), order_kind, symbol, lots, entry_price,
+            )
+        else:
+            logger.error(
+                "[{}] PENDING FAILED {} {} {:.2f} lots: {}",
+                platform.upper(), order_kind, symbol, lots, result.error,
+            )
+        return result
+
     def modify_trade(
         self,
         order_id: str,

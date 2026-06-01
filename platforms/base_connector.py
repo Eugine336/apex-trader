@@ -18,6 +18,13 @@ class OrderDirection(Enum):
     SELL = "SELL"
 
 
+class PendingOrderKind(Enum):
+    BUY_LIMIT = "BUY_LIMIT"
+    SELL_LIMIT = "SELL_LIMIT"
+    BUY_STOP = "BUY_STOP"
+    SELL_STOP = "SELL_STOP"
+
+
 class OrderStatus(Enum):
     PENDING = "PENDING"
     FILLED = "FILLED"
@@ -142,6 +149,32 @@ class BaseConnector(ABC):
         comment: str = "",
     ) -> OrderResult:
         """Place a market order. Returns fill details."""
+
+    def place_pending_order(
+        self,
+        symbol: str,
+        order_kind: str,
+        entry_price: float,
+        lots: float,
+        sl: float,
+        tp: float,
+        comment: str = "",
+    ) -> OrderResult:
+        """Place a pending (limit/stop) order. Override in subclass if supported."""
+        return OrderResult(
+            success=False,
+            order_id="",
+            fill_price=0.0,
+            requested_price=entry_price,
+            slippage_pips=0.0,
+            lots=lots,
+            symbol=symbol,
+            direction=order_kind.split("_")[0],
+            sl=sl,
+            tp=tp,
+            platform="unknown",
+            error="Pending orders not supported on this platform",
+        )
 
     @abstractmethod
     def modify_order(
