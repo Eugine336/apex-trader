@@ -9,6 +9,7 @@ from dashboard.state_helpers import (
     normalize_direction,
     safe_float,
 )
+from platform_context import build_context_for_symbol
 
 
 class TradesMixin(HelpersMixin):
@@ -49,24 +50,39 @@ class TradesMixin(HelpersMixin):
             else:
                 pnl_pips = 0.0
 
+            pos_ctx = build_context_for_symbol(symbol)
             lot_size = safe_float(getattr(pos, "lots", 0.0), 0.0)
-            pip_value = self._estimate_pip_value(symbol)
-            pnl_dollars = pnl_pips * pip_value * lot_size
+            if pos_ctx.uses_stake:
+                stake_usd = safe_float(getattr(pos, "stake_usd", 0.0), 0.0)
+                multiplier = safe_float(getattr(pos, "multiplier", 100), 100)
+                if entry_price > 0 and stake_usd > 0:
+                    price_move_pct = (current_price - entry_price) / entry_price
+                    if direction == "SHORT":
+                        price_move_pct = -price_move_pct
+                    pnl_dollars = stake_usd * price_move_pct * multiplier
+                else:
+                    pnl_dollars = 0.0
+            else:
+                lot_size = safe_float(getattr(pos, "lots", 0.0), 0.0)
+                pip_value = self._estimate_pip_value(symbol)
+                pnl_dollars = pnl_pips * pip_value * lot_size
 
-            trades.append({
-                "id": str(oid),
-                "instrument": symbol,
-                "direction": direction,
-                "entry_price": round(entry_price, 5),
-                "current_price": round(current_price, 5),
-                "stop_loss": round(safe_float(getattr(pos, "sl", 0.0), 0.0), 5),
-                "tp1": round(safe_float(getattr(pos, "tp1", 0.0), 0.0), 5),
-                "tp2": round(safe_float(getattr(pos, "tp2", 0.0), 0.0), 5),
-                "pnl_pips": round(pnl_pips, 1),
-                "pnl_dollars": round(pnl_dollars, 2),
-                "lot_size": round(lot_size, 2),
-                "score": int(round(safe_float(getattr(pos, "score", 0), 0.0))),
-                "stage": build_stage(pos),
-            })
+            trades.append(
+                {
+                    "id": str(oid),
+                    "instrument": symbol,
+                    "direction": direction,
+                    "entry_price": round(entry_price, 5),
+                    "current_price": round(current_price, 5),
+                    "stop_loss": round(safe_float(getattr(pos, "sl", 0.0), 0.0), 5),
+                    "tp1": round(safe_float(getattr(pos, "tp1", 0.0), 0.0), 5),
+                    "tp2": round(safe_float(getattr(pos, "tp2", 0.0), 0.0), 5),
+                    "pnl_pips": round(pnl_pips, 1),
+                    "pnl_dollars": round(pnl_dollars, 2),
+                    "lot_size": round(lot_size, 2),
+                    "score": int(round(safe_float(getattr(pos, "score", 0), 0.0))),
+                    "stage": build_stage(pos),
+                }
+            )
 
         return {"trades": trades, "count": len(trades)}
