@@ -464,6 +464,10 @@ class PlatformManager:
         connector = self._connector_by_platform_str(platform)
         return connector.close_order(order_id, lots)
 
+    def get_realized_pnl(self, order_id: str, platform: str) -> Optional[float]:
+        connector = self._connector_by_platform_str(platform)
+        return connector.get_realized_pnl(order_id)
+
     def _connector_by_platform_str(self, platform: str) -> BaseConnector:
         """Resolve "mt5", "mt5_0", "mt5_1", "deriv" to the right connector."""
         if platform == "deriv":

@@ -161,6 +161,15 @@ class PositionStore:
                 logger.error("PositionStore load failed: {}", exc)
                 return []
 
+    def clear_all(self) -> None:
+        """Delete all persisted positions (used by emergency flatten)."""
+        with self._lock:
+            try:
+                self._conn.execute("DELETE FROM managed_positions")
+                self._conn.commit()
+            except Exception as exc:
+                logger.error("PositionStore clear_all failed: {}", exc)
+
     def count(self) -> int:
         with self._lock:
             try:
