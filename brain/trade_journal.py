@@ -191,6 +191,7 @@ class TradeJournal:
                 """
                 SELECT pair, session, pnl, time_to_exit, outcome, pnl_dollars
                 FROM trades
+                WHERE outcome != 'LEGACY'
                 ORDER BY timestamp ASC
                 """
             )
@@ -238,7 +239,8 @@ class TradeJournal:
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 "SELECT pair, direction, pnl, score, confluences, regime, "
-                "session, spread, entry_type, time_to_exit, outcome, pnl_dollars FROM trades"
+                "session, spread, entry_type, time_to_exit, outcome FROM trades "
+                "WHERE outcome != 'LEGACY'"
             )
             rows = await cursor.fetchall()
         return [
