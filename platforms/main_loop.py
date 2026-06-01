@@ -868,7 +868,16 @@ class TradingLoop:
         )
 
         if not order.success:
-            self._execution_breaker.record_failure()
+            # MARKET_CLOSED is an expected, temporary broker rejection — not an
+            # execution failure. Don't penalise the circuit breaker for it; doing
+            # so opens a 10-minute cooldown that blocks all other instruments.
+            if order.error and "MARKET_CLOSED" in str(order.error).upper():
+                logger.warning(
+                    "⏸ {} {} — market closed, skipping circuit breaker penalty",
+                    pair, direction,
+                )
+            else:
+                self._execution_breaker.record_failure()
             return False
 
         self._execution_breaker.record_success()
