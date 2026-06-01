@@ -528,6 +528,15 @@ class DerivConnector(BaseConnector):
                 break  # unrecognised error — retrying won't help
 
             # ── 3. Retry with updated multiplier + amount ──────────────────
+            # IMPORTANT: limit_order SL/TP are expressed in absolute dollar P&L,
+            # NOT as a price level. The formula is:
+            #   stop_loss_$ = (|price - sl| / price) × stake × multiplier
+            # When `amount` changes the SL dollar value changes too, which shifts
+            # Deriv's stake cap threshold — causing the cap to slide on each retry.
+            # Fix: always compute limit_order from the CURRENT amount so the
+            # SL dollar value is consistent with the stake being sent.
+            sl_dollar  = round(abs(price - sl) / price * amount * multiplier, 2)
+            tp_dollar  = round(abs(tp - price) / price * amount * multiplier, 2)
             resp = self._sync_send({
                 "buy": 1,
                 "subscribe": 1,
@@ -540,8 +549,8 @@ class DerivConnector(BaseConnector):
                     "basis": "stake",
                     "multiplier": multiplier,
                     "limit_order": {
-                        "stop_loss": round(abs(price - sl) / price * amount * multiplier, 2),
-                        "take_profit": round(abs(tp - price) / price * amount * multiplier, 2),
+                        "stop_loss": sl_dollar,
+                        "take_profit": tp_dollar,
                     },
                 },
             })
@@ -557,7 +566,24 @@ class DerivConnector(BaseConnector):
             )
 
         buy_resp = resp.get("buy", {})
-        contract_id = str(buy_resp.get("contract_id", ""))
+        contract_id = str(buy_resp.get("contract_id", "")).strip()
+
+        # Guard: Deriv sometimes returns a buy response without a contract_id
+        # (e.g. partial fills, balance-check responses, network hiccups).
+        # Without a real contract_id we cannot track, modify, or close the position.
+        # Treat this as a failure so no ghost trade is recorded in the dashboard.
+        if not contract_id or contract_id == "0":
+            logger.error(
+                "Deriv order response missing contract_id — treating as FAILED. "
+                "buy_resp={}", buy_resp,
+            )
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0,
+                requested_price=price, slippage_pips=0.0, lots=lots,
+                symbol=symbol, direction=direction.upper(), sl=sl, tp=tp,
+                platform="deriv",
+                error="No contract_id in Deriv response — order not confirmed",
+            )
 
         self._positions[contract_id] = {
             "symbol": symbol, "direction": direction.upper(),
@@ -565,8 +591,8 @@ class DerivConnector(BaseConnector):
         }
 
         logger.info(
-            "Deriv order filled — {} {} {} lots @ {} ({:.0f}ms)",
-            direction, mapped, lots, amount, latency,
+            "Deriv order filled — {} {} {} lots @ {} contract={} ({:.0f}ms)",
+            direction, mapped, lots, amount, contract_id, latency,
         )
         return OrderResult(
             success=True,
