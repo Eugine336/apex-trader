@@ -1,9 +1,10 @@
 """APEX TRADER — Dashboard Status Mixin."""
 
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any
 
-from dashboard.state_helpers import HelpersMixin, pct_to_fraction
+from dashboard.state_helpers import HelpersMixin, pct_to_fraction, safe_float
 
 
 class StatusMixin(HelpersMixin):
@@ -14,6 +15,7 @@ class StatusMixin(HelpersMixin):
 
     def get_status(self) -> dict:
         import time as _time
+
         uptime = _time.monotonic() - self._start_time
         if self.is_live:
             return self._live_status(uptime)
@@ -32,8 +34,21 @@ class StatusMixin(HelpersMixin):
         total = wins + losses
 
         win_rate = (wins / total * 100) if total > 0 else 0.0
-        daily_frac = pct_to_fraction(getattr(dd, "daily_pnl_pct", 0.0))
         total_pnl = round(sum(r["pnl_dollars"] for r in records), 2) if records else 0.0
+
+        today = datetime.now(timezone.utc).date()
+        daily_pnl = 0.0
+        for r in records:
+            try:
+                d_str = str(r.get("opened_at", ""))[:10]
+                d = datetime.fromisoformat(d_str).date()
+                if d == today:
+                    daily_pnl += safe_float(r["pnl_dollars"], 0.0)
+            except Exception:
+                pass
+        if not records:
+            daily_frac = pct_to_fraction(getattr(dd, "daily_pnl_pct", 0.0))
+            daily_pnl = daily_frac * balance
 
         return {
             "bot_status": "running" if bool(loop.running) else "stopped",
@@ -44,12 +59,12 @@ class StatusMixin(HelpersMixin):
             "total_trades": total,
             "win_count": wins,
             "loss_count": losses,
-            "daily_pnl": round(daily_frac * balance, 2),
+            "daily_pnl": round(daily_pnl, 2),
             "total_pnl": total_pnl,
             "account_balance": round(balance, 2),
             "mt5_balance": mt5_balance,
             "deriv_balance": deriv_balance,
-            "daily_loss_pct": round(abs(min(daily_frac, 0.0)) * 100, 2),
+            "daily_loss_pct": round(abs(min(daily_pnl / balance, 0.0)) * 100, 2) if balance > 0 else 0.0,
             "max_daily_loss_pct": float(
                 getattr(getattr(loop, "config", None), "risk", None).max_daily_drawdown_pct
                 if hasattr(getattr(loop, "config", None), "risk")
@@ -60,9 +75,7 @@ class StatusMixin(HelpersMixin):
             "consecutive_wins": int(getattr(dd, "consecutive_wins", 0)),
             "mt5_connected": self._connection_status.get("mt5", False),
             "deriv_connected": self._connection_status.get("deriv", False),
-            "trade_manager_trades": len(
-                getattr(getattr(loop, "trade_manager", None), "_trades", {})
-            ),
+            "trade_manager_trades": len(getattr(getattr(loop, "trade_manager", None), "_trades", {})),
         }
 
     @staticmethod
