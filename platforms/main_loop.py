@@ -44,7 +44,7 @@ from management.trade_manager import (
     EntrySignal as TMEntrySignal,
 )
 from adaptive.optimizer import AdaptiveOptimizer as MLAdapter, TradeAdjustments
-from platforms.base_connector import OrderResult, PositionInfo
+from platforms.base_connector import OrderResult, CloseResult, PositionInfo
 from platforms.deriv.deriv_connector import DerivConnector
 from platforms.platform_manager import PlatformManager
 from platform_context import PlatformContext, build_context_for_symbol
@@ -59,17 +59,42 @@ class ManagedPosition:
     """Tracks a live position through its lifecycle."""
 
     __slots__ = (
-        "order_id", "platform", "symbol", "direction", "lots",
-        "entry_price", "sl", "tp1", "tp2", "score", "regime",
-        "session", "entry_type", "open_time", "tp1_hit",
-        "at_breakeven", "trailing", "last_update", "re_entry_eligible",
-        "tm_trade_id", "stake_usd", "multiplier",
+        "order_id",
+        "platform",
+        "symbol",
+        "direction",
+        "lots",
+        "entry_price",
+        "sl",
+        "tp1",
+        "tp2",
+        "score",
+        "regime",
+        "session",
+        "entry_type",
+        "open_time",
+        "tp1_hit",
+        "at_breakeven",
+        "trailing",
+        "last_update",
+        "re_entry_eligible",
+        "tm_trade_id",
+        "stake_usd",
+        "multiplier",
     )
 
-    def __init__(self, order: OrderResult, tp1: float, tp2: float,
-                 score: int = 0, regime: str = "", session: str = "",
-                 entry_type: str = "", stake_usd: float = 0.0,
-                 multiplier: int = 100):
+    def __init__(
+        self,
+        order: OrderResult,
+        tp1: float,
+        tp2: float,
+        score: int = 0,
+        regime: str = "",
+        session: str = "",
+        entry_type: str = "",
+        stake_usd: float = 0.0,
+        multiplier: int = 100,
+    ):
         self.order_id = order.order_id
         self.platform = order.platform
         self.symbol = order.symbol
@@ -219,7 +244,9 @@ class TradingLoop:
             return cycle
 
         should_scan = self.scheduler.should_scan_now(
-            self._last_scan_time, session_status, news_status,
+            self._last_scan_time,
+            session_status,
+            news_status,
             has_active_positions=len(self.managed_positions) > 0,
         )
 
@@ -262,7 +289,8 @@ class TradingLoop:
             self.position_store.save_position(pos)
         logger.info(
             "APEX TRADER SHUTTING DOWN — {} positions persisted for restart recovery, {} trades today",
-            n_positions, self._daily_trades,
+            n_positions,
+            self._daily_trades,
         )
         self.position_store.close()
         self.platforms.disconnect_all()
@@ -275,6 +303,7 @@ class TradingLoop:
 
     def _install_signal_handlers(self) -> None:
         """Register SIGTERM/SIGINT so the trading loop shuts down cleanly."""
+
         def _handle_signal(signum, frame):
             sig_name = signal.Signals(signum).name
             logger.info("Received {} — initiating graceful shutdown", sig_name)
@@ -345,7 +374,11 @@ class TradingLoop:
                 self.managed_positions[pos.order_id] = pos
                 logger.info(
                     "🔄 RESTORED — {} {} | lots={} | SL={:.5f} | tp1_hit={}",
-                    pos.direction, pos.symbol, pos.lots, pos.sl, pos.tp1_hit,
+                    pos.direction,
+                    pos.symbol,
+                    pos.lots,
+                    pos.sl,
+                    pos.tp1_hit,
                 )
             except Exception as exc:
                 logger.error("Failed to restore position {}: {}", row.get("order_id"), exc)
@@ -360,9 +393,7 @@ class TradingLoop:
             logger.warning("Broker position query failed during reconciliation: {}", exc)
             return
 
-        broker_by_id: dict[str, PositionInfo] = {
-            p.order_id: p for p in broker_positions
-        }
+        broker_by_id: dict[str, PositionInfo] = {p.order_id: p for p in broker_positions}
         persisted_ids = set(self.managed_positions.keys())
         broker_ids = set(broker_by_id.keys())
 
@@ -370,7 +401,8 @@ class TradingLoop:
             pos = self.managed_positions[oid]
             logger.info(
                 "📋 RECONCILE — {} {} was closed externally while offline — removing",
-                pos.direction, pos.symbol,
+                pos.direction,
+                pos.symbol,
             )
             del self.managed_positions[oid]
             self.position_store.remove_position(oid)
@@ -379,7 +411,9 @@ class TradingLoop:
             bp = broker_by_id[oid]
             logger.warning(
                 "⚠️ RECONCILE — Orphaned position found: {} {} {:.2f} lots — adopting",
-                bp.direction, bp.symbol, bp.lots,
+                bp.direction,
+                bp.symbol,
+                bp.lots,
             )
             dummy_order = OrderResult(
                 success=True,
@@ -430,11 +464,59 @@ class TradingLoop:
 
         logger.info(
             "Reconciliation complete — {} managed, {} on broker, {} adopted, {} removed",
-            len(self.managed_positions), len(broker_positions),
-            len(broker_ids - persisted_ids), len(persisted_ids - broker_ids),
+            len(self.managed_positions),
+            len(broker_positions),
+            len(broker_ids - persisted_ids),
+            len(persisted_ids - broker_ids),
         )
 
     # ── Auto-reconnect ─────────────────────────────────────────────────
+
+    def _reconcile_externally_closed(self, to_remove: list[str]) -> None:
+        """Drop managed positions that no longer exist at the broker."""
+        if not self.managed_positions:
+            return
+        try:
+            broker_positions = self.platforms.get_all_open_positions()
+        except Exception:
+            return
+        broker_ids = {p.order_id for p in broker_positions}
+        broker_pnl = {p.order_id: p.pnl for p in broker_positions}
+
+        for oid, pos in list(self.managed_positions.items()):
+            if oid not in broker_ids:
+                real_pnl = broker_pnl.get(oid, 0.0)
+                fake_close = CloseResult(
+                    success=True,
+                    order_id=oid,
+                    close_price=pos.entry_price,
+                    lots_closed=pos.lots,
+                    pnl=real_pnl,
+                    platform=pos.platform,
+                )
+                try:
+                    tick = self.platforms.get_price(pos.symbol)
+                    is_buy = pos.direction == "BUY"
+                    fake_close.close_price = tick.bid if is_buy else tick.ask
+                except Exception:
+                    pass
+                self._record_closed_trade(
+                    pos,
+                    fake_close.close_price,
+                    "CLOSED_EXTERNALLY",
+                    close_result=fake_close if real_pnl != 0.0 else None,
+                )
+                to_remove.append(oid)
+                self._add_warning(
+                    "warning",
+                    f"{pos.direction} {pos.symbol} closed externally by broker",
+                    symbol=pos.symbol,
+                )
+                logger.info(
+                    "📋 LIVE RECONCILE — {} {} closed externally — removed",
+                    pos.direction,
+                    pos.symbol,
+                )
 
     def _check_and_reconnect(self) -> None:
         """Non-blocking reconnect check — attempts only when backoff timer allows."""
@@ -454,11 +536,10 @@ class TradingLoop:
         """True if any enabled symbol trades outside FX session hours (24/5 non-FX or 24/7).
         Keeps the scan loop alive during FX dead zones. Reads from instrument registry."""
         from config import is_always_open
+
         return any(is_always_open(pair) for pair in self.config.enabled_pairs)
 
-    def _scan_and_enter(
-        self, session_status, news_status, now: datetime, cycle: dict
-    ) -> None:
+    def _scan_and_enter(self, session_status, news_status, now: datetime, cycle: dict) -> None:
         try:
             market_data = self.platforms.fetch_all_market_data(now_utc=now)
         except Exception as exc:
@@ -469,11 +550,7 @@ class TradingLoop:
             return
 
         # Build currency_data for the strength meter — H1 data keyed by symbol
-        currency_data = {
-            pair: frames["H1"]
-            for pair, frames in market_data.items()
-            if "H1" in frames
-        }
+        currency_data = {pair: frames["H1"] for pair, frames in market_data.items() if "H1" in frames}
 
         report = self.scanner.scan_all(market_data, currency_data=currency_data, utc_now=now)
         ready = self.scanner.get_ready_setups(report)
@@ -484,6 +561,7 @@ class TradingLoop:
         # Update system-wide volatility state — reduce all sizes during market vol spikes
         try:
             from brain.regime_detector import RegimeDetector
+
             _regime_det = RegimeDetector()
             _vol_analyses = []
             for pair, frames in market_data.items():
@@ -498,7 +576,9 @@ class TradingLoop:
                 if _vol_state.state != "NORMAL":
                     logger.warning(
                         "⚡ SYSTEM VOL {} — {} — all sizes ×{:.2f}",
-                        _vol_state.state, _vol_state.note, _vol_state.size_multiplier,
+                        _vol_state.state,
+                        _vol_state.note,
+                        _vol_state.size_multiplier,
                     )
         except Exception as _exc:
             logger.debug("Vol monitor update error: {}", _exc)
@@ -529,16 +609,12 @@ class TradingLoop:
             if result.pair in open_pairs:
                 continue
 
-            _current_risk = self.risk_engine.drawdown_guard.risk_map.get(
-                self.risk_engine.drawdown_guard.mode, 0.005
-            )
+            _current_risk = self.risk_engine.drawdown_guard.risk_map.get(self.risk_engine.drawdown_guard.mode, 0.005)
             open_trades = [
                 OpenTrade(pair=p.symbol, direction=p.direction, risk_pct=_current_risk)
                 for p in self.managed_positions.values()
             ]
-            can_open, corr_reason = self.correlation.can_open_trade(
-                result.pair, result.direction, open_trades
-            )
+            can_open, corr_reason = self.correlation.can_open_trade(result.pair, result.direction, open_trades)
             if not can_open:
                 self._log_rejection(result.pair, result.direction, result.score, corr_reason)
                 continue
@@ -579,9 +655,7 @@ class TradingLoop:
         self.risk_engine.balance = balance
 
         # Resolve actual risk % from current drawdown mode — never hardcode 0.02
-        _exec_risk = self.risk_engine.drawdown_guard.risk_map.get(
-            self.risk_engine.drawdown_guard.mode, 0.005
-        )
+        _exec_risk = self.risk_engine.drawdown_guard.risk_map.get(self.risk_engine.drawdown_guard.mode, 0.005)
 
         # Build the platform context for this symbol — used by every downstream module
         broker = self.platforms.get_broker_name(pair)
@@ -667,8 +741,7 @@ class TradingLoop:
                 pass
             if pair_mult < 1.0:
                 self._log_rejection(
-                    pair, direction, result.score,
-                    f"EV gate: negative EV ({ev_val:.4f}) + pair_mult={pair_mult:.2f}"
+                    pair, direction, result.score, f"EV gate: negative EV ({ev_val:.4f}) + pair_mult={pair_mult:.2f}"
                 )
                 return False
 
@@ -684,10 +757,7 @@ class TradingLoop:
             density_mult = self.density_tracker.get_size_multiplier()
             vol_mult = self.vol_monitor.get_size_multiplier()
             adjusted_lots = round(
-                signal.position_size_lots
-                * adjustments.position_size_multiplier
-                * density_mult
-                * vol_mult,
+                signal.position_size_lots * adjustments.position_size_multiplier * density_mult * vol_mult,
                 2,
             )
             adjusted_lots = max(0.01, adjusted_lots)
@@ -709,7 +779,8 @@ class TradingLoop:
             return False
 
         order = self.platforms.execute_entry(
-            pair, direction,
+            pair,
+            direction,
             adjusted_lots,
             signal.stop_loss,
             signal.tp1,
@@ -737,7 +808,9 @@ class TradingLoop:
             stats = self.execution_monitor.get_stats()
             logger.warning(
                 "⚠️ EXECUTION QUALITY {} — avg slip {:.2f}pip, latency {:.0f}ms, spread {}",
-                stats.execution_quality, stats.avg_slippage_pips, stats.avg_latency_ms,
+                stats.execution_quality,
+                stats.avg_slippage_pips,
+                stats.avg_latency_ms,
                 "WIDE" if stats.spread_is_wide else "OK",
             )
 
@@ -777,8 +850,14 @@ class TradingLoop:
 
         logger.info(
             "🎯 TRADE OPENED — {} {} {:.2f}lots @ {:.5f} | SL {:.5f} | TP1 {:.5f} | TP2 {:.5f} | Score {}",
-            direction, pair, signal.position_size_lots, order.fill_price,
-            signal.stop_loss, signal.tp1, signal.tp2, signal.score,
+            direction,
+            pair,
+            signal.position_size_lots,
+            order.fill_price,
+            signal.stop_loss,
+            signal.tp1,
+            signal.tp2,
+            signal.score,
         )
         return True
 
@@ -787,6 +866,13 @@ class TradingLoop:
     def _update_positions(self) -> int:
         closed_count = 0
         to_remove: list[str] = []
+
+        self._reconcile_externally_closed(to_remove)
+        for oid in to_remove:
+            del self.managed_positions[oid]
+            self.position_store.remove_position(oid)
+        closed_count += len(to_remove)
+        to_remove = []
 
         for oid, pos in self.managed_positions.items():
             try:
@@ -819,7 +905,9 @@ class TradingLoop:
             if tm_trade.status in TERMINAL_STATUSES:
                 result = self.platforms.close_trade(oid, pos.platform)
                 if result.success:
-                    self._record_closed_trade(pos, result.close_price, tm_trade.close_reason or "CLOSED")
+                    self._record_closed_trade(
+                        pos, result.close_price, tm_trade.close_reason or "CLOSED", close_result=result
+                    )
                     to_remove.append(oid)
                     closed_count += 1
                     if tm_trade.re_entry_eligible:
@@ -844,15 +932,16 @@ class TradingLoop:
                     result = self.platforms.close_trade(oid, pos.platform)
                     if result.success:
                         pos.tp1_hit = True
-                        self._record_closed_trade(pos, result.close_price, "TP1_FULL_CLOSE_REOPEN")
+                        self._record_closed_trade(pos, result.close_price, "TP1_FULL_CLOSE_REOPEN", close_result=result)
                         to_remove.append(oid)
                         closed_count += 1
                         # Attempt re-open at half stake (50% of original risk)
                         try:
                             half_stake = round(pos.stake_usd * 0.5, 2) if pos.stake_usd > 0 else None
                             reopen_order = self.platforms.execute_entry(
-                                pos.symbol, pos.direction,
-                                0.0,            # lots unused on Deriv
+                                pos.symbol,
+                                pos.direction,
+                                0.0,  # lots unused on Deriv
                                 tm_trade.stop_loss,
                                 tm_trade.tp2,
                                 comment=f"APEX|TP1_REOPEN|{pos.score}",
@@ -861,7 +950,8 @@ class TradingLoop:
                             if reopen_order.success:
                                 logger.info(
                                     "✅ TP1 HIT (Deriv reopen) — {} {} | full close + reopen at half stake",
-                                    pos.direction, pos.symbol,
+                                    pos.direction,
+                                    pos.symbol,
                                 )
                         except Exception as reopen_err:
                             logger.warning("Deriv TP1 reopen failed: {}", reopen_err)
@@ -875,7 +965,12 @@ class TradingLoop:
                     if tm_trade.breakeven_active and not pos.at_breakeven:
                         pos.at_breakeven = True
                         self.position_store.update_position(oid, sl=pos.sl, at_breakeven=True)
-                        logger.info("✅ BREAKEVEN (MT5 modify) — {} {} | SL→{:.5f}", pos.direction, pos.symbol, tm_trade.stop_loss)
+                        logger.info(
+                            "✅ BREAKEVEN (MT5 modify) — {} {} | SL→{:.5f}",
+                            pos.direction,
+                            pos.symbol,
+                            tm_trade.stop_loss,
+                        )
                     else:
                         self.position_store.update_position(oid, sl=pos.sl)
                 else:
@@ -887,7 +982,8 @@ class TradingLoop:
                         self.position_store.update_position(oid, sl=pos.sl)
                     logger.debug(
                         "SL update for Deriv {} {} tracked locally only (modify not supported)",
-                        pos.direction, pos.symbol,
+                        pos.direction,
+                        pos.symbol,
                     )
 
             pos.trailing = tm_trade.status == TradeStatus.TRAILING
@@ -903,25 +999,28 @@ class TradingLoop:
     # ── Logging & journal ────────────────────────────────────────────────
 
     def _record_closed_trade(
-        self, pos: ManagedPosition, close_price: float, outcome: str
+        self,
+        pos: ManagedPosition,
+        close_price: float,
+        outcome: str,
+        close_result: Optional[CloseResult] = None,
     ) -> None:
         pip_size = get_pip_size(pos.symbol)
         is_buy = pos.direction == "BUY"
         pnl_pips = (close_price - pos.entry_price) / pip_size if is_buy else (pos.entry_price - close_price) / pip_size
 
-        pos_ctx = build_context_for_symbol(pos.symbol)
-        if pos_ctx.uses_stake:
-            # Deriv: pnl is returned directly by the connector in close_result.pnl
-            # We approximate here using stake × price_movement% × multiplier.
-            # The connector's pnl field is authoritative when available.
-            price_move_pct = abs(close_price - pos.entry_price) / pos.entry_price if pos.entry_price > 0 else 0.0
-            # Win/loss sign based on direction
-            signed_move = price_move_pct if is_buy == (close_price >= pos.entry_price) else -price_move_pct
-            pnl_dollars = round(pos.stake_usd * signed_move * pos.multiplier, 2)
+        if close_result is not None and close_result.pnl != 0.0:
+            pnl_dollars = round(close_result.pnl, 2)
         else:
-            info = INSTRUMENT_REGISTRY.get(pos.symbol.upper())
-            pip_value = info.pip_value_per_lot if info else 10.0
-            pnl_dollars = round(pnl_pips * pip_value * pos.lots, 2)
+            pos_ctx = build_context_for_symbol(pos.symbol)
+            if pos_ctx.uses_stake:
+                price_move_pct = abs(close_price - pos.entry_price) / pos.entry_price if pos.entry_price > 0 else 0.0
+                signed_move = price_move_pct if is_buy == (close_price >= pos.entry_price) else -price_move_pct
+                pnl_dollars = round(pos.stake_usd * signed_move * pos.multiplier, 2)
+            else:
+                info = INSTRUMENT_REGISTRY.get(pos.symbol.upper())
+                pip_value = info.pip_value_per_lot if info else 10.0
+                pnl_dollars = round(pnl_pips * pip_value * pos.lots, 2)
 
         balance = self.platforms.get_platform_balance(pos.symbol) or 10_000.0
         pnl_pct = pnl_dollars / balance if balance > 0 else 0.0
@@ -937,7 +1036,11 @@ class TradingLoop:
         hold_seconds = (datetime.now(timezone.utc) - pos.open_time).total_seconds()
         logger.info(
             "📊 TRADE CLOSED — {} {} | {:.1f}pip | {} | {:.0f}s",
-            pos.direction, pos.symbol, pnl_pips, outcome, hold_seconds,
+            pos.direction,
+            pos.symbol,
+            pnl_pips,
+            outcome,
+            hold_seconds,
         )
 
         trade_record = TradeRecord(
@@ -956,6 +1059,7 @@ class TradingLoop:
             time_to_tp1=None,
             time_to_exit=hold_seconds / 60.0,
             outcome=outcome,
+            pnl_dollars=pnl_dollars,
         )
         self._run_journal_async(self.journal.log_trade(trade_record))
         self.ml.register_new_trade()
@@ -963,15 +1067,16 @@ class TradingLoop:
     def _add_warning(self, level: str, message: str, symbol: str = "") -> None:
         """Append a system event to the in-memory activity feed for the dashboard."""
         from datetime import datetime, timezone
+
         entry = {
-            "level": level,           # "warning" | "rejection" | "info"
+            "level": level,  # "warning" | "rejection" | "info"
             "symbol": symbol,
             "message": message,
             "timestamp": datetime.now(timezone.utc).isoformat(),
         }
         self.system_warnings.insert(0, entry)
         if len(self.system_warnings) > self._MAX_WARNINGS:
-            self.system_warnings = self.system_warnings[:self._MAX_WARNINGS]
+            self.system_warnings = self.system_warnings[: self._MAX_WARNINGS]
 
     def _log_rejection(self, pair: str, direction: str, score: int, reason: str) -> None:
         logger.debug("❌ REJECTED {} {} (score {}) — {}", direction, pair, score, reason)
@@ -1012,8 +1117,10 @@ class TradingLoop:
                     if stats.avg_slippage_pips > 0:
                         logger.info(
                             "📊 Execution stats — quality: {}, avg slip: {:.2f}pip, avg latency: {:.0f}ms, requotes: {}",
-                            stats.execution_quality, stats.avg_slippage_pips,
-                            stats.avg_latency_ms, stats.requote_count,
+                            stats.execution_quality,
+                            stats.avg_slippage_pips,
+                            stats.avg_latency_ms,
+                            stats.requote_count,
                         )
                 except Exception:
                     pass
@@ -1035,7 +1142,8 @@ class TradingLoop:
         session_status = self.session_engine.get_status(now)
         news_status = self.news_guard.check(self.config.enabled_pairs, now)
         return self.scheduler.get_scan_interval(
-            session_status, news_status,
+            session_status,
+            news_status,
             has_active_positions=len(self.managed_positions) > 0,
         )
 
@@ -1053,15 +1161,11 @@ class TradingLoop:
     def _run_ml_optimization(self) -> None:
         """Fetch all trades from the journal and run ML optimisation."""
         try:
-            raw_trades = self._journal_loop.run_until_complete(
-                self.journal.get_all_trades_as_dicts()
-            )
+            raw_trades = self._journal_loop.run_until_complete(self.journal.get_all_trades_as_dicts())
             if not raw_trades:
                 return
             for t in raw_trades:
-                t["confluences_tags"] = _parse_confluence_tags(
-                    t.pop("confluences_raw", [])
-                )
+                t["confluences_tags"] = _parse_confluence_tags(t.pop("confluences_raw", []))
             report = self.ml.run_optimization(raw_trades)
             logger.info(
                 "🧠 ML optimization — {} recommendations",
@@ -1087,9 +1191,7 @@ class TradingLoop:
             m5_df = m5_data.get("M5")
             if m5_df is None:
                 return
-            minutes_since = (
-                (datetime.now(timezone.utc) - pos.open_time).total_seconds() / 60
-            )
+            minutes_since = (datetime.now(timezone.utc) - pos.open_time).total_seconds() / 60
             candles_since = int(minutes_since / 5)
             trade_obj = SimpleNamespace(
                 pair=pos.symbol,
@@ -1102,7 +1204,9 @@ class TradingLoop:
             if opp.eligible:
                 logger.info(
                     "🔄 RE-ENTRY eligible — {} {} — {}",
-                    pos.direction, pos.symbol, opp.new_entry_zone,
+                    pos.direction,
+                    pos.symbol,
+                    opp.new_entry_zone,
                 )
         except Exception as exc:
             logger.debug("Re-entry check error for {}: {}", pos.symbol, exc)
