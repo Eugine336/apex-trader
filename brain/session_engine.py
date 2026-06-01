@@ -200,6 +200,22 @@ class SessionEngine:
             return open_mins - current_mins
         return 0  # Market already open
 
+    def minutes_to_fx_close(self, utc_now: Optional[datetime] = None) -> int:
+        """Minutes until the next Friday 21:00 UTC FX close.
+
+        Returns a small positive number only on Friday before 21:00 UTC.
+        All other times return 99999 (sentinel = not approaching close).
+        """
+        if utc_now is None:
+            utc_now = datetime.now(timezone.utc)
+        if utc_now.weekday() != 4:  # Only Friday (weekday 4)
+            return 99999
+        close_mins = 21 * 60  # 21:00 UTC
+        current_mins = utc_now.hour * 60 + utc_now.minute
+        if current_mins >= close_mins:
+            return 99999  # Already past Friday close
+        return close_mins - current_mins
+
 
 class NewsGuard:
     """

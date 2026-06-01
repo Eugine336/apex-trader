@@ -35,7 +35,7 @@ from brain import (
 )
 from brain.opportunity_density import OpportunityDensityTracker
 from brain.regime_detector import SystemVolatilityMonitor
-from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size
+from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open
 from management.re_entry import ReEntryManager
 from management.trade_manager import (
     TradeManager,
@@ -83,6 +83,7 @@ class ManagedPosition:
         "multiplier",
         "broker_pnl",
         "broker_lots",
+        "scale_in_count",
     )
 
     def __init__(
@@ -121,6 +122,7 @@ class ManagedPosition:
         self.multiplier = multiplier  # Deriv contract multiplier; 100 default
         self.broker_pnl = 0.0  # Live P&L from broker (source of truth)
         self.broker_lots = 0.0  # Live lots from broker (detects partial fills)
+        self.scale_in_count = 0
 
 
 class TradingLoop:
@@ -161,6 +163,9 @@ class TradingLoop:
             partial_close_ratio=0.5,
             breakeven_buffer_pips=2.0,
             tp_adjust_enabled=self.config.risk.tp_adjust_enabled,
+            tp3_ladder_enabled=self.config.risk.tp3_ladder_enabled,
+            tp3_r_multiple=self.config.risk.tp3_r_multiple,
+            tp3_close_ratio=self.config.risk.tp3_close_ratio,
         )
         self._journal_loop = asyncio.new_event_loop()
         self.position_store = PositionStore()
@@ -178,6 +183,7 @@ class TradingLoop:
 
         self.managed_positions: dict[str, ManagedPosition] = {}
         self._pending_orders: dict[str, dict] = {}
+        self._weekend_protected_oids: set[str] = {}
         self.running = False
         self._last_scan_time: Optional[datetime] = None
         self._daily_trades = 0
@@ -250,6 +256,7 @@ class TradingLoop:
         if not can_trade:
             logger.debug("Trading paused: {}", reason)
             self._check_pending_orders()
+            self._check_weekend_protection()
             self._update_positions()
             return cycle
 
@@ -281,7 +288,9 @@ class TradingLoop:
 
         try:
             self._check_pending_orders()
+            self._check_weekend_protection()
             closed_count = self._update_positions()
+            self._check_scale_in()
             self.watchdog.record_trade_check_success()
         except Exception as exc:
             logger.error("Position update error: {}", exc)
@@ -546,8 +555,6 @@ class TradingLoop:
     def _has_always_open_instruments(self) -> bool:
         """True if any enabled symbol trades outside FX session hours (24/5 non-FX or 24/7).
         Keeps the scan loop alive during FX dead zones. Reads from instrument registry."""
-        from config import is_always_open
-
         return any(is_always_open(pair) for pair in self.config.enabled_pairs)
 
     def _scan_and_enter(self, session_status, news_status, now: datetime, cycle: dict) -> None:
@@ -1128,6 +1135,7 @@ class TradingLoop:
             prev_sl = tm_trade.stop_loss
             prev_tp2 = tm_trade.tp2
             was_partial = tm_trade.partial_closed
+            was_tp3_hit = getattr(tm_trade, "tp3_hit", False)
 
             # Feed the price to the trade manager for value-add management
             # (TP1 detection, breakeven, trailing, stall/structure exit).
@@ -1220,6 +1228,20 @@ class TradingLoop:
                             logger.warning("Deriv TP1 reopen failed: {}", reopen_err)
                     continue
 
+            if getattr(tm_trade, "tp3_hit", False) and not was_tp3_hit:
+                pos_ctx = build_context_for_symbol(pos.symbol)
+                tp3_lots = round(pos.lots * self.config.risk.tp3_close_ratio, 2)
+                tp3_lots = max(0.01, tp3_lots)
+                if pos_ctx.supports_partial_close:
+                    result = self.platforms.close_trade(oid, pos.platform, tp3_lots)
+                    if result.success:
+                        pos.lots = round(pos.lots - tp3_lots, 2)
+                        self.position_store.update_position(oid, lots=pos.lots)
+                        logger.info(
+                            "✅ TP3 HIT (partial) — {} {} | {:.0%} of runner closed",
+                            pos.direction, pos.symbol, self.config.risk.tp3_close_ratio,
+                        )
+
             sl_changed = tm_trade.stop_loss != prev_sl
             tp_changed = tm_trade.tp2 != prev_tp2
             if sl_changed or tp_changed:
@@ -1275,6 +1297,111 @@ class TradingLoop:
             self.position_store.remove_position(oid)
 
         return closed_count
+
+    # ── Weekend-gap protection ───────────────────────────────────────────
+
+    def _check_weekend_protection(self, utc_now=None):
+        if not self.config.risk.weekend_protection_enabled:
+            return
+        utc_now = utc_now or datetime.now(timezone.utc)
+        mins = self.session_engine.minutes_to_fx_close(utc_now)
+        if mins > self.config.risk.weekend_close_buffer_minutes:
+            self._weekend_protected_oids.clear()
+            return
+        mode = self.config.risk.weekend_protection_mode
+        for oid, pos in list(self.managed_positions.items()):
+            if oid in self._weekend_protected_oids:
+                continue
+            if is_always_open(pos.symbol):
+                continue
+            self._weekend_protected_oids.add(oid)
+            try:
+                if mode == "flatten":
+                    result = self.platforms.close_trade(oid, pos.platform)
+                    if result.success:
+                        self._record_closed_trade(
+                            pos, result.close_price, "WEEKEND_FLATTEN", close_result=result,
+                        )
+                        del self.managed_positions[oid]
+                        self.position_store.remove_position(oid)
+                        logger.info("🌙 WEEKEND FLATTEN — {}", pos.symbol)
+                elif mode == "derisk":
+                    be_price = pos.entry_price
+                    is_buy = pos.direction == "BUY"
+                    already_at_be = (
+                        (is_buy and pos.sl >= be_price)
+                        or (not is_buy and pos.sl <= be_price)
+                    )
+                    if not already_at_be:
+                        self.platforms.modify_trade(oid, pos.platform, new_sl=be_price, new_tp=None)
+                        pos.sl = be_price
+                        pos.at_breakeven = True
+                        tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+                        if tm_trade:
+                            tm_trade.stop_loss = be_price
+                            tm_trade.breakeven_active = True
+                        self.position_store.update_position(oid, sl=be_price, at_breakeven=True)
+                        logger.info("🌙 WEEKEND DE-RISK (SL→BE) — {}", pos.symbol)
+            except Exception as exc:
+                logger.warning("Weekend protection failed for {}: {}", pos.symbol, exc)
+
+    # ── Scale-in / pyramiding ────────────────────────────────────────────
+
+    def _check_scale_in(self):
+        if not self.config.risk.scale_in_enabled:
+            return
+        for oid, pos in list(self.managed_positions.items()):
+            try:
+                ctx = build_context_for_symbol(pos.symbol)
+                if ctx.uses_stake:
+                    continue
+                tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+                if tm_trade is None:
+                    continue
+                if not tm_trade.partial_closed or not tm_trade.breakeven_active:
+                    continue
+                if pos.scale_in_count >= self.config.risk.scale_in_max_adds:
+                    continue
+                risk_distance = abs(tm_trade.entry_price - tm_trade.original_stop_loss)
+                if risk_distance < 1e-8:
+                    continue
+                is_long = self.trade_manager._is_long(tm_trade.direction)
+                if is_long:
+                    profit_r = (tm_trade.current_price - tm_trade.entry_price) / risk_distance
+                else:
+                    profit_r = (tm_trade.entry_price - tm_trade.current_price) / risk_distance
+                if profit_r < self.config.risk.scale_in_min_profit_r:
+                    continue
+                open_trades_list = [
+                    {"pair": p.symbol, "direction": p.direction}
+                    for p in self.managed_positions.values()
+                ]
+                if not self.correlation.can_open_trade(pos.symbol, pos.direction, open_trades_list):
+                    continue
+                if len(self.managed_positions) >= self.config.risk.max_open_trades:
+                    continue
+                if self.config.risk.margin_guardian_enabled:
+                    ml = self._get_margin_level()
+                    if ml is not None and ml < self.config.risk.margin_block_entry_pct:
+                        continue
+                add_lots = round(pos.lots * self.config.risk.scale_in_add_ratio, 2)
+                add_lots = max(0.01, add_lots)
+                order = self.platforms.execute_entry(
+                    pos.symbol,
+                    pos.direction,
+                    add_lots,
+                    tm_trade.stop_loss,
+                    tm_trade.tp2,
+                    comment=f"APEX|SCALEIN|{pos.score}",
+                )
+                if order.success:
+                    pos.scale_in_count += 1
+                    logger.info(
+                        "📈 SCALE-IN — {} {} | +{} lots (add #{})",
+                        pos.direction, pos.symbol, add_lots, pos.scale_in_count,
+                    )
+            except Exception as exc:
+                logger.warning("Scale-in check failed for {}: {}", pos.symbol, exc)
 
     # ── Logging & journal ────────────────────────────────────────────────
 
