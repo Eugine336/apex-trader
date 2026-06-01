@@ -32,16 +32,16 @@
     "XAGUSD": "frxXAGUSD"
   },
   "multipliers": {
-    "1HZ10V":    { "default": 400, "accepted": [40, 100, 200, 300, 400] },
-    "1HZ25V":    { "default": 400, "accepted": [40, 100, 200, 300, 400] },
-    "1HZ50V":    { "default": 400, "accepted": [40, 100, 200, 300, 400] },
-    "1HZ75V":    { "default": 400, "accepted": [40, 100, 200, 300, 400] },
-    "1HZ100V":   { "default": 400, "accepted": [40, 100, 200, 300, 400] },
-    "BOOM500":   { "default": 300, "accepted": [100, 150, 200, 300, 400] },
-    "BOOM1000":  { "default": 300, "accepted": [100, 150, 200, 300, 400] },
-    "BOOM300N":  { "default": 300, "accepted": [100, 150, 200, 300, 400] },
-    "CRASH500":  { "default": 300, "accepted": [100, 150, 200, 300, 400] },
-    "CRASH1000": { "default": 300, "accepted": [100, 150, 200, 300, 400] },
-    "CRASH300N": { "default": 300, "accepted": [100, 150, 200, 300, 400] }
+    "1HZ10V":    { "default": 100, "accepted": [40, 100, 200, 300, 400] },
+    "1HZ25V":    { "default": 100, "accepted": [40, 100, 200, 300, 400] },
+    "1HZ50V":    { "default": 200, "accepted": [80, 200, 400, 600, 800] },
+    "1HZ75V":    { "default": 200, "accepted": [40, 100, 200, 300, 400] },
+    "1HZ100V":   { "default": 100, "accepted": [40, 100, 200, 300, 400] },
+    "BOOM500":   { "default": 300, "accepted": [100, 200, 300, 400, 500] },
+    "BOOM1000":  { "default": 300, "accepted": [100, 200, 300, 400, 500] },
+    "BOOM300N":  { "default": 300, "accepted": [100, 200, 300, 400, 500] },
+    "CRASH500":  { "default": 300, "accepted": [100, 200, 300, 400, 500] },
+    "CRASH1000": { "default": 300, "accepted": [100, 200, 300, 400, 500] },
+    "CRASH300N": { "default": 300, "accepted": [100, 200, 300, 400, 500] }
   }
 }

@@ -55,7 +55,7 @@ class TestMultiplierDiscovery:
         c = self._make_connector()
         c._discovered_multipliers["1HZ50V"] = [80, 200, 400, 600, 800]
         result = c._get_multiplier("1HZ50V")
-        assert result == 800
+        assert result == 200
 
     def test_get_multiplier_falls_back_to_json_when_not_discovered(self):
         c = self._make_connector()

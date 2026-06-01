@@ -778,6 +778,7 @@ class TradingLoop:
             )
             return False
 
+        pre_exec_ts = datetime.now(timezone.utc)
         order = self.platforms.execute_entry(
             pair,
             direction,
@@ -798,10 +799,11 @@ class TradingLoop:
             self.execution_monitor.record_execution(
                 requested_price=signal.entry_price,
                 filled_price=order.fill_price,
-                signal_timestamp=now,
+                signal_timestamp=pre_exec_ts,
                 fill_timestamp=datetime.now(timezone.utc),
                 spread=spread,
                 requote=False,
+                pip_size=get_pip_size(pair),
             )
 
         if self.execution_monitor.should_alert():

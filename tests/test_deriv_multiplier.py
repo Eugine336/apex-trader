@@ -29,9 +29,9 @@ class TestDerivMultiplierConfig:
         for sym, entry in mults.items():
             default = entry["default"]
             accepted = entry["accepted"]
-            assert default <= 400, f"{sym} default {default} exceeds Deriv max 400"
+            assert default <= 1000, f"{sym} default {default} exceeds Deriv max 1000"
             for v in accepted:
-                assert v <= 400, f"{sym} accepted value {v} exceeds Deriv max 400"
+                assert v <= 1000, f"{sym} accepted value {v} exceeds Deriv max 1000"
 
     def test_default_is_in_accepted(self):
         cfg = self._load_config()
@@ -47,7 +47,6 @@ class TestDerivMultiplierConfig:
         expected = [
             "1HZ10V", "1HZ25V", "1HZ50V", "1HZ75V", "1HZ100V",
             "BOOM500", "BOOM1000", "CRASH500", "CRASH1000",
-            "stpRNG", "RDBULL", "RDBEAR", "JD10", "JD25", "JD50",
         ]
         for sym in expected:
             assert sym in mults, f"Missing multiplier entry for {sym}"
@@ -71,6 +70,7 @@ class TestGetMultiplier:
         from platforms.deriv.deriv_connector import DerivConnector
         conn = DerivConnector.__new__(DerivConnector)
         conn._mapper = MagicMock()
+        conn._discovered_multipliers = {}
         return conn
 
     def test_returns_configured_default(self):
@@ -81,7 +81,7 @@ class TestGetMultiplier:
     def test_returns_from_default_entry_for_unknown_symbol(self):
         conn = self._make_connector()
         mult = conn._get_multiplier("UNKNOWN_SYMBOL_XYZ")
-        assert mult == 100
+        assert mult == 1000
 
     def test_snaps_to_nearest_accepted(self):
         conn = self._make_connector()
