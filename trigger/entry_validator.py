@@ -16,6 +16,13 @@ from brain.correlation_engine import CorrelationEngine, OpenTrade
 from brain.session_engine import SessionEngine
 from trigger.entry_engine import EntrySignal
 
+_MT5_AVAILABLE = False
+try:
+    import MetaTrader5 as mt5  # type: ignore[import-untyped]
+    _MT5_AVAILABLE = True
+except ImportError:
+    mt5 = None
+
 
 @dataclass
 class ValidationResult:
@@ -37,6 +44,7 @@ class EntryValidator:
         config: Optional[AppConfig] = None,
         drawdown: Optional[DrawdownGuard] = None,
         correlation: Optional[CorrelationEngine] = None,
+        mt5_connector=None,
     ):
         self.config = config or AppConfig()
         self.drawdown = drawdown or DrawdownGuard()
@@ -45,6 +53,7 @@ class EntryValidator:
             max_correlated_trades=self.config.risk.max_correlated_trades,
         )
         self.session = SessionEngine()
+        self._mt5_connector = mt5_connector  # injected from platform_manager if available
 
     def validate(
         self,
@@ -52,11 +61,19 @@ class EntryValidator:
         current_spread_pips: float,
         open_trades: Optional[list] = None,
         utc_now: Optional[datetime] = None,
+        platform: str = "mt5",
     ) -> ValidationResult:
         utc_now = utc_now or datetime.now(timezone.utc)
         open_trades = open_trades or []
         passed: list[str] = []
         failed: list[str] = []
+
+        # ── Check 1: Market open (exchange hours) ─────────────────────
+        # Must be first — no point running any other check if the market
+        # is physically closed. Uses MT5 trade_mode for MT5 instruments;
+        # Deriv synthetics are always open so they skip this gate.
+        ok, msg = self.check_market_open(signal.pair, platform)
+        (passed if ok else failed).append(msg)
 
         ok, msg = self.check_spread(signal.pair, current_spread_pips)
         (passed if ok else failed).append(msg)
@@ -97,7 +114,64 @@ class EntryValidator:
     # Individual checks
     # ------------------------------------------------------------------
 
-    def check_spread(
+    def check_market_open(self, pair: str, platform: str = "mt5") -> tuple[bool, str]:
+        """
+        Asks MT5 directly whether this symbol is currently tradeable.
+        Uses symbol_info().trade_mode — no hardcoded hours, works for any
+        instrument including ones added in future.
+
+        Trade modes:
+            0 = SYMBOL_TRADE_MODE_DISABLED  — trading disabled
+            1 = SYMBOL_TRADE_MODE_LONGONLY  — buy only
+            2 = SYMBOL_TRADE_MODE_SHORTONLY — sell only
+            3 = SYMBOL_TRADE_MODE_CLOSEONLY — close only (session ending)
+            4 = SYMBOL_TRADE_MODE_FULL      — fully open
+
+        Deriv synthetics are always open — skip this check entirely for them.
+        If MT5 is unavailable (e.g. running tests), pass through gracefully.
+        """
+        # Deriv instruments never have exchange-hour restrictions
+        if platform == "deriv" or is_always_open(pair):
+            return True, "24/7 instrument — market always open"
+
+        if not _MT5_AVAILABLE or mt5 is None:
+            return True, "MT5 not available — market hours check skipped"
+
+        # Resolve broker symbol name via connector if injected, else use raw pair
+        mapped = pair
+        if self._mt5_connector is not None:
+            try:
+                mapped = self._mt5_connector.symbol_map(pair)
+            except Exception:
+                pass
+
+        try:
+            mt5.symbol_select(mapped, True)
+            info = mt5.symbol_info(mapped)
+            if info is None:
+                # Symbol not found — don't block, let broker reject it properly
+                logger.warning(f"[{pair}] symbol_info returned None — skipping market hours check")
+                return True, f"Market hours unknown for {pair} — proceeding"
+
+            mode = info.trade_mode
+
+            # SYMBOL_TRADE_MODE_FULL (4) = fully open
+            # SYMBOL_TRADE_MODE_LONGONLY (1) or SHORTONLY (2) = partially open
+            # SYMBOL_TRADE_MODE_CLOSEONLY (3) or DISABLED (0) = closed
+            if mode == 4:
+                return True, f"Market open (trade_mode=FULL)"
+            elif mode in (1, 2):
+                return True, f"Market partially open (trade_mode={mode})"
+            elif mode == 3:
+                return False, f"Market closing — close-only mode ({pair})"
+            else:
+                return False, f"Market closed — trading disabled ({pair}, trade_mode={mode})"
+
+        except Exception as exc:
+            logger.warning(f"[{pair}] Market hours check error: {exc} — proceeding")
+            return True, f"Market hours check failed ({exc}) — proceeding"
+
+
         self, pair: str, current_spread_pips: float,
     ) -> tuple[bool, str]:
         try:
