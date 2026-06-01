@@ -50,23 +50,31 @@ class TradesMixin(HelpersMixin):
             else:
                 pnl_pips = 0.0
 
-            pos_ctx = build_context_for_symbol(symbol)
-            lot_size = safe_float(getattr(pos, "lots", 0.0), 0.0)
-            if pos_ctx.uses_stake:
-                stake_usd = safe_float(getattr(pos, "stake_usd", 0.0), 0.0)
-                multiplier = safe_float(getattr(pos, "multiplier", 100), 100)
-                if entry_price > 0 and stake_usd > 0:
-                    price_move_pct = (current_price - entry_price) / entry_price
-                    if direction == "SHORT":
-                        price_move_pct = -price_move_pct
-                    pnl_dollars = stake_usd * price_move_pct * multiplier
-                else:
-                    pnl_dollars = 0.0
+            # Prefer broker-reported P&L (synced each cycle from the broker).
+            # This is the real dollar P&L the broker sees — not a local
+            # reconstruction from pip math and estimated pip values.
+            broker_pnl = safe_float(getattr(pos, "broker_pnl", 0.0), 0.0)
+            if broker_pnl != 0.0:
+                pnl_dollars = broker_pnl
             else:
+                pos_ctx = build_context_for_symbol(symbol)
                 lot_size = safe_float(getattr(pos, "lots", 0.0), 0.0)
-                pip_value = self._estimate_pip_value(symbol)
-                pnl_dollars = pnl_pips * pip_value * lot_size
+                if pos_ctx.uses_stake:
+                    stake_usd = safe_float(getattr(pos, "stake_usd", 0.0), 0.0)
+                    multiplier = safe_float(getattr(pos, "multiplier", 100), 100)
+                    if entry_price > 0 and stake_usd > 0:
+                        price_move_pct = (current_price - entry_price) / entry_price
+                        if direction == "SHORT":
+                            price_move_pct = -price_move_pct
+                        pnl_dollars = stake_usd * price_move_pct * multiplier
+                    else:
+                        pnl_dollars = 0.0
+                else:
+                    lot_size = safe_float(getattr(pos, "lots", 0.0), 0.0)
+                    pip_value = self._estimate_pip_value(symbol)
+                    pnl_dollars = pnl_pips * pip_value * lot_size
 
+            lot_size = safe_float(getattr(pos, "lots", 0.0), 0.0)
             trades.append(
                 {
                     "id": str(oid),
