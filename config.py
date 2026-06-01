@@ -252,6 +252,16 @@ class RiskConfig:
     margin_warn_pct: float = 200.0
     margin_block_entry_pct: float = 150.0
     margin_flatten_pct: float = 100.0
+    weekend_protection_enabled: bool = False
+    weekend_protection_mode: str = "derisk"
+    weekend_close_buffer_minutes: int = 15
+    tp3_ladder_enabled: bool = False
+    tp3_r_multiple: float = 4.0
+    tp3_close_ratio: float = 0.5
+    scale_in_enabled: bool = False
+    scale_in_max_adds: int = 1
+    scale_in_min_profit_r: float = 1.0
+    scale_in_add_ratio: float = 0.5
 
 
 # ---------------------------------------------------------------------------
