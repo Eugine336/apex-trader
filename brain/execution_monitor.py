@@ -49,8 +49,10 @@ class ExecutionMonitor:
         fill_timestamp: datetime,
         spread: float,
         requote: bool = False,
+        pip_size: float | None = None,
     ) -> None:
-        slippage_pips = abs(filled_price - requested_price) / self.pip_size
+        actual_pip = pip_size if pip_size and pip_size > 0 else self.pip_size
+        slippage_pips = abs(filled_price - requested_price) / actual_pip
         latency_ms = max(
             (fill_timestamp - signal_timestamp).total_seconds() * 1000.0, 0.0
         )

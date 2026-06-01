@@ -9,6 +9,7 @@ import json
 import threading
 import time as _time
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 import pandas as pd
@@ -364,10 +365,7 @@ class DerivConnector(BaseConnector):
             accepted = None
 
         try:
-            cfg_path = __file__.replace(
-                "platforms/deriv/deriv_connector.py",
-                "config/brokers/deriv.json"
-            )
+            cfg_path = Path(__file__).resolve().parent.parent.parent / "config" / "brokers" / "deriv.json"
             with open(cfg_path) as f:
                 cfg = json.load(f)
             mult_map = cfg.get("multipliers", {})
@@ -468,18 +466,15 @@ class DerivConnector(BaseConnector):
 
         # ── Auto-retry loop ────────────────────────────────────────────────
         # Deriv can reject for wrong multiplier or stake cap.
-        # limit_order SL/TP are dollar P&L proportional to stake; recomputing
-        # them after each reduction shifts Deriv's cap by the same delta,
-        # causing an infinite chase. Fix: compute limit_order ONCE from the
-        # original stake and keep it fixed across cap retries.
+        # SL/TP dollar values MUST be recomputed after every amount change so
+        # Deriv's cap (which scales with the SL dollar magnitude) converges.
         import re as _re
         import math as _math
 
-        MAX_RETRIES = 3
+        MAX_RETRIES = 5
+        _MIN_STAKE = 1.0
         sl_pct = abs(price - sl) / price if price > 0 else 0
         tp_pct = abs(tp - price) / price if price > 0 else 0
-        sl_dollar_fixed = round(sl_pct * amount * multiplier, 2)
-        tp_dollar_fixed = round(tp_pct * amount * multiplier, 2)
         err: Optional[str] = resp["error"].get("message", "Unknown error") if resp.get("error") else None
 
         for _attempt in range(MAX_RETRIES):
@@ -502,19 +497,23 @@ class DerivConnector(BaseConnector):
                         multiplier, mapped, corrected, valid,
                     )
                     if corrected > 0:
-                        amount = round(max(1.0, amount * multiplier / corrected), 2)
+                        amount = round(max(_MIN_STAKE, amount * multiplier / corrected), 2)
                     multiplier = corrected
-                    sl_dollar_fixed = round(sl_pct * amount * multiplier, 2)
-                    tp_dollar_fixed = round(tp_pct * amount * multiplier, 2)
                     changed = True
 
             # ── 2. Stake cap ───────────────────────────────────────────────
             _cap_match = _re.search(r"equal to or lower than ([\d]+(?:\.[\d]+)?)", err)
             if _cap_match:
                 max_stake = float(_cap_match.group(1))
-                capped = max(1.0, float(_math.floor(max_stake * 100)) / 100)
+                capped = max(_MIN_STAKE, float(_math.floor(max_stake * 100 - 1)) / 100)
                 if capped >= amount:
-                    capped = max(1.0, amount - 0.50)
+                    capped = max(_MIN_STAKE, amount - 0.50)
+                if capped < _MIN_STAKE:
+                    logger.warning(
+                        "Deriv cap ${:.2f} below minimum ${:.2f} — skipping {} {}",
+                        max_stake, _MIN_STAKE, direction, symbol,
+                    )
+                    break
                 if capped < amount:
                     logger.warning(
                         "Deriv stake capped — {} {} floored to ${:.2f} (broker cap ${:.2f})",
@@ -526,7 +525,11 @@ class DerivConnector(BaseConnector):
             if not changed:
                 break
 
-            # ── 3. Retry — limit_order stays FIXED to prevent cap sliding ──
+            # Recompute SL/TP dollar values from current amount so the cap
+            # does not slide due to a stale, oversized stop_loss value.
+            sl_dollar = round(sl_pct * amount * multiplier, 2)
+            tp_dollar = round(tp_pct * amount * multiplier, 2)
+
             resp = self._sync_send({
                 "buy": 1,
                 "subscribe": 1,
@@ -539,8 +542,8 @@ class DerivConnector(BaseConnector):
                     "basis": "stake",
                     "multiplier": multiplier,
                     "limit_order": {
-                        "stop_loss": sl_dollar_fixed,
-                        "take_profit": tp_dollar_fixed,
+                        "stop_loss": sl_dollar,
+                        "take_profit": tp_dollar,
                     },
                 },
             })
