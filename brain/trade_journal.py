@@ -21,7 +21,7 @@ class TradeRecord:
     direction: str
     entry: float
     exit: float
-    pnl: float
+    pnl: float  # pips
     score: int
     confluences: list[Any]
     regime: str
@@ -32,6 +32,7 @@ class TradeRecord:
     time_to_tp1: Optional[float]
     time_to_exit: Optional[float]
     outcome: str
+    pnl_dollars: float = 0.0
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -99,6 +100,11 @@ class TradeJournal:
                     """
                 )
                 await db.commit()
+                try:
+                    await db.execute("ALTER TABLE trades ADD COLUMN pnl_dollars REAL DEFAULT 0.0")
+                    await db.commit()
+                except Exception:
+                    pass
             self._initialized = True
 
     async def log_trade(self, trade: TradeRecord) -> None:
@@ -109,8 +115,8 @@ class TradeJournal:
                 INSERT INTO trades (
                     pair, direction, entry, exit, pnl, score, confluences, regime,
                     session, spread, slippage, entry_type, time_to_tp1, time_to_exit,
-                    outcome, timestamp
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    outcome, pnl_dollars, timestamp
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     trade.pair,
@@ -128,6 +134,7 @@ class TradeJournal:
                     trade.time_to_tp1,
                     trade.time_to_exit,
                     trade.outcome,
+                    trade.pnl_dollars,
                     trade.timestamp.isoformat(),
                 ),
             )
@@ -182,7 +189,7 @@ class TradeJournal:
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 """
-                SELECT pair, session, pnl, time_to_exit, outcome
+                SELECT pair, session, pnl, time_to_exit, outcome, pnl_dollars
                 FROM trades
                 WHERE outcome != 'LEGACY'
                 ORDER BY timestamp ASC
@@ -202,17 +209,15 @@ class TradeJournal:
                 "avg_hold_time": 0.0,
             }
 
-        pnls = [float(row[2]) for row in rows]
-        wins = [p for p in pnls if p > 0]
-        losses = [p for p in pnls if p < 0]
-        win_rate = (len(wins) / len(pnls)) * 100
-        avg_rr = float(np.mean(pnls))
+        pnl_dollars = [float(row[5]) if row[5] is not None else float(row[2]) for row in rows]
+        wins = [p for p in pnl_dollars if p > 0]
+        losses = [p for p in pnl_dollars if p < 0]
+        win_rate = (len(wins) / len(pnl_dollars)) * 100
+        avg_rr = float(np.mean(pnl_dollars))
         profit_factor = sum(wins) / abs(sum(losses)) if losses else float("inf")
-        sharpe_ratio = self._sharpe_ratio(pnls)
-        max_drawdown = self._max_drawdown(pnls)
-        avg_hold_time = (
-            float(np.mean([r[3] for r in rows if r[3] is not None])) if rows else 0.0
-        )
+        sharpe_ratio = self._sharpe_ratio(pnl_dollars)
+        max_drawdown = self._max_drawdown(pnl_dollars)
+        avg_hold_time = float(np.mean([r[3] for r in rows if r[3] is not None])) if rows else 0.0
 
         best_pair = self._best_dimension(rows, dimension="pair")
         best_session = self._best_dimension(rows, dimension="session")
@@ -220,9 +225,7 @@ class TradeJournal:
         return {
             "win_rate": round(win_rate, 2),
             "avg_rr": round(avg_rr, 4),
-            "profit_factor": round(profit_factor, 4)
-            if np.isfinite(profit_factor)
-            else float("inf"),
+            "profit_factor": round(profit_factor, 4) if np.isfinite(profit_factor) else float("inf"),
             "sharpe_ratio": round(sharpe_ratio, 4),
             "max_drawdown": round(max_drawdown, 4),
             "best_pair": best_pair,
@@ -253,6 +256,7 @@ class TradeJournal:
                 "entry_type": r[8],
                 "time_to_exit": r[9],
                 "outcome": r[10],
+                "pnl_dollars": r[11] if r[11] is not None else 0.0,
             }
             for r in rows
         ]
@@ -290,7 +294,5 @@ class TradeJournal:
             grouped.setdefault(row[idx], []).append(float(row[2]))
         if not grouped:
             return None
-        ranked = sorted(
-            grouped.items(), key=lambda item: np.mean(item[1]), reverse=True
-        )
+        ranked = sorted(grouped.items(), key=lambda item: np.mean(item[1]), reverse=True)
         return ranked[0][0]
