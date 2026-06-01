@@ -174,6 +174,11 @@ class BaseConnector(ABC):
     def get_tick(self, symbol: str) -> TickData:
         """Latest tick data (bid, ask, time)."""
 
+    def get_realized_pnl(self, order_id: str) -> Optional[float]:
+        """Return broker-reported realized P&L for a closed ticket.
+        Returns None when unavailable (Deriv, unsupported)."""
+        return None
+
     # ── Concrete helpers (shared by all connectors) ──────────────────────
 
     def symbol_map(self, apex_symbol: str) -> str:
