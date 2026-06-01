@@ -90,6 +90,9 @@ class ManagedTrade:
     confluences: list[str] = field(default_factory=list)
     entry_zone: str = ""
     entry_timeframe: str = "M5"
+    tp3: Optional[float] = None
+    original_tp3: Optional[float] = None
+    tp3_hit: bool = False
 
 
 class TradeManager:
@@ -111,12 +114,18 @@ class TradeManager:
         breakeven_buffer_pips: float = 2.0,
         default_pip_value: float = 10.0,
         tp_adjust_enabled: bool = False,
+        tp3_ladder_enabled: bool = False,
+        tp3_r_multiple: float = 4.0,
+        tp3_close_ratio: float = 0.5,
     ):
         self.max_stall_candles = max_stall_candles
         self.partial_close_ratio = partial_close_ratio
         self.breakeven_buffer_pips = breakeven_buffer_pips
         self.default_pip_value = default_pip_value
         self.tp_adjust_enabled = tp_adjust_enabled
+        self.tp3_ladder_enabled = tp3_ladder_enabled
+        self.tp3_r_multiple = tp3_r_multiple
+        self.tp3_close_ratio = tp3_close_ratio
         self.trailing = StructureTrailingStop()
         self.partial_calc = PartialCloseCalculator()
         self._trades: dict[str, ManagedTrade] = {}
@@ -173,6 +182,22 @@ class TradeManager:
             entry_zone=signal.entry_zone,
             entry_timeframe=getattr(signal, "entry_timeframe", "M5"),
         )
+
+        if self.tp3_ladder_enabled:
+            risk_distance = abs(signal.entry_price - signal.stop_loss)
+            is_long = self._is_long(signal.direction)
+            candidate = (
+                signal.entry_price + self.tp3_r_multiple * risk_distance
+                if is_long
+                else signal.entry_price - self.tp3_r_multiple * risk_distance
+            )
+            beyond_tp2 = (
+                (candidate > signal.tp2) if is_long else (candidate < signal.tp2)
+            )
+            if beyond_tp2:
+                trade.tp3 = candidate
+                trade.original_tp3 = candidate
+
         self._trades[trade_id] = trade
         logger.info(
             f"TRADE OPENED: {signal.pair} {signal.direction} @ {signal.entry_price}, "
@@ -210,6 +235,8 @@ class TradeManager:
             self._update_trailing(trade, current_df_m5)
         if self.tp_adjust_enabled and trade.partial_closed and current_df_m5 is not None:
             self._adjust_tp2(trade, current_df_m5)
+        if self._check_tp3(trade):
+            pass
         if self._check_tp2(trade):
             return trade
         if current_df_m5 is not None and self._check_structure_exit(trade, current_df_m5):
@@ -357,6 +384,29 @@ class TradeManager:
             logger.info(
                 f"TRAILING: {trade.pair} — SL moved to {new_sl} (structure-based)"
             )
+
+    def _check_tp3(self, trade: ManagedTrade) -> bool:
+        if not self.tp3_ladder_enabled:
+            return False
+        if trade.tp3 is None or trade.tp3_hit or not trade.partial_closed:
+            return False
+        is_long = self._is_long(trade.direction)
+        hit = (
+            (is_long and trade.current_price >= trade.tp3)
+            or (not is_long and trade.current_price <= trade.tp3)
+        )
+        if hit:
+            tp3_lots = round(trade.remaining_size_lots * self.tp3_close_ratio, 2)
+            tp3_lots = max(0.01, tp3_lots)
+            remainder = round(trade.remaining_size_lots - tp3_lots, 2)
+            remainder = max(0.0, remainder)
+            trade.remaining_size_lots = remainder
+            trade.tp3_hit = True
+            logger.info(
+                "TP3 HIT: {} — closed {:.0%} of runner ({} lots) at {:.5f}",
+                trade.pair, self.tp3_close_ratio, tp3_lots, trade.tp3,
+            )
+        return hit
 
     def _check_tp2(self, trade: ManagedTrade) -> bool:
         is_long = self._is_long(trade.direction)
