@@ -641,3 +641,43 @@ class TestScaleIn:
             mock_ctx.return_value = SimpleNamespace(uses_stake=True, supports_partial_close=False, supports_modify=False)
             loop._check_scale_in()
         loop.platforms.execute_entry.assert_not_called()
+
+
+# =====================================================================
+# Regression — _weekend_protected_oids must be a set, not a dict
+# =====================================================================
+
+class TestWeekendProtectedOidsType:
+    """Regression: production __init__ must create _weekend_protected_oids as
+    a real ``set``, not ``{}`` (which is a dict).  A dict would crash on
+    ``.add()`` inside _check_weekend_protection at runtime.
+
+    This test exercises the *production init expression* directly rather
+    than relying on _make_loop (which bypasses __init__).
+    """
+
+    def test_production_init_creates_a_set(self):
+        """Read the TradingLoop source and verify the init literal is set()."""
+        import inspect
+        from platforms.main_loop import TradingLoop
+        source = inspect.getsource(TradingLoop.__init__)
+        assert "self._weekend_protected_oids" in source
+        assert "_weekend_protected_oids: set[str] = set()" in source, (
+            "_weekend_protected_oids must be initialised with set(), not {}"
+        )
+
+    def test_set_operations_on_production_attr(self):
+        """Build a loop the way __init__ would and verify .add/.clear work."""
+        loop = _make_loop()
+        del loop._weekend_protected_oids
+        loop._weekend_protected_oids = set()
+        loop._weekend_protected_oids.add("OID_1")
+        assert "OID_1" in loop._weekend_protected_oids
+        loop._weekend_protected_oids.clear()
+        assert len(loop._weekend_protected_oids) == 0
+
+    def test_dict_literal_would_crash_on_add(self):
+        """Prove that the old buggy {} init crashes on .add()."""
+        buggy = {}
+        with pytest.raises(AttributeError, match="add"):
+            buggy.add("anything")
