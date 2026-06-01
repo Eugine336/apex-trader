@@ -244,6 +244,11 @@ class RiskConfig:
     # The validator uses: max_allowed = typical_spread * max_spread_multiplier
     max_spread_multiplier: float = 3.0
     ev_threshold: float = -0.1
+    max_cluster_same_direction: int = 2
+    margin_guardian_enabled: bool = False
+    margin_warn_pct: float = 200.0
+    margin_block_entry_pct: float = 150.0
+    margin_flatten_pct: float = 100.0
 
 
 # ---------------------------------------------------------------------------
