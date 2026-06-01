@@ -467,23 +467,24 @@ class DerivConnector(BaseConnector):
         latency = (_time.monotonic() - t0) * 1000
 
         # ── Auto-retry loop ────────────────────────────────────────────────
-        # Deriv can reject an order for two independent reasons that interact:
-        #   1. Wrong multiplier  → fix multiplier, rescale stake to preserve risk
-        #   2. Stake cap         → floor stake to Deriv's cap for this symbol/price
-        #
-        # The old nested-if approach fired cap-check BEFORE multiplier-check, so
-        # when both were wrong it chased a moving cap at the wrong multiplier.
-        # This loop handles them in the correct order (multiplier first) and re-runs
-        # up to MAX_RETRIES times so a cap that shifts between requests is caught.
+        # Deriv can reject for wrong multiplier or stake cap.
+        # limit_order SL/TP are dollar P&L proportional to stake; recomputing
+        # them after each reduction shifts Deriv's cap by the same delta,
+        # causing an infinite chase. Fix: compute limit_order ONCE from the
+        # original stake and keep it fixed across cap retries.
         import re as _re
         import math as _math
 
-        MAX_RETRIES = 4
+        MAX_RETRIES = 3
+        sl_pct = abs(price - sl) / price if price > 0 else 0
+        tp_pct = abs(tp - price) / price if price > 0 else 0
+        sl_dollar_fixed = round(sl_pct * amount * multiplier, 2)
+        tp_dollar_fixed = round(tp_pct * amount * multiplier, 2)
         err: Optional[str] = resp["error"].get("message", "Unknown error") if resp.get("error") else None
 
         for _attempt in range(MAX_RETRIES):
             if err is None:
-                break  # success
+                break
 
             changed = False
 
@@ -502,41 +503,30 @@ class DerivConnector(BaseConnector):
                     )
                     if corrected > 0:
                         amount = round(max(1.0, amount * multiplier / corrected), 2)
-                        logger.debug(
-                            "Deriv stake rescaled for {}\u00d7 \u2192 {}\u00d7: ${:.2f}",
-                            multiplier, corrected, amount,
-                        )
                     multiplier = corrected
+                    sl_dollar_fixed = round(sl_pct * amount * multiplier, 2)
+                    tp_dollar_fixed = round(tp_pct * amount * multiplier, 2)
                     changed = True
 
-            # ── 2. Stake cap — applied in SAME iteration as multiplier fix ─
-            # After multiplier rescale the amount may still exceed Deriv cap.
-            # Floor 1 cent below cap so we are cleanly under it.
+            # ── 2. Stake cap ───────────────────────────────────────────────
             _cap_match = _re.search(r"equal to or lower than ([\d]+(?:\.[\d]+)?)", err)
             if _cap_match:
                 max_stake = float(_cap_match.group(1))
-                capped = max(1.0, float(_math.floor(max_stake * 100 - 1)) / 100)
+                capped = max(1.0, float(_math.floor(max_stake * 100)) / 100)
+                if capped >= amount:
+                    capped = max(1.0, amount - 0.50)
                 if capped < amount:
                     logger.warning(
-                        "Deriv stake capped — retrying {} {} with ${:.2f} (cap ${:.2f}), attempt {}/{}",
-                        direction, symbol, capped, max_stake, _attempt + 1, MAX_RETRIES,
+                        "Deriv stake capped — {} {} floored to ${:.2f} (broker cap ${:.2f})",
+                        direction, symbol, capped, max_stake,
                     )
                     amount = capped
                     changed = True
 
             if not changed:
-                break  # unrecognised error — retrying won't help
+                break
 
-            # ── 3. Retry with updated multiplier + amount ──────────────────
-            # IMPORTANT: limit_order SL/TP are expressed in absolute dollar P&L,
-            # NOT as a price level. The formula is:
-            #   stop_loss_$ = (|price - sl| / price) × stake × multiplier
-            # When `amount` changes the SL dollar value changes too, which shifts
-            # Deriv's stake cap threshold — causing the cap to slide on each retry.
-            # Fix: always compute limit_order from the CURRENT amount so the
-            # SL dollar value is consistent with the stake being sent.
-            sl_dollar  = round(abs(price - sl) / price * amount * multiplier, 2)
-            tp_dollar  = round(abs(tp - price) / price * amount * multiplier, 2)
+            # ── 3. Retry — limit_order stays FIXED to prevent cap sliding ──
             resp = self._sync_send({
                 "buy": 1,
                 "subscribe": 1,
@@ -549,12 +539,13 @@ class DerivConnector(BaseConnector):
                     "basis": "stake",
                     "multiplier": multiplier,
                     "limit_order": {
-                        "stop_loss": sl_dollar,
-                        "take_profit": tp_dollar,
+                        "stop_loss": sl_dollar_fixed,
+                        "take_profit": tp_dollar_fixed,
                     },
                 },
             })
             err = resp["error"].get("message", "Unknown error") if resp.get("error") else None
+
 
         if err:
             logger.error("Deriv order failed — {} {} {}: {}", direction, mapped, lots, err)

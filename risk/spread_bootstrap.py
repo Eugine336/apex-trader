@@ -85,15 +85,20 @@ def _sample_spread(connector, symbol: str, retries: int) -> float | None:
     """
     Try up to `retries` times to get a clean spread reading.
     Returns the median of successful samples, or None on total failure.
+    Bails immediately on 'not found' errors to avoid log spam.
     """
     samples: list[float] = []
-    for _ in range(retries):
+    for attempt in range(retries):
         try:
             tick = connector.get_tick(symbol)
             if tick and tick.spread > 0:
                 samples.append(tick.spread)
-            # spread=0.0 means bid==ask (ticks_history mid-only) — not a real spread
         except Exception as exc:
+            msg = str(exc).lower()
+            if "not found" in msg or "terminal:" in msg or "invalid" in msg:
+                if attempt == 0:
+                    logger.debug("Spread sample failed for {}: {}", symbol, exc)
+                return None
             logger.debug("Spread sample failed for {}: {}", symbol, exc)
 
     if not samples:
