@@ -5,6 +5,7 @@ Survival precedes growth — every open position is written to disk.
 """
 
 import sqlite3
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -43,16 +44,19 @@ CREATE TABLE IF NOT EXISTS managed_positions (
 
 
 class PositionStore:
-    """Synchronous SQLite store for managed positions."""
+    """Thread-safe SQLite store for managed positions."""
 
     def __init__(self, db_path: Optional[str] = None):
         self._db_path = Path(db_path) if db_path else _DB_PATH
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None
+        self._lock = threading.Lock()
         self._connect()
 
     def _connect(self) -> None:
-        self._conn = sqlite3.connect(str(self._db_path), timeout=10)
+        self._conn = sqlite3.connect(
+            str(self._db_path), timeout=10, check_same_thread=False,
+        )
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute(_CREATE_TABLE)
@@ -61,43 +65,44 @@ class PositionStore:
 
     def save_position(self, pos) -> None:
         """Persist a ManagedPosition to disk."""
-        try:
-            self._conn.execute(
-                """
-                INSERT OR REPLACE INTO managed_positions
-                (order_id, platform, symbol, direction, lots, entry_price,
-                 sl, tp1, tp2, score, regime, session, entry_type,
-                 open_time, tp1_hit, at_breakeven, trailing,
-                 tm_trade_id, stake_usd, multiplier, last_update)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    str(pos.order_id),
-                    pos.platform,
-                    pos.symbol,
-                    pos.direction,
-                    pos.lots,
-                    pos.entry_price,
-                    pos.sl,
-                    pos.tp1,
-                    pos.tp2,
-                    pos.score,
-                    pos.regime,
-                    pos.session,
-                    pos.entry_type,
-                    pos.open_time.isoformat(),
-                    int(pos.tp1_hit),
-                    int(pos.at_breakeven),
-                    int(pos.trailing),
-                    pos.tm_trade_id,
-                    pos.stake_usd,
-                    getattr(pos, "multiplier", 100),
-                    datetime.now(timezone.utc).isoformat(),
-                ),
-            )
-            self._conn.commit()
-        except Exception as exc:
-            logger.error("PositionStore save failed for {}: {}", pos.order_id, exc)
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """
+                    INSERT OR REPLACE INTO managed_positions
+                    (order_id, platform, symbol, direction, lots, entry_price,
+                     sl, tp1, tp2, score, regime, session, entry_type,
+                     open_time, tp1_hit, at_breakeven, trailing,
+                     tm_trade_id, stake_usd, multiplier, last_update)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        str(pos.order_id),
+                        pos.platform,
+                        pos.symbol,
+                        pos.direction,
+                        pos.lots,
+                        pos.entry_price,
+                        pos.sl,
+                        pos.tp1,
+                        pos.tp2,
+                        pos.score,
+                        pos.regime,
+                        pos.session,
+                        pos.entry_type,
+                        pos.open_time.isoformat(),
+                        int(pos.tp1_hit),
+                        int(pos.at_breakeven),
+                        int(pos.trailing),
+                        pos.tm_trade_id,
+                        pos.stake_usd,
+                        getattr(pos, "multiplier", 100),
+                        datetime.now(timezone.utc).isoformat(),
+                    ),
+                )
+                self._conn.commit()
+            except Exception as exc:
+                logger.error("PositionStore save failed for {}: {}", pos.order_id, exc)
 
     def update_position(self, order_id: str, **fields) -> None:
         """Update specific fields on a persisted position."""
@@ -120,59 +125,68 @@ class PositionStore:
         updates["last_update"] = datetime.now(timezone.utc).isoformat()
         set_clause = ", ".join(f"{k} = ?" for k in updates)
         values = list(updates.values()) + [str(order_id)]
-        try:
-            self._conn.execute(
-                f"UPDATE managed_positions SET {set_clause} WHERE order_id = ?",
-                values,
-            )
-            self._conn.commit()
-        except Exception as exc:
-            logger.error("PositionStore update failed for {}: {}", order_id, exc)
+        with self._lock:
+            try:
+                self._conn.execute(
+                    f"UPDATE managed_positions SET {set_clause} WHERE order_id = ?",
+                    values,
+                )
+                self._conn.commit()
+            except Exception as exc:
+                logger.error("PositionStore update failed for {}: {}", order_id, exc)
 
     def remove_position(self, order_id: str) -> None:
         """Remove a closed position from persistence."""
-        try:
-            self._conn.execute(
-                "DELETE FROM managed_positions WHERE order_id = ?",
-                (str(order_id),),
-            )
-            self._conn.commit()
-        except Exception as exc:
-            logger.error("PositionStore remove failed for {}: {}", order_id, exc)
+        with self._lock:
+            try:
+                self._conn.execute(
+                    "DELETE FROM managed_positions WHERE order_id = ?",
+                    (str(order_id),),
+                )
+                self._conn.commit()
+            except Exception as exc:
+                logger.error("PositionStore remove failed for {}: {}", order_id, exc)
 
     def load_all_positions(self) -> list[dict]:
         """Load all persisted positions as dicts for reconstruction."""
-        try:
-            cursor = self._conn.execute(
-                "SELECT * FROM managed_positions"
-            )
-            columns = [desc[0] for desc in cursor.description]
-            rows = cursor.fetchall()
-            return [dict(zip(columns, row)) for row in rows]
-        except Exception as exc:
-            logger.error("PositionStore load failed: {}", exc)
-            return []
+        with self._lock:
+            try:
+                cursor = self._conn.execute(
+                    "SELECT * FROM managed_positions"
+                )
+                columns = [desc[0] for desc in cursor.description]
+                rows = cursor.fetchall()
+                return [dict(zip(columns, row)) for row in rows]
+            except Exception as exc:
+                logger.error("PositionStore load failed: {}", exc)
+                return []
 
     def count(self) -> int:
-        try:
-            cursor = self._conn.execute(
-                "SELECT COUNT(*) FROM managed_positions"
-            )
-            return cursor.fetchone()[0]
-        except Exception:
-            return 0
+        with self._lock:
+            try:
+                cursor = self._conn.execute(
+                    "SELECT COUNT(*) FROM managed_positions"
+                )
+                return cursor.fetchone()[0]
+            except Exception:
+                return 0
 
     def flush(self) -> None:
         """Force WAL checkpoint — call before shutdown."""
-        try:
-            if self._conn:
-                self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        except Exception:
-            pass
+        with self._lock:
+            try:
+                if self._conn:
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
 
     def close(self) -> None:
         """Close the database connection."""
-        if self._conn:
-            self.flush()
-            self._conn.close()
-            self._conn = None
+        with self._lock:
+            if self._conn:
+                try:
+                    self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                except Exception:
+                    pass
+                self._conn.close()
+                self._conn = None
