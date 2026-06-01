@@ -15,6 +15,7 @@ from config import INSTRUMENT_REGISTRY, get_instrument, get_pip_size
 
 # ── Pure helpers (no self) ──────────────────────────────────────────────
 
+
 def value(obj: Any, *keys: str, default: Any = None) -> Any:
     for key in keys:
         if isinstance(obj, dict) and key in obj:
@@ -73,12 +74,18 @@ def build_stage(pos: Any) -> str:
 
 def base_factor_set() -> dict[str, int]:
     return {
-        "structure": 0, "fvg": 0, "ob": 0, "liquidity": 0,
-        "sweep": 0, "session": 0, "strength": 0,
+        "structure": 0,
+        "fvg": 0,
+        "ob": 0,
+        "liquidity": 0,
+        "sweep": 0,
+        "session": 0,
+        "strength": 0,
     }
 
 
 # ── HelpersMixin (instance methods that need self._*) ──────────────────
+
 
 class HelpersMixin:
     """Methods shared across all dashboard state sub-modules."""
@@ -108,9 +115,7 @@ class HelpersMixin:
                 thread_loop = asyncio.new_event_loop()
                 asyncio.set_event_loop(thread_loop)
                 try:
-                    return thread_loop.run_until_complete(
-                        journal.get_all_trades_as_dicts()
-                    )
+                    return thread_loop.run_until_complete(journal.get_all_trades_as_dicts())
                 finally:
                     thread_loop.close()
 
@@ -162,13 +167,18 @@ class HelpersMixin:
             entry_price = safe_float(record.get("entry", record.get("entry_price", 0.0)))
             exit_price = safe_float(record.get("exit", record.get("exit_price", entry_price)))
 
-            pnl_raw = safe_float(record.get("pnl", 0.0))
-            pnl_dollars = pnl_raw
+            pnl_dollars_raw = record.get("pnl_dollars")
+            if pnl_dollars_raw is not None and pnl_dollars_raw != 0.0:
+                pnl_dollars = safe_float(pnl_dollars_raw, 0.0)
+            else:
+                pnl_dollars = safe_float(record.get("pnl", 0.0))
+
+            pnl_pips_raw = safe_float(record.get("pnl", 0.0))
 
             pip_size = safe_float(get_pip_size(symbol), 0.0001) or 0.0001
             sl_distance = abs(exit_price - entry_price)
-            pnl_pips = sl_distance / pip_size if sl_distance > 0 else 0.0
-            if pnl_raw < 0:
+            pnl_pips = pnl_pips_raw if pnl_pips_raw != 0.0 else (sl_distance / pip_size if sl_distance > 0 else 0.0)
+            if pnl_dollars < 0 and pnl_pips > 0:
                 pnl_pips = -pnl_pips
 
             time_to_exit = safe_float(record.get("time_to_exit"), 0.0)
@@ -176,24 +186,26 @@ class HelpersMixin:
 
             outcome = str(record.get("outcome", "")).upper()
             if outcome not in {"WIN", "LOSS"}:
-                outcome = "WIN" if pnl_raw >= 0 else "LOSS"
+                outcome = "WIN" if pnl_dollars >= 0 else "LOSS"
 
             ts = record.get("timestamp", datetime.now(timezone.utc).isoformat())
             opened_at = str(ts) if ts else datetime.now(timezone.utc).isoformat()
 
-            rows.append({
-                "id": str(record.get("id", f"hist_{i}")),
-                "instrument": symbol,
-                "direction": direction,
-                "entry_price": entry_price,
-                "exit_price": exit_price,
-                "pnl_pips": round(pnl_pips, 1),
-                "pnl_dollars": round(pnl_dollars, 2),
-                "duration_minutes": round(duration_minutes, 1),
-                "score": int(round(safe_float(record.get("score", 0)))),
-                "outcome": outcome,
-                "opened_at": opened_at,
-            })
+            rows.append(
+                {
+                    "id": str(record.get("id", f"hist_{i}")),
+                    "instrument": symbol,
+                    "direction": direction,
+                    "entry_price": entry_price,
+                    "exit_price": exit_price,
+                    "pnl_pips": round(pnl_pips, 1),
+                    "pnl_dollars": round(pnl_dollars, 2),
+                    "duration_minutes": round(duration_minutes, 1),
+                    "score": int(round(safe_float(record.get("score", 0)))),
+                    "outcome": outcome,
+                    "opened_at": opened_at,
+                }
+            )
 
         return rows
 
