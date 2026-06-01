@@ -67,6 +67,7 @@ class ManagedTrade:
     original_stop_loss: float
     tp1: float
     tp2: float
+    original_tp2: float
     position_size_lots: float
     remaining_size_lots: float
     status: TradeStatus
@@ -109,11 +110,13 @@ class TradeManager:
         partial_close_ratio: float = 0.5,
         breakeven_buffer_pips: float = 2.0,
         default_pip_value: float = 10.0,
+        tp_adjust_enabled: bool = False,
     ):
         self.max_stall_candles = max_stall_candles
         self.partial_close_ratio = partial_close_ratio
         self.breakeven_buffer_pips = breakeven_buffer_pips
         self.default_pip_value = default_pip_value
+        self.tp_adjust_enabled = tp_adjust_enabled
         self.trailing = StructureTrailingStop()
         self.partial_calc = PartialCloseCalculator()
         self._trades: dict[str, ManagedTrade] = {}
@@ -146,6 +149,7 @@ class TradeManager:
             original_stop_loss=signal.stop_loss,
             tp1=signal.tp1,
             tp2=signal.tp2,
+            original_tp2=signal.tp2,
             position_size_lots=signal.position_size_lots,
             remaining_size_lots=signal.position_size_lots,
             status=TradeStatus.OPEN,
@@ -204,6 +208,8 @@ class TradeManager:
             self._activate_breakeven(trade)
         if trade.breakeven_active and current_df_m5 is not None:
             self._update_trailing(trade, current_df_m5)
+        if self.tp_adjust_enabled and trade.partial_closed and current_df_m5 is not None:
+            self._adjust_tp2(trade, current_df_m5)
         if self._check_tp2(trade):
             return trade
         if current_df_m5 is not None and self._check_structure_exit(trade, current_df_m5):
@@ -394,7 +400,37 @@ class TradeManager:
             return True
         return False
 
-    def _check_stall(self, trade: ManagedTrade) -> bool:
+    def _adjust_tp2(
+        self, trade: ManagedTrade, df_m5: pd.DataFrame,
+    ) -> None:
+        """Extend or tighten TP2 based on M5 structure when trailing is active."""
+        if len(df_m5) < 10:
+            return
+        is_long = self._is_long(trade.direction)
+        struct = StructureEngine(swing_lookback=3)
+        analysis = struct.analyze(df_m5)
+        continuation_events = (StructureEvent.BOS_BULLISH,) if is_long else (StructureEvent.BOS_BEARISH,)
+        counter_events = (StructureEvent.CHOCH_BEARISH,) if is_long else (StructureEvent.CHOCH_BULLISH,)
+        if analysis.last_event in continuation_events:
+            risk_distance = abs(trade.entry_price - trade.original_stop_loss)
+            new_tp2 = trade.tp2 + risk_distance if is_long else trade.tp2 - risk_distance
+            if (is_long and new_tp2 > trade.tp2) or (not is_long and new_tp2 < trade.tp2):
+                trade.tp2 = new_tp2
+                logger.info(
+                    "TP2 EXTENDED: {} — new TP2 {:.5f} (continuation BOS)",
+                    trade.pair, new_tp2,
+                )
+        elif analysis.last_event in counter_events and trade.partial_closed:
+            halfway = (trade.entry_price + trade.tp2) / 2
+            if is_long and trade.current_price > halfway:
+                trade.tp2 = trade.current_price + (trade.current_price - trade.entry_price) * 0.3
+            elif not is_long and trade.current_price < halfway:
+                trade.tp2 = trade.current_price - (trade.entry_price - trade.current_price) * 0.3
+            logger.info(
+                "TP2 TIGHTENED: {} — new TP2 {:.5f} (counter structure)",
+                trade.pair, trade.tp2,
+            )
+
         """Time-based stall exit — scales with entry timeframe."""
         if trade.partial_closed:
             return False

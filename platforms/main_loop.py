@@ -160,6 +160,7 @@ class TradingLoop:
         self.trade_manager = TradeManager(
             partial_close_ratio=0.5,
             breakeven_buffer_pips=2.0,
+            tp_adjust_enabled=self.config.risk.tp_adjust_enabled,
         )
         self._journal_loop = asyncio.new_event_loop()
         self.position_store = PositionStore()
@@ -176,6 +177,7 @@ class TradingLoop:
         self._MAX_WARNINGS = 200
 
         self.managed_positions: dict[str, ManagedPosition] = {}
+        self._pending_orders: dict[str, dict] = {}
         self.running = False
         self._last_scan_time: Optional[datetime] = None
         self._daily_trades = 0
@@ -247,6 +249,7 @@ class TradingLoop:
         can_trade, reason = self.drawdown.can_trade(now)
         if not can_trade:
             logger.debug("Trading paused: {}", reason)
+            self._check_pending_orders()
             self._update_positions()
             return cycle
 
@@ -277,6 +280,7 @@ class TradingLoop:
                 )
 
         try:
+            self._check_pending_orders()
             closed_count = self._update_positions()
             self.watchdog.record_trade_check_success()
         except Exception as exc:
@@ -792,6 +796,60 @@ class TradingLoop:
             return False
 
         pre_exec_ts = datetime.now(timezone.utc)
+
+        use_pending = False
+        if self.config.risk.pending_orders_enabled and not ctx.uses_stake:
+            try:
+                tick = self.platforms.get_price(pair)
+                current = tick.ask if direction == "LONG" else tick.bid
+                pip_size = get_pip_size(pair)
+                distance_pips = abs(current - signal.entry_price) / pip_size
+                if distance_pips > 3.0:
+                    is_buy = direction == "LONG"
+                    if is_buy and current > signal.entry_price:
+                        order_kind = "BUY_LIMIT"
+                        use_pending = True
+                    elif not is_buy and current < signal.entry_price:
+                        order_kind = "SELL_LIMIT"
+                        use_pending = True
+                    elif is_buy and current < signal.entry_price:
+                        order_kind = "BUY_STOP"
+                        use_pending = True
+                    elif not is_buy and current > signal.entry_price:
+                        order_kind = "SELL_STOP"
+                        use_pending = True
+            except Exception:
+                pass
+
+        if use_pending:
+            order = self.platforms.place_pending_entry(
+                pair,
+                order_kind,
+                signal.entry_price,
+                adjusted_lots,
+                signal.stop_loss,
+                signal.tp1,
+                comment=f"APEX_PEND|{signal.score}|{session}",
+            )
+            if order.success:
+                pending_id = order.order_id
+                max_wait = self.config.risk.pending_max_wait_minutes
+                self._pending_orders[pending_id] = {
+                    "symbol": pair,
+                    "direction": direction,
+                    "placed_at": datetime.now(timezone.utc),
+                    "max_wait_minutes": max_wait,
+                    "signal": signal,
+                    "session": session,
+                }
+                logger.info(
+                    "📋 PENDING ORDER PLACED — {} {} @ {:.5f} | expires in {}min",
+                    order_kind, pair, signal.entry_price, max_wait,
+                )
+                return True
+            self._execution_breaker.record_failure()
+            return False
+
         order = self.platforms.execute_entry(
             pair,
             direction,
@@ -875,6 +933,89 @@ class TradingLoop:
             signal.score,
         )
         return True
+
+    # ── Pending order management ────────────────────────────────────────
+
+    def _check_pending_orders(self) -> None:
+        if not self._pending_orders:
+            return
+        expired: list[str] = []
+        now = datetime.now(timezone.utc)
+        broker_positions = {}
+        try:
+            for p in self.platforms.get_all_open_positions():
+                broker_positions[p.order_id] = p
+        except Exception:
+            return
+
+        for oid, info in list(self._pending_orders.items()):
+            age_min = (now - info["placed_at"]).total_seconds() / 60.0
+            if oid in broker_positions:
+                bp = broker_positions[oid]
+                logger.info(
+                    "📋 PENDING FILLED — {} {} @ {:.5f}",
+                    info["direction"], info["symbol"], bp.open_price,
+                )
+                order = OrderResult(
+                    success=True,
+                    order_id=oid,
+                    fill_price=bp.open_price,
+                    requested_price=bp.open_price,
+                    slippage_pips=0.0,
+                    lots=bp.lots,
+                    symbol=info["symbol"],
+                    direction=info["direction"],
+                    sl=bp.sl,
+                    tp=bp.tp,
+                    platform=bp.platform,
+                )
+                sig = info["signal"]
+                managed = ManagedPosition(
+                    order=order,
+                    tp1=sig.tp1,
+                    tp2=sig.tp2,
+                    score=sig.score,
+                    session=info["session"],
+                    entry_type=sig.entry_type,
+                )
+                tm_signal = TMEntrySignal(
+                    pair=info["symbol"],
+                    direction=info["direction"],
+                    entry_price=bp.open_price,
+                    stop_loss=sig.stop_loss,
+                    tp1=sig.tp1,
+                    tp2=sig.tp2,
+                    risk_reward_1=sig.risk_reward_1,
+                    risk_reward_2=sig.risk_reward_2,
+                    position_size_lots=bp.lots,
+                    score=sig.score,
+                    entry_timeframe=sig.entry_timeframe,
+                )
+                tm_trade = self.trade_manager.open_trade(tm_signal)
+                managed.tm_trade_id = tm_trade.trade_id
+                self.managed_positions[oid] = managed
+                self.position_store.save_position(managed)
+                self._daily_trades += 1
+                expired.append(oid)
+            elif age_min > info["max_wait_minutes"]:
+                logger.info(
+                    "📋 PENDING EXPIRED — {} {} after {:.0f}min",
+                    info["direction"], info["symbol"], age_min,
+                )
+                try:
+                    from platforms.mt5.mt5_connector import MT5Connector
+                    connector = self.platforms.get_connector(info["symbol"])
+                    if isinstance(connector, MT5Connector):
+                        import MetaTrader5 as mt5
+                        mt5.order_send({
+                            "action": mt5.TRADE_ACTION_REMOVE,
+                            "order": int(oid),
+                        })
+                except Exception:
+                    pass
+                expired.append(oid)
+        for oid in expired:
+            del self._pending_orders[oid]
 
     # ── Position management ──────────────────────────────────────────────
 
@@ -985,6 +1126,7 @@ class TradingLoop:
                     pass
 
             prev_sl = tm_trade.stop_loss
+            prev_tp2 = tm_trade.tp2
             was_partial = tm_trade.partial_closed
 
             # Feed the price to the trade manager for value-add management
@@ -1078,11 +1220,18 @@ class TradingLoop:
                             logger.warning("Deriv TP1 reopen failed: {}", reopen_err)
                     continue
 
-            if tm_trade.stop_loss != prev_sl:
+            sl_changed = tm_trade.stop_loss != prev_sl
+            tp_changed = tm_trade.tp2 != prev_tp2
+            if sl_changed or tp_changed:
                 pos_ctx = build_context_for_symbol(pos.symbol)
+                new_sl = tm_trade.stop_loss if sl_changed else None
+                new_tp = tm_trade.tp2 if tp_changed else None
                 if pos_ctx.supports_modify:
-                    self.platforms.modify_trade(oid, pos.platform, new_sl=tm_trade.stop_loss)
-                    pos.sl = tm_trade.stop_loss
+                    self.platforms.modify_trade(oid, pos.platform, new_sl=new_sl, new_tp=new_tp)
+                    if sl_changed:
+                        pos.sl = tm_trade.stop_loss
+                    if tp_changed:
+                        pos.tp2 = tm_trade.tp2
                     if tm_trade.breakeven_active and not pos.at_breakeven:
                         pos.at_breakeven = True
                         self.position_store.update_position(oid, sl=pos.sl, at_breakeven=True)
@@ -1094,15 +1243,25 @@ class TradingLoop:
                         )
                     else:
                         self.position_store.update_position(oid, sl=pos.sl)
+                    if tp_changed:
+                        logger.info(
+                            "✅ TP MODIFIED — {} {} | TP2→{:.5f}",
+                            pos.direction,
+                            pos.symbol,
+                            tm_trade.tp2,
+                        )
                 else:
-                    pos.sl = tm_trade.stop_loss
+                    if sl_changed:
+                        pos.sl = tm_trade.stop_loss
+                    if tp_changed:
+                        pos.tp2 = tm_trade.tp2
                     if tm_trade.breakeven_active and not pos.at_breakeven:
                         pos.at_breakeven = True
                         self.position_store.update_position(oid, sl=pos.sl, at_breakeven=True)
                     else:
                         self.position_store.update_position(oid, sl=pos.sl)
                     logger.debug(
-                        "SL update for Deriv {} {} tracked locally only (modify not supported)",
+                        "SL/TP update for Deriv {} {} tracked locally only (modify not supported)",
                         pos.direction,
                         pos.symbol,
                     )
