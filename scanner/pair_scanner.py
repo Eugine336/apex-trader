@@ -28,6 +28,46 @@ from brain.inducement_detector import InducementDetector
 from brain.wyckoff_engine import WyckoffEngine
 from brain.instrument_profile import get_profile
 
+_MT5_AVAILABLE = False
+try:
+    import MetaTrader5 as mt5  # type: ignore[import-untyped]
+    _MT5_AVAILABLE = True
+except ImportError:
+    mt5 = None
+
+
+def _mt5_market_open(symbol: str, connector=None) -> bool:
+    """
+    Returns True if MT5 reports this symbol as currently tradeable.
+    Checks symbol_info().trade_mode — no hardcoded hours, works for any
+    instrument. Called once per scan cycle per instrument to skip closed
+    markets before running the full brain stack.
+
+    Trade modes: 0=disabled, 1=long-only, 2=short-only, 3=close-only, 4=full
+    Modes 1/2/3 are treated as open enough to scan (signal may still be
+    useful by the time the market fully opens).
+    """
+    if not _MT5_AVAILABLE or mt5 is None:
+        return True  # can't check — don't block
+
+    mapped = symbol
+    if connector is not None:
+        try:
+            mapped = connector.symbol_map(symbol)
+        except Exception:
+            pass
+
+    try:
+        mt5.symbol_select(mapped, True)
+        info = mt5.symbol_info(mapped)
+        if info is None:
+            return True  # unknown symbol — don't block scan
+        # trade_mode 0 = fully disabled, 3 = close-only (session ending)
+        # Both mean no new entries are possible
+        return info.trade_mode not in (0,)
+    except Exception:
+        return True  # on any error, don't block
+
 
 @dataclass
 class PairScanResult:
@@ -73,7 +113,7 @@ class PairScanner:
     stack, and surfaces only the setups worth pulling the trigger on.
     """
 
-    def __init__(self, config: Optional[AppConfig] = None):
+    def __init__(self, config: Optional[AppConfig] = None, mt5_connector=None):
         self.config = config or AppConfig()
         self.structure = StructureEngine()
         self.fvg_detector = FVGDetector()
@@ -88,6 +128,7 @@ class PairScanner:
         self.news = NewsGuard()
         self.volume = VolumeAnalyzer()
         self.last_report: Optional[ScanReport] = None
+        self._mt5_connector = mt5_connector  # used for dynamic market hours checks
 
     # ------------------------------------------------------------------
     # Single-pair scan
@@ -107,6 +148,39 @@ class PairScanner:
         pip_size = self._pip_size(pair)
         category = self._category(pair)
         profile = get_profile(pair)
+
+        # ── Market hours gate ─────────────────────────────────────────
+        # For non-24/7 MT5 instruments (indices, some commodities, crypto)
+        # ask MT5 directly whether the market is open right now.
+        # This prevents the full brain stack running on a closed instrument,
+        # wasting scan cycles and generating signals that will fail at execution.
+        # Deriv synthetics and forex pass through — they are always available.
+        if not is_always_open(pair):
+            if not _mt5_market_open(pair, self._mt5_connector):
+                logger.debug(f"{pair} — market closed (MT5 trade_mode=0), skipping scan")
+                return PairScanResult(
+                    pair=pair,
+                    direction="NEUTRAL",
+                    score=0,
+                    regime="UNKNOWN",
+                    ev_estimate=0.0,
+                    trend_h4="UNKNOWN",
+                    trend_h1="UNKNOWN",
+                    bias_strength="NONE",
+                    has_fvg=False,
+                    has_order_block=False,
+                    has_liquidity_target=False,
+                    sweep_detected=False,
+                    inducement_detected=False,
+                    wyckoff_phase="N/A",
+                    volume_confirmation=False,
+                    session_active=False,
+                    currency_strength_aligned=False,
+                    status="MARKET_CLOSED",
+                    timestamp=utc_now,
+                    confluences=["Market closed — exchange hours"],
+                    instrument_category=category,
+                )
 
         # ── 1. Structure bias (H4 + H1) ──────────────────────────────
         bias = self.structure.get_bias(h4_df, h1_df)
@@ -385,6 +459,13 @@ class PairScanner:
 
         ready = [r for r in results if r.status == "READY"]
         watch = [r for r in results if r.status == "WATCHLIST"]
+        closed = [r for r in results if r.status == "MARKET_CLOSED"]
+
+        if closed:
+            logger.debug(
+                f"Skipped {len(closed)} closed markets: "
+                f"{', '.join(r.pair for r in closed)}"
+            )
 
         report = ScanReport(
             timestamp=utc_now,
