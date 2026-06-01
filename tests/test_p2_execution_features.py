@@ -234,20 +234,109 @@ class TestTPAdjustLogic:
 
 
 class TestTPModifyWiring:
-    """TP changes reach modify_trade in the management loop."""
+    """TP changes reach modify_trade in the management loop.
 
-    def test_modify_trade_called_with_new_tp(self):
-        from platforms.base_connector import OrderResult
-        platforms = MagicMock()
-        platforms.modify_trade.return_value = True
+    Covers main_loop.py lines 1128-1134 (prev_tp2 capture, trade_manager.update)
+    and 1223-1234 (tp_changed detection + modify_trade dispatch).
+    """
 
-        order_result = OrderResult(
-            success=True, order_id="123", fill_price=1.1000,
+    def _make_loop_with_position(self, *, tp2_before=1.1100, tp2_after=1.1200,
+                                  sl_before=1.0950, sl_after=1.0950):
+        """Build a minimal TradingLoop for the modify-dispatch tests."""
+        from platforms.main_loop import TradingLoop, ManagedPosition
+        from platforms.base_connector import OrderResult, PositionInfo
+        from management.trade_manager import TradeStatus
+
+        loop = TradingLoop.__new__(TradingLoop)
+        loop.managed_positions = {}
+        loop.position_store = MagicMock()
+        loop.platforms = MagicMock()
+        loop.trade_manager = MagicMock()
+        loop.config = MagicMock()
+        loop.config.risk.margin_guardian_enabled = False
+
+        order = OrderResult(
+            success=True, order_id="TP_TEST_1", fill_price=1.1000,
             requested_price=1.1000, slippage_pips=0.0, lots=0.01,
-            symbol="EURUSD", direction="BUY", sl=1.0950, tp=1.1100,
+            symbol="EURUSD", direction="BUY", sl=sl_before, tp=tp2_before,
             platform="mt5",
         )
-        assert order_result.success
+        pos = ManagedPosition(order=order, tp1=1.1050, tp2=tp2_before)
+        pos.tm_trade_id = "tm_1"
+        pos.broker_pnl = 0.0
+        pos.broker_lots = 0.01
+        loop.managed_positions["TP_TEST_1"] = pos
+
+        bp = PositionInfo(
+            order_id="TP_TEST_1", symbol="EURUSD", direction="BUY",
+            lots=0.01, open_price=1.1000, current_price=1.1050,
+            sl=sl_before, tp=tp2_before, pnl=5.0, swap=0.0,
+            open_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            platform="mt5",
+        )
+        loop.platforms.get_all_open_positions.return_value = [bp]
+        loop.platforms.get_realized_pnl.return_value = None
+
+        tick = SimpleNamespace(bid=1.1050, ask=1.1052)
+        loop.platforms.get_price.return_value = tick
+        loop.platforms.fetch_market_data.return_value = {}
+        loop.platforms.modify_trade.return_value = True
+
+        tm_trade = SimpleNamespace(
+            trade_id="tm_1",
+            stop_loss=sl_before,
+            tp2=tp2_before,
+            partial_closed=False,
+            status=TradeStatus.OPEN,
+            close_reason=None,
+            close_time=None,
+            breakeven_active=False,
+            re_entry_eligible=False,
+            current_price=1.1050,
+        )
+        loop.trade_manager.get_trade.return_value = tm_trade
+
+        def update_side_effect(trade, price, m5_df):
+            trade.stop_loss = sl_after
+            trade.tp2 = tp2_after
+            return trade
+        loop.trade_manager.update.side_effect = update_side_effect
+
+        return loop, pos
+
+    def test_modify_trade_called_with_new_tp(self):
+        """Covers main_loop.py:1224-1230 — tp_changed triggers modify_trade with new_tp."""
+        loop, pos = self._make_loop_with_position(
+            tp2_before=1.1100, tp2_after=1.1200,
+            sl_before=1.0950, sl_after=1.0950,
+        )
+        with patch("platforms.main_loop.build_context_for_symbol") as mock_ctx:
+            mock_ctx.return_value = SimpleNamespace(
+                supports_modify=True, supports_partial_close=True,
+                sizing_mode="lots", uses_stake=False,
+            )
+            loop._update_positions()
+
+        loop.platforms.modify_trade.assert_called_once_with(
+            "TP_TEST_1", "mt5", new_sl=None, new_tp=1.1200,
+        )
+
+    def test_tp_and_sl_both_changed(self):
+        """Covers main_loop.py:1223-1230 — both SL and TP changed in one cycle."""
+        loop, pos = self._make_loop_with_position(
+            tp2_before=1.1100, tp2_after=1.1200,
+            sl_before=1.0950, sl_after=1.1000,
+        )
+        with patch("platforms.main_loop.build_context_for_symbol") as mock_ctx:
+            mock_ctx.return_value = SimpleNamespace(
+                supports_modify=True, supports_partial_close=True,
+                sizing_mode="lots", uses_stake=False,
+            )
+            loop._update_positions()
+
+        loop.platforms.modify_trade.assert_called_once_with(
+            "TP_TEST_1", "mt5", new_sl=1.1000, new_tp=1.1200,
+        )
 
 
 # =====================================================================
@@ -269,20 +358,39 @@ class TestPendingOrderConfig:
 
 
 class TestBaseConnectorPendingDefault:
-    """BaseConnector.place_pending_order returns unsupported by default."""
+    """BaseConnector.place_pending_order returns unsupported by default.
+
+    Covers base_connector.py:153-177 — the non-abstract default body.
+    """
 
     def test_default_returns_failure(self):
-        from platforms.base_connector import BaseConnector
-        # Can't instantiate ABC directly; test through MT5
-        from platforms.base_connector import OrderResult
-        result = OrderResult(
-            success=False, order_id="", fill_price=0.0,
-            requested_price=1.1, slippage_pips=0.0, lots=0.01,
-            symbol="EURUSD", direction="BUY", sl=0.0, tp=0.0,
-            platform="test", error="Pending orders not supported",
-        )
+        """Actually invoke the base-class default via a minimal concrete subclass."""
+        from platforms.base_connector import BaseConnector, OrderResult
+
+        class _MinimalConnector(BaseConnector):
+            def connect(self): return True
+            def disconnect(self): pass
+            def is_connected(self): return True
+            def place_order(self, *a, **kw): return OrderResult(
+                success=False, order_id="", fill_price=0, requested_price=0,
+                slippage_pips=0, lots=0, symbol="", direction="", sl=0, tp=0,
+                platform="test",
+            )
+            def modify_order(self, *a, **kw): return False
+            def close_order(self, *a, **kw): pass
+            def get_open_positions(self): return []
+            def get_position_info(self, oid): return None
+            def get_price(self, sym): return None
+            def fetch_candles(self, *a, **kw): return []
+            def get_account_info(self): return {}
+            def get_ohlcv(self, *a, **kw): return []
+            def get_spread(self, *a, **kw): return 0.0
+            def get_tick(self, *a, **kw): return None
+
+        c = _MinimalConnector()
+        result = c.place_pending_order("EURUSD", "BUY_LIMIT", 1.0950, 0.05, 1.0900, 1.1050)
         assert not result.success
-        assert "not supported" in result.error
+        assert "not supported" in result.error.lower()
 
 
 class TestPendingOrderKindEnum:
@@ -405,13 +513,223 @@ class TestPendingOrderTracking:
 
 
 class TestRegressionSLOnlyModifyStillWorks:
-    """When only SL changes (no TP change), modify_trade is still called with new_sl."""
+    """When only SL changes (no TP change), modify_trade is called with new_sl only.
+
+    Covers main_loop.py:1223-1230 — sl_changed=True, tp_changed=False results
+    in modify_trade(new_sl=<new>, new_tp=None).
+    """
 
     def test_sl_change_alone(self):
-        from platforms.base_connector import OrderResult
-        result = OrderResult(
-            success=True, order_id="123", fill_price=1.1, requested_price=1.1,
-            slippage_pips=0.0, lots=0.01, symbol="EURUSD", direction="BUY",
-            sl=1.095, tp=1.11, platform="mt5",
+        """SL-only change dispatches modify_trade with new_sl, new_tp=None."""
+        from platforms.main_loop import TradingLoop, ManagedPosition
+        from platforms.base_connector import OrderResult, PositionInfo
+        from management.trade_manager import TradeStatus
+
+        loop = TradingLoop.__new__(TradingLoop)
+        loop.managed_positions = {}
+        loop.position_store = MagicMock()
+        loop.platforms = MagicMock()
+        loop.trade_manager = MagicMock()
+        loop.config = MagicMock()
+        loop.config.risk.margin_guardian_enabled = False
+
+        order = OrderResult(
+            success=True, order_id="SL_TEST_1", fill_price=1.1000,
+            requested_price=1.1000, slippage_pips=0.0, lots=0.01,
+            symbol="EURUSD", direction="BUY", sl=1.0950, tp=1.1100,
+            platform="mt5",
         )
-        assert result.sl == 1.095
+        pos = ManagedPosition(order=order, tp1=1.1050, tp2=1.1100)
+        pos.tm_trade_id = "tm_sl"
+        pos.broker_pnl = 0.0
+        pos.broker_lots = 0.01
+        loop.managed_positions["SL_TEST_1"] = pos
+
+        bp = PositionInfo(
+            order_id="SL_TEST_1", symbol="EURUSD", direction="BUY",
+            lots=0.01, open_price=1.1000, current_price=1.1050,
+            sl=1.0950, tp=1.1100, pnl=5.0, swap=0.0,
+            open_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            platform="mt5",
+        )
+        loop.platforms.get_all_open_positions.return_value = [bp]
+        loop.platforms.get_realized_pnl.return_value = None
+        loop.platforms.get_price.return_value = SimpleNamespace(bid=1.1050, ask=1.1052)
+        loop.platforms.fetch_market_data.return_value = {}
+        loop.platforms.modify_trade.return_value = True
+
+        tm_trade = SimpleNamespace(
+            trade_id="tm_sl", stop_loss=1.0950, tp2=1.1100,
+            partial_closed=False, status=TradeStatus.OPEN,
+            close_reason=None, close_time=None,
+            breakeven_active=False, re_entry_eligible=False,
+            current_price=1.1050,
+        )
+        loop.trade_manager.get_trade.return_value = tm_trade
+
+        def update_sl_only(trade, price, m5_df):
+            trade.stop_loss = 1.1000  # moved to breakeven
+            return trade
+        loop.trade_manager.update.side_effect = update_sl_only
+
+        with patch("platforms.main_loop.build_context_for_symbol") as mock_ctx:
+            mock_ctx.return_value = SimpleNamespace(
+                supports_modify=True, supports_partial_close=True,
+                sizing_mode="lots", uses_stake=False,
+            )
+            loop._update_positions()
+
+        loop.platforms.modify_trade.assert_called_once_with(
+            "SL_TEST_1", "mt5", new_sl=1.1000, new_tp=None,
+        )
+
+
+# =====================================================================
+# _check_pending_orders lifecycle tests
+# =====================================================================
+
+class TestCheckPendingOrdersLifecycle:
+    """End-to-end tests for TradingLoop._check_pending_orders.
+
+    Covers main_loop.py lines 939-1018: fill detection, expiry cancellation,
+    and edge cases (not-yet-filled, broker query failure, empty dict).
+    """
+
+    def _make_loop(self, pending=None):
+        """Build a TradingLoop with only the attributes _check_pending_orders reads."""
+        from platforms.main_loop import TradingLoop
+        loop = TradingLoop.__new__(TradingLoop)
+        loop._pending_orders = pending if pending is not None else {}
+        loop.managed_positions = {}
+        loop.platforms = MagicMock()
+        loop.trade_manager = MagicMock()
+        loop.position_store = MagicMock()
+        loop._daily_trades = 0
+        return loop
+
+    def _make_pending_info(self, symbol="EURUSD", direction="BUY",
+                           placed_minutes_ago=5, max_wait=30):
+        """Build a pending-order info dict matching what _execute_entry stores."""
+        from trigger.entry_engine import EntrySignal
+        sig = SimpleNamespace(
+            tp1=1.1050, tp2=1.1100, score=90, stop_loss=1.0950,
+            risk_reward_1=1.0, risk_reward_2=2.0, entry_type="FVG_MIDPOINT",
+            entry_timeframe="M5",
+        )
+        placed = datetime.now(timezone.utc) - __import__("datetime").timedelta(minutes=placed_minutes_ago)
+        return {
+            "symbol": symbol,
+            "direction": direction,
+            "signal": sig,
+            "session": "LONDON",
+            "placed_at": placed,
+            "max_wait_minutes": max_wait,
+        }
+
+    def test_fill_path(self):
+        """Covers lines 953-999: pending order found in broker_positions → adopted.
+
+        Asserts: moved into managed_positions, trade_manager.open_trade called,
+        position_store.save_position called, _daily_trades incremented, oid removed
+        from _pending_orders.
+        """
+        from platforms.base_connector import PositionInfo
+
+        oid = "PEND_001"
+        info = self._make_pending_info()
+        loop = self._make_loop(pending={oid: info})
+
+        bp = PositionInfo(
+            order_id=oid, symbol="EURUSD", direction="BUY",
+            lots=0.05, open_price=1.0950, current_price=1.1000,
+            sl=1.0900, tp=1.1100, pnl=2.5, swap=0.0,
+            open_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            platform="mt5",
+        )
+        loop.platforms.get_all_open_positions.return_value = [bp]
+
+        mock_tm_trade = SimpleNamespace(trade_id="tm_pend_1")
+        loop.trade_manager.open_trade.return_value = mock_tm_trade
+
+        loop._check_pending_orders()
+
+        assert oid not in loop._pending_orders
+        assert oid in loop.managed_positions
+        loop.trade_manager.open_trade.assert_called_once()
+        loop.position_store.save_position.assert_called_once()
+        assert loop._daily_trades == 1
+
+    def test_expiry_cancels_mt5_pending(self):
+        """Covers lines 1000-1016: aged-out pending → MT5 TRADE_ACTION_REMOVE cancel.
+
+        Asserts: mt5.order_send called with TRADE_ACTION_REMOVE, oid removed from
+        _pending_orders. Uses numeric oid since production code calls int(oid).
+        """
+        mt5_mod = sys.modules["MetaTrader5"]
+        mt5_mod.TRADE_ACTION_REMOVE = 11
+        mt5_mod.order_send = MagicMock()
+
+        oid = "1234567"
+        info = self._make_pending_info(placed_minutes_ago=60, max_wait=30)
+        loop = self._make_loop(pending={oid: info})
+
+        loop.platforms.get_all_open_positions.return_value = []
+
+        from platforms.mt5.mt5_connector import MT5Connector
+        mt5_connector = MT5Connector.__new__(MT5Connector)
+        loop.platforms.get_connector.return_value = mt5_connector
+
+        loop._check_pending_orders()
+
+        assert oid not in loop._pending_orders
+        mt5_mod.order_send.assert_called_once()
+        sent_req = mt5_mod.order_send.call_args[0][0]
+        assert sent_req["action"] == 11  # TRADE_ACTION_REMOVE
+        assert sent_req["order"] == 1234567
+
+    def test_not_filled_not_expired_is_kept(self):
+        """Covers lines 951-952 + 1000: pending order still young, not filled → stays.
+
+        Asserts: remains in _pending_orders, no open_trade, no order_send REMOVE.
+        """
+        mt5_mod = sys.modules["MetaTrader5"]
+        mt5_mod.order_send = MagicMock()
+
+        oid = "PEND_WAITING"
+        info = self._make_pending_info(placed_minutes_ago=5, max_wait=30)
+        loop = self._make_loop(pending={oid: info})
+
+        loop.platforms.get_all_open_positions.return_value = []
+
+        loop._check_pending_orders()
+
+        assert oid in loop._pending_orders
+        loop.trade_manager.open_trade.assert_not_called()
+        mt5_mod.order_send.assert_not_called()
+
+    def test_broker_query_failure_is_safe(self):
+        """Covers lines 945-949: get_all_open_positions raises → returns safely.
+
+        Asserts: method returns without raising, _pending_orders unchanged.
+        """
+        oid = "PEND_SAFE"
+        info = self._make_pending_info()
+        loop = self._make_loop(pending={oid: info})
+
+        loop.platforms.get_all_open_positions.side_effect = ConnectionError("broker down")
+
+        loop._check_pending_orders()
+
+        assert oid in loop._pending_orders
+        loop.trade_manager.open_trade.assert_not_called()
+
+    def test_empty_pending_is_noop(self):
+        """Covers line 940-941: empty _pending_orders → early return, no broker call.
+
+        Asserts: get_all_open_positions never called.
+        """
+        loop = self._make_loop(pending={})
+
+        loop._check_pending_orders()
+
+        loop.platforms.get_all_open_positions.assert_not_called()
