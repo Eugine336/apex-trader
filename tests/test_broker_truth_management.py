@@ -109,6 +109,7 @@ def _build_loop_with_position(
     loop.system_warnings = []
     loop._MAX_WARNINGS = 200
     loop.managed_positions = {}
+    loop.config = SimpleNamespace(risk=SimpleNamespace(margin_guardian_enabled=False))
 
     order = _make_order(oid, symbol, direction, fill, lots, sl, tp1, platform)
     pos = ManagedPosition(order=order, tp1=tp1, tp2=tp2, score=90)
@@ -149,6 +150,7 @@ class TestBrokerSideCloseDetection:
         loop.platforms.get_all_open_positions.return_value = []
         loop.platforms.get_price.return_value = _make_tick(1.1020, 1.1022)
         loop.platforms.get_platform_balance.return_value = 10000.0
+        loop.platforms.get_realized_pnl.return_value = None
 
         # Mock the journal async call
         loop._run_journal_async = MagicMock()
@@ -166,6 +168,7 @@ class TestBrokerSideCloseDetection:
         loop.platforms.get_all_open_positions.return_value = []
         loop.platforms.get_price.return_value = _make_tick(1.1020, 1.1022)
         loop.platforms.get_platform_balance.return_value = 10000.0
+        loop.platforms.get_realized_pnl.return_value = None
         loop._run_journal_async = MagicMock()
 
         loop._update_positions()

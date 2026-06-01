@@ -1,12 +1,35 @@
 """
 APEX TRADER — Correlation Engine
 Multiple open positions can look diversified while being the same bet.
-This module enforces exposure discipline across currencies and correlated pairs.
+This module enforces exposure discipline across currencies, asset clusters,
+and directional concentration — covering forex, indices, commodities, crypto,
+and synthetics.
 """
 
 from dataclasses import dataclass
 
 from brain.currency_strength import CURRENCY_PAIRS
+
+
+ASSET_CLUSTER: dict[str, str] = {
+    "US100": "equity_risk_on", "US30": "equity_risk_on", "US500": "equity_risk_on",
+    "GER40": "equity_risk_on", "UK100": "equity_risk_on", "JP225": "equity_risk_on",
+    "AUS200": "equity_risk_on", "FRA40": "equity_risk_on", "ESP35": "equity_risk_on",
+    "HK50": "equity_risk_on",
+    "XAUUSD": "metals", "XAGUSD": "metals",
+    "XBRUSD": "energy", "XTIUSD": "energy",
+    "BTCUSD": "crypto", "ETHUSD": "crypto", "LTCUSD": "crypto",
+    "XRPUSD": "crypto", "BNBUSD": "crypto", "SOLUSD": "crypto",
+    "ADAUSD": "crypto", "DOTUSD": "crypto",
+    "V10_1S": "volatility_index", "V25_1S": "volatility_index",
+    "V50_1S": "volatility_index", "V75_1S": "volatility_index",
+    "V100_1S": "volatility_index",
+    "BOOM500": "boom", "BOOM1000": "boom",
+    "CRASH500": "crash", "CRASH1000": "crash",
+    "STPIDX": "step_index",
+    "RNGBULL": "range_break", "RNGBEAR": "range_break",
+    "JD10": "jump_index", "JD25": "jump_index", "JD50": "jump_index",
+}
 
 
 @dataclass
@@ -23,20 +46,25 @@ class ExposureMap:
     hedge_conflicts: list[str]
     max_single_currency_exposure: float
     is_safe: bool
+    cluster_counts: dict[str, dict[str, int]] | None = None
 
 
 class CorrelationEngine:
     """
-    Controls aggregate currency exposure and blocks hidden synthetic overexposure.
+    Controls aggregate currency exposure and asset-cluster concentration.
+    Blocks hidden overexposure for ALL instrument types — forex via currency
+    decomposition, non-forex via asset-cluster + directional caps.
     """
 
     def __init__(
         self,
         max_single_currency_exposure: float = 0.04,
         max_correlated_trades: int = 3,
+        max_cluster_same_direction: int = 2,
     ):
         self.max_single_currency_exposure = max_single_currency_exposure
         self.max_correlated_trades = max_correlated_trades
+        self.max_cluster_same_direction = max_cluster_same_direction
 
     def calculate_exposure(self, open_trades: list[OpenTrade | dict]) -> ExposureMap:
         exposures: dict[str, float] = {}
@@ -53,6 +81,9 @@ class CorrelationEngine:
 
         hedge_conflicts = self._detect_hedge_conflicts(normalized)
         max_exposure = max((abs(v) for v in exposures.values()), default=0.0)
+
+        cluster_counts = self._count_cluster_directions(normalized)
+
         is_safe = (
             max_exposure <= self.max_single_currency_exposure and not hedge_conflicts
         )
@@ -63,6 +94,7 @@ class CorrelationEngine:
             hedge_conflicts=hedge_conflicts,
             max_single_currency_exposure=round(max_exposure, 4),
             is_safe=is_safe,
+            cluster_counts=cluster_counts,
         )
 
     def can_open_trade(
@@ -77,6 +109,20 @@ class CorrelationEngine:
 
         if self._count_correlated(pair, normalized[:-1]) >= self.max_correlated_trades:
             return False, f"Too many correlated trades with {pair}"
+
+        cluster = ASSET_CLUSTER.get(pair.upper())
+        if cluster:
+            existing = [self._normalize_trade(t) for t in open_trades]
+            same_dir = sum(
+                1 for t in existing
+                if ASSET_CLUSTER.get(t.pair) == cluster
+                and t.direction.upper() == direction.upper()
+            )
+            if same_dir >= self.max_cluster_same_direction:
+                return False, (
+                    f"Cluster '{cluster}' already has {same_dir} {direction} "
+                    f"trades (max {self.max_cluster_same_direction})"
+                )
 
         exposure = self.calculate_exposure(normalized)
         if exposure.max_single_currency_exposure > self.max_single_currency_exposure:
@@ -109,17 +155,40 @@ class CorrelationEngine:
         )
 
     def _count_correlated(self, pair: str, open_trades: list[OpenTrade]) -> int:
-        if pair not in CURRENCY_PAIRS:
-            return 0
-        base, quote = CURRENCY_PAIRS[pair]
-        count = 0
-        for trade in open_trades:
-            if trade.pair not in CURRENCY_PAIRS:
+        if pair in CURRENCY_PAIRS:
+            base, quote = CURRENCY_PAIRS[pair]
+            count = 0
+            for trade in open_trades:
+                if trade.pair not in CURRENCY_PAIRS:
+                    continue
+                t_base, t_quote = CURRENCY_PAIRS[trade.pair]
+                if quote in {t_base, t_quote} or base in {t_base, t_quote}:
+                    count += 1
+            return count
+
+        cluster = ASSET_CLUSTER.get(pair.upper())
+        if cluster:
+            return sum(
+                1 for t in open_trades
+                if ASSET_CLUSTER.get(t.pair) == cluster
+            )
+        return 0
+
+    def _count_cluster_directions(
+        self, trades: list[OpenTrade]
+    ) -> dict[str, dict[str, int]]:
+        """Count LONG/SHORT per asset cluster."""
+        result: dict[str, dict[str, int]] = {}
+        for t in trades:
+            cluster = ASSET_CLUSTER.get(t.pair)
+            if not cluster:
                 continue
-            t_base, t_quote = CURRENCY_PAIRS[trade.pair]
-            if quote in {t_base, t_quote} or base in {t_base, t_quote}:
-                count += 1
-        return count
+            if cluster not in result:
+                result[cluster] = {"LONG": 0, "SHORT": 0}
+            d = t.direction.upper()
+            if d in result[cluster]:
+                result[cluster][d] += 1
+        return result
 
     def _detect_hedge_conflicts(self, open_trades: list[OpenTrade]) -> list[str]:
         conflicts: list[str] = []

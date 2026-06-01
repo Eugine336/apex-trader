@@ -138,7 +138,10 @@ class TradingLoop:
         self.orchestrator = MTFOrchestrator(min_entry_score=self.config.scoring.min_entry_score)
         self.entry_engine = EntryEngine(config=self.config)
         self.drawdown = DrawdownGuard()
-        self.correlation = CorrelationEngine()
+        self.correlation = CorrelationEngine(
+            max_correlated_trades=self.config.risk.max_correlated_trades,
+            max_cluster_same_direction=self.config.risk.max_cluster_same_direction,
+        )
         self.risk_engine = RiskEngine(config=self.config)
         self.execution_monitor = ExecutionMonitor()
         self.session_engine = SessionEngine()
@@ -623,6 +626,12 @@ class TradingLoop:
                 self._log_rejection(result.pair, result.direction, result.score, corr_reason)
                 continue
 
+            if self.config.risk.margin_guardian_enabled:
+                margin_ok, margin_reason = self._check_margin_for_entry(result.pair)
+                if not margin_ok:
+                    self._log_rejection(result.pair, result.direction, result.score, margin_reason)
+                    continue
+
             if len(self.managed_positions) >= self.config.risk.max_open_trades:
                 self._log_rejection(result.pair, result.direction, result.score, "Max trades reached")
                 break
@@ -885,6 +894,10 @@ class TradingLoop:
         except Exception:
             pass  # broker unreachable — skip reconciliation this cycle
 
+        # ── STEP 1.5: Margin-level guardian ──────────────────────────────
+        if self.config.risk.margin_guardian_enabled and self.managed_positions:
+            self._margin_guardian_check()
+
         # ── STEP 2: Detect broker-side closes ────────────────────────────
         # If a managed position is no longer at the broker, the broker
         # closed it (SL hit, TP hit, margin call, manual close).  Record
@@ -893,7 +906,8 @@ class TradingLoop:
         if broker_map is not None:
             for oid, pos in list(self.managed_positions.items()):
                 if oid not in broker_map:
-                    broker_pnl = pos.broker_pnl  # last synced value
+                    realized = self.platforms.get_realized_pnl(oid, pos.platform)
+                    broker_pnl = realized if realized is not None else pos.broker_pnl
                     close_price = pos.entry_price
                     try:
                         tick = self.platforms.get_price(pos.symbol)
@@ -1199,6 +1213,71 @@ class TradingLoop:
             reason_rejected=reason,
         )
         self._run_journal_async(self.journal.log_decision(decision))
+
+    # ── Margin guardian ──────────────────────────────────────────────────
+
+    def _get_margin_level(self, symbol: str | None = None) -> float:
+        """Return the margin_level for the platform serving *symbol*.
+        Returns 0.0 when unavailable (Deriv, disconnected) — callers must
+        treat 0.0 as *unknown*, never as a flatten trigger."""
+        try:
+            if symbol:
+                connector = self.platforms.get_connector(symbol)
+            else:
+                for i, c in enumerate(self.platforms.mt5_connectors):
+                    if self.platforms._mt5_connected_flags[i]:
+                        connector = c
+                        break
+                else:
+                    return 0.0
+            info = connector.get_account_info()
+            return info.margin_level
+        except Exception:
+            return 0.0
+
+    def _check_margin_for_entry(self, symbol: str) -> tuple[bool, str]:
+        ml = self._get_margin_level(symbol)
+        if ml <= 0.0:
+            return True, "margin_level unknown — skipping check"
+        threshold = self.config.risk.margin_block_entry_pct
+        if ml < threshold:
+            return False, f"Margin level {ml:.0f}% < entry floor {threshold:.0f}%"
+        return True, "Margin OK"
+
+    def _margin_guardian_check(self) -> None:
+        ml = self._get_margin_level()
+        if ml <= 0.0:
+            return
+        risk_cfg = self.config.risk
+        if ml < risk_cfg.margin_flatten_pct:
+            logger.critical(
+                "🚨 MARGIN GUARDIAN — margin {:.0f}% < flatten floor {:.0f}% — flattening all positions",
+                ml, risk_cfg.margin_flatten_pct,
+            )
+            self._emergency_flatten_all()
+        elif ml < risk_cfg.margin_warn_pct:
+            logger.warning(
+                "⚠️ MARGIN WARNING — margin {:.0f}% < warn level {:.0f}%",
+                ml, risk_cfg.margin_warn_pct,
+            )
+
+    def _emergency_flatten_all(self) -> None:
+        closed = 0
+        for oid, pos in list(self.managed_positions.items()):
+            try:
+                result = self.platforms.close_trade(oid, pos.platform)
+                if result.success:
+                    self._record_closed_trade(
+                        pos, result.close_price, "MARGIN_FLATTEN", close_result=result
+                    )
+                    closed += 1
+            except Exception as exc:
+                logger.error("Margin flatten failed for {}: {}", oid, exc)
+        self.managed_positions.clear()
+        self.position_store.clear_all()
+        from brain.drawdown_guard import DrawdownMode
+        self.drawdown._mode = DrawdownMode.FROZEN
+        logger.critical("🚨 MARGIN FLATTEN COMPLETE — {} positions closed, risk FROZEN", closed)
 
     # ── Deriv multiplier lookup ──────────────────────────────────────────
 
