@@ -152,17 +152,13 @@ class EntryEngine:
 
         entry_price = zone["midpoint"]
         stop_loss = self.calculate_stop_loss(direction, zone, pip_size, profile.sl_buffer_pips)
-        tp1, tp2 = self.calculate_targets(pair, direction, entry_price, stop_loss, h1_df, pip_size)
-
         risk_distance = abs(entry_price - stop_loss)
-        min_risk_distance = profile.min_risk_pips * pip_size
 
-        # Percentage-based SL floor for synthetics and crypto.
-        # A fixed pip minimum fails on instruments with very small pip sizes
-        # (e.g. V100 pip=0.01 but price=857 — "8 pips" = 0.08 pts = 0.009%).
-        # At 400x multiplier a 0.009% SL is noise — you will be stopped out
-        # constantly before the trade has a chance to work.
-        # Minimum 0.3% of entry price for synthetics, 0.15% for crypto.
+        # ── SL floor for synthetics and crypto — MUST run before calculate_targets ──
+        # calculate_targets uses risk_distance to validate the 2.5R minimum for TP2.
+        # If the floor widens the SL AFTER targets are set, the effective R:R collapses
+        # and the validator rejects a perfectly good setup with "R:R to TP2 below minimum".
+        # Fix: apply the floor here so calculate_targets sees the real risk distance.
         if category == "synthetic":
             pct_floor = entry_price * 0.003   # 0.3%
             if risk_distance < pct_floor:
@@ -179,6 +175,12 @@ class EntryEngine:
                     else entry_price + pct_floor
                 )
                 risk_distance = pct_floor
+
+        tp1, tp2 = self.calculate_targets(pair, direction, entry_price, stop_loss, h1_df, pip_size)
+
+        min_risk_distance = profile.min_risk_pips * pip_size
+
+        # Percentage-based SL floor already applied above — skip duplicate block.
 
         if risk_distance < pip_size:
             return EntryRejection(
