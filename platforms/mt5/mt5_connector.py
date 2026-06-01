@@ -354,6 +354,11 @@ class MT5Connector(BaseConnector):
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
             err = result.comment if result else str(mt5.last_error())
             logger.error("MT5 order failed — {} {} {} lots: {}", direction, mapped, lots, err)
+            # Tag market-closed errors so the execution circuit breaker upstream
+            # does NOT count them as real failures and open a cooldown window.
+            # A closed market is expected and temporary — not an execution problem.
+            if "market closed" in err.lower() or "market is closed" in err.lower():
+                return self._fail_order(symbol, direction, lots, sl, tp, f"MARKET_CLOSED: {err}")
             return self._fail_order(symbol, direction, lots, sl, tp, err)
 
         pip_size = get_pip_size(symbol)
