@@ -171,7 +171,7 @@ class EntryValidator:
             logger.warning(f"[{pair}] Market hours check error: {exc} — proceeding")
             return True, f"Market hours check failed ({exc}) — proceeding"
 
-
+    def check_spread(
         self, pair: str, current_spread_pips: float,
     ) -> tuple[bool, str]:
         try:
