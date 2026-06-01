@@ -377,6 +377,91 @@ class MT5Connector(BaseConnector):
             platform="mt5",
         )
 
+    _PENDING_TYPE_MAP = {
+        "BUY_LIMIT": "ORDER_TYPE_BUY_LIMIT",
+        "SELL_LIMIT": "ORDER_TYPE_SELL_LIMIT",
+        "BUY_STOP": "ORDER_TYPE_BUY_STOP",
+        "SELL_STOP": "ORDER_TYPE_SELL_STOP",
+    }
+
+    def place_pending_order(
+        self,
+        symbol: str,
+        order_kind: str,
+        entry_price: float,
+        lots: float,
+        sl: float,
+        tp: float,
+        comment: str = "",
+    ) -> OrderResult:
+        self._require_connection()
+        mapped = self.symbol_map(symbol)
+        mt5_type_name = self._PENDING_TYPE_MAP.get(order_kind.upper())
+        if mt5_type_name is None:
+            return self._fail_order(symbol, order_kind, lots, sl, tp, f"Unknown pending type: {order_kind}")
+        mt5_order_type = getattr(mt5, mt5_type_name, None)
+        if mt5_order_type is None:
+            return self._fail_order(symbol, order_kind, lots, sl, tp, f"MT5 constant not found: {mt5_type_name}")
+
+        cached = self._get_symbol_constraints(mapped)
+        if cached:
+            vol_min = cached.get("volume_min", 0.01)
+            vol_max = cached.get("volume_max", 100.0)
+            vol_step = cached.get("volume_step", 0.01)
+            digits = cached.get("digits", 5)
+        else:
+            mt5.symbol_select(mapped, True)
+            sym_info = mt5.symbol_info(mapped)
+            if sym_info is not None:
+                vol_min, vol_max, vol_step = sym_info.volume_min, sym_info.volume_max, sym_info.volume_step
+                digits = sym_info.digits
+            else:
+                vol_min, vol_max, vol_step, digits = 0.01, 100.0, 0.01, 5
+
+        if vol_step > 0:
+            lots = round(round(lots / vol_step) * vol_step, 10)
+        lots = max(vol_min, min(vol_max, lots))
+        lots = round(lots, 2)
+
+        request = {
+            "action": mt5.TRADE_ACTION_PENDING,
+            "symbol": mapped,
+            "volume": float(lots),
+            "type": mt5_order_type,
+            "price": round(entry_price, digits),
+            "sl": float(sl),
+            "tp": float(tp),
+            "deviation": self._deviation,
+            "magic": self._magic,
+            "comment": comment or "APEX_PENDING",
+            "type_time": mt5.ORDER_TIME_GTC,
+            "type_filling": mt5.ORDER_FILLING_IOC,
+        }
+
+        result = mt5.order_send(request)
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            err = result.comment if result else str(mt5.last_error())
+            logger.error("MT5 pending order failed — {} {} {} lots @ {}: {}", order_kind, mapped, lots, entry_price, err)
+            return self._fail_order(symbol, order_kind, lots, sl, tp, err)
+
+        logger.info(
+            "MT5 pending placed — {} {} {} lots @ {}",
+            order_kind, mapped, lots, entry_price,
+        )
+        return OrderResult(
+            success=True,
+            order_id=str(result.order),
+            fill_price=entry_price,
+            requested_price=entry_price,
+            slippage_pips=0.0,
+            lots=lots,
+            symbol=symbol,
+            direction=order_kind.split("_")[0],
+            sl=sl,
+            tp=tp,
+            platform="mt5",
+        )
+
     def modify_order(
         self,
         order_id: str,
