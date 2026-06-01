@@ -81,6 +81,8 @@ class ManagedPosition:
         "tm_trade_id",
         "stake_usd",
         "multiplier",
+        "broker_pnl",
+        "broker_lots",
     )
 
     def __init__(
@@ -117,6 +119,8 @@ class ManagedPosition:
         self.tm_trade_id = ""
         self.stake_usd = stake_usd  # Deriv only; 0.0 for MT5
         self.multiplier = multiplier  # Deriv contract multiplier; 100 default
+        self.broker_pnl = 0.0  # Live P&L from broker (source of truth)
+        self.broker_lots = 0.0  # Live lots from broker (detects partial fills)
 
 
 class TradingLoop:
@@ -869,14 +873,81 @@ class TradingLoop:
         closed_count = 0
         to_remove: list[str] = []
 
-        self._reconcile_externally_closed(to_remove)
-        for oid in to_remove:
-            del self.managed_positions[oid]
-            self.position_store.remove_position(oid)
-        closed_count += len(to_remove)
-        to_remove = []
+        # ── STEP 1: Fetch broker state ONCE ─────────────────────────────
+        # The broker is the source of truth for what positions exist and
+        # their real P&L.  We use this to detect broker-side closes (SL/TP
+        # fills the broker executed) and to sync floating P&L for still-open
+        # positions, instead of relying on a local price-feed simulation.
+        broker_map: dict[str, PositionInfo] = {}
+        try:
+            broker_positions = self.platforms.get_all_open_positions()
+            broker_map = {p.order_id: p for p in broker_positions}
+        except Exception:
+            pass  # broker unreachable — skip reconciliation this cycle
 
+        # ── STEP 2: Detect broker-side closes ────────────────────────────
+        # If a managed position is no longer at the broker, the broker
+        # closed it (SL hit, TP hit, margin call, manual close).  Record
+        # using the best-available broker P&L and remove from management
+        # within THIS cycle — no phantom open trades.
+        if broker_map is not None:
+            for oid, pos in list(self.managed_positions.items()):
+                if oid not in broker_map:
+                    broker_pnl = pos.broker_pnl  # last synced value
+                    close_price = pos.entry_price
+                    try:
+                        tick = self.platforms.get_price(pos.symbol)
+                        is_buy = pos.direction == "BUY"
+                        close_price = tick.bid if is_buy else tick.ask
+                    except Exception:
+                        pass
+                    fake_close = CloseResult(
+                        success=True,
+                        order_id=oid,
+                        close_price=close_price,
+                        lots_closed=pos.lots,
+                        pnl=broker_pnl,
+                        platform=pos.platform,
+                    )
+                    self._record_closed_trade(
+                        pos,
+                        close_price,
+                        "BROKER_CLOSED",
+                        close_result=fake_close if broker_pnl != 0.0 else None,
+                    )
+                    to_remove.append(oid)
+                    closed_count += 1
+                    self._add_warning(
+                        "info",
+                        f"{pos.direction} {pos.symbol} closed by broker (SL/TP/external)",
+                        symbol=pos.symbol,
+                    )
+                    logger.info(
+                        "📋 BROKER CLOSED — {} {} | pnl={:.2f} — removed from management",
+                        pos.direction,
+                        pos.symbol,
+                        broker_pnl,
+                    )
+            for oid in to_remove:
+                del self.managed_positions[oid]
+                self.position_store.remove_position(oid)
+            to_remove = []
+
+        # ── STEP 3: Manage still-open positions ─────────────────────────
+        # For positions that remain open at the broker, sync their real
+        # P&L and lots, then run ONLY value-add management: TP1 partial
+        # close, breakeven SL modify, structure trailing, stall exit.
+        # We do NOT use the simulation to detect hard SL/TP2 hits —
+        # the broker already enforces those server-side.
         for oid, pos in self.managed_positions.items():
+            # Sync broker state onto the managed position
+            bp = broker_map.get(oid)
+            if bp is not None:
+                pos.broker_pnl = bp.pnl
+                pos.broker_lots = bp.lots
+                if abs(bp.sl - pos.sl) > 1e-8:
+                    pos.sl = bp.sl
+
             try:
                 tick = self.platforms.get_price(pos.symbol)
             except Exception:
@@ -902,24 +973,61 @@ class TradingLoop:
             prev_sl = tm_trade.stop_loss
             was_partial = tm_trade.partial_closed
 
+            # Feed the price to the trade manager for value-add management
+            # (TP1 detection, breakeven, trailing, stall/structure exit).
+            # The manager may set TERMINAL status for stall/structure exits
+            # that the broker cannot enforce — those we still close ourselves.
             tm_trade = self.trade_manager.update(tm_trade, current, m5_df)
 
+            # Only act on TERMINAL status from stall or structure exit —
+            # NOT from simulated SL/TP2, which the broker handles.
             if tm_trade.status in TERMINAL_STATUSES:
-                result = self.platforms.close_trade(oid, pos.platform)
-                if result.success:
-                    self._record_closed_trade(
-                        pos, result.close_price, tm_trade.close_reason or "CLOSED", close_result=result
-                    )
-                    to_remove.append(oid)
-                    closed_count += 1
-                    if tm_trade.re_entry_eligible:
-                        self._check_re_entry(pos)
-                continue
+                is_stall_or_structure = tm_trade.close_reason and (
+                    "Stall" in tm_trade.close_reason
+                    or "Structure" in tm_trade.close_reason
+                    or "stall" in tm_trade.close_reason.lower()
+                    or "structure" in tm_trade.close_reason.lower()
+                )
+                is_simulated_sl_tp = tm_trade.close_reason and (
+                    "Stop loss" in tm_trade.close_reason
+                    or "TP2" in tm_trade.close_reason
+                    or "Stopped at breakeven" in tm_trade.close_reason
+                )
+                if is_stall_or_structure:
+                    result = self.platforms.close_trade(oid, pos.platform)
+                    if result.success:
+                        self._record_closed_trade(
+                            pos, result.close_price, tm_trade.close_reason or "CLOSED", close_result=result
+                        )
+                        to_remove.append(oid)
+                        closed_count += 1
+                        if tm_trade.re_entry_eligible:
+                            self._check_re_entry(pos)
+                    continue
+                elif is_simulated_sl_tp:
+                    # The simulation thinks SL/TP2 was hit, but the broker
+                    # manages hard SL/TP server-side.  If the broker already
+                    # closed it, step 2 caught it.  If the position is still
+                    # open at the broker, the simulation fired early/late due
+                    # to price-feed divergence — reset to let the broker handle it.
+                    tm_trade.status = TradeStatus.TRAILING if tm_trade.breakeven_active else TradeStatus.OPEN
+                    tm_trade.close_reason = None
+                    tm_trade.close_time = None
+                else:
+                    result = self.platforms.close_trade(oid, pos.platform)
+                    if result.success:
+                        self._record_closed_trade(
+                            pos, result.close_price, tm_trade.close_reason or "CLOSED", close_result=result
+                        )
+                        to_remove.append(oid)
+                        closed_count += 1
+                        if tm_trade.re_entry_eligible:
+                            self._check_re_entry(pos)
+                    continue
 
             if tm_trade.partial_closed and not was_partial:
                 pos_ctx = build_context_for_symbol(pos.symbol)
                 if pos_ctx.supports_partial_close:
-                    # MT5: native partial close
                     partial_lots = round(pos.lots * 0.5, 2)
                     partial_lots = max(0.01, partial_lots)
                     result = self.platforms.close_trade(oid, pos.platform, partial_lots)
@@ -929,21 +1037,18 @@ class TradingLoop:
                         self.position_store.update_position(oid, tp1_hit=True, lots=pos.lots)
                         logger.info("✅ TP1 HIT (MT5 partial) — {} {} | 50% closed", pos.direction, pos.symbol)
                 else:
-                    # Deriv: partial close is not supported — close the full contract
-                    # and immediately open a fresh smaller one to simulate TP1 management.
                     result = self.platforms.close_trade(oid, pos.platform)
                     if result.success:
                         pos.tp1_hit = True
                         self._record_closed_trade(pos, result.close_price, "TP1_FULL_CLOSE_REOPEN", close_result=result)
                         to_remove.append(oid)
                         closed_count += 1
-                        # Attempt re-open at half stake (50% of original risk)
                         try:
                             half_stake = round(pos.stake_usd * 0.5, 2) if pos.stake_usd > 0 else None
                             reopen_order = self.platforms.execute_entry(
                                 pos.symbol,
                                 pos.direction,
-                                0.0,  # lots unused on Deriv
+                                0.0,
                                 tm_trade.stop_loss,
                                 tm_trade.tp2,
                                 comment=f"APEX|TP1_REOPEN|{pos.score}",
