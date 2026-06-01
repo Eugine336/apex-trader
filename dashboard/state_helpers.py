@@ -157,6 +157,9 @@ class HelpersMixin:
         rows: list[dict[str, Any]] = []
 
         for i, record in enumerate(raw_rows):
+            if str(record.get("outcome", "")).upper() == "LEGACY":
+                continue
+
             symbol = str(record.get("pair", "")).upper()
             direction = normalize_direction(record.get("direction", ""))
             entry_price = safe_float(record.get("entry", record.get("entry_price", 0.0)))
