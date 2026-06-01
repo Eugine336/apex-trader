@@ -564,6 +564,20 @@ class MT5Connector(BaseConnector):
             return None
         return self._to_position_info(position)
 
+    def get_realized_pnl(self, order_id: str) -> Optional[float]:
+        """Return the broker's realized P&L for a closed ticket via history_deals_get.
+        Returns None if the deal history isn't available."""
+        self._require_connection()
+        try:
+            ticket = int(order_id)
+            deals = mt5.history_deals_get(position=ticket)
+            if deals is None or len(deals) == 0:
+                return None
+            total_pnl = sum(d.profit + d.commission + d.swap + d.fee for d in deals)
+            return round(total_pnl, 2)
+        except Exception:
+            return None
+
     # ── Symbol / timeframe mapping ───────────────────────────────────────
 
     def symbol_map(self, apex_symbol: str) -> str:

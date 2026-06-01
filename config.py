@@ -247,6 +247,11 @@ class RiskConfig:
     tp_adjust_enabled: bool = False
     pending_orders_enabled: bool = False
     pending_max_wait_minutes: int = 30
+    max_cluster_same_direction: int = 2
+    margin_guardian_enabled: bool = False
+    margin_warn_pct: float = 200.0
+    margin_block_entry_pct: float = 150.0
+    margin_flatten_pct: float = 100.0
 
 
 # ---------------------------------------------------------------------------
