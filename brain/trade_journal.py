@@ -236,13 +236,20 @@ class TradeJournal:
         """Return all trades as plain dicts for ML consumption."""
         await self.initialize()
         async with aiosqlite.connect(self.db_path) as db:
-            cursor = await db.execute(
-                "SELECT pair, direction, pnl, score, confluences, regime, "
-                "session, spread, entry_type, time_to_exit, outcome, pnl_dollars FROM trades"
-            )
+            try:
+                cursor = await db.execute(
+                    "SELECT pair, direction, pnl, score, confluences, regime, "
+                    "session, spread, entry_type, time_to_exit, outcome, pnl_dollars FROM trades"
+                )
+            except Exception:
+                cursor = await db.execute(
+                    "SELECT pair, direction, pnl, score, confluences, regime, "
+                    "session, spread, entry_type, time_to_exit, outcome FROM trades"
+                )
             rows = await cursor.fetchall()
-        return [
-            {
+        result = []
+        for r in rows:
+            result.append({
                 "pair": r[0],
                 "direction": r[1],
                 "pnl": r[2],
@@ -254,10 +261,9 @@ class TradeJournal:
                 "entry_type": r[8],
                 "time_to_exit": r[9],
                 "outcome": r[10],
-                "pnl_dollars": r[11] if r[11] is not None else 0.0,
-            }
-            for r in rows
-        ]
+                "pnl_dollars": r[11] if len(r) > 11 and r[11] is not None else 0.0,
+            })
+        return result
 
     async def get_win_rate(self) -> float:
         stats = await self.get_performance_stats()
