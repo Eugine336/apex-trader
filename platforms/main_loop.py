@@ -1165,7 +1165,10 @@ class TradingLoop:
             if not raw_trades:
                 return
             for t in raw_trades:
-                t["confluences_tags"] = _parse_confluence_tags(t.pop("confluences_raw", []))
+                raw = t.pop("confluences_raw", [])
+                if not isinstance(raw, list):
+                    raw = []
+                t["confluences_tags"] = _parse_confluence_tags(raw)
             report = self.ml.run_optimization(raw_trades)
             logger.info(
                 "🧠 ML optimization — {} recommendations",
@@ -1179,8 +1182,8 @@ class TradingLoop:
                 self.scanner._trade_history = raw_trades
             except Exception:
                 pass
-        except Exception as exc:
-            logger.warning("ML retraining error: {}", exc)
+        except Exception:
+            logger.exception("ML retraining error")
 
     # ── Re-entry evaluation ───────────────────────────────────────────
 
