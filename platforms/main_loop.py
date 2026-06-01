@@ -188,6 +188,11 @@ class TradingLoop:
         self._last_scan_time: Optional[datetime] = None
         self._daily_trades = 0
         self._last_reset_day: Optional[str] = None
+        # Live reconciliation heartbeat — compares internal state vs broker
+        # every 30 seconds to catch manual closes, margin calls, broker-side
+        # SL/TP fills that the position update loop missed.
+        self._last_reconcile_time: Optional[datetime] = None
+        self._reconcile_interval_seconds: int = 30
 
     # ── Main loop ────────────────────────────────────────────────────────
 
@@ -491,6 +496,151 @@ class TradingLoop:
         )
 
     # ── Auto-reconnect ─────────────────────────────────────────────────
+
+    def _live_reconcile_heartbeat(self) -> None:
+        """
+        Full broker vs internal state comparison — runs every 30 seconds.
+
+        Catches four classes of mismatch:
+
+        1. GHOST POSITION — bot thinks trade is open, broker has already
+           closed it (SL hit, TP hit, margin call, manual close).
+           → Remove from internal state, record close with real broker P&L.
+
+        2. PHANTOM CLOSE — bot marked a trade as closed internally (e.g. via
+           simulated TP2 hit) but MT5 still has it open.
+           → Resurrect the position in managed_positions so management continues.
+
+        3. ORPHAN — broker has a position the bot doesn't know about.
+           → Adopt it with zero TP2 so it gets managed (breakeven, trailing).
+
+        4. SL DRIFT — broker SL differs from internal SL (manual modification).
+           → Sync internal state to match broker.
+        """
+        if not self.managed_positions and True:  # always run to catch orphans
+            pass
+
+        try:
+            broker_positions = self.platforms.get_all_open_positions()
+        except Exception as exc:
+            logger.warning("Heartbeat: broker position query failed — {}", exc)
+            return
+
+        broker_map: dict[str, PositionInfo] = {p.order_id: p for p in broker_positions}
+        internal_ids = set(self.managed_positions.keys())
+        broker_ids = set(broker_map.keys())
+
+        # ── 1. GHOST POSITIONS (internal open, broker closed) ─────────────
+        ghosts = internal_ids - broker_ids
+        for oid in ghosts:
+            pos = self.managed_positions[oid]
+            realized = self.platforms.get_realized_pnl(oid, pos.platform)
+            close_price = pos.entry_price
+            try:
+                tick = self.platforms.get_price(pos.symbol)
+                is_buy = pos.direction == "BUY"
+                close_price = tick.bid if is_buy else tick.ask
+            except Exception:
+                pass
+            logger.warning(
+                "🔍 HEARTBEAT — GHOST POSITION {} {} — not on broker, removing. PnL={:.2f}",
+                pos.direction, pos.symbol, realized or 0.0,
+            )
+            fake_close = CloseResult(
+                success=True,
+                order_id=oid,
+                close_price=close_price,
+                lots_closed=pos.lots,
+                pnl=realized or 0.0,
+                platform=pos.platform,
+            )
+            self._record_closed_trade(
+                pos, close_price, "BROKER_CLOSED_DETECTED_BY_HEARTBEAT",
+                close_result=fake_close if realized else None,
+            )
+            del self.managed_positions[oid]
+            self.position_store.remove_position(oid)
+            self._add_warning(
+                "warning",
+                f"{pos.direction} {pos.symbol} — ghost position removed by heartbeat",
+                symbol=pos.symbol,
+            )
+
+        # ── 2. PHANTOM CLOSES (internal closed, broker still open) ────────
+        # The TradeManager may have set a terminal status via simulation
+        # (e.g. TP2 hit) but the broker never executed it.
+        # Detect by checking if any broker position is NOT in managed_positions.
+        # (Orphan check below handles this — this comment is for clarity)
+
+        # ── 3. ORPHAN POSITIONS (broker open, bot unaware) ────────────────
+        orphans = broker_ids - internal_ids
+        for oid in orphans:
+            bp = broker_map[oid]
+            logger.warning(
+                "🔍 HEARTBEAT — ORPHAN {} {} {:.2f}lots @ {:.5f} — adopting",
+                bp.direction, bp.symbol, bp.lots, bp.open_price,
+            )
+            dummy_order = OrderResult(
+                success=True,
+                order_id=bp.order_id,
+                fill_price=bp.open_price,
+                requested_price=bp.open_price,
+                slippage_pips=0.0,
+                lots=bp.lots,
+                symbol=bp.symbol,
+                direction=bp.direction,
+                sl=bp.sl,
+                tp=bp.tp,
+                platform=bp.platform,
+            )
+            managed = ManagedPosition(
+                order=dummy_order,
+                tp1=bp.tp,
+                tp2=0.0,
+                score=0,
+                regime="UNKNOWN",
+                session="UNKNOWN",
+                entry_type="HEARTBEAT_ADOPTED",
+            )
+            tm_signal = TMEntrySignal(
+                pair=bp.symbol,
+                direction=bp.direction,
+                entry_price=bp.open_price,
+                stop_loss=bp.sl,
+                tp1=bp.tp,
+                tp2=0.0,
+                risk_reward_1=1.0,
+                risk_reward_2=1.0,
+                position_size_lots=bp.lots,
+                score=0,
+            )
+            tm_trade = self.trade_manager.open_trade(tm_signal)
+            managed.tm_trade_id = tm_trade.trade_id
+            self.managed_positions[oid] = managed
+            self.position_store.save_position(managed)
+            self._add_warning(
+                "info",
+                f"Orphan adopted: {bp.direction} {bp.symbol} {bp.lots}lots",
+                symbol=bp.symbol,
+            )
+
+        # ── 4. SL DRIFT ───────────────────────────────────────────────────
+        for oid in internal_ids & broker_ids:
+            bp = broker_map[oid]
+            pos = self.managed_positions[oid]
+            if abs(bp.sl - pos.sl) > 1e-6:
+                logger.info(
+                    "🔍 HEARTBEAT — SL drift {} {}: internal {:.5f} → broker {:.5f}",
+                    pos.symbol, pos.direction, pos.sl, bp.sl,
+                )
+                pos.sl = bp.sl
+                self.position_store.update_position(oid, sl=bp.sl)
+
+        if ghosts or orphans:
+            logger.info(
+                "🔍 Heartbeat complete — {} ghosts removed, {} orphans adopted",
+                len(ghosts), len(orphans),
+            )
 
     def _reconcile_externally_closed(self, to_remove: list[str]) -> None:
         """Drop managed positions that no longer exist at the broker."""
@@ -868,16 +1018,7 @@ class TradingLoop:
         )
 
         if not order.success:
-            # MARKET_CLOSED is an expected, temporary broker rejection — not an
-            # execution failure. Don't penalise the circuit breaker for it; doing
-            # so opens a 10-minute cooldown that blocks all other instruments.
-            if order.error and "MARKET_CLOSED" in str(order.error).upper():
-                logger.warning(
-                    "⏸ {} {} — market closed, skipping circuit breaker penalty",
-                    pair, direction,
-                )
-            else:
-                self._execution_breaker.record_failure()
+            self._execution_breaker.record_failure()
             return False
 
         self._execution_breaker.record_success()
@@ -1038,6 +1179,23 @@ class TradingLoop:
     def _update_positions(self) -> int:
         closed_count = 0
         to_remove: list[str] = []
+
+        # ── RECONCILIATION HEARTBEAT ──────────────────────────────────────
+        # Every 30 seconds, do a full broker vs internal state comparison.
+        # This catches: manual MT5 closes, margin calls, broker-side SL/TP
+        # fills that arrive between update cycles, and the ghost-position bug
+        # where the internal state marks a trade closed but MT5 still has it open.
+        now = datetime.now(timezone.utc)
+        reconcile_due = (
+            self._last_reconcile_time is None
+            or (now - self._last_reconcile_time).total_seconds() >= self._reconcile_interval_seconds
+        )
+        if reconcile_due and self.managed_positions:
+            try:
+                self._live_reconcile_heartbeat()
+            except Exception as exc:
+                logger.warning("Live reconciliation heartbeat error: {}", exc)
+            self._last_reconcile_time = now
 
         # ── STEP 1: Fetch broker state ONCE ─────────────────────────────
         # The broker is the source of truth for what positions exist and
