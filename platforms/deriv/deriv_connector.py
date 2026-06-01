@@ -485,6 +485,8 @@ class DerivConnector(BaseConnector):
             if err is None:
                 break  # success
 
+            changed = False
+
             # ── 1. Multiplier correction (always fix this first) ───────────
             _mult_match = _re.search(
                 r"Multiplier is not in acceptable range.*?Accepts\s+([\d,\s]+)", err
@@ -498,29 +500,32 @@ class DerivConnector(BaseConnector):
                         "Update config/brokers/deriv.json!",
                         multiplier, mapped, corrected, valid,
                     )
-                    # Rescale stake so max-loss in dollars stays constant:
-                    # max_loss = stake × mult × sl_pct  →  new_stake = stake × old_mult / new_mult
                     if corrected > 0:
                         amount = round(max(1.0, amount * multiplier / corrected), 2)
                         logger.debug(
-                            "Deriv stake rescaled for {}× → {}×: ${:.2f}",
+                            "Deriv stake rescaled for {}\u00d7 \u2192 {}\u00d7: ${:.2f}",
                             multiplier, corrected, amount,
                         )
                     multiplier = corrected
+                    changed = True
 
-            # ── 2. Stake cap ───────────────────────────────────────────────
+            # ── 2. Stake cap — applied in SAME iteration as multiplier fix ─
+            # After multiplier rescale the amount may still exceed Deriv cap.
+            # Floor 1 cent below cap so we are cleanly under it.
             _cap_match = _re.search(r"equal to or lower than ([\d]+(?:\.[\d]+)?)", err)
             if _cap_match:
                 max_stake = float(_cap_match.group(1))
-                # Floor to cent — keeps us cleanly under the cap without
-                # giving up more than $0.01 of stake.
-                capped = max(1.0, float(_math.floor(max_stake * 100)) / 100)
+                capped = max(1.0, float(_math.floor(max_stake * 100 - 1)) / 100)
                 if capped < amount:
                     logger.warning(
                         "Deriv stake capped — retrying {} {} with ${:.2f} (cap ${:.2f}), attempt {}/{}",
                         direction, symbol, capped, max_stake, _attempt + 1, MAX_RETRIES,
                     )
                     amount = capped
+                    changed = True
+
+            if not changed:
+                break  # unrecognised error — retrying won't help
 
             # ── 3. Retry with updated multiplier + amount ──────────────────
             resp = self._sync_send({
