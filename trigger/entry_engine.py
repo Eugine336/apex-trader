@@ -402,10 +402,19 @@ class EntryEngine:
             tp2_candidate = h1_analysis.swing_high
             if (tp2_candidate
                     and tp2_candidate > tp1                          # must be beyond TP1
+                    and tp2_candidate > entry_price                  # SANITY: must be above entry on LONG
                     and (tp2_candidate - entry_price) / risk >= 2.5): # must give at least 2.5R
                 tp2 = tp2_candidate
             else:
                 tp2 = entry_price + risk * 3.0   # guaranteed 3R fallback
+
+            # Final sanity: if tp1 or tp2 ended up on wrong side, force correct direction
+            if tp1 <= entry_price:
+                tp1 = entry_price + risk * 1.5
+                logger.warning("TP1 sanity fix on LONG {} — was below entry, reset to 1.5R", pair)
+            if tp2 <= tp1:
+                tp2 = entry_price + risk * 3.0
+                logger.warning("TP2 sanity fix on LONG {} — was below TP1, reset to 3R", pair)
 
         else:  # SHORT
             tp1_liq = liq_map.nearest_sell_liq
@@ -418,10 +427,19 @@ class EntryEngine:
             tp2_candidate = h1_analysis.swing_low
             if (tp2_candidate
                     and tp2_candidate < tp1                          # must be beyond TP1
+                    and tp2_candidate < entry_price                  # SANITY: must be below entry on SHORT
                     and (entry_price - tp2_candidate) / risk >= 2.5): # must give at least 2.5R
                 tp2 = tp2_candidate
             else:
                 tp2 = entry_price - risk * 3.0   # guaranteed 3R fallback
+
+            # Final sanity: if tp1 or tp2 ended up on wrong side, force correct direction
+            if tp1 >= entry_price:
+                tp1 = entry_price - risk * 1.5
+                logger.warning("TP1 sanity fix on SHORT {} — was above entry, reset to 1.5R", pair)
+            if tp2 >= tp1:
+                tp2 = entry_price - risk * 3.0
+                logger.warning("TP2 sanity fix on SHORT {} — was above TP1, reset to 3R", pair)
 
         return tp1, tp2
 
