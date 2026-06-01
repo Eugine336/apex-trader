@@ -150,6 +150,11 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
 
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
+        if _API_KEY:
+            key = websocket.query_params.get("api_key", "")
+            if key != _API_KEY:
+                await websocket.close(code=1008, reason="Invalid API key")
+                return
         await manager.connect(websocket)
         try:
             while True:
