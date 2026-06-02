@@ -1,17 +1,18 @@
 """
-APEX TRADER — Portfolio Risk State Machine (M8 Phase 4a)
+APEX TRADER — Portfolio Risk State Machine (M8 Phase 4a + 4b)
 
 Unified portfolio-risk engine fed by BOTH live capital-at-risk heat
-and correlation exposure.  Non-destructive only: NORMAL ↔ DEFENSIVE.
+and correlation exposure.
 
 States:
   NORMAL     — business as usual
   DEFENSIVE  — freeze entries/scale-ins, advance eligible→BE, tighten stops
+  REDUCING   — graduated partial-close of weakest positions (Phase 4b)
 
-Phase 4b/4c will add REDUCING and EMERGENCY (slots reserved, not implemented).
+Phase 4c will add EMERGENCY (slot reserved, not implemented).
 
 Design principles:
-  • Risk-directed exits (future) MUST bypass entry circuit-breakers / cooldowns.
+  • Risk-directed exits MUST bypass entry circuit-breakers / cooldowns.
   • Adaptive learning may NEVER override this engine.
   • Unknown/orphan metadata = neutral, never "weakest."
 """
@@ -31,8 +32,8 @@ from loguru import logger
 class PortfolioRiskState(Enum):
     NORMAL = auto()
     DEFENSIVE = auto()
-    # Phase 4b/4c extension points — NOT implemented in this phase
-    # REDUCING = auto()
+    REDUCING = auto()
+    # Phase 4c extension point — NOT implemented in this phase
     # EMERGENCY = auto()
 
 
@@ -67,6 +68,22 @@ class StateTransition:
     reason: str
     live_heat_pct: float
     correlation_safe: bool
+    escalated_to_reducing: bool = False
+
+
+@dataclass
+class PositionWeakness:
+    """Composite weakness ranking for a single position."""
+    order_id: str
+    symbol: str
+    direction: str
+    weakness_score: float
+    r_multiple: float
+    entry_score: int
+    stagnation_minutes: float
+    risk_share_pct: float
+    is_insufficient_data: bool
+    reason: str
 
 
 # ── Orphan-neutral helper ───────────────────────────────────────────────────
@@ -85,13 +102,141 @@ def is_position_data_insufficient(
 
     Adopted orphans (score=0, regime=UNKNOWN) must be treated as NEUTRAL
     — never as the weakest.  This helper is shared by 4a (eligibility)
-    and future 4b (ranking).
+    and 4b (ranking).
     """
     if entry_type in _ORPHAN_ENTRY_TYPES:
         return True
     if score == 0 and regime in _UNKNOWN_REGIMES:
         return True
     return False
+
+
+# ── Weakest-position ranking (Phase 4b) ─────────────────────────────────
+
+def rank_positions_weakest_first(
+    positions: list[dict],
+    total_risk_dollars: float,
+) -> list[PositionWeakness]:
+    """
+    Rank open positions from weakest to strongest using a composite score.
+
+    Each position dict must have:
+      order_id, symbol, direction, entry_price, sl, current_price,
+      score, regime, entry_type, open_time_utc (datetime),
+      risk_dollars, lots
+
+    Positions with insufficient data (orphan/unknown) are pinned to
+    MEDIAN rank — never auto-ranked weakest.
+
+    Returns a list sorted weakest-first (highest weakness_score first).
+    """
+    scored: list[PositionWeakness] = []
+    insufficient: list[PositionWeakness] = []
+
+    for p in positions:
+        oid = p["order_id"]
+        symbol = p["symbol"]
+        direction = p["direction"]
+        entry_price = p["entry_price"]
+        sl = p["sl"]
+        current_price = p["current_price"]
+        score = p["score"]
+        regime = p.get("regime", "")
+        entry_type = p.get("entry_type", "")
+        open_time = p["open_time_utc"]
+        risk_dollars = p.get("risk_dollars", 0.0)
+        lots = p.get("lots", 0.0)
+
+        is_long = direction.upper() in ("BUY", "LONG")
+        original_risk = abs(entry_price - sl) if sl > 0 and entry_price > 0 else 0.0
+
+        if original_risk > 1e-10:
+            excursion = (
+                (current_price - entry_price) if is_long
+                else (entry_price - current_price)
+            )
+            r_multiple = excursion / original_risk
+        else:
+            r_multiple = 0.0
+
+        now_utc = time.time()
+        open_ts = open_time.timestamp() if hasattr(open_time, "timestamp") else now_utc
+        stagnation_minutes = (now_utc - open_ts) / 60.0
+
+        risk_share = (
+            (risk_dollars / total_risk_dollars * 100.0)
+            if total_risk_dollars > 0 else 0.0
+        )
+
+        is_insuff = is_position_data_insufficient(score, regime, entry_type)
+
+        if is_insuff:
+            pw = PositionWeakness(
+                order_id=oid,
+                symbol=symbol,
+                direction=direction,
+                weakness_score=0.0,
+                r_multiple=r_multiple,
+                entry_score=score,
+                stagnation_minutes=stagnation_minutes,
+                risk_share_pct=risk_share,
+                is_insufficient_data=True,
+                reason="insufficient data (neutral)",
+            )
+            insufficient.append(pw)
+            continue
+
+        weakness = 0.0
+        reasons = []
+
+        if r_multiple < -0.5:
+            weakness += 30.0
+            reasons.append(f"deep loss {r_multiple:.2f}R")
+        elif r_multiple < 0.0:
+            weakness += 15.0
+            reasons.append(f"losing {r_multiple:.2f}R")
+        elif r_multiple < 0.5:
+            weakness += 5.0
+            reasons.append(f"marginal {r_multiple:.2f}R")
+
+        if score > 0:
+            score_weakness = max(0.0, (100 - score) / 100.0) * 25.0
+            weakness += score_weakness
+            if score < 60:
+                reasons.append(f"low score {score}")
+
+        if stagnation_minutes > 120 and abs(r_multiple) < 0.5:
+            stall_factor = min(stagnation_minutes / 360.0, 1.0) * 20.0
+            weakness += stall_factor
+            reasons.append(f"stalled {stagnation_minutes:.0f}min")
+
+        weakness += min(risk_share, 30.0) * 0.5
+
+        pw = PositionWeakness(
+            order_id=oid,
+            symbol=symbol,
+            direction=direction,
+            weakness_score=round(weakness, 2),
+            r_multiple=round(r_multiple, 3),
+            entry_score=score,
+            stagnation_minutes=round(stagnation_minutes, 1),
+            risk_share_pct=round(risk_share, 2),
+            is_insufficient_data=False,
+            reason="; ".join(reasons) if reasons else "strong",
+        )
+        scored.append(pw)
+
+    scored.sort(key=lambda x: (-x.weakness_score, x.order_id))
+
+    if insufficient and scored:
+        mid = len(scored) // 2
+        for ip in insufficient:
+            ip.weakness_score = scored[mid].weakness_score if scored else 0.0
+        scored = scored[:mid] + insufficient + scored[mid:]
+    elif insufficient:
+        scored = insufficient
+
+    return scored
 
 
 # ── Capital-at-risk calculator ──────────────────────────────────────────────
@@ -216,6 +361,9 @@ class PortfolioRiskStateMachine:
 
     Hysteresis:
       Enter DEFENSIVE when heat >= heat_defensive_pct OR correlation unsafe.
+      Escalate to REDUCING when in DEFENSIVE for >= reduction_persist_seconds
+        OR heat >= heat_reduction_pct.
+      De-escalate REDUCING → DEFENSIVE → NORMAL (never skip).
       Exit DEFENSIVE only when BOTH heat < heat_recovery_pct AND correlation safe,
       sustained for recovery_dwell_seconds.
     """
@@ -225,19 +373,29 @@ class PortfolioRiskStateMachine:
         heat_defensive_pct: float = 1.5,
         heat_recovery_pct: float = 1.0,
         recovery_dwell_seconds: float = 120.0,
+        heat_reduction_pct: float = 2.5,
+        reduction_persist_seconds: float = 300.0,
     ):
         if heat_recovery_pct >= heat_defensive_pct:
             raise ValueError(
                 f"heat_recovery_pct ({heat_recovery_pct}) must be < "
                 f"heat_defensive_pct ({heat_defensive_pct})"
             )
+        if heat_reduction_pct <= heat_defensive_pct:
+            raise ValueError(
+                f"heat_reduction_pct ({heat_reduction_pct}) must be > "
+                f"heat_defensive_pct ({heat_defensive_pct})"
+            )
 
         self.heat_defensive_pct = heat_defensive_pct
         self.heat_recovery_pct = heat_recovery_pct
         self.recovery_dwell_seconds = recovery_dwell_seconds
+        self.heat_reduction_pct = heat_reduction_pct
+        self.reduction_persist_seconds = reduction_persist_seconds
 
         self._state = PortfolioRiskState.NORMAL
         self._recovery_eligible_since: Optional[float] = None
+        self._defensive_entered_at: Optional[float] = None
 
     @property
     def state(self) -> PortfolioRiskState:
@@ -259,6 +417,7 @@ class PortfolioRiskStateMachine:
             if heat_breached or corr_breached:
                 self._state = PortfolioRiskState.DEFENSIVE
                 self._recovery_eligible_since = None
+                self._defensive_entered_at = now
                 reasons = []
                 if heat_breached:
                     reasons.append(
@@ -285,9 +444,73 @@ class PortfolioRiskStateMachine:
                 correlation_safe=corr_safe,
             )
 
-        # ── DEFENSIVE state ──────────────────────────────────────────
-        recovery_ok = (heat < self.heat_recovery_pct) and corr_safe
+        if self._state == PortfolioRiskState.DEFENSIVE:
+            heat_reduction_breach = heat >= self.heat_reduction_pct
+            persist_breach = (
+                self._defensive_entered_at is not None
+                and (now - self._defensive_entered_at) >= self.reduction_persist_seconds
+                and (heat_breached or corr_breached)
+            )
 
+            if heat_reduction_breach or persist_breach:
+                self._state = PortfolioRiskState.REDUCING
+                self._recovery_eligible_since = None
+                trigger = (
+                    f"heat {heat:.2f}% >= {self.heat_reduction_pct:.2f}%"
+                    if heat_reduction_breach
+                    else f"DEFENSIVE persisted {(now - self._defensive_entered_at):.0f}s >= {self.reduction_persist_seconds:.0f}s"
+                )
+                reason = f"Escalated to REDUCING: {trigger}"
+                logger.warning("[PortfolioRisk] {}", reason)
+                return StateTransition(
+                    state=self._state,
+                    changed=True,
+                    reason=reason,
+                    live_heat_pct=heat,
+                    correlation_safe=corr_safe,
+                    escalated_to_reducing=True,
+                )
+
+            recovery_ok = (heat < self.heat_recovery_pct) and corr_safe
+            return self._check_defensive_recovery(recovery_ok, heat, corr_safe, now)
+
+        # ── REDUCING state ──────────────────────────────────────────
+        still_breached = heat_breached or corr_breached
+        if not still_breached:
+            self._state = PortfolioRiskState.DEFENSIVE
+            self._defensive_entered_at = now
+            self._recovery_eligible_since = None
+            reason = (
+                f"De-escalated REDUCING → DEFENSIVE: "
+                f"heat {heat:.2f}% < {self.heat_defensive_pct:.2f}% and corr safe"
+            )
+            logger.info("[PortfolioRisk] {}", reason)
+            return StateTransition(
+                state=self._state,
+                changed=True,
+                reason=reason,
+                live_heat_pct=heat,
+                correlation_safe=corr_safe,
+            )
+
+        return StateTransition(
+            state=self._state,
+            changed=False,
+            reason=(
+                f"REDUCING (heat={heat:.2f}%, "
+                f"corr_safe={corr_safe})"
+            ),
+            live_heat_pct=heat,
+            correlation_safe=corr_safe,
+        )
+
+    def _check_defensive_recovery(
+        self,
+        recovery_ok: bool,
+        heat: float,
+        corr_safe: bool,
+        now: float,
+    ) -> StateTransition:
         if not recovery_ok:
             self._recovery_eligible_since = None
             return StateTransition(
@@ -318,6 +541,7 @@ class PortfolioRiskStateMachine:
         if elapsed >= self.recovery_dwell_seconds:
             self._state = PortfolioRiskState.NORMAL
             self._recovery_eligible_since = None
+            self._defensive_entered_at = None
             reason = (
                 f"Recovered to NORMAL: heat {heat:.2f}% < "
                 f"{self.heat_recovery_pct:.2f}% for "
@@ -347,26 +571,27 @@ class PortfolioRiskStateMachine:
         """Reset to NORMAL (e.g. on startup before any positions exist)."""
         self._state = PortfolioRiskState.NORMAL
         self._recovery_eligible_since = None
+        self._defensive_entered_at = None
 
 
-# ── Exit-authority scaffolding (Phase 4b/4c) ────────────────────────────────
+# ── Exit-authority (Phase 4b) ────────────────────────────────────────────
 #
-# When Phase 4b/4c introduce risk-directed exits (position reduction or
-# emergency liquidation), those exits MUST:
+# Risk-directed exits (position reduction) MUST:
 #   1. Bypass the entry Execution circuit breaker.
 #   2. Bypass entry cooldowns and opportunity-density throttles.
 #   3. Be routed through a dedicated close path, NOT the entry path.
 #
-# Signature reserved for future implementation:
+# Phase 4c will add emergency full-close; for 4b, only partial
+# reduction is implemented (never fully close a position).
 #
-# def execute_risk_directed_exit(
+# Signature reserved for Phase 4c:
+#
+# def execute_emergency_liquidation(
 #     order_id: str,
 #     reason: str,
-#     *,
-#     partial_ratio: float = 1.0,  # 1.0 = full close
 # ) -> bool:
 #     """
-#     Close or reduce a position on risk authority.
+#     Full-close a position on emergency risk authority.
 #     Must never be gated by entry-initiation controls.
 #     """
-#     raise NotImplementedError("Phase 4b/4c")
+#     raise NotImplementedError("Phase 4c")

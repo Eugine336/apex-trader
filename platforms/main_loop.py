@@ -58,6 +58,8 @@ from risk.portfolio_risk_state import (
     compute_position_risk_dollars,
     compute_live_heat_pct,
     is_eligible_for_defensive_breakeven,
+    is_position_data_insufficient,
+    rank_positions_weakest_first,
 )
 from risk.risk_engine import RiskEngine
 from risk.risk_reporter import RiskReporter
@@ -292,17 +294,21 @@ class TradingLoop:
         self._news_exit_protected: set[str] = set()            # oids already tightened for news
         self._last_market_data: dict = {}                       # most recent market data for in-trade analysis
 
-        # ── Portfolio risk state machine (M8 Phase 4a) ──────────────
+        # ── Portfolio risk state machine (M8 Phase 4a + 4b) ──────────────
         cfg_r = self.config.risk
         if cfg_r.portfolio_risk_engine_enabled:
             self._portfolio_risk_sm = PortfolioRiskStateMachine(
                 heat_defensive_pct=cfg_r.heat_defensive_pct,
                 heat_recovery_pct=cfg_r.heat_recovery_pct,
                 recovery_dwell_seconds=cfg_r.recovery_dwell_seconds,
+                heat_reduction_pct=cfg_r.heat_reduction_pct,
+                reduction_persist_seconds=cfg_r.reduction_persist_seconds,
             )
         else:
             self._portfolio_risk_sm: Optional[PortfolioRiskStateMachine] = None
         self._defensive_action_timestamps: dict[str, float] = {}  # oid → monotonic time of last action
+        self._reduction_action_timestamps: dict[str, float] = {}  # oid → monotonic time of last trim
+        self._reduction_actions_this_hour: list[float] = []  # monotonic timestamps of trims
 
     # ── Thread-safe position accessors ──────────────────────────────────
 
@@ -779,13 +785,14 @@ class TradingLoop:
         if not ready:
             return
 
-        # Portfolio risk state gate — freeze entries in DEFENSIVE
+        # Portfolio risk state gate — freeze entries in DEFENSIVE or REDUCING
         if (
             getattr(self, '_portfolio_risk_sm', None) is not None
-            and self._portfolio_risk_sm.state == PortfolioRiskState.DEFENSIVE
+            and self._portfolio_risk_sm.state in (PortfolioRiskState.DEFENSIVE, PortfolioRiskState.REDUCING)
         ):
             logger.info(
-                "[PortfolioRisk] DEFENSIVE — new entries frozen (heat={:.2f}%)",
+                "[PortfolioRisk] {} — new entries frozen (heat={:.2f}%)",
+                self._portfolio_risk_sm.state.name,
                 getattr(self, '_current_portfolio_heat', 0.0),
             )
             return
@@ -1908,7 +1915,7 @@ class TradingLoop:
         """
         if (
             getattr(self, '_portfolio_risk_sm', None) is not None
-            and self._portfolio_risk_sm.state == PortfolioRiskState.DEFENSIVE
+            and self._portfolio_risk_sm.state in (PortfolioRiskState.DEFENSIVE, PortfolioRiskState.REDUCING)
         ):
             return
         cfg = self.config.risk
@@ -2154,7 +2161,8 @@ class TradingLoop:
         """
         Compute live capital-at-risk heat and feed the portfolio risk
         state machine.  When in DEFENSIVE, advance eligible positions
-        to breakeven (non-destructive only — Phase 4a).
+        to breakeven.  When in REDUCING and reduction enabled, trim the
+        weakest position (Phase 4b).
         """
         cfg = self.config.risk
         if not cfg.portfolio_heat_enabled:
@@ -2240,13 +2248,19 @@ class TradingLoop:
         transition = self._portfolio_risk_sm.evaluate(snapshot)
 
         if transition.changed:
+            severity = "info"
+            if transition.state in (PortfolioRiskState.DEFENSIVE, PortfolioRiskState.REDUCING):
+                severity = "critical"
             self._add_warning(
-                "critical" if transition.state == PortfolioRiskState.DEFENSIVE else "info",
+                severity,
                 f"[PortfolioRisk] {transition.reason}",
             )
 
         if transition.state == PortfolioRiskState.DEFENSIVE:
             self._apply_defensive_actions()
+        elif transition.state == PortfolioRiskState.REDUCING:
+            self._apply_defensive_actions()
+            self._apply_reduction_actions(position_risks, exposure)
 
     def _apply_defensive_actions(self) -> None:
         """
@@ -2316,6 +2330,146 @@ class TradingLoop:
                     "tp1_hit" if pos.tp1_hit else f">={cfg.be_eligible_r_multiple}R excursion",
                 )
 
+    def _apply_reduction_actions(
+        self,
+        position_risks: list[PositionRisk],
+        exposure,
+    ) -> None:
+        """
+        Graduated exposure reduction: trim the single weakest position
+        by a configurable fraction.  Bypasses entry circuit-breaker /
+        cooldowns / opportunity throttles — risk exits are not entries.
+
+        Safety rails:
+          • Gated behind portfolio_reduction_enabled (default OFF).
+          • Per-position cooldown prevents repeated trims of the same position.
+          • Hourly cap prevents a reduction storm.
+          • Never fully closes a position (floor at broker minimum 0.01).
+          • Orphan/unknown positions are neutral-ranked, never auto-targeted.
+        """
+        cfg = self.config.risk
+        if not cfg.portfolio_reduction_enabled:
+            return
+
+        now = _time.monotonic()
+
+        cutoff = now - 3600.0
+        self._reduction_actions_this_hour = [
+            t for t in self._reduction_actions_this_hour if t > cutoff
+        ]
+        if len(self._reduction_actions_this_hour) >= cfg.max_reductions_per_hour:
+            logger.debug(
+                "[PortfolioRisk] REDUCING — hourly cap reached ({}/{})",
+                len(self._reduction_actions_this_hour), cfg.max_reductions_per_hour,
+            )
+            return
+
+        total_risk = sum(pr.risk_dollars for pr in position_risks)
+        pos_dicts: list[dict] = []
+
+        for oid, pos in list(self.managed_positions.items()):
+            try:
+                tick = self.platforms.get_price(pos.symbol)
+                current_price = tick.bid if pos.direction == "BUY" else tick.ask
+            except Exception:
+                continue
+
+            pr_match = next((pr for pr in position_risks if pr.order_id == oid), None)
+            risk_dollars = pr_match.risk_dollars if pr_match else 0.0
+
+            pos_dicts.append({
+                "order_id": oid,
+                "symbol": pos.symbol,
+                "direction": pos.direction,
+                "entry_price": pos.entry_price,
+                "sl": pos.sl,
+                "current_price": current_price,
+                "score": pos.score,
+                "regime": pos.regime,
+                "entry_type": pos.entry_type,
+                "open_time_utc": pos.open_time,
+                "risk_dollars": risk_dollars,
+                "lots": pos.lots,
+            })
+
+        if not pos_dicts:
+            return
+
+        ranked = rank_positions_weakest_first(pos_dicts, total_risk)
+        if not ranked:
+            return
+
+        for candidate in ranked:
+            if candidate.is_insufficient_data:
+                continue
+
+            oid = candidate.order_id
+            pos = self.managed_positions.get(oid)
+            if pos is None:
+                continue
+
+            last_trim = self._reduction_action_timestamps.get(oid, 0.0)
+            if (now - last_trim) < cfg.reduction_action_cooldown_seconds:
+                continue
+
+            if pos.lots <= 0.01:
+                continue
+
+            trim_lots = round(pos.lots * cfg.reduction_partial_ratio, 2)
+            trim_lots = max(0.01, trim_lots)
+            remaining_after = round(pos.lots - trim_lots, 2)
+            if remaining_after < 0.01:
+                trim_lots = round(pos.lots - 0.01, 2)
+                if trim_lots < 0.01:
+                    continue
+
+            pos_ctx = build_context_for_symbol(pos.symbol)
+            if not pos_ctx.supports_partial_close:
+                logger.debug(
+                    "[PortfolioRisk] REDUCING — {} does not support partial close, skipping",
+                    pos.symbol,
+                )
+                continue
+
+            logger.warning(
+                "[PortfolioRisk] REDUCING TRIM — {} {} | {:.2f} → {:.2f} lots "
+                "| weakness={:.1f} ({}) | R={:.2f} | score={} | risk_share={:.1f}%",
+                pos.direction, pos.symbol,
+                pos.lots, remaining_after,
+                candidate.weakness_score, candidate.reason,
+                candidate.r_multiple, candidate.entry_score,
+                candidate.risk_share_pct,
+            )
+
+            result = self.platforms.close_trade(oid, pos.platform, trim_lots)
+            if result.success:
+                pos.lots = remaining_after
+                self.position_store.update_position(oid, lots=remaining_after)
+                self._reduction_action_timestamps[oid] = now
+                self._reduction_actions_this_hour.append(now)
+
+                tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+                if tm_trade:
+                    tm_trade.remaining_size_lots = remaining_after
+
+                self._add_warning(
+                    "critical",
+                    f"[PortfolioRisk] REDUCING — trimmed {pos.direction} {pos.symbol} "
+                    f"by {trim_lots} lots (weakness={candidate.weakness_score:.1f})",
+                )
+                logger.warning(
+                    "[PortfolioRisk] REDUCING TRIM SUCCESS — {} {} | trimmed {:.2f} lots, "
+                    "remaining {:.2f} | heat was {:.2f}%",
+                    pos.direction, pos.symbol, trim_lots, remaining_after,
+                    self._current_portfolio_heat,
+                )
+            else:
+                logger.warning(
+                    "[PortfolioRisk] REDUCING TRIM FAILED — {} {} | broker rejected",
+                    pos.direction, pos.symbol,
+                )
+            return
+
     def _check_spread_deterioration(self) -> None:
         """
         Monitor spread quality on open positions.
@@ -2376,7 +2530,7 @@ class TradingLoop:
             return
         if (
             getattr(self, '_portfolio_risk_sm', None) is not None
-            and self._portfolio_risk_sm.state == PortfolioRiskState.DEFENSIVE
+            and self._portfolio_risk_sm.state in (PortfolioRiskState.DEFENSIVE, PortfolioRiskState.REDUCING)
         ):
             return
         for oid, pos in list(self.managed_positions.items()):
