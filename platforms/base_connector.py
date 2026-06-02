@@ -147,6 +147,7 @@ class BaseConnector(ABC):
         sl: float,
         tp: float,
         comment: str = "",
+        idempotency_key: str = "",
     ) -> OrderResult:
         """Place a market order. Returns fill details."""
 
@@ -159,6 +160,7 @@ class BaseConnector(ABC):
         sl: float,
         tp: float,
         comment: str = "",
+        idempotency_key: str = "",
     ) -> OrderResult:
         """Place a pending (limit/stop) order. Override in subclass if supported."""
         return OrderResult(

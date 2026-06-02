@@ -47,6 +47,7 @@ from management.trade_manager import (
 from adaptive.optimizer import AdaptiveOptimizer as MLAdapter, TradeAdjustments
 from platforms.base_connector import OrderResult, CloseResult, PositionInfo
 from platforms.deriv.deriv_connector import DerivConnector
+from platforms.order_idempotency import generate_idempotency_key
 from platforms.platform_manager import PlatformManager
 from platform_context import PlatformContext, build_context_for_symbol
 from risk.risk_engine import RiskEngine
@@ -85,6 +86,7 @@ class ManagedPosition:
         "broker_pnl",
         "broker_lots",
         "scale_in_count",
+        "idempotency_key",
     )
 
     def __init__(
@@ -98,6 +100,7 @@ class ManagedPosition:
         entry_type: str = "",
         stake_usd: float = 0.0,
         multiplier: int = 100,
+        idempotency_key: str = "",
     ):
         self.order_id = order.order_id
         self.platform = order.platform
@@ -124,6 +127,7 @@ class ManagedPosition:
         self.broker_pnl = 0.0  # Live P&L from broker (source of truth)
         self.broker_lots = 0.0  # Live lots from broker (detects partial fills)
         self.scale_in_count = 0
+        self.idempotency_key = idempotency_key
 
 
 class _LockedPositions:
@@ -962,6 +966,10 @@ class TradingLoop:
             return False
 
         pre_exec_ts = datetime.now(timezone.utc)
+        idem_key = generate_idempotency_key(pair, direction, adjusted_lots, pre_exec_ts)
+
+        if self.position_store:
+            self.position_store.record_in_flight(idem_key, pair, direction, adjusted_lots)
 
         use_pending = False
         if self.config.risk.pending_orders_enabled and not ctx.uses_stake:
@@ -995,7 +1003,8 @@ class TradingLoop:
                 adjusted_lots,
                 signal.stop_loss,
                 signal.tp1,
-                comment=f"APEX_PEND|{signal.score}|{session}",
+                comment=f"APEX_PEND|{signal.score}|{session}|{idem_key}",
+                idempotency_key=idem_key,
             )
             if order.success:
                 pending_id = order.order_id
@@ -1008,12 +1017,16 @@ class TradingLoop:
                     "signal": signal,
                     "session": session,
                 }
+                if self.position_store:
+                    self.position_store.resolve_in_flight(idem_key, pending_id)
                 logger.info(
                     "📋 PENDING ORDER PLACED — {} {} @ {:.5f} | expires in {}min",
                     order_kind, pair, signal.entry_price, max_wait,
                 )
                 return True
             self._execution_breaker.record_failure()
+            if self.position_store:
+                self.position_store.cancel_in_flight(idem_key)
             return False
 
         order = self.platforms.execute_entry(
@@ -1022,15 +1035,20 @@ class TradingLoop:
             adjusted_lots,
             signal.stop_loss,
             signal.tp1,
-            comment=f"APEX|{signal.score}|{session}",
+            comment=f"APEX|{signal.score}|{session}|{idem_key}",
             stake_usd=stake_usd,
+            idempotency_key=idem_key,
         )
 
         if not order.success:
             self._execution_breaker.record_failure()
+            if self.position_store:
+                self.position_store.cancel_in_flight(idem_key)
             return False
 
         self._execution_breaker.record_success()
+        if self.position_store:
+            self.position_store.resolve_in_flight(idem_key, order.order_id)
 
         if not ctx.uses_stake:
             self.execution_monitor.record_execution(
@@ -1063,6 +1081,7 @@ class TradingLoop:
             entry_type=signal.entry_type,
             stake_usd=stake_usd or 0.0,
             multiplier=self._get_deriv_multiplier(pair) if ctx.uses_stake else 100,
+            idempotency_key=idem_key,
         )
 
         tm_signal = TMEntrySignal(

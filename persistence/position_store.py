@@ -42,6 +42,22 @@ CREATE TABLE IF NOT EXISTS managed_positions (
 )
 """
 
+_CREATE_IN_FLIGHT = """
+CREATE TABLE IF NOT EXISTS in_flight_intents (
+    idempotency_key TEXT PRIMARY KEY,
+    symbol          TEXT NOT NULL,
+    direction       TEXT NOT NULL,
+    lots            REAL NOT NULL,
+    created_at      TEXT NOT NULL,
+    order_id        TEXT NOT NULL DEFAULT '',
+    status          TEXT NOT NULL DEFAULT 'PENDING'
+)
+"""
+
+_MIGRATE_IDEM_KEY = (
+    "ALTER TABLE managed_positions ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''"
+)
+
 
 class PositionStore:
     """Thread-safe SQLite store for managed positions."""
@@ -60,8 +76,20 @@ class PositionStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute(_CREATE_TABLE)
+        self._conn.execute(_CREATE_IN_FLIGHT)
+        self._migrate_schema()
         self._conn.commit()
         logger.debug("PositionStore opened — {}", self._db_path)
+
+    def _migrate_schema(self) -> None:
+        """Add columns that may not exist in older databases."""
+        cursor = self._conn.execute("PRAGMA table_info(managed_positions)")
+        cols = {row[1] for row in cursor.fetchall()}
+        if "idempotency_key" not in cols:
+            try:
+                self._conn.execute(_MIGRATE_IDEM_KEY)
+            except sqlite3.OperationalError:
+                pass
 
     def save_position(self, pos) -> None:
         """Persist a ManagedPosition to disk."""
@@ -73,8 +101,9 @@ class PositionStore:
                     (order_id, platform, symbol, direction, lots, entry_price,
                      sl, tp1, tp2, score, regime, session, entry_type,
                      open_time, tp1_hit, at_breakeven, trailing,
-                     tm_trade_id, stake_usd, multiplier, last_update)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     tm_trade_id, stake_usd, multiplier, idempotency_key,
+                     last_update)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         str(pos.order_id),
@@ -97,6 +126,7 @@ class PositionStore:
                         pos.tm_trade_id,
                         pos.stake_usd,
                         getattr(pos, "multiplier", 100),
+                        getattr(pos, "idempotency_key", ""),
                         datetime.now(timezone.utc).isoformat(),
                     ),
                 )
@@ -111,6 +141,7 @@ class PositionStore:
         allowed = {
             "sl", "tp1", "tp2", "lots", "tp1_hit", "at_breakeven",
             "trailing", "tm_trade_id", "stake_usd", "multiplier",
+            "idempotency_key",
         }
         updates = {}
         for key, val in fields.items():
@@ -186,6 +217,82 @@ class PositionStore:
             try:
                 if self._conn:
                     self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except Exception:
+                pass
+
+    # ── In-flight intent tracking (H3 idempotency) ──────────────────────
+
+    def record_in_flight(
+        self, idempotency_key: str, symbol: str, direction: str, lots: float,
+    ) -> None:
+        """Write an intent BEFORE submitting the order to the broker."""
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """INSERT OR REPLACE INTO in_flight_intents
+                       (idempotency_key, symbol, direction, lots, created_at, order_id, status)
+                       VALUES (?, ?, ?, ?, ?, '', 'PENDING')""",
+                    (idempotency_key, symbol, direction, lots,
+                     datetime.now(timezone.utc).isoformat()),
+                )
+                self._conn.commit()
+            except Exception as exc:
+                logger.error("in_flight record failed for {}: {}", idempotency_key, exc)
+
+    def resolve_in_flight(self, idempotency_key: str, order_id: str) -> None:
+        """Mark an in-flight intent as filled after broker confirmation."""
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """UPDATE in_flight_intents
+                       SET order_id = ?, status = 'FILLED'
+                       WHERE idempotency_key = ?""",
+                    (order_id, idempotency_key),
+                )
+                self._conn.commit()
+            except Exception as exc:
+                logger.error("in_flight resolve failed for {}: {}", idempotency_key, exc)
+
+    def cancel_in_flight(self, idempotency_key: str) -> None:
+        """Remove an in-flight intent after confirmed failure."""
+        with self._lock:
+            try:
+                self._conn.execute(
+                    "DELETE FROM in_flight_intents WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                )
+                self._conn.commit()
+            except Exception as exc:
+                logger.error("in_flight cancel failed for {}: {}", idempotency_key, exc)
+
+    def get_in_flight(self, idempotency_key: str) -> Optional[dict]:
+        """Return the in-flight record for *idempotency_key*, or None."""
+        with self._lock:
+            try:
+                cursor = self._conn.execute(
+                    "SELECT * FROM in_flight_intents WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                )
+                row = cursor.fetchone()
+                if row is None:
+                    return None
+                columns = [desc[0] for desc in cursor.description]
+                return dict(zip(columns, row))
+            except Exception:
+                return None
+
+    def cleanup_stale_in_flight(self, max_age_seconds: int = 600) -> None:
+        """Remove PENDING in-flight records older than *max_age_seconds*."""
+        with self._lock:
+            try:
+                cutoff = datetime.now(timezone.utc).timestamp() - max_age_seconds
+                self._conn.execute(
+                    """DELETE FROM in_flight_intents
+                       WHERE status = 'PENDING'
+                       AND created_at < ?""",
+                    (datetime.fromtimestamp(cutoff, tz=timezone.utc).isoformat(),),
+                )
+                self._conn.commit()
             except Exception:
                 pass
 
