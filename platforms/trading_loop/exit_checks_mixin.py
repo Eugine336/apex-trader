@@ -8,7 +8,7 @@ from loguru import logger
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from platforms.main_loop import ManagedPosition
+    from platforms.trading_loop.positions import ManagedPosition
 
 
 class ExitChecksMixin:

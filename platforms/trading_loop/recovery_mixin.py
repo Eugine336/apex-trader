@@ -8,7 +8,7 @@ from loguru import logger
 
 from management.trade_manager import EntrySignal as TMEntrySignal
 from platforms.base_connector import OrderResult, CloseResult, PositionInfo
-from platforms.main_loop import ManagedPosition
+from platforms.trading_loop.positions import ManagedPosition
 
 
 class RecoveryReconciliationMixin:
