@@ -81,13 +81,15 @@ class DailyMaintenance:
                 try:
                     f.unlink()
                     count += 1
-                except Exception:
+                except Exception as exc:
+                    logger.debug("[maintenance] temp file deletion failed: {}", exc)
                     pass
         for cache_dir in self._data_dir.rglob("__pycache__"):
             try:
                 shutil.rmtree(str(cache_dir))
                 count += 1
-            except Exception:
+            except Exception as exc:
+                logger.debug("[maintenance] pycache removal failed: {}", exc)
                 pass
         return count
 
@@ -100,6 +102,7 @@ class DailyMaintenance:
                 if f.stat().st_mtime < cutoff:
                     f.unlink()
                     deleted += 1
-            except Exception:
+            except Exception as exc:
+                logger.debug("[maintenance] old file cleanup failed: {}", exc)
                 pass
         return deleted

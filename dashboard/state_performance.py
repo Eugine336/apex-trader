@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from dashboard.state_helpers import HelpersMixin, pct_to_fraction, safe_float
+from loguru import logger
 
 
 class PerformanceMixin(HelpersMixin):
@@ -57,7 +58,8 @@ class PerformanceMixin(HelpersMixin):
         for date_key, pnl in date_pnl.items():
             try:
                 d = datetime.fromisoformat(date_key).date()
-            except Exception:
+            except Exception as exc:
+                logger.debug("[dashboard] date parse failed for PnL key, skipping: {}", exc)
                 continue
             if d == today:
                 daily_pnl += pnl

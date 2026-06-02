@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from dashboard.state_helpers import HelpersMixin, safe_float, pct_to_fraction
+from loguru import logger
 
 
 class RiskMixin(HelpersMixin):
@@ -51,7 +52,8 @@ class RiskMixin(HelpersMixin):
                     result["avg_latency_ms"] = stats.avg_latency_ms
                     result["spread_is_wide"] = stats.spread_is_wide
                     result["requote_count"] = stats.requote_count
-                except Exception:
+                except Exception as exc:
+                    logger.debug("[dashboard] execution stats read failed: {}", exc)
                     pass
 
             reporter = getattr(loop, "risk_reporter", None)
@@ -82,7 +84,8 @@ class RiskMixin(HelpersMixin):
                         result["win_rate_today"] = report.win_rate_today
                         result["profit_factor"] = report.profit_factor
                         result["max_drawdown_today"] = report.max_drawdown_today
-                except Exception:
+                except Exception as exc:
+                    logger.debug("[dashboard] risk report read failed: {}", exc)
                     pass
 
             # Opportunity density

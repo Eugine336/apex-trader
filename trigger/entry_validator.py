@@ -142,7 +142,8 @@ class EntryValidator:
         if self._mt5_connector is not None:
             try:
                 mapped = self._mt5_connector.symbol_map(pair)
-            except Exception:
+            except Exception as exc:
+                logger.warning("[entry_validator] symbol_map lookup failed: {}", exc)
                 pass
 
         try:

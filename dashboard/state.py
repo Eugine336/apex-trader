@@ -82,7 +82,8 @@ class LiveState(
         # Sort newest-first and cap
         try:
             events.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
-        except Exception:
+        except Exception as exc:
+            logger.debug("[dashboard] event sort failed: {}", exc)
             pass
         events = events[:100]
 

@@ -88,7 +88,8 @@ class PositionStore:
         if "idempotency_key" not in cols:
             try:
                 self._conn.execute(_MIGRATE_IDEM_KEY)
-            except sqlite3.OperationalError:
+            except sqlite3.OperationalError as exc:
+                logger.debug("[position_store] idempotency-key migration skipped (likely already exists): {}", exc)
                 pass
 
     def save_position(self, pos) -> None:
@@ -208,7 +209,8 @@ class PositionStore:
                     "SELECT COUNT(*) FROM managed_positions"
                 )
                 return cursor.fetchone()[0]
-            except Exception:
+            except Exception as exc:
+                logger.warning("[position_store] open-position count read failed, returning 0: {}", exc)
                 return 0
 
     def flush(self) -> None:
@@ -217,7 +219,8 @@ class PositionStore:
             try:
                 if self._conn:
                     self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-            except Exception:
+            except Exception as exc:
+                logger.warning("[position_store] WAL checkpoint failed during flush: {}", exc)
                 pass
 
     # ── In-flight intent tracking (H3 idempotency) ──────────────────────
@@ -278,7 +281,8 @@ class PositionStore:
                     return None
                 columns = [desc[0] for desc in cursor.description]
                 return dict(zip(columns, row))
-            except Exception:
+            except Exception as exc:
+                logger.warning("[position_store] in-flight record lookup failed, returning None: {}", exc)
                 return None
 
     def cleanup_stale_in_flight(self, max_age_seconds: int = 600) -> None:
@@ -293,7 +297,8 @@ class PositionStore:
                     (datetime.fromtimestamp(cutoff, tz=timezone.utc).isoformat(),),
                 )
                 self._conn.commit()
-            except Exception:
+            except Exception as exc:
+                logger.error("[position_store] stale in-flight cleanup commit failed: {}", exc)
                 pass
 
     def close(self) -> None:
@@ -302,7 +307,8 @@ class PositionStore:
             if self._conn:
                 try:
                     self._conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                except Exception:
+                except Exception as exc:
+                    logger.warning("[position_store] WAL checkpoint failed during close: {}", exc)
                     pass
                 self._conn.close()
                 self._conn = None
