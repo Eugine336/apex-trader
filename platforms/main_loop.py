@@ -242,7 +242,14 @@ class TradingLoop:
         self.scanner = PairScanner(self.config)
         self.ranker = PairRanker()
         self.scheduler = ScanScheduler()
-        self.orchestrator = MTFOrchestrator(min_entry_score=self.config.scoring.min_entry_score)
+        _adaptive_weights = None
+        if self.config.scoring.use_adaptive_scoring_weights:
+            _adaptive_weights = MTFOrchestrator.load_saved_weights()
+        self.orchestrator = MTFOrchestrator(
+            min_entry_score=self.config.scoring.min_entry_score,
+            use_adaptive_weights=self.config.scoring.use_adaptive_scoring_weights,
+            scoring_weights=_adaptive_weights,
+        )
         self.entry_engine = EntryEngine(config=self.config)
         self.drawdown = DrawdownGuard()
         self.correlation = CorrelationEngine(

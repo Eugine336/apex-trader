@@ -242,7 +242,7 @@ class BacktestEngine:
         broker_loader: Optional[BrokerDataLoader] = None,
     ):
         self.orchestrator = orchestrator or MTFOrchestrator(
-            min_entry_score=65, pip_size=pip_size
+            min_entry_score=65, pip_size=pip_size,
         )
         self.journal = journal
         self.starting_balance = starting_balance
