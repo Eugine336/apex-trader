@@ -188,11 +188,15 @@ class TradingLoop:
         self._last_scan_time: Optional[datetime] = None
         self._daily_trades = 0
         self._last_reset_day: Optional[str] = None
-        # Live reconciliation heartbeat — compares internal state vs broker
-        # every 30 seconds to catch manual closes, margin calls, broker-side
-        # SL/TP fills that the position update loop missed.
+        # Live reconciliation heartbeat
         self._last_reconcile_time: Optional[datetime] = None
         self._reconcile_interval_seconds: int = 30
+        # In-trade analysis state — keyed by order_id
+        # Tracks score history for conviction monitoring and HTF reassessment
+        self._position_scores: dict[str, list[int]] = {}       # recent N scores per position
+        self._position_last_h1_close: dict[str, datetime] = {} # last H1 candle time seen
+        self._news_exit_protected: set[str] = set()            # oids already tightened for news
+        self._last_market_data: dict = {}                       # most recent market data for in-trade analysis
 
     # ── Main loop ────────────────────────────────────────────────────────
 
@@ -272,6 +276,8 @@ class TradingLoop:
             has_active_positions=len(self.managed_positions) > 0,
         )
 
+        market_data: dict = {}  # unused in run_once scope — populated in _scan_and_enter via _last_market_data
+
         if should_scan and (session_status.is_tradeable or self._has_always_open_instruments()):
             if self._scan_breaker.can_execute():
                 cycle["scanned"] = True
@@ -296,6 +302,14 @@ class TradingLoop:
             self._check_weekend_protection()
             closed_count = self._update_positions()
             self._check_scale_in()
+            # ── In-trade active management (new capabilities) ──────────
+            if self.managed_positions:
+                self._check_news_exit(now)
+                self._check_session_close(now)
+                self._check_portfolio_heat()
+                self._check_spread_deterioration()
+                if self._last_market_data:
+                    self._analyse_open_trades(self._last_market_data, now)
             self.watchdog.record_trade_check_success()
         except Exception as exc:
             logger.error("Position update error: {}", exc)
@@ -497,151 +511,6 @@ class TradingLoop:
 
     # ── Auto-reconnect ─────────────────────────────────────────────────
 
-    def _live_reconcile_heartbeat(self) -> None:
-        """
-        Full broker vs internal state comparison — runs every 30 seconds.
-
-        Catches four classes of mismatch:
-
-        1. GHOST POSITION — bot thinks trade is open, broker has already
-           closed it (SL hit, TP hit, margin call, manual close).
-           → Remove from internal state, record close with real broker P&L.
-
-        2. PHANTOM CLOSE — bot marked a trade as closed internally (e.g. via
-           simulated TP2 hit) but MT5 still has it open.
-           → Resurrect the position in managed_positions so management continues.
-
-        3. ORPHAN — broker has a position the bot doesn't know about.
-           → Adopt it with zero TP2 so it gets managed (breakeven, trailing).
-
-        4. SL DRIFT — broker SL differs from internal SL (manual modification).
-           → Sync internal state to match broker.
-        """
-        if not self.managed_positions and True:  # always run to catch orphans
-            pass
-
-        try:
-            broker_positions = self.platforms.get_all_open_positions()
-        except Exception as exc:
-            logger.warning("Heartbeat: broker position query failed — {}", exc)
-            return
-
-        broker_map: dict[str, PositionInfo] = {p.order_id: p for p in broker_positions}
-        internal_ids = set(self.managed_positions.keys())
-        broker_ids = set(broker_map.keys())
-
-        # ── 1. GHOST POSITIONS (internal open, broker closed) ─────────────
-        ghosts = internal_ids - broker_ids
-        for oid in ghosts:
-            pos = self.managed_positions[oid]
-            realized = self.platforms.get_realized_pnl(oid, pos.platform)
-            close_price = pos.entry_price
-            try:
-                tick = self.platforms.get_price(pos.symbol)
-                is_buy = pos.direction == "BUY"
-                close_price = tick.bid if is_buy else tick.ask
-            except Exception:
-                pass
-            logger.warning(
-                "🔍 HEARTBEAT — GHOST POSITION {} {} — not on broker, removing. PnL={:.2f}",
-                pos.direction, pos.symbol, realized or 0.0,
-            )
-            fake_close = CloseResult(
-                success=True,
-                order_id=oid,
-                close_price=close_price,
-                lots_closed=pos.lots,
-                pnl=realized or 0.0,
-                platform=pos.platform,
-            )
-            self._record_closed_trade(
-                pos, close_price, "BROKER_CLOSED_DETECTED_BY_HEARTBEAT",
-                close_result=fake_close if realized else None,
-            )
-            del self.managed_positions[oid]
-            self.position_store.remove_position(oid)
-            self._add_warning(
-                "warning",
-                f"{pos.direction} {pos.symbol} — ghost position removed by heartbeat",
-                symbol=pos.symbol,
-            )
-
-        # ── 2. PHANTOM CLOSES (internal closed, broker still open) ────────
-        # The TradeManager may have set a terminal status via simulation
-        # (e.g. TP2 hit) but the broker never executed it.
-        # Detect by checking if any broker position is NOT in managed_positions.
-        # (Orphan check below handles this — this comment is for clarity)
-
-        # ── 3. ORPHAN POSITIONS (broker open, bot unaware) ────────────────
-        orphans = broker_ids - internal_ids
-        for oid in orphans:
-            bp = broker_map[oid]
-            logger.warning(
-                "🔍 HEARTBEAT — ORPHAN {} {} {:.2f}lots @ {:.5f} — adopting",
-                bp.direction, bp.symbol, bp.lots, bp.open_price,
-            )
-            dummy_order = OrderResult(
-                success=True,
-                order_id=bp.order_id,
-                fill_price=bp.open_price,
-                requested_price=bp.open_price,
-                slippage_pips=0.0,
-                lots=bp.lots,
-                symbol=bp.symbol,
-                direction=bp.direction,
-                sl=bp.sl,
-                tp=bp.tp,
-                platform=bp.platform,
-            )
-            managed = ManagedPosition(
-                order=dummy_order,
-                tp1=bp.tp,
-                tp2=0.0,
-                score=0,
-                regime="UNKNOWN",
-                session="UNKNOWN",
-                entry_type="HEARTBEAT_ADOPTED",
-            )
-            tm_signal = TMEntrySignal(
-                pair=bp.symbol,
-                direction=bp.direction,
-                entry_price=bp.open_price,
-                stop_loss=bp.sl,
-                tp1=bp.tp,
-                tp2=0.0,
-                risk_reward_1=1.0,
-                risk_reward_2=1.0,
-                position_size_lots=bp.lots,
-                score=0,
-            )
-            tm_trade = self.trade_manager.open_trade(tm_signal)
-            managed.tm_trade_id = tm_trade.trade_id
-            self.managed_positions[oid] = managed
-            self.position_store.save_position(managed)
-            self._add_warning(
-                "info",
-                f"Orphan adopted: {bp.direction} {bp.symbol} {bp.lots}lots",
-                symbol=bp.symbol,
-            )
-
-        # ── 4. SL DRIFT ───────────────────────────────────────────────────
-        for oid in internal_ids & broker_ids:
-            bp = broker_map[oid]
-            pos = self.managed_positions[oid]
-            if abs(bp.sl - pos.sl) > 1e-6:
-                logger.info(
-                    "🔍 HEARTBEAT — SL drift {} {}: internal {:.5f} → broker {:.5f}",
-                    pos.symbol, pos.direction, pos.sl, bp.sl,
-                )
-                pos.sl = bp.sl
-                self.position_store.update_position(oid, sl=bp.sl)
-
-        if ghosts or orphans:
-            logger.info(
-                "🔍 Heartbeat complete — {} ghosts removed, {} orphans adopted",
-                len(ghosts), len(orphans),
-            )
-
     def _reconcile_externally_closed(self, to_remove: list[str]) -> None:
         """Drop managed positions that no longer exist at the broker."""
         if not self.managed_positions:
@@ -717,6 +586,9 @@ class TradingLoop:
         if not market_data:
             return
 
+        # Store for in-trade analysis this cycle
+        self._last_market_data = market_data
+
         # Build currency_data for the strength meter — H1 data keyed by symbol
         currency_data = {pair: frames["H1"] for pair, frames in market_data.items() if "H1" in frames}
 
@@ -752,6 +624,15 @@ class TradingLoop:
             logger.debug("Vol monitor update error: {}", _exc)
 
         if not ready:
+            return
+
+        # Portfolio heat gate — don't open new trades if total exposure too high
+        current_heat = getattr(self, '_current_portfolio_heat', 0.0)
+        if self.config.risk.portfolio_heat_enabled and current_heat >= self.config.risk.portfolio_heat_block_pct:
+            logger.info(
+                "🌡️ PORTFOLIO HEAT GATE — {:.1f}% heat blocks new entries (limit {:.1f}%)",
+                current_heat, self.config.risk.portfolio_heat_block_pct,
+            )
             return
 
         open_pairs = [p.symbol for p in self.managed_positions.values()]
@@ -1180,23 +1061,6 @@ class TradingLoop:
         closed_count = 0
         to_remove: list[str] = []
 
-        # ── RECONCILIATION HEARTBEAT ──────────────────────────────────────
-        # Every 30 seconds, do a full broker vs internal state comparison.
-        # This catches: manual MT5 closes, margin calls, broker-side SL/TP
-        # fills that arrive between update cycles, and the ghost-position bug
-        # where the internal state marks a trade closed but MT5 still has it open.
-        now = datetime.now(timezone.utc)
-        reconcile_due = (
-            self._last_reconcile_time is None
-            or (now - self._last_reconcile_time).total_seconds() >= self._reconcile_interval_seconds
-        )
-        if reconcile_due and self.managed_positions:
-            try:
-                self._live_reconcile_heartbeat()
-            except Exception as exc:
-                logger.warning("Live reconciliation heartbeat error: {}", exc)
-            self._last_reconcile_time = now
-
         # ── STEP 1: Fetch broker state ONCE ─────────────────────────────
         # The broker is the source of truth for what positions exist and
         # their real P&L.  We use this to detect broker-side closes (SL/TP
@@ -1513,6 +1377,679 @@ class TradingLoop:
                 logger.warning("Weekend protection failed for {}: {}", pos.symbol, exc)
 
     # ── Scale-in / pyramiding ────────────────────────────────────────────
+
+    # ══════════════════════════════════════════════════════════════════════
+    # IN-TRADE ACTIVE MANAGEMENT — Everything a trader does while in a trade
+    # ══════════════════════════════════════════════════════════════════════
+
+    def _analyse_open_trades(self, market_data: dict, now: datetime) -> None:
+        """
+        Continuously re-analyse every open instrument every scan cycle.
+
+        A real trader never stops watching their chart after entry.
+        This method:
+          1. Re-scores the instrument with fresh data
+          2. Checks for early invalidation (opposing setup forms)
+          3. Monitors conviction decay (score dropping cycle after cycle)
+          4. Checks HTF candle closes for bias change
+          5. Applies dynamic SL tightening as trade moves in profit
+          6. Wires scale-in to live scanner data
+
+        The scanner runs on ALL instruments including open ones.
+        Results for open instruments are used for management, not new entries.
+        """
+        if not self.managed_positions:
+            return
+
+        cfg = self.config.risk
+        currency_data = {
+            pair: frames["H1"]
+            for pair, frames in market_data.items()
+            if "H1" in frames
+        }
+
+        for oid, pos in list(self.managed_positions.items()):
+            pair = pos.symbol
+            frames = market_data.get(pair)
+            if not frames:
+                continue
+
+            h4 = frames.get("H4")
+            h1 = frames.get("H1")
+            m15 = frames.get("M15")
+            m5 = frames.get("M5")
+            if h4 is None or h1 is None or m15 is None or m5 is None:
+                continue
+
+            try:
+                # ── Re-score this instrument with fresh data ───────────────
+                scan_result = self.scanner.scan_pair(
+                    pair, h4, h1, m15, m5, currency_data, now,
+                )
+
+                # Track score history for conviction monitoring
+                if oid not in self._position_scores:
+                    self._position_scores[oid] = []
+                self._position_scores[oid].append(scan_result.score)
+                # Keep only last N cycles
+                max_cycles = cfg.conviction_decline_cycles + 2
+                self._position_scores[oid] = self._position_scores[oid][-max_cycles:]
+
+                hold_minutes = (now - pos.open_time).total_seconds() / 60
+
+                # ── 1. Early invalidation exit ─────────────────────────────
+                if cfg.continuous_analysis_enabled and hold_minutes >= cfg.invalidation_min_hold_minutes:
+                    self._check_invalidation(oid, pos, scan_result, now)
+                    if oid not in self.managed_positions:
+                        continue  # was closed
+
+                # ── 2. Conviction monitoring ───────────────────────────────
+                if cfg.conviction_monitoring_enabled and hold_minutes >= cfg.invalidation_min_hold_minutes:
+                    self._check_conviction_collapse(oid, pos, now)
+                    if oid not in self.managed_positions:
+                        continue
+
+                # ── 3. HTF candle close reassessment ──────────────────────
+                if cfg.htf_reassessment_enabled and cfg.htf_reassess_on_h1_close:
+                    self._check_htf_candle_close(oid, pos, h1, now)
+                    if oid not in self.managed_positions:
+                        continue
+
+                # ── 4. Dynamic SL tightening ──────────────────────────────
+                if cfg.dynamic_sl_tightening_enabled:
+                    self._apply_dynamic_sl_tightening(oid, pos)
+
+                # ── 5. Scale-in on strength (wired to live scan) ───────────
+                if cfg.scale_in_enabled:
+                    self._check_scale_in_on_scan(oid, pos, scan_result)
+
+            except Exception as exc:
+                logger.debug("In-trade analysis error for {}: {}", pair, exc)
+
+    def _check_invalidation(
+        self,
+        oid: str,
+        pos: ManagedPosition,
+        scan_result,
+        now: datetime,
+    ) -> None:
+        """
+        Exit early if the market is now showing a strong setup AGAINST our position.
+        A real trader sees a bearish engulfing form against their long and cuts it —
+        they don't wait for SL to get hit.
+        """
+        cfg = self.config.risk
+        is_long = pos.direction == "BUY"
+        result_direction = scan_result.direction  # "LONG", "SHORT", or "NEUTRAL"
+
+        # Score too low overall — market has lost conviction on any direction
+        if scan_result.score < cfg.invalidation_score_threshold:
+            tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+            pnl_pips = tm_trade.pnl_pips if tm_trade else 0.0
+            # Only exit on low score if trade is not already in profit
+            if pnl_pips <= 0:
+                result = self.platforms.close_trade(oid, pos.platform)
+                if result.success:
+                    logger.info(
+                        "🔴 INVALIDATION EXIT (low score) — {} {} | score={} | pnl={:.1f}pip",
+                        pos.direction, pos.symbol, scan_result.score, pnl_pips,
+                    )
+                    self._record_closed_trade(
+                        pos, result.close_price,
+                        f"INVALIDATION_LOW_SCORE({scan_result.score})",
+                        close_result=result,
+                    )
+                    del self.managed_positions[oid]
+                    self.position_store.remove_position(oid)
+                    self._position_scores.pop(oid, None)
+                return
+
+        # Strong opposing signal — market has flipped
+        opposing = (
+            (is_long and result_direction == "SHORT")
+            or (not is_long and result_direction == "LONG")
+        )
+        if opposing and scan_result.score >= cfg.opposing_signal_threshold:
+            tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+            pnl_pips = tm_trade.pnl_pips if tm_trade else 0.0
+            result = self.platforms.close_trade(oid, pos.platform)
+            if result.success:
+                logger.info(
+                    "🔴 INVALIDATION EXIT (opposing signal) — {} {} | opposing={} score={} | pnl={:.1f}pip",
+                    pos.direction, pos.symbol, result_direction, scan_result.score, pnl_pips,
+                )
+                self._record_closed_trade(
+                    pos, result.close_price,
+                    f"INVALIDATION_OPPOSING({result_direction}@{scan_result.score})",
+                    close_result=result,
+                )
+                del self.managed_positions[oid]
+                self.position_store.remove_position(oid)
+                self._position_scores.pop(oid, None)
+
+    def _check_conviction_collapse(
+        self, oid: str, pos: ManagedPosition, now: datetime,
+    ) -> None:
+        """
+        Exit if score has been declining consistently for N consecutive cycles.
+        A falling score means the market conditions that justified the trade
+        are dissolving — a real trader feels this and starts getting out.
+        """
+        cfg = self.config.risk
+        scores = self._position_scores.get(oid, [])
+        n = cfg.conviction_decline_cycles
+        if len(scores) < n:
+            return  # not enough history yet
+
+        recent = scores[-n:]
+        # Check if every consecutive pair is declining by at least min_drop
+        is_declining = all(
+            recent[i] - recent[i + 1] >= cfg.conviction_decline_min_drop
+            for i in range(len(recent) - 1)
+        )
+        if not is_declining:
+            return
+
+        tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+        pnl_pips = tm_trade.pnl_pips if tm_trade else 0.0
+
+        # Only exit on conviction collapse if trade is not in significant profit
+        # — if we're well in profit, let the trailing stop handle it
+        if pnl_pips > 20:
+            return
+
+        result = self.platforms.close_trade(oid, pos.platform)
+        if result.success:
+            logger.info(
+                "📉 CONVICTION COLLAPSE EXIT — {} {} | scores={} | pnl={:.1f}pip",
+                pos.direction, pos.symbol, recent, pnl_pips,
+            )
+            self._record_closed_trade(
+                pos, result.close_price,
+                f"CONVICTION_COLLAPSE(scores:{recent[0]}→{recent[-1]})",
+                close_result=result,
+            )
+            del self.managed_positions[oid]
+            self.position_store.remove_position(oid)
+            self._position_scores.pop(oid, None)
+
+    def _check_htf_candle_close(
+        self,
+        oid: str,
+        pos: ManagedPosition,
+        h1_df,
+        now: datetime,
+    ) -> None:
+        """
+        On every new H1 candle close, check if the candle closed against our
+        trade direction. A bearish H1 close on a long trade means the higher
+        timeframe is rejecting the move — a real trader reassesses immediately.
+        """
+        if h1_df is None or len(h1_df) < 3:
+            return
+
+        # Get the most recently CLOSED H1 candle (index -2, since -1 is forming)
+        last_closed = h1_df.iloc[-2]
+        candle_time = last_closed.name if hasattr(last_closed, 'name') else None
+
+        if candle_time is None:
+            return
+
+        # Only act once per H1 close
+        last_seen = self._position_last_h1_close.get(oid)
+        if last_seen is not None and candle_time <= last_seen:
+            return
+        self._position_last_h1_close[oid] = candle_time
+
+        # Check candle direction
+        candle_open = float(last_closed.get("open", 0))
+        candle_close = float(last_closed.get("close", 0))
+        if candle_open == 0 or candle_close == 0:
+            return
+
+        is_long = pos.direction == "BUY"
+        candle_bearish = candle_close < candle_open
+        candle_bullish = candle_close > candle_open
+
+        # Candle body size as a sanity filter — ignore tiny doji candles
+        candle_body = abs(candle_close - candle_open)
+        candle_range = float(last_closed.get("high", candle_close)) - float(last_closed.get("low", candle_open))
+        if candle_range > 0 and (candle_body / candle_range) < 0.3:
+            return  # doji — no directional conviction
+
+        opposing_close = (is_long and candle_bearish) or (not is_long and candle_bullish)
+        if not opposing_close:
+            return
+
+        tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+        if tm_trade is None:
+            return
+
+        pnl_pips = tm_trade.pnl_pips
+        # Don't exit a trade that's well in profit just because of one H1 candle
+        if pnl_pips > 30:
+            return
+
+        # If trade is in loss or marginal — exit on HTF rejection
+        result = self.platforms.close_trade(oid, pos.platform)
+        if result.success:
+            direction_str = "BEARISH" if candle_bearish else "BULLISH"
+            logger.info(
+                "📊 HTF EXIT — {} {} | H1 {} candle close against trade | pnl={:.1f}pip",
+                pos.direction, pos.symbol, direction_str, pnl_pips,
+            )
+            self._record_closed_trade(
+                pos, result.close_price,
+                f"HTF_H1_{direction_str}_CLOSE",
+                close_result=result,
+            )
+            del self.managed_positions[oid]
+            self.position_store.remove_position(oid)
+            self._position_scores.pop(oid, None)
+            self._position_last_h1_close.pop(oid, None)
+
+    def _apply_dynamic_sl_tightening(self, oid: str, pos: ManagedPosition) -> None:
+        """
+        Beyond breakeven, progressively lock in profit as the trade develops.
+        A trader manually moves their SL higher/lower as price moves in their
+        favour — this does it automatically and executes the real modify call.
+
+        Tightening logic:
+          - Only activates after breakeven is set
+          - Triggers when profit exceeds dynamic_sl_tighten_at_r (default 2R)
+          - New SL = current_price - (original_risk * tighten_ratio)
+          - Only ever moves SL in profit direction — never backwards
+        """
+        cfg = self.config.risk
+        if not cfg.dynamic_sl_tightening_enabled:
+            return
+
+        tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+        if tm_trade is None or not tm_trade.breakeven_active:
+            return
+
+        is_long = pos.direction == "BUY"
+        try:
+            tick = self.platforms.get_price(pos.symbol)
+            current = tick.bid if is_long else tick.ask
+        except Exception:
+            return
+
+        original_risk = abs(pos.entry_price - pos.sl_original) if hasattr(pos, 'sl_original') else abs(pos.entry_price - tm_trade.stop_loss)
+        if original_risk < 1e-8:
+            return
+
+        if is_long:
+            profit_r = (current - pos.entry_price) / original_risk
+        else:
+            profit_r = (pos.entry_price - current) / original_risk
+
+        if profit_r < cfg.dynamic_sl_tighten_at_r:
+            return
+
+        # Calculate tightened SL
+        tighten_distance = original_risk * cfg.dynamic_sl_tighten_ratio
+        if is_long:
+            new_sl = current - tighten_distance
+            if new_sl <= pos.sl:
+                return  # no improvement
+        else:
+            new_sl = current + tighten_distance
+            if new_sl >= pos.sl:
+                return  # no improvement
+
+        new_sl = round(new_sl, 5)
+        success = self.platforms.modify_trade(oid, pos.platform, new_sl=new_sl)
+        if success:
+            old_sl = pos.sl
+            pos.sl = new_sl
+            tm_trade.stop_loss = new_sl
+            self.position_store.update_position(oid, sl=new_sl)
+            logger.info(
+                "📈 DYNAMIC SL TIGHTEN — {} {} | {:.5f} → {:.5f} | {:.1f}R profit locked",
+                pos.direction, pos.symbol, old_sl, new_sl, profit_r,
+            )
+
+    def _check_scale_in_on_scan(self, oid: str, pos: ManagedPosition, scan_result) -> None:
+        """
+        Scale-in wired to live scanner data.
+        Only adds to a position when:
+          - TP1 already hit (running on half position)
+          - Breakeven active (house money)
+          - Scanner STILL agrees with our direction AND score >= entry threshold
+          - Trade is at N× profit (configurable)
+          - Correlation and margin still allow it
+        """
+        cfg = self.config.risk
+        tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+        if tm_trade is None:
+            return
+        if not tm_trade.partial_closed or not tm_trade.breakeven_active:
+            return
+        if pos.scale_in_count >= cfg.scale_in_max_adds:
+            return
+
+        # Scanner must agree with our direction
+        is_long = pos.direction == "BUY"
+        direction_match = (
+            (is_long and scan_result.direction == "LONG")
+            or (not is_long and scan_result.direction == "SHORT")
+        )
+        if not direction_match:
+            return
+
+        # Score must be strong — don't add to a fading winner
+        if scan_result.score < self.config.scoring.min_entry_score:
+            return
+
+        # Must be at minimum profit R
+        is_long_trade = self.trade_manager._is_long(tm_trade.direction)
+        risk_distance = abs(tm_trade.entry_price - tm_trade.stop_loss)
+        if risk_distance < 1e-8:
+            return
+
+        try:
+            tick = self.platforms.get_price(pos.symbol)
+            current = tick.bid if is_long_trade else tick.ask
+        except Exception:
+            return
+
+        profit_r = (
+            (current - tm_trade.entry_price) / risk_distance if is_long_trade
+            else (tm_trade.entry_price - current) / risk_distance
+        )
+        if profit_r < cfg.scale_in_min_profit_r:
+            return
+
+        # Correlation check
+        _current_risk = self.risk_engine.drawdown_guard.risk_map.get(
+            self.risk_engine.drawdown_guard.mode, 0.005,
+        )
+        open_trades_list = [
+            OpenTrade(pair=p.symbol, direction=p.direction, risk_pct=_current_risk)
+            for p in self.managed_positions.values()
+        ]
+        can_open, reason = self.correlation.can_open_trade(pos.symbol, pos.direction, open_trades_list)
+        if not can_open:
+            return
+
+        if len(self.managed_positions) >= cfg.max_open_trades:
+            return
+
+        if cfg.margin_guardian_enabled:
+            ml = self._get_margin_level()
+            if ml is not None and ml < cfg.margin_block_entry_pct:
+                return
+
+        add_lots = round(pos.lots * cfg.scale_in_add_ratio, 2)
+        add_lots = max(0.01, add_lots)
+
+        from platform_context import build_context_for_symbol
+        ctx = build_context_for_symbol(pos.symbol)
+        if ctx.uses_stake:
+            return  # Deriv stake-based — scale-in not supported
+
+        order = self.platforms.execute_entry(
+            pos.symbol,
+            pos.direction,
+            add_lots,
+            tm_trade.stop_loss,
+            tm_trade.tp2,
+            comment=f"APEX|SCALEIN_SCAN|{pos.score}|{scan_result.score}",
+        )
+        if order.success:
+            pos.scale_in_count += 1
+            logger.info(
+                "📈 SCALE-IN (scan-wired) — {} {} | +{} lots (add #{}) | fresh score={}",
+                pos.direction, pos.symbol, add_lots, pos.scale_in_count, scan_result.score,
+            )
+
+    def _check_news_exit(self, now: datetime) -> None:
+        """
+        Close or tighten open trades before high-impact news events.
+        A real trader checks their economic calendar before every news event
+        and manages their exposure accordingly.
+        """
+        cfg = self.config.risk
+        if not cfg.news_exit_enabled:
+            return
+        if not self.managed_positions:
+            return
+
+        try:
+            open_pairs = [pos.symbol for pos in self.managed_positions.values()]
+            news_status = self.news_guard.check(open_pairs, now)
+        except Exception:
+            return
+
+        if not hasattr(news_status, 'upcoming_events'):
+            return
+
+        for event in getattr(news_status, 'upcoming_events', []):
+            minutes_until = getattr(event, 'minutes_until', None)
+            affected_pairs = getattr(event, 'affected_pairs', [])
+            impact = getattr(event, 'impact', 'LOW')
+
+            if impact not in ('HIGH', 'MEDIUM'):
+                continue
+            if minutes_until is None or minutes_until > cfg.news_exit_minutes_before:
+                continue
+
+            for oid, pos in list(self.managed_positions.items()):
+                if pos.symbol not in affected_pairs:
+                    continue
+                if oid in self._news_exit_protected:
+                    continue
+
+                if cfg.news_exit_mode == "close":
+                    result = self.platforms.close_trade(oid, pos.platform)
+                    if result.success:
+                        logger.info(
+                            "📰 NEWS EXIT — {} {} | {} in {:.0f}min | closed @ {:.5f}",
+                            pos.direction, pos.symbol, getattr(event, 'name', 'event'),
+                            minutes_until, result.close_price,
+                        )
+                        self._record_closed_trade(
+                            pos, result.close_price,
+                            f"NEWS_EXIT({getattr(event, 'name', 'event')})",
+                            close_result=result,
+                        )
+                        del self.managed_positions[oid]
+                        self.position_store.remove_position(oid)
+                        self._news_exit_protected.discard(oid)
+
+                elif cfg.news_exit_mode == "tighten":
+                    # Move SL to breakeven to protect position
+                    tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+                    if tm_trade is None:
+                        continue
+                    be_level = pos.entry_price
+                    success = self.platforms.modify_trade(oid, pos.platform, new_sl=be_level)
+                    if success:
+                        pos.sl = be_level
+                        tm_trade.stop_loss = be_level
+                        self._news_exit_protected.add(oid)
+                        self.position_store.update_position(oid, sl=be_level)
+                        logger.info(
+                            "📰 NEWS TIGHTEN — {} {} | SL→entry {:.5f} | {} in {:.0f}min",
+                            pos.direction, pos.symbol, be_level,
+                            getattr(event, 'name', 'event'), minutes_until,
+                        )
+
+    def _check_session_close(self, now: datetime) -> None:
+        """
+        Manage open trades as sessions end.
+
+        Real traders:
+          - Close index trades before the exchange closes for the day
+          - Reduce or exit trades entering the dead zone (00:00-02:00 UTC)
+          - Don't hold GER40 into the Xetra close at 20:00 UTC
+        """
+        cfg = self.config.risk
+        if not cfg.session_close_enabled:
+            return
+
+        utc_hour = now.hour
+        utc_minute = now.minute
+
+        # Index session close windows (UTC)
+        index_close_windows = {
+            "HK50":  (8, 0),    # HKEX closes 08:00 UTC
+            "JP225": (6, 30),   # Osaka closes 06:30 UTC
+            "AUS200":(6, 0),    # ASX closes 06:00 UTC
+            "GER40": (20, 0),   # Xetra closes 20:00 UTC
+            "FRA40": (20, 0),   # Euronext closes 20:00 UTC
+            "UK100": (16, 30),  # LSE closes 16:30 UTC
+            "US30":  (21, 0),   # CME equity closes 21:00 UTC
+            "US100": (21, 0),
+            "US500": (21, 0),
+        }
+
+        for oid, pos in list(self.managed_positions.items()):
+            symbol = pos.symbol
+
+            # Check index session close
+            close_time = index_close_windows.get(symbol)
+            if close_time:
+                close_h, close_m = close_time
+                # Minutes until close
+                close_total = close_h * 60 + close_m
+                now_total = utc_hour * 60 + utc_minute
+                diff = close_total - now_total
+                # Within buffer window before close
+                if 0 < diff <= cfg.index_close_buffer_minutes:
+                    result = self.platforms.close_trade(oid, pos.platform)
+                    if result.success:
+                        tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+                        pnl = tm_trade.pnl_pips if tm_trade else 0.0
+                        logger.info(
+                            "🕐 SESSION CLOSE EXIT — {} {} | exchange closes in {}min | pnl={:.1f}pip",
+                            pos.direction, symbol, diff, pnl,
+                        )
+                        self._record_closed_trade(
+                            pos, result.close_price,
+                            f"SESSION_CLOSE({symbol})",
+                            close_result=result,
+                        )
+                        del self.managed_positions[oid]
+                        self.position_store.remove_position(oid)
+                        self._position_scores.pop(oid, None)
+                    continue
+
+            # Dead zone management for forex (00:00-02:00 UTC)
+            if cfg.dead_zone_management and pos.symbol.find("USD") >= 0 or pos.symbol.find("JPY") >= 0:
+                in_dead_zone = (utc_hour == 0 or (utc_hour == 1 and utc_minute <= 59))
+                if in_dead_zone:
+                    tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+                    if tm_trade and not tm_trade.breakeven_active:
+                        # Move to breakeven during dead zone — don't hold unprotected
+                        from management.partial_close import PartialCloseCalculator
+                        pip_size = tm_trade.pip_size if hasattr(tm_trade, 'pip_size') else 0.0001
+                        be_level = PartialCloseCalculator.calculate_breakeven_level(
+                            pos.entry_price, pos.direction, 2.0, pip_size,
+                        )
+                        success = self.platforms.modify_trade(oid, pos.platform, new_sl=be_level)
+                        if success:
+                            pos.sl = be_level
+                            tm_trade.stop_loss = be_level
+                            tm_trade.breakeven_active = True
+                            self.position_store.update_position(oid, sl=be_level, at_breakeven=True)
+                            logger.info(
+                                "🌙 DEAD ZONE PROTECTION — {} {} | SL→BE {:.5f}",
+                                pos.direction, symbol, be_level,
+                            )
+
+    def _check_portfolio_heat(self) -> None:
+        """
+        Monitor total portfolio risk across all open trades.
+        A real trader never lets their total exposure exceed a safe level.
+        If heat is too high, block further entries (handled in _scan_and_enter
+        via the portfolio_heat_block_pct check) and log warnings.
+
+        Heat = sum of (risk_pct × lots) across all positions
+        """
+        cfg = self.config.risk
+        if not cfg.portfolio_heat_enabled:
+            return
+        if not self.managed_positions:
+            return
+
+        total_heat = 0.0
+        for pos in self.managed_positions.values():
+            # Each position contributes its original risk % to total heat
+            # Reduce heat for positions at breakeven (risk = 0 effectively)
+            tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+            if tm_trade and tm_trade.breakeven_active:
+                continue  # no longer contributing to heat
+            total_heat += cfg.risk_per_trade_pct
+
+        if total_heat >= cfg.max_portfolio_heat_pct:
+            logger.warning(
+                "🌡️ PORTFOLIO HEAT {:.1f}% — max {:.1f}% | {} positions open",
+                total_heat, cfg.max_portfolio_heat_pct, len(self.managed_positions),
+            )
+            self._add_warning(
+                "warning",
+                f"Portfolio heat {total_heat:.1f}% — approaching limit",
+            )
+
+        # Store on instance for entry gating in _scan_and_enter
+        self._current_portfolio_heat = total_heat
+
+    def _check_spread_deterioration(self) -> None:
+        """
+        Monitor spread quality on open positions.
+        If spread widens beyond N× normal (e.g. ahead of news, broker issues,
+        thin liquidity), tighten SL to protect against a spike close-out.
+        """
+        cfg = self.config.risk
+        if not cfg.spread_monitor_enabled:
+            return
+
+        for oid, pos in list(self.managed_positions.items()):
+            try:
+                tick = self.platforms.get_price(pos.symbol)
+                if not hasattr(tick, 'spread') or tick.spread is None:
+                    continue
+
+                # Get typical spread for this instrument from execution monitor
+                typical_spread = self.execution_monitor.get_typical_spread(pos.symbol)
+                if typical_spread is None or typical_spread < 1e-8:
+                    continue
+
+                current_spread = tick.spread
+                spread_ratio = current_spread / typical_spread
+
+                if spread_ratio >= cfg.spread_deterioration_multiplier:
+                    tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+                    if tm_trade is None or tm_trade.breakeven_active:
+                        continue
+
+                    # Tighten SL to breakeven as protection
+                    from management.partial_close import PartialCloseCalculator
+                    pip_size = tm_trade.pip_size if hasattr(tm_trade, 'pip_size') else 0.0001
+                    be_level = PartialCloseCalculator.calculate_breakeven_level(
+                        pos.entry_price, pos.direction, 2.0, pip_size,
+                    )
+                    is_improvement = (
+                        (pos.direction == "BUY" and be_level > pos.sl)
+                        or (pos.direction == "SELL" and be_level < pos.sl)
+                    )
+                    if not is_improvement:
+                        continue
+
+                    success = self.platforms.modify_trade(oid, pos.platform, new_sl=be_level)
+                    if success:
+                        pos.sl = be_level
+                        tm_trade.stop_loss = be_level
+                        tm_trade.breakeven_active = True
+                        self.position_store.update_position(oid, sl=be_level, at_breakeven=True)
+                        logger.warning(
+                            "📊 SPREAD DETERIORATION — {} {} | spread {:.1f}× normal | SL→BE",
+                            pos.direction, pos.symbol, spread_ratio,
+                        )
+            except Exception as exc:
+                logger.debug("Spread monitor error for {}: {}", pos.symbol, exc)
 
     def _check_scale_in(self):
         if not self.config.risk.scale_in_enabled:
