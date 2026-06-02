@@ -3179,18 +3179,19 @@ class TradingLoop:
 
 _CONFLUENCE_TO_TAG = {
     "Structure": "structure",
-    "H1 OB": "order_block",
-    "M5 OB": "order_block",
-    "Order block": "order_block",
+    "H1 OB": "ob_h1",
+    "M5 OB": "ob_m5",
+    "Order block": "ob_h1",
     "FVG": "fvg",
     "Multi-TF": "mtf_confluence",
     "Session": "session",
     "News": "news",
     "Currency strength": "currency_strength",
-    "M1 confirmed": "m1_trigger",
-    "M1 ": "m1_trigger",
     "Liquidity sweep": "liquidity_sweep",
     "Liquidity": "liquidity_sweep",
+    "Volume confirmed": "volume",
+    "Inducement": "inducement",
+    "Wyckoff": "wyckoff",
 }
 
 

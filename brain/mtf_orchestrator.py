@@ -90,17 +90,21 @@ class MTFOrchestrator:
     @staticmethod
     def load_saved_weights() -> ScoringWeights:
         """Load OOS-validated weights from the adaptive store, falling back
-        to canonical defaults if the file is absent or corrupt."""
+        to canonical defaults if the file is absent or corrupt. Handles
+        old 9-factor → new 12-factor schema migration transparently."""
         import json
         from pathlib import Path
+
+        from adaptive.score_optimizer import _migrate_old_weights
 
         default_path = Path("data/scoring_weights.json")
         if not default_path.exists():
             return ScoringWeights()
         try:
             data = json.loads(default_path.read_text())
+            migrated = _migrate_old_weights(data)
             return ScoringWeights(
-                **{k: v for k, v in data.items() if k in ScoringWeights.__dataclass_fields__}
+                **{k: v for k, v in migrated.items() if k in ScoringWeights.__dataclass_fields__}
             )
         except Exception as exc:
             logger.warning(f"Could not load adaptive weights, using defaults: {exc}")
@@ -351,7 +355,9 @@ class MTFOrchestrator:
         sweep_confirmed: bool,
         currency_strength_aligned: bool,
     ) -> tuple[int, list[Confluence]]:
-        """Adaptive scoring — each factor's ceiling comes from ScoringWeights."""
+        """Adaptive scoring — each factor's ceiling comes from ScoringWeights.
+        Uses the 12-factor live-scanner taxonomy. Factors not available in
+        the orchestrator context (ob_h1, volume, inducement, wyckoff) score 0."""
         w = self._weights.as_dict()
         score = 0
         confluences: list[Confluence] = []
@@ -414,23 +420,13 @@ class MTFOrchestrator:
             )
         )
 
-        ob_pts = w["order_block"] if entry_ob else 0
+        ob_pts = w["ob_m5"] if entry_ob else 0
         score += ob_pts
         confluences.append(
             Confluence(
                 name="Order Block",
                 score=ob_pts,
                 details=f"entry_ob={'YES' if entry_ob else 'NO'}",
-            )
-        )
-
-        trigger_pts = w["m1_trigger"] if choch_aligned else 0
-        score += trigger_pts
-        confluences.append(
-            Confluence(
-                name="M1 Trigger",
-                score=trigger_pts,
-                details=f"event={m1_structure.last_event.value}",
             )
         )
 
