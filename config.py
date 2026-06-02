@@ -327,6 +327,21 @@ class RiskConfig:
     # Per-position cooldown between defensive stop adjustments
     defensive_action_cooldown_seconds: float = 60.0
 
+    # ── Portfolio risk reduction (M8 Phase 4b) ──────────────────────────
+    # Controlled, graduated exposure reduction.  Default OFF.
+    # Requires portfolio_risk_engine_enabled=True to have any effect.
+    portfolio_reduction_enabled: bool = False
+    # Heat % that triggers escalation to REDUCING state (must be > heat_defensive_pct)
+    heat_reduction_pct: float = 2.5
+    # Seconds in DEFENSIVE before escalating to REDUCING if breach persists
+    reduction_persist_seconds: float = 300.0
+    # Fraction of weakest position to trim per reduction action (0.5 = 50%)
+    reduction_partial_ratio: float = 0.5
+    # Per-position cooldown between reduction trims
+    reduction_action_cooldown_seconds: float = 120.0
+    # Max number of reduction trims per hour (safety cap)
+    max_reductions_per_hour: int = 4
+
     # ── Spread / slippage deterioration monitoring ────────────────────────
     spread_monitor_enabled: bool = True
     # If spread widens beyond N× normal for this instrument, tighten SL

@@ -1,15 +1,17 @@
 """
-Tests for the Portfolio Risk State Machine (M8 Phase 4a).
+Tests for the Portfolio Risk State Machine (M8 Phase 4a + 4b).
 
 Covers:
   1. compute_position_risk_dollars — MT5, Deriv, breakeven, fallback
   2. compute_live_heat_pct — normal, zero-equity guard
-  3. PortfolioRiskStateMachine — transitions, hysteresis, dwell
+  3. PortfolioRiskStateMachine — transitions, hysteresis, dwell, REDUCING
   4. is_position_data_insufficient — orphan-neutral helper
   5. is_eligible_for_defensive_breakeven — eligibility rules
+  6. rank_positions_weakest_first — composite ranking, orphan-neutral
 """
 
 import time
+from datetime import datetime, timezone
 
 import pytest
 
@@ -18,11 +20,13 @@ from risk.portfolio_risk_state import (
     PortfolioRiskState,
     PortfolioRiskSnapshot,
     PositionRisk,
+    PositionWeakness,
     StateTransition,
     compute_position_risk_dollars,
     compute_live_heat_pct,
     is_eligible_for_defensive_breakeven,
     is_position_data_insufficient,
+    rank_positions_weakest_first,
 )
 
 
@@ -312,3 +316,188 @@ class TestPortfolioRiskStateMachine:
         assert sm.state == PortfolioRiskState.DEFENSIVE
         sm.reset()
         assert sm.state == PortfolioRiskState.NORMAL
+
+
+# ── Phase 4b: REDUCING state tests ─────────────────────────────────────────
+
+class TestReducingState:
+
+    def _make_snapshot(self, heat=0.5, corr_safe=True, ts=None):
+        return PortfolioRiskSnapshot(
+            live_heat_pct=heat,
+            position_risks=[],
+            correlation_safe=corr_safe,
+            max_currency_exposure=0.02,
+            timestamp=ts or time.monotonic(),
+        )
+
+    def test_invalid_reduction_threshold_raises(self):
+        with pytest.raises(ValueError, match="heat_reduction_pct"):
+            PortfolioRiskStateMachine(
+                heat_defensive_pct=1.5,
+                heat_recovery_pct=1.0,
+                heat_reduction_pct=1.0,
+            )
+
+    def test_escalate_on_secondary_heat(self):
+        sm = PortfolioRiskStateMachine(
+            heat_defensive_pct=1.5, heat_recovery_pct=1.0,
+            heat_reduction_pct=2.5,
+        )
+        t0 = 1000.0
+        sm.evaluate(self._make_snapshot(heat=2.0, ts=t0))
+        assert sm.state == PortfolioRiskState.DEFENSIVE
+        result = sm.evaluate(self._make_snapshot(heat=3.0, ts=t0 + 1))
+        assert result.state == PortfolioRiskState.REDUCING
+        assert result.changed is True
+        assert result.escalated_to_reducing is True
+
+    def test_escalate_on_persistence(self):
+        sm = PortfolioRiskStateMachine(
+            heat_defensive_pct=1.5, heat_recovery_pct=1.0,
+            heat_reduction_pct=10.0,
+            reduction_persist_seconds=60.0,
+        )
+        t0 = 1000.0
+        sm.evaluate(self._make_snapshot(heat=2.0, ts=t0))
+        assert sm.state == PortfolioRiskState.DEFENSIVE
+        result = sm.evaluate(self._make_snapshot(heat=1.8, ts=t0 + 30))
+        assert result.state == PortfolioRiskState.DEFENSIVE
+        result = sm.evaluate(self._make_snapshot(heat=1.8, ts=t0 + 61))
+        assert result.state == PortfolioRiskState.REDUCING
+        assert result.changed is True
+
+    def test_no_escalate_if_breach_cleared(self):
+        sm = PortfolioRiskStateMachine(
+            heat_defensive_pct=1.5, heat_recovery_pct=1.0,
+            heat_reduction_pct=10.0,
+            reduction_persist_seconds=60.0,
+        )
+        t0 = 1000.0
+        sm.evaluate(self._make_snapshot(heat=2.0, ts=t0))
+        sm.evaluate(self._make_snapshot(heat=0.5, ts=t0 + 1))
+        result = sm.evaluate(self._make_snapshot(heat=0.5, ts=t0 + 70))
+        assert result.state != PortfolioRiskState.REDUCING
+
+    def test_deescalate_reducing_to_defensive(self):
+        sm = PortfolioRiskStateMachine(
+            heat_defensive_pct=1.5, heat_recovery_pct=1.0,
+            heat_reduction_pct=2.5,
+        )
+        t0 = 1000.0
+        sm.evaluate(self._make_snapshot(heat=2.0, ts=t0))
+        sm.evaluate(self._make_snapshot(heat=3.0, ts=t0 + 1))
+        assert sm.state == PortfolioRiskState.REDUCING
+        result = sm.evaluate(self._make_snapshot(heat=1.2, ts=t0 + 2))
+        assert result.state == PortfolioRiskState.DEFENSIVE
+        assert result.changed is True
+
+    def test_never_reducing_to_normal_directly(self):
+        sm = PortfolioRiskStateMachine(
+            heat_defensive_pct=1.5, heat_recovery_pct=1.0,
+            heat_reduction_pct=2.5, recovery_dwell_seconds=5.0,
+        )
+        t0 = 1000.0
+        sm.evaluate(self._make_snapshot(heat=2.0, ts=t0))
+        sm.evaluate(self._make_snapshot(heat=3.0, ts=t0 + 1))
+        assert sm.state == PortfolioRiskState.REDUCING
+        result = sm.evaluate(self._make_snapshot(heat=0.5, ts=t0 + 2))
+        assert result.state == PortfolioRiskState.DEFENSIVE
+        result = sm.evaluate(self._make_snapshot(heat=0.5, ts=t0 + 3))
+        assert result.state == PortfolioRiskState.DEFENSIVE
+        result = sm.evaluate(self._make_snapshot(heat=0.5, ts=t0 + 10))
+        assert result.state == PortfolioRiskState.NORMAL
+
+    def test_stays_reducing_while_breached(self):
+        sm = PortfolioRiskStateMachine(
+            heat_defensive_pct=1.5, heat_recovery_pct=1.0,
+            heat_reduction_pct=2.5,
+        )
+        t0 = 1000.0
+        sm.evaluate(self._make_snapshot(heat=3.0, ts=t0))
+        sm.evaluate(self._make_snapshot(heat=3.0, ts=t0 + 1))
+        result = sm.evaluate(self._make_snapshot(heat=2.0, ts=t0 + 2))
+        assert result.state == PortfolioRiskState.REDUCING
+        assert result.changed is False
+
+
+# ── Phase 4b: rank_positions_weakest_first ──────────────────────────────────
+
+class TestRankPositions:
+
+    def _make_pos(
+        self, oid="a", score=80, r_mult=0.0, minutes_ago=30,
+        risk_dollars=50.0, regime="TRENDING", entry_type="ENTRY",
+        direction="BUY", entry_price=1.10, sl=1.09, lots=0.1,
+    ):
+        now = datetime.now(timezone.utc)
+        from datetime import timedelta
+        open_time = now - timedelta(minutes=minutes_ago)
+        current_price = entry_price + r_mult * abs(entry_price - sl) * (
+            1 if direction.upper() in ("BUY", "LONG") else -1
+        )
+        return {
+            "order_id": oid,
+            "symbol": "EURUSD",
+            "direction": direction,
+            "entry_price": entry_price,
+            "sl": sl,
+            "current_price": current_price,
+            "score": score,
+            "regime": regime,
+            "entry_type": entry_type,
+            "open_time_utc": open_time,
+            "risk_dollars": risk_dollars,
+            "lots": lots,
+        }
+
+    def test_orphan_is_neutral_not_weakest(self):
+        positions = [
+            self._make_pos(oid="weak", score=40, r_mult=-0.8),
+            self._make_pos(oid="orphan", score=0, regime="UNKNOWN", entry_type="ORPHAN_ADOPTED"),
+            self._make_pos(oid="strong", score=95, r_mult=2.0),
+        ]
+        ranked = rank_positions_weakest_first(positions, 150.0)
+        oids = [r.order_id for r in ranked]
+        assert oids[0] == "weak"
+        assert oids[-1] == "strong"
+        orphan = next(r for r in ranked if r.order_id == "orphan")
+        assert orphan.is_insufficient_data is True
+
+    def test_deep_loss_ranks_weakest(self):
+        positions = [
+            self._make_pos(oid="loser", score=70, r_mult=-1.0),
+            self._make_pos(oid="winner", score=90, r_mult=2.0),
+        ]
+        ranked = rank_positions_weakest_first(positions, 100.0)
+        assert ranked[0].order_id == "loser"
+        assert ranked[-1].order_id == "winner"
+
+    def test_stagnant_position_ranks_weaker(self):
+        positions = [
+            self._make_pos(oid="stale", score=70, r_mult=0.1, minutes_ago=200),
+            self._make_pos(oid="fresh", score=70, r_mult=0.1, minutes_ago=10),
+        ]
+        ranked = rank_positions_weakest_first(positions, 100.0)
+        assert ranked[0].order_id == "stale"
+
+    def test_deterministic_tiebreak(self):
+        positions = [
+            self._make_pos(oid="b", score=70, r_mult=0.5),
+            self._make_pos(oid="a", score=70, r_mult=0.5),
+        ]
+        ranked1 = rank_positions_weakest_first(positions, 100.0)
+        ranked2 = rank_positions_weakest_first(list(reversed(positions)), 100.0)
+        assert [r.order_id for r in ranked1] == [r.order_id for r in ranked2]
+
+    def test_empty_positions(self):
+        assert rank_positions_weakest_first([], 0.0) == []
+
+    def test_all_orphans(self):
+        positions = [
+            self._make_pos(oid="o1", score=0, regime="UNKNOWN", entry_type="ORPHAN_ADOPTED"),
+            self._make_pos(oid="o2", score=0, regime="UNKNOWN", entry_type="ORPHAN_ADOPTED"),
+        ]
+        ranked = rank_positions_weakest_first(positions, 100.0)
+        assert len(ranked) == 2
+        assert all(r.is_insufficient_data for r in ranked)
