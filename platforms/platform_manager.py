@@ -373,7 +373,8 @@ class PlatformManager:
                 overrides = cfg.get("overrides", {})
                 if symbol in overrides or symbol.upper() in overrides:
                     return connector
-            except Exception:
+            except Exception as exc:
+                logger.warning("[platform_manager] config load for symbol routing failed: {}", exc)
                 continue
 
         return fallback  # None if no MT5 brokers connected
@@ -513,7 +514,8 @@ class PlatformManager:
                 try:
                     idx = int(platform.split("_")[1])
                     return self.mt5_connectors[idx]
-                except (IndexError, ValueError):
+                except (IndexError, ValueError) as exc:
+                    logger.debug("[platform_manager] MT5 connector index parse failed: {}", exc)
                     pass
             return self._first_connected_mt5()
         return self.deriv

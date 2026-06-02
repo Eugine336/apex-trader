@@ -330,7 +330,8 @@ class NewsGuard:
                         minutes_away=int(mins_away),
                         direction="BEFORE" if mins_away > 0 else "AFTER",
                     ))
-                except Exception:
+                except Exception as exc:
+                    logger.debug("[session_engine] failed to parse news event, skipping: {}", exc)
                     continue
 
             self._cache = events

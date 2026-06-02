@@ -7,6 +7,7 @@ commodities, indices, and Deriv synthetics.
 
 from dataclasses import dataclass, field
 from enum import Enum
+from loguru import logger
 
 
 class InstrumentCategory(Enum):
@@ -421,7 +422,8 @@ def is_session_gated(symbol: str) -> bool:
     try:
         info = get_instrument(symbol)
         return info.category == InstrumentCategory.FOREX
-    except KeyError:
+    except KeyError as exc:
+        logger.debug("[config] instrument lookup failed for symbol, treating as forex: {}", exc)
         return True  # unknown instrument — treat conservatively as FX
 
 
@@ -440,7 +442,8 @@ def is_always_open(symbol: str) -> bool:
     try:
         info = get_instrument(symbol)
         return info.trading_hours == "24/7"
-    except KeyError:
+    except KeyError as exc:
+        logger.debug("[config] instrument lookup failed for symbol, treating as non-24/7: {}", exc)
         return False
 
 
