@@ -370,6 +370,15 @@ class RiskConfig:
     # The position is NEVER auto-closed — only flagged for human review.
     reconcile_max_unconfirmed_cycles: int = 20
 
+    # ── Swap / rollover financing model (F2 Phase 1: observability) ─────
+    # When enabled, estimates overnight financing from a user-supplied
+    # rate table and journals the result alongside each closed trade.
+    # Does NOT alter pnl_dollars, sizing, scoring, or any exit decision.
+    model_swap_costs: bool = False
+    swap_rates_path: str = "data/swap_rates.json"
+    swap_rollover_hour_utc: int = 21
+    swap_triple_weekday: int = 2  # Wednesday (Mon=0)
+
     # ── Spread / slippage deterioration monitoring ────────────────────────
     spread_monitor_enabled: bool = True
     # If spread widens beyond N× normal for this instrument, tighten SL
