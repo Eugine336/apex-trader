@@ -1,5 +1,5 @@
 """
-APEX TRADER — Portfolio Risk State Machine (M8 Phase 4a + 4b)
+APEX TRADER — Portfolio Risk State Machine (M8 Phase 4a + 4b + 4c)
 
 Unified portfolio-risk engine fed by BOTH live capital-at-risk heat
 and correlation exposure.
@@ -8,8 +8,11 @@ States:
   NORMAL     — business as usual
   DEFENSIVE  — freeze entries/scale-ins, advance eligible→BE, tighten stops
   REDUCING   — graduated partial-close of weakest positions (Phase 4b)
+  EMERGENCY  — progressive full-close of weakest positions (Phase 4c)
 
-Phase 4c will add EMERGENCY (slot reserved, not implemented).
+Precedence (highest → lowest):
+  margin_guardian (margin events) ≥ EMERGENCY (survival) > REDUCING >
+  DEFENSIVE > normal management > adaptive.
 
 Design principles:
   • Risk-directed exits MUST bypass entry circuit-breakers / cooldowns.
@@ -33,8 +36,7 @@ class PortfolioRiskState(Enum):
     NORMAL = auto()
     DEFENSIVE = auto()
     REDUCING = auto()
-    # Phase 4c extension point — NOT implemented in this phase
-    # EMERGENCY = auto()
+    EMERGENCY = auto()
 
 
 # ── Data structures ─────────────────────────────────────────────────────────
@@ -69,6 +71,8 @@ class StateTransition:
     live_heat_pct: float
     correlation_safe: bool
     escalated_to_reducing: bool = False
+    escalated_to_emergency: bool = False
+    emergency_trigger: str = ""
 
 
 @dataclass
@@ -84,6 +88,79 @@ class PositionWeakness:
     risk_share_pct: float
     is_insufficient_data: bool
     reason: str
+
+
+# ── Emergency trigger snapshot (Phase 4c) ───────────────────────────────
+
+@dataclass
+class EmergencyTriggerSnapshot:
+    """Inputs to the emergency trigger evaluator."""
+    live_heat_pct: float
+    drawdown_mode: str  # DrawdownMode.value
+    reconcile_age_seconds: float  # seconds since last successful reconcile
+    managed_count: int  # positions we think are open
+    broker_count: int  # positions broker reports as open
+    timestamp: float = field(default_factory=time.monotonic)
+
+
+@dataclass
+class EmergencyTriggerResult:
+    """Which emergency triggers fired, if any."""
+    extreme_heat: bool = False
+    drawdown_frozen: bool = False
+    reconcile_failure: bool = False
+    broker_exposure_mismatch: bool = False
+
+    @property
+    def any_fired(self) -> bool:
+        return (
+            self.extreme_heat
+            or self.drawdown_frozen
+            or self.reconcile_failure
+            or self.broker_exposure_mismatch
+        )
+
+    @property
+    def description(self) -> str:
+        parts = []
+        if self.extreme_heat:
+            parts.append("extreme_heat")
+        if self.drawdown_frozen:
+            parts.append("drawdown_frozen")
+        if self.reconcile_failure:
+            parts.append("reconcile_failure")
+        if self.broker_exposure_mismatch:
+            parts.append("broker_exposure_mismatch")
+        return ", ".join(parts) if parts else "none"
+
+
+def evaluate_emergency_triggers(
+    snap: EmergencyTriggerSnapshot,
+    *,
+    heat_emergency_pct: float,
+    emergency_reconcile_failure_seconds: float,
+    emergency_broker_exposure_tolerance: int,
+) -> EmergencyTriggerResult:
+    """
+    Pure function: evaluate all emergency trigger conditions.
+    Returns which triggers fired (any → should enter EMERGENCY).
+    """
+    result = EmergencyTriggerResult()
+
+    if snap.live_heat_pct >= heat_emergency_pct:
+        result.extreme_heat = True
+
+    if snap.drawdown_mode == "FROZEN":
+        result.drawdown_frozen = True
+
+    if snap.reconcile_age_seconds >= emergency_reconcile_failure_seconds:
+        result.reconcile_failure = True
+
+    count_diff = abs(snap.managed_count - snap.broker_count)
+    if count_diff > emergency_broker_exposure_tolerance:
+        result.broker_exposure_mismatch = True
+
+    return result
 
 
 # ── Orphan-neutral helper ───────────────────────────────────────────────────
@@ -359,13 +436,22 @@ class PortfolioRiskStateMachine:
     Pure state machine: takes metric inputs + monotonic time, returns
     (state, transition_event).  No broker I/O, no side-effects.
 
+    Full ladder: NORMAL → DEFENSIVE → REDUCING → EMERGENCY.
+    Hard triggers may jump directly to EMERGENCY from any state.
+    De-escalation always steps down: EMERGENCY → REDUCING → DEFENSIVE → NORMAL
+    (never skips downward steps).
+
     Hysteresis:
       Enter DEFENSIVE when heat >= heat_defensive_pct OR correlation unsafe.
       Escalate to REDUCING when in DEFENSIVE for >= reduction_persist_seconds
         OR heat >= heat_reduction_pct.
-      De-escalate REDUCING → DEFENSIVE → NORMAL (never skip).
+      Escalate to EMERGENCY when any emergency trigger fires (via
+        evaluate_with_emergency).
       Exit DEFENSIVE only when BOTH heat < heat_recovery_pct AND correlation safe,
       sustained for recovery_dwell_seconds.
+
+    Threshold ordering (validated in constructor):
+      heat_emergency_pct > heat_reduction_pct > heat_defensive_pct > heat_recovery_pct
     """
 
     def __init__(
@@ -375,6 +461,7 @@ class PortfolioRiskStateMachine:
         recovery_dwell_seconds: float = 120.0,
         heat_reduction_pct: float = 2.5,
         reduction_persist_seconds: float = 300.0,
+        heat_emergency_pct: float = 4.0,
     ):
         if heat_recovery_pct >= heat_defensive_pct:
             raise ValueError(
@@ -386,12 +473,18 @@ class PortfolioRiskStateMachine:
                 f"heat_reduction_pct ({heat_reduction_pct}) must be > "
                 f"heat_defensive_pct ({heat_defensive_pct})"
             )
+        if heat_emergency_pct <= heat_reduction_pct:
+            raise ValueError(
+                f"heat_emergency_pct ({heat_emergency_pct}) must be > "
+                f"heat_reduction_pct ({heat_reduction_pct})"
+            )
 
         self.heat_defensive_pct = heat_defensive_pct
         self.heat_recovery_pct = heat_recovery_pct
         self.recovery_dwell_seconds = recovery_dwell_seconds
         self.heat_reduction_pct = heat_reduction_pct
         self.reduction_persist_seconds = reduction_persist_seconds
+        self.heat_emergency_pct = heat_emergency_pct
 
         self._state = PortfolioRiskState.NORMAL
         self._recovery_eligible_since: Optional[float] = None
@@ -403,7 +496,8 @@ class PortfolioRiskStateMachine:
 
     def evaluate(self, snapshot: PortfolioRiskSnapshot) -> StateTransition:
         """
-        Evaluate metrics and return the (possibly changed) state.
+        Evaluate heat/correlation metrics and return the (possibly changed) state.
+        Does NOT evaluate emergency triggers — call evaluate_with_emergency for that.
         Must be called every loop iteration.
         """
         now = snapshot.timestamp
@@ -474,14 +568,43 @@ class PortfolioRiskStateMachine:
             recovery_ok = (heat < self.heat_recovery_pct) and corr_safe
             return self._check_defensive_recovery(recovery_ok, heat, corr_safe, now)
 
-        # ── REDUCING state ──────────────────────────────────────────
+        if self._state == PortfolioRiskState.REDUCING:
+            still_breached = heat_breached or corr_breached
+            if not still_breached:
+                self._state = PortfolioRiskState.DEFENSIVE
+                self._defensive_entered_at = now
+                self._recovery_eligible_since = None
+                reason = (
+                    f"De-escalated REDUCING → DEFENSIVE: "
+                    f"heat {heat:.2f}% < {self.heat_defensive_pct:.2f}% and corr safe"
+                )
+                logger.info("[PortfolioRisk] {}", reason)
+                return StateTransition(
+                    state=self._state,
+                    changed=True,
+                    reason=reason,
+                    live_heat_pct=heat,
+                    correlation_safe=corr_safe,
+                )
+
+            return StateTransition(
+                state=self._state,
+                changed=False,
+                reason=(
+                    f"REDUCING (heat={heat:.2f}%, "
+                    f"corr_safe={corr_safe})"
+                ),
+                live_heat_pct=heat,
+                correlation_safe=corr_safe,
+            )
+
+        # ── EMERGENCY state ─────────────────────────────────────────
         still_breached = heat_breached or corr_breached
         if not still_breached:
-            self._state = PortfolioRiskState.DEFENSIVE
-            self._defensive_entered_at = now
+            self._state = PortfolioRiskState.REDUCING
             self._recovery_eligible_since = None
             reason = (
-                f"De-escalated REDUCING → DEFENSIVE: "
+                f"De-escalated EMERGENCY → REDUCING: "
                 f"heat {heat:.2f}% < {self.heat_defensive_pct:.2f}% and corr safe"
             )
             logger.info("[PortfolioRisk] {}", reason)
@@ -497,11 +620,49 @@ class PortfolioRiskStateMachine:
             state=self._state,
             changed=False,
             reason=(
-                f"REDUCING (heat={heat:.2f}%, "
+                f"EMERGENCY (heat={heat:.2f}%, "
                 f"corr_safe={corr_safe})"
             ),
             live_heat_pct=heat,
             correlation_safe=corr_safe,
+        )
+
+    def escalate_to_emergency(
+        self,
+        trigger_result: EmergencyTriggerResult,
+        heat: float,
+        corr_safe: bool,
+    ) -> StateTransition:
+        """
+        Force-escalate to EMERGENCY from ANY current state.
+        Called when emergency triggers fire.
+        Returns the transition (always changed=True when entering EMERGENCY).
+        """
+        if self._state == PortfolioRiskState.EMERGENCY:
+            return StateTransition(
+                state=self._state,
+                changed=False,
+                reason=f"EMERGENCY (triggers: {trigger_result.description})",
+                live_heat_pct=heat,
+                correlation_safe=corr_safe,
+            )
+
+        prev = self._state.name
+        self._state = PortfolioRiskState.EMERGENCY
+        self._recovery_eligible_since = None
+        reason = (
+            f"Escalated {prev} → EMERGENCY: "
+            f"triggers=[{trigger_result.description}]"
+        )
+        logger.critical("[PortfolioRisk] {}", reason)
+        return StateTransition(
+            state=self._state,
+            changed=True,
+            reason=reason,
+            live_heat_pct=heat,
+            correlation_safe=corr_safe,
+            escalated_to_emergency=True,
+            emergency_trigger=trigger_result.description,
         )
 
     def _check_defensive_recovery(
@@ -574,24 +735,15 @@ class PortfolioRiskStateMachine:
         self._defensive_entered_at = None
 
 
-# ── Exit-authority (Phase 4b) ────────────────────────────────────────────
+# ── Exit-authority (Phase 4b + 4c) ───────────────────────────────────────
 #
-# Risk-directed exits (position reduction) MUST:
+# Risk-directed exits (reduction + emergency) MUST:
 #   1. Bypass the entry Execution circuit breaker.
 #   2. Bypass entry cooldowns and opportunity-density throttles.
 #   3. Be routed through a dedicated close path, NOT the entry path.
 #
-# Phase 4c will add emergency full-close; for 4b, only partial
-# reduction is implemented (never fully close a position).
+# Precedence (highest → lowest):
+#   margin_guardian (margin events) ≥ EMERGENCY (survival) > REDUCING >
+#   DEFENSIVE > normal management > adaptive.
 #
-# Signature reserved for Phase 4c:
-#
-# def execute_emergency_liquidation(
-#     order_id: str,
-#     reason: str,
-# ) -> bool:
-#     """
-#     Full-close a position on emergency risk authority.
-#     Must never be gated by entry-initiation controls.
-#     """
-#     raise NotImplementedError("Phase 4c")
+# Adaptive learning may NEVER veto or downgrade emergency or reduction actions.

@@ -342,6 +342,25 @@ class RiskConfig:
     # Max number of reduction trims per hour (safety cap)
     max_reductions_per_hour: int = 4
 
+    # ── Emergency liquidation (M8 Phase 4c) ─────────────────────────────
+    # Progressive full-close of weakest positions when portfolio survival
+    # is at risk.  Default OFF.  Requires portfolio_risk_engine_enabled=True.
+    # Precedence: margin_guardian (margin) >= EMERGENCY (survival) > REDUCING.
+    portfolio_emergency_enabled: bool = False
+    # Heat % that triggers EMERGENCY state (must be > heat_reduction_pct)
+    heat_emergency_pct: float = 4.0
+    # Seconds since last successful reconcile before triggering EMERGENCY
+    emergency_reconcile_failure_seconds: float = 300.0
+    # Absolute count divergence between managed and broker positions
+    # that triggers EMERGENCY (e.g. 2 = tolerate up to 2 position mismatch)
+    emergency_broker_exposure_tolerance: int = 2
+    # Max positions fully closed per loop cycle in EMERGENCY
+    emergency_max_closes_per_cycle: int = 1
+    # Per-position cooldown between emergency closes
+    emergency_action_cooldown_seconds: float = 30.0
+    # Max emergency closes per hour (global circuit breaker)
+    emergency_max_closes_per_hour: int = 6
+
     # ── Spread / slippage deterioration monitoring ────────────────────────
     spread_monitor_enabled: bool = True
     # If spread widens beyond N× normal for this instrument, tighten SL
