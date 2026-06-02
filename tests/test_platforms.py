@@ -302,6 +302,35 @@ class TestPlatformManager:
         result = mgr.close_trade("99", "deriv")
         assert result.success is True
 
+    def test_deriv_reconnect_log_throttle_positions(self):
+        mgr = self._make_manager()
+        mgr._deriv_reconnect_warned = False
+        mgr.deriv.get_open_positions.side_effect = ConnectionError(
+            "Deriv is reconnecting — request blocked"
+        )
+        mgr.get_all_open_positions()
+        assert mgr._deriv_reconnect_warned is True
+        mgr.get_all_open_positions()
+        assert mgr._deriv_reconnect_warned is True
+
+    def test_deriv_reconnect_log_throttle_account(self):
+        mgr = self._make_manager()
+        mgr._deriv_reconnect_warned = False
+        mgr.deriv.get_account_info.side_effect = ConnectionError(
+            "Deriv is reconnecting — request blocked"
+        )
+        mgr.get_account_summary()
+        assert mgr._deriv_reconnect_warned is True
+        mgr.get_account_summary()
+        assert mgr._deriv_reconnect_warned is True
+
+    def test_deriv_reconnect_flag_clears_on_recovery(self):
+        mgr = self._make_manager()
+        mgr._deriv_reconnect_warned = True
+        mgr.deriv.get_open_positions.return_value = []
+        mgr.get_all_open_positions()
+        assert mgr._deriv_reconnect_warned is False
+
 
 # ═══════════════════════════════════════════════════════════════════════════
 # ManagedPosition

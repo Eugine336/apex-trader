@@ -123,6 +123,8 @@ class PlatformManager:
         self._mt5_next_reconnects: list[float] = [0.0] * len(self.mt5_connectors)
         self._deriv_next_reconnect: float = 0.0
 
+        self._deriv_reconnect_warned: bool = False
+
     # ── Convenience properties ───────────────────────────────────────────
 
     @property
@@ -530,8 +532,16 @@ class PlatformManager:
         if self._deriv_connected:
             try:
                 positions.extend(self.deriv.get_open_positions())
+                if self._deriv_reconnect_warned:
+                    logger.info("Deriv positions fetch recovered")
+                    self._deriv_reconnect_warned = False
             except Exception as exc:
-                logger.warning("Deriv positions fetch error: {}", exc)
+                if "reconnecting" in str(exc).lower():
+                    if not self._deriv_reconnect_warned:
+                        logger.warning("Deriv positions fetch blocked — broker is reconnecting")
+                        self._deriv_reconnect_warned = True
+                else:
+                    logger.warning("Deriv positions fetch error: {}", exc)
         return positions
 
     # ── Account ──────────────────────────────────────────────────────────
@@ -549,8 +559,16 @@ class PlatformManager:
         if self._deriv_connected:
             try:
                 summary["deriv"] = self.deriv.get_account_info()
+                if self._deriv_reconnect_warned:
+                    logger.info("Deriv account info recovered")
+                    self._deriv_reconnect_warned = False
             except Exception as exc:
-                logger.warning("Deriv account info error: {}", exc)
+                if "reconnecting" in str(exc).lower():
+                    if not self._deriv_reconnect_warned:
+                        logger.warning("Deriv account info blocked — broker is reconnecting")
+                        self._deriv_reconnect_warned = True
+                else:
+                    logger.warning("Deriv account info error: {}", exc)
         return summary
 
     def get_total_balance(self) -> float:
@@ -673,7 +691,7 @@ class PlatformManager:
 
     def _add_platform_warning(self, level: str, message: str, symbol: str = "") -> None:
         """Append a system warning to the in-memory feed read by the dashboard."""
-        from datetime import datetime, timezone
+        from datetime import timezone
         if not hasattr(self, "system_warnings"):
             self.system_warnings: list[dict] = []
         entry = {
