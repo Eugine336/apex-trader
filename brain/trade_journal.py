@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 import aiosqlite
 import numpy as np
+from loguru import logger
 
 
 @dataclass
@@ -103,7 +104,8 @@ class TradeJournal:
                 try:
                     await db.execute("ALTER TABLE trades ADD COLUMN pnl_dollars REAL DEFAULT 0.0")
                     await db.commit()
-                except Exception:
+                except Exception as exc:
+                    logger.debug("[trade_journal] pnl_dollars column migration skipped (likely already exists): {}", exc)
                     pass
             self._initialized = True
 

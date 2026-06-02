@@ -54,7 +54,8 @@ def _mt5_market_open(symbol: str, connector=None) -> bool:
     if connector is not None:
         try:
             mapped = connector.symbol_map(symbol)
-        except Exception:
+        except Exception as exc:
+            logger.warning("[scanner] symbol_map lookup failed: {}", exc)
             pass
 
     try:
@@ -65,7 +66,8 @@ def _mt5_market_open(symbol: str, connector=None) -> bool:
         # trade_mode 0 = fully disabled, 3 = close-only (session ending)
         # Both mean no new entries are possible
         return info.trade_mode not in (0,)
-    except Exception:
+    except Exception as exc:
+        logger.warning("[scanner] symbol tradability check failed, allowing scan: {}", exc)
         return True  # on any error, don't block
 
 

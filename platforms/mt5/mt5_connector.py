@@ -161,7 +161,8 @@ class MT5Connector(BaseConnector):
         try:
             info = mt5.terminal_info()
             return info is not None and info.connected
-        except Exception:
+        except Exception as exc:
+            logger.warning("[mt5] health check failed: {}", exc)
             return False
 
     # ── Account ──────────────────────────────────────────────────────────
@@ -247,7 +248,8 @@ class MT5Connector(BaseConnector):
             # Cache entire file contents for this session
             self._constraints_cache.update(all_constraints)
             return self._constraints_cache.get(broker_symbol, {})
-        except Exception:
+        except Exception as exc:
+            logger.warning("[mt5] symbol constraints load failed: {}", exc)
             return {}
 
     # ── Order execution ──────────────────────────────────────────────────
@@ -636,7 +638,8 @@ class MT5Connector(BaseConnector):
                 return None
             total_pnl = sum(d.profit + d.commission + d.swap + d.fee for d in deals)
             return round(total_pnl, 2)
-        except Exception:
+        except Exception as exc:
+            logger.warning("[mt5] PnL history deals fetch failed for ticket: {}", exc)
             return None
 
     # ── Symbol / timeframe mapping ───────────────────────────────────────
