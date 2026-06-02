@@ -223,6 +223,7 @@ class ScoringConfig:
     currency_strength_points: int = 10
     ranging_score_cap: int = 55  # Tighter cap — ranging pairs need stronger confluences
     volatile_score_cap: int = 100  # FIX: was 0 — killed all volatile-regime trades
+    use_adaptive_scoring_weights: bool = False
 
 
 # ---------------------------------------------------------------------------
