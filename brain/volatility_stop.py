@@ -10,9 +10,9 @@ main_loop or trading_loop.  It reads no external files — rate tables or
 instrument data are passed in by the caller.
 
 Zero-vs-unknown discipline (matching F2 swap model):
-  - ("unavailable", None) = ATR could not be computed (insufficient data,
+  - (None, "unavailable") = ATR could not be computed (insufficient data,
     NaN, non-positive).  The caller must NOT fabricate a stop.
-  - ("modeled", <float>) = a valid clamped distance was produced, even if
+  - (<float>, "modeled") = a valid clamped distance was produced, even if
     it hit a clamp boundary.
 """
 
