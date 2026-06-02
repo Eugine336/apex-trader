@@ -379,6 +379,20 @@ class RiskConfig:
     swap_rollover_hour_utc: int = 21
     swap_triple_weekday: int = 2  # Wednesday (Mon=0)
 
+    # ── Volatility stop model (F1 Phase A: offline evidence only) ────────
+    # Controls ATR-based stop-loss distance computation for offline
+    # backtest comparison.  "off" = live SL is unaffected; backtest
+    # comparison harness uses compare_atr_stop=True opt-in.
+    # "shadow"/"on" are reserved for a FUTURE PR-B and are NOT
+    # implemented here — the live _resolve_stop_loss is byte-for-byte
+    # unchanged regardless of this value.
+    volatility_stop_mode: str = "off"
+    atr_stop_period: int = 14
+    atr_stop_mult: float = 1.5
+    atr_stop_ratio_min: float = 0.5
+    atr_stop_ratio_max: float = 2.0
+    atr_stop_max_risk_mult: float = 4.0
+
     # ── Spread / slippage deterioration monitoring ────────────────────────
     spread_monitor_enabled: bool = True
     # If spread widens beyond N× normal for this instrument, tighten SL

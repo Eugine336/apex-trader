@@ -5,6 +5,7 @@ before real capital is exposed.
 """
 
 import asyncio
+import copy
 import os
 import random
 from dataclasses import dataclass
@@ -17,6 +18,28 @@ import pandas as pd
 from brain.mtf_orchestrator import MTFOrchestrator, TradeSetup
 from brain.trade_journal import TradeJournal, TradeRecord
 from loguru import logger
+
+
+@dataclass
+class ATRComparisonResult:
+    """Side-by-side metrics: structure-stop vs ATR-stop on the same setups."""
+    total_compared: int = 0
+    total_skipped: int = 0
+    structure_wins: int = 0
+    structure_losses: int = 0
+    structure_breakevens: int = 0
+    structure_win_rate: float = 0.0
+    structure_mean_r: float = 0.0
+    structure_expectancy: float = 0.0
+    atr_wins: int = 0
+    atr_losses: int = 0
+    atr_breakevens: int = 0
+    atr_win_rate: float = 0.0
+    atr_mean_r: float = 0.0
+    atr_expectancy: float = 0.0
+    expectancy_delta: float = 0.0
+    structure_stopout_rate: float = 0.0
+    atr_stopout_rate: float = 0.0
 
 
 @dataclass
@@ -39,6 +62,7 @@ class BacktestResult:
     total_slippage_cost: float = 0.0
     gross_profit_factor: float = 0.0
     net_profit_factor: float = 0.0
+    atr_comparison: Optional[ATRComparisonResult] = None
 
 
 class DataLoader:
@@ -259,6 +283,12 @@ class BacktestEngine:
         data_by_timeframe: dict[str, pd.DataFrame],
         start_index: Optional[int] = None,
         end_index: Optional[int] = None,
+        compare_atr_stop: bool = False,
+        atr_stop_period: int = 14,
+        atr_stop_mult: float = 1.5,
+        atr_stop_ratio_min: float = 0.5,
+        atr_stop_ratio_max: float = 2.0,
+        atr_stop_max_risk_mult: float = 4.0,
     ) -> BacktestResult:
         if "M1" not in data_by_timeframe:
             raise ValueError("M1 timeframe is required for replay execution")
@@ -279,6 +309,23 @@ class BacktestEngine:
         total_commission = 0.0
         total_slippage_cost = 0.0
 
+        atr_compared = 0
+        atr_skipped = 0
+        struct_returns: list[float] = []
+        struct_outcomes: list[str] = []
+        atr_returns: list[float] = []
+        atr_outcomes: list[str] = []
+        atr_open_trade: Optional[dict] = None
+
+        if compare_atr_stop:
+            from brain.instrument_profile import get_profile
+            from brain.volatility_stop import (
+                clamped_atr_stop_distance,
+                latest_atr,
+                atr_stop_price,
+            )
+            inst_profile = get_profile(pair)
+
         for i in range(start_index, end_index + 1):
             candle = m1.iloc[i]
             now = pd.Timestamp(candle["time"]).to_pydatetime()
@@ -293,11 +340,69 @@ class BacktestEngine:
                 )
                 if setup:
                     open_trade = self._open_trade(setup, now)
+
+                    if compare_atr_stop and open_trade is not None:
+                        m1_slice = slices.get("M1")
+                        atr_val = latest_atr(m1_slice, atr_stop_period) if m1_slice is not None else None
+                        structure_dist = abs(open_trade["entry_price"] - open_trade["stop_loss"])
+                        max_pips = atr_stop_max_risk_mult * inst_profile.min_risk_pips
+                        dist, status = clamped_atr_stop_distance(
+                            atr_val,
+                            structure_dist,
+                            mult=atr_stop_mult,
+                            min_pips=inst_profile.min_risk_pips,
+                            max_pips=max_pips,
+                            pip_size=self.pip_size,
+                            ratio_min=atr_stop_ratio_min,
+                            ratio_max=atr_stop_ratio_max,
+                        )
+                        if status == "modeled" and dist is not None:
+                            direction = setup.direction
+                            atr_sl = atr_stop_price(open_trade["entry_price"], direction, dist)
+                            atr_risk = dist
+                            if atr_risk <= 0:
+                                atr_risk = 8 * self.pip_size
+                            if direction == "LONG":
+                                atr_tp1 = open_trade["entry_price"] + atr_risk * 1.5
+                                atr_tp2 = open_trade["entry_price"] + atr_risk * 2.5
+                                atr_tp1 = max(atr_tp1, open_trade["entry_price"] + atr_risk)
+                                atr_tp2 = max(atr_tp2, open_trade["entry_price"] + atr_risk * 1.5)
+                            else:
+                                atr_tp1 = open_trade["entry_price"] - atr_risk * 1.5
+                                atr_tp2 = open_trade["entry_price"] - atr_risk * 2.5
+                                atr_tp1 = min(atr_tp1, open_trade["entry_price"] - atr_risk)
+                                atr_tp2 = min(atr_tp2, open_trade["entry_price"] - atr_risk * 1.5)
+                            atr_open_trade = copy.deepcopy(open_trade)
+                            atr_open_trade["stop_loss"] = atr_sl
+                            atr_open_trade["tp1"] = atr_tp1
+                            atr_open_trade["tp2"] = atr_tp2
+                            atr_open_trade["risk"] = atr_risk
+                            atr_compared += 1
+                        else:
+                            atr_open_trade = None
+                            atr_skipped += 1
                 continue
 
             close_event = self._evaluate_trade(open_trade, candle)
+
+            if compare_atr_stop and atr_open_trade is not None:
+                atr_close = self._evaluate_trade(atr_open_trade, candle)
+                if atr_close is not None:
+                    atr_returns.append(atr_close["pnl_r"])
+                    atr_outcomes.append(atr_close["outcome"])
+                    atr_open_trade = None
+
             if close_event is None:
                 continue
+
+            if compare_atr_stop:
+                struct_returns.append(close_event["pnl_r"])
+                struct_outcomes.append(close_event["outcome"])
+                if atr_open_trade is not None:
+                    atr_forced = self._force_close(atr_open_trade, candle)
+                    atr_returns.append(atr_forced["pnl_r"])
+                    atr_outcomes.append(atr_forced["outcome"])
+                    atr_open_trade = None
 
             pnl_r = close_event["pnl_r"]
             trade_returns_gross.append(pnl_r)
@@ -325,6 +430,16 @@ class BacktestEngine:
         if open_trade:
             final_candle = m1.iloc[end_index]
             forced_close = self._force_close(open_trade, final_candle)
+
+            if compare_atr_stop:
+                struct_returns.append(forced_close["pnl_r"])
+                struct_outcomes.append(forced_close["outcome"])
+                if atr_open_trade is not None:
+                    atr_forced = self._force_close(atr_open_trade, final_candle)
+                    atr_returns.append(atr_forced["pnl_r"])
+                    atr_outcomes.append(atr_forced["outcome"])
+                    atr_open_trade = None
+
             pnl_r = forced_close["pnl_r"]
             pnl_pct = pnl_r * self.risk_per_trade
             balance *= max(1.0 + pnl_pct, 0.01)
@@ -351,6 +466,14 @@ class BacktestEngine:
         avg_hold = float(np.mean(hold_times)) if hold_times else 0.0
         best_session = self._best_session(sessions)
 
+        atr_cmp: Optional[ATRComparisonResult] = None
+        if compare_atr_stop:
+            atr_cmp = self._build_atr_comparison(
+                atr_compared, atr_skipped,
+                struct_returns, struct_outcomes,
+                atr_returns, atr_outcomes,
+            )
+
         return BacktestResult(
             total_trades=total,
             wins=wins,
@@ -372,6 +495,7 @@ class BacktestEngine:
             total_slippage_cost=round(total_slippage_cost, 6),
             gross_profit_factor=round(gross_pf, 4) if np.isfinite(gross_pf) else float("inf"),
             net_profit_factor=round(profit_factor, 4) if np.isfinite(profit_factor) else float("inf"),
+            atr_comparison=atr_cmp,
         )
 
     def walk_forward(
@@ -718,6 +842,53 @@ class BacktestEngine:
         if score_map.get("Order Block", 0) > 0:
             return "OB"
         return "MARKET"
+
+    def _build_atr_comparison(
+        self,
+        compared: int,
+        skipped: int,
+        struct_returns: list[float],
+        struct_outcomes: list[str],
+        atr_returns: list[float],
+        atr_outcomes: list[str],
+    ) -> ATRComparisonResult:
+        s_wins = sum(1 for o in struct_outcomes if o == "WIN")
+        s_losses = sum(1 for o in struct_outcomes if o == "LOSS")
+        s_be = sum(1 for o in struct_outcomes if o == "BREAKEVEN")
+        s_total = len(struct_returns)
+        a_wins = sum(1 for o in atr_outcomes if o == "WIN")
+        a_losses = sum(1 for o in atr_outcomes if o == "LOSS")
+        a_be = sum(1 for o in atr_outcomes if o == "BREAKEVEN")
+        a_total = len(atr_returns)
+
+        s_wr = (s_wins / s_total * 100.0) if s_total else 0.0
+        a_wr = (a_wins / a_total * 100.0) if a_total else 0.0
+        s_mean = float(np.mean(struct_returns)) if struct_returns else 0.0
+        a_mean = float(np.mean(atr_returns)) if atr_returns else 0.0
+        s_exp = s_mean
+        a_exp = a_mean
+        s_stopout = (s_losses / s_total) if s_total else 0.0
+        a_stopout = (a_losses / a_total) if a_total else 0.0
+
+        return ATRComparisonResult(
+            total_compared=compared,
+            total_skipped=skipped,
+            structure_wins=s_wins,
+            structure_losses=s_losses,
+            structure_breakevens=s_be,
+            structure_win_rate=round(s_wr, 2),
+            structure_mean_r=round(s_mean, 4),
+            structure_expectancy=round(s_exp, 4),
+            atr_wins=a_wins,
+            atr_losses=a_losses,
+            atr_breakevens=a_be,
+            atr_win_rate=round(a_wr, 2),
+            atr_mean_r=round(a_mean, 4),
+            atr_expectancy=round(a_exp, 4),
+            expectancy_delta=round(a_exp - s_exp, 4),
+            structure_stopout_rate=round(s_stopout, 4),
+            atr_stopout_rate=round(a_stopout, 4),
+        )
 
     def _profit_factor(self, returns: list[float]) -> float:
         gains = sum(r for r in returns if r > 0)
