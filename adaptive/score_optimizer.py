@@ -388,3 +388,19 @@ def _migrate_old_weights(data: dict) -> dict:
         out.setdefault(field_name, getattr(defaults, field_name))
 
     return out
+
+
+def load_saved_weights(filepath: str = "data/scoring_weights.json") -> ScoringWeights:
+    """Load OOS-validated weights from disk, migrating old schemas if needed.
+    Falls back to canonical defaults if absent or corrupt.
+    Shared by the backtest orchestrator and the live scanner."""
+    p = Path(filepath)
+    if not p.exists():
+        return ScoringWeights()
+    try:
+        data = json.loads(p.read_text())
+    except Exception:
+        return ScoringWeights()
+    migrated = _migrate_old_weights(data)
+    valid = {k: v for k, v in migrated.items() if k in ScoringWeights.__dataclass_fields__}
+    return ScoringWeights(**valid)
