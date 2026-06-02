@@ -99,7 +99,7 @@ class EmergencyTriggerSnapshot:
     drawdown_mode: str  # DrawdownMode.value
     reconcile_age_seconds: float  # seconds since last successful reconcile
     managed_count: int  # positions we think are open
-    broker_count: int  # positions broker reports as open
+    broker_count: Optional[int]  # positions broker reports; None = fetch failed
     timestamp: float = field(default_factory=time.monotonic)
 
 
@@ -156,9 +156,10 @@ def evaluate_emergency_triggers(
     if snap.reconcile_age_seconds >= emergency_reconcile_failure_seconds:
         result.reconcile_failure = True
 
-    count_diff = abs(snap.managed_count - snap.broker_count)
-    if count_diff > emergency_broker_exposure_tolerance:
-        result.broker_exposure_mismatch = True
+    if snap.broker_count is not None:
+        count_diff = abs(snap.managed_count - snap.broker_count)
+        if count_diff > emergency_broker_exposure_tolerance:
+            result.broker_exposure_mismatch = True
 
     return result
 

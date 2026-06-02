@@ -217,6 +217,39 @@ class TestEmergencyTriggers:
         )
         assert result2.broker_exposure_mismatch is True
 
+    def test_broker_count_none_skips_mismatch(self):
+        snap = EmergencyTriggerSnapshot(
+            live_heat_pct=1.0,
+            drawdown_mode="NORMAL",
+            reconcile_age_seconds=10.0,
+            managed_count=10,
+            broker_count=None,
+        )
+        result = evaluate_emergency_triggers(
+            snap,
+            heat_emergency_pct=4.0,
+            emergency_reconcile_failure_seconds=300.0,
+            emergency_broker_exposure_tolerance=2,
+        )
+        assert result.broker_exposure_mismatch is False
+        assert result.any_fired is False
+
+    def test_broker_count_zero_still_fires(self):
+        snap = EmergencyTriggerSnapshot(
+            live_heat_pct=1.0,
+            drawdown_mode="NORMAL",
+            reconcile_age_seconds=10.0,
+            managed_count=5,
+            broker_count=0,
+        )
+        result = evaluate_emergency_triggers(
+            snap,
+            heat_emergency_pct=4.0,
+            emergency_reconcile_failure_seconds=300.0,
+            emergency_broker_exposure_tolerance=2,
+        )
+        assert result.broker_exposure_mismatch is True
+
 
 # ── State machine escalation to EMERGENCY ────────────────────────────────
 
