@@ -14,6 +14,7 @@ Deriv: single connection (WebSocket API is account-scoped).
 import json
 import os
 import time as _time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -43,6 +44,20 @@ from platforms.base_connector import (
 )
 from platforms.deriv.deriv_connector import DerivConnector
 from platforms.mt5.mt5_connector import MT5Connector
+
+
+@dataclass
+class BrokerPositionsSnapshot:
+    """Result of fetching broker positions with per-platform confirmation.
+
+    Callers must check ``confirmed_platforms`` before inferring that a
+    position's absence means it was closed.  A platform in
+    ``failed_platforms`` returned no data due to an error — its positions
+    are *unknown*, not absent.
+    """
+    positions: list = field(default_factory=list)
+    confirmed_platforms: set = field(default_factory=set)
+    failed_platforms: set = field(default_factory=set)
 
 
 def _load_mt5_configs() -> list[dict]:
@@ -545,6 +560,60 @@ class PlatformManager:
                 else:
                     logger.warning("Deriv positions fetch error: {}", exc)
         return positions
+
+    def get_open_positions_snapshot(self) -> BrokerPositionsSnapshot:
+        """Fetch broker positions with per-platform confirmation tracking.
+
+        Unlike ``get_all_open_positions``, this method records *which*
+        platforms positively answered.  A position may only be considered
+        absent (and therefore closed) if its own platform is in
+        ``confirmed_platforms``.  If a platform is in ``failed_platforms``,
+        its positions are unknown — not absent.
+
+        MT5 is marked confirmed only when **all** connected brokers
+        respond.  If any single MT5 broker fails, "mt5" is failed
+        (conservative — we cannot distinguish which broker owns which
+        position since all carry ``platform="mt5"``).
+        """
+        snap = BrokerPositionsSnapshot()
+
+        mt5_all_ok = True
+        for i, connector in enumerate(self.mt5_connectors):
+            if self._mt5_connected_flags[i]:
+                try:
+                    snap.positions.extend(connector.get_open_positions())
+                except Exception as exc:
+                    mt5_all_ok = False
+                    label = f"MT5[{i}]" if len(self.mt5_connectors) > 1 else "MT5"
+                    logger.warning("{} positions fetch error (snapshot): {}", label, exc)
+
+        if any(self._mt5_connected_flags):
+            if mt5_all_ok:
+                snap.confirmed_platforms.add("mt5")
+            else:
+                snap.failed_platforms.add("mt5")
+        elif any(self._mt5_was_connected):
+            snap.failed_platforms.add("mt5")
+
+        if self._deriv_connected:
+            try:
+                snap.positions.extend(self.deriv.get_open_positions())
+                snap.confirmed_platforms.add("deriv")
+                if self._deriv_reconnect_warned:
+                    logger.info("Deriv positions fetch recovered (snapshot)")
+                    self._deriv_reconnect_warned = False
+            except Exception as exc:
+                snap.failed_platforms.add("deriv")
+                if "reconnecting" in str(exc).lower():
+                    if not self._deriv_reconnect_warned:
+                        logger.warning("Deriv positions fetch blocked (snapshot) — broker is reconnecting")
+                        self._deriv_reconnect_warned = True
+                else:
+                    logger.warning("Deriv positions fetch error (snapshot): {}", exc)
+        elif self._deriv_was_connected:
+            snap.failed_platforms.add("deriv")
+
+        return snap
 
     # ── Account ──────────────────────────────────────────────────────────
 
