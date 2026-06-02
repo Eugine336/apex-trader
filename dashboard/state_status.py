@@ -70,7 +70,7 @@ class StatusMixin(HelpersMixin):
                 if hasattr(getattr(loop, "config", None), "risk")
                 else 5.0
             ),
-            "open_trade_count": len(getattr(loop, "managed_positions", {})),
+            "open_trade_count": loop.get_positions_count() if hasattr(loop, "get_positions_count") else len(getattr(loop, "managed_positions", {})),
             "consecutive_losses": int(getattr(dd, "consecutive_losses", 0)),
             "consecutive_wins": int(getattr(dd, "consecutive_wins", 0)),
             "mt5_connected": self._connection_status.get("mt5", False),
