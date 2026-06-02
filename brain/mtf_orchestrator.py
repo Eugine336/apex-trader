@@ -92,23 +92,8 @@ class MTFOrchestrator:
         """Load OOS-validated weights from the adaptive store, falling back
         to canonical defaults if the file is absent or corrupt. Handles
         old 9-factor → new 12-factor schema migration transparently."""
-        import json
-        from pathlib import Path
-
-        from adaptive.score_optimizer import _migrate_old_weights
-
-        default_path = Path("data/scoring_weights.json")
-        if not default_path.exists():
-            return ScoringWeights()
-        try:
-            data = json.loads(default_path.read_text())
-            migrated = _migrate_old_weights(data)
-            return ScoringWeights(
-                **{k: v for k, v in migrated.items() if k in ScoringWeights.__dataclass_fields__}
-            )
-        except Exception as exc:
-            logger.warning(f"Could not load adaptive weights, using defaults: {exc}")
-            return ScoringWeights()
+        from adaptive.score_optimizer import load_saved_weights as _load
+        return _load()
 
     def build_setup(
         self,

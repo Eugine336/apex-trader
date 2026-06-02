@@ -239,12 +239,20 @@ class TradingLoop:
     def __init__(self, config: Optional[AppConfig] = None):
         self.config = config or AppConfig()
         self.platforms = PlatformManager(self.config)
-        self.scanner = PairScanner(self.config)
+        _adaptive_weights = None
+        _scanner_weights_dict = None
+        if self.config.scoring.use_adaptive_scoring_weights:
+            from adaptive.score_optimizer import (
+                load_saved_weights as _load_weights,
+                ScoringWeights as _SW,
+                ADAPTIVE_WEIGHT_ENVELOPE_PCT as _ENV_PCT,
+            )
+            _adaptive_weights = _load_weights()
+            _clamped = _adaptive_weights.clamped_to_envelope(_SW(), _ENV_PCT)
+            _scanner_weights_dict = _clamped.as_dict()
+        self.scanner = PairScanner(self.config, scoring_weights=_scanner_weights_dict)
         self.ranker = PairRanker()
         self.scheduler = ScanScheduler()
-        _adaptive_weights = None
-        if self.config.scoring.use_adaptive_scoring_weights:
-            _adaptive_weights = MTFOrchestrator.load_saved_weights()
         self.orchestrator = MTFOrchestrator(
             min_entry_score=self.config.scoring.min_entry_score,
             use_adaptive_weights=self.config.scoring.use_adaptive_scoring_weights,
