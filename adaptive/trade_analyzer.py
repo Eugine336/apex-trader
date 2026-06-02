@@ -92,6 +92,189 @@ class TradeAnalyzer:
         return patterns
 
     # ------------------------------------------------------------------
+    # Score-edge attribution
+    # ------------------------------------------------------------------
+
+    _FIXED_BANDS: list[tuple[str, int, int]] = [
+        ("<70", 0, 69),
+        ("70-79", 70, 79),
+        ("80-89", 80, 89),
+        ("90-100", 90, 100),
+    ]
+
+    def analyze_by_score(
+        self,
+        trades: list[dict],
+        n_buckets: int = 10,
+    ) -> dict[str, dict[str, PerformanceProfile]]:
+        """Score-bucketed performance profiles.
+
+        Returns ``{"quantile": {label: profile}, "fixed": {label: profile}}``.
+
+        *quantile* — trades split into ``n_buckets`` equal-frequency bins by
+        score (numpy ``percentile``).  Degrades gracefully when distinct
+        scores < ``n_buckets``.
+
+        *fixed* — trades grouped into the four canonical score bands
+        ``<70 / 70-79 / 80-89 / 90-100``.
+        """
+        valid = [
+            t for t in trades
+            if isinstance(t.get("score"), (int, float))
+            and isinstance(t.get("pnl"), (int, float))
+        ]
+        if not valid:
+            return {"quantile": {}, "fixed": {}}
+
+        scores = np.array([float(t["score"]) for t in valid])
+
+        # --- quantile buckets ---
+        distinct = np.unique(scores)
+        effective_n = min(n_buckets, len(distinct))
+        quantile_profiles: dict[str, PerformanceProfile] = {}
+        if effective_n >= 2:
+            edges = np.percentile(
+                scores,
+                np.linspace(0, 100, effective_n + 1),
+            )
+            edges[0] -= 1e-9
+            for i in range(len(edges) - 1):
+                lo, hi = edges[i], edges[i + 1]
+                bucket = [t for t, s in zip(valid, scores) if lo < s <= hi]
+                if bucket:
+                    label = f"Q{i + 1} ({lo + 1e-9:.0f}–{hi:.0f})"
+                    quantile_profiles[label] = self._build_profile(bucket)
+        elif effective_n == 1:
+            label = f"ALL ({distinct[0]:.0f})"
+            quantile_profiles[label] = self._build_profile(valid)
+
+        # --- fixed bands ---
+        fixed_profiles: dict[str, PerformanceProfile] = {}
+        for label, lo, hi in self._FIXED_BANDS:
+            bucket = [t for t in valid if lo <= float(t["score"]) <= hi]
+            if bucket:
+                fixed_profiles[label] = self._build_profile(bucket)
+
+        return {"quantile": quantile_profiles, "fixed": fixed_profiles}
+
+    def score_edge(
+        self,
+        trades: list[dict],
+        min_samples: int = 30,
+        spearman_positive_threshold: float = 0.10,
+        spearman_inverted_threshold: float = -0.10,
+    ) -> dict:
+        """Measure whether live entry *score* predicts realized *pnl*.
+
+        Verdict thresholds (all configurable via parameters):
+        * ``INSUFFICIENT_DATA`` — fewer than *min_samples* qualifying trades.
+        * ``POSITIVE_EDGE``    — Spearman ≥ *spearman_positive_threshold*
+          **and** the fixed-band expectancy sequence is broadly
+          monotone-increasing (at most one inversion among adjacent bands).
+        * ``INVERTED_EDGE``    — Spearman ≤ *spearman_inverted_threshold*.
+        * ``NO_EDGE``          — everything else.
+
+        Returns a dict with ``sample_count``, ``spearman``, ``pearson``,
+        ``band_expectancies`` (ordered dict label→float),
+        ``monotonicity_inversions`` (int), and ``verdict`` (str).
+        """
+        valid = [
+            t for t in trades
+            if isinstance(t.get("score"), (int, float))
+            and isinstance(t.get("pnl"), (int, float))
+        ]
+        n = len(valid)
+        if n < min_samples:
+            return {
+                "sample_count": n,
+                "spearman": 0.0,
+                "pearson": 0.0,
+                "band_expectancies": {},
+                "monotonicity_inversions": 0,
+                "verdict": "INSUFFICIENT_DATA",
+            }
+
+        scores = np.array([float(t["score"]) for t in valid])
+        pnls = np.array([float(t["pnl"]) for t in valid])
+
+        spearman = self._spearman(scores, pnls)
+        pearson = self._pearson(scores, pnls)
+
+        # Per-band expectancy (ordered low→high).
+        band_exp: dict[str, float] = {}
+        for label, lo, hi in self._FIXED_BANDS:
+            bucket_pnls = [float(t["pnl"]) for t in valid if lo <= float(t["score"]) <= hi]
+            if bucket_pnls:
+                band_exp[label] = round(float(np.mean(bucket_pnls)), 4)
+
+        # Monotonicity: count adjacent-band inversions.
+        exp_values = list(band_exp.values())
+        inversions = sum(
+            1 for i in range(len(exp_values) - 1) if exp_values[i + 1] < exp_values[i]
+        )
+        broadly_monotone = inversions <= 1
+
+        if spearman >= spearman_positive_threshold and broadly_monotone:
+            verdict = "POSITIVE_EDGE"
+        elif spearman <= spearman_inverted_threshold:
+            verdict = "INVERTED_EDGE"
+        else:
+            verdict = "NO_EDGE"
+
+        return {
+            "sample_count": n,
+            "spearman": round(spearman, 4),
+            "pearson": round(pearson, 4),
+            "band_expectancies": band_exp,
+            "monotonicity_inversions": inversions,
+            "verdict": verdict,
+        }
+
+    # ------------------------------------------------------------------
+    # Correlation helpers (Spearman via rank-then-Pearson; Pearson direct)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _rank(arr: np.ndarray) -> np.ndarray:
+        """Average-rank with tie-handling (identical to scipy.stats.rankdata)."""
+        order = arr.argsort()
+        ranks = np.empty_like(order, dtype=float)
+        ranks[order] = np.arange(1, len(arr) + 1, dtype=float)
+        # Average tied ranks.
+        sorted_arr = arr[order]
+        i = 0
+        while i < len(sorted_arr):
+            j = i
+            while j < len(sorted_arr) and sorted_arr[j] == sorted_arr[i]:
+                j += 1
+            if j > i + 1:
+                avg_rank = np.mean(ranks[order[i:j]])
+                ranks[order[i:j]] = avg_rank
+            i = j
+        return ranks
+
+    @staticmethod
+    def _pearson(x: np.ndarray, y: np.ndarray) -> float:
+        if len(x) < 2:
+            return 0.0
+        std_x = float(np.std(x, ddof=1))
+        std_y = float(np.std(y, ddof=1))
+        if std_x == 0.0 or std_y == 0.0:
+            return 0.0
+        mean_x = float(np.mean(x))
+        mean_y = float(np.mean(y))
+        cov = float(np.mean((x - mean_x) * (y - mean_y)))
+        return cov / (std_x * std_y) * (len(x) / (len(x) - 1))
+
+    @classmethod
+    def _spearman(cls, x: np.ndarray, y: np.ndarray) -> float:
+        if len(x) < 2:
+            return 0.0
+        rx = cls._rank(x)
+        ry = cls._rank(y)
+        return cls._pearson(rx, ry)
+
+    # ------------------------------------------------------------------
     # Internal
     # ------------------------------------------------------------------
 
