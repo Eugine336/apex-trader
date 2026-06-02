@@ -378,25 +378,108 @@ class BacktestEngine:
         self,
         pair: str,
         data_by_timeframe: dict[str, pd.DataFrame],
+        n_folds: int = 5,
         train_ratio: float = 0.7,
-    ) -> dict[str, BacktestResult]:
+    ) -> dict:
+        """Anchored/expanding-window walk-forward analysis.
+
+        For *n_folds* >= 2 the M1 data from ``self.min_history`` to the
+        last bar is divided into *n_folds* contiguous segments of roughly
+        equal length.  For fold *k* (0-based):
+
+        * **Train** — an *expanding* (anchored) window from
+          ``self.min_history`` up to the end of segment *k*.
+        * **Test** — segment *k + 1* (the next contiguous, non-
+          overlapping out-of-sample block).
+
+        This produces ``n_folds - 1`` train/test pairs because the last
+        segment is always consumed as a test window (no fold uses it as
+        training only).
+
+        When *n_folds* == 1, the method falls back to the legacy single
+        70/30 hold-out split controlled by *train_ratio*, preserving
+        backward compatibility with the original implementation.
+
+        Returns
+        -------
+        dict
+            ``{"folds": [{"fold": int, "train": BacktestResult,
+            "test": BacktestResult}, ...], "aggregate": BacktestResult}``
+
+            *aggregate* is the result of running the engine across the
+            **union of all OOS test segments** (concatenated, non-
+            overlapping).  When *n_folds* == 1, *folds* contains one
+            entry and *aggregate* equals the single test result.
+        """
         m1 = data_by_timeframe["M1"].sort_values("time").reset_index(drop=True)
-        split = int(len(m1) * train_ratio)
+        total_bars = len(m1)
+        usable_start = self.min_history
 
-        train = self.run(
-            pair,
-            data_by_timeframe,
-            start_index=self.min_history,
-            end_index=max(split - 1, self.min_history),
-        )
-        test = self.run(
-            pair,
-            data_by_timeframe,
-            start_index=max(split, self.min_history),
-            end_index=len(m1) - 1,
+        if n_folds < 1:
+            raise ValueError("n_folds must be >= 1")
+
+        if n_folds == 1:
+            split = int(total_bars * train_ratio)
+            train_result = self.run(
+                pair,
+                data_by_timeframe,
+                start_index=usable_start,
+                end_index=max(split - 1, usable_start),
+            )
+            test_result = self.run(
+                pair,
+                data_by_timeframe,
+                start_index=max(split, usable_start),
+                end_index=total_bars - 1,
+            )
+            return {
+                "folds": [{"fold": 0, "train": train_result, "test": test_result}],
+                "aggregate": test_result,
+            }
+
+        usable_length = total_bars - usable_start
+        if usable_length < n_folds:
+            raise ValueError(
+                f"Not enough bars ({usable_length} usable) for {n_folds} folds"
+            )
+
+        segment_size = usable_length // n_folds
+        boundaries: list[int] = []
+        for k in range(n_folds):
+            boundaries.append(usable_start + k * segment_size)
+        boundaries.append(total_bars)
+
+        folds: list[dict] = []
+        oos_ranges: list[tuple[int, int]] = []
+
+        for k in range(n_folds - 1):
+            train_start = usable_start
+            train_end = boundaries[k + 1] - 1
+            test_start = boundaries[k + 1]
+            test_end = boundaries[k + 2] - 1
+
+            train_result = self.run(
+                pair, data_by_timeframe,
+                start_index=train_start, end_index=train_end,
+            )
+            test_result = self.run(
+                pair, data_by_timeframe,
+                start_index=test_start, end_index=test_end,
+            )
+            folds.append({
+                "fold": k,
+                "train": train_result,
+                "test": test_result,
+            })
+            oos_ranges.append((test_start, test_end))
+
+        aggregate = self.run(
+            pair, data_by_timeframe,
+            start_index=oos_ranges[0][0],
+            end_index=oos_ranges[-1][1],
         )
 
-        return {"train": train, "test": test}
+        return {"folds": folds, "aggregate": aggregate}
 
     def run_from_broker(
         self,
@@ -516,21 +599,22 @@ class BacktestEngine:
                     trade["tp1_hit"] = True
                     trade["stop_loss"] = entry
                     trade["realized_r"] += 0.5 * ((tp1 - entry) / risk)
+                    return None
 
             if trade["tp1_hit"]:
                 stop_be_hit = candle["low"] <= trade["stop_loss"]
+                if stop_be_hit:
+                    return {
+                        "pnl_r": trade["realized_r"],
+                        "hold_minutes": hold_minutes,
+                        "outcome": "BREAKEVEN",
+                    }
                 if tp2_hit:
                     pnl = trade["realized_r"] + 0.5 * ((tp2 - entry) / risk)
                     return {
                         "pnl_r": pnl,
                         "hold_minutes": hold_minutes,
                         "outcome": "WIN",
-                    }
-                if stop_be_hit:
-                    return {
-                        "pnl_r": trade["realized_r"],
-                        "hold_minutes": hold_minutes,
-                        "outcome": "BREAKEVEN",
                     }
 
         else:
@@ -549,21 +633,22 @@ class BacktestEngine:
                     trade["tp1_hit"] = True
                     trade["stop_loss"] = entry
                     trade["realized_r"] += 0.5 * ((entry - tp1) / risk)
+                    return None
 
             if trade["tp1_hit"]:
                 stop_be_hit = candle["high"] >= trade["stop_loss"]
+                if stop_be_hit:
+                    return {
+                        "pnl_r": trade["realized_r"],
+                        "hold_minutes": hold_minutes,
+                        "outcome": "BREAKEVEN",
+                    }
                 if tp2_hit:
                     pnl = trade["realized_r"] + 0.5 * ((entry - tp2) / risk)
                     return {
                         "pnl_r": pnl,
                         "hold_minutes": hold_minutes,
                         "outcome": "WIN",
-                    }
-                if stop_be_hit:
-                    return {
-                        "pnl_r": trade["realized_r"],
-                        "hold_minutes": hold_minutes,
-                        "outcome": "BREAKEVEN",
                     }
 
         if hold_minutes >= 180:
