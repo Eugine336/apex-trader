@@ -115,7 +115,8 @@ class PairScanner:
     stack, and surfaces only the setups worth pulling the trigger on.
     """
 
-    def __init__(self, config: Optional[AppConfig] = None, mt5_connector=None):
+    def __init__(self, config: Optional[AppConfig] = None, mt5_connector=None,
+                 scoring_weights: Optional[dict[str, int]] = None):
         self.config = config or AppConfig()
         self.structure = StructureEngine()
         self.fvg_detector = FVGDetector()
@@ -131,6 +132,7 @@ class PairScanner:
         self.volume = VolumeAnalyzer()
         self.last_report: Optional[ScanReport] = None
         self._mt5_connector = mt5_connector  # used for dynamic market hours checks
+        self._adaptive_weights = scoring_weights
 
     # ------------------------------------------------------------------
     # Single-pair scan
@@ -192,9 +194,10 @@ class PairScanner:
         score = 0
         confluences: list[str] = []
         scoring = self.config.scoring
+        _w = self._adaptive_weights
 
         if bias["tradeable"]:
-            score += scoring.structure_points
+            score += _w["structure"] if _w else scoring.structure_points
             confluences.append(f"Structure aligned ({bias['strength']})")
 
         # ── 2a. H1 Order blocks (directional bias) ───────────────────
@@ -209,7 +212,11 @@ class PairScanner:
             entry_ob = ob_det.get_entry_ob(h1_obs, trade_dir, h1_df["close"].iloc[-1])
             if entry_ob and entry_ob.status in (OBStatus.FRESH, OBStatus.TESTED):
                 has_h1_ob = True
-                h1_ob_pts = 10 if entry_ob.strength == "STRONG" else (7 if entry_ob.strength == "MODERATE" else 4)
+                if _w:
+                    _h1_max = _w["ob_h1"]
+                    h1_ob_pts = _h1_max if entry_ob.strength == "STRONG" else (round(_h1_max * 0.7) if entry_ob.strength == "MODERATE" else round(_h1_max * 0.4))
+                else:
+                    h1_ob_pts = 10 if entry_ob.strength == "STRONG" else (7 if entry_ob.strength == "MODERATE" else 4)
                 score += h1_ob_pts
                 confluences.append(f"H1 OB bias ({entry_ob.strength}, +{h1_ob_pts})")
 
@@ -220,7 +227,11 @@ class PairScanner:
             m5_entry_ob = ob_det.get_entry_ob(m5_obs, trade_dir, m5_df["close"].iloc[-1])
             if m5_entry_ob and m5_entry_ob.status in (OBStatus.FRESH, OBStatus.TESTED):
                 has_m5_ob = True
-                m5_ob_pts = 10 if m5_entry_ob.strength == "STRONG" else (7 if m5_entry_ob.strength == "MODERATE" else 4)
+                if _w:
+                    _m5_max = _w["ob_m5"]
+                    m5_ob_pts = _m5_max if m5_entry_ob.strength == "STRONG" else (round(_m5_max * 0.7) if m5_entry_ob.strength == "MODERATE" else round(_m5_max * 0.4))
+                else:
+                    m5_ob_pts = 10 if m5_entry_ob.strength == "STRONG" else (7 if m5_entry_ob.strength == "MODERATE" else 4)
                 score += m5_ob_pts
                 confluences.append(f"M5 OB entry zone ({m5_entry_ob.strength}, +{m5_ob_pts})")
 
@@ -239,12 +250,13 @@ class PairScanner:
             entry_fvg = fvg_det.get_entry_fvg(m5_fvgs + m15_fvgs, trade_dir, m5_df["close"].iloc[-1])
             if entry_fvg:
                 has_fvg = True
+                _fvg_base = _w["fvg"] if _w else scoring.fvg_points
                 if entry_fvg.strength == "STRONG":
-                    fvg_pts = scoring.fvg_points
+                    fvg_pts = _fvg_base
                 elif entry_fvg.strength == "MODERATE":
-                    fvg_pts = int(scoring.fvg_points * 0.7)
+                    fvg_pts = int(_fvg_base * 0.7)
                 else:
-                    fvg_pts = int(scoring.fvg_points * 0.4)
+                    fvg_pts = int(_fvg_base * 0.4)
                 score += fvg_pts
                 confluences.append(f"FVG entry zone ({entry_fvg.strength}, +{fvg_pts})")
 
@@ -254,7 +266,7 @@ class PairScanner:
             overlap_threshold_pips=profile.mtf_overlap_threshold_pips,
         )
         if confluence["has_confluence"]:
-            score += scoring.mtf_confluence_points
+            score += _w["mtf_confluence"] if _w else scoring.mtf_confluence_points
             confluences.append("Multi-TF FVG confluence")
 
         # ── 5. Session timing ─────────────────────────────────────────
@@ -268,17 +280,16 @@ class PairScanner:
             session_active = session_status.is_tradeable
 
         if session_active:
-            score += scoring.session_points
+            score += _w["session"] if _w else scoring.session_points
             confluences.append(f"Session active ({session_status.current_session})")
 
         # ── 6. News filter ────────────────────────────────────────────
         news_status = self.news.check([pair], utc_now)
         if not profile.news_filter_enabled:
-            # Synthetics don't react to economic news — always grant news points
-            score += scoring.news_points
+            score += _w["news"] if _w else scoring.news_points
             confluences.append("News filter N/A (synthetic)")
         elif news_status.is_clear:
-            score += scoring.news_points
+            score += _w["news"] if _w else scoring.news_points
             confluences.append("News clear")
 
         # ── 7. Currency strength alignment ────────────────────────────
@@ -288,7 +299,7 @@ class PairScanner:
             alignment = self.strength_meter.get_pair_alignment(pair, strength, trade_dir)
             if alignment["aligned"]:
                 cs_aligned = True
-                score += scoring.currency_strength_points
+                score += _w["currency_strength"] if _w else scoring.currency_strength_points
                 confluences.append(f"Currency strength ({alignment['reason']})")
 
         # ── 8. Liquidity ──────────────────────────────────────────────
@@ -304,8 +315,8 @@ class PairScanner:
             for zone in targets[:3]:
                 if self.liquidity.detect_sweep(m5_df, zone, pip_size):
                     sweep = True
-                    score += 8
-                    confluences.append("Liquidity sweep detected (+8)")
+                    score += _w["liquidity_sweep"] if _w else 8
+                    confluences.append(f"Liquidity sweep detected (+{_w['liquidity_sweep'] if _w else 8})")
                     break
 
         # ── 9. Volume confirmation ────────────────────────────────────
@@ -318,7 +329,8 @@ class PairScanner:
                     or (trade_dir == "SHORT" and vol_analysis.confirmation_bias == "BEARISH")
                 ):
                     volume_confirmed = True
-                    score += 5
+                    _vol_pts = _w["volume"] if _w else 5
+                    score += _vol_pts
                     confluences.append(
                         f"Volume confirmed ({vol_analysis.confirmation_bias}, "
                         f"ratio={vol_analysis.volume_ratio:.1f}x)"
@@ -337,8 +349,9 @@ class PairScanner:
             inducement_analysis = ind_det.analyze(m5_df)
             if inducement_analysis.inducement_detected:
                 inducement_detected = True
-                score += 5
-                confluences.append(f"Inducement detected ({inducement_analysis.type}, +5)")
+                _ind_pts = _w["inducement"] if _w else 5
+                score += _ind_pts
+                confluences.append(f"Inducement detected ({inducement_analysis.type}, +{_ind_pts})")
         except Exception as exc:
             logger.debug(f"Inducement detection error for {pair}: {exc}")
 
@@ -350,8 +363,9 @@ class PairScanner:
                 wyckoff_analysis = wyck.analyze(h1_df)
                 wyckoff_phase = wyckoff_analysis.phase
                 if wyckoff_analysis.sub_phase in ("SPRING", "UPTHRUST"):
-                    score += 5
-                    confluences.append(f"Wyckoff {wyckoff_analysis.sub_phase} (+5)")
+                    _wyck_pts = _w["wyckoff"] if _w else 5
+                    score += _wyck_pts
+                    confluences.append(f"Wyckoff {wyckoff_analysis.sub_phase} (+{_wyck_pts})")
             except Exception as exc:
                 logger.debug(f"Wyckoff analysis error for {pair}: {exc}")
         else:
