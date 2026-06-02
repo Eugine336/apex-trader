@@ -947,6 +947,13 @@ class TradingLoop:
                 signal.position_size_lots * adjustments.position_size_multiplier * density_mult * vol_mult,
                 2,
             )
+            risk_ceiling = signal.position_size_lots
+            if adjusted_lots > risk_ceiling:
+                logger.info(
+                    "[RiskAuthority] {} — adaptive sizing capped {:.2f} → {:.2f} lots (risk ceiling)",
+                    pair, adjusted_lots, risk_ceiling,
+                )
+                adjusted_lots = risk_ceiling
             adjusted_lots = max(0.01, adjusted_lots)
         except Exception as exc:
             logger.debug("ML adjustments error: {}", exc)
