@@ -10,11 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from management.trade_manager import (
-    EntrySignal,
-    ManagedTrade,
     TradeManager,
-    TradeStatus,
-    TERMINAL_STATUSES,
 )
 from platforms.base_connector import CloseResult, OrderResult, PositionInfo, TickData
 
@@ -157,7 +153,6 @@ class TestBrokerSideCloseDetection:
 
     def test_position_removed_when_broker_closes_it(self):
         loop, pos, tm_trade = _build_loop_with_position()
-        oid = pos.order_id
 
         # Broker returns EMPTY list — position was closed broker-side
         loop.platforms.get_all_open_positions.return_value = []
@@ -175,7 +170,6 @@ class TestBrokerSideCloseDetection:
 
     def test_broker_pnl_used_in_close_record(self):
         loop, pos, tm_trade = _build_loop_with_position()
-        oid = pos.order_id
         pos.broker_pnl = 3.50  # last synced broker P&L
 
         loop.platforms.get_all_open_positions.return_value = []
@@ -373,7 +367,7 @@ class TestDashboardBrokerPnl:
             mod = importlib.util.module_from_spec(spec)
             sys.modules["dashboard.state_trades"] = mod
             spec.loader.exec_module(mod)
-            TradesMixin = mod.TradesMixin
+            mod.TradesMixin  # noqa: B018 — validate attr exists
         except Exception:
             pytest.skip("Cannot import state_trades without FastAPI")
             return

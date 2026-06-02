@@ -6,8 +6,6 @@ Price returns to these zones to fill remaining orders.
 """
 
 import pandas as pd
-import numpy as np
-from loguru import logger
 from dataclasses import dataclass
 from typing import Optional
 from enum import Enum

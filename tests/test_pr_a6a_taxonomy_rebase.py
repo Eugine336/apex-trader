@@ -11,7 +11,6 @@ Tests:
 
 import json
 
-import pytest
 
 from adaptive.score_optimizer import (
     ADAPTIVE_WEIGHT_ENVELOPE_PCT,

@@ -12,14 +12,13 @@ from typing import Any, Optional
 import pandas as pd
 from loguru import logger
 
-from config import get_instrument, get_pip_size
+from config import get_pip_size
 from brain.symbol_mapper import SymbolMapper
 from platforms.base_connector import (
     AccountInfo,
     BaseConnector,
     CloseResult,
     OrderResult,
-    OrderStatus,
     PositionInfo,
     TickData,
 )

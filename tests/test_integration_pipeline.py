@@ -3,25 +3,21 @@ APEX TRADER — Integration Tests
 Verifies end-to-end wiring between modules: scan → entry → risk → manage → close.
 """
 
-import tempfile
 from datetime import datetime, timezone
 from types import SimpleNamespace
 
 import numpy as np
 import pandas as pd
-import pytest
 
-from config import AppConfig, get_pip_size
 from management.trade_manager import (
     EntrySignal as TMEntrySignal,
-    ManagedTrade,
     TradeManager,
     TradeStatus,
 )
 from persistence.position_store import PositionStore
 from risk.risk_engine import RiskEngine, RiskAssessment
 from adaptive.ev_estimator import EVEstimator, EVEstimate
-from brain.drawdown_guard import DrawdownGuard, DrawdownMode
+from brain.drawdown_guard import DrawdownMode
 from adaptive.optimizer import AdaptiveOptimizer
 from dashboard.state import LiveState
 

@@ -14,7 +14,6 @@ from datetime import datetime, timezone
 from types import SimpleNamespace
 from typing import Optional
 
-import pandas as pd
 from loguru import logger
 
 from persistence.position_store import PositionStore
@@ -45,11 +44,11 @@ from management.trade_manager import (
     TERMINAL_STATUSES,
     EntrySignal as TMEntrySignal,
 )
-from adaptive.optimizer import AdaptiveOptimizer as MLAdapter, TradeAdjustments
+from adaptive.optimizer import AdaptiveOptimizer as MLAdapter
 from platforms.base_connector import OrderResult, CloseResult, PositionInfo
 from platforms.deriv.deriv_connector import DerivConnector
 from platforms.order_idempotency import generate_idempotency_key
-from platforms.platform_manager import PlatformManager, BrokerPositionsSnapshot
+from platforms.platform_manager import PlatformManager
 from platform_context import PlatformContext, build_context_for_symbol
 from risk.portfolio_risk_state import (
     PortfolioRiskStateMachine,
@@ -61,14 +60,13 @@ from risk.portfolio_risk_state import (
     compute_position_risk_dollars,
     compute_live_heat_pct,
     is_eligible_for_defensive_breakeven,
-    is_position_data_insufficient,
     rank_positions_weakest_first,
 )
 from risk.risk_engine import RiskEngine
 from risk.risk_reporter import RiskReporter
 from scanner import PairScanner, PairRanker, ScanScheduler
-from trigger.entry_engine import EntryEngine, EntrySignal, EntryRejection
-from trigger.entry_validator import EntryValidator, ValidationResult
+from trigger.entry_engine import EntryEngine, EntryRejection
+from trigger.entry_validator import EntryValidator
 
 
 class ManagedPosition:
@@ -438,7 +436,6 @@ class TradingLoop:
                 has_active_positions=len(self.managed_positions) > 0,
             )
 
-            market_data: dict = {}  # unused in run_once scope — populated in _scan_and_enter via _last_market_data
 
             if should_scan and (session_status.is_tradeable or self._has_always_open_instruments()):
                 if self._scan_breaker.can_execute():
@@ -843,7 +840,7 @@ class TradingLoop:
         ready = self.scanner.get_ready_setups(report)
 
         # Track opportunity density — feeds into position sizing
-        density = self.density_tracker.record_scan(len(ready), utc_now=now)
+        self.density_tracker.record_scan(len(ready), utc_now=now)
 
         # Update system-wide volatility state — reduce all sizes during market vol spikes
         try:
@@ -1051,7 +1048,7 @@ class TradingLoop:
             # Determine confidence from EVEstimator sample size indirectly via score
             # We gate on negative EV only when pair_mult is also below 1.0 (i.e. learner
             # has marked this pair as REDUCE_SIZE or worse) — belt + braces gate.
-            pair_mult = pair_mult_map = 1.0
+            pair_mult = 1.0
             try:
                 pair_mult = self.ml.pair_learner.get_pair_multiplier(pair)
             except Exception as exc:

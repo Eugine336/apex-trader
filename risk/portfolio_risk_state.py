@@ -223,7 +223,6 @@ def rank_positions_weakest_first(
         entry_type = p.get("entry_type", "")
         open_time = p["open_time_utc"]
         risk_dollars = p.get("risk_dollars", 0.0)
-        lots = p.get("lots", 0.0)
 
         is_long = direction.upper() in ("BUY", "LONG")
         original_risk = abs(entry_price - sl) if sl > 0 and entry_price > 0 else 0.0

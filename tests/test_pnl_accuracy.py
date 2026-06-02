@@ -8,12 +8,8 @@ Validates fixes for:
 """
 
 import asyncio
-import os
-import tempfile
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Optional
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -211,10 +207,8 @@ class TestRecordClosedTradeUsesBrokerPnl:
 
         loop._record_closed_trade(pos, 1.09, "TP2", close_result=close_result)
 
-        journal_call = loop.journal.log_trade
-        trade_record = loop._journal_loop.run_until_complete(asyncio.sleep(0))
+        loop._journal_loop.run_until_complete(asyncio.sleep(0))
 
-        call_args = loop._journal_loop.close
         logged = loop.journal.log_trade
         assert logged.called or True  # _run_journal_async wraps it
 

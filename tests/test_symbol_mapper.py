@@ -83,11 +83,6 @@ class TestSymbolMapperDeriv:
             "BOOM500", "BOOM1000",
             "CRASH500", "CRASH1000",
         ]
-        passthrough_ok = {
-            "JD10", "JD25", "JD50",
-            "BOOM500", "BOOM1000",
-            "CRASH500", "CRASH1000",
-        }
         for sym in synthetics:
             result = mapper.to_broker(sym)
             assert result is not None, f"{sym} should produce a valid mapping"

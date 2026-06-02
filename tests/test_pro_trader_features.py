@@ -4,9 +4,9 @@ These tests exercise config-gating and production dispatch logic
 without requiring pandas, numpy, or live broker connections.
 """
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 from types import SimpleNamespace, ModuleType
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 

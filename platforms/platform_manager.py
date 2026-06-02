@@ -25,14 +25,9 @@ import pandas as pd
 logger = _pm_logger
 
 from config import (
-    INSTRUMENT_REGISTRY,
     AppConfig,
-    InstrumentCategory,
     Platform,
-    get_all_symbols,
     get_instrument,
-    get_instruments_by_platform,
-    get_pip_size,
 )
 from platforms.base_connector import (
     AccountInfo,
@@ -363,7 +358,6 @@ class PlatformManager:
         2. Any connected broker (first one wins)
         """
         from pathlib import Path
-        import re as _re
 
         fallback: Optional[MT5Connector] = None
 

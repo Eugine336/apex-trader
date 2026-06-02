@@ -10,8 +10,6 @@ Proves the adaptive-weight scanner wiring is byte-for-byte neutral:
 """
 
 import pytest
-from unittest.mock import patch, MagicMock
-from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import numpy as np
@@ -19,7 +17,7 @@ import pandas as pd
 
 from adaptive.score_optimizer import ScoringWeights, ADAPTIVE_WEIGHT_ENVELOPE_PCT
 from config import AppConfig
-from scanner.pair_scanner import PairScanner, PairScanResult
+from scanner.pair_scanner import PairScanner
 
 
 # ---------------------------------------------------------------------------

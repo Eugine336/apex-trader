@@ -4,7 +4,6 @@ Keeps the system clean without human intervention.
 Runs once per day: backs up the database, rotates old logs, cleans stale files.
 """
 
-import os
 import shutil
 import time as _time
 from datetime import datetime, timezone

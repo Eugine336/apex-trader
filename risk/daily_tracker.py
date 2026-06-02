@@ -4,7 +4,7 @@ Tracks every dollar, every day.
 The moment daily loss crosses the line, everything stops.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 
 

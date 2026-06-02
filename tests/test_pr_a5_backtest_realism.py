@@ -13,7 +13,7 @@ the PR's CI pipeline is the runtime authority.
 """
 
 from datetime import datetime, timedelta, timezone
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from dataclasses import dataclass
 
 import pytest
@@ -90,7 +90,6 @@ class TestWalkForwardMultiFold:
     def _make_engine(self, min_history=10):
         """Return a BacktestEngine with a mocked run() that records calls."""
         from brain.backtest_engine import BacktestEngine, BacktestResult
-        import pandas as pd
 
         engine = BacktestEngine.__new__(BacktestEngine)
         engine.min_history = min_history
@@ -112,7 +111,6 @@ class TestWalkForwardMultiFold:
         )
         engine._run_calls: list[tuple[int, int]] = []
 
-        original_run = engine.run
 
         def _tracking_run(pair, data_by_timeframe, start_index=None, end_index=None):
             engine._run_calls.append((start_index, end_index))

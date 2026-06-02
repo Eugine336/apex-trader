@@ -11,14 +11,14 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional, Union
 from loguru import logger
 
-from config import AppConfig, get_instrument, get_pip_size, InstrumentCategory, spread_open_guard_applies
+from config import AppConfig, get_instrument, get_pip_size, spread_open_guard_applies
 from brain.instrument_profile import get_profile, InstrumentProfile
 from brain.market_data_utils import drop_forming_bar
 from brain.structure_engine import StructureEngine
 from brain.fvg_detector import FVGDetector, FairValueGap
 from brain.order_block import OrderBlockDetector, OrderBlock, OBStatus
 from brain.liquidity_mapper import LiquidityMapper
-from brain.drawdown_guard import DrawdownGuard, DrawdownMode
+from brain.drawdown_guard import DrawdownGuard
 from brain.session_engine import NewsGuard, SessionEngine
 from trigger.entry_patterns import EntryPatternDetector
 
@@ -574,7 +574,6 @@ class EntryEngine:
         if entry_zone and entry_zone.get("type", "NONE") != "NONE":
             zone_top = entry_zone["top"]
             zone_bottom = entry_zone["bottom"]
-            last_close = float(df["close"].iloc[-1])
             last_low = float(df["low"].iloc[-1])
             last_high = float(df["high"].iloc[-1])
             # Use profile proximity pips — synthetics/indices need much wider

@@ -9,7 +9,6 @@ This is how a professional trails — by reading the market.
 from typing import Optional
 
 import pandas as pd
-from loguru import logger
 
 from brain.structure_engine import StructureEngine
 

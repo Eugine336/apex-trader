@@ -13,7 +13,6 @@ Covers:
 """
 
 import time
-from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -23,7 +22,6 @@ from risk.portfolio_risk_state import (
     PortfolioRiskSnapshot,
     PortfolioRiskState,
     PortfolioRiskStateMachine,
-    StateTransition,
     evaluate_emergency_triggers,
     rank_positions_weakest_first,
 )

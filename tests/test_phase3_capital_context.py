@@ -7,10 +7,10 @@ dynamic risk scaling, and opportunity ranking.
 import pytest
 from datetime import datetime, timezone
 
-from brain.drawdown_guard import DrawdownGuard, DrawdownMode, DrawdownStatus
-from risk.position_sizer import PositionSizer, SizeResult
+from brain.drawdown_guard import DrawdownGuard
+from risk.position_sizer import PositionSizer
 from risk.risk_engine import RiskEngine
-from adaptive.ev_estimator import EVEstimator, EVEstimate
+from adaptive.ev_estimator import EVEstimator
 from scanner.pair_ranker import PairRanker
 from scanner.pair_scanner import PairScanResult
 

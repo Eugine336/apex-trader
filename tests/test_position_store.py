@@ -3,9 +3,6 @@ APEX TRADER — Position Store Tests
 Verifies SQLite persistence: save, load, update, remove, and restart recovery.
 """
 
-import os
-import tempfile
-from datetime import datetime, timezone
 
 import pytest
 
