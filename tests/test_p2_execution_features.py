@@ -254,6 +254,7 @@ class TestTPModifyWiring:
         loop.trade_manager = MagicMock()
         loop.config = MagicMock()
         loop.config.risk.margin_guardian_enabled = False
+        loop.config.risk.reconcile_max_unconfirmed_cycles = 20
 
         order = OrderResult(
             success=True, order_id="TP_TEST_1", fill_price=1.1000,
@@ -273,6 +274,10 @@ class TestTPModifyWiring:
             sl=sl_before, tp=tp2_before, pnl=5.0, swap=0.0,
             open_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
             platform="mt5",
+        )
+        from platforms.platform_manager import BrokerPositionsSnapshot
+        loop.platforms.get_open_positions_snapshot.return_value = BrokerPositionsSnapshot(
+            positions=[bp], confirmed_platforms={"mt5"}, failed_platforms=set(),
         )
         loop.platforms.get_all_open_positions.return_value = [bp]
         loop.platforms.get_realized_pnl.return_value = None
@@ -532,6 +537,7 @@ class TestRegressionSLOnlyModifyStillWorks:
         loop.trade_manager = MagicMock()
         loop.config = MagicMock()
         loop.config.risk.margin_guardian_enabled = False
+        loop.config.risk.reconcile_max_unconfirmed_cycles = 20
 
         order = OrderResult(
             success=True, order_id="SL_TEST_1", fill_price=1.1000,
@@ -551,6 +557,10 @@ class TestRegressionSLOnlyModifyStillWorks:
             sl=1.0950, tp=1.1100, pnl=5.0, swap=0.0,
             open_time=datetime(2026, 1, 1, tzinfo=timezone.utc),
             platform="mt5",
+        )
+        from platforms.platform_manager import BrokerPositionsSnapshot
+        loop.platforms.get_open_positions_snapshot.return_value = BrokerPositionsSnapshot(
+            positions=[bp], confirmed_platforms={"mt5"}, failed_platforms=set(),
         )
         loop.platforms.get_all_open_positions.return_value = [bp]
         loop.platforms.get_realized_pnl.return_value = None

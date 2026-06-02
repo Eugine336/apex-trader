@@ -48,7 +48,7 @@ from adaptive.optimizer import AdaptiveOptimizer as MLAdapter, TradeAdjustments
 from platforms.base_connector import OrderResult, CloseResult, PositionInfo
 from platforms.deriv.deriv_connector import DerivConnector
 from platforms.order_idempotency import generate_idempotency_key
-from platforms.platform_manager import PlatformManager
+from platforms.platform_manager import PlatformManager, BrokerPositionsSnapshot
 from platform_context import PlatformContext, build_context_for_symbol
 from risk.portfolio_risk_state import (
     PortfolioRiskStateMachine,
@@ -100,6 +100,8 @@ class ManagedPosition:
         "broker_lots",
         "scale_in_count",
         "idempotency_key",
+        "revalidation_pending",
+        "unconfirmed_cycles",
     )
 
     def __init__(
@@ -141,6 +143,8 @@ class ManagedPosition:
         self.broker_lots = 0.0  # Live lots from broker (detects partial fills)
         self.scale_in_count = 0
         self.idempotency_key = idempotency_key
+        self.revalidation_pending = False
+        self.unconfirmed_cycles = 0
 
 
 class _LockedPositions:
@@ -588,27 +592,49 @@ class TradingLoop:
         logger.info("Position store — {} positions restored from disk", len(self.managed_positions))
 
     def _reconcile_positions(self) -> None:
-        """Compare persisted positions with broker's live positions on startup."""
-        broker_positions: list[PositionInfo] = []
-        try:
-            broker_positions = self.platforms.get_all_open_positions()
-        except Exception as exc:
-            logger.warning("Broker position query failed during reconciliation: {}", exc)
+        """Compare persisted positions with broker's live positions on startup.
+
+        Requires positive confirmation from each position's own platform.
+        Positions whose platform did not respond are retained and marked
+        for revalidation — never removed on absence of data.
+        """
+        snap = self.platforms.get_open_positions_snapshot()
+
+        if not snap.confirmed_platforms:
+            logger.warning(
+                "Startup reconciliation skipped — no platform confirmed "
+                "(failed: {})",
+                snap.failed_platforms or "none connected",
+            )
             return
 
-        broker_by_id: dict[str, PositionInfo] = {p.order_id: p for p in broker_positions}
+        broker_by_id: dict[str, PositionInfo] = {
+            p.order_id: p for p in snap.positions
+        }
         persisted_ids = set(self.managed_positions.keys())
         broker_ids = set(broker_by_id.keys())
 
+        removed_count = 0
         for oid in persisted_ids - broker_ids:
             pos = self.managed_positions[oid]
-            logger.info(
-                "📋 RECONCILE — {} {} was closed externally while offline — removing",
-                pos.direction,
-                pos.symbol,
-            )
-            self.managed_positions.pop(oid, None)
-            self.position_store.remove_position(oid)
+            if pos.platform in snap.confirmed_platforms:
+                logger.info(
+                    "📋 RECONCILE — {} {} was closed externally while "
+                    "offline — removing",
+                    pos.direction,
+                    pos.symbol,
+                )
+                self.managed_positions.pop(oid, None)
+                self.position_store.remove_position(oid)
+                removed_count += 1
+            else:
+                pos.revalidation_pending = True
+                pos.unconfirmed_cycles += 1
+                logger.warning(
+                    "[Reconcile] Cannot confirm {} {} on {} at startup — "
+                    "retaining under management, marked for revalidation",
+                    pos.direction, pos.symbol, pos.platform,
+                )
 
         for oid in broker_ids - persisted_ids:
             bp = broker_by_id[oid]
@@ -660,66 +686,101 @@ class TradingLoop:
         for oid in persisted_ids & broker_ids:
             bp = broker_by_id[oid]
             pos = self.managed_positions[oid]
+            if pos.revalidation_pending:
+                pos.revalidation_pending = False
+                pos.unconfirmed_cycles = 0
             if abs(bp.sl - pos.sl) > 1e-8:
                 logger.debug("RECONCILE — {} SL updated from broker: {:.5f} → {:.5f}", pos.symbol, pos.sl, bp.sl)
                 pos.sl = bp.sl
                 self.position_store.update_position(oid, sl=bp.sl)
 
+        adopted = len(broker_ids - persisted_ids)
         logger.info(
-            "Reconciliation complete — {} managed, {} on broker, {} adopted, {} removed",
+            "Reconciliation complete — {} managed, {} on broker, {} adopted, "
+            "{} removed, {} unconfirmed (confirmed: {}, failed: {})",
             len(self.managed_positions),
-            len(broker_positions),
-            len(broker_ids - persisted_ids),
-            len(persisted_ids - broker_ids),
+            len(snap.positions),
+            adopted,
+            removed_count,
+            sum(1 for p in self.managed_positions.values() if p.revalidation_pending),
+            snap.confirmed_platforms or "none",
+            snap.failed_platforms or "none",
         )
 
     # ── Auto-reconnect ─────────────────────────────────────────────────
 
     def _reconcile_externally_closed(self, to_remove: list[str]) -> None:
-        """Drop managed positions that no longer exist at the broker."""
+        """Drop managed positions that no longer exist at the broker.
+
+        Requires positive confirmation from the position's own platform.
+        If the platform failed to respond, the position is retained and
+        marked for revalidation — never auto-closed on absence of data.
+        """
         if not self.managed_positions:
             return
-        try:
-            broker_positions = self.platforms.get_all_open_positions()
-        except Exception:
-            return
-        broker_ids = {p.order_id for p in broker_positions}
-        broker_pnl = {p.order_id: p.pnl for p in broker_positions}
+        snap = self.platforms.get_open_positions_snapshot()
+        broker_ids = {p.order_id for p in snap.positions}
+        broker_pnl = {p.order_id: p.pnl for p in snap.positions}
+        max_unconfirmed = self.config.risk.reconcile_max_unconfirmed_cycles
 
         for oid, pos in list(self.managed_positions.items()):
-            if oid not in broker_ids:
-                real_pnl = broker_pnl.get(oid, 0.0)
-                fake_close = CloseResult(
-                    success=True,
-                    order_id=oid,
-                    close_price=pos.entry_price,
-                    lots_closed=pos.lots,
-                    pnl=real_pnl,
-                    platform=pos.platform,
-                )
-                try:
-                    tick = self.platforms.get_price(pos.symbol)
-                    is_buy = pos.direction == "BUY"
-                    fake_close.close_price = tick.bid if is_buy else tick.ask
-                except Exception:
-                    pass
-                self._record_closed_trade(
-                    pos,
-                    fake_close.close_price,
-                    "CLOSED_EXTERNALLY",
-                    close_result=fake_close if real_pnl != 0.0 else None,
-                )
-                to_remove.append(oid)
-                self._add_warning(
-                    "warning",
-                    f"{pos.direction} {pos.symbol} closed externally by broker",
-                    symbol=pos.symbol,
-                )
-                logger.info(
-                    "📋 LIVE RECONCILE — {} {} closed externally — removed",
-                    pos.direction,
-                    pos.symbol,
-                )
+            if oid in broker_ids:
+                if pos.revalidation_pending:
+                    pos.revalidation_pending = False
+                    pos.unconfirmed_cycles = 0
+                continue
+
+            if pos.platform not in snap.confirmed_platforms:
+                pos.revalidation_pending = True
+                pos.unconfirmed_cycles += 1
+                if pos.unconfirmed_cycles >= max_unconfirmed:
+                    logger.critical(
+                        "[Reconcile] CRITICAL — {} {} on {} unverifiable for {} cycles "
+                        "— retaining under management, requires human review",
+                        pos.direction, pos.symbol, pos.platform,
+                        pos.unconfirmed_cycles,
+                    )
+                else:
+                    logger.warning(
+                        "[Reconcile] Cannot confirm {} {} on {} — retaining under "
+                        "management (cycle {}/{})",
+                        pos.direction, pos.symbol, pos.platform,
+                        pos.unconfirmed_cycles, max_unconfirmed,
+                    )
+                continue
+
+            real_pnl = broker_pnl.get(oid, 0.0)
+            fake_close = CloseResult(
+                success=True,
+                order_id=oid,
+                close_price=pos.entry_price,
+                lots_closed=pos.lots,
+                pnl=real_pnl,
+                platform=pos.platform,
+            )
+            try:
+                tick = self.platforms.get_price(pos.symbol)
+                is_buy = pos.direction == "BUY"
+                fake_close.close_price = tick.bid if is_buy else tick.ask
+            except Exception:
+                pass
+            self._record_closed_trade(
+                pos,
+                fake_close.close_price,
+                "CLOSED_EXTERNALLY",
+                close_result=fake_close if real_pnl != 0.0 else None,
+            )
+            to_remove.append(oid)
+            self._add_warning(
+                "warning",
+                f"{pos.direction} {pos.symbol} closed externally by broker",
+                symbol=pos.symbol,
+            )
+            logger.info(
+                "📋 LIVE RECONCILE — {} {} closed externally — removed",
+                pos.direction,
+                pos.symbol,
+            )
 
     def _check_and_reconnect(self) -> None:
         """Non-blocking reconnect check — attempts only when backoff timer allows."""
@@ -1259,70 +1320,96 @@ class TradingLoop:
         closed_count = 0
         to_remove: list[str] = []
 
-        # ── STEP 1: Fetch broker state ONCE ─────────────────────────────
+        # ── STEP 1: Fetch broker state ONCE with per-platform confirmation ─
         # The broker is the source of truth for what positions exist and
-        # their real P&L.  We use this to detect broker-side closes (SL/TP
-        # fills the broker executed) and to sync floating P&L for still-open
-        # positions, instead of relying on a local price-feed simulation.
-        broker_map: dict[str, PositionInfo] = {}
-        try:
-            broker_positions = self.platforms.get_all_open_positions()
-            broker_map = {p.order_id: p for p in broker_positions}
-        except Exception:
-            pass  # broker unreachable — skip reconciliation this cycle
+        # their real P&L.  We require *positive confirmation* from a
+        # position's own platform before inferring it was closed.
+        # "Cannot see the position" ≠ "position is closed."
+        snap = self.platforms.get_open_positions_snapshot()
+        broker_map: dict[str, PositionInfo] = {
+            p.order_id: p for p in snap.positions
+        }
 
         # ── STEP 1.5: Margin-level guardian ──────────────────────────────
         if self.config.risk.margin_guardian_enabled and self.managed_positions:
             self._margin_guardian_check()
 
-        # ── STEP 2: Detect broker-side closes ────────────────────────────
-        # If a managed position is no longer at the broker, the broker
-        # closed it (SL hit, TP hit, margin call, manual close).  Record
-        # using the best-available broker P&L and remove from management
-        # within THIS cycle — no phantom open trades.
-        if broker_map is not None:
-            for oid, pos in list(self.managed_positions.items()):
-                if oid not in broker_map:
-                    realized = self.platforms.get_realized_pnl(oid, pos.platform)
-                    broker_pnl = realized if realized is not None else pos.broker_pnl
-                    close_price = pos.entry_price
-                    try:
-                        tick = self.platforms.get_price(pos.symbol)
-                        is_buy = pos.direction == "BUY"
-                        close_price = tick.bid if is_buy else tick.ask
-                    except Exception:
-                        pass
-                    fake_close = CloseResult(
-                        success=True,
-                        order_id=oid,
-                        close_price=close_price,
-                        lots_closed=pos.lots,
-                        pnl=broker_pnl,
-                        platform=pos.platform,
-                    )
-                    self._record_closed_trade(
-                        pos,
-                        close_price,
-                        "BROKER_CLOSED",
-                        close_result=fake_close if broker_pnl != 0.0 else None,
-                    )
-                    to_remove.append(oid)
-                    closed_count += 1
-                    self._add_warning(
-                        "info",
-                        f"{pos.direction} {pos.symbol} closed by broker (SL/TP/external)",
-                        symbol=pos.symbol,
-                    )
+        # ── STEP 2: Detect broker-side closes (confirmed platforms only) ──
+        # A managed position is removed ONLY when its own platform
+        # positively confirmed its open-position list AND the position
+        # is absent from that list.  If the platform failed or is
+        # unconfirmed, the position is retained and marked for
+        # revalidation — never auto-closed.
+        max_unconfirmed = self.config.risk.reconcile_max_unconfirmed_cycles
+        for oid, pos in list(self.managed_positions.items()):
+            if oid in broker_map:
+                if pos.revalidation_pending:
+                    pos.revalidation_pending = False
+                    pos.unconfirmed_cycles = 0
                     logger.info(
-                        "📋 BROKER CLOSED — {} {} | pnl={:.2f} — removed from management",
-                        pos.direction,
-                        pos.symbol,
-                        broker_pnl,
+                        "[Reconcile] {} {} revalidation cleared — confirmed present on {}",
+                        pos.direction, pos.symbol, pos.platform,
                     )
-            for oid in to_remove:
-                self.managed_positions.pop(oid, None)
-                self.position_store.remove_position(oid)
-            to_remove = []
+                continue
+
+            if pos.platform in snap.confirmed_platforms:
+                realized = self.platforms.get_realized_pnl(oid, pos.platform)
+                broker_pnl = realized if realized is not None else pos.broker_pnl
+                close_price = pos.entry_price
+                try:
+                    tick = self.platforms.get_price(pos.symbol)
+                    is_buy = pos.direction == "BUY"
+                    close_price = tick.bid if is_buy else tick.ask
+                except Exception:
+                    pass
+                fake_close = CloseResult(
+                    success=True,
+                    order_id=oid,
+                    close_price=close_price,
+                    lots_closed=pos.lots,
+                    pnl=broker_pnl,
+                    platform=pos.platform,
+                )
+                self._record_closed_trade(
+                    pos,
+                    close_price,
+                    "BROKER_CLOSED",
+                    close_result=fake_close if broker_pnl != 0.0 else None,
+                )
+                to_remove.append(oid)
+                closed_count += 1
+                self._add_warning(
+                    "info",
+                    f"{pos.direction} {pos.symbol} closed by broker (SL/TP/external)",
+                    symbol=pos.symbol,
+                )
+                logger.info(
+                    "📋 BROKER CLOSED — {} {} | pnl={:.2f} — removed from management",
+                    pos.direction,
+                    pos.symbol,
+                    broker_pnl,
+                )
+            else:
+                pos.revalidation_pending = True
+                pos.unconfirmed_cycles += 1
+                if pos.unconfirmed_cycles >= max_unconfirmed:
+                    logger.critical(
+                        "[Reconcile] CRITICAL — {} {} on {} unverifiable for {} cycles "
+                        "— retaining under management, requires human review",
+                        pos.direction, pos.symbol, pos.platform,
+                        pos.unconfirmed_cycles,
+                    )
+                else:
+                    logger.warning(
+                        "[Reconcile] Cannot confirm {} {} on {} — retaining under "
+                        "management, marked for revalidation (cycle {}/{})",
+                        pos.direction, pos.symbol, pos.platform,
+                        pos.unconfirmed_cycles, max_unconfirmed,
+                    )
+        for oid in to_remove:
+            self.managed_positions.pop(oid, None)
+            self.position_store.remove_position(oid)
+        to_remove = []
 
         # ── STEP 3: Manage still-open positions ─────────────────────────
         # For positions that remain open at the broker, sync their real
@@ -2261,10 +2348,15 @@ class TradingLoop:
                 else 999999.0
             )
             broker_count: Optional[int] = None
-            try:
-                broker_count = len(self.platforms.get_all_open_positions())
-            except Exception as exc:
-                logger.warning("[PortfolioRisk] EMERGENCY — broker exposure check skipped, position fetch failed: {}", exc)
+            emergency_snap_fetch = self.platforms.get_open_positions_snapshot()
+            if emergency_snap_fetch.confirmed_platforms:
+                broker_count = len(emergency_snap_fetch.positions)
+            else:
+                logger.warning(
+                    "[PortfolioRisk] EMERGENCY — broker exposure check skipped, "
+                    "no platform confirmed (failed: {})",
+                    emergency_snap_fetch.failed_platforms or "none connected",
+                )
             emergency_snap = EmergencyTriggerSnapshot(
                 live_heat_pct=live_heat,
                 drawdown_mode=self.drawdown.mode.value,

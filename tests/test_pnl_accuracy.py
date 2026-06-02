@@ -247,10 +247,13 @@ class TestRecordClosedTradeUsesBrokerPnl:
 class TestLiveReconciliation:
     def test_reconcile_removes_externally_closed(self):
         from platforms.main_loop import TradingLoop
+        from platforms.platform_manager import BrokerPositionsSnapshot
 
         loop = TradingLoop.__new__(TradingLoop)
         loop.platforms = MagicMock()
-        loop.platforms.get_all_open_positions.return_value = []
+        loop.platforms.get_open_positions_snapshot.return_value = BrokerPositionsSnapshot(
+            positions=[], confirmed_platforms={"mt5"}, failed_platforms=set(),
+        )
         loop.platforms.get_price.return_value = SimpleNamespace(bid=1.09, ask=1.091)
         loop.position_store = MagicMock()
         loop.drawdown = MagicMock()
@@ -261,6 +264,9 @@ class TestLiveReconciliation:
         loop._journal_loop = asyncio.new_event_loop()
         loop.system_warnings = []
         loop._MAX_WARNINGS = 200
+        loop.config = SimpleNamespace(risk=SimpleNamespace(
+            reconcile_max_unconfirmed_cycles=20,
+        ))
 
         pos = SimpleNamespace(
             order_id="T123",
@@ -284,6 +290,8 @@ class TestLiveReconciliation:
             tm_trade_id="tm1",
             stake_usd=0.0,
             multiplier=100,
+            revalidation_pending=False,
+            unconfirmed_cycles=0,
         )
         loop.managed_positions = {"T123": pos}
 
@@ -296,11 +304,21 @@ class TestLiveReconciliation:
 
     def test_reconcile_keeps_positions_on_broker_fetch_failure(self):
         from platforms.main_loop import TradingLoop
+        from platforms.platform_manager import BrokerPositionsSnapshot
 
         loop = TradingLoop.__new__(TradingLoop)
         loop.platforms = MagicMock()
-        loop.platforms.get_all_open_positions.side_effect = Exception("Connection lost")
-        loop.managed_positions = {"T123": MagicMock()}
+        loop.platforms.get_open_positions_snapshot.return_value = BrokerPositionsSnapshot(
+            positions=[], confirmed_platforms=set(), failed_platforms={"mt5"},
+        )
+        pos_mock = MagicMock()
+        pos_mock.platform = "mt5"
+        pos_mock.revalidation_pending = False
+        pos_mock.unconfirmed_cycles = 0
+        loop.managed_positions = {"T123": pos_mock}
+        loop.config = SimpleNamespace(risk=SimpleNamespace(
+            reconcile_max_unconfirmed_cycles=20,
+        ))
 
         to_remove = []
         loop._reconcile_externally_closed(to_remove)
@@ -310,6 +328,7 @@ class TestLiveReconciliation:
     def test_reconcile_keeps_positions_present_at_broker(self):
         from platforms.base_connector import PositionInfo
         from platforms.main_loop import TradingLoop
+        from platforms.platform_manager import BrokerPositionsSnapshot
 
         loop = TradingLoop.__new__(TradingLoop)
         broker_pos = PositionInfo(
@@ -327,8 +346,17 @@ class TestLiveReconciliation:
             platform="mt5",
         )
         loop.platforms = MagicMock()
-        loop.platforms.get_all_open_positions.return_value = [broker_pos]
-        loop.managed_positions = {"T123": MagicMock()}
+        loop.platforms.get_open_positions_snapshot.return_value = BrokerPositionsSnapshot(
+            positions=[broker_pos], confirmed_platforms={"mt5"}, failed_platforms=set(),
+        )
+        pos_mock = MagicMock()
+        pos_mock.platform = "mt5"
+        pos_mock.revalidation_pending = False
+        pos_mock.unconfirmed_cycles = 0
+        loop.managed_positions = {"T123": pos_mock}
+        loop.config = SimpleNamespace(risk=SimpleNamespace(
+            reconcile_max_unconfirmed_cycles=20,
+        ))
 
         to_remove = []
         loop._reconcile_externally_closed(to_remove)
@@ -345,7 +373,7 @@ class TestLiveReconciliation:
         to_remove = []
         loop._reconcile_externally_closed(to_remove)
 
-        loop.platforms.get_all_open_positions.assert_not_called()
+        loop.platforms.get_open_positions_snapshot.assert_not_called()
 
 
 # ── Bug 4: Deriv floating P&L ───────────────────────────────────────────
