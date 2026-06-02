@@ -265,7 +265,35 @@ class TestBacktestATRComparison:
             atr_wins=6, atr_losses=2, atr_breakevens=2,
             atr_win_rate=60.0, atr_mean_r=0.5, atr_expectancy=0.5,
             expectancy_delta=0.2,
-            structure_stopout_rate=0.3, atr_stopout_rate=0.2,
+            structure_loss_rate=0.3, atr_loss_rate=0.2,
         )
         assert cmp.total_compared == 10
         assert cmp.expectancy_delta == 0.2
+
+
+class TestATRCounterfactualTPEquality:
+    """Verify the ATR counterfactual trade keeps the same TP prices as
+    the structure trade — only stop_loss and risk differ."""
+
+    def test_atr_trade_shares_structure_tps(self) -> None:
+        import copy
+
+        structure_trade = {
+            "entry_price": 1.1000,
+            "stop_loss": 1.0950,
+            "tp1": 1.1080,
+            "tp2": 1.1150,
+            "risk": 0.0050,
+        }
+
+        atr_sl = 1.0930
+        atr_risk = 0.0070
+
+        atr_trade = copy.deepcopy(structure_trade)
+        atr_trade["stop_loss"] = atr_sl
+        atr_trade["risk"] = atr_risk
+
+        assert atr_trade["tp1"] == structure_trade["tp1"]
+        assert atr_trade["tp2"] == structure_trade["tp2"]
+        assert atr_trade["stop_loss"] != structure_trade["stop_loss"]
+        assert atr_trade["risk"] != structure_trade["risk"]
