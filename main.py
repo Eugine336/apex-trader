@@ -138,6 +138,7 @@ def main() -> None:
 
         if platform_manager.any_connected:
             trading_loop.running = True
+            trading_loop._perform_startup_recovery()
             t = threading.Thread(target=_start_trading_loop, args=(trading_loop,), daemon=True)
             t.start()
             logger.info("Trading loop started in background thread")

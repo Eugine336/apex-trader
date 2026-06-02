@@ -7,6 +7,7 @@ Always watching. Always ready. In and out like a sniper.
 
 import asyncio
 import signal
+import threading
 import time as _time
 from datetime import datetime, timezone
 from types import SimpleNamespace
@@ -125,6 +126,85 @@ class ManagedPosition:
         self.scale_in_count = 0
 
 
+class _LockedPositions:
+    """Thread-safe dict wrapper for managed positions.
+
+    Prevents 'dictionary changed size during iteration' when the
+    dashboard/API thread reads while the trading-loop thread mutates.
+    Iteration helpers return snapshot lists; every operation acquires
+    an RLock so compound operations from a single thread cannot deadlock.
+    """
+
+    def __init__(self) -> None:
+        self._data: dict[str, ManagedPosition] = {}
+        self.lock = threading.RLock()
+
+    def __getitem__(self, key: str) -> ManagedPosition:
+        with self.lock:
+            return self._data[key]
+
+    def __setitem__(self, key: str, value: ManagedPosition) -> None:
+        with self.lock:
+            self._data[key] = value
+
+    def __delitem__(self, key: str) -> None:
+        with self.lock:
+            del self._data[key]
+
+    def __contains__(self, key: object) -> bool:
+        with self.lock:
+            return key in self._data
+
+    def __len__(self) -> int:
+        with self.lock:
+            return len(self._data)
+
+    def __bool__(self) -> bool:
+        with self.lock:
+            return bool(self._data)
+
+    def __iter__(self):
+        with self.lock:
+            return iter(list(self._data))
+
+    def get(self, key: str, default=None):
+        with self.lock:
+            return self._data.get(key, default)
+
+    def pop(self, key: str, *args):
+        with self.lock:
+            return self._data.pop(key, *args)
+
+    def keys(self):
+        with self.lock:
+            return list(self._data.keys())
+
+    def values(self):
+        with self.lock:
+            return list(self._data.values())
+
+    def items(self):
+        with self.lock:
+            return list(self._data.items())
+
+    def clear(self) -> None:
+        with self.lock:
+            self._data.clear()
+
+    def snapshot(self) -> dict:
+        """Return a shallow copy for safe cross-thread iteration."""
+        with self.lock:
+            return dict(self._data)
+
+    def __eq__(self, other: object) -> bool:
+        with self.lock:
+            if isinstance(other, _LockedPositions):
+                return self._data == other._data
+            if isinstance(other, dict):
+                return self._data == other
+            return NotImplemented
+
+
 class TradingLoop:
     """
     Master trading loop — orchestrates the full pipeline.
@@ -181,7 +261,7 @@ class TradingLoop:
         self.system_warnings: list[dict] = []
         self._MAX_WARNINGS = 200
 
-        self.managed_positions: dict[str, ManagedPosition] = {}
+        self.managed_positions: _LockedPositions = _LockedPositions()
         self._pending_orders: dict[str, dict] = {}
         self._weekend_protected_oids: set[str] = set()
         self.running = False
@@ -191,12 +271,37 @@ class TradingLoop:
         # Live reconciliation heartbeat
         self._last_reconcile_time: Optional[datetime] = None
         self._reconcile_interval_seconds: int = 30
+        self._recovery_completed: bool = False
         # In-trade analysis state — keyed by order_id
         # Tracks score history for conviction monitoring and HTF reassessment
         self._position_scores: dict[str, list[int]] = {}       # recent N scores per position
         self._position_last_h1_close: dict[str, datetime] = {} # last H1 candle time seen
         self._news_exit_protected: set[str] = set()            # oids already tightened for news
         self._last_market_data: dict = {}                       # most recent market data for in-trade analysis
+
+    # ── Thread-safe position accessors ──────────────────────────────────
+
+    def get_positions_snapshot(self) -> dict[str, ManagedPosition]:
+        """Return a shallow copy of managed positions for safe cross-thread reads."""
+        return self.managed_positions.snapshot()
+
+    def get_positions_count(self) -> int:
+        """Thread-safe count of managed positions."""
+        return len(self.managed_positions)
+
+    def emergency_close_all_positions(self, platform_manager) -> int:
+        """Thread-safe emergency close — used by the dashboard API thread."""
+        with self.managed_positions.lock:
+            closed = 0
+            for oid, pos in list(self.managed_positions._data.items()):
+                try:
+                    result = platform_manager.close_trade(oid, pos.platform)
+                    if result.success:
+                        closed += 1
+                except Exception as exc:
+                    logger.error("Emergency close failed for {}: {}", oid, exc)
+            self.managed_positions._data.clear()
+            return closed
 
     # ── Main loop ────────────────────────────────────────────────────────
 
@@ -221,8 +326,7 @@ class TradingLoop:
         logger.info("Platforms: MT5={} | Deriv={}", connection_status["mt5"], connection_status["deriv"])
 
         self._install_signal_handlers()
-        self._restore_positions()
-        self._reconcile_positions()
+        self._perform_startup_recovery()
 
         self.running = True
 
@@ -267,57 +371,66 @@ class TradingLoop:
             self._check_pending_orders()
             self._check_weekend_protection()
             self._update_positions()
-            return cycle
+        else:
+            should_scan = self.scheduler.should_scan_now(
+                self._last_scan_time,
+                session_status,
+                news_status,
+                has_active_positions=len(self.managed_positions) > 0,
+            )
 
-        should_scan = self.scheduler.should_scan_now(
-            self._last_scan_time,
-            session_status,
-            news_status,
-            has_active_positions=len(self.managed_positions) > 0,
-        )
+            market_data: dict = {}  # unused in run_once scope — populated in _scan_and_enter via _last_market_data
 
-        market_data: dict = {}  # unused in run_once scope — populated in _scan_and_enter via _last_market_data
+            if should_scan and (session_status.is_tradeable or self._has_always_open_instruments()):
+                if self._scan_breaker.can_execute():
+                    cycle["scanned"] = True
+                    try:
+                        self._scan_and_enter(session_status, news_status, now, cycle)
+                        self._scan_breaker.record_success()
+                        self.watchdog.record_scan_success()
+                    except Exception as exc:
+                        logger.error("Scan cycle error: {}", exc)
+                        self._scan_breaker.record_failure()
+                        self.watchdog.record_scan_failure()
+                    self._last_scan_time = now
+                else:
+                    status = self._scan_breaker.get_status()
+                    logger.debug(
+                        "Scan circuit OPEN — cooldown {:.0f}s remaining",
+                        status.cooldown_remaining_seconds,
+                    )
 
-        if should_scan and (session_status.is_tradeable or self._has_always_open_instruments()):
-            if self._scan_breaker.can_execute():
-                cycle["scanned"] = True
+            try:
+                self._check_pending_orders()
+                self._check_weekend_protection()
+                closed_count = self._update_positions()
+                self._check_scale_in()
+                # ── In-trade active management (new capabilities) ──────────
+                if self.managed_positions:
+                    self._check_news_exit(now)
+                    self._check_session_close(now)
+                    self._check_portfolio_heat()
+                    self._check_spread_deterioration()
+                    if self._last_market_data:
+                        self._analyse_open_trades(self._last_market_data, now)
+                self.watchdog.record_trade_check_success()
+            except Exception as exc:
+                logger.error("Position update error: {}", exc)
+                closed_count = 0
+                self.watchdog.record_trade_check_failure()
+
+            cycle["positions_updated"] = len(self.managed_positions)
+            cycle["positions_closed"] = closed_count
+
+        # ── Periodic reconciliation heartbeat (H6) ───────────────────────
+        if self._recovery_completed and self._last_reconcile_time is not None:
+            elapsed = (now - self._last_reconcile_time).total_seconds()
+            if elapsed >= self._reconcile_interval_seconds:
                 try:
-                    self._scan_and_enter(session_status, news_status, now, cycle)
-                    self._scan_breaker.record_success()
-                    self.watchdog.record_scan_success()
+                    self._reconcile_positions()
+                    self._last_reconcile_time = datetime.now(timezone.utc)
                 except Exception as exc:
-                    logger.error("Scan cycle error: {}", exc)
-                    self._scan_breaker.record_failure()
-                    self.watchdog.record_scan_failure()
-                self._last_scan_time = now
-            else:
-                status = self._scan_breaker.get_status()
-                logger.debug(
-                    "Scan circuit OPEN — cooldown {:.0f}s remaining",
-                    status.cooldown_remaining_seconds,
-                )
-
-        try:
-            self._check_pending_orders()
-            self._check_weekend_protection()
-            closed_count = self._update_positions()
-            self._check_scale_in()
-            # ── In-trade active management (new capabilities) ──────────
-            if self.managed_positions:
-                self._check_news_exit(now)
-                self._check_session_close(now)
-                self._check_portfolio_heat()
-                self._check_spread_deterioration()
-                if self._last_market_data:
-                    self._analyse_open_trades(self._last_market_data, now)
-            self.watchdog.record_trade_check_success()
-        except Exception as exc:
-            logger.error("Position update error: {}", exc)
-            closed_count = 0
-            self.watchdog.record_trade_check_failure()
-
-        cycle["positions_updated"] = len(self.managed_positions)
-        cycle["positions_closed"] = closed_count
+                    logger.warning("Periodic reconciliation error: {}", exc)
 
         return cycle
 
@@ -339,6 +452,21 @@ class TradingLoop:
             pass
 
     # ── Startup & recovery ───────────────────────────────────────────────
+
+    def _perform_startup_recovery(self) -> None:
+        """Restore persisted positions and reconcile with the broker.
+
+        Idempotent — safe to call from both ``run()`` and the dashboard
+        startup path.  The flag ensures restore+reconcile execute at most
+        once per process lifetime.
+        """
+        if self._recovery_completed:
+            return
+        self._restore_positions()
+        self._reconcile_positions()
+        self._last_reconcile_time = datetime.now(timezone.utc)
+        self._recovery_completed = True
+        logger.info("Startup recovery complete — periodic reconcile armed ({}s)", self._reconcile_interval_seconds)
 
     def _install_signal_handlers(self) -> None:
         """Register SIGTERM/SIGINT so the trading loop shuts down cleanly."""
@@ -443,7 +571,7 @@ class TradingLoop:
                 pos.direction,
                 pos.symbol,
             )
-            del self.managed_positions[oid]
+            self.managed_positions.pop(oid, None)
             self.position_store.remove_position(oid)
 
         for oid in broker_ids - persisted_ids:
@@ -1122,7 +1250,7 @@ class TradingLoop:
                         broker_pnl,
                     )
             for oid in to_remove:
-                del self.managed_positions[oid]
+                self.managed_positions.pop(oid, None)
                 self.position_store.remove_position(oid)
             to_remove = []
 
@@ -1324,7 +1452,7 @@ class TradingLoop:
             pos.last_update = datetime.now(timezone.utc)
 
         for oid in to_remove:
-            del self.managed_positions[oid]
+            self.managed_positions.pop(oid, None)
             self.position_store.remove_position(oid)
 
         return closed_count
@@ -1353,7 +1481,7 @@ class TradingLoop:
                         self._record_closed_trade(
                             pos, result.close_price, "WEEKEND_FLATTEN", close_result=result,
                         )
-                        del self.managed_positions[oid]
+                        self.managed_positions.pop(oid, None)
                         self.position_store.remove_position(oid)
                         logger.info("🌙 WEEKEND FLATTEN — {}", pos.symbol)
                 elif mode == "derisk":
@@ -1499,7 +1627,7 @@ class TradingLoop:
                         f"INVALIDATION_LOW_SCORE({scan_result.score})",
                         close_result=result,
                     )
-                    del self.managed_positions[oid]
+                    self.managed_positions.pop(oid, None)
                     self.position_store.remove_position(oid)
                     self._position_scores.pop(oid, None)
                 return
@@ -1523,7 +1651,7 @@ class TradingLoop:
                     f"INVALIDATION_OPPOSING({result_direction}@{scan_result.score})",
                     close_result=result,
                 )
-                del self.managed_positions[oid]
+                self.managed_positions.pop(oid, None)
                 self.position_store.remove_position(oid)
                 self._position_scores.pop(oid, None)
 
@@ -1569,7 +1697,7 @@ class TradingLoop:
                 f"CONVICTION_COLLAPSE(scores:{recent[0]}→{recent[-1]})",
                 close_result=result,
             )
-            del self.managed_positions[oid]
+            self.managed_positions.pop(oid, None)
             self.position_store.remove_position(oid)
             self._position_scores.pop(oid, None)
 
@@ -1643,7 +1771,7 @@ class TradingLoop:
                 f"HTF_H1_{direction_str}_CLOSE",
                 close_result=result,
             )
-            del self.managed_positions[oid]
+            self.managed_positions.pop(oid, None)
             self.position_store.remove_position(oid)
             self._position_scores.pop(oid, None)
             self._position_last_h1_close.pop(oid, None)
@@ -1854,7 +1982,7 @@ class TradingLoop:
                             f"NEWS_EXIT({getattr(event, 'name', 'event')})",
                             close_result=result,
                         )
-                        del self.managed_positions[oid]
+                        self.managed_positions.pop(oid, None)
                         self.position_store.remove_position(oid)
                         self._news_exit_protected.discard(oid)
 
@@ -1931,7 +2059,7 @@ class TradingLoop:
                             f"SESSION_CLOSE({symbol})",
                             close_result=result,
                         )
-                        del self.managed_positions[oid]
+                        self.managed_positions.pop(oid, None)
                         self.position_store.remove_position(oid)
                         self._position_scores.pop(oid, None)
                     continue
