@@ -50,6 +50,15 @@ from platforms.deriv.deriv_connector import DerivConnector
 from platforms.order_idempotency import generate_idempotency_key
 from platforms.platform_manager import PlatformManager
 from platform_context import PlatformContext, build_context_for_symbol
+from risk.portfolio_risk_state import (
+    PortfolioRiskStateMachine,
+    PortfolioRiskState,
+    PortfolioRiskSnapshot,
+    PositionRisk,
+    compute_position_risk_dollars,
+    compute_live_heat_pct,
+    is_eligible_for_defensive_breakeven,
+)
 from risk.risk_engine import RiskEngine
 from risk.risk_reporter import RiskReporter
 from scanner import PairScanner, PairRanker, ScanScheduler
@@ -282,6 +291,18 @@ class TradingLoop:
         self._position_last_h1_close: dict[str, datetime] = {} # last H1 candle time seen
         self._news_exit_protected: set[str] = set()            # oids already tightened for news
         self._last_market_data: dict = {}                       # most recent market data for in-trade analysis
+
+        # ── Portfolio risk state machine (M8 Phase 4a) ──────────────
+        cfg_r = self.config.risk
+        if cfg_r.portfolio_risk_engine_enabled:
+            self._portfolio_risk_sm = PortfolioRiskStateMachine(
+                heat_defensive_pct=cfg_r.heat_defensive_pct,
+                heat_recovery_pct=cfg_r.heat_recovery_pct,
+                recovery_dwell_seconds=cfg_r.recovery_dwell_seconds,
+            )
+        else:
+            self._portfolio_risk_sm: Optional[PortfolioRiskStateMachine] = None
+        self._defensive_action_timestamps: dict[str, float] = {}  # oid → monotonic time of last action
 
     # ── Thread-safe position accessors ──────────────────────────────────
 
@@ -758,11 +779,22 @@ class TradingLoop:
         if not ready:
             return
 
+        # Portfolio risk state gate — freeze entries in DEFENSIVE
+        if (
+            getattr(self, '_portfolio_risk_sm', None) is not None
+            and self._portfolio_risk_sm.state == PortfolioRiskState.DEFENSIVE
+        ):
+            logger.info(
+                "[PortfolioRisk] DEFENSIVE — new entries frozen (heat={:.2f}%)",
+                getattr(self, '_current_portfolio_heat', 0.0),
+            )
+            return
+
         # Portfolio heat gate — don't open new trades if total exposure too high
         current_heat = getattr(self, '_current_portfolio_heat', 0.0)
         if self.config.risk.portfolio_heat_enabled and current_heat >= self.config.risk.portfolio_heat_block_pct:
             logger.info(
-                "🌡️ PORTFOLIO HEAT GATE — {:.1f}% heat blocks new entries (limit {:.1f}%)",
+                "🌡️ PORTFOLIO HEAT GATE — {:.2f}% heat blocks new entries (limit {:.1f}%)",
                 current_heat, self.config.risk.portfolio_heat_block_pct,
             )
             return
@@ -1874,6 +1906,11 @@ class TradingLoop:
           - Trade is at N× profit (configurable)
           - Correlation and margin still allow it
         """
+        if (
+            getattr(self, '_portfolio_risk_sm', None) is not None
+            and self._portfolio_risk_sm.state == PortfolioRiskState.DEFENSIVE
+        ):
+            return
         cfg = self.config.risk
         tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
         if tm_trade is None:
@@ -2115,40 +2152,169 @@ class TradingLoop:
 
     def _check_portfolio_heat(self) -> None:
         """
-        Monitor total portfolio risk across all open trades.
-        A real trader never lets their total exposure exceed a safe level.
-        If heat is too high, block further entries (handled in _scan_and_enter
-        via the portfolio_heat_block_pct check) and log warnings.
-
-        Heat = sum of (risk_pct × lots) across all positions
+        Compute live capital-at-risk heat and feed the portfolio risk
+        state machine.  When in DEFENSIVE, advance eligible positions
+        to breakeven (non-destructive only — Phase 4a).
         """
         cfg = self.config.risk
         if not cfg.portfolio_heat_enabled:
             return
         if not self.managed_positions:
+            self._current_portfolio_heat = 0.0
             return
 
-        total_heat = 0.0
-        for pos in self.managed_positions.values():
-            # Each position contributes its original risk % to total heat
-            # Reduce heat for positions at breakeven (risk = 0 effectively)
-            tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
-            if tm_trade and tm_trade.breakeven_active:
-                continue  # no longer contributing to heat
-            total_heat += cfg.risk_per_trade_pct
+        equity = getattr(self.risk_engine, 'balance', 0.0) or 0.0
+        position_risks: list[PositionRisk] = []
 
-        if total_heat >= cfg.max_portfolio_heat_pct:
+        for oid, pos in list(self.managed_positions.items()):
+            tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+            at_be = bool(tm_trade and tm_trade.breakeven_active)
+
+            info = INSTRUMENT_REGISTRY.get(pos.symbol)
+            pip_size = info.pip_size if info else 0.0001
+            pip_val = info.pip_value_per_lot if info else 10.0
+
+            ctx = build_context_for_symbol(pos.symbol)
+            is_deriv = ctx.uses_stake
+
+            risk_dollars, is_fallback = compute_position_risk_dollars(
+                direction=pos.direction,
+                entry_price=pos.entry_price,
+                sl=pos.sl,
+                lots=pos.lots,
+                pip_size=pip_size,
+                pip_value_per_lot=pip_val,
+                at_breakeven=at_be,
+                stake_usd=pos.stake_usd,
+                multiplier=pos.multiplier,
+                is_deriv_stake=is_deriv,
+            )
+            if is_fallback:
+                risk_dollars = equity * cfg.risk_per_trade_pct / 100.0
+                logger.debug(
+                    "[PortfolioRisk] {} fallback to static proxy ${:.2f}",
+                    pos.symbol, risk_dollars,
+                )
+            position_risks.append(PositionRisk(
+                order_id=oid,
+                symbol=pos.symbol,
+                direction=pos.direction,
+                risk_dollars=risk_dollars,
+                is_at_breakeven=at_be,
+                is_fallback=is_fallback,
+            ))
+
+        live_heat = compute_live_heat_pct(position_risks, equity)
+        self._current_portfolio_heat = live_heat
+
+        if live_heat >= cfg.max_portfolio_heat_pct:
             logger.warning(
-                "🌡️ PORTFOLIO HEAT {:.1f}% — max {:.1f}% | {} positions open",
-                total_heat, cfg.max_portfolio_heat_pct, len(self.managed_positions),
+                "🌡️ PORTFOLIO HEAT {:.2f}% — max {:.1f}% | {} positions | equity ${:.2f}",
+                live_heat, cfg.max_portfolio_heat_pct,
+                len(self.managed_positions), equity,
             )
             self._add_warning(
                 "warning",
-                f"Portfolio heat {total_heat:.1f}% — approaching limit",
+                f"Portfolio heat {live_heat:.2f}% — approaching limit",
             )
 
-        # Store on instance for entry gating in _scan_and_enter
-        self._current_portfolio_heat = total_heat
+        if self._portfolio_risk_sm is None:
+            return
+
+        _current_risk = self.risk_engine.drawdown_guard.risk_map.get(
+            self.risk_engine.drawdown_guard.mode, 0.005,
+        )
+        open_trades = [
+            OpenTrade(pair=p.symbol, direction=p.direction, risk_pct=_current_risk)
+            for p in self.managed_positions.values()
+        ]
+        exposure = self.correlation.calculate_exposure(open_trades)
+
+        snapshot = PortfolioRiskSnapshot(
+            live_heat_pct=live_heat,
+            position_risks=position_risks,
+            correlation_safe=exposure.is_safe,
+            max_currency_exposure=exposure.max_single_currency_exposure,
+            timestamp=_time.monotonic(),
+        )
+        transition = self._portfolio_risk_sm.evaluate(snapshot)
+
+        if transition.changed:
+            self._add_warning(
+                "critical" if transition.state == PortfolioRiskState.DEFENSIVE else "info",
+                f"[PortfolioRisk] {transition.reason}",
+            )
+
+        if transition.state == PortfolioRiskState.DEFENSIVE:
+            self._apply_defensive_actions()
+
+    def _apply_defensive_actions(self) -> None:
+        """
+        Non-destructive defensive actions: advance eligible positions to
+        breakeven.  Respects per-position cooldowns and idempotency.
+        No positions are closed or reduced (Phase 4b/4c).
+        """
+        cfg = self.config.risk
+        now = _time.monotonic()
+
+        for oid, pos in list(self.managed_positions.items()):
+            if pos.at_breakeven:
+                continue
+
+            last_action = self._defensive_action_timestamps.get(oid, 0.0)
+            if (now - last_action) < cfg.defensive_action_cooldown_seconds:
+                continue
+
+            tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+            if tm_trade is None:
+                continue
+            if tm_trade.breakeven_active:
+                continue
+
+            try:
+                tick = self.platforms.get_price(pos.symbol)
+                current_price = tick.bid if pos.direction == "BUY" else tick.ask
+            except Exception:
+                continue
+
+            eligible = is_eligible_for_defensive_breakeven(
+                direction=pos.direction,
+                entry_price=pos.entry_price,
+                sl=pos.sl,
+                current_price=current_price,
+                tp1_hit=pos.tp1_hit,
+                partial_closed=getattr(tm_trade, 'partial_closed', False),
+                at_breakeven=pos.at_breakeven,
+                be_eligible_r_multiple=cfg.be_eligible_r_multiple,
+            )
+            if not eligible:
+                continue
+
+            from management.partial_close import PartialCloseCalculator
+            pip_size = tm_trade.pip_size if hasattr(tm_trade, 'pip_size') else 0.0001
+            be_level = PartialCloseCalculator.calculate_breakeven_level(
+                pos.entry_price, pos.direction, 2.0, pip_size,
+            )
+            is_improvement = (
+                (pos.direction == "BUY" and be_level > pos.sl)
+                or (pos.direction == "SELL" and be_level < pos.sl)
+            )
+            if not is_improvement:
+                continue
+
+            success = self.platforms.modify_trade(oid, pos.platform, new_sl=be_level)
+            if success:
+                pos.sl = be_level
+                tm_trade.stop_loss = be_level
+                tm_trade.breakeven_active = True
+                pos.at_breakeven = True
+                self.position_store.update_position(oid, sl=be_level, at_breakeven=True)
+                self._defensive_action_timestamps[oid] = now
+                logger.warning(
+                    "[PortfolioRisk] DEFENSIVE BE — {} {} | SL→{:.5f} | eligible via {}",
+                    pos.direction, pos.symbol, be_level,
+                    "tp1_hit" if pos.tp1_hit else f">={cfg.be_eligible_r_multiple}R excursion",
+                )
 
     def _check_spread_deterioration(self) -> None:
         """
@@ -2207,6 +2373,11 @@ class TradingLoop:
 
     def _check_scale_in(self):
         if not self.config.risk.scale_in_enabled:
+            return
+        if (
+            getattr(self, '_portfolio_risk_sm', None) is not None
+            and self._portfolio_risk_sm.state == PortfolioRiskState.DEFENSIVE
+        ):
             return
         for oid, pos in list(self.managed_positions.items()):
             try:

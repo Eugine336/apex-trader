@@ -309,6 +309,24 @@ class RiskConfig:
     # When heat exceeds this, block new entries
     portfolio_heat_block_pct: float = 1.8
 
+    # ── Live portfolio risk engine (M8 Phase 4a) ────────────────────────
+    # Replaces the static count-based heat with true capital-at-risk.
+    # Non-destructive: DEFENSIVE state freezes entries/scale-ins and
+    # advances eligible positions to breakeven.  No position is ever
+    # closed or reduced by this engine (Phase 4b/4c).
+    portfolio_risk_engine_enabled: bool = True
+    # Heat % at which the portfolio enters DEFENSIVE state
+    heat_defensive_pct: float = 1.5
+    # Heat % that must be sustained before returning to NORMAL
+    heat_recovery_pct: float = 1.0
+    # Seconds that recovery conditions must persist before exiting DEFENSIVE
+    recovery_dwell_seconds: float = 120.0
+    # R-multiple of favorable excursion required before a position may be
+    # advanced to breakeven during DEFENSIVE state
+    be_eligible_r_multiple: float = 1.0
+    # Per-position cooldown between defensive stop adjustments
+    defensive_action_cooldown_seconds: float = 60.0
+
     # ── Spread / slippage deterioration monitoring ────────────────────────
     spread_monitor_enabled: bool = True
     # If spread widens beyond N× normal for this instrument, tighten SL
