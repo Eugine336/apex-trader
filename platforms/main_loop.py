@@ -6,6 +6,7 @@ Always watching. Always ready. In and out like a sniper.
 """
 
 import asyncio
+import json
 import signal
 import threading
 import time as _time
@@ -102,6 +103,7 @@ class ManagedPosition:
         "idempotency_key",
         "revalidation_pending",
         "unconfirmed_cycles",
+        "confluences",
     )
 
     def __init__(
@@ -116,6 +118,7 @@ class ManagedPosition:
         stake_usd: float = 0.0,
         multiplier: int = 100,
         idempotency_key: str = "",
+        confluences: list = None,
     ):
         self.order_id = order.order_id
         self.platform = order.platform
@@ -145,6 +148,7 @@ class ManagedPosition:
         self.idempotency_key = idempotency_key
         self.revalidation_pending = False
         self.unconfirmed_cycles = 0
+        self.confluences = list(confluences) if confluences else []
 
 
 class _LockedPositions:
@@ -554,6 +558,7 @@ class TradingLoop:
                     entry_type=row["entry_type"],
                     stake_usd=row["stake_usd"],
                     multiplier=row.get("multiplier", 100),
+                    confluences=json.loads(row.get("confluences_json", "[]")),
                 )
                 pos.open_time = datetime.fromisoformat(row["open_time"])
                 pos.tp1_hit = bool(row["tp1_hit"])
@@ -1201,6 +1206,7 @@ class TradingLoop:
             stake_usd=stake_usd or 0.0,
             multiplier=self._get_deriv_multiplier(pair) if ctx.uses_stake else 100,
             idempotency_key=idem_key,
+            confluences=list(signal.confluences),
         )
 
         tm_signal = TMEntrySignal(
@@ -1282,6 +1288,7 @@ class TradingLoop:
                     score=sig.score,
                     session=info["session"],
                     entry_type=sig.entry_type,
+                    confluences=list(sig.confluences),
                 )
                 tm_signal = TMEntrySignal(
                     pair=info["symbol"],
@@ -2930,7 +2937,7 @@ class TradingLoop:
             exit=close_price,
             pnl=pnl_pips,
             score=pos.score,
-            confluences=[],
+            confluences=list(pos.confluences),
             regime=pos.regime,
             session=pos.session,
             spread=0.0,
