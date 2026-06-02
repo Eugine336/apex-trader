@@ -146,8 +146,19 @@ def main() -> None:
             logger.warning("No platforms connected — dashboard will show empty data")
 
         app = create_app(state)
-        logger.info("Launching dashboard on http://0.0.0.0:8000")
-        uvicorn.run(app, host="0.0.0.0", port=8000, log_level="info")
+        bind_host = os.getenv("DD_DASHBOARD_BIND_HOST", "127.0.0.1")
+        bind_port = int(os.getenv("DD_DASHBOARD_PORT", "8000"))
+
+        if bind_host != "127.0.0.1" and not os.getenv("DD_DASHBOARD_API_KEY"):
+            logger.critical(
+                "REFUSING to bind dashboard on {} without DD_DASHBOARD_API_KEY — "
+                "set an API key or use the default 127.0.0.1 bind host",
+                bind_host,
+            )
+            return
+
+        logger.info("Launching dashboard on http://{}:{}", bind_host, bind_port)
+        uvicorn.run(app, host=bind_host, port=bind_port, log_level="info")
     else:
         if not platform_manager.any_connected:
             logger.error("No platforms connected — cannot trade. Set DERIV_API_TOKEN and DERIV_APP_ID in .env")
