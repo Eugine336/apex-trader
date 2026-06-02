@@ -80,12 +80,14 @@ class EntryEngine:
         m5_df: pd.DataFrame,
         m1_df: pd.DataFrame,
         h1_df: pd.DataFrame,
-        scan_result=None,
+        scan_result,
         account_balance: float = 10000.0,
     ) -> Union[EntrySignal, EntryRejection]:
+        if scan_result is None:
+            raise ValueError("calculate_entry requires a scan_result; refusing to fabricate a score")
         now = datetime.now(timezone.utc)
-        score = scan_result.score if scan_result else 85
-        confluences = list(scan_result.confluences) if scan_result else []
+        score = scan_result.score
+        confluences = list(scan_result.confluences)
         pip_size = self._pip_size(pair)
         category = self._category(pair)
         profile = get_profile(pair)
