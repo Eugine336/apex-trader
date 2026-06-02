@@ -40,7 +40,9 @@ platforms/mt5/*.ex5
 platforms/mt5/*.log
 
 # Node / Dashboard
+node_modules/
 dashboard/node_modules/
+dashboard/frontend/node_modules/
 dashboard/build/
 dashboard/.env
 
