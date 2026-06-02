@@ -311,7 +311,8 @@ class BrokerAutoDiscovery:
                 data = json.load(f)
             if not data.get("overrides"):
                 return False  # Empty overrides — must re-run
-        except Exception:
+        except Exception as exc:
+            logger.warning("[autodiscovery] config file read/parse failed, will re-run discovery: {}", exc)
             return False  # Corrupt file — must re-run
         age_days = (time.time() - self.config_path.stat().st_mtime) / 86400
         return age_days < 7
@@ -321,7 +322,8 @@ class BrokerAutoDiscovery:
             with open(self.config_path) as f:
                 data = json.load(f)
             return data.get("overrides", {})
-        except Exception:
+        except Exception as exc:
+            logger.warning("[autodiscovery] failed to load existing overrides: {}", exc)
             return {}
 
     def _write_json(self, overrides: dict, constraints: dict | None = None) -> None:
@@ -339,7 +341,8 @@ class BrokerAutoDiscovery:
             try:
                 with open(self.config_path) as f:
                     existing = json.load(f)
-            except Exception:
+            except Exception as exc:
+                logger.warning("[autodiscovery] failed to read existing config for merge: {}", exc)
                 pass
 
         # Merge: auto-discovered overrides win, but manual-only keys are kept
@@ -449,7 +452,8 @@ class DerivAutoDiscovery:
                     try:
                         with open(config_path) as f:
                             existing_overrides = _json.load(f).get("overrides", {})
-                    except Exception:
+                    except Exception as exc:
+                        logger.warning("[autodiscovery] failed to load existing Deriv overrides: {}", exc)
                         pass
 
                 for apex_name, aliases in self.DERIV_ALIASES.items():
@@ -544,7 +548,8 @@ def run_autodiscovery(mt5_broker_name: str = "auto", force: bool = False) -> Non
                 mt5_broker_name = broker_slug or "mt5_broker"
                 logger.info("MT5 broker detected: '{}' → slug: '{}'", raw, broker_slug)
             mt5.shutdown()
-    except Exception:
+    except Exception as exc:
+        logger.warning("[autodiscovery] MT5 broker detection failed: {}", exc)
         pass
 
     if mt5_broker_name and mt5_broker_name != "auto":

@@ -10,6 +10,7 @@ from dashboard.state_helpers import (
     safe_float,
 )
 from platform_context import build_context_for_symbol
+from loguru import logger
 
 
 class TradesMixin(HelpersMixin):
@@ -37,7 +38,8 @@ class TradesMixin(HelpersMixin):
                     current_price = safe_float(getattr(tick, "bid", entry_price), entry_price)
                 elif direction == "SHORT":
                     current_price = safe_float(getattr(tick, "ask", entry_price), entry_price)
-            except Exception:
+            except Exception as exc:
+                logger.debug("[dashboard] tick fetch failed for trade display: {}", exc)
                 pass
 
             pip_size = safe_float(get_pip_size(symbol), 0.0001)
