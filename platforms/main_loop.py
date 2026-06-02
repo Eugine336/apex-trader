@@ -2260,17 +2260,17 @@ class TradingLoop:
                 if self._last_reconcile_time is not None
                 else 999999.0
             )
-            broker_positions: list = []
+            broker_count: Optional[int] = None
             try:
-                broker_positions = self.platforms.get_all_open_positions()
-            except Exception:
-                pass
+                broker_count = len(self.platforms.get_all_open_positions())
+            except Exception as exc:
+                logger.warning("[PortfolioRisk] EMERGENCY — broker exposure check skipped, position fetch failed: {}", exc)
             emergency_snap = EmergencyTriggerSnapshot(
                 live_heat_pct=live_heat,
                 drawdown_mode=self.drawdown.mode.value,
                 reconcile_age_seconds=reconcile_age,
                 managed_count=len(self.managed_positions),
-                broker_count=len(broker_positions),
+                broker_count=broker_count,
             )
             trigger_result = evaluate_emergency_triggers(
                 emergency_snap,
