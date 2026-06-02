@@ -8,6 +8,8 @@ and synthetics.
 
 from dataclasses import dataclass
 
+from loguru import logger
+
 from brain.currency_strength import CURRENCY_PAIRS
 
 
@@ -61,10 +63,12 @@ class CorrelationEngine:
         max_single_currency_exposure: float = 0.04,
         max_correlated_trades: int = 3,
         max_cluster_same_direction: int = 2,
+        allow_intentional_hedge: bool = False,
     ):
         self.max_single_currency_exposure = max_single_currency_exposure
         self.max_correlated_trades = max_correlated_trades
         self.max_cluster_same_direction = max_cluster_same_direction
+        self.allow_intentional_hedge = allow_intentional_hedge
 
     def calculate_exposure(self, open_trades: list[OpenTrade | dict]) -> ExposureMap:
         exposures: dict[str, float] = {}
@@ -130,8 +134,11 @@ class CorrelationEngine:
                 "Currency exposure limit exceeded "
                 f"({exposure.max_single_currency_exposure:.2%} > {self.max_single_currency_exposure:.2%})"
             )
-        if exposure.hedge_conflicts:
+        if exposure.hedge_conflicts and not self.allow_intentional_hedge:
             return False, f"Hedge conflict detected: {exposure.hedge_conflicts[0]}"
+
+        if exposure.hedge_conflicts and self.allow_intentional_hedge:
+            logger.info("[hedge] intentional hedge permitted (bypassed conflict): {}", exposure.hedge_conflicts[0])
 
         return True, "Exposure profile is safe"
 

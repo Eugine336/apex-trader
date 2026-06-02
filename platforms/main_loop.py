@@ -98,6 +98,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self.correlation = CorrelationEngine(
             max_correlated_trades=self.config.risk.max_correlated_trades,
             max_cluster_same_direction=self.config.risk.max_cluster_same_direction,
+            allow_intentional_hedge=self.config.risk.allow_intentional_hedge,
         )
         self.risk_engine = RiskEngine(config=self.config)
         self.execution_monitor = ExecutionMonitor()
