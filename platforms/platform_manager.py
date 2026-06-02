@@ -417,6 +417,7 @@ class PlatformManager:
         tp: float,
         comment: str = "",
         stake_usd: Optional[float] = None,  # Deriv only — risk amount in USD
+        idempotency_key: str = "",
     ) -> OrderResult:
         connector = self.get_connector(symbol)
         platform = "mt5" if isinstance(connector, MT5Connector) else "deriv"
@@ -425,10 +426,14 @@ class PlatformManager:
         if isinstance(connector, DerivConnector):
             result = connector.place_order(
                 symbol, direction, lots, sl, tp, comment,
+                idempotency_key=idempotency_key,
                 stake_usd=stake_usd,
             )
         else:
-            result = connector.place_order(symbol, direction, lots, sl, tp, comment)
+            result = connector.place_order(
+                symbol, direction, lots, sl, tp, comment,
+                idempotency_key=idempotency_key,
+            )
         latency_ms = (_time.monotonic() - t0) * 1000
 
         if result.success:
@@ -453,10 +458,14 @@ class PlatformManager:
         sl: float,
         tp: float,
         comment: str = "",
+        idempotency_key: str = "",
     ) -> OrderResult:
         connector = self.get_connector(symbol)
         platform = "mt5" if isinstance(connector, MT5Connector) else "deriv"
-        result = connector.place_pending_order(symbol, order_kind, entry_price, lots, sl, tp, comment)
+        result = connector.place_pending_order(
+            symbol, order_kind, entry_price, lots, sl, tp, comment,
+            idempotency_key=idempotency_key,
+        )
         if result.success:
             logger.info(
                 "[{}] PENDING {} {} {:.2f} lots @ {:.5f}",

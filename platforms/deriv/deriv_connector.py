@@ -391,6 +391,7 @@ class DerivConnector(BaseConnector):
         sl: float,
         tp: float,
         comment: str = "",
+        idempotency_key: str = "",
         # ── Deriv-specific kwargs ──────────────────────────────────────────
         # Pass stake_usd to bypass the lots→stake conversion entirely.
         # PlatformManager sets this when routing a Deriv synthetic order.
@@ -444,8 +445,33 @@ class DerivConnector(BaseConnector):
             direction, symbol, price, sl, amount, multiplier,
         )
 
+        if idempotency_key:
+            dup_cid = self._find_contract_by_idem_key(idempotency_key)
+            if dup_cid:
+                logger.warning(
+                    "Deriv duplicate prevented — idem_key {} already filled as contract {}",
+                    idempotency_key, dup_cid,
+                )
+                return OrderResult(
+                    success=True,
+                    order_id=dup_cid,
+                    fill_price=price,
+                    requested_price=price,
+                    slippage_pips=0.0,
+                    lots=lots,
+                    symbol=symbol,
+                    direction=direction.upper(),
+                    sl=sl,
+                    tp=tp,
+                    platform="deriv",
+                )
+
+        passthrough: dict[str, str] = {}
+        if idempotency_key:
+            passthrough["idem_key"] = idempotency_key
+
         t0 = _time.monotonic()
-        resp = self._sync_send({
+        buy_payload: dict = {
             "buy": 1,
             "subscribe": 1,
             "price": amount,
@@ -461,7 +487,10 @@ class DerivConnector(BaseConnector):
                     "take_profit": round(abs(tp - price) / price * amount * multiplier, 2),
                 },
             },
-        })
+        }
+        if passthrough:
+            buy_payload["passthrough"] = passthrough
+        resp = self._sync_send(buy_payload)
         latency = (_time.monotonic() - t0) * 1000
 
         # ── Auto-retry loop ────────────────────────────────────────────────
@@ -582,6 +611,7 @@ class DerivConnector(BaseConnector):
         self._positions[contract_id] = {
             "symbol": symbol, "direction": direction.upper(),
             "lots": lots, "sl": sl, "tp": tp, "open_price": price,
+            "idem_key": idempotency_key,
         }
 
         logger.info(
@@ -740,3 +770,26 @@ class DerivConnector(BaseConnector):
             raise ConnectionError("Deriv is reconnecting — request blocked")
         if not self._connected or self._ws is None:
             raise ConnectionError("Deriv is not connected")
+
+    def _find_contract_by_idem_key(self, idem_key: str) -> str:
+        """Query the Deriv portfolio for a contract matching *idem_key*.
+
+        Returns the contract_id string if found, empty string otherwise.
+        Uses the in-memory ``_positions`` dict first (fast path) then
+        falls back to a live portfolio query (handles crash restart).
+        """
+        for cid, info in self._positions.items():
+            if info.get("idem_key") == idem_key:
+                return cid
+        try:
+            resp = self._sync_send({
+                "portfolio": 1,
+                "contract_type": ["MULTUP", "MULTDOWN"],
+            })
+            for c in resp.get("portfolio", {}).get("contracts", []):
+                pt = c.get("passthrough") or {}
+                if pt.get("idem_key") == idem_key:
+                    return str(c.get("contract_id", ""))
+        except Exception:
+            pass
+        return ""

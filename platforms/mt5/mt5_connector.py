@@ -260,9 +260,32 @@ class MT5Connector(BaseConnector):
         sl: float,
         tp: float,
         comment: str = "",
+        idempotency_key: str = "",
     ) -> OrderResult:
         self._require_connection()
         mapped = self.symbol_map(symbol)
+
+        if idempotency_key:
+            dup = self._find_order_by_idem_key(idempotency_key)
+            if dup is not None:
+                logger.warning(
+                    "MT5 duplicate prevented — idem_key {} already filled as ticket {}",
+                    idempotency_key, dup.ticket,
+                )
+                return OrderResult(
+                    success=True,
+                    order_id=str(dup.ticket),
+                    fill_price=dup.price_open,
+                    requested_price=dup.price_open,
+                    slippage_pips=0.0,
+                    lots=dup.volume,
+                    symbol=symbol,
+                    direction=direction.upper(),
+                    sl=dup.sl,
+                    tp=dup.tp,
+                    platform="mt5",
+                )
+
         tick = mt5.symbol_info_tick(mapped)
         if tick is None:
             return self._fail_order(symbol, direction, lots, sl, tp, "No tick data")
@@ -270,6 +293,11 @@ class MT5Connector(BaseConnector):
         is_buy = direction.upper() in ("BUY", "LONG")
         order_type = mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL
         price = tick.ask if is_buy else tick.bid
+
+        order_comment = comment or "APEX"
+        if idempotency_key:
+            order_comment = f"{order_comment}|{idempotency_key}"
+        order_comment = order_comment[:31]
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -281,7 +309,7 @@ class MT5Connector(BaseConnector):
             "tp": float(tp),
             "deviation": self._deviation,
             "magic": self._magic,
-            "comment": comment or "APEX",
+            "comment": order_comment,
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
@@ -398,9 +426,32 @@ class MT5Connector(BaseConnector):
         sl: float,
         tp: float,
         comment: str = "",
+        idempotency_key: str = "",
     ) -> OrderResult:
         self._require_connection()
         mapped = self.symbol_map(symbol)
+
+        if idempotency_key:
+            dup = self._find_order_by_idem_key(idempotency_key)
+            if dup is not None:
+                logger.warning(
+                    "MT5 pending duplicate prevented — idem_key {} already exists as ticket {}",
+                    idempotency_key, dup.ticket,
+                )
+                return OrderResult(
+                    success=True,
+                    order_id=str(dup.ticket),
+                    fill_price=dup.price_open,
+                    requested_price=entry_price,
+                    slippage_pips=0.0,
+                    lots=dup.volume,
+                    symbol=symbol,
+                    direction=order_kind.split("_")[0],
+                    sl=dup.sl,
+                    tp=dup.tp,
+                    platform="mt5",
+                )
+
         mt5_type_name = self._PENDING_TYPE_MAP.get(order_kind.upper())
         if mt5_type_name is None:
             return self._fail_order(symbol, order_kind, lots, sl, tp, f"Unknown pending type: {order_kind}")
@@ -428,6 +479,11 @@ class MT5Connector(BaseConnector):
         lots = max(vol_min, min(vol_max, lots))
         lots = round(lots, 2)
 
+        pending_comment = comment or "APEX_PENDING"
+        if idempotency_key:
+            pending_comment = f"{pending_comment}|{idempotency_key}"
+        pending_comment = pending_comment[:31]
+
         request = {
             "action": mt5.TRADE_ACTION_PENDING,
             "symbol": mapped,
@@ -438,7 +494,7 @@ class MT5Connector(BaseConnector):
             "tp": float(tp),
             "deviation": self._deviation,
             "magic": self._magic,
-            "comment": comment or "APEX_PENDING",
+            "comment": pending_comment,
             "type_time": mt5.ORDER_TIME_GTC,
             "type_filling": mt5.ORDER_FILLING_IOC,
         }
@@ -663,6 +719,20 @@ class MT5Connector(BaseConnector):
         positions = mt5.positions_get(ticket=int(order_id))
         if positions and len(positions) > 0:
             return positions[0]
+        return None
+
+    def _find_order_by_idem_key(self, idem_key: str) -> Any:
+        """Check open positions and pending orders for an existing idem key."""
+        positions = mt5.positions_get()
+        if positions:
+            for p in positions:
+                if idem_key in (getattr(p, "comment", "") or ""):
+                    return p
+        orders = mt5.orders_get()
+        if orders:
+            for o in orders:
+                if idem_key in (getattr(o, "comment", "") or ""):
+                    return o
         return None
 
     def _to_position_info(self, p: Any) -> PositionInfo:

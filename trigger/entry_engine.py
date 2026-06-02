@@ -13,6 +13,7 @@ from loguru import logger
 
 from config import AppConfig, get_instrument, get_pip_size, InstrumentCategory, spread_open_guard_applies
 from brain.instrument_profile import get_profile, InstrumentProfile
+from brain.market_data_utils import drop_forming_bar
 from brain.structure_engine import StructureEngine
 from brain.fvg_detector import FVGDetector, FairValueGap
 from brain.order_block import OrderBlockDetector, OrderBlock, OBStatus
@@ -347,7 +348,7 @@ class EntryEngine:
         )
 
         pattern_name, pattern_desc = self.pattern_detector.get_best_pattern(
-            m1_df, direction, zone_top, zone_bottom, pip_size,
+            drop_forming_bar(m1_df), direction, zone_top, zone_bottom, pip_size,
         )
         logger.debug(f"M1 pattern result — name='{pattern_name}' desc='{pattern_desc}'")
         if pattern_name:
