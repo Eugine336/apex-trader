@@ -22,7 +22,12 @@ from loguru import logger
 
 @dataclass
 class ATRComparisonResult:
-    """Side-by-side metrics: structure-stop vs ATR-stop on the same setups."""
+    """Side-by-side metrics: structure-stop vs ATR-stop on the same setups.
+
+    ATR counterfactual is force-closed at the structure trade's exit candle
+    (single-position serial model); this dampens divergence and is a known
+    limitation.
+    """
     total_compared: int = 0
     total_skipped: int = 0
     structure_wins: int = 0
@@ -38,8 +43,8 @@ class ATRComparisonResult:
     atr_mean_r: float = 0.0
     atr_expectancy: float = 0.0
     expectancy_delta: float = 0.0
-    structure_stopout_rate: float = 0.0
-    atr_stopout_rate: float = 0.0
+    structure_loss_rate: float = 0.0  # LOSS outcomes / total, not verified stop-hits
+    atr_loss_rate: float = 0.0  # LOSS outcomes / total, not verified stop-hits
 
 
 @dataclass
@@ -362,20 +367,11 @@ class BacktestEngine:
                             atr_risk = dist
                             if atr_risk <= 0:
                                 atr_risk = 8 * self.pip_size
-                            if direction == "LONG":
-                                atr_tp1 = open_trade["entry_price"] + atr_risk * 1.5
-                                atr_tp2 = open_trade["entry_price"] + atr_risk * 2.5
-                                atr_tp1 = max(atr_tp1, open_trade["entry_price"] + atr_risk)
-                                atr_tp2 = max(atr_tp2, open_trade["entry_price"] + atr_risk * 1.5)
-                            else:
-                                atr_tp1 = open_trade["entry_price"] - atr_risk * 1.5
-                                atr_tp2 = open_trade["entry_price"] - atr_risk * 2.5
-                                atr_tp1 = min(atr_tp1, open_trade["entry_price"] - atr_risk)
-                                atr_tp2 = min(atr_tp2, open_trade["entry_price"] - atr_risk * 1.5)
+                            # Only override stop and risk — TP prices stay identical
+                            # to the structure trade (deep-copied from open_trade) so
+                            # the comparison isolates the effect of stop distance alone.
                             atr_open_trade = copy.deepcopy(open_trade)
                             atr_open_trade["stop_loss"] = atr_sl
-                            atr_open_trade["tp1"] = atr_tp1
-                            atr_open_trade["tp2"] = atr_tp2
                             atr_open_trade["risk"] = atr_risk
                             atr_compared += 1
                         else:
@@ -399,6 +395,10 @@ class BacktestEngine:
                 struct_returns.append(close_event["pnl_r"])
                 struct_outcomes.append(close_event["outcome"])
                 if atr_open_trade is not None:
+                    # ATR counterfactual force-closed at the structure trade's
+                    # exit candle (single-position serial model). This dampens
+                    # divergence — a wider ATR stop that would have run longer
+                    # is truncated here. Known limitation.
                     atr_forced = self._force_close(atr_open_trade, candle)
                     atr_returns.append(atr_forced["pnl_r"])
                     atr_outcomes.append(atr_forced["outcome"])
@@ -867,8 +867,8 @@ class BacktestEngine:
         a_mean = float(np.mean(atr_returns)) if atr_returns else 0.0
         s_exp = s_mean
         a_exp = a_mean
-        s_stopout = (s_losses / s_total) if s_total else 0.0
-        a_stopout = (a_losses / a_total) if a_total else 0.0
+        s_loss_rate = (s_losses / s_total) if s_total else 0.0
+        a_loss_rate = (a_losses / a_total) if a_total else 0.0
 
         return ATRComparisonResult(
             total_compared=compared,
@@ -886,8 +886,8 @@ class BacktestEngine:
             atr_mean_r=round(a_mean, 4),
             atr_expectancy=round(a_exp, 4),
             expectancy_delta=round(a_exp - s_exp, 4),
-            structure_stopout_rate=round(s_stopout, 4),
-            atr_stopout_rate=round(a_stopout, 4),
+            structure_loss_rate=round(s_loss_rate, 4),
+            atr_loss_rate=round(a_loss_rate, 4),
         )
 
     def _profit_factor(self, returns: list[float]) -> float:
