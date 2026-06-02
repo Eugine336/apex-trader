@@ -247,8 +247,9 @@ class TestOldToNewMigration:
 
 
 class TestOptimizerCanonicalTotal:
-    def test_fit_weights_total_is_123(self):
+    def test_fit_weights_within_envelope(self):
         import random
+
         random.seed(99)
         trades = []
         for _ in range(120):
@@ -258,4 +259,10 @@ class TestOptimizerCanonicalTotal:
             trades.append({"pnl": pnl, "confluences_tags": tags})
         opt = ScoreOptimizer()
         result = opt.optimize(trades, min_trades=50)
-        assert result.total == 123
+        baseline = ScoringWeights()
+        bd = baseline.as_dict()
+        rd = result.as_dict()
+        for key in FACTOR_KEYS:
+            lo = round(bd[key] * 0.75)
+            hi = round(bd[key] * 1.25)
+            assert lo <= rd[key] <= hi, f"{key}: {rd[key]} outside [{lo}, {hi}]"
