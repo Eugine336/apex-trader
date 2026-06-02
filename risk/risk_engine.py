@@ -86,6 +86,7 @@ class RiskEngine:
         self.correlation_engine = CorrelationEngine(
             max_single_currency_exposure=self.risk_cfg.max_correlated_trades * 0.02,
             max_correlated_trades=self.risk_cfg.max_correlated_trades,
+            allow_intentional_hedge=cfg.risk.allow_intentional_hedge,
         )
         self.position_sizer = PositionSizer()
         self.pnl_tracker = PnLTracker(starting_balance=starting_balance)
