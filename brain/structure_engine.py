@@ -5,7 +5,6 @@ Detects: trend direction, swing highs/lows, BOS, CHOCH
 """
 
 import pandas as pd
-import numpy as np
 from loguru import logger
 from dataclasses import dataclass
 from enum import Enum

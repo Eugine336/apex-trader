@@ -7,11 +7,10 @@ broker never requires touching Python code.
 
 import json
 from pathlib import Path
-from typing import Optional
 
 from loguru import logger
 
-from config import INSTRUMENT_REGISTRY, InstrumentCategory
+from config import INSTRUMENT_REGISTRY
 
 _BROKERS_DIR = Path(__file__).parent.parent / "config" / "brokers"
 

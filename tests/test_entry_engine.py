@@ -374,9 +374,7 @@ class TestIntegration:
 
     def test_import_from_trigger_package(self):
         from trigger import (
-            EntryEngine, EntrySignal, EntryRejection,
-            EntryPatternDetector, PatternMatch,
-            EntryValidator, ValidationResult,
+            EntryEngine, EntrySignal,
         )
         assert EntryEngine is not None
         assert EntrySignal is not None

@@ -24,7 +24,6 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Optional
 
-import numpy as np
 from loguru import logger
 
 

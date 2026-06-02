@@ -10,7 +10,7 @@ from typing import Any, Optional
 
 from loguru import logger
 
-from config import INSTRUMENT_REGISTRY, get_instrument, get_pip_size
+from config import get_instrument, get_pip_size
 
 
 # ── Pure helpers (no self) ──────────────────────────────────────────────

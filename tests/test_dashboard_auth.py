@@ -6,7 +6,6 @@ M6: Constant-time key comparison via hmac.compare_digest.
 L3: WebSocket authenticates via header/subprotocol, not query param.
 """
 
-import hmac
 import os
 from unittest.mock import patch
 

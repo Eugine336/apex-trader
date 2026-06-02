@@ -14,7 +14,6 @@ Regression tests for three critical defects:
              the sole trigger.
 """
 
-import pytest
 from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -286,7 +285,6 @@ class TestSelfInitiatedCloseUnaffected:
     """Positions closed via close_trade(success=True) still removed correctly."""
 
     def test_close_via_trade_manager_still_works(self):
-        from platforms.main_loop import ManagedPosition
 
         loop = _build_loop(
             ("1", "EURUSD", "BUY", 1.1, 0.1, 1.09, 1.12, 1.13, "mt5"),

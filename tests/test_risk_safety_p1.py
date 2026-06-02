@@ -4,13 +4,11 @@ Uses REAL instruments (GER40, JP225, US500, AUS200, ETHUSD, V75_1S, CRASH1000)
 to prove the correlation cap actually bites on the instruments the system trades.
 """
 
-import pytest
 from brain.correlation_engine import (
     ASSET_CLUSTER,
     CorrelationEngine,
     OpenTrade,
 )
-from brain.currency_strength import CURRENCY_PAIRS
 from config import RiskConfig
 
 

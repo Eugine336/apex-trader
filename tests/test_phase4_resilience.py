@@ -4,14 +4,12 @@ Tests for auto-reconnect, health watchdog, circuit breaker, maintenance, and sta
 """
 
 import os
-import shutil
 import tempfile
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 from platforms.circuit_breaker import CircuitBreaker, CircuitState
 from platforms.health_watchdog import HealthWatchdog

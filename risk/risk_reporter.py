@@ -83,7 +83,7 @@ class RiskReporter:
         total_today = snapshot.trades_today
         win_rate_today = round(wins / total_today * 100, 1) if total_today else 0.0
 
-        daily_summary = pnl_tracker.get_performance_summary("daily", now)
+        pnl_tracker.get_performance_summary("daily", now)
         gross_profit = max(snapshot.best_trade_today, 0.0)
         gross_loss = abs(min(snapshot.worst_trade_today, 0.0))
         profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else 0.0

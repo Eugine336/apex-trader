@@ -20,8 +20,6 @@ from risk.portfolio_risk_state import (
     PortfolioRiskState,
     PortfolioRiskSnapshot,
     PositionRisk,
-    PositionWeakness,
-    StateTransition,
     compute_position_risk_dollars,
     compute_live_heat_pct,
     is_eligible_for_defensive_breakeven,

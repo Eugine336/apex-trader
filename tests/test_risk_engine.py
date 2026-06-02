@@ -6,12 +6,11 @@ Every gate, every check, every edge case.
 import pytest
 from datetime import datetime, timezone
 
-from risk.risk_engine import RiskEngine, RiskAssessment, AccountSnapshot
+from risk.risk_engine import RiskEngine, AccountSnapshot
 from risk.position_sizer import PositionSizer
 from risk.daily_tracker import PnLTracker
 from risk.spread_monitor import SpreadMonitor
 from risk.risk_reporter import RiskReporter
-from config import AppConfig
 
 
 # ── Fixtures ──────────────────────────────────────────────────────────────

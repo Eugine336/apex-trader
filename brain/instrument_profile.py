@@ -13,7 +13,7 @@ so the system scales to any number of instruments automatically.
 from dataclasses import dataclass
 from loguru import logger
 
-from config import INSTRUMENT_REGISTRY, InstrumentCategory
+from config import INSTRUMENT_REGISTRY
 
 
 @dataclass(frozen=True)
