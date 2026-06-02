@@ -3,13 +3,10 @@ APEX TRADER — Hotfix 2: Production Bug Tests
 Tests for multiplier discovery, Deriv fill_price fix, and timeframe warning dedup.
 """
 
-import json
-from datetime import datetime, timezone
 from unittest.mock import MagicMock, AsyncMock, patch
 
 import pytest
 
-from platforms.base_connector import OrderResult, TickData
 from platforms.deriv.deriv_connector import DerivConnector
 from platforms.platform_manager import PlatformManager
 from platforms.mt5.mt5_connector import MT5Connector
@@ -291,7 +288,6 @@ class TestFailedTimeframeDedup:
     def test_different_timeframes_tracked_separately(self):
         mgr = self._make_manager()
 
-        call_count = {"H4": 0, "H1": 0}
         def side_effect(sym, tf, count):
             if tf in ("H4", "H1"):
                 raise RuntimeError(f"No candle data for test/{tf}")

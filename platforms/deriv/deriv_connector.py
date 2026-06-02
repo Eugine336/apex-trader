@@ -301,7 +301,6 @@ class DerivConnector(BaseConnector):
         # Spread is effectively 0 from this endpoint; bootstrap uses it only
         # for instruments where bid/ask are unavailable. For spread purposes
         # the hardcoded registry fallback will be used for synthetics.
-        pip_size = get_pip_size(symbol)
         return TickData(
             bid=quote,
             ask=quote,

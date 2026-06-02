@@ -4,9 +4,7 @@ H2: closed-bar contract (no repaint)
 H3: order idempotency (no duplicate orders)
 """
 
-import sqlite3
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -15,7 +13,7 @@ import pytest
 # ── H2 helpers ──────────────────────────────────────────────────────────
 
 from brain.market_data_utils import drop_forming_bar
-from brain.structure_engine import StructureEngine, StructureEvent, Trend
+from brain.structure_engine import StructureEngine, StructureEvent
 
 
 def _make_ohlcv(n: int = 50, trend: str = "up", seed: int = 42) -> pd.DataFrame:

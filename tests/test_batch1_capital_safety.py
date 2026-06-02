@@ -11,9 +11,8 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Optional
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 # ──────────────────────────────────────────────────────────────────────

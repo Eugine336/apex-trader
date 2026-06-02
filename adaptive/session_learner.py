@@ -7,7 +7,6 @@ I learn exactly when my edge is sharpest.
 import json
 from dataclasses import dataclass, field, asdict
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 from loguru import logger

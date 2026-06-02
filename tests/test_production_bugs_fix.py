@@ -7,12 +7,9 @@ Tests for production bug fixes:
 """
 
 import asyncio
-import json
-import math
 import os
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 

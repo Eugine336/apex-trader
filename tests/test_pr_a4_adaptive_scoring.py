@@ -10,14 +10,13 @@ Safety contract enforcement:
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from enum import Enum
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from adaptive.score_optimizer import ScoringWeights
-from brain.mtf_orchestrator import Confluence, MTFOrchestrator, TradeSetup
+from brain.mtf_orchestrator import MTFOrchestrator
 
 
 # ---------------------------------------------------------------------------
@@ -509,7 +508,6 @@ class TestWeightsStoreFallback:
         assert w.structure_weight == 20
 
     def test_corrupt_file_uses_defaults(self):
-        import json
         from pathlib import Path
 
         test_path = Path("data/scoring_weights.json")

@@ -4,15 +4,12 @@ Verifies trade analysis, score optimisation, regime/pair/session learning,
 and the master adapter's adjustment pipeline.
 """
 
-import json
 import random
 from datetime import datetime, timezone
 from pathlib import Path
 
-import pytest
-import numpy as np
 
-from ml.trade_analyzer import TradeAnalyzer, PerformanceProfile
+from ml.trade_analyzer import TradeAnalyzer
 from ml.score_optimizer import ScoreOptimizer, ScoringWeights
 from ml.regime_learner import RegimeLearner, RegimeStrategy
 from ml.pair_learner import PairLearner, PairProfile

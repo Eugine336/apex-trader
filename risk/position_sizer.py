@@ -13,7 +13,7 @@ from typing import Optional
 
 from loguru import logger
 
-from config import INSTRUMENT_REGISTRY, InstrumentInfo
+from config import INSTRUMENT_REGISTRY
 from platform_context import PlatformContext
 
 

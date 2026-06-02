@@ -4,9 +4,7 @@ and get_in_flight_checked() — M3 Phase B (Option C).
 Self-contained: creates temporary SQLite DBs, requires no external services.
 """
 
-import os
 import sqlite3
-import tempfile
 from datetime import datetime, timezone
 from unittest.mock import patch
 
@@ -190,7 +188,6 @@ class TestWritePathHealth:
 class TestStartupCheckDegradedStore:
     def test_degraded_store_warns_on_zero_count(self, tmp_path):
         from platforms.startup_check import StartupCheck
-        db_path = str(tmp_path / "degraded.db")
 
         with patch("platforms.startup_check.PositionStore") as MockStore:
             instance = MockStore.return_value
@@ -209,7 +206,6 @@ class TestStartupCheckDegradedStore:
 
     def test_healthy_store_normal_message(self, tmp_path):
         from platforms.startup_check import StartupCheck
-        db_path = str(tmp_path / "healthy.db")
 
         with patch("platforms.startup_check.PositionStore") as MockStore:
             instance = MockStore.return_value

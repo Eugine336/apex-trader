@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 from types import SimpleNamespace, ModuleType
 from unittest.mock import MagicMock, patch
 
-import pytest
 
 
 # ── Stub heavy deps so imports succeed in minimal environments ────────────
@@ -213,7 +212,6 @@ class TestTPAdjustLogic:
         original_tp2 = trade.tp2
         trade.current_price = 1.1150
 
-        from management.trade_manager import TradeStatus
         assert trade.tp2 == original_tp2
 
     def test_tighten_short_on_counter_choch(self):
@@ -501,7 +499,7 @@ class TestPlatformManagerPendingEntry:
 
         from platforms.mt5.mt5_connector import MT5Connector
         with patch("platforms.platform_manager.MT5Connector", MT5Connector):
-            result = pm.place_pending_entry(
+            pm.place_pending_entry(
                 "EURUSD", "BUY_LIMIT", 1.095, 0.05, 1.09, 1.105,
             )
         mock_connector.place_pending_order.assert_called_once()
@@ -620,7 +618,6 @@ class TestCheckPendingOrdersLifecycle:
     def _make_pending_info(self, symbol="EURUSD", direction="BUY",
                            placed_minutes_ago=5, max_wait=30):
         """Build a pending-order info dict matching what _execute_entry stores."""
-        from trigger.entry_engine import EntrySignal
         sig = SimpleNamespace(
             tp1=1.1050, tp2=1.1100, score=90, stop_loss=1.0950,
             risk_reward_1=1.0, risk_reward_2=2.0, entry_type="FVG_MIDPOINT",

@@ -5,10 +5,8 @@ NOTE: pytest cannot be executed in this sandbox session (numpy/loguru are not
 installed).  CI on the PR is the runtime authority for these tests.
 """
 
-import math
 
 import numpy as np
-import pytest
 
 from adaptive.trade_analyzer import TradeAnalyzer
 

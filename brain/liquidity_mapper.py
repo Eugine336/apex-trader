@@ -7,7 +7,6 @@ The bot sees the traps before price springs them.
 
 import pandas as pd
 import numpy as np
-from loguru import logger
 from dataclasses import dataclass
 from typing import Optional
 

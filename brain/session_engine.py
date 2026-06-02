@@ -9,9 +9,7 @@ import pandas as pd
 from datetime import datetime, time, timezone
 from loguru import logger
 from dataclasses import dataclass
-import requests
 from typing import Optional
-import os
 
 
 @dataclass

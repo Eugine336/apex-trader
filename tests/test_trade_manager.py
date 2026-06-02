@@ -6,7 +6,6 @@ TP2 full close, time-based exit, re-entry eligibility, partial close math.
 
 import pandas as pd
 import numpy as np
-import pytest
 from datetime import datetime, timedelta, timezone
 
 from management.trade_manager import (
@@ -17,7 +16,6 @@ from management.trade_manager import (
 )
 from management.partial_close import PartialCloseCalculator
 from management.trailing_stop import StructureTrailingStop
-from management.re_entry import ReEntryManager, ReEntryOpportunity
 
 
 # -------------------------------------------------------------------
