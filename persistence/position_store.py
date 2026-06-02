@@ -4,6 +4,7 @@ SQLite-backed position storage so no trade is ever lost to a crash.
 Survival precedes growth — every open position is written to disk.
 """
 
+import json
 import sqlite3
 import threading
 from datetime import datetime, timezone
@@ -81,6 +82,9 @@ CREATE TABLE IF NOT EXISTS in_flight_intents (
 _MIGRATE_IDEM_KEY = (
     "ALTER TABLE managed_positions ADD COLUMN idempotency_key TEXT NOT NULL DEFAULT ''"
 )
+_MIGRATE_CONFLUENCES = (
+    "ALTER TABLE managed_positions ADD COLUMN confluences_json TEXT NOT NULL DEFAULT '[]'"
+)
 
 
 class PositionStore:
@@ -117,6 +121,12 @@ class PositionStore:
                 self._conn.execute(_MIGRATE_IDEM_KEY)
             except sqlite3.OperationalError as exc:
                 logger.debug("[position_store] idempotency-key migration skipped (likely already exists): {}", exc)
+                pass
+        if "confluences_json" not in cols:
+            try:
+                self._conn.execute(_MIGRATE_CONFLUENCES)
+            except sqlite3.OperationalError as exc:
+                logger.debug("[position_store] confluences migration skipped (likely already exists): {}", exc)
                 pass
 
     # ── Health tracking ─────────────────────────────────────────────────
@@ -157,8 +167,8 @@ class PositionStore:
                      sl, tp1, tp2, score, regime, session, entry_type,
                      open_time, tp1_hit, at_breakeven, trailing,
                      tm_trade_id, stake_usd, multiplier, idempotency_key,
-                     last_update)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     confluences_json, last_update)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         str(pos.order_id),
@@ -182,6 +192,7 @@ class PositionStore:
                         pos.stake_usd,
                         getattr(pos, "multiplier", 100),
                         getattr(pos, "idempotency_key", ""),
+                        json.dumps(getattr(pos, "confluences", [])),
                         datetime.now(timezone.utc).isoformat(),
                     ),
                 )
