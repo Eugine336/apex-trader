@@ -5,6 +5,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from dashboard.state_helpers import HelpersMixin, pct_to_fraction, safe_float
+from loguru import logger
 
 
 class StatusMixin(HelpersMixin):
@@ -44,7 +45,8 @@ class StatusMixin(HelpersMixin):
                 d = datetime.fromisoformat(d_str).date()
                 if d == today:
                     daily_pnl += safe_float(r["pnl_dollars"], 0.0)
-            except Exception:
+            except Exception as exc:
+                logger.debug("[dashboard] daily PnL date parse failed, skipping record: {}", exc)
                 pass
         if not records:
             daily_frac = pct_to_fraction(getattr(dd, "daily_pnl_pct", 0.0))
