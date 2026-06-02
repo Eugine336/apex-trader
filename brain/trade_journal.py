@@ -242,7 +242,7 @@ class TradeJournal:
             try:
                 cursor = await db.execute(
                     "SELECT pair, direction, pnl, score, confluences, regime, "
-                    "session, spread, entry_type, time_to_exit, outcome, pnl_dollars FROM trades"
+                    "session, spread, entry_type, time_to_exit, outcome, pnl_dollars, timestamp FROM trades"
                 )
             except Exception:
                 cursor = await db.execute(
@@ -265,6 +265,7 @@ class TradeJournal:
                 "time_to_exit": r[9],
                 "outcome": r[10],
                 "pnl_dollars": r[11] if len(r) > 11 and r[11] is not None else 0.0,
+                "timestamp": r[12] if len(r) > 12 else None,
             })
         return result
 

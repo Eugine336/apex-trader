@@ -73,11 +73,17 @@ class ScoreOptimizer:
     Adjusts the 9-factor confluence scoring weights based on actual trade
     performance. Changes are gradual — max 3 points per optimisation cycle
     — so the system evolves, never lurches.
+
+    An out-of-sample validation gate ensures candidate weights are adopted
+    only when they do not degrade win/loss discrimination on held-out
+    (later-in-time) trades, preventing in-sample overfit.
     """
 
     DEFAULT_PATH = "data/scoring_weights.json"
     MAX_SHIFT = 3
     MIN_WEIGHT = 3
+    VALIDATION_RATIO = 0.30
+    MIN_VALIDATION = 15
 
     def __init__(self) -> None:
         self.current_weights = ScoringWeights()
@@ -92,11 +98,61 @@ class ScoreOptimizer:
             )
             return self.current_weights
 
+        sorted_trades = self._sort_by_time(trades)
+
+        split_idx = int(len(sorted_trades) * (1 - self.VALIDATION_RATIO))
+        train = sorted_trades[:split_idx]
+        validation = sorted_trades[split_idx:]
+
+        if len(validation) < self.MIN_VALIDATION:
+            logger.info(
+                "OOS gate skipped — validation set too small "
+                f"({len(validation)} < {self.MIN_VALIDATION}), "
+                f"fitting on all {len(trades)} trades"
+            )
+            return self._fit_and_adopt(sorted_trades)
+
+        candidate = self._fit_weights(train)
+        if candidate is None:
+            return self.current_weights
+
+        candidate_metric = self._compute_validation_metric(candidate, validation)
+        incumbent_metric = self._compute_validation_metric(
+            self.current_weights, validation
+        )
+
+        if candidate_metric >= incumbent_metric:
+            self.current_weights = candidate
+            self.save_weights()
+            logger.info(
+                "Weights ADOPTED — OOS separation: "
+                f"candidate={candidate_metric:.4f} >= "
+                f"incumbent={incumbent_metric:.4f} | "
+                f"train={len(train)} validation={len(validation)} | "
+                f"total={candidate.total}"
+            )
+            return candidate
+
+        logger.info(
+            "Weights REJECTED — OOS separation: "
+            f"candidate={candidate_metric:.4f} < "
+            f"incumbent={incumbent_metric:.4f} | "
+            f"train={len(train)} validation={len(validation)} — "
+            "incumbent retained"
+        )
+        return self.current_weights
+
+    def _fit_weights(self, trades: list[dict]) -> Optional[ScoringWeights]:
+        """Fit candidate weights from the given trades. Returns None if insufficient lift data."""
         effectiveness = self.get_factor_effectiveness(trades)
-        lifts = {k: v["lift"] for k, v in effectiveness.items() if v["sample_present"] >= 10}
+        lifts = {
+            k: v["lift"]
+            for k, v in effectiveness.items()
+            if v["sample_present"] >= 10
+        }
 
         if not lifts:
-            return self.current_weights
+            return None
 
         current = self.current_weights.as_dict()
         raw_new: dict[str, float] = {}
@@ -107,14 +163,17 @@ class ScoreOptimizer:
 
         raw_total = sum(raw_new.values())
         if raw_total == 0:
-            return self.current_weights
+            return None
 
-        scaled = {k: max(self.MIN_WEIGHT, round(v / raw_total * 100)) for k, v in raw_new.items()}
+        scaled = {
+            k: max(self.MIN_WEIGHT, round(v / raw_total * 100))
+            for k, v in raw_new.items()
+        }
         remainder = 100 - sum(scaled.values())
         best_key = max(scaled, key=lambda k: scaled[k])
         scaled[best_key] += remainder
 
-        new_weights = ScoringWeights(
+        return ScoringWeights(
             structure_weight=scaled["structure"],
             order_block_weight=scaled["order_block"],
             fvg_weight=scaled["fvg"],
@@ -126,10 +185,60 @@ class ScoreOptimizer:
             liquidity_sweep_weight=scaled["liquidity_sweep"],
         )
 
-        self.current_weights = new_weights
+    def _fit_and_adopt(self, trades: list[dict]) -> ScoringWeights:
+        """Fit on all trades and adopt without OOS validation (small-sample fallback)."""
+        candidate = self._fit_weights(trades)
+        if candidate is None:
+            return self.current_weights
+        self.current_weights = candidate
         self.save_weights()
-        logger.info(f"Weights optimised — total={new_weights.total}")
-        return new_weights
+        logger.info(f"Weights optimised (no OOS gate) — total={candidate.total}")
+        return candidate
+
+    @staticmethod
+    def _compute_validation_metric(
+        weights: ScoringWeights, trades: list[dict]
+    ) -> float:
+        """
+        Measure how well weights discriminate winners from losers.
+
+        For each trade, weighted_score = sum of weights for factors present
+        in the trade's confluences_tags. Then:
+            separation = mean(win_scores) - mean(loss_scores)
+
+        Higher separation means better discrimination. Returns 0.0 when all
+        trades are wins or all are losses (no separation measurable).
+        """
+        weight_dict = weights.as_dict()
+        win_scores: list[float] = []
+        loss_scores: list[float] = []
+
+        for t in trades:
+            tags = t.get("confluences_tags", [])
+            score = sum(weight_dict.get(tag, 0) for tag in tags)
+            if t.get("pnl", 0) > 0:
+                win_scores.append(score)
+            else:
+                loss_scores.append(score)
+
+        if not win_scores or not loss_scores:
+            return 0.0
+
+        return (sum(win_scores) / len(win_scores)) - (
+            sum(loss_scores) / len(loss_scores)
+        )
+
+    @staticmethod
+    def _sort_by_time(trades: list[dict]) -> list[dict]:
+        """
+        Sort trades by timestamp ascending for a temporal train/validation
+        split. Falls back to preserving input order (assumed chronological
+        from the journal's row-insertion order) when no timestamps present.
+        """
+        has_timestamps = any(t.get("timestamp") for t in trades)
+        if not has_timestamps:
+            return list(trades)
+        return sorted(trades, key=lambda t: t.get("timestamp", ""))
 
     def get_factor_effectiveness(self, trades: list[dict]) -> dict[str, dict]:
         results: dict[str, dict] = {}
