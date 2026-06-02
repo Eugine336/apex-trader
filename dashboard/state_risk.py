@@ -14,7 +14,7 @@ class RiskMixin(HelpersMixin):
             loop = self._trading_loop
             dd = loop.drawdown.get_status(datetime.now(timezone.utc))
             max_open = int(getattr(loop.config.risk, "max_open_trades", 6))
-            open_count = len(getattr(loop, "managed_positions", {}))
+            open_count = loop.get_positions_count() if hasattr(loop, "get_positions_count") else len(getattr(loop, "managed_positions", {}))
             balance = self._get_balance()
 
             risk_raw = safe_float(getattr(dd, "current_risk_pct", 2.0), 2.0)
@@ -62,9 +62,10 @@ class RiskMixin(HelpersMixin):
                         _dash_risk = risk_engine.drawdown_guard.risk_map.get(
                             risk_engine.drawdown_guard.mode, 0.005
                         )
+                        positions_snap = loop.get_positions_snapshot() if hasattr(loop, "get_positions_snapshot") else {}
                         open_trades = [
                             {"pair": p.symbol, "direction": p.direction, "risk_pct": _dash_risk}
-                            for p in loop.managed_positions.values()
+                            for p in positions_snap.values()
                         ]
                         report = reporter.generate_report(
                             risk_engine=risk_engine,

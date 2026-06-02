@@ -53,13 +53,5 @@ class ControlsMixin:
     def emergency_close_all(self) -> dict:
         if not self.is_live:
             return {"status": "no_engine_attached", "closed": 0}
-        closed = 0
-        for oid, pos in list(self._trading_loop.managed_positions.items()):
-            try:
-                result = self._platform_manager.close_trade(oid, pos.platform)
-                if result.success:
-                    closed += 1
-            except Exception as exc:
-                logger.error("Emergency close failed for {}: {}", oid, exc)
-        self._trading_loop.managed_positions.clear()
+        closed = self._trading_loop.emergency_close_all_positions(self._platform_manager)
         return {"status": "emergency_close_complete", "closed": closed, "message": f"Closed {closed} positions"}
