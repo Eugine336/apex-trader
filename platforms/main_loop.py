@@ -55,6 +55,8 @@ from risk.portfolio_risk_state import (
     PortfolioRiskState,
     PortfolioRiskSnapshot,
     PositionRisk,
+    EmergencyTriggerSnapshot,
+    evaluate_emergency_triggers,
     compute_position_risk_dollars,
     compute_live_heat_pct,
     is_eligible_for_defensive_breakeven,
@@ -294,7 +296,7 @@ class TradingLoop:
         self._news_exit_protected: set[str] = set()            # oids already tightened for news
         self._last_market_data: dict = {}                       # most recent market data for in-trade analysis
 
-        # ── Portfolio risk state machine (M8 Phase 4a + 4b) ──────────────
+        # ── Portfolio risk state machine (M8 Phase 4a + 4b + 4c) ────────────
         cfg_r = self.config.risk
         if cfg_r.portfolio_risk_engine_enabled:
             self._portfolio_risk_sm = PortfolioRiskStateMachine(
@@ -303,12 +305,15 @@ class TradingLoop:
                 recovery_dwell_seconds=cfg_r.recovery_dwell_seconds,
                 heat_reduction_pct=cfg_r.heat_reduction_pct,
                 reduction_persist_seconds=cfg_r.reduction_persist_seconds,
+                heat_emergency_pct=cfg_r.heat_emergency_pct,
             )
         else:
             self._portfolio_risk_sm: Optional[PortfolioRiskStateMachine] = None
         self._defensive_action_timestamps: dict[str, float] = {}  # oid → monotonic time of last action
         self._reduction_action_timestamps: dict[str, float] = {}  # oid → monotonic time of last trim
         self._reduction_actions_this_hour: list[float] = []  # monotonic timestamps of trims
+        self._emergency_action_timestamps: dict[str, float] = {}  # oid → monotonic time of last emergency close
+        self._emergency_closes_this_hour: list[float] = []  # monotonic timestamps of emergency closes
 
     # ── Thread-safe position accessors ──────────────────────────────────
 
@@ -2247,9 +2252,44 @@ class TradingLoop:
         )
         transition = self._portfolio_risk_sm.evaluate(snapshot)
 
+        # ── Emergency trigger evaluation (Phase 4c) ──────────────────────
+        cfg_e = self.config.risk
+        if cfg_e.portfolio_emergency_enabled and self._portfolio_risk_sm is not None:
+            reconcile_age = (
+                (datetime.now(timezone.utc) - self._last_reconcile_time).total_seconds()
+                if self._last_reconcile_time is not None
+                else 999999.0
+            )
+            broker_positions: list = []
+            try:
+                broker_positions = self.platforms.get_all_open_positions()
+            except Exception:
+                pass
+            emergency_snap = EmergencyTriggerSnapshot(
+                live_heat_pct=live_heat,
+                drawdown_mode=self.drawdown.mode.value,
+                reconcile_age_seconds=reconcile_age,
+                managed_count=len(self.managed_positions),
+                broker_count=len(broker_positions),
+            )
+            trigger_result = evaluate_emergency_triggers(
+                emergency_snap,
+                heat_emergency_pct=cfg_e.heat_emergency_pct,
+                emergency_reconcile_failure_seconds=cfg_e.emergency_reconcile_failure_seconds,
+                emergency_broker_exposure_tolerance=cfg_e.emergency_broker_exposure_tolerance,
+            )
+            if trigger_result.any_fired:
+                transition = self._portfolio_risk_sm.escalate_to_emergency(
+                    trigger_result, live_heat, exposure.is_safe,
+                )
+
         if transition.changed:
             severity = "info"
-            if transition.state in (PortfolioRiskState.DEFENSIVE, PortfolioRiskState.REDUCING):
+            if transition.state in (
+                PortfolioRiskState.DEFENSIVE,
+                PortfolioRiskState.REDUCING,
+                PortfolioRiskState.EMERGENCY,
+            ):
                 severity = "critical"
             self._add_warning(
                 severity,
@@ -2261,6 +2301,10 @@ class TradingLoop:
         elif transition.state == PortfolioRiskState.REDUCING:
             self._apply_defensive_actions()
             self._apply_reduction_actions(position_risks, exposure)
+        elif transition.state == PortfolioRiskState.EMERGENCY:
+            self._apply_defensive_actions()
+            self._apply_reduction_actions(position_risks, exposure)
+            self._apply_emergency_actions(position_risks, exposure, transition)
 
     def _apply_defensive_actions(self) -> None:
         """
@@ -2469,6 +2513,142 @@ class TradingLoop:
                     pos.direction, pos.symbol,
                 )
             return
+
+    def _apply_emergency_actions(
+        self,
+        position_risks: list[PositionRisk],
+        exposure,
+        transition,
+    ) -> None:
+        """
+        Progressive full-close of weakest positions until heat returns
+        below emergency threshold.  Bypasses entry circuit-breaker /
+        cooldowns / opportunity throttles — risk exits are not entries.
+
+        Precedence: margin_guardian owns margin events; this method owns
+        heat/correlation-survival, drawdown-frozen, and reconcile-failure.
+        Before every close, re-check managed_positions membership to
+        prevent double-closing a position margin_guardian already closed.
+
+        Safety rails:
+          • Gated behind portfolio_emergency_enabled (default OFF).
+          • Per-position cooldown prevents repeated closes.
+          • Per-hour cap prevents an unbounded close storm.
+          • emergency_max_closes_per_cycle limits closes per loop.
+          • Orphan/unknown positions are neutral-ranked.
+        """
+        cfg = self.config.risk
+        if not cfg.portfolio_emergency_enabled:
+            return
+
+        now = _time.monotonic()
+
+        cutoff = now - 3600.0
+        self._emergency_closes_this_hour = [
+            t for t in self._emergency_closes_this_hour if t > cutoff
+        ]
+        if len(self._emergency_closes_this_hour) >= cfg.emergency_max_closes_per_hour:
+            logger.warning(
+                "[PortfolioRisk] EMERGENCY — hourly close cap reached ({}/{})",
+                len(self._emergency_closes_this_hour), cfg.emergency_max_closes_per_hour,
+            )
+            return
+
+        total_risk = sum(pr.risk_dollars for pr in position_risks)
+        pos_dicts: list[dict] = []
+
+        for oid, pos in list(self.managed_positions.items()):
+            try:
+                tick = self.platforms.get_price(pos.symbol)
+                current_price = tick.bid if pos.direction == "BUY" else tick.ask
+            except Exception:
+                continue
+
+            pr_match = next((pr for pr in position_risks if pr.order_id == oid), None)
+            risk_dollars = pr_match.risk_dollars if pr_match else 0.0
+
+            pos_dicts.append({
+                "order_id": oid,
+                "symbol": pos.symbol,
+                "direction": pos.direction,
+                "entry_price": pos.entry_price,
+                "sl": pos.sl,
+                "current_price": current_price,
+                "score": pos.score,
+                "regime": pos.regime,
+                "entry_type": pos.entry_type,
+                "open_time_utc": pos.open_time,
+                "risk_dollars": risk_dollars,
+                "lots": pos.lots,
+            })
+
+        if not pos_dicts:
+            return
+
+        ranked = rank_positions_weakest_first(pos_dicts, total_risk)
+        if not ranked:
+            return
+
+        closes_this_cycle = 0
+        for candidate in ranked:
+            if closes_this_cycle >= cfg.emergency_max_closes_per_cycle:
+                break
+            if len(self._emergency_closes_this_hour) >= cfg.emergency_max_closes_per_hour:
+                break
+
+            if candidate.is_insufficient_data:
+                continue
+
+            oid = candidate.order_id
+            pos = self.managed_positions.get(oid)
+            if pos is None:
+                continue
+
+            last_action = self._emergency_action_timestamps.get(oid, 0.0)
+            if (now - last_action) < cfg.emergency_action_cooldown_seconds:
+                continue
+
+            logger.critical(
+                "[PortfolioRisk] EMERGENCY CLOSE — {} {} | weakness={:.1f} ({}) "
+                "| R={:.2f} | score={} | risk_share={:.1f}% | trigger={}",
+                pos.direction, pos.symbol,
+                candidate.weakness_score, candidate.reason,
+                candidate.r_multiple, candidate.entry_score,
+                candidate.risk_share_pct,
+                transition.emergency_trigger or "sustained",
+            )
+
+            result = self.platforms.close_trade(oid, pos.platform)
+            if result.success:
+                self._record_closed_trade(
+                    pos, result.close_price,
+                    f"EMERGENCY_CLOSE({transition.emergency_trigger or 'sustained'})",
+                    close_result=result,
+                )
+                self.managed_positions.pop(oid, None)
+                self.position_store.remove_position(oid)
+                self._emergency_action_timestamps[oid] = now
+                self._emergency_closes_this_hour.append(now)
+                closes_this_cycle += 1
+
+                self._add_warning(
+                    "critical",
+                    f"[PortfolioRisk] EMERGENCY — closed {pos.direction} {pos.symbol} "
+                    f"(weakness={candidate.weakness_score:.1f}, "
+                    f"trigger={transition.emergency_trigger or 'sustained'})",
+                )
+                logger.critical(
+                    "[PortfolioRisk] EMERGENCY CLOSE SUCCESS — {} {} | "
+                    "heat was {:.2f}% | closes this hour: {}",
+                    pos.direction, pos.symbol,
+                    self._current_portfolio_heat,
+                    len(self._emergency_closes_this_hour),
+                )
+            else:
+                logger.warning(
+                    "[PortfolioRisk] EMERGENCY CLOSE FAILED — {} {} | broker rejected",
+                    pos.direction, pos.symbol,
+                )
 
     def _check_spread_deterioration(self) -> None:
         """

@@ -357,6 +357,7 @@ class TestReducingState:
             heat_defensive_pct=1.5, heat_recovery_pct=1.0,
             heat_reduction_pct=10.0,
             reduction_persist_seconds=60.0,
+            heat_emergency_pct=15.0,
         )
         t0 = 1000.0
         sm.evaluate(self._make_snapshot(heat=2.0, ts=t0))
@@ -372,6 +373,7 @@ class TestReducingState:
             heat_defensive_pct=1.5, heat_recovery_pct=1.0,
             heat_reduction_pct=10.0,
             reduction_persist_seconds=60.0,
+            heat_emergency_pct=15.0,
         )
         t0 = 1000.0
         sm.evaluate(self._make_snapshot(heat=2.0, ts=t0))
