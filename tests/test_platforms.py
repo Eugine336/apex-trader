@@ -4,10 +4,9 @@ Tests connectors, routing, and the trading loop with mock platforms.
 """
 
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 import pytest
 
-import pandas as pd
 
 from platforms.base_connector import (
     AccountInfo,
@@ -15,7 +14,6 @@ from platforms.base_connector import (
     CloseResult,
     OrderResult,
     PositionInfo,
-    TickData,
 )
 from platforms.mt5.mt5_connector import MT5Connector
 from platforms.deriv.deriv_connector import DerivConnector, _GRANULARITY_MAP

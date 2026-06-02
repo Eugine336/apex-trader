@@ -7,15 +7,12 @@ Regression tests for:
   BUG 5 — Execution latency uses pre-exec timestamp
 """
 
-import math
-import re
-import sqlite3
 import tempfile
 import threading
 from dataclasses import dataclass
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -232,7 +229,6 @@ def _build_deriv_connector_for_retry_test():
 
 def test_multiplier_then_cap_combined_converges():
     """BUG 1: multiplier rejected → rescaled → cap hit → must converge and succeed."""
-    from platforms.deriv.deriv_connector import DerivConnector
 
     connector = _build_deriv_connector_for_retry_test()
 
@@ -241,8 +237,6 @@ def test_multiplier_then_cap_combined_converges():
     def fake_sync_send(msg):
         call_count[0] += 1
         amount = msg.get("price", msg.get("parameters", {}).get("amount", 0))
-        mult = msg.get("parameters", {}).get("multiplier", 0)
-        sl_dollar = msg.get("parameters", {}).get("limit_order", {}).get("stop_loss", 0)
 
         if call_count[0] == 1:
             return {"error": {"message": "Multiplier is not in acceptable range. Accepts 100,200,300,400,500"}}
@@ -284,7 +278,6 @@ def test_cap_floors_strictly_below():
 
 def test_sl_dollar_recomputed_each_retry():
     """BUG 1: SL dollar must match the current amount on each retry."""
-    from platforms.deriv.deriv_connector import DerivConnector
 
     connector = _build_deriv_connector_for_retry_test()
 
@@ -329,7 +322,6 @@ def test_sl_dollar_recomputed_each_retry():
 
 def test_cap_below_minimum_skips_cleanly():
     """BUG 1: If broker cap drops below $1, the order is skipped, not retried forever."""
-    from platforms.deriv.deriv_connector import DerivConnector
 
     connector = _build_deriv_connector_for_retry_test()
 

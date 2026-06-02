@@ -5,7 +5,7 @@ Which pairs win most? Which sessions? Which entry types?
 The answers are in the data — I just have to look.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np

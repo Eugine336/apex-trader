@@ -8,7 +8,6 @@ for each regime separately. One size does NOT fit all.
 import json
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Optional
 
 import numpy as np
 from loguru import logger

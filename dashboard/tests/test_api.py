@@ -11,7 +11,7 @@ from fastapi.testclient import TestClient
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 
 from dashboard.api import app
-from dashboard.state import STATE, BotStatus, RiskMode, load_demo_data
+from dashboard.state import STATE, BotStatus, load_demo_data
 
 
 @pytest.fixture(autouse=True)

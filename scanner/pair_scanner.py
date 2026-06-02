@@ -13,10 +13,10 @@ from typing import Optional
 from loguru import logger
 
 from config import (
-    AppConfig, get_instrument, get_pip_size, INSTRUMENT_REGISTRY,
+    AppConfig, get_instrument, get_pip_size,
     is_always_open, is_session_gated,
 )
-from brain.structure_engine import StructureEngine, Trend
+from brain.structure_engine import StructureEngine
 from brain.fvg_detector import FVGDetector
 from brain.order_block import OrderBlockDetector, OBStatus
 from brain.liquidity_mapper import LiquidityMapper

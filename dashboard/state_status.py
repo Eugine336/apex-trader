@@ -1,8 +1,6 @@
 """APEX TRADER — Dashboard Status Mixin."""
 
-from collections import defaultdict
 from datetime import datetime, timezone
-from typing import Any
 
 from dashboard.state_helpers import HelpersMixin, pct_to_fraction, safe_float
 from loguru import logger

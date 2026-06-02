@@ -9,13 +9,13 @@ import pytest
 from datetime import datetime, timezone
 
 from config import (
-    get_instrument, get_instruments_by_category, get_instruments_by_platform,
-    get_pip_size, get_all_symbols, INSTRUMENT_REGISTRY, AppConfig,
+    get_instruments_by_category, get_instruments_by_platform,
+    get_pip_size, INSTRUMENT_REGISTRY,
 )
 from scanner.pair_scanner import PairScanner, PairScanResult, ScanReport
-from scanner.pair_ranker import PairRanker, RankedSetup
+from scanner.pair_ranker import PairRanker
 from scanner.scan_scheduler import ScanScheduler
-from brain.session_engine import SessionStatus, NewsStatus, NewsEvent
+from brain.session_engine import SessionStatus, NewsStatus
 
 
 # ---------------------------------------------------------------------------

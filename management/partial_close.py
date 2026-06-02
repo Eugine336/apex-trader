@@ -8,7 +8,6 @@ Platform-aware:
   Deriv — no partial close; pnl at TP1 = stake × price_move% × multiplier
 """
 
-from typing import Optional
 
 
 class PartialCloseCalculator:

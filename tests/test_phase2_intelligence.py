@@ -6,11 +6,10 @@ timeframe-aware stall exit, dynamic signal expiry, adaptive scan frequency.
 
 import pandas as pd
 import numpy as np
-import pytest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
-from brain.structure_engine import StructureEngine, StructureEvent, Trend
+from brain.structure_engine import StructureEngine, StructureEvent
 from trigger.entry_engine import EntryEngine, EntrySignal
 from management.trade_manager import (
     TradeManager,

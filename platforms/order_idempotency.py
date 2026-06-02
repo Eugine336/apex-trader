@@ -5,7 +5,6 @@ submitted twice — even across retries, reconnects, or crash recovery.
 """
 
 import hashlib
-import time
 from datetime import datetime, timezone
 
 
