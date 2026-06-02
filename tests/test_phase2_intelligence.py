@@ -143,21 +143,25 @@ class TestMultiBarBOSCHOCH:
         return pd.DataFrame(data)
 
     def test_body_confirmed_bullish_bos(self):
-        """Full body above swing high → BOS confirmed."""
+        """Full body above swing high → BOS confirmed.
+        Signal bar is second-to-last; last bar is the still-forming candle
+        which is ignored by the closed-bar contract (H2 fix).
+        """
         engine = StructureEngine(swing_lookback=1, min_swing_size_pips=0.5)
         closes = [
             1.1000, 1.1010, 1.1005, 1.1015, 1.1008, 1.1020,
             1.1012, 1.1025, 1.1018, 1.1030,
             1.1022, 1.1035, 1.1028, 1.1042,
+            1.1045,
         ]
         opens = [closes[0]] + closes[:-1]
         highs = [c + 0.0008 for c in closes]
         lows = [c - 0.0008 for c in closes]
-        # Last bar: open AND close both above the last swing high
-        opens[-1] = 1.1044
-        closes[-1] = 1.1050
-        highs[-1] = 1.1052
-        lows[-1] = 1.1043
+        # Signal bar (now second-to-last): open AND close both above the last swing high
+        opens[-2] = 1.1044
+        closes[-2] = 1.1050
+        highs[-2] = 1.1052
+        lows[-2] = 1.1043
         df = pd.DataFrame({
             "time": pd.date_range("2025-01-01", periods=len(closes), freq="5min"),
             "open": opens, "high": highs, "low": lows, "close": closes,
@@ -166,24 +170,27 @@ class TestMultiBarBOSCHOCH:
         assert analysis.last_event in (StructureEvent.BOS_BULLISH, StructureEvent.CHOCH_BULLISH)
 
     def test_wick_only_break_rejected(self):
-        """Close above swing high but open well below → wick fake, rejected."""
+        """Close above swing high but open well below → wick fake, rejected.
+        Signal bar is second-to-last per the closed-bar contract.
+        """
         engine = StructureEngine(swing_lookback=1, min_swing_size_pips=0.5)
         closes = [
             1.1000, 1.1010, 1.1005, 1.1015, 1.1008, 1.1020,
             1.1012, 1.1025, 1.1018, 1.1030,
             1.1022, 1.1035, 1.1028, 1.1042,
+            1.1040,
         ]
         opens = [closes[0]] + closes[:-1]
         highs = [c + 0.0008 for c in closes]
         lows = [c - 0.0008 for c in closes]
-        # Last bar: close barely above swing high, but open far below
-        # AND previous bar closed well below the swing high
-        opens[-1] = 1.1020  # open well below
-        closes[-1] = 1.1044  # close barely above
-        highs[-1] = 1.1046
-        lows[-1] = 1.1018
-        opens[-2] = 1.1025
-        closes[-2] = 1.1028  # prev close well below
+        # Signal bar (second-to-last): close barely above swing high, but open far below
+        # AND bar before it closed well below the swing high
+        opens[-2] = 1.1020  # open well below
+        closes[-2] = 1.1044  # close barely above
+        highs[-2] = 1.1046
+        lows[-2] = 1.1018
+        opens[-3] = 1.1025
+        closes[-3] = 1.1028  # prev close well below
         df = pd.DataFrame({
             "time": pd.date_range("2025-01-01", periods=len(closes), freq="5min"),
             "open": opens, "high": highs, "low": lows, "close": closes,
@@ -192,26 +199,29 @@ class TestMultiBarBOSCHOCH:
         assert analysis.last_event == StructureEvent.NONE
 
     def test_prev_bar_confirmation_passes(self):
-        """Close above swing high, open below, but previous bar also closed above → confirmed."""
+        """Close above swing high, open below, but previous bar also closed above → confirmed.
+        Signal bar is second-to-last per the closed-bar contract.
+        """
         engine = StructureEngine(swing_lookback=1, min_swing_size_pips=0.5)
         closes = [
             1.1000, 1.1010, 1.1005, 1.1015, 1.1008, 1.1020,
             1.1012, 1.1025, 1.1018, 1.1030,
             1.1022, 1.1035, 1.1028, 1.1042,
+            1.1045,
         ]
         opens = [closes[0]] + closes[:-1]
         highs = [c + 0.0008 for c in closes]
         lows = [c - 0.0008 for c in closes]
-        # Previous bar closed above the swing high
-        opens[-2] = 1.1038
-        closes[-2] = 1.1044  # prev close above swing high
-        highs[-2] = 1.1046
-        lows[-2] = 1.1036
-        # Last bar: close above, open below (wick-like body but prev confirms)
-        opens[-1] = 1.1030
-        closes[-1] = 1.1048
-        highs[-1] = 1.1050
-        lows[-1] = 1.1028
+        # Bar before signal closed above the swing high
+        opens[-3] = 1.1038
+        closes[-3] = 1.1044  # prev close above swing high
+        highs[-3] = 1.1046
+        lows[-3] = 1.1036
+        # Signal bar (second-to-last): close above, open below (wick-like body but prev confirms)
+        opens[-2] = 1.1030
+        closes[-2] = 1.1048
+        highs[-2] = 1.1050
+        lows[-2] = 1.1028
         df = pd.DataFrame({
             "time": pd.date_range("2025-01-01", periods=len(closes), freq="5min"),
             "open": opens, "high": highs, "low": lows, "close": closes,
