@@ -481,7 +481,6 @@ class TradeManager:
                 trade.pair, trade.tp2,
             )
 
-    def _check_stall(self, trade: ManagedTrade) -> bool:
         """Time-based stall exit — scales with entry timeframe."""
         if trade.partial_closed:
             return False
