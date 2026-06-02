@@ -263,6 +263,62 @@ class RiskConfig:
     scale_in_min_profit_r: float = 1.0
     scale_in_add_ratio: float = 0.5
 
+    # ── Continuous in-trade analysis ─────────────────────────────────────
+    # Re-score open instruments every cycle and exit if thesis invalidates
+    continuous_analysis_enabled: bool = True
+    # Score must drop below this to trigger early invalidation exit
+    invalidation_score_threshold: int = 40
+    # Opposing signal must score above this to trigger early exit
+    opposing_signal_threshold: int = 75
+    # Minimum minutes in trade before invalidation exit can fire
+    invalidation_min_hold_minutes: float = 5.0
+
+    # ── Conviction monitoring ─────────────────────────────────────────────
+    # Track score trend across cycles — exit if conviction collapses
+    conviction_monitoring_enabled: bool = True
+    # Number of consecutive cycles with declining score before exit
+    conviction_decline_cycles: int = 5
+    # Minimum score drop to count as a declining cycle
+    conviction_decline_min_drop: int = 5
+
+    # ── News exit on open trades ──────────────────────────────────────────
+    news_exit_enabled: bool = True
+    # Minutes before high-impact news to close/tighten open trades
+    news_exit_minutes_before: int = 3
+    # Whether to fully close or just tighten SL to breakeven before news
+    news_exit_mode: str = "close"   # "close" | "tighten"
+
+    # ── Session close management ─────────────────────────────────────────
+    session_close_enabled: bool = True
+    # Close index trades N minutes before their exchange closes
+    index_close_buffer_minutes: int = 15
+    # Close or tighten forex trades during dead zone (00:00-02:00 UTC)
+    dead_zone_management: bool = True
+
+    # ── Dynamic SL tightening in profit ──────────────────────────────────
+    dynamic_sl_tightening_enabled: bool = True
+    # R-multiple at which to start tightening beyond breakeven
+    dynamic_sl_tighten_at_r: float = 2.0
+    # How much to tighten: new SL = current_price - (original_risk * ratio)
+    dynamic_sl_tighten_ratio: float = 0.5
+
+    # ── Portfolio heat monitoring ─────────────────────────────────────────
+    portfolio_heat_enabled: bool = True
+    # Max total portfolio risk % across all open trades
+    max_portfolio_heat_pct: float = 2.0
+    # When heat exceeds this, block new entries
+    portfolio_heat_block_pct: float = 1.8
+
+    # ── Spread / slippage deterioration monitoring ────────────────────────
+    spread_monitor_enabled: bool = True
+    # If spread widens beyond N× normal for this instrument, tighten SL
+    spread_deterioration_multiplier: float = 3.0
+
+    # ── HTF candle close reassessment ────────────────────────────────────
+    htf_reassessment_enabled: bool = True
+    # Check H1 candle close direction — if against trade, exit
+    htf_reassess_on_h1_close: bool = True
+
 
 # ---------------------------------------------------------------------------
 # Application config
