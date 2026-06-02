@@ -4,6 +4,7 @@ REST endpoints + WebSocket serving live trading data to the frontend.
 """
 
 import asyncio
+import hmac
 import os
 from typing import Optional
 
@@ -19,6 +20,21 @@ _state = LiveState()
 
 _FRONTEND_BUILD = os.path.join(os.path.dirname(__file__), "frontend", "build")
 _API_KEY = os.getenv("DD_DASHBOARD_API_KEY", "")
+
+_MUTATING_PATHS = {
+    "/api/control",
+    "/api/control/pause",
+    "/api/control/resume",
+    "/api/control/emergency-close",
+}
+
+
+def _is_mutating_request(path: str) -> bool:
+    return path in _MUTATING_PATHS
+
+
+def _key_matches(provided: str) -> bool:
+    return hmac.compare_digest(provided.encode(), _API_KEY.encode())
 
 
 class ConnectionManager:
@@ -64,17 +80,27 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
     if _API_KEY:
         logger.info("Dashboard API key authentication ENABLED")
     else:
-        logger.warning("Dashboard running without authentication — set DD_DASHBOARD_API_KEY")
+        logger.warning(
+            "No DD_DASHBOARD_API_KEY set — mutating endpoints DISABLED (read-only mode)"
+        )
 
     @app.middleware("http")
     async def api_key_auth(request: Request, call_next):
-        if not _API_KEY:
-            return await call_next(request)
         path = request.url.path
+
         if path == "/api/health" or not path.startswith("/api/"):
             return await call_next(request)
+
+        if not _API_KEY:
+            if _is_mutating_request(path) and request.method in ("POST", "PUT", "PATCH", "DELETE"):
+                return JSONResponse(
+                    {"error": "Mutating endpoints disabled — set DD_DASHBOARD_API_KEY"},
+                    status_code=503,
+                )
+            return await call_next(request)
+
         provided = request.headers.get("X-API-Key", "")
-        if provided != _API_KEY:
+        if not _key_matches(provided):
             return JSONResponse(
                 {"error": "Invalid or missing API key"},
                 status_code=401,
@@ -151,11 +177,20 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
     @app.websocket("/ws")
     async def websocket_endpoint(websocket: WebSocket):
         if _API_KEY:
-            key = websocket.query_params.get("api_key", "")
-            if key != _API_KEY:
+            key = (
+                websocket.headers.get("x-api-key", "")
+                or websocket.headers.get("sec-websocket-protocol", "")
+            )
+            if not _key_matches(key):
                 await websocket.close(code=1008, reason="Invalid API key")
                 return
-        await manager.connect(websocket)
+            if websocket.headers.get("sec-websocket-protocol"):
+                await websocket.accept(subprotocol=websocket.headers["sec-websocket-protocol"])
+            else:
+                await websocket.accept()
+        else:
+            await websocket.accept()
+        manager.active.append(websocket)
         try:
             while True:
                 await websocket.receive_text()
