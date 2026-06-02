@@ -138,8 +138,20 @@ class StartupCheck:
             from persistence.position_store import PositionStore
             store = PositionStore()
             count = store.count()
+            healthy = store.is_healthy()
             store.close()
             elapsed = (_time.monotonic() - t0) * 1000
+            if not healthy and count == 0:
+                return CheckResult(
+                    name="database",
+                    passed=True,
+                    message=(
+                        f"SQLite reachable but DEGRADED — count returned 0 "
+                        f"which may be inaccurate ({store.degraded_reason()}). "
+                        f"Persisted positions may exist but could not be verified."
+                    ),
+                    duration_ms=elapsed,
+                )
             return CheckResult(
                 name="database",
                 passed=True,

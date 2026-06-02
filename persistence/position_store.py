@@ -8,9 +8,33 @@ import sqlite3
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from loguru import logger
+
+
+class _StoreUnavailableSentinel:
+    """Singleton sentinel indicating the store could not service a read.
+
+    Use identity comparison (``result is STORE_UNAVAILABLE``) to distinguish
+    a genuine None/empty from a degraded-store response.
+    """
+
+    _instance: Optional["_StoreUnavailableSentinel"] = None
+
+    def __new__(cls) -> "_StoreUnavailableSentinel":
+        if cls._instance is None:
+            cls._instance = super().__new__(cls)
+        return cls._instance
+
+    def __repr__(self) -> str:
+        return "STORE_UNAVAILABLE"
+
+    def __bool__(self) -> bool:
+        return False
+
+
+STORE_UNAVAILABLE = _StoreUnavailableSentinel()
 
 
 _DB_DIR = Path(__file__).parent.parent / "data"
@@ -67,6 +91,9 @@ class PositionStore:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None
         self._lock = threading.Lock()
+        self._last_operation_failed: bool = False
+        self._consecutive_failures: int = 0
+        self._last_failure_reason: str = ""
         self._connect()
 
     def _connect(self) -> None:
@@ -91,6 +118,33 @@ class PositionStore:
             except sqlite3.OperationalError as exc:
                 logger.debug("[position_store] idempotency-key migration skipped (likely already exists): {}", exc)
                 pass
+
+    # ── Health tracking ─────────────────────────────────────────────────
+
+    def _record_success(self) -> None:
+        """Reset health state after a successful DB operation."""
+        self._last_operation_failed = False
+        self._consecutive_failures = 0
+        self._last_failure_reason = ""
+
+    def _record_failure(self, reason: str) -> None:
+        """Update health state after a failed DB operation."""
+        self._last_operation_failed = True
+        self._consecutive_failures += 1
+        self._last_failure_reason = reason
+
+    def is_healthy(self) -> bool:
+        """True if the most recent DB operation succeeded."""
+        return not self._last_operation_failed
+
+    def degraded_reason(self) -> str:
+        """Human-readable reason if the store is degraded, empty if healthy."""
+        if self._last_operation_failed:
+            return (
+                f"consecutive_failures={self._consecutive_failures}, "
+                f"last_error={self._last_failure_reason}"
+            )
+        return ""
 
     def save_position(self, pos) -> None:
         """Persist a ManagedPosition to disk."""
@@ -132,7 +186,9 @@ class PositionStore:
                     ),
                 )
                 self._conn.commit()
+                self._record_success()
             except Exception as exc:
+                self._record_failure(f"save {pos.order_id}: {exc}")
                 logger.error("PositionStore save failed for {}: {}", pos.order_id, exc)
 
     def update_position(self, order_id: str, **fields) -> None:
@@ -164,7 +220,9 @@ class PositionStore:
                     values,
                 )
                 self._conn.commit()
+                self._record_success()
             except Exception as exc:
+                self._record_failure(f"update {order_id}: {exc}")
                 logger.error("PositionStore update failed for {}: {}", order_id, exc)
 
     def remove_position(self, order_id: str) -> None:
@@ -176,7 +234,9 @@ class PositionStore:
                     (str(order_id),),
                 )
                 self._conn.commit()
+                self._record_success()
             except Exception as exc:
+                self._record_failure(f"remove {order_id}: {exc}")
                 logger.error("PositionStore remove failed for {}: {}", order_id, exc)
 
     def load_all_positions(self) -> list[dict]:
@@ -188,8 +248,10 @@ class PositionStore:
                 )
                 columns = [desc[0] for desc in cursor.description]
                 rows = cursor.fetchall()
+                self._record_success()
                 return [dict(zip(columns, row)) for row in rows]
             except Exception as exc:
+                self._record_failure(f"load_all: {exc}")
                 logger.error("PositionStore load failed: {}", exc)
                 return []
 
@@ -199,7 +261,9 @@ class PositionStore:
             try:
                 self._conn.execute("DELETE FROM managed_positions")
                 self._conn.commit()
+                self._record_success()
             except Exception as exc:
+                self._record_failure(f"clear_all: {exc}")
                 logger.error("PositionStore clear_all failed: {}", exc)
 
     def count(self) -> int:
@@ -208,8 +272,11 @@ class PositionStore:
                 cursor = self._conn.execute(
                     "SELECT COUNT(*) FROM managed_positions"
                 )
-                return cursor.fetchone()[0]
+                result = cursor.fetchone()[0]
+                self._record_success()
+                return result
             except Exception as exc:
+                self._record_failure(f"count: {exc}")
                 logger.warning("[position_store] open-position count read failed, returning 0: {}", exc)
                 return 0
 
@@ -239,7 +306,9 @@ class PositionStore:
                      datetime.now(timezone.utc).isoformat()),
                 )
                 self._conn.commit()
+                self._record_success()
             except Exception as exc:
+                self._record_failure(f"record_in_flight {idempotency_key}: {exc}")
                 logger.error("in_flight record failed for {}: {}", idempotency_key, exc)
 
     def resolve_in_flight(self, idempotency_key: str, order_id: str) -> None:
@@ -253,7 +322,9 @@ class PositionStore:
                     (order_id, idempotency_key),
                 )
                 self._conn.commit()
+                self._record_success()
             except Exception as exc:
+                self._record_failure(f"resolve_in_flight {idempotency_key}: {exc}")
                 logger.error("in_flight resolve failed for {}: {}", idempotency_key, exc)
 
     def cancel_in_flight(self, idempotency_key: str) -> None:
@@ -265,11 +336,18 @@ class PositionStore:
                     (idempotency_key,),
                 )
                 self._conn.commit()
+                self._record_success()
             except Exception as exc:
+                self._record_failure(f"cancel_in_flight {idempotency_key}: {exc}")
                 logger.error("in_flight cancel failed for {}: {}", idempotency_key, exc)
 
     def get_in_flight(self, idempotency_key: str) -> Optional[dict]:
-        """Return the in-flight record for *idempotency_key*, or None."""
+        """Return the in-flight record for *idempotency_key*, or None.
+
+        .. warning:: Ambiguous on DB error — returns None for both "genuinely
+           absent" and "store unreachable".  Prefer :meth:`get_in_flight_checked`
+           for any close/re-entry decision where the distinction matters.
+        """
         with self._lock:
             try:
                 cursor = self._conn.execute(
@@ -277,13 +355,43 @@ class PositionStore:
                     (idempotency_key,),
                 )
                 row = cursor.fetchone()
+                self._record_success()
                 if row is None:
                     return None
                 columns = [desc[0] for desc in cursor.description]
                 return dict(zip(columns, row))
             except Exception as exc:
+                self._record_failure(f"get_in_flight {idempotency_key}: {exc}")
                 logger.warning("[position_store] in-flight record lookup failed, returning None: {}", exc)
                 return None
+
+    def get_in_flight_checked(
+        self, idempotency_key: str,
+    ) -> Union[dict, None, _StoreUnavailableSentinel]:
+        """Return the in-flight record, None if genuinely absent, or
+        :data:`STORE_UNAVAILABLE` if the store could not service the read.
+
+        Callers should check ``result is STORE_UNAVAILABLE`` before trusting a
+        None as "no prior intent exists."  This prevents the dormant
+        double-submit vector where a transient DB error is misread as "safe to
+        re-fire."
+        """
+        with self._lock:
+            try:
+                cursor = self._conn.execute(
+                    "SELECT * FROM in_flight_intents WHERE idempotency_key = ?",
+                    (idempotency_key,),
+                )
+                row = cursor.fetchone()
+                self._record_success()
+                if row is None:
+                    return None
+                columns = [desc[0] for desc in cursor.description]
+                return dict(zip(columns, row))
+            except Exception as exc:
+                self._record_failure(f"get_in_flight_checked {idempotency_key}: {exc}")
+                logger.warning("[position_store] in-flight checked lookup failed — returning STORE_UNAVAILABLE: {}", exc)
+                return STORE_UNAVAILABLE
 
     def cleanup_stale_in_flight(self, max_age_seconds: int = 600) -> None:
         """Remove PENDING in-flight records older than *max_age_seconds*."""
@@ -297,7 +405,9 @@ class PositionStore:
                     (datetime.fromtimestamp(cutoff, tz=timezone.utc).isoformat(),),
                 )
                 self._conn.commit()
+                self._record_success()
             except Exception as exc:
+                self._record_failure(f"cleanup_stale: {exc}")
                 logger.error("[position_store] stale in-flight cleanup commit failed: {}", exc)
                 pass
 
