@@ -44,6 +44,7 @@ from management.trade_manager import (
     EntrySignal as TMEntrySignal,
 )
 from adaptive.optimizer import AdaptiveOptimizer as MLAdapter
+from brain.swap_model import load_swap_rates, estimate_swap
 from platforms.base_connector import OrderResult, CloseResult, PositionInfo
 from platforms.deriv.deriv_connector import DerivConnector
 from platforms.order_idempotency import generate_idempotency_key
@@ -1543,6 +1544,26 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             hold_seconds,
         )
 
+        swap_modeled = None
+        swap_status = "unavailable"
+        if self.config.risk.model_swap_costs:
+            pos_ctx = build_context_for_symbol(pos.symbol)
+            if pos_ctx.uses_stake:
+                swap_modeled = None
+                swap_status = "unavailable"
+            else:
+                rates = load_swap_rates(self.config.risk.swap_rates_path)
+                swap_modeled, swap_status = estimate_swap(
+                    pos.symbol,
+                    pos.direction,
+                    pos.lots,
+                    pos.open_time,
+                    datetime.now(timezone.utc),
+                    rates=rates,
+                    rollover_hour_utc=self.config.risk.swap_rollover_hour_utc,
+                    triple_weekday=self.config.risk.swap_triple_weekday,
+                )
+
         trade_record = TradeRecord(
             pair=pos.symbol,
             direction=pos.direction,
@@ -1560,6 +1581,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             time_to_exit=hold_seconds / 60.0,
             outcome=outcome,
             pnl_dollars=pnl_dollars,
+            swap_modeled=swap_modeled,
+            swap_status=swap_status,
         )
         self._run_journal_async(self.journal.log_trade(trade_record))
         self.ml.register_new_trade()

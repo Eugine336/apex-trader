@@ -34,6 +34,8 @@ class TradeRecord:
     time_to_exit: Optional[float]
     outcome: str
     pnl_dollars: float = 0.0
+    swap_modeled: Optional[float] = None
+    swap_status: str = "unavailable"
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -107,6 +109,18 @@ class TradeJournal:
                 except Exception as exc:
                     logger.debug("[trade_journal] pnl_dollars column migration skipped (likely already exists): {}", exc)
                     pass
+                try:
+                    await db.execute("ALTER TABLE trades ADD COLUMN swap_modeled REAL")
+                    await db.commit()
+                except Exception as exc:
+                    logger.debug("[trade_journal] swap_modeled column migration skipped (likely already exists): {}", exc)
+                    pass
+                try:
+                    await db.execute("ALTER TABLE trades ADD COLUMN swap_status TEXT DEFAULT 'unavailable'")
+                    await db.commit()
+                except Exception as exc:
+                    logger.debug("[trade_journal] swap_status column migration skipped (likely already exists): {}", exc)
+                    pass
             self._initialized = True
 
     async def log_trade(self, trade: TradeRecord) -> None:
@@ -117,8 +131,8 @@ class TradeJournal:
                 INSERT INTO trades (
                     pair, direction, entry, exit, pnl, score, confluences, regime,
                     session, spread, slippage, entry_type, time_to_tp1, time_to_exit,
-                    outcome, pnl_dollars, timestamp
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    outcome, pnl_dollars, swap_modeled, swap_status, timestamp
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     trade.pair,
@@ -137,6 +151,8 @@ class TradeJournal:
                     trade.time_to_exit,
                     trade.outcome,
                     trade.pnl_dollars,
+                    trade.swap_modeled,
+                    trade.swap_status,
                     trade.timestamp.isoformat(),
                 ),
             )
@@ -191,7 +207,8 @@ class TradeJournal:
         async with aiosqlite.connect(self.db_path) as db:
             cursor = await db.execute(
                 """
-                SELECT pair, session, pnl, time_to_exit, outcome, pnl_dollars
+                SELECT pair, session, pnl, time_to_exit, outcome, pnl_dollars,
+                       swap_modeled, swap_status
                 FROM trades
                 WHERE outcome != 'LEGACY'
                 ORDER BY timestamp ASC
@@ -242,7 +259,8 @@ class TradeJournal:
             try:
                 cursor = await db.execute(
                     "SELECT pair, direction, pnl, score, confluences, regime, "
-                    "session, spread, entry_type, time_to_exit, outcome, pnl_dollars, timestamp FROM trades"
+                    "session, spread, entry_type, time_to_exit, outcome, pnl_dollars, "
+                    "timestamp, swap_modeled, swap_status FROM trades"
                 )
             except Exception:
                 cursor = await db.execute(
@@ -266,6 +284,8 @@ class TradeJournal:
                 "outcome": r[10],
                 "pnl_dollars": r[11] if len(r) > 11 and r[11] is not None else 0.0,
                 "timestamp": r[12] if len(r) > 12 else None,
+                "swap_modeled": r[13] if len(r) > 13 else None,
+                "swap_status": r[14] if len(r) > 14 else "unavailable",
             })
         return result
 
