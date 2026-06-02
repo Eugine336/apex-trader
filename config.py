@@ -250,6 +250,7 @@ class RiskConfig:
     pending_orders_enabled: bool = False
     pending_max_wait_minutes: int = 30
     max_cluster_same_direction: int = 2
+    allow_intentional_hedge: bool = False
     margin_guardian_enabled: bool = False
     margin_warn_pct: float = 200.0
     margin_block_entry_pct: float = 150.0

@@ -51,6 +51,7 @@ class EntryValidator:
         self.correlation = correlation or CorrelationEngine(
             max_single_currency_exposure=self.config.risk.max_spread_multiplier / 100,
             max_correlated_trades=self.config.risk.max_correlated_trades,
+            allow_intentional_hedge=self.config.risk.allow_intentional_hedge,
         )
         self.session = SessionEngine()
         self._mt5_connector = mt5_connector  # injected from platform_manager if available
