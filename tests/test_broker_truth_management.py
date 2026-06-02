@@ -109,7 +109,20 @@ def _build_loop_with_position(
     loop.system_warnings = []
     loop._MAX_WARNINGS = 200
     loop.managed_positions = {}
-    loop.config = SimpleNamespace(risk=SimpleNamespace(margin_guardian_enabled=False))
+    loop.config = SimpleNamespace(risk=SimpleNamespace(
+        margin_guardian_enabled=False,
+        reconcile_max_unconfirmed_cycles=20,
+    ))
+
+    def _snapshot_from_legacy():
+        from platforms.platform_manager import BrokerPositionsSnapshot
+        positions = loop.platforms.get_all_open_positions()
+        return BrokerPositionsSnapshot(
+            positions=positions,
+            confirmed_platforms={"mt5", "deriv"},
+            failed_platforms=set(),
+        )
+    loop.platforms.get_open_positions_snapshot.side_effect = lambda: _snapshot_from_legacy()
 
     order = _make_order(oid, symbol, direction, fill, lots, sl, tp1, platform)
     pos = ManagedPosition(order=order, tp1=tp1, tp2=tp2, score=90)

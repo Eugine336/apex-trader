@@ -361,6 +361,12 @@ class RiskConfig:
     # Max emergency closes per hour (global circuit breaker)
     emergency_max_closes_per_hour: int = 6
 
+    # ── Reconciliation confirmation ─────────────────────────────────────
+    # Number of consecutive confirmed-absent cycles before emitting a
+    # CRITICAL warning about a persistently unverifiable position.
+    # The position is NEVER auto-closed — only flagged for human review.
+    reconcile_max_unconfirmed_cycles: int = 20
+
     # ── Spread / slippage deterioration monitoring ────────────────────────
     spread_monitor_enabled: bool = True
     # If spread widens beyond N× normal for this instrument, tighten SL
