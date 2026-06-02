@@ -790,6 +790,7 @@ class DerivConnector(BaseConnector):
                 pt = c.get("passthrough") or {}
                 if pt.get("idem_key") == idem_key:
                     return str(c.get("contract_id", ""))
-        except Exception:
+        except Exception as exc:
+            logger.warning("[deriv] idempotency portfolio lookup failed: {}", exc)
             pass
         return ""

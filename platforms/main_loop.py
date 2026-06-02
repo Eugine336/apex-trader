@@ -488,7 +488,8 @@ class TradingLoop:
         self.platforms.disconnect_all()
         try:
             self._journal_loop.close()
-        except Exception:
+        except Exception as exc:
+            logger.debug("[shutdown] journal loop close failed: {}", exc)
             pass
 
     # ── Startup & recovery ───────────────────────────────────────────────
@@ -834,7 +835,8 @@ class TradingLoop:
                 if h4 is not None and len(h4) >= 50:
                     try:
                         _vol_analyses.append(_regime_det.analyze(h4))
-                    except Exception:
+                    except Exception as exc:
+                        logger.debug("[scan] volatility regime analysis failed for pair: {}", exc)
                         pass
             if _vol_analyses:
                 _vol_state = self.vol_monitor.update(_vol_analyses)
@@ -878,7 +880,8 @@ class TradingLoop:
         try:
             for r in ready:
                 pair_mult_map[r.pair] = self.ml.pair_learner.get_pair_multiplier(r.pair)
-        except Exception:
+        except Exception as exc:
+            logger.warning("[scan] pair multiplier map build failed: {}", exc)
             pass
 
         ranked = self.ranker.rank(ready, open_pairs)
@@ -974,7 +977,8 @@ class TradingLoop:
         spread = 0.0
         try:
             spread = self.platforms.get_spread(pair)
-        except Exception:
+        except Exception as exc:
+            logger.warning("[entry] spread fetch failed, proceeding with zero spread: {}", exc)
             pass
 
         validation = self.validator.validate(
@@ -1029,7 +1033,8 @@ class TradingLoop:
             pair_mult = pair_mult_map = 1.0
             try:
                 pair_mult = self.ml.pair_learner.get_pair_multiplier(pair)
-            except Exception:
+            except Exception as exc:
+                logger.warning("[entry] pair multiplier fetch for EV gate failed, defaulting to 1.0: {}", exc)
                 pass
             if pair_mult < 1.0:
                 self._log_rejection(
@@ -1104,7 +1109,8 @@ class TradingLoop:
                     elif not is_buy and current > signal.entry_price:
                         order_kind = "SELL_STOP"
                         use_pending = True
-            except Exception:
+            except Exception as exc:
+                logger.debug("[entry] pending order distance check failed, using market order: {}", exc)
                 pass
 
         if use_pending:
@@ -1242,7 +1248,8 @@ class TradingLoop:
         try:
             for p in self.platforms.get_all_open_positions():
                 broker_positions[p.order_id] = p
-        except Exception:
+        except Exception as exc:
+            logger.warning("[pending] broker position fetch failed, skipping pending order check: {}", exc)
             return
 
         for oid, info in list(self._pending_orders.items()):
@@ -1308,7 +1315,8 @@ class TradingLoop:
                             "action": mt5.TRADE_ACTION_REMOVE,
                             "order": int(oid),
                         })
-                except Exception:
+                except Exception as exc:
+                    logger.warning("[pending] MT5 order cancel failed for expired pending order: {}", exc)
                     pass
                 expired.append(oid)
         for oid in expired:
@@ -1428,7 +1436,8 @@ class TradingLoop:
 
             try:
                 tick = self.platforms.get_price(pos.symbol)
-            except Exception:
+            except Exception as exc:
+                logger.warning("[management] tick fetch failed for position, skipping cycle: {}", exc)
                 continue
 
             is_buy = pos.direction == "BUY"
@@ -1445,7 +1454,8 @@ class TradingLoop:
                 try:
                     m5_data = self.platforms.fetch_market_data(pos.symbol, ["M5"])
                     m5_df = m5_data.get("M5")
-                except Exception:
+                except Exception as exc:
+                    logger.debug("[management] M5 data fetch for stall analysis failed: {}", exc)
                     pass
 
             prev_sl = tm_trade.stop_loss
@@ -1957,7 +1967,8 @@ class TradingLoop:
         try:
             tick = self.platforms.get_price(pos.symbol)
             current = tick.bid if is_long else tick.ask
-        except Exception:
+        except Exception as exc:
+            logger.warning("[management] tick fetch for partial close failed, aborting: {}", exc)
             return
 
         original_risk = abs(pos.entry_price - pos.sl_original) if hasattr(pos, 'sl_original') else abs(pos.entry_price - tm_trade.stop_loss)
@@ -2041,7 +2052,8 @@ class TradingLoop:
         try:
             tick = self.platforms.get_price(pos.symbol)
             current = tick.bid if is_long_trade else tick.ask
-        except Exception:
+        except Exception as exc:
+            logger.warning("[management] tick fetch for profit-R calc failed, aborting: {}", exc)
             return
 
         profit_r = (
@@ -2109,7 +2121,8 @@ class TradingLoop:
         try:
             open_pairs = [pos.symbol for pos in self.managed_positions.values()]
             news_status = self.news_guard.check(open_pairs, now)
-        except Exception:
+        except Exception as exc:
+            logger.warning("[management] news guard check failed, skipping news exit: {}", exc)
             return
 
         if not hasattr(news_status, 'upcoming_events'):
@@ -2424,7 +2437,8 @@ class TradingLoop:
             try:
                 tick = self.platforms.get_price(pos.symbol)
                 current_price = tick.bid if pos.direction == "BUY" else tick.ask
-            except Exception:
+            except Exception as exc:
+                logger.debug("[defensive] tick fetch for breakeven check failed, skipping position: {}", exc)
                 continue
 
             eligible = is_eligible_for_defensive_breakeven(
@@ -2507,7 +2521,8 @@ class TradingLoop:
             try:
                 tick = self.platforms.get_price(pos.symbol)
                 current_price = tick.bid if pos.direction == "BUY" else tick.ask
-            except Exception:
+            except Exception as exc:
+                logger.debug("[heat] tick fetch for portfolio heat failed, skipping position: {}", exc)
                 continue
 
             pr_match = next((pr for pr in position_risks if pr.order_id == oid), None)
@@ -2653,7 +2668,8 @@ class TradingLoop:
             try:
                 tick = self.platforms.get_price(pos.symbol)
                 current_price = tick.bid if pos.direction == "BUY" else tick.ask
-            except Exception:
+            except Exception as exc:
+                logger.debug("[correlation] tick fetch for correlated risk failed, skipping position: {}", exc)
                 continue
 
             pr_match = next((pr for pr in position_risks if pr.order_id == oid), None)
@@ -2973,7 +2989,8 @@ class TradingLoop:
                     return 0.0
             info = connector.get_account_info()
             return info.margin_level
-        except Exception:
+        except Exception as exc:
+            logger.warning("[margin] margin level fetch failed, returning 0.0: {}", exc)
             return 0.0
 
     def _check_margin_for_entry(self, symbol: str) -> tuple[bool, str]:
@@ -3049,7 +3066,8 @@ class TradingLoop:
                             stats.avg_latency_ms,
                             stats.requote_count,
                         )
-                except Exception:
+                except Exception as exc:
+                    logger.debug("[daily_reset] execution stats logging failed: {}", exc)
                     pass
             self._daily_trades = 0
             self._last_reset_day = today
@@ -3107,7 +3125,8 @@ class TradingLoop:
             # Feed trade history into scanner so EVEstimator has live data
             try:
                 self.scanner._trade_history = raw_trades
-            except Exception:
+            except Exception as exc:
+                logger.debug("[retrain] trade history assignment to scanner failed: {}", exc)
                 pass
         except Exception:
             logger.exception("ML retraining error")

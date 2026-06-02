@@ -58,7 +58,8 @@ def parse_dt(val: Any) -> Optional[datetime]:
         if text.endswith("Z"):
             text = text[:-1] + "+00:00"
         return datetime.fromisoformat(text)
-    except Exception:
+    except Exception as exc:
+        logger.debug("[dashboard] datetime parse failed for value, returning None: {}", exc)
         return None
 
 
