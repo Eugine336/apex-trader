@@ -11,6 +11,7 @@ from typing import Optional
 import pandas as pd
 from loguru import logger
 
+from adaptive.score_optimizer import ScoringWeights
 from brain.fvg_detector import FVGDetector
 from brain.liquidity_mapper import LiquidityMapper
 from brain.order_block import OrderBlockDetector
@@ -45,9 +46,18 @@ class TradeSetup:
 class MTFOrchestrator:
     """
     Coordinates all timing layers and emits a complete setup packet when ready.
+
+    When use_adaptive_weights=True, each factor's maximum point contribution
+    is determined by the corresponding ScoringWeights value rather than
+    hardcoded ceilings.  Two additional factors — mtf_confluence and
+    currency_strength — become active.  When False (default), scoring is
+    identical to the original hardcoded logic.
     """
 
     REQUIRED_TIMEFRAMES = ("H4", "H1", "M15", "M5", "M1")
+
+    _STRUCTURE_PARTIAL_RATIO = 0.7
+    _SESSION_MEDIUM_RATIO = 0.5
 
     def __init__(
         self,
@@ -60,6 +70,8 @@ class MTFOrchestrator:
         news_guard: Optional[NewsGuard] = None,
         min_entry_score: int = 65,
         pip_size: float = 0.0001,
+        use_adaptive_weights: bool = False,
+        scoring_weights: Optional[ScoringWeights] = None,
     ):
         self.structure_engine = structure_engine or StructureEngine(swing_lookback=2)
         self.liquidity_mapper = liquidity_mapper or LiquidityMapper()
@@ -72,12 +84,34 @@ class MTFOrchestrator:
         self.news_guard = news_guard or NewsGuard()
         self.min_entry_score = min_entry_score
         self.pip_size = pip_size
+        self._use_adaptive_weights = use_adaptive_weights
+        self._weights = scoring_weights or ScoringWeights()
+
+    @staticmethod
+    def load_saved_weights() -> ScoringWeights:
+        """Load OOS-validated weights from the adaptive store, falling back
+        to canonical defaults if the file is absent or corrupt."""
+        import json
+        from pathlib import Path
+
+        default_path = Path("data/scoring_weights.json")
+        if not default_path.exists():
+            return ScoringWeights()
+        try:
+            data = json.loads(default_path.read_text())
+            return ScoringWeights(
+                **{k: v for k, v in data.items() if k in ScoringWeights.__dataclass_fields__}
+            )
+        except Exception as exc:
+            logger.warning(f"Could not load adaptive weights, using defaults: {exc}")
+            return ScoringWeights()
 
     def build_setup(
         self,
         pair: str,
         data_by_timeframe: dict[str, pd.DataFrame],
         utc_now: Optional[datetime] = None,
+        currency_strength_aligned: bool = False,
     ) -> Optional[TradeSetup]:
         utc_now = utc_now or datetime.now(timezone.utc)
         missing = [tf for tf in self.REQUIRED_TIMEFRAMES if tf not in data_by_timeframe]
@@ -107,16 +141,6 @@ class MTFOrchestrator:
         confluences: list[Confluence] = []
         score = 0
 
-        structure_score = 20 if bias["strength"] == "STRONG" else 14
-        score += structure_score
-        confluences.append(
-            Confluence(
-                name="Market Structure",
-                score=structure_score,
-                details=f"H4={bias['h4_trend']}, H1={bias['h1_trend']}, strength={bias['strength']}",
-            )
-        )
-
         regime = self.regime_detector.analyze(m15_df)
         if regime.regime == MarketRegime.VOLATILE:
             confluences.append(
@@ -127,19 +151,6 @@ class MTFOrchestrator:
                 )
             )
             return None
-
-        session_score = self.session_engine.get_session_score(utc_now)
-        # Floor comes from instrument registry — FX gets 0, non-FX gets 4
-        session_score = max(session_score, session_score_floor(pair))
-        session_points = 10 if session_score >= 7 else (5 if session_score >= 4 else 0)
-        score += session_points
-        confluences.append(
-            Confluence(
-                name="Session Timing",
-                score=session_points,
-                details=f"session_score={session_score}",
-            )
-        )
 
         news = self.news_guard.check([pair], utc_now)
         if not news.is_clear:
@@ -152,15 +163,6 @@ class MTFOrchestrator:
             )
             return None
 
-        score += 10
-        confluences.append(
-            Confluence(
-                name="News Guard",
-                score=10,
-                details="No blocking high-impact event",
-            )
-        )
-
         m15_fvgs = self.fvg_detector.detect(m15_df, timeframe="M15")
         m5_fvgs = self.fvg_detector.detect(m5_df, timeframe="M5")
         fvg_confluence = self.fvg_detector.get_confluence_fvgs(
@@ -171,32 +173,9 @@ class MTFOrchestrator:
             pip_size=self.pip_size,
         )
 
-        fvg_points = (
-            15
-            if fvg_confluence["has_confluence"]
-            else (8 if fvg_confluence["m5_fvg"] else 0)
-        )
-        score += fvg_points
-        confluences.append(
-            Confluence(
-                name="FVG Zone",
-                score=fvg_points,
-                details=f"confluence={fvg_confluence['has_confluence']}",
-            )
-        )
-
         m5_obs = self.order_block_detector.detect(m5_df, timeframe="M5")
         entry_ob = self.order_block_detector.get_entry_ob(
             m5_obs, direction=direction, current_price=current_price
-        )
-        ob_points = 20 if entry_ob else 0
-        score += ob_points
-        confluences.append(
-            Confluence(
-                name="Order Block",
-                score=ob_points,
-                details=f"entry_ob={'YES' if entry_ob else 'NO'}",
-            )
         )
 
         m1_structure = self.structure_engine.analyze(m1_df)
@@ -209,15 +188,6 @@ class MTFOrchestrator:
             and m1_structure.last_event
             in {StructureEvent.CHOCH_BEARISH, StructureEvent.BOS_BEARISH}
         )
-        trigger_points = 15 if choch_aligned else 0
-        score += trigger_points
-        confluences.append(
-            Confluence(
-                name="M1 Trigger",
-                score=trigger_points,
-                details=f"event={m1_structure.last_event.value}",
-            )
-        )
 
         liq_map = self.liquidity_mapper.map(m5_df, pip_size=self.pip_size)
         sweep_zone = (
@@ -228,15 +198,31 @@ class MTFOrchestrator:
             if sweep_zone
             else False
         )
-        sweep_points = 10 if sweep_confirmed else 0
-        score += sweep_points
-        confluences.append(
-            Confluence(
-                name="Liquidity Sweep",
-                score=sweep_points,
-                details=f"sweep_confirmed={sweep_confirmed}",
+
+        session_raw = self.session_engine.get_session_score(utc_now)
+        session_raw = max(session_raw, session_score_floor(pair))
+
+        if self._use_adaptive_weights:
+            score, confluences = self._score_adaptive(
+                bias=bias,
+                session_raw=session_raw,
+                fvg_confluence=fvg_confluence,
+                entry_ob=entry_ob,
+                choch_aligned=choch_aligned,
+                m1_structure=m1_structure,
+                sweep_confirmed=sweep_confirmed,
+                currency_strength_aligned=currency_strength_aligned,
             )
-        )
+        else:
+            score, confluences = self._score_hardcoded(
+                bias=bias,
+                session_raw=session_raw,
+                fvg_confluence=fvg_confluence,
+                entry_ob=entry_ob,
+                choch_aligned=choch_aligned,
+                m1_structure=m1_structure,
+                sweep_confirmed=sweep_confirmed,
+            )
 
         adjusted_score = self.regime_detector.adjust_score(score, regime, max_score=100)
         if adjusted_score < self.min_entry_score:
@@ -263,6 +249,212 @@ class MTFOrchestrator:
             bias_strength=bias["strength"],
             timestamp=utc_now,
         )
+
+    def _score_hardcoded(
+        self,
+        bias: dict,
+        session_raw: int,
+        fvg_confluence: dict,
+        entry_ob,
+        choch_aligned: bool,
+        m1_structure,
+        sweep_confirmed: bool,
+    ) -> tuple[int, list[Confluence]]:
+        """Original hardcoded scoring — byte-for-byte identical to the
+        pre-A4 implementation.  No mtf_confluence or currency_strength."""
+        score = 0
+        confluences: list[Confluence] = []
+
+        structure_score = 20 if bias["strength"] == "STRONG" else 14
+        score += structure_score
+        confluences.append(
+            Confluence(
+                name="Market Structure",
+                score=structure_score,
+                details=f"H4={bias['h4_trend']}, H1={bias['h1_trend']}, strength={bias['strength']}",
+            )
+        )
+
+        session_points = 10 if session_raw >= 7 else (5 if session_raw >= 4 else 0)
+        score += session_points
+        confluences.append(
+            Confluence(
+                name="Session Timing",
+                score=session_points,
+                details=f"session_score={session_raw}",
+            )
+        )
+
+        score += 10
+        confluences.append(
+            Confluence(
+                name="News Guard",
+                score=10,
+                details="No blocking high-impact event",
+            )
+        )
+
+        fvg_points = (
+            15
+            if fvg_confluence["has_confluence"]
+            else (8 if fvg_confluence["m5_fvg"] else 0)
+        )
+        score += fvg_points
+        confluences.append(
+            Confluence(
+                name="FVG Zone",
+                score=fvg_points,
+                details=f"confluence={fvg_confluence['has_confluence']}",
+            )
+        )
+
+        ob_points = 20 if entry_ob else 0
+        score += ob_points
+        confluences.append(
+            Confluence(
+                name="Order Block",
+                score=ob_points,
+                details=f"entry_ob={'YES' if entry_ob else 'NO'}",
+            )
+        )
+
+        trigger_points = 15 if choch_aligned else 0
+        score += trigger_points
+        confluences.append(
+            Confluence(
+                name="M1 Trigger",
+                score=trigger_points,
+                details=f"event={m1_structure.last_event.value}",
+            )
+        )
+
+        sweep_points = 10 if sweep_confirmed else 0
+        score += sweep_points
+        confluences.append(
+            Confluence(
+                name="Liquidity Sweep",
+                score=sweep_points,
+                details=f"sweep_confirmed={sweep_confirmed}",
+            )
+        )
+
+        return score, confluences
+
+    def _score_adaptive(
+        self,
+        bias: dict,
+        session_raw: int,
+        fvg_confluence: dict,
+        entry_ob,
+        choch_aligned: bool,
+        m1_structure,
+        sweep_confirmed: bool,
+        currency_strength_aligned: bool,
+    ) -> tuple[int, list[Confluence]]:
+        """Adaptive scoring — each factor's ceiling comes from ScoringWeights."""
+        w = self._weights.as_dict()
+        score = 0
+        confluences: list[Confluence] = []
+
+        structure_pts = (
+            w["structure"]
+            if bias["strength"] == "STRONG"
+            else round(w["structure"] * self._STRUCTURE_PARTIAL_RATIO)
+        )
+        score += structure_pts
+        confluences.append(
+            Confluence(
+                name="Market Structure",
+                score=structure_pts,
+                details=f"H4={bias['h4_trend']}, H1={bias['h1_trend']}, strength={bias['strength']}",
+            )
+        )
+
+        session_pts = (
+            w["session"]
+            if session_raw >= 7
+            else (round(w["session"] * self._SESSION_MEDIUM_RATIO) if session_raw >= 4 else 0)
+        )
+        score += session_pts
+        confluences.append(
+            Confluence(
+                name="Session Timing",
+                score=session_pts,
+                details=f"session_score={session_raw}",
+            )
+        )
+
+        news_pts = w["news"]
+        score += news_pts
+        confluences.append(
+            Confluence(
+                name="News Guard",
+                score=news_pts,
+                details="No blocking high-impact event",
+            )
+        )
+
+        fvg_pts = w["fvg"] if fvg_confluence["m5_fvg"] else 0
+        score += fvg_pts
+        confluences.append(
+            Confluence(
+                name="FVG Zone",
+                score=fvg_pts,
+                details=f"m5_fvg={'YES' if fvg_confluence['m5_fvg'] else 'NO'}",
+            )
+        )
+
+        mtf_pts = w["mtf_confluence"] if fvg_confluence["has_confluence"] else 0
+        score += mtf_pts
+        confluences.append(
+            Confluence(
+                name="Multi-TF FVG",
+                score=mtf_pts,
+                details=f"confluence={fvg_confluence['has_confluence']}",
+            )
+        )
+
+        ob_pts = w["order_block"] if entry_ob else 0
+        score += ob_pts
+        confluences.append(
+            Confluence(
+                name="Order Block",
+                score=ob_pts,
+                details=f"entry_ob={'YES' if entry_ob else 'NO'}",
+            )
+        )
+
+        trigger_pts = w["m1_trigger"] if choch_aligned else 0
+        score += trigger_pts
+        confluences.append(
+            Confluence(
+                name="M1 Trigger",
+                score=trigger_pts,
+                details=f"event={m1_structure.last_event.value}",
+            )
+        )
+
+        sweep_pts = w["liquidity_sweep"] if sweep_confirmed else 0
+        score += sweep_pts
+        confluences.append(
+            Confluence(
+                name="Liquidity Sweep",
+                score=sweep_pts,
+                details=f"sweep_confirmed={sweep_confirmed}",
+            )
+        )
+
+        cs_pts = w["currency_strength"] if currency_strength_aligned else 0
+        score += cs_pts
+        confluences.append(
+            Confluence(
+                name="Currency Strength",
+                score=cs_pts,
+                details=f"aligned={currency_strength_aligned}",
+            )
+        )
+
+        return score, confluences
 
     def _resolve_entry_price(
         self,
