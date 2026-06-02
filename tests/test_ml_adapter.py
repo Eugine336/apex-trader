@@ -56,7 +56,7 @@ def _generate_trades(n: int = 100, win_rate: float = 0.75) -> list[dict]:
     regimes = ["TRENDING_STRONG", "TRENDING_WEAK", "RANGING"]
     entry_types = ["FVG", "OB", "SWEEP", "CHOCH"]
     days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-    all_tags = ["structure", "order_block", "fvg", "mtf_confluence", "session", "news", "currency_strength", "m1_trigger", "liquidity_sweep"]
+    all_tags = ["structure", "ob_h1", "ob_m5", "fvg", "mtf_confluence", "session", "news", "currency_strength", "liquidity_sweep", "volume", "inducement", "wyckoff"]
 
     trades: list[dict] = []
     for _ in range(n):
@@ -169,20 +169,20 @@ class TestTradeAnalyzer:
 class TestScoreOptimizer:
     def test_default_weights_sum_to_100(self):
         w = ScoringWeights()
-        assert w.total == 100
+        assert w.total == 123
 
     def test_optimize_below_min_trades_returns_defaults(self):
         opt = ScoreOptimizer()
         trades = _generate_trades(n=10)
         result = opt.optimize(trades, min_trades=50)
-        assert result.total == 100
+        assert result.total == 123
 
     def test_optimize_produces_valid_weights(self):
         random.seed(42)
         opt = ScoreOptimizer()
         trades = _generate_trades(n=120, win_rate=0.7)
         result = opt.optimize(trades, min_trades=50)
-        assert result.total == 100
+        assert result.total == 123
         d = result.as_dict()
         assert all(v >= opt.MIN_WEIGHT for v in d.values())
 
@@ -208,20 +208,21 @@ class TestScoreOptimizer:
 
     def test_save_and_load_weights(self, tmp_path):
         opt = ScoreOptimizer()
-        w = ScoringWeights(structure_weight=22, order_block_weight=16,
-                           fvg_weight=11, mtf_confluence_weight=13,
-                           session_weight=10, news_weight=7,
-                           currency_strength_weight=8,
-                           m1_trigger_weight=7, liquidity_sweep_weight=6)
+        w = ScoringWeights(structure_weight=22, ob_h1_weight=10, ob_m5_weight=10,
+                           fvg_weight=16, mtf_confluence_weight=13,
+                           session_weight=10, news_weight=10,
+                           currency_strength_weight=10,
+                           liquidity_sweep_weight=8, volume_weight=5,
+                           inducement_weight=5, wyckoff_weight=4)
         fp = str(tmp_path / "weights.json")
         opt.save_weights(w, fp)
         loaded = opt.load_weights(fp)
         assert loaded.structure_weight == 22
-        assert loaded.total == 100
+        assert loaded.total == 123
 
     def test_load_missing_file_returns_defaults(self, tmp_path):
         loaded = ScoreOptimizer().load_weights(str(tmp_path / "nonexistent.json"))
-        assert loaded.total == 100
+        assert loaded.total == 123
 
 
 # ──────────────────────────────────────────────────────────────────────────
@@ -340,7 +341,7 @@ class TestMLAdapter:
 
         assert isinstance(report, OptimizationReport)
         assert report.trades_analyzed == 120
-        assert report.new_scoring_weights.total == 100
+        assert report.new_scoring_weights.total == 123
         assert report.overall_performance is not None
         assert report.overall_performance.total_trades == 120
 

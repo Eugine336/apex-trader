@@ -74,7 +74,7 @@ class TestOOSValidationGate:
         trades = _build_predictive_dataset()
         result = opt.optimize(trades, min_trades=50)
         assert result.as_dict() != ScoringWeights().as_dict()
-        assert result.total == 100
+        assert result.total == 123
         assert (tmp_path / "weights.json").exists()
 
     def test_overfit_trap_rejected(self, tmp_path):
@@ -101,7 +101,7 @@ class TestOOSValidationGate:
         opt.DEFAULT_PATH = str(tmp_path / "weights.json")
         trades = _build_predictive_dataset(n_train=25, n_val=10)
         result = opt.optimize(trades, min_trades=30)
-        assert result.total == 100
+        assert result.total == 123
         assert (tmp_path / "weights.json").exists()
 
     def test_deterministic_decision(self):
@@ -116,9 +116,10 @@ class TestOOSValidationGate:
     def test_validation_metric_perfect_discrimination(self):
         """Weights that perfectly separate wins from losses -> high positive metric."""
         weights = ScoringWeights(
-            fvg_weight=50, structure_weight=10, order_block_weight=10,
-            mtf_confluence_weight=5, session_weight=5, news_weight=5,
-            currency_strength_weight=5, m1_trigger_weight=5, liquidity_sweep_weight=5,
+            fvg_weight=40, structure_weight=15, ob_h1_weight=10, ob_m5_weight=10,
+            mtf_confluence_weight=10, session_weight=8, news_weight=8,
+            currency_strength_weight=7, liquidity_sweep_weight=5,
+            volume_weight=4, inducement_weight=3, wyckoff_weight=3,
         )
         trades = [
             _make_trade(10.0, ["fvg"]),
@@ -165,10 +166,10 @@ class TestOOSValidationGate:
         opt = ScoreOptimizer()
         opt.DEFAULT_PATH = str(tmp_path / "w1.json")
         r1 = opt.optimize(_build_predictive_dataset(), min_trades=50)
-        assert r1.total == 100
+        assert r1.total == 123
 
         opt2 = ScoreOptimizer()
         opt2.DEFAULT_PATH = str(tmp_path / "w2.json")
         small = _build_predictive_dataset(n_train=25, n_val=10)
         r2 = opt2.optimize(small, min_trades=30)
-        assert r2.total == 100
+        assert r2.total == 123
