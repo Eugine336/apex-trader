@@ -116,10 +116,18 @@ class TestOOSValidationGate:
     def test_validation_metric_perfect_discrimination(self):
         """Weights that perfectly separate wins from losses -> high positive metric."""
         weights = ScoringWeights(
-            fvg_weight=40, structure_weight=15, ob_h1_weight=10, ob_m5_weight=10,
-            mtf_confluence_weight=10, session_weight=8, news_weight=8,
-            currency_strength_weight=7, liquidity_sweep_weight=5,
-            volume_weight=4, inducement_weight=3, wyckoff_weight=3,
+            fvg_weight=40,
+            structure_weight=15,
+            ob_h1_weight=10,
+            ob_m5_weight=10,
+            mtf_confluence_weight=10,
+            session_weight=8,
+            news_weight=8,
+            currency_strength_weight=7,
+            liquidity_sweep_weight=5,
+            volume_weight=4,
+            inducement_weight=3,
+            wyckoff_weight=3,
         )
         trades = [
             _make_trade(10.0, ["fvg"]),
@@ -161,15 +169,26 @@ class TestOOSValidationGate:
         assert result[1] is trades[1]
         assert result is not trades
 
-    def test_total_always_100_both_paths(self, tmp_path):
-        """Both adoption and fallback must produce total=100."""
+    def test_adopted_weights_within_envelope(self, tmp_path):
+        """Both adoption and fallback produce per-factor weights within ±25% of baseline."""
+        baseline = ScoringWeights()
+        bd = baseline.as_dict()
+
         opt = ScoreOptimizer()
         opt.DEFAULT_PATH = str(tmp_path / "w1.json")
         r1 = opt.optimize(_build_predictive_dataset(), min_trades=50)
-        assert r1.total == 123
+        r1d = r1.as_dict()
+        for key in r1d:
+            lo = round(bd[key] * 0.75)
+            hi = round(bd[key] * 1.25)
+            assert lo <= r1d[key] <= hi, f"OOS path: {key}={r1d[key]} outside [{lo},{hi}]"
 
         opt2 = ScoreOptimizer()
         opt2.DEFAULT_PATH = str(tmp_path / "w2.json")
         small = _build_predictive_dataset(n_train=25, n_val=10)
         r2 = opt2.optimize(small, min_trades=30)
-        assert r2.total == 123
+        r2d = r2.as_dict()
+        for key in r2d:
+            lo = round(bd[key] * 0.75)
+            hi = round(bd[key] * 1.25)
+            assert lo <= r2d[key] <= hi, f"fallback path: {key}={r2d[key]} outside [{lo},{hi}]"
