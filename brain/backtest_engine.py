@@ -699,6 +699,8 @@ class BacktestEngine:
             time_to_exit=close_event["hold_minutes"],
             outcome=close_event["outcome"],
             timestamp=now,
+            swap_modeled=None,
+            swap_status="unavailable",  # backtest has no lot basis for financing in phase 1
         )
 
         try:
