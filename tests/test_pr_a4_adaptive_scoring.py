@@ -280,8 +280,10 @@ class TestFlagOnDefaultWeights:
         orch = _build_orchestrator(use_adaptive=True)
         setup = orch.build_setup("EURUSD", _data_by_tf())
         assert setup is not None
-        # All 9 factors at full → sum of all weights = 100
-        assert setup.score == 100
+        # Applicable factors at default: structure=20, session=10, news=10,
+        # fvg=15, mtf_confluence=15, ob_m5=10, liquidity_sweep=8,
+        # currency_strength=0 (not passed). Total = 88.
+        assert setup.score == 88
 
     def test_minimal_with_defaults(self):
         orch = _build_orchestrator(
@@ -294,16 +296,16 @@ class TestFlagOnDefaultWeights:
             sweep=False,
             session_score=2,
         )
-        # structure=round(17*0.7)=12, session=0, news=8, rest=0 → 20
+        # structure=round(20*0.7)=14, session=0, news=10, rest=0 → 24
         setup = orch.build_setup("EURUSD", _data_by_tf())
         assert setup is not None
-        assert setup.score == 12 + 0 + 8
+        assert setup.score == 14 + 0 + 10
 
-    def test_nine_confluences_when_on(self):
+    def test_eight_confluences_when_on(self):
         orch = _build_orchestrator(use_adaptive=True)
         setup = orch.build_setup("EURUSD", _data_by_tf())
         assert setup is not None
-        assert len(setup.confluences) == 9
+        assert len(setup.confluences) == 8
         names = {c.name for c in setup.confluences}
         assert "Multi-TF FVG" in names
         assert "Currency Strength" in names
@@ -320,16 +322,19 @@ class TestNonTrivialWeightsShiftScores:
     def test_heavy_structure_weight(self):
         heavy = ScoringWeights(
             structure_weight=40,
-            order_block_weight=10,
+            ob_h1_weight=10,
+            ob_m5_weight=10,
             fvg_weight=10,
             mtf_confluence_weight=5,
             session_weight=10,
             news_weight=5,
             currency_strength_weight=5,
-            m1_trigger_weight=10,
             liquidity_sweep_weight=5,
+            volume_weight=8,
+            inducement_weight=8,
+            wyckoff_weight=7,
         )
-        assert heavy.total == 100
+        assert heavy.total == 123
 
         orch = _build_orchestrator(
             use_adaptive=True,
@@ -344,16 +349,19 @@ class TestNonTrivialWeightsShiftScores:
     def test_heavy_fvg_weight(self):
         heavy = ScoringWeights(
             structure_weight=5,
-            order_block_weight=5,
+            ob_h1_weight=5,
+            ob_m5_weight=5,
             fvg_weight=40,
             mtf_confluence_weight=5,
             session_weight=5,
             news_weight=5,
             currency_strength_weight=5,
-            m1_trigger_weight=5,
             liquidity_sweep_weight=25,
+            volume_weight=8,
+            inducement_weight=8,
+            wyckoff_weight=7,
         )
-        assert heavy.total == 100
+        assert heavy.total == 123
 
         orch = _build_orchestrator(
             use_adaptive=True,
@@ -366,19 +374,22 @@ class TestNonTrivialWeightsShiftScores:
         fvg_conf = [c for c in setup.confluences if c.name == "FVG Zone"][0]
         assert fvg_conf.score == 40
 
-    def test_score_sum_equals_total_when_all_factors_present(self):
+    def test_score_sum_equals_applicable_when_all_factors_present(self):
         custom = ScoringWeights(
             structure_weight=25,
-            order_block_weight=15,
+            ob_h1_weight=10,
+            ob_m5_weight=15,
             fvg_weight=10,
             mtf_confluence_weight=10,
             session_weight=10,
             news_weight=10,
             currency_strength_weight=5,
-            m1_trigger_weight=10,
             liquidity_sweep_weight=5,
+            volume_weight=8,
+            inducement_weight=8,
+            wyckoff_weight=7,
         )
-        assert custom.total == 100
+        assert custom.total == 123
 
         orch = _build_orchestrator(
             use_adaptive=True,
@@ -389,7 +400,8 @@ class TestNonTrivialWeightsShiftScores:
             "EURUSD", _data_by_tf(), currency_strength_aligned=True
         )
         assert setup is not None
-        assert setup.score == 100
+        # Applicable: structure+session+news+fvg+mtf+ob_m5+sweep+cs = 25+10+10+10+10+15+5+5 = 90
+        assert setup.score == 90
 
     def test_partial_structure_with_custom_weight(self):
         w = ScoringWeights(structure_weight=30)
@@ -459,14 +471,14 @@ class TestNewBucketsGatedByFlag:
         assert "Currency Strength" not in names
 
     def test_currency_strength_scored_when_on_and_aligned(self):
-        w = ScoringWeights(currency_strength_weight=8)
+        w = ScoringWeights(currency_strength_weight=10)
         orch = _build_orchestrator(use_adaptive=True, weights=w)
         setup = orch.build_setup(
             "EURUSD", _data_by_tf(), currency_strength_aligned=True
         )
         assert setup is not None
         cs = [c for c in setup.confluences if c.name == "Currency Strength"][0]
-        assert cs.score == 8
+        assert cs.score == 10
 
     def test_currency_strength_zero_when_on_but_not_aligned(self):
         orch = _build_orchestrator(use_adaptive=True)
@@ -493,8 +505,8 @@ class TestWeightsStoreFallback:
             mock_path.exists.return_value = False
             mock_path_cls.return_value = mock_path
             w = MTFOrchestrator.load_saved_weights()
-        assert w.total == 100
-        assert w.structure_weight == 17
+        assert w.total == 123
+        assert w.structure_weight == 20
 
     def test_corrupt_file_uses_defaults(self):
         import json
@@ -508,8 +520,8 @@ class TestWeightsStoreFallback:
         try:
             test_path.write_text("NOT JSON {{{")
             w = MTFOrchestrator.load_saved_weights()
-            assert w.total == 100
-            assert w.structure_weight == 17
+            assert w.total == 123
+            assert w.structure_weight == 20
         finally:
             if original_content is not None:
                 test_path.write_text(original_content)
@@ -527,14 +539,17 @@ class TestWeightsStoreFallback:
 
         custom_data = {
             "structure_weight": 25,
-            "order_block_weight": 15,
+            "ob_h1_weight": 12,
+            "ob_m5_weight": 12,
             "fvg_weight": 10,
             "mtf_confluence_weight": 10,
             "session_weight": 10,
             "news_weight": 10,
             "currency_strength_weight": 5,
-            "m1_trigger_weight": 10,
-            "liquidity_sweep_weight": 5,
+            "liquidity_sweep_weight": 9,
+            "volume_weight": 7,
+            "inducement_weight": 7,
+            "wyckoff_weight": 6,
         }
 
         try:
@@ -542,7 +557,7 @@ class TestWeightsStoreFallback:
             w = MTFOrchestrator.load_saved_weights()
             assert w.structure_weight == 25
             assert w.fvg_weight == 10
-            assert w.total == 100
+            assert w.total == 123
         finally:
             if original_content is not None:
                 test_path.write_text(original_content)
@@ -551,8 +566,8 @@ class TestWeightsStoreFallback:
 
     def test_none_weights_param_uses_defaults(self):
         orch = MTFOrchestrator(use_adaptive_weights=True, scoring_weights=None)
-        assert orch._weights.total == 100
-        assert orch._weights.structure_weight == 17
+        assert orch._weights.total == 123
+        assert orch._weights.structure_weight == 20
 
     def test_explicit_weights_param_used(self):
         custom = ScoringWeights(structure_weight=30)
@@ -641,7 +656,7 @@ class TestBehavioralEdgeCases:
     def test_fvg_and_mtf_separate_when_on(self):
         """FVG and MTF confluence are independent buckets when adaptive is ON.
         With m5_fvg=True + has_confluence=True, both contribute."""
-        w = ScoringWeights(fvg_weight=13, mtf_confluence_weight=13)
+        w = ScoringWeights(fvg_weight=15, mtf_confluence_weight=15)
         orch = _build_orchestrator(
             use_adaptive=True,
             weights=w,
@@ -652,12 +667,12 @@ class TestBehavioralEdgeCases:
         assert setup is not None
         fvg = [c for c in setup.confluences if c.name == "FVG Zone"][0]
         mtf = [c for c in setup.confluences if c.name == "Multi-TF FVG"][0]
-        assert fvg.score == 13
-        assert mtf.score == 13
+        assert fvg.score == 15
+        assert mtf.score == 15
 
     def test_fvg_only_no_mtf_when_on(self):
         """FVG without multi-TF confluence: only FVG scores."""
-        w = ScoringWeights(fvg_weight=13, mtf_confluence_weight=13)
+        w = ScoringWeights(fvg_weight=15, mtf_confluence_weight=15)
         orch = _build_orchestrator(
             use_adaptive=True,
             weights=w,
@@ -668,5 +683,5 @@ class TestBehavioralEdgeCases:
         assert setup is not None
         fvg = [c for c in setup.confluences if c.name == "FVG Zone"][0]
         mtf = [c for c in setup.confluences if c.name == "Multi-TF FVG"][0]
-        assert fvg.score == 13
+        assert fvg.score == 15
         assert mtf.score == 0
