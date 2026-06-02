@@ -763,7 +763,8 @@ class TradingLoop:
                 tick = self.platforms.get_price(pos.symbol)
                 is_buy = pos.direction == "BUY"
                 fake_close.close_price = tick.bid if is_buy else tick.ask
-            except Exception:
+            except Exception as exc:
+                logger.debug("[Reconcile] close-price fetch failed for {} {}, using fallback price: {}", pos.direction, pos.symbol, exc)
                 pass
             self._record_closed_trade(
                 pos,
@@ -1368,7 +1369,8 @@ class TradingLoop:
                     tick = self.platforms.get_price(pos.symbol)
                     is_buy = pos.direction == "BUY"
                     close_price = tick.bid if is_buy else tick.ask
-                except Exception:
+                except Exception as exc:
+                    logger.debug("[Reconcile] close-price fetch failed for {} {}, using fallback price: {}", pos.direction, pos.symbol, exc)
                     pass
                 fake_close = CloseResult(
                     success=True,
