@@ -23,18 +23,22 @@ FACTOR_KEYS = [
     "session",
     "news",
     "currency_strength",
+    "m1_trigger",
+    "liquidity_sweep",
 ]
 
 
 @dataclass
 class ScoringWeights:
-    structure_weight: int = 20
-    order_block_weight: int = 20
-    fvg_weight: int = 15
-    mtf_confluence_weight: int = 15
-    session_weight: int = 10
-    news_weight: int = 10
-    currency_strength_weight: int = 10
+    structure_weight: int = 17
+    order_block_weight: int = 17
+    fvg_weight: int = 13
+    mtf_confluence_weight: int = 13
+    session_weight: int = 9
+    news_weight: int = 8
+    currency_strength_weight: int = 8
+    m1_trigger_weight: int = 8
+    liquidity_sweep_weight: int = 7
 
     @property
     def total(self) -> int:
@@ -46,6 +50,8 @@ class ScoringWeights:
             + self.session_weight
             + self.news_weight
             + self.currency_strength_weight
+            + self.m1_trigger_weight
+            + self.liquidity_sweep_weight
         )
 
     def as_dict(self) -> dict[str, int]:
@@ -57,12 +63,14 @@ class ScoringWeights:
             "session": self.session_weight,
             "news": self.news_weight,
             "currency_strength": self.currency_strength_weight,
+            "m1_trigger": self.m1_trigger_weight,
+            "liquidity_sweep": self.liquidity_sweep_weight,
         }
 
 
 class ScoreOptimizer:
     """
-    Adjusts the 7-factor confluence scoring weights based on actual trade
+    Adjusts the 9-factor confluence scoring weights based on actual trade
     performance. Changes are gradual — max 3 points per optimisation cycle
     — so the system evolves, never lurches.
     """
@@ -114,6 +122,8 @@ class ScoreOptimizer:
             session_weight=scaled["session"],
             news_weight=scaled["news"],
             currency_strength_weight=scaled["currency_strength"],
+            m1_trigger_weight=scaled["m1_trigger"],
+            liquidity_sweep_weight=scaled["liquidity_sweep"],
         )
 
         self.current_weights = new_weights

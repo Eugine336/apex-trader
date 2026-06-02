@@ -3172,22 +3172,31 @@ class TradingLoop:
 
 _CONFLUENCE_TO_TAG = {
     "Structure": "structure",
+    "H1 OB": "order_block",
+    "M5 OB": "order_block",
     "Order block": "order_block",
     "FVG": "fvg",
     "Multi-TF": "mtf_confluence",
     "Session": "session",
     "News": "news",
     "Currency strength": "currency_strength",
+    "M1 confirmed": "m1_trigger",
+    "M1 ": "m1_trigger",
+    "Liquidity sweep": "liquidity_sweep",
+    "Liquidity": "liquidity_sweep",
 }
 
 
 def _parse_confluence_tags(confluences: list) -> list[str]:
-    """Map display confluence strings to ML factor keys."""
+    """Map display confluence strings to canonical factor keys."""
+    seen: set[str] = set()
     tags: list[str] = []
     for c in confluences:
+        text = str(c)
         for prefix, tag in _CONFLUENCE_TO_TAG.items():
-            if str(c).startswith(prefix):
+            if text.startswith(prefix) and tag not in seen:
                 tags.append(tag)
+                seen.add(tag)
                 break
     return tags
 

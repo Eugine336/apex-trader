@@ -56,7 +56,7 @@ def _generate_trades(n: int = 100, win_rate: float = 0.75) -> list[dict]:
     regimes = ["TRENDING_STRONG", "TRENDING_WEAK", "RANGING"]
     entry_types = ["FVG", "OB", "SWEEP", "CHOCH"]
     days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-    all_tags = ["structure", "order_block", "fvg", "mtf_confluence", "session", "news", "currency_strength"]
+    all_tags = ["structure", "order_block", "fvg", "mtf_confluence", "session", "news", "currency_strength", "m1_trigger", "liquidity_sweep"]
 
     trades: list[dict] = []
     for _ in range(n):
@@ -208,14 +208,15 @@ class TestScoreOptimizer:
 
     def test_save_and_load_weights(self, tmp_path):
         opt = ScoreOptimizer()
-        w = ScoringWeights(structure_weight=25, order_block_weight=18,
-                           fvg_weight=12, mtf_confluence_weight=15,
-                           session_weight=12, news_weight=8,
-                           currency_strength_weight=10)
+        w = ScoringWeights(structure_weight=22, order_block_weight=16,
+                           fvg_weight=11, mtf_confluence_weight=13,
+                           session_weight=10, news_weight=7,
+                           currency_strength_weight=8,
+                           m1_trigger_weight=7, liquidity_sweep_weight=6)
         fp = str(tmp_path / "weights.json")
         opt.save_weights(w, fp)
         loaded = opt.load_weights(fp)
-        assert loaded.structure_weight == 25
+        assert loaded.structure_weight == 22
         assert loaded.total == 100
 
     def test_load_missing_file_returns_defaults(self, tmp_path):
