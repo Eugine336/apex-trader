@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
+from brain.market_data_utils import drop_forming_bar
+
 
 class Trend(Enum):
     BULLISH = "BULLISH"
@@ -234,13 +236,20 @@ class StructureEngine:
         Requires body confirmation: the bar's full body (open AND close)
         must be beyond the level, OR the previous bar also closed beyond it.
         Single-bar wicks that spike through a level and reverse are filtered.
+
+        Uses the last CLOSED bar (not the forming bar) so that BOS/CHOCH
+        signals cannot repaint mid-bar.
         """
         if len(labeled) < 3:
             return StructureEvent.NONE, None
 
-        last_close = float(df["close"].iloc[-1])
-        last_open = float(df["open"].iloc[-1])
-        prev_close = float(df["close"].iloc[-2]) if len(df) >= 2 else None
+        closed = drop_forming_bar(df)
+        if len(closed) < 2:
+            return StructureEvent.NONE, None
+
+        last_close = float(closed["close"].iloc[-1])
+        last_open = float(closed["open"].iloc[-1])
+        prev_close = float(closed["close"].iloc[-2])
         recent_highs = [s for s in labeled if s.kind in ["HH", "LH"]]
         recent_lows  = [s for s in labeled if s.kind in ["HL", "LL"]]
 
@@ -254,7 +263,7 @@ class StructureEngine:
         if last_close > last_high.price:
             body_confirmed = (
                 last_open > last_high.price
-                or (prev_close is not None and prev_close > last_high.price)
+                or prev_close > last_high.price
             )
             if body_confirmed:
                 if trend == Trend.BULLISH:
@@ -266,7 +275,7 @@ class StructureEngine:
         if last_close < last_low.price:
             body_confirmed = (
                 last_open < last_low.price
-                or (prev_close is not None and prev_close < last_low.price)
+                or prev_close < last_low.price
             )
             if body_confirmed:
                 if trend == Trend.BEARISH:
