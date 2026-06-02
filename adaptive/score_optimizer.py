@@ -139,8 +139,10 @@ class ScoreOptimizer:
     only when they do not degrade win/loss discrimination on held-out
     (later-in-time) trades, preventing in-sample overfit.
 
-    The canonical total is 123 (the sum of all live-scanner baseline
-    magnitudes). Fitted weights are normalised to this total.
+    Fitted weights are normalised to CANONICAL_TOTAL (123) for fit
+    stability, then clamped to a ±25% safety envelope around baseline
+    magnitudes before persistence. The envelope clamp is the final
+    authority — the post-clamp total may differ from 123.
     """
 
     DEFAULT_PATH = "data/scoring_weights.json"
@@ -154,13 +156,9 @@ class ScoreOptimizer:
         self.current_weights = ScoringWeights()
         self.load_weights()
 
-    def optimize(
-        self, trades: list[dict], min_trades: int = 50
-    ) -> ScoringWeights:
+    def optimize(self, trades: list[dict], min_trades: int = 50) -> ScoringWeights:
         if len(trades) < min_trades:
-            logger.info(
-                f"Only {len(trades)} trades — need {min_trades} before optimising"
-            )
+            logger.info(f"Only {len(trades)} trades — need {min_trades} before optimising")
             return self.current_weights
 
         sorted_trades = self._sort_by_time(trades)
@@ -182,21 +180,21 @@ class ScoreOptimizer:
             return self.current_weights
 
         candidate_metric = self._compute_validation_metric(candidate, validation)
-        incumbent_metric = self._compute_validation_metric(
-            self.current_weights, validation
-        )
+        incumbent_metric = self._compute_validation_metric(self.current_weights, validation)
 
         if candidate_metric >= incumbent_metric:
-            self.current_weights = candidate
+            baseline = ScoringWeights()
+            clamped = candidate.clamped_to_envelope(baseline)
+            self.current_weights = clamped
             self.save_weights()
             logger.info(
                 "Weights ADOPTED — OOS separation: "
                 f"candidate={candidate_metric:.4f} >= "
                 f"incumbent={incumbent_metric:.4f} | "
                 f"train={len(train)} validation={len(validation)} | "
-                f"total={candidate.total}"
+                f"total={clamped.total} (pre-clamp={candidate.total})"
             )
-            return candidate
+            return clamped
 
         logger.info(
             "Weights REJECTED — OOS separation: "
@@ -210,11 +208,7 @@ class ScoreOptimizer:
     def _fit_weights(self, trades: list[dict]) -> Optional[ScoringWeights]:
         """Fit candidate weights from the given trades. Returns None if insufficient lift data."""
         effectiveness = self.get_factor_effectiveness(trades)
-        lifts = {
-            k: v["lift"]
-            for k, v in effectiveness.items()
-            if v["sample_present"] >= 10
-        }
+        lifts = {k: v["lift"] for k, v in effectiveness.items() if v["sample_present"] >= 10}
 
         if not lifts:
             return None
@@ -231,10 +225,7 @@ class ScoreOptimizer:
             return None
 
         target = self.CANONICAL_TOTAL
-        scaled = {
-            k: max(self.MIN_WEIGHT, round(v / raw_total * target))
-            for k, v in raw_new.items()
-        }
+        scaled = {k: max(self.MIN_WEIGHT, round(v / raw_total * target)) for k, v in raw_new.items()}
         remainder = target - sum(scaled.values())
         best_key = max(scaled, key=lambda k: scaled[k])
         scaled[best_key] += remainder
@@ -259,15 +250,15 @@ class ScoreOptimizer:
         candidate = self._fit_weights(trades)
         if candidate is None:
             return self.current_weights
-        self.current_weights = candidate
+        baseline = ScoringWeights()
+        clamped = candidate.clamped_to_envelope(baseline)
+        self.current_weights = clamped
         self.save_weights()
-        logger.info(f"Weights optimised (no OOS gate) — total={candidate.total}")
-        return candidate
+        logger.info(f"Weights optimised (no OOS gate) — total={clamped.total} (pre-clamp={candidate.total})")
+        return clamped
 
     @staticmethod
-    def _compute_validation_metric(
-        weights: ScoringWeights, trades: list[dict]
-    ) -> float:
+    def _compute_validation_metric(weights: ScoringWeights, trades: list[dict]) -> float:
         """
         Measure how well weights discriminate winners from losers.
 
@@ -293,9 +284,7 @@ class ScoreOptimizer:
         if not win_scores or not loss_scores:
             return 0.0
 
-        return (sum(win_scores) / len(win_scores)) - (
-            sum(loss_scores) / len(loss_scores)
-        )
+        return (sum(win_scores) / len(win_scores)) - (sum(loss_scores) / len(loss_scores))
 
     @staticmethod
     def _sort_by_time(trades: list[dict]) -> list[dict]:
@@ -399,7 +388,8 @@ def load_saved_weights(filepath: str = "data/scoring_weights.json") -> ScoringWe
         return ScoringWeights()
     try:
         data = json.loads(p.read_text())
-    except Exception:
+    except Exception as exc:
+        logger.warning("Could not parse weights file {}: {} — using defaults", filepath, exc)
         return ScoringWeights()
     migrated = _migrate_old_weights(data)
     valid = {k: v for k, v in migrated.items() if k in ScoringWeights.__dataclass_fields__}
