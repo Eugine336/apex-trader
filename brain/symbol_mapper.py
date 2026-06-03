@@ -79,3 +79,38 @@ class SymbolMapper:
     @property
     def broker(self) -> str:
         return self._broker
+
+
+# ---------------------------------------------------------------------------
+# Module-level convenience — resolve any broker-native symbol to internal
+# ---------------------------------------------------------------------------
+
+_BROKER_CONFIGS = ("deriv", "icmarkets", "metaquotes_ltd")
+
+
+def resolve_to_internal(broker_symbol: str) -> str:
+    """Resolve a broker-native symbol (e.g. ``1HZ50V``) to the APEX
+    internal registry key (e.g. ``V50_1S``).
+
+    Resolution order:
+      1. Already a known registry key → return as-is.
+      2. Try ``SymbolMapper.to_canonical()`` for each known broker config
+         (deriv, icmarkets, metaquotes_ltd). The reverse maps are built from
+         ``config/brokers/<broker>.json`` — one canonical source.
+      3. No match → return the input unchanged (never raises).
+
+    The Deriv 1HZ##V ↔ V##_1S family is the primary case this handles:
+    on restart the Deriv connector reports broker-native symbols, but the
+    instrument registry and all downstream code expect the internal key.
+    """
+    normalized = broker_symbol.upper().replace("/", "")
+    if normalized in INSTRUMENT_REGISTRY:
+        return normalized
+    for broker_name in _BROKER_CONFIGS:
+        mapper = SymbolMapper(broker_name)
+        for sym in INSTRUMENT_REGISTRY:
+            mapper.to_broker(sym)
+        canonical = mapper.to_canonical(broker_symbol)
+        if canonical != broker_symbol and canonical.upper() in INSTRUMENT_REGISTRY:
+            return canonical
+    return broker_symbol
