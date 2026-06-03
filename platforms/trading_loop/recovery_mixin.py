@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 from loguru import logger
 
+from brain.symbol_mapper import resolve_to_internal
 from management.trade_manager import EntrySignal as TMEntrySignal
 from platforms.base_connector import OrderResult, CloseResult, PositionInfo
 from platforms.trading_loop.positions import ManagedPosition
@@ -126,92 +127,121 @@ class RecoveryReconciliationMixin:
 
         removed_count = 0
         for oid in persisted_ids - broker_ids:
-            pos = self.managed_positions[oid]
-            if pos.platform in snap.confirmed_platforms:
-                logger.info(
-                    "📋 RECONCILE — {} {} was closed externally while "
-                    "offline — removing",
-                    pos.direction,
-                    pos.symbol,
-                )
-                self.managed_positions.pop(oid, None)
-                self.position_store.remove_position(oid)
-                removed_count += 1
-            else:
-                pos.revalidation_pending = True
-                pos.unconfirmed_cycles += 1
-                logger.warning(
-                    "[Reconcile] Cannot confirm {} {} on {} at startup — "
-                    "retaining under management, marked for revalidation",
-                    pos.direction, pos.symbol, pos.platform,
-                )
+            try:
+                pos = self.managed_positions[oid]
+                if pos.platform in snap.confirmed_platforms:
+                    logger.info(
+                        "📋 RECONCILE — {} {} was closed externally while "
+                        "offline — removing",
+                        pos.direction,
+                        pos.symbol,
+                    )
+                    self.managed_positions.pop(oid, None)
+                    self.position_store.remove_position(oid)
+                    removed_count += 1
+                else:
+                    pos.revalidation_pending = True
+                    pos.unconfirmed_cycles += 1
+                    logger.warning(
+                        "[Reconcile] Cannot confirm {} {} on {} at startup — "
+                        "retaining under management, marked for revalidation",
+                        pos.direction, pos.symbol, pos.platform,
+                    )
+            except Exception as exc:
+                logger.warning("[RECONCILE_SKIP] Failed to process persisted position {}: {}", oid, exc)
 
+        adopted_count = 0
         for oid in broker_ids - persisted_ids:
             bp = broker_by_id[oid]
-            logger.warning(
-                "⚠️ RECONCILE — Orphaned position found: {} {} {:.2f} lots — adopting",
-                bp.direction,
-                bp.symbol,
-                bp.lots,
-            )
-            dummy_order = OrderResult(
-                success=True,
-                order_id=bp.order_id,
-                fill_price=bp.open_price,
-                requested_price=bp.open_price,
-                slippage_pips=0.0,
-                lots=bp.lots,
-                symbol=bp.symbol,
-                direction=bp.direction,
-                sl=bp.sl,
-                tp=bp.tp,
-                platform=bp.platform,
-            )
-            managed = ManagedPosition(
-                order=dummy_order,
-                tp1=bp.tp,
-                tp2=0.0,
-                score=0,
-                regime="UNKNOWN",
-                session="UNKNOWN",
-                entry_type="ORPHAN_ADOPTED",
-            )
-            tm_signal = TMEntrySignal(
-                pair=bp.symbol,
-                direction=bp.direction,
-                entry_price=bp.open_price,
-                stop_loss=bp.sl,
-                tp1=bp.tp,
-                tp2=0.0,
-                risk_reward_1=1.0,
-                risk_reward_2=1.0,
-                position_size_lots=bp.lots,
-                score=0,
-            )
-            tm_trade = self.trade_manager.open_trade(tm_signal)
-            managed.tm_trade_id = tm_trade.trade_id
-            self.managed_positions[oid] = managed
-            self._position_scores[oid] = [managed.score]
-            self.position_store.save_position(managed)
+
+            if bp.lots <= 0:
+                logger.warning(
+                    "[RECONCILE_SKIP] Orphan {} {} has {:.2f} lots (zero/negative) — skipping adoption",
+                    bp.direction, bp.symbol, bp.lots,
+                )
+                continue
+
+            try:
+                internal_symbol = resolve_to_internal(bp.symbol)
+                if internal_symbol != bp.symbol:
+                    logger.info(
+                        "[Reconcile] Resolved broker symbol {} → internal {}",
+                        bp.symbol, internal_symbol,
+                    )
+
+                logger.warning(
+                    "⚠️ RECONCILE — Orphaned position found: {} {} {:.2f} lots — adopting (internal: {})",
+                    bp.direction,
+                    bp.symbol,
+                    bp.lots,
+                    internal_symbol,
+                )
+                dummy_order = OrderResult(
+                    success=True,
+                    order_id=bp.order_id,
+                    fill_price=bp.open_price,
+                    requested_price=bp.open_price,
+                    slippage_pips=0.0,
+                    lots=bp.lots,
+                    symbol=internal_symbol,
+                    direction=bp.direction,
+                    sl=bp.sl,
+                    tp=bp.tp,
+                    platform=bp.platform,
+                )
+                managed = ManagedPosition(
+                    order=dummy_order,
+                    tp1=bp.tp,
+                    tp2=0.0,
+                    score=0,
+                    regime="UNKNOWN",
+                    session="UNKNOWN",
+                    entry_type="ORPHAN_ADOPTED",
+                )
+                tm_signal = TMEntrySignal(
+                    pair=internal_symbol,
+                    direction=bp.direction,
+                    entry_price=bp.open_price,
+                    stop_loss=bp.sl,
+                    tp1=bp.tp,
+                    tp2=0.0,
+                    risk_reward_1=1.0,
+                    risk_reward_2=1.0,
+                    position_size_lots=bp.lots,
+                    score=0,
+                )
+                tm_trade = self.trade_manager.open_trade(tm_signal)
+                managed.tm_trade_id = tm_trade.trade_id
+                self.managed_positions[oid] = managed
+                self._position_scores[oid] = [managed.score]
+                self.position_store.save_position(managed)
+                adopted_count += 1
+            except Exception as exc:
+                logger.warning(
+                    "[RECONCILE_SKIP] Failed to adopt orphan {} {} ({}) — skipping: {}",
+                    bp.direction, bp.symbol, oid, exc,
+                )
 
         for oid in persisted_ids & broker_ids:
-            bp = broker_by_id[oid]
-            pos = self.managed_positions[oid]
-            if pos.revalidation_pending:
-                pos.revalidation_pending = False
-                pos.unconfirmed_cycles = 0
-            if abs(bp.sl - pos.sl) > 1e-8:
-                logger.debug("RECONCILE — {} SL updated from broker: {:.5f} → {:.5f}", pos.symbol, pos.sl, bp.sl)
-                pos.sl = bp.sl
-                self.position_store.update_position(oid, sl=bp.sl)
+            try:
+                bp = broker_by_id[oid]
+                pos = self.managed_positions[oid]
+                if pos.revalidation_pending:
+                    pos.revalidation_pending = False
+                    pos.unconfirmed_cycles = 0
+                if abs(bp.sl - pos.sl) > 1e-8:
+                    logger.debug("RECONCILE — {} SL updated from broker: {:.5f} → {:.5f}", pos.symbol, pos.sl, bp.sl)
+                    pos.sl = bp.sl
+                    self.position_store.update_position(oid, sl=bp.sl)
+            except Exception as exc:
+                logger.warning("[RECONCILE_SKIP] Failed to reconcile existing position {}: {}", oid, exc)
 
-        adopted = len(broker_ids - persisted_ids)
         logger.info(
             "Reconciliation complete — {} managed, {} on broker, {} adopted, "
             "{} removed, {} unconfirmed (confirmed: {}, failed: {})",
             len(self.managed_positions),
             len(snap.positions),
-            adopted,
+            adopted_count,
             removed_count,
             sum(1 for p in self.managed_positions.values() if p.revalidation_pending),
             snap.confirmed_platforms or "none",
