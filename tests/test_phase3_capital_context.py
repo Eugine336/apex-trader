@@ -38,8 +38,19 @@ def _make_scan_result(
 
 
 def _make_trade(pair: str = "EURUSD", pnl: float = 10.0,
-                regime: str = "BULLISH", session: str = "LONDON") -> dict:
-    return {"pair": pair, "pnl": pnl, "regime": regime, "session": session}
+                regime: str = "BULLISH", session: str = "LONDON",
+                pnl_dollars: float | None = None,
+                risk_dollars: float | None = None) -> dict:
+    d: dict = {"pair": pair, "pnl": pnl, "regime": regime, "session": session}
+    if pnl_dollars is not None:
+        d["pnl_dollars"] = pnl_dollars
+    else:
+        d["pnl_dollars"] = pnl
+    if risk_dollars is not None:
+        d["risk_dollars"] = risk_dollars
+    else:
+        d["risk_dollars"] = 10.0
+    return d
 
 
 # ════════════════════════════════════════════════════════════════════
