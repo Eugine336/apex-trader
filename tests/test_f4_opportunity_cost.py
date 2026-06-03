@@ -1,12 +1,13 @@
 """
-F4 Phase 1 — Opportunity-cost exit (shadow/telemetry only).
+F4 — Opportunity-cost exit.
 
 Validates:
   1. Mode "off" → method returns immediately, never inspects positions
   2. Shadow mode, all gates pass → logs WOULD-fire, never closes
   3. Each gate failing independently → no WOULD-fire log
-  4. "active" mode in Phase 1 behaves like shadow (no close) + warning
-  5. No position is ever closed/modified regardless of mode
+  4. "active" mode closes the position via the soft-close idiom
+  5. "active" mode on close failure → position retained
+  6. "shadow" mode with all gates passing → never calls close_trade
 """
 
 from datetime import datetime, timedelta, timezone
@@ -29,7 +30,7 @@ def _make_risk_cfg(**overrides):
 
 
 def _make_pos(score=70, direction="BUY", symbol="EURUSD",
-              open_time=None, tm_trade_id="tm_001"):
+              open_time=None, tm_trade_id="tm_001", platform="mt5"):
     if open_time is None:
         open_time = datetime.now(timezone.utc) - timedelta(minutes=30)
     return SimpleNamespace(
@@ -38,6 +39,7 @@ def _make_pos(score=70, direction="BUY", symbol="EURUSD",
         symbol=symbol,
         open_time=open_time,
         tm_trade_id=tm_trade_id,
+        platform=platform,
     )
 
 
@@ -52,7 +54,8 @@ def _make_blocked_candidate(pair="GBPUSD", direction="SHORT", score=85):
 class _FakeMixin:
     """Minimal stand-in providing the attributes _check_opportunity_cost_exit reads."""
 
-    def __init__(self, risk_cfg, managed_count, blocked, tm_trade):
+    def __init__(self, risk_cfg, managed_count, blocked, tm_trade,
+                 close_result=None):
         self.config = SimpleNamespace(risk=risk_cfg)
         self._managed_count = managed_count
         self.managed_positions = MagicMock()
@@ -61,10 +64,14 @@ class _FakeMixin:
         self.trade_manager = MagicMock()
         self.trade_manager.get_trade = MagicMock(return_value=tm_trade)
         self.platforms = MagicMock()
-        self.platforms.close_trade = MagicMock(
-            side_effect=AssertionError("close_trade must NEVER be called in Phase 1"),
-        )
+        if close_result is not None:
+            self.platforms.close_trade = MagicMock(return_value=close_result)
+        else:
+            self.platforms.close_trade = MagicMock(
+                side_effect=AssertionError("close_trade must NOT be called"),
+            )
         self.position_store = MagicMock()
+        self._record_closed_trade = MagicMock()
         self._position_scores = {}
 
 
@@ -73,10 +80,11 @@ class AssertionError(Exception):
 
 
 def _run_check(risk_cfg, *, managed_count=3, blocked=None, tm_trade=None,
-               pos=None, now=None):
+               pos=None, now=None, close_result=None):
     from platforms.trading_loop.exit_checks_mixin import ExitChecksMixin
 
-    fake = _FakeMixin(risk_cfg, managed_count, blocked, tm_trade)
+    fake = _FakeMixin(risk_cfg, managed_count, blocked, tm_trade,
+                      close_result=close_result)
     if pos is None:
         pos = _make_pos()
     if now is None:
@@ -221,34 +229,103 @@ class TestGateFailures:
         mock_logger.info.assert_not_called()
 
 
-class TestActiveModeFallback:
-    """'active' mode in Phase 1 must behave like shadow + emit a warning."""
+class TestActiveCloses:
+    """'active' mode closes the position via the soft-close idiom."""
 
-    def test_active_logs_shadow_and_warning(self):
+    def _success_result(self):
+        return SimpleNamespace(success=True, close_price=1.08500)
+
+    def _failure_result(self):
+        return SimpleNamespace(success=False, close_price=0.0, error="broker timeout")
+
+    def test_active_calls_close_trade(self):
+        cfg = _make_risk_cfg(opportunity_cost_exit_mode="active")
+        blocked = _make_blocked_candidate(score=85)
+        pos = _make_pos(score=70)
+        tm_trade = _make_tm_trade(pnl_pips=1.0)
+
+        with patch("platforms.trading_loop.exit_checks_mixin.logger"):
+            fake = _run_check(
+                cfg, blocked=blocked, tm_trade=tm_trade, pos=pos,
+                close_result=self._success_result(),
+            )
+
+        fake.platforms.close_trade.assert_called_once_with("oid_1", pos.platform)
+
+    def test_active_success_records_and_pops(self):
         cfg = _make_risk_cfg(opportunity_cost_exit_mode="active")
         blocked = _make_blocked_candidate(score=85)
         pos = _make_pos(score=70)
         tm_trade = _make_tm_trade(pnl_pips=1.0)
 
         with patch("platforms.trading_loop.exit_checks_mixin.logger") as mock_logger:
-            fake = _run_check(cfg, blocked=blocked, tm_trade=tm_trade, pos=pos)
+            fake = _run_check(
+                cfg, blocked=blocked, tm_trade=tm_trade, pos=pos,
+                close_result=self._success_result(),
+            )
+
+        fake._record_closed_trade.assert_called_once()
+        call_args = fake._record_closed_trade.call_args
+        assert call_args[0][0] is pos
+        assert call_args[0][1] == 1.08500
+        assert "OPPORTUNITY_COST" in call_args[0][2]
+        assert "GBPUSD" in call_args[0][2]
+
+        fake.managed_positions.pop.assert_called_once_with("oid_1", None)
+        fake.position_store.remove_position.assert_called_once_with("oid_1")
+
+        warn_calls = mock_logger.warning.call_args_list
+        assert len(warn_calls) == 1
+        assert "[F4]" in warn_calls[0][0][0]
+        assert "OPPORTUNITY-COST EXIT" in warn_calls[0][0][0]
+
+    def test_active_failure_retains_position(self):
+        cfg = _make_risk_cfg(opportunity_cost_exit_mode="active")
+        blocked = _make_blocked_candidate(score=85)
+        pos = _make_pos(score=70)
+        tm_trade = _make_tm_trade(pnl_pips=1.0)
+
+        with patch("platforms.trading_loop.exit_checks_mixin.logger") as mock_logger:
+            fake = _run_check(
+                cfg, blocked=blocked, tm_trade=tm_trade, pos=pos,
+                close_result=self._failure_result(),
+            )
+
+        fake.platforms.close_trade.assert_called_once()
+        fake._record_closed_trade.assert_not_called()
+        fake.managed_positions.pop.assert_not_called()
+        fake.position_store.remove_position.assert_not_called()
+
+        error_calls = mock_logger.error.call_args_list
+        assert len(error_calls) == 1
+        assert "FAILED" in error_calls[0][0][0]
+        assert "position retained" in error_calls[0][0][0]
+
+    def test_active_still_logs_shadow_line(self):
+        cfg = _make_risk_cfg(opportunity_cost_exit_mode="active")
+        blocked = _make_blocked_candidate(score=85)
+        pos = _make_pos(score=70)
+        tm_trade = _make_tm_trade(pnl_pips=1.0)
+
+        with patch("platforms.trading_loop.exit_checks_mixin.logger") as mock_logger:
+            _run_check(
+                cfg, blocked=blocked, tm_trade=tm_trade, pos=pos,
+                close_result=self._success_result(),
+            )
 
         info_calls = mock_logger.info.call_args_list
         assert len(info_calls) == 1
         assert "[F4 SHADOW]" in info_calls[0][0][0]
 
-        warn_calls = mock_logger.warning.call_args_list
-        assert len(warn_calls) == 1
-        assert "not implemented" in warn_calls[0][0][0].lower()
 
-        fake.platforms.close_trade.assert_not_called()
-        fake.managed_positions.pop.assert_not_called()
+class TestShadowNeverCloses:
+    """Shadow mode with all gates passing must never call close_trade."""
 
-    def test_active_never_closes(self):
-        cfg = _make_risk_cfg(opportunity_cost_exit_mode="active")
-        blocked = _make_blocked_candidate(score=90)
-        pos = _make_pos(score=60)
-        tm_trade = _make_tm_trade(pnl_pips=-2.0)
+    def test_shadow_does_not_call_close(self):
+        cfg = _make_risk_cfg(opportunity_cost_exit_mode="shadow")
+        blocked = _make_blocked_candidate(score=85)
+        pos = _make_pos(score=70)
+        tm_trade = _make_tm_trade(pnl_pips=1.0)
 
         with patch("platforms.trading_loop.exit_checks_mixin.logger"):
             fake = _run_check(cfg, blocked=blocked, tm_trade=tm_trade, pos=pos)
