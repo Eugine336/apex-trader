@@ -605,25 +605,6 @@ class BacktestEngine:
 
         return {"folds": folds, "aggregate": aggregate}
 
-    def run_from_broker(
-        self,
-        pair: str,
-        platform: str = "mt5",
-        timeframes: list[str] = None,
-        bars: int = 5000,
-        **kwargs,
-    ) -> BacktestResult:
-        timeframes = timeframes or ["H4", "H1", "M15", "M5", "M1"]
-        logger.info(f"Fetching {bars} bars for {pair} from {platform}…")
-        data = self.broker_loader.fetch_all_timeframes(
-            symbol=pair,
-            timeframes=timeframes,
-            platform=platform,
-            bars=bars,
-            **kwargs,
-        )
-        return self.run(pair=pair, data_by_timeframe=data)
-
     def monte_carlo(
         self, trade_returns_r: list[float], iterations: int = 500
     ) -> dict[str, float]:
