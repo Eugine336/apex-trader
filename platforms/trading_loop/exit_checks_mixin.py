@@ -473,7 +473,7 @@ class ExitChecksMixin:
     def _check_opportunity_cost_exit(
         self, oid: str, pos: ManagedPosition, now: datetime,
     ) -> None:
-        """Shadow-mode opportunity-cost detection (F4 Phase 1).
+        """Opportunity-cost exit (F4).
 
         Fires ONLY when all position slots are full AND a materially
         better candidate was rejected this cycle AND this position is
@@ -482,8 +482,12 @@ class ExitChecksMixin:
         by being contention-gated and relative (compares entry score
         against the foregone candidate's score).
 
-        Phase 1 NEVER closes a position — it only logs when the
-        condition would fire, regardless of the configured mode.
+        Modes:
+          "off"    — inert, early return.
+          "shadow" — logs [F4 SHADOW] WOULD-fire, never closes.
+          "active" — logs + closes the position via the soft-close
+                     idiom (close_trade → _record_closed_trade →
+                     managed_positions.pop → position_store.remove).
         """
         cfg = self.config.risk
         if cfg.opportunity_cost_exit_mode == "off":
@@ -521,8 +525,27 @@ class ExitChecksMixin:
             blocked["score"], score_delta,
         )
         if cfg.opportunity_cost_exit_mode == "active":
-            logger.warning(
-                "[F4] active mode is not implemented in Phase 1 — "
-                "treating as shadow (no position closed)"
-            )
+            result = self.platforms.close_trade(oid, pos.platform)
+            if result.success:
+                logger.warning(
+                    "[F4] OPPORTUNITY-COST EXIT — {} {} closed @ {:.5f} "
+                    "(entry_score={}, pnl={:.1f}pip, held={:.0f}min "
+                    "← blocked {} {} score={}, delta=+{})",
+                    pos.direction, pos.symbol, result.close_price,
+                    pos.score, tm_trade.pnl_pips, hold_minutes,
+                    blocked["direction"], blocked["pair"],
+                    blocked["score"], score_delta,
+                )
+                self._record_closed_trade(
+                    pos, result.close_price,
+                    f"OPPORTUNITY_COST(blocked={blocked['pair']})",
+                    close_result=result,
+                )
+                self.managed_positions.pop(oid, None)
+                self.position_store.remove_position(oid)
+            else:
+                logger.error(
+                    "[F4] opportunity-cost close FAILED for {} {} — position retained: {}",
+                    pos.direction, pos.symbol, getattr(result, "error", "unknown"),
+                )
 

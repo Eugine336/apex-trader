@@ -393,12 +393,12 @@ class RiskConfig:
     atr_stop_ratio_max: float = 2.0
     atr_stop_max_risk_mult: float = 4.0
 
-    # ── Opportunity-cost exit (F4 Phase 1: shadow/telemetry only) ──────
+    # ── Opportunity-cost exit (F4) ────────────────────────────────────
     # Detects when a better setup is blocked because all position slots
     # are full and the weakest held position is stagnant.  Shadow mode
     # only LOGS the would-fire event; it NEVER closes a position.
-    # "active" is reserved for a future PR and treated as "shadow" here.
-    opportunity_cost_exit_mode: str = "active"  # "off" | "shadow" | "active"
+    # "active" closes the position via the soft-close idiom.
+    opportunity_cost_exit_mode: str = "shadow"  # "off" | "shadow" | "active"
     opportunity_cost_score_margin: float = 10.0
     opportunity_cost_max_pnl_pips: float = 5.0
     opportunity_cost_min_hold_minutes: float = 20.0
