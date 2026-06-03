@@ -266,6 +266,12 @@ class RiskConfig:
     scale_in_min_profit_r: float = 1.0
     scale_in_add_ratio: float = 0.5
 
+    # ── Min-lot inflation guard ──────────────────────────────────────────
+    # When True, reject an order if the broker's volume_min floors the
+    # risk-engine-sized lot upward (e.g. 0.01 → 0.5).  Default OFF so
+    # a WARNING is logged but the order still proceeds as today.
+    reject_on_minlot_inflation: bool = False
+
     # ── Continuous in-trade analysis ─────────────────────────────────────
     # Re-score open instruments every cycle and exit if thesis invalidates
     continuous_analysis_enabled: bool = True
