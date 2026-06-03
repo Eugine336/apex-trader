@@ -47,7 +47,7 @@ from adaptive.optimizer import AdaptiveOptimizer as MLAdapter
 from brain.swap_model import load_swap_rates, estimate_swap
 from platforms.base_connector import OrderResult, CloseResult, PositionInfo
 from platforms.deriv.deriv_connector import DerivConnector
-from platforms.order_idempotency import generate_idempotency_key
+from platforms.order_idempotency import build_order_comment, generate_idempotency_key
 from platforms.platform_manager import PlatformManager
 from platform_context import PlatformContext, build_context_for_symbol
 from risk.portfolio_risk_state import (
@@ -705,7 +705,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 adjusted_lots,
                 signal.stop_loss,
                 signal.tp1,
-                comment=f"APEX_PEND|{signal.score}|{session}|{idem_key}",
+                comment=build_order_comment("APND", idem_key, signal.score, session),
                 idempotency_key=idem_key,
             )
             if order.success:
@@ -737,7 +737,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             adjusted_lots,
             signal.stop_loss,
             signal.tp1,
-            comment=f"APEX|{signal.score}|{session}|{idem_key}",
+            comment=build_order_comment("APEX", idem_key, signal.score, session),
             stake_usd=stake_usd,
             idempotency_key=idem_key,
         )
