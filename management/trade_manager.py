@@ -229,7 +229,7 @@ class TradeManager:
             return trade
         if self._check_tp1(trade):
             pass
-        if trade.partial_closed and not trade.breakeven_active:
+        if trade.partial_closed and not trade.breakeven_active and trade.pnl_pips > 0:
             self._activate_breakeven(trade)
         if trade.breakeven_active and current_df_m5 is not None:
             self._update_trailing(trade, current_df_m5)
@@ -360,6 +360,8 @@ class TradeManager:
         return hit
 
     def _activate_breakeven(self, trade: ManagedTrade) -> None:
+        if trade.pnl_pips <= 0:
+            return
         direction = "LONG" if self._is_long(trade.direction) else "SHORT"
         be_level = self.partial_calc.calculate_breakeven_level(
             trade.entry_price,
