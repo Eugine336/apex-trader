@@ -27,6 +27,8 @@ from brain.volume_analyzer import VolumeAnalyzer
 from brain.inducement_detector import InducementDetector
 from brain.wyckoff_engine import WyckoffEngine
 from brain.instrument_profile import get_profile
+from rl.bridge import RLBridge
+from rl.obs_builder import ObservationBuilder
 
 _MT5_AVAILABLE = False
 try:
@@ -95,6 +97,10 @@ class PairScanResult:
     instrument_category: str = "forex"
     ev_estimate: float = 0.0
     opportunity_score: float = 0.0
+    rl_action: int = 0
+    rl_confidence: float = 0.0
+    rl_expected_r: float = 0.0
+    rl_stage: int = 1
 
 
 @dataclass
@@ -116,7 +122,8 @@ class PairScanner:
     """
 
     def __init__(self, config: Optional[AppConfig] = None, mt5_connector=None,
-                 scoring_weights: Optional[dict[str, int]] = None):
+                 scoring_weights: Optional[dict[str, int]] = None,
+                 rl_checkpoint: Optional[str] = None):
         self.config = config or AppConfig()
         self.structure = StructureEngine()
         self.fvg_detector = FVGDetector()
@@ -125,14 +132,22 @@ class PairScanner:
         self.strength_meter = CurrencyStrengthMeter()
         self.session = SessionEngine()
         self._ev_estimator = EVEstimator()
-        self._trade_history: list[dict] = []  # updated by main loop after each closed trade
-        self._ev_estimator = EVEstimator()
-        self._trade_history: list[dict] = []  # fed by main loop after each closed trade
+        self._trade_history: list[dict] = []
         self.news = NewsGuard()
         self.volume = VolumeAnalyzer()
         self.last_report: Optional[ScanReport] = None
-        self._mt5_connector = mt5_connector  # used for dynamic market hours checks
+        self._mt5_connector = mt5_connector
         self._adaptive_weights = scoring_weights
+
+        # ── RL subsystem ──────────────────────────────────────────────
+        self._obs_builders: dict[str, ObservationBuilder] = {}
+        checkpoint = rl_checkpoint or "checkpoints/apex_rl_best.pt"
+        try:
+            self._rl = RLBridge(checkpoint=checkpoint)
+            logger.info(f"[scanner] RL subsystem loaded — stage {self._rl.authority.stage_label}")
+        except Exception as exc:
+            logger.warning(f"[scanner] RL subsystem unavailable: {exc}")
+            self._rl = RLBridge(checkpoint=checkpoint, enabled=False)
 
     # ------------------------------------------------------------------
     # Single-pair scan
@@ -154,11 +169,6 @@ class PairScanner:
         profile = get_profile(pair)
 
         # ── Market hours gate ─────────────────────────────────────────
-        # For non-24/7 MT5 instruments (indices, some commodities, crypto)
-        # ask MT5 directly whether the market is open right now.
-        # This prevents the full brain stack running on a closed instrument,
-        # wasting scan cycles and generating signals that will fail at execution.
-        # Deriv synthetics and forex pass through — they are always available.
         if not is_always_open(pair):
             if not _mt5_market_open(pair, self._mt5_connector):
                 logger.debug(f"{pair} — market closed (MT5 trade_mode=0), skipping scan")
@@ -188,7 +198,7 @@ class PairScanner:
 
         # ── 1. Structure bias (H4 + H1) ──────────────────────────────
         bias = self.structure.get_bias(h4_df, h1_df)
-        direction = bias["direction"]       # "BULLISH" / "BEARISH" / "RANGING"
+        direction = bias["direction"]
         trade_dir = {"BULLISH": "LONG", "BEARISH": "SHORT"}.get(direction, "NEUTRAL")
 
         score = 0
@@ -272,8 +282,6 @@ class PairScanner:
         # ── 5. Session timing ─────────────────────────────────────────
         session_status = self.session.get_status(utc_now)
 
-        # Use registry to decide session gating — FX pairs are gated,
-        # everything else (commodities, indices, synthetics) trades freely.
         if is_always_open(pair):
             session_active = session_status.current_session not in ("DEAD", "WEEKEND")
         else:
@@ -342,7 +350,8 @@ class PairScanner:
                     )
         except Exception as exc:
             logger.debug(f"Volume analysis error for {pair}: {exc}")
-        # ── 9. Inducement detection ──────────────────────────────────
+
+        # ── 10. Inducement detection ──────────────────────────────────
         inducement_detected = False
         try:
             ind_det = InducementDetector(pip_size=pip_size)
@@ -355,7 +364,7 @@ class PairScanner:
         except Exception as exc:
             logger.debug(f"Inducement detection error for {pair}: {exc}")
 
-        # ── 10. Wyckoff phase ────────────────────────────────────────
+        # ── 11. Wyckoff phase ─────────────────────────────────────────
         wyckoff_phase = "N/A"
         if profile.wyckoff_enabled:
             try:
@@ -375,13 +384,10 @@ class PairScanner:
         regime = bias["h4_trend"]
         if regime == "RANGING":
             score = min(score, scoring.ranging_score_cap)
-        # Off-session penalty only applies to instruments that are FX session-gated
         if not session_active and score > 0 and is_session_gated(pair):
             score = max(score - 10, 0)
 
-        # ── Expected Value estimate ──────────────────────────────────────
-        # Estimates EV from historical trade data for this pair/regime/session.
-        # Feeds into PairRanker.rank_opportunities() for opportunity priority.
+        # ── Expected Value estimate ───────────────────────────────────
         try:
             ev_est = self._ev_estimator.estimate(
                 pair=pair,
@@ -393,9 +399,84 @@ class PairScanner:
         except Exception:
             ev_estimate = 0.0
 
+        # ── RL augmentation ───────────────────────────────────────────
+        rl_action    = 0
+        rl_confidence = 0.0
+        rl_expected_r = 0.0
+        rl_stage      = self._rl.authority.stage
+
+        try:
+            if pair not in self._obs_builders:
+                self._obs_builders[pair] = ObservationBuilder()
+
+            close_now = float(m5_df["close"].iloc[-1])
+            # ATR from last 14 bars of M5
+            tr = (m5_df["high"] - m5_df["low"]).abs().tail(14)
+            atr_now = float(tr.mean()) if len(tr) > 0 else 0.0
+
+            obs = self._obs_builders[pair].update(
+                open=float(m5_df["open"].iloc[-1]),
+                high=float(m5_df["high"].iloc[-1]),
+                low=float(m5_df["low"].iloc[-1]),
+                close=close_now,
+                volume=float(m5_df.get("tick_volume", m5_df.get("volume", 1)).iloc[-1])
+                    if hasattr(m5_df, "get") else 1.0,
+                in_trade=0.0,
+            )
+
+            if obs is not None:
+                rl_result = self._rl.augment_score(
+                    pair=pair,
+                    base_score=float(score),
+                    obs=obs,
+                    close=close_now,
+                    atr=atr_now,
+                    pip_size=pip_size,
+                )
+
+                if rl_result.vetoed:
+                    logger.info(f"[RL] VETO {pair} — stage {rl_stage} "
+                                f"conf={rl_result.rl_confidence:.2f}")
+                    # Return WAITING — vetoed by RL
+                    return PairScanResult(
+                        pair=pair, direction=trade_dir,
+                        score=int(score), regime=regime,
+                        ev_estimate=ev_estimate,
+                        trend_h4=bias["h4_trend"], trend_h1=bias["h1_trend"],
+                        bias_strength=bias["strength"],
+                        has_fvg=has_fvg, has_order_block=has_ob,
+                        has_liquidity_target=has_liq, sweep_detected=sweep,
+                        inducement_detected=inducement_detected,
+                        wyckoff_phase=wyckoff_phase,
+                        volume_confirmation=volume_confirmed,
+                        session_active=session_active,
+                        currency_strength_aligned=cs_aligned,
+                        status="WAITING",
+                        timestamp=utc_now,
+                        confluences=confluences + [f"RL VETO (conf={rl_result.rl_confidence:.2f})"],
+                        instrument_category=category,
+                        rl_action=rl_result.rl_action,
+                        rl_confidence=rl_result.rl_confidence,
+                        rl_expected_r=rl_result.rl_expected_r,
+                        rl_stage=rl_stage,
+                    )
+
+                score        = int(rl_result.final_score)
+                rl_action    = rl_result.rl_action
+                rl_confidence = rl_result.rl_confidence
+                rl_expected_r = rl_result.rl_expected_r
+
+                if rl_result.rl_delta != 0:
+                    confluences.append(
+                        f"RL signal ({rl_result.rl_action} "
+                        f"conf={rl_confidence:.2f} "
+                        f"Δ{rl_result.rl_delta:+.1f})"
+                    )
+
+        except Exception as exc:
+            logger.debug(f"[RL] augmentation error for {pair}: {exc}")
+
         # ── Status ────────────────────────────────────────────────────
-        # Use profile.min_entry_score — adjusts per category.
-        # Synthetics score lower (no Wyckoff/currency strength) so threshold drops.
         effective_min_score = profile.min_entry_score
         if score >= effective_min_score:
             status = "READY"
@@ -426,6 +507,10 @@ class PairScanner:
             timestamp=utc_now,
             confluences=confluences,
             instrument_category=category,
+            rl_action=rl_action,
+            rl_confidence=rl_confidence,
+            rl_expected_r=rl_expected_r,
+            rl_stage=rl_stage,
         )
 
     # ------------------------------------------------------------------
@@ -438,17 +523,6 @@ class PairScanner:
         currency_data: Optional[dict[str, pd.DataFrame]] = None,
         utc_now: Optional[datetime] = None,
     ) -> ScanReport:
-        """
-        Scan every instrument in *market_data*.
-
-        market_data structure::
-
-            {
-                "EURUSD": {"H4": df, "H1": df, "M15": df, "M5": df},
-                "XAUUSD": {"H4": df, "H1": df, "M15": df, "M5": df},
-                ...
-            }
-        """
         utc_now = utc_now or datetime.now(timezone.utc)
         session_status = self.session.get_status(utc_now)
 
@@ -482,6 +556,12 @@ class PairScanner:
                 f"Skipped {len(closed)} closed markets: "
                 f"{', '.join(r.pair for r in closed)}"
             )
+
+        # Periodic authority evaluation
+        try:
+            self._rl.evaluate_authority()
+        except Exception:
+            pass
 
         report = ScanReport(
             timestamp=utc_now,
