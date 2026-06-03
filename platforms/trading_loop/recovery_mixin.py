@@ -15,6 +15,47 @@ from platforms.trading_loop.positions import ManagedPosition
 class RecoveryReconciliationMixin:
     """Mixin providing startup recovery and broker reconciliation."""
 
+    @staticmethod
+    def _validated_adopted_tp1(
+        direction: str,
+        entry_price: float,
+        sl: float,
+        broker_tp: float,
+    ) -> float:
+        """Return a validated TP1 for an adopted orphan position.
+
+        If the broker TP is valid (positive and on the profitable side of
+        entry), it is returned unchanged.  Otherwise a reconstructed TP1 is
+        computed from entry ± 1.5 × risk when a usable SL exists, or 0.0
+        (TP management disabled — PR-1 sentinel guard treats ≤ 0 as
+        "no target") when risk cannot be derived.
+        """
+        is_long = direction.upper() in ("BUY", "LONG")
+
+        broker_tp_valid = (
+            isinstance(broker_tp, (int, float))
+            and broker_tp > 0
+            and (
+                (is_long and broker_tp > entry_price)
+                or (not is_long and broker_tp < entry_price)
+            )
+        )
+        if broker_tp_valid:
+            return float(broker_tp)
+
+        sl_usable = (
+            isinstance(sl, (int, float))
+            and sl > 0
+            and abs(sl - entry_price) > 1e-8
+        )
+        if not sl_usable:
+            return 0.0
+
+        risk = abs(entry_price - sl)
+        if is_long:
+            return round(entry_price + 1.5 * risk, 8)
+        return round(entry_price - 1.5 * risk, 8)
+
     def _perform_startup_recovery(self) -> None:
         """Restore persisted positions and reconcile with the broker.
 
@@ -169,6 +210,17 @@ class RecoveryReconciliationMixin:
                         bp.symbol, internal_symbol,
                     )
 
+                validated_tp1 = self._validated_adopted_tp1(
+                    bp.direction, bp.open_price, bp.sl, bp.tp,
+                )
+                if validated_tp1 != bp.tp:
+                    logger.warning(
+                        "[RECONCILE_TP] {} {} broker TP {:.5f} invalid for entry {:.5f}"
+                        " — using reconstructed TP1 {:.5f}",
+                        bp.direction, bp.symbol, bp.tp, bp.open_price,
+                        validated_tp1,
+                    )
+
                 logger.warning(
                     "⚠️ RECONCILE — Orphaned position found: {} {} {:.2f} lots — adopting (internal: {})",
                     bp.direction,
@@ -186,12 +238,12 @@ class RecoveryReconciliationMixin:
                     symbol=internal_symbol,
                     direction=bp.direction,
                     sl=bp.sl,
-                    tp=bp.tp,
+                    tp=validated_tp1,
                     platform=bp.platform,
                 )
                 managed = ManagedPosition(
                     order=dummy_order,
-                    tp1=bp.tp,
+                    tp1=validated_tp1,
                     tp2=0.0,
                     score=0,
                     regime="UNKNOWN",
@@ -203,7 +255,7 @@ class RecoveryReconciliationMixin:
                     direction=bp.direction,
                     entry_price=bp.open_price,
                     stop_loss=bp.sl,
-                    tp1=bp.tp,
+                    tp1=validated_tp1,
                     tp2=0.0,
                     risk_reward_1=1.0,
                     risk_reward_2=1.0,
