@@ -3,6 +3,7 @@ APEX TRADER — Backtest Runner
 Usage:
     python scripts/run_backtest.py --pair EURUSD --platform mt5 --bars 10000
     python scripts/run_backtest.py --pair EURUSD --csv M1:data/EURUSD_M1.csv M5:data/EURUSD_M5.csv
+    python scripts/run_backtest.py --pair EURUSD --compare-atr-stop --csv M1:data/EURUSD_M1.csv ...
 """
 import argparse
 import csv
@@ -34,6 +35,18 @@ def main():
     parser.add_argument("--csv", nargs="*",
                         help="CSV files instead of broker fetch. "
                              "Format: TF:path e.g. M1:data/eu_m1.csv H1:data/eu_h1.csv")
+    parser.add_argument("--compare-atr-stop", action="store_true", default=False,
+                        help="Run ATR volatility-stop counterfactual alongside structure stop")
+    parser.add_argument("--atr-stop-period", type=int, default=14,
+                        help="ATR lookback period (default 14)")
+    parser.add_argument("--atr-stop-mult", type=float, default=1.5,
+                        help="ATR multiplier for stop distance (default 1.5)")
+    parser.add_argument("--atr-stop-ratio-min", type=float, default=0.5,
+                        help="Minimum ratio of ATR stop to structure stop (default 0.5)")
+    parser.add_argument("--atr-stop-ratio-max", type=float, default=2.0,
+                        help="Maximum ratio of ATR stop to structure stop (default 2.0)")
+    parser.add_argument("--atr-stop-max-risk-mult", type=float, default=4.0,
+                        help="Maximum multiple of min_risk_pips for ATR stop (default 4.0)")
     args = parser.parse_args()
 
     if args.platform == "mt5" and not args.csv:
@@ -64,19 +77,31 @@ def main():
         commission_per_lot=args.commission,
     )
 
+    atr_kwargs = dict(
+        compare_atr_stop=args.compare_atr_stop,
+        atr_stop_period=args.atr_stop_period,
+        atr_stop_mult=args.atr_stop_mult,
+        atr_stop_ratio_min=args.atr_stop_ratio_min,
+        atr_stop_ratio_max=args.atr_stop_ratio_max,
+        atr_stop_max_risk_mult=args.atr_stop_max_risk_mult,
+    )
+
     if args.csv:
         loader = DataLoader()
         data = {}
         for entry in args.csv:
             tf, path = entry.split(":", 1)
             data[tf] = loader.load_csv(path)
-        result = engine.run(pair=args.pair, data_by_timeframe=data)
+        result = engine.run(pair=args.pair, data_by_timeframe=data, **atr_kwargs)
     else:
-        result = engine.run_from_broker(
-            pair=args.pair,
+        logger.info(f"Fetching {args.bars} bars for {args.pair} from {args.platform}…")
+        data = engine.broker_loader.fetch_all_timeframes(
+            symbol=args.pair,
+            timeframes=["H4", "H1", "M15", "M5", "M1"],
             platform=args.platform,
             bars=args.bars,
         )
+        result = engine.run(pair=args.pair, data_by_timeframe=data, **atr_kwargs)
 
     logger.info("=" * 50)
     logger.info(f"BACKTEST RESULTS — {args.pair}")
@@ -94,6 +119,40 @@ def main():
     logger.info(f"Total slippage cost:    {result.total_slippage_cost:.6f}")
     logger.info(f"Best session:           {result.best_session}")
     logger.info(f"Equity curve points:    {len(result.equity_curve)}")
+
+    if result.atr_comparison is not None:
+        cmp = result.atr_comparison
+        logger.info("")
+        logger.info("=" * 50)
+        logger.info("ATR VOLATILITY STOP — COMPARISON")
+        logger.info("=" * 50)
+        logger.info(f"Trades compared:        {cmp.total_compared}")
+        logger.info(f"Trades skipped (no ATR):{cmp.total_skipped}")
+        logger.info("")
+        logger.info(f"  {'':24s} {'STRUCTURE':>12s} {'ATR':>12s}")
+        logger.info(f"  {'─' * 48}")
+        logger.info(f"  {'Wins':24s} {cmp.structure_wins:12d} {cmp.atr_wins:12d}")
+        logger.info(f"  {'Losses':24s} {cmp.structure_losses:12d} {cmp.atr_losses:12d}")
+        logger.info(f"  {'Breakevens':24s} {cmp.structure_breakevens:12d} {cmp.atr_breakevens:12d}")
+        logger.info(f"  {'Win rate':24s} {cmp.structure_win_rate:11.1f}% {cmp.atr_win_rate:11.1f}%")
+        logger.info(f"  {'Loss rate':24s} {cmp.structure_loss_rate:11.1f}% {cmp.atr_loss_rate:11.1f}%")
+        logger.info(f"  {'Mean R':24s} {cmp.structure_mean_r:12.3f} {cmp.atr_mean_r:12.3f}")
+        logger.info(f"  {'Expectancy (R)':24s} {cmp.structure_expectancy:12.4f} {cmp.atr_expectancy:12.4f}")
+        logger.info("")
+        logger.info("  ══════════════════════════════════════════════")
+        delta_sign = "+" if cmp.expectancy_delta >= 0 else ""
+        logger.info(f"  EXPECTANCY DELTA (ATR − Structure): {delta_sign}{cmp.expectancy_delta:.4f} R")
+        if cmp.expectancy_delta > 0:
+            logger.info("  ATR stop OUTPERFORMED structure stop")
+        elif cmp.expectancy_delta < 0:
+            logger.info("  Structure stop OUTPERFORMED ATR stop")
+        else:
+            logger.info("  No difference between stop methods")
+        logger.info("  ══════════════════════════════════════════════")
+    elif args.compare_atr_stop:
+        logger.info("")
+        logger.info("ATR comparison requested but no comparison data produced")
+        logger.info("(likely zero eligible trades or ATR unavailable for all setups)")
 
     out_path = f"data/backtest_{args.pair}_{args.platform}.csv"
     Path("data").mkdir(exist_ok=True)
