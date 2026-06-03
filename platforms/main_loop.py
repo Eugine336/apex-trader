@@ -93,6 +93,12 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             min_entry_score=self.config.scoring.min_entry_score,
             use_adaptive_weights=self.config.scoring.use_adaptive_scoring_weights,
             scoring_weights=_adaptive_weights,
+            volatility_stop_mode=self.config.risk.volatility_stop_mode,
+            atr_stop_period=self.config.risk.atr_stop_period,
+            atr_stop_mult=self.config.risk.atr_stop_mult,
+            atr_stop_ratio_min=self.config.risk.atr_stop_ratio_min,
+            atr_stop_ratio_max=self.config.risk.atr_stop_ratio_max,
+            atr_stop_max_risk_mult=self.config.risk.atr_stop_max_risk_mult,
         )
         self.entry_engine = EntryEngine(config=self.config)
         self.drawdown = DrawdownGuard()

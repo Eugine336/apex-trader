@@ -381,12 +381,11 @@ class RiskConfig:
 
     # ── Volatility stop model (F1 Phase A: offline evidence only) ────────
     # Controls ATR-based stop-loss distance computation for offline
-    # backtest comparison.  "off" = live SL is unaffected; backtest
-    # comparison harness uses compare_atr_stop=True opt-in.
-    # "shadow"/"on" are reserved for a FUTURE PR-B and are NOT
-    # implemented here — the live _resolve_stop_loss is byte-for-byte
-    # unchanged regardless of this value.
-    volatility_stop_mode: str = "on"
+    # ATR-based volatility stop.  "off" = live SL uses structure only
+    # (byte-for-byte identical to pre-PR-B behavior).  "on" = live SL
+    # is replaced by a clamped ATR stop when ATR data is available,
+    # falling back to the structure SL otherwise.
+    volatility_stop_mode: str = "off"
     atr_stop_period: int = 14
     atr_stop_mult: float = 1.5
     atr_stop_ratio_min: float = 0.5
