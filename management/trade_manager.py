@@ -338,6 +338,8 @@ class TradeManager:
     def _check_tp1(self, trade: ManagedTrade) -> bool:
         if trade.partial_closed:
             return False
+        if trade.tp1 is None or trade.tp1 <= 0:
+            return False
         is_long = self._is_long(trade.direction)
         hit = (
             (is_long and trade.current_price >= trade.tp1)
@@ -388,7 +390,7 @@ class TradeManager:
     def _check_tp3(self, trade: ManagedTrade) -> bool:
         if not self.tp3_ladder_enabled:
             return False
-        if trade.tp3 is None or trade.tp3_hit or not trade.partial_closed:
+        if trade.tp3 is None or trade.tp3 <= 0 or trade.tp3_hit or not trade.partial_closed:
             return False
         is_long = self._is_long(trade.direction)
         hit = (
@@ -409,6 +411,8 @@ class TradeManager:
         return hit
 
     def _check_tp2(self, trade: ManagedTrade) -> bool:
+        if trade.tp2 is None or trade.tp2 <= 0:
+            return False
         is_long = self._is_long(trade.direction)
         hit = (
             (is_long and trade.current_price >= trade.tp2)
