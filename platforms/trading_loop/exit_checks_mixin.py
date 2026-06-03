@@ -470,3 +470,59 @@ class ExitChecksMixin:
             except Exception as exc:
                 logger.debug("Spread monitor error for {}: {}", pos.symbol, exc)
 
+    def _check_opportunity_cost_exit(
+        self, oid: str, pos: ManagedPosition, now: datetime,
+    ) -> None:
+        """Shadow-mode opportunity-cost detection (F4 Phase 1).
+
+        Fires ONLY when all position slots are full AND a materially
+        better candidate was rejected this cycle AND this position is
+        stagnant/flat.  Differentiated from the existing stall exit
+        (which is absolute time-based and ignores portfolio contention)
+        by being contention-gated and relative (compares entry score
+        against the foregone candidate's score).
+
+        Phase 1 NEVER closes a position — it only logs when the
+        condition would fire, regardless of the configured mode.
+        """
+        cfg = self.config.risk
+        if cfg.opportunity_cost_exit_mode == "off":
+            return
+
+        if len(self.managed_positions) < cfg.max_open_trades:
+            return
+        blocked = self._last_slot_blocked_candidate
+        if blocked is None:
+            return
+
+        hold_minutes = (now - pos.open_time).total_seconds() / 60
+        if hold_minutes < cfg.opportunity_cost_min_hold_minutes:
+            return
+
+        tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+        if tm_trade is None:
+            return
+        if tm_trade.pnl_pips > cfg.opportunity_cost_max_pnl_pips:
+            return
+        if tm_trade.partial_closed:
+            return
+
+        score_delta = blocked["score"] - pos.score
+        if score_delta < cfg.opportunity_cost_score_margin:
+            return
+
+        logger.info(
+            "[F4 SHADOW] opportunity-cost exit WOULD fire — "
+            "{} {} (entry_score={}, pnl={:.1f}pip, held={:.0f}min) "
+            "← blocked {} {} (score={}, delta=+{})",
+            pos.direction, pos.symbol, pos.score,
+            tm_trade.pnl_pips, hold_minutes,
+            blocked["direction"], blocked["pair"],
+            blocked["score"], score_delta,
+        )
+        if cfg.opportunity_cost_exit_mode == "active":
+            logger.warning(
+                "[F4] active mode is not implemented in Phase 1 — "
+                "treating as shadow (no position closed)"
+            )
+
