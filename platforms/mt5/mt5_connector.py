@@ -74,6 +74,7 @@ class MT5Connector(BaseConnector):
         deviation: int = 20,
         magic: int = 202500,
         broker_name: str = "auto",  # "auto" = detect from terminal info on connect
+        reject_on_minlot_inflation: bool = False,
     ):
         self._login = login
         self._password = password
@@ -84,6 +85,7 @@ class MT5Connector(BaseConnector):
         self._symbol_cache: dict[str, Optional[str]] = {}  # None = confirmed not on broker
         self._not_found_warned: set[str] = set()  # warn once then silent
         self._broker_name = broker_name
+        self._reject_on_minlot_inflation = reject_on_minlot_inflation
         # Defer SymbolMapper creation when broker_name is "auto".
         # connect() will detect the real broker name and create the mapper then.
         # Creating it now with "auto" would trigger a "no config" warning.
@@ -348,10 +350,25 @@ class MT5Connector(BaseConnector):
                 stops_level, digits, point = 0, 5, 0.00001
 
         # Volume: clamp and round to broker's volume_min/max/step
+        requested_lots = lots
         if vol_step > 0:
             lots = round(round(lots / vol_step) * vol_step, 10)
         lots = max(vol_min, min(vol_max, lots))
         lots = round(lots, 2)
+
+        if lots > requested_lots and vol_min > requested_lots:
+            inflation_factor = round(lots / requested_lots, 1) if requested_lots > 0 else 0.0
+            logger.warning(
+                "[MINLOT_INFLATION] {} — requested {:.4f} lots, broker vol_min={:.4f}, "
+                "final {:.4f} lots ({}x inflation)",
+                mapped, requested_lots, vol_min, lots, inflation_factor,
+            )
+            if self._reject_on_minlot_inflation:
+                return self._fail_order(
+                    symbol, direction, lots, sl, tp,
+                    f"min-lot inflation: requested {requested_lots} < broker min {vol_min}",
+                )
+
         request["volume"] = float(lots)
 
         # Stops: enforce minimum SL/TP distance from entry price
@@ -475,10 +492,24 @@ class MT5Connector(BaseConnector):
             else:
                 vol_min, vol_max, vol_step, digits = 0.01, 100.0, 0.01, 5
 
+        requested_lots = lots
         if vol_step > 0:
             lots = round(round(lots / vol_step) * vol_step, 10)
         lots = max(vol_min, min(vol_max, lots))
         lots = round(lots, 2)
+
+        if lots > requested_lots and vol_min > requested_lots:
+            inflation_factor = round(lots / requested_lots, 1) if requested_lots > 0 else 0.0
+            logger.warning(
+                "[MINLOT_INFLATION] {} — requested {:.4f} lots, broker vol_min={:.4f}, "
+                "final {:.4f} lots ({}x inflation)",
+                mapped, requested_lots, vol_min, lots, inflation_factor,
+            )
+            if self._reject_on_minlot_inflation:
+                return self._fail_order(
+                    symbol, order_kind, lots, sl, tp,
+                    f"min-lot inflation: requested {requested_lots} < broker min {vol_min}",
+                )
 
         pending_comment = comment or "APEX_PENDING"
         if idempotency_key:
