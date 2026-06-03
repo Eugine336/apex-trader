@@ -85,6 +85,9 @@ _MIGRATE_IDEM_KEY = (
 _MIGRATE_CONFLUENCES = (
     "ALTER TABLE managed_positions ADD COLUMN confluences_json TEXT NOT NULL DEFAULT '[]'"
 )
+_MIGRATE_INITIAL_RISK = (
+    "ALTER TABLE managed_positions ADD COLUMN initial_risk_dollars REAL"
+)
 
 
 class PositionStore:
@@ -128,6 +131,12 @@ class PositionStore:
             except sqlite3.OperationalError as exc:
                 logger.debug("[position_store] confluences migration skipped (likely already exists): {}", exc)
                 pass
+        if "initial_risk_dollars" not in cols:
+            try:
+                self._conn.execute(_MIGRATE_INITIAL_RISK)
+            except sqlite3.OperationalError as exc:
+                logger.debug("[position_store] initial_risk_dollars migration skipped (likely already exists): {}", exc)
+                pass
 
     # ── Health tracking ─────────────────────────────────────────────────
 
@@ -167,8 +176,8 @@ class PositionStore:
                      sl, tp1, tp2, score, regime, session, entry_type,
                      open_time, tp1_hit, at_breakeven, trailing,
                      tm_trade_id, stake_usd, multiplier, idempotency_key,
-                     confluences_json, last_update)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     confluences_json, initial_risk_dollars, last_update)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         str(pos.order_id),
@@ -193,6 +202,7 @@ class PositionStore:
                         getattr(pos, "multiplier", 100),
                         getattr(pos, "idempotency_key", ""),
                         json.dumps(getattr(pos, "confluences", [])),
+                        getattr(pos, "initial_risk_dollars", None),
                         datetime.now(timezone.utc).isoformat(),
                     ),
                 )

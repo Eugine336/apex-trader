@@ -68,6 +68,7 @@ class RecoveryReconciliationMixin:
                 pos.trailing = bool(row["trailing"])
                 pos.tm_trade_id = row["tm_trade_id"]
                 pos.last_update = datetime.fromisoformat(row["last_update"])
+                pos.initial_risk_dollars = row.get("initial_risk_dollars")
 
                 tm_signal = TMEntrySignal(
                     pair=pos.symbol,

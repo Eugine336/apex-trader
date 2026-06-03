@@ -43,6 +43,7 @@ class ManagedPosition:
         "revalidation_pending",
         "unconfirmed_cycles",
         "confluences",
+        "initial_risk_dollars",
     )
 
     def __init__(
@@ -88,6 +89,7 @@ class ManagedPosition:
         self.revalidation_pending = False
         self.unconfirmed_cycles = 0
         self.confluences = list(confluences) if confluences else []
+        self.initial_risk_dollars: float | None = None
 
 
 class _LockedPositions:
