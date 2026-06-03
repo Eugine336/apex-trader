@@ -230,18 +230,18 @@ class TradeJournal:
                 "avg_hold_time": 0.0,
             }
 
-        pnl_dollars = [float(row[5]) if row[5] is not None else float(row[2]) for row in rows]
-        wins = [p for p in pnl_dollars if p > 0]
-        losses = [p for p in pnl_dollars if p < 0]
-        win_rate = (len(wins) / len(pnl_dollars)) * 100
-        avg_rr = float(np.mean(pnl_dollars))
+        pnl_net = [self._swap_net_pnl(row) for row in rows]
+        wins = [p for p in pnl_net if p > 0]
+        losses = [p for p in pnl_net if p < 0]
+        win_rate = (len(wins) / len(pnl_net)) * 100
+        avg_rr = float(np.mean(pnl_net))
         profit_factor = sum(wins) / abs(sum(losses)) if losses else float("inf")
-        sharpe_ratio = self._sharpe_ratio(pnl_dollars)
-        max_drawdown = self._max_drawdown(pnl_dollars)
+        sharpe_ratio = self._sharpe_ratio(pnl_net)
+        max_drawdown = self._max_drawdown(pnl_net)
         avg_hold_time = float(np.mean([r[3] for r in rows if r[3] is not None])) if rows else 0.0
 
-        best_pair = self._best_dimension(rows, dimension="pair")
-        best_session = self._best_dimension(rows, dimension="session")
+        best_pair = self._best_dimension(rows, pnl_net, dimension="pair")
+        best_session = self._best_dimension(rows, pnl_net, dimension="session")
 
         return {
             "win_rate": round(win_rate, 2),
@@ -329,6 +329,8 @@ class TradeJournal:
         _PNL = 2
         _OUTCOME = 4
         _PNL_D = 5
+        _SWAP = 6
+        _SWAP_ST = 7
         _DIR = 8
         MARKER = TradeJournal._PARTIAL_OUTCOME
 
@@ -364,14 +366,17 @@ class TradeJournal:
                 idx = merge_into[idx]
             return idx
 
-        extra: dict[int, tuple[float, float]] = {}
+        extra: dict[int, tuple[float, float, float, bool]] = {}
         for pi in skip:
             target = _resolve(pi)
             p = rows[pi]
             pnl_add = float(p[_PNL])
             pnl_d_add = float(p[_PNL_D]) if p[_PNL_D] is not None else float(p[_PNL])
-            prev = extra.get(target, (0.0, 0.0))
-            extra[target] = (prev[0] + pnl_add, prev[1] + pnl_d_add)
+            leg_modeled = len(p) > _SWAP_ST and p[_SWAP_ST] == "modeled"
+            swap_add = float(p[_SWAP]) if leg_modeled and p[_SWAP] is not None else 0.0
+            prev = extra.get(target, (0.0, 0.0, 0.0, False))
+            extra[target] = (prev[0] + pnl_add, prev[1] + pnl_d_add,
+                             prev[2] + swap_add, prev[3] or leg_modeled)
 
         result: list[tuple] = []
         for i, row in enumerate(rows):
@@ -382,6 +387,12 @@ class TradeJournal:
                 row[_PNL] = float(row[_PNL]) + extra[i][0]
                 pnl_d = float(row[_PNL_D]) if row[_PNL_D] is not None else float(row[_PNL] - extra[i][0])
                 row[_PNL_D] = pnl_d + extra[i][1]
+                extra_swap, extra_any_modeled = extra[i][2], extra[i][3]
+                surv_modeled = len(row) > _SWAP_ST and row[_SWAP_ST] == "modeled"
+                surv_swap = float(row[_SWAP]) if surv_modeled and row[_SWAP] is not None else 0.0
+                if extra_any_modeled or surv_modeled:
+                    row[_SWAP] = surv_swap + extra_swap
+                    row[_SWAP_ST] = "modeled"
                 row = tuple(row)
             result.append(row)
         return result
@@ -428,14 +439,17 @@ class TradeJournal:
                 idx = merge_into[idx]
             return idx
 
-        extra: dict[int, tuple[float, float]] = {}
+        extra: dict[int, tuple[float, float, float, bool]] = {}
         for pi in skip:
             target = _resolve(pi)
             p = trades[pi]
             pnl_add = float(p.get("pnl", 0))
             pnl_d_add = float(p.get("pnl_dollars", 0))
-            prev = extra.get(target, (0.0, 0.0))
-            extra[target] = (prev[0] + pnl_add, prev[1] + pnl_d_add)
+            leg_modeled = p.get("swap_status") == "modeled"
+            swap_add = float(p.get("swap_modeled") or 0) if leg_modeled else 0.0
+            prev = extra.get(target, (0.0, 0.0, 0.0, False))
+            extra[target] = (prev[0] + pnl_add, prev[1] + pnl_d_add,
+                             prev[2] + swap_add, prev[3] or leg_modeled)
 
         result: list[dict] = []
         for i, t in enumerate(trades):
@@ -445,8 +459,29 @@ class TradeJournal:
                 t = dict(t)
                 t["pnl"] = float(t.get("pnl", 0)) + extra[i][0]
                 t["pnl_dollars"] = float(t.get("pnl_dollars", 0)) + extra[i][1]
+                extra_swap, extra_any_modeled = extra[i][2], extra[i][3]
+                surv_modeled = t.get("swap_status") == "modeled"
+                surv_swap = float(t.get("swap_modeled") or 0) if surv_modeled else 0.0
+                if extra_any_modeled or surv_modeled:
+                    t["swap_modeled"] = surv_swap + extra_swap
+                    t["swap_status"] = "modeled"
             result.append(t)
         return result
+
+    @staticmethod
+    def _swap_net_pnl(row: tuple) -> float:
+        """Compute swap-netted P&L for a single consolidated row.
+
+        Sign convention (from swap_model.py): positive = credit (money
+        received), negative = cost (money paid).  Netting is additive:
+        ``net = pnl_dollars + swap_modeled``.  Rows with swap_status !=
+        "modeled" are returned at their raw dollar value — unknown swap
+        is never treated as zero.
+        """
+        raw = float(row[5]) if row[5] is not None else float(row[2])
+        if len(row) > 7 and row[7] == "modeled" and row[6] is not None:
+            return raw + float(row[6])
+        return raw
 
     def _sharpe_ratio(self, returns: list[float]) -> float:
         if len(returns) < 2:
@@ -462,11 +497,11 @@ class TradeJournal:
         drawdowns = peaks - equity
         return float(np.max(drawdowns)) if len(drawdowns) else 0.0
 
-    def _best_dimension(self, rows: list[tuple], dimension: str) -> Optional[str]:
+    def _best_dimension(self, rows: list[tuple], pnl_net: list[float], dimension: str) -> Optional[str]:
         idx = 0 if dimension == "pair" else 1
         grouped: dict[str, list[float]] = {}
-        for row in rows:
-            grouped.setdefault(row[idx], []).append(float(row[2]))
+        for row, pnl in zip(rows, pnl_net):
+            grouped.setdefault(row[idx], []).append(pnl)
         if not grouped:
             return None
         ranked = sorted(grouped.items(), key=lambda item: np.mean(item[1]), reverse=True)
