@@ -317,9 +317,13 @@ class TradeJournal:
 
         Rows are already sorted by timestamp ASC.  For each partial-close
         record, the next row with the same pair+direction is the continuation.
-        The two are merged: pnl and pnl_dollars are summed onto the
-        continuation row, and the partial row is dropped.  If no continuation
-        is found the partial row is kept as-is (it represents a real P&L).
+        When partial-close records chain (a reopened half-stake position
+        itself hits TP1 and reopens again), the entire chain is collapsed
+        into a single surviving row: pnl and pnl_dollars are summed across
+        all legs, and every marker row is dropped.  The surviving row is
+        the final non-marker continuation, or the last marker if no
+        non-marker continuation exists (orphaned chain — kept because it
+        represents real realized P&L).
         """
         _PAIR = 0
         _PNL = 2
@@ -355,13 +359,19 @@ class TradeJournal:
         if not skip:
             return rows
 
+        def _resolve(idx: int) -> int:
+            while idx in merge_into:
+                idx = merge_into[idx]
+            return idx
+
         extra: dict[int, tuple[float, float]] = {}
-        for pi, ci in merge_into.items():
+        for pi in skip:
+            target = _resolve(pi)
             p = rows[pi]
             pnl_add = float(p[_PNL])
             pnl_d_add = float(p[_PNL_D]) if p[_PNL_D] is not None else float(p[_PNL])
-            prev = extra.get(ci, (0.0, 0.0))
-            extra[ci] = (prev[0] + pnl_add, prev[1] + pnl_d_add)
+            prev = extra.get(target, (0.0, 0.0))
+            extra[target] = (prev[0] + pnl_add, prev[1] + pnl_d_add)
 
         result: list[tuple] = []
         for i, row in enumerate(rows):
@@ -382,7 +392,9 @@ class TradeJournal:
 
         Same algorithm as _consolidate_partial_rows but operates on the dict
         representation returned by get_all_trades_as_dicts.  Trades are assumed
-        to be in insertion (chronological) order.
+        to be in insertion (chronological) order.  Handles chained reopens
+        (3+ legs) by resolving merge targets to their ultimate destination,
+        ensuring no P&L is lost regardless of chain length.
         """
         MARKER = TradeJournal._PARTIAL_OUTCOME
         if not trades:
@@ -411,13 +423,19 @@ class TradeJournal:
         if not skip:
             return trades
 
+        def _resolve(idx: int) -> int:
+            while idx in merge_into:
+                idx = merge_into[idx]
+            return idx
+
         extra: dict[int, tuple[float, float]] = {}
-        for pi, ci in merge_into.items():
+        for pi in skip:
+            target = _resolve(pi)
             p = trades[pi]
             pnl_add = float(p.get("pnl", 0))
             pnl_d_add = float(p.get("pnl_dollars", 0))
-            prev = extra.get(ci, (0.0, 0.0))
-            extra[ci] = (prev[0] + pnl_add, prev[1] + pnl_d_add)
+            prev = extra.get(target, (0.0, 0.0))
+            extra[target] = (prev[0] + pnl_add, prev[1] + pnl_d_add)
 
         result: list[dict] = []
         for i, t in enumerate(trades):
