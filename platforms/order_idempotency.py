@@ -5,10 +5,24 @@ submitted twice — even across retries, reconnects, or crash recovery.
 """
 
 import hashlib
+import re
 from datetime import datetime, timezone
 
 
 _KEY_WINDOW_SECONDS = 300
+
+_MT5_COMMENT_MAX = 31
+
+_SAFE_RE = re.compile(r"[^A-Za-z0-9._\-]")
+
+_VALID_PREFIXES = ("APEX", "APND")
+
+_LEGACY_PREFIXES = ("APEX", "APEX_PEND")
+
+
+def _sanitize(value: str) -> str:
+    """Strip non-alphanumeric chars (except . - _) to produce MT5-safe text."""
+    return _SAFE_RE.sub("", value)
 
 
 def generate_idempotency_key(
@@ -32,13 +46,68 @@ def generate_idempotency_key(
     return digest
 
 
-def extract_idempotency_key(comment: str) -> str | None:
-    """Parse an APEX order comment and return the embedded idem key, if any.
+def build_order_comment(
+    prefix: str,
+    idem_key: str,
+    score: int | float | None = None,
+    session: str | None = None,
+) -> str:
+    """Build an MT5-safe order comment that fits within 31 chars.
 
-    Comment format: ``APEX|<score>|<session>|<idem_key>``
-    Legacy format (no key): ``APEX|<score>|<session>``
+    Layout: ``<PREFIX>|<idem_key>|<score>|<session>``
+
+    The idem_key occupies a fixed position (field 1) and is NEVER
+    truncated.  Score and session are sanitized and trimmed from the
+    right if the total would exceed 31 chars.
+
+    Prefixes:
+        APEX  — market / generic orders
+        APND  — pending limit / stop orders
+    """
+    pfx = _sanitize(prefix)[:4] or "APEX"
+    key = _sanitize(idem_key)[:12]
+
+    fixed = f"{pfx}|{key}"
+    budget = _MT5_COMMENT_MAX - len(fixed)
+
+    tail = ""
+    if score is not None and budget > 1:
+        s = _sanitize(str(int(score)))
+        candidate = f"|{s}"
+        if len(candidate) <= budget:
+            tail += candidate
+            budget -= len(candidate)
+        else:
+            tail += candidate[:budget]
+            budget = 0
+
+    if session and budget > 1:
+        s = _sanitize(str(session))
+        candidate = f"|{s}"
+        if len(candidate) <= budget:
+            tail += candidate
+        else:
+            tail += candidate[:budget]
+
+    result = f"{fixed}{tail}"
+    return result[:_MT5_COMMENT_MAX]
+
+
+def extract_idempotency_key(comment: str) -> str | None:
+    """Parse an APEX order comment and return the embedded idem key.
+
+    Current format: ``<PREFIX>|<idem_key>|...``
+       where PREFIX is APEX or APND, idem_key is at index 1.
+
+    Legacy format: ``<PREFIX>|<score>|<session>|<idem_key>``
+       where PREFIX is APEX or APEX_PEND, idem_key is at index 3.
     """
     parts = comment.split("|")
-    if len(parts) >= 4 and parts[0] in ("APEX", "APEX_PEND"):
+    if len(parts) < 2:
+        return None
+    prefix = parts[0]
+    if prefix in _VALID_PREFIXES and len(parts) >= 2 and len(parts[1]) == 12:
+        return parts[1]
+    if prefix in _LEGACY_PREFIXES and len(parts) >= 4:
         return parts[3]
     return None

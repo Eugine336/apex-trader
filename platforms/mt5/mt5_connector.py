@@ -298,9 +298,6 @@ class MT5Connector(BaseConnector):
         price = tick.ask if is_buy else tick.bid
 
         order_comment = comment or "APEX"
-        if idempotency_key:
-            order_comment = f"{order_comment}|{idempotency_key}"
-        order_comment = order_comment[:31]
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -512,9 +509,6 @@ class MT5Connector(BaseConnector):
                 )
 
         pending_comment = comment or "APEX_PENDING"
-        if idempotency_key:
-            pending_comment = f"{pending_comment}|{idempotency_key}"
-        pending_comment = pending_comment[:31]
 
         request = {
             "action": mt5.TRADE_ACTION_PENDING,
