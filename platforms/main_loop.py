@@ -53,6 +53,7 @@ from platform_context import PlatformContext, build_context_for_symbol
 from risk.portfolio_risk_state import (
     PortfolioRiskStateMachine,
     PortfolioRiskState,
+    compute_position_risk_dollars,
 )
 from risk.risk_engine import RiskEngine
 from risk.risk_reporter import RiskReporter
@@ -786,6 +787,23 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             confluences=list(signal.confluences),
         )
 
+        info_risk = INSTRUMENT_REGISTRY.get(pair.upper())
+        pip_sz = info_risk.pip_size if info_risk else 0.0001
+        pip_val = info_risk.pip_value_per_lot if info_risk else 10.0
+        risk_d, is_fb = compute_position_risk_dollars(
+            direction=direction,
+            entry_price=order.fill_price,
+            sl=signal.stop_loss,
+            lots=order.lots,
+            pip_size=pip_sz,
+            pip_value_per_lot=pip_val,
+            at_breakeven=False,
+            stake_usd=managed.stake_usd,
+            multiplier=managed.multiplier,
+            is_deriv_stake=ctx.uses_stake,
+        )
+        managed.initial_risk_dollars = risk_d if not is_fb else None
+
         tm_signal = TMEntrySignal(
             pair=pair,
             direction=direction,
@@ -867,6 +885,23 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     entry_type=sig.entry_type,
                     confluences=list(sig.confluences),
                 )
+                pend_info = INSTRUMENT_REGISTRY.get(info["symbol"].upper())
+                pend_pip_sz = pend_info.pip_size if pend_info else 0.0001
+                pend_pip_val = pend_info.pip_value_per_lot if pend_info else 10.0
+                pend_ctx = build_context_for_symbol(info["symbol"])
+                pend_risk, pend_fb = compute_position_risk_dollars(
+                    direction=info["direction"],
+                    entry_price=bp.open_price,
+                    sl=sig.stop_loss,
+                    lots=bp.lots,
+                    pip_size=pend_pip_sz,
+                    pip_value_per_lot=pend_pip_val,
+                    at_breakeven=False,
+                    stake_usd=managed.stake_usd,
+                    multiplier=managed.multiplier,
+                    is_deriv_stake=pend_ctx.uses_stake,
+                )
+                managed.initial_risk_dollars = pend_risk if not pend_fb else None
                 tm_signal = TMEntrySignal(
                     pair=info["symbol"],
                     direction=info["direction"],
@@ -1602,6 +1637,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             pnl_dollars=pnl_dollars,
             swap_modeled=swap_modeled,
             swap_status=swap_status,
+            risk_dollars=getattr(pos, "initial_risk_dollars", None),
         )
         self._run_journal_async(self.journal.log_trade(trade_record))
         self.ml.register_new_trade()
