@@ -212,18 +212,18 @@ def get_all_symbols() -> list[str]:
 
 @dataclass
 class ScoringConfig:
-    min_entry_score: int = 65
-    watchlist_score: int = 50
+    min_entry_score: int = 70
+    watchlist_score: int = 55
     structure_points: int = 20
     order_block_points: int = 20
     fvg_points: int = 15
     mtf_confluence_points: int = 15
     session_points: int = 10
     news_points: int = 10
-    currency_strength_points: int = 10
-    ranging_score_cap: int = 55  # Tighter cap — ranging pairs need stronger confluences
+    currency_strength_points: int = 0
+    ranging_score_cap: int = 50  # Tighter cap — ranging pairs need stronger confluences
     volatile_score_cap: int = 100  # FIX: was 0 — killed all volatile-regime trades
-    use_adaptive_scoring_weights: bool = False
+    use_adaptive_scoring_weights: bool = True
 
 
 # ---------------------------------------------------------------------------
@@ -235,19 +235,19 @@ class ScoringConfig:
 # risk_per_trade_pct to 1.0, then 2.0. Never increase before proving edge.
 @dataclass
 class RiskConfig:
-    risk_per_trade_pct: float = 0.5
+    risk_per_trade_pct: float = 0.75
     max_daily_drawdown_pct: float = 3.0
     max_open_trades: int = 3
     max_correlated_trades: int = 1
-    min_risk_reward: float = 1.5
+    min_risk_reward: float = 1.8
     # How many times the instrument's typical spread we allow before rejecting.
     # 3.0 gives headroom for indices (US100 widens ~10 pts off-hours vs typical 1.5)
     # and crypto (BTCUSD spreads balloon on thin liquidity).
     # The validator uses: max_allowed = typical_spread * max_spread_multiplier
     max_spread_multiplier: float = 3.0
     ev_threshold: float = -0.1
-    tp_adjust_enabled: bool = False
-    pending_orders_enabled: bool = False
+    tp_adjust_enabled: bool = True
+    pending_orders_enabled: bool = True
     pending_max_wait_minutes: int = 30
     max_cluster_same_direction: int = 2
     allow_intentional_hedge: bool = False
@@ -255,12 +255,12 @@ class RiskConfig:
     margin_warn_pct: float = 200.0
     margin_block_entry_pct: float = 150.0
     margin_flatten_pct: float = 100.0
-    weekend_protection_enabled: bool = False
+    weekend_protection_enabled: bool = True
     weekend_protection_mode: str = "derisk"
     weekend_close_buffer_minutes: int = 15
-    tp3_ladder_enabled: bool = False
-    tp3_r_multiple: float = 4.0
-    tp3_close_ratio: float = 0.5
+    tp3_ladder_enabled: bool = True
+    tp3_r_multiple: float = 5.0
+    tp3_close_ratio: float = 0.25
     scale_in_enabled: bool = False
     scale_in_max_adds: int = 1
     scale_in_min_profit_r: float = 1.0
@@ -333,7 +333,7 @@ class RiskConfig:
     # ── Portfolio risk reduction (M8 Phase 4b) ──────────────────────────
     # Controlled, graduated exposure reduction.  Default OFF.
     # Requires portfolio_risk_engine_enabled=True to have any effect.
-    portfolio_reduction_enabled: bool = False
+    portfolio_reduction_enabled: bool = True
     # Heat % that triggers escalation to REDUCING state (must be > heat_defensive_pct)
     heat_reduction_pct: float = 2.5
     # Seconds in DEFENSIVE before escalating to REDUCING if breach persists
@@ -349,7 +349,7 @@ class RiskConfig:
     # Progressive full-close of weakest positions when portfolio survival
     # is at risk.  Default OFF.  Requires portfolio_risk_engine_enabled=True.
     # Precedence: margin_guardian (margin) >= EMERGENCY (survival) > REDUCING.
-    portfolio_emergency_enabled: bool = False
+    portfolio_emergency_enabled: bool = True
     # Heat % that triggers EMERGENCY state (must be > heat_reduction_pct)
     heat_emergency_pct: float = 4.0
     # Seconds since last successful reconcile before triggering EMERGENCY
@@ -386,7 +386,7 @@ class RiskConfig:
     # "shadow"/"on" are reserved for a FUTURE PR-B and are NOT
     # implemented here — the live _resolve_stop_loss is byte-for-byte
     # unchanged regardless of this value.
-    volatility_stop_mode: str = "off"
+    volatility_stop_mode: str = "on"
     atr_stop_period: int = 14
     atr_stop_mult: float = 1.5
     atr_stop_ratio_min: float = 0.5
