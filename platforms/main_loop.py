@@ -155,6 +155,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._position_last_h1_close: dict[str, datetime] = {} # last H1 candle time seen
         self._news_exit_protected: set[str] = set()            # oids already tightened for news
         self._last_market_data: dict = {}                       # most recent market data for in-trade analysis
+        self._last_slot_blocked_candidate: dict | None = None    # best foregone candidate when slots full (F4)
 
         # ── Portfolio risk state machine (M8 Phase 4a + 4b + 4c) ────────────
         cfg_r = self.config.risk
@@ -463,6 +464,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         top_results = reranked[:3]
         top = [rank_map[r.pair] for r in top_results if r.pair in rank_map]
 
+        self._last_slot_blocked_candidate = None
         for setup in top:
             result = setup.result
             if result.pair in open_pairs:
@@ -485,6 +487,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     continue
 
             if len(self.managed_positions) >= self.config.risk.max_open_trades:
+                self._last_slot_blocked_candidate = {
+                    "pair": result.pair,
+                    "direction": result.direction,
+                    "score": result.score,
+                }
                 self._log_rejection(result.pair, result.direction, result.score, "Max trades reached")
                 break
 
@@ -1327,7 +1334,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 if cfg.dynamic_sl_tightening_enabled:
                     self._apply_dynamic_sl_tightening(oid, pos)
 
-                # ── 5. Scale-in on strength (wired to live scan) ───────────
+                # ── 5. Opportunity-cost exit detection (F4 shadow) ─────────
+                if cfg.opportunity_cost_exit_mode != "off":
+                    self._check_opportunity_cost_exit(oid, pos, now)
+                    if oid not in self.managed_positions:
+                        continue
+
+                # ── 6. Scale-in on strength (wired to live scan) ───────────
                 if cfg.scale_in_enabled:
                     self._check_scale_in_on_scan(oid, pos, scan_result)
 
