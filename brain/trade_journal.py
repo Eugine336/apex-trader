@@ -36,6 +36,7 @@ class TradeRecord:
     pnl_dollars: float = 0.0
     swap_modeled: Optional[float] = None
     swap_status: str = "unavailable"
+    risk_dollars: Optional[float] = None
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -121,6 +122,12 @@ class TradeJournal:
                 except Exception as exc:
                     logger.debug("[trade_journal] swap_status column migration skipped (likely already exists): {}", exc)
                     pass
+                try:
+                    await db.execute("ALTER TABLE trades ADD COLUMN risk_dollars REAL")
+                    await db.commit()
+                except Exception as exc:
+                    logger.debug("[trade_journal] risk_dollars column migration skipped (likely already exists): {}", exc)
+                    pass
             self._initialized = True
 
     async def log_trade(self, trade: TradeRecord) -> None:
@@ -131,8 +138,9 @@ class TradeJournal:
                 INSERT INTO trades (
                     pair, direction, entry, exit, pnl, score, confluences, regime,
                     session, spread, slippage, entry_type, time_to_tp1, time_to_exit,
-                    outcome, pnl_dollars, swap_modeled, swap_status, timestamp
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    outcome, pnl_dollars, swap_modeled, swap_status, risk_dollars,
+                    timestamp
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     trade.pair,
@@ -153,6 +161,7 @@ class TradeJournal:
                     trade.pnl_dollars,
                     trade.swap_modeled,
                     trade.swap_status,
+                    trade.risk_dollars,
                     trade.timestamp.isoformat(),
                 ),
             )
@@ -208,7 +217,7 @@ class TradeJournal:
             cursor = await db.execute(
                 """
                 SELECT pair, session, pnl, time_to_exit, outcome, pnl_dollars,
-                       swap_modeled, swap_status, direction
+                       swap_modeled, swap_status, direction, risk_dollars
                 FROM trades
                 WHERE outcome != 'LEGACY'
                 ORDER BY timestamp ASC
@@ -221,20 +230,23 @@ class TradeJournal:
         if not rows:
             return {
                 "win_rate": 0.0,
-                "avg_rr": 0.0,
+                "avg_rr": 0.0,  # mean dollar P&L, not R — kept for backward-compat
                 "profit_factor": 0.0,
                 "sharpe_ratio": 0.0,
                 "max_drawdown": 0.0,
                 "best_pair": None,
                 "best_session": None,
                 "avg_hold_time": 0.0,
+                "mean_r": 0.0,
+                "expectancy_r": 0.0,
+                "r_sample_size": 0,
             }
 
         pnl_net = [self._swap_net_pnl(row) for row in rows]
         wins = [p for p in pnl_net if p > 0]
         losses = [p for p in pnl_net if p < 0]
         win_rate = (len(wins) / len(pnl_net)) * 100
-        avg_rr = float(np.mean(pnl_net))
+        avg_rr = float(np.mean(pnl_net))  # mean dollar P&L — NOT reward/risk
         profit_factor = sum(wins) / abs(sum(losses)) if losses else float("inf")
         sharpe_ratio = self._sharpe_ratio(pnl_net)
         max_drawdown = self._max_drawdown(pnl_net)
@@ -243,15 +255,39 @@ class TradeJournal:
         best_pair = self._best_dimension(rows, pnl_net, dimension="pair")
         best_session = self._best_dimension(rows, pnl_net, dimension="session")
 
+        _RISK_D = 9
+        r_values = []
+        for row, net_pnl in zip(rows, pnl_net):
+            risk_d = row[_RISK_D] if len(row) > _RISK_D else None
+            if risk_d is not None and risk_d > 0:
+                r_values.append(net_pnl / risk_d)
+
+        r_sample_size = len(r_values)
+        if r_values:
+            mean_r = float(np.mean(r_values))
+            r_wins = [rv for rv in r_values if rv > 0]
+            r_losses = [rv for rv in r_values if rv <= 0]
+            win_pct = len(r_wins) / len(r_values)
+            loss_pct = 1.0 - win_pct
+            avg_win_r = float(np.mean(r_wins)) if r_wins else 0.0
+            avg_loss_r = float(np.mean(r_losses)) if r_losses else 0.0
+            expectancy_r = win_pct * avg_win_r + loss_pct * avg_loss_r
+        else:
+            mean_r = 0.0
+            expectancy_r = 0.0
+
         return {
             "win_rate": round(win_rate, 2),
-            "avg_rr": round(avg_rr, 4),
+            "avg_rr": round(avg_rr, 4),  # mean dollar P&L — NOT reward/risk
             "profit_factor": round(profit_factor, 4) if np.isfinite(profit_factor) else float("inf"),
             "sharpe_ratio": round(sharpe_ratio, 4),
             "max_drawdown": round(max_drawdown, 4),
             "best_pair": best_pair,
             "best_session": best_session,
             "avg_hold_time": round(avg_hold_time, 2),
+            "mean_r": round(mean_r, 4),
+            "expectancy_r": round(expectancy_r, 4),
+            "r_sample_size": r_sample_size,
         }
 
     async def get_all_trades_as_dicts(self) -> list[dict]:
@@ -262,7 +298,7 @@ class TradeJournal:
                 cursor = await db.execute(
                     "SELECT pair, direction, pnl, score, confluences, regime, "
                     "session, spread, entry_type, time_to_exit, outcome, pnl_dollars, "
-                    "timestamp, swap_modeled, swap_status FROM trades"
+                    "timestamp, swap_modeled, swap_status, risk_dollars FROM trades"
                 )
             except Exception:
                 cursor = await db.execute(
@@ -288,6 +324,7 @@ class TradeJournal:
                 "timestamp": r[12] if len(r) > 12 else None,
                 "swap_modeled": r[13] if len(r) > 13 else None,
                 "swap_status": r[14] if len(r) > 14 else "unavailable",
+                "risk_dollars": r[15] if len(r) > 15 else None,
             })
         return self._consolidate_partial_dicts(result)
 
@@ -313,7 +350,8 @@ class TradeJournal:
 
         Column layout assumed (get_performance_stats SELECT):
           0=pair, 1=session, 2=pnl, 3=time_to_exit, 4=outcome,
-          5=pnl_dollars, 6=swap_modeled, 7=swap_status, 8=direction
+          5=pnl_dollars, 6=swap_modeled, 7=swap_status, 8=direction,
+          9=risk_dollars
 
         Rows are already sorted by timestamp ASC.  For each partial-close
         record, the next row with the same pair+direction is the continuation.
@@ -324,6 +362,10 @@ class TradeJournal:
         the final non-marker continuation, or the last marker if no
         non-marker continuation exists (orphaned chain — kept because it
         represents real realized P&L).
+
+        risk_dollars on the surviving row is set to the FIRST (earliest)
+        leg's risk_dollars, because R-multiple is measured against the
+        capital originally risked at the initial entry.
         """
         _PAIR = 0
         _PNL = 2
@@ -332,6 +374,7 @@ class TradeJournal:
         _SWAP = 6
         _SWAP_ST = 7
         _DIR = 8
+        _RISK_D = 9
         MARKER = TradeJournal._PARTIAL_OUTCOME
 
         if not rows:
@@ -366,17 +409,19 @@ class TradeJournal:
                 idx = merge_into[idx]
             return idx
 
-        extra: dict[int, tuple[float, float, float, bool]] = {}
-        for pi in skip:
+        extra: dict[int, tuple[float, float, float, bool, object]] = {}
+        for pi in sorted(skip):
             target = _resolve(pi)
             p = rows[pi]
             pnl_add = float(p[_PNL])
             pnl_d_add = float(p[_PNL_D]) if p[_PNL_D] is not None else float(p[_PNL])
             leg_modeled = len(p) > _SWAP_ST and p[_SWAP_ST] == "modeled"
             swap_add = float(p[_SWAP]) if leg_modeled and p[_SWAP] is not None else 0.0
-            prev = extra.get(target, (0.0, 0.0, 0.0, False))
+            leg_risk = p[_RISK_D] if len(p) > _RISK_D else None
+            prev = extra.get(target, (0.0, 0.0, 0.0, False, None))
+            first_risk = prev[4] if prev[4] is not None else leg_risk
             extra[target] = (prev[0] + pnl_add, prev[1] + pnl_d_add,
-                             prev[2] + swap_add, prev[3] or leg_modeled)
+                             prev[2] + swap_add, prev[3] or leg_modeled, first_risk)
 
         result: list[tuple] = []
         for i, row in enumerate(rows):
@@ -393,6 +438,9 @@ class TradeJournal:
                 if extra_any_modeled or surv_modeled:
                     row[_SWAP] = surv_swap + extra_swap
                     row[_SWAP_ST] = "modeled"
+                first_risk = extra[i][4]
+                if first_risk is not None and len(row) > _RISK_D:
+                    row[_RISK_D] = first_risk
                 row = tuple(row)
             result.append(row)
         return result
@@ -406,6 +454,9 @@ class TradeJournal:
         to be in insertion (chronological) order.  Handles chained reopens
         (3+ legs) by resolving merge targets to their ultimate destination,
         ensuring no P&L is lost regardless of chain length.
+
+        risk_dollars on the surviving dict is set to the FIRST (earliest)
+        leg's risk_dollars for correct R-multiple calculation.
         """
         MARKER = TradeJournal._PARTIAL_OUTCOME
         if not trades:
@@ -439,17 +490,19 @@ class TradeJournal:
                 idx = merge_into[idx]
             return idx
 
-        extra: dict[int, tuple[float, float, float, bool]] = {}
-        for pi in skip:
+        extra: dict[int, tuple[float, float, float, bool, object]] = {}
+        for pi in sorted(skip):
             target = _resolve(pi)
             p = trades[pi]
             pnl_add = float(p.get("pnl", 0))
             pnl_d_add = float(p.get("pnl_dollars", 0))
             leg_modeled = p.get("swap_status") == "modeled"
             swap_add = float(p.get("swap_modeled") or 0) if leg_modeled else 0.0
-            prev = extra.get(target, (0.0, 0.0, 0.0, False))
+            leg_risk = p.get("risk_dollars")
+            prev = extra.get(target, (0.0, 0.0, 0.0, False, None))
+            first_risk = prev[4] if prev[4] is not None else leg_risk
             extra[target] = (prev[0] + pnl_add, prev[1] + pnl_d_add,
-                             prev[2] + swap_add, prev[3] or leg_modeled)
+                             prev[2] + swap_add, prev[3] or leg_modeled, first_risk)
 
         result: list[dict] = []
         for i, t in enumerate(trades):
@@ -465,6 +518,9 @@ class TradeJournal:
                 if extra_any_modeled or surv_modeled:
                     t["swap_modeled"] = surv_swap + extra_swap
                     t["swap_status"] = "modeled"
+                first_risk = extra[i][4]
+                if first_risk is not None:
+                    t["risk_dollars"] = first_risk
             result.append(t)
         return result
 
