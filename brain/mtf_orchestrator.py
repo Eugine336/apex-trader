@@ -72,6 +72,12 @@ class MTFOrchestrator:
         pip_size: float = 0.0001,
         use_adaptive_weights: bool = False,
         scoring_weights: Optional[ScoringWeights] = None,
+        volatility_stop_mode: str = "off",
+        atr_stop_period: int = 14,
+        atr_stop_mult: float = 1.5,
+        atr_stop_ratio_min: float = 0.5,
+        atr_stop_ratio_max: float = 2.0,
+        atr_stop_max_risk_mult: float = 4.0,
     ):
         self.structure_engine = structure_engine or StructureEngine(swing_lookback=2)
         self.liquidity_mapper = liquidity_mapper or LiquidityMapper()
@@ -86,6 +92,12 @@ class MTFOrchestrator:
         self.pip_size = pip_size
         self._use_adaptive_weights = use_adaptive_weights
         self._weights = scoring_weights or ScoringWeights()
+        self._volatility_stop_mode = volatility_stop_mode
+        self._atr_stop_period = atr_stop_period
+        self._atr_stop_mult = atr_stop_mult
+        self._atr_stop_ratio_min = atr_stop_ratio_min
+        self._atr_stop_ratio_max = atr_stop_ratio_max
+        self._atr_stop_max_risk_mult = atr_stop_max_risk_mult
 
     @staticmethod
     def load_saved_weights() -> ScoringWeights:
@@ -222,7 +234,7 @@ class MTFOrchestrator:
             fvg_confluence=fvg_confluence,
             entry_ob=entry_ob,
         )
-        stop_loss = self._resolve_stop_loss(direction, m1_df, entry_price)
+        stop_loss = self._resolve_stop_loss(direction, m1_df, entry_price, pair)
         tp1, tp2 = self._resolve_targets(direction, entry_price, stop_loss, liq_map)
 
         return TradeSetup(
@@ -455,14 +467,52 @@ class MTFOrchestrator:
         return current_price
 
     def _resolve_stop_loss(
-        self, direction: str, m1_df: pd.DataFrame, entry_price: float
+        self, direction: str, m1_df: pd.DataFrame, entry_price: float,
+        pair: str = "",
     ) -> float:
         buffer = 2 * self.pip_size
         if direction == "LONG":
             swing_low = float(m1_df["low"].tail(10).min())
-            return min(swing_low - buffer, entry_price - 5 * self.pip_size)
-        swing_high = float(m1_df["high"].tail(10).max())
-        return max(swing_high + buffer, entry_price + 5 * self.pip_size)
+            structure_sl = min(swing_low - buffer, entry_price - 5 * self.pip_size)
+        else:
+            swing_high = float(m1_df["high"].tail(10).max())
+            structure_sl = max(swing_high + buffer, entry_price + 5 * self.pip_size)
+
+        if self._volatility_stop_mode != "on":
+            return structure_sl
+
+        from brain.instrument_profile import get_profile
+        from brain.volatility_stop import (
+            atr_stop_price,
+            clamped_atr_stop_distance,
+            latest_atr,
+        )
+
+        atr_val = latest_atr(m1_df, self._atr_stop_period)
+        structure_distance = abs(entry_price - structure_sl)
+        inst_profile = get_profile(pair) if pair else None
+        min_pips = inst_profile.min_risk_pips if inst_profile else 5.0
+        max_pips = self._atr_stop_max_risk_mult * min_pips
+
+        dist, status = clamped_atr_stop_distance(
+            atr_val,
+            structure_distance,
+            mult=self._atr_stop_mult,
+            min_pips=min_pips,
+            max_pips=max_pips,
+            pip_size=self.pip_size,
+            ratio_min=self._atr_stop_ratio_min,
+            ratio_max=self._atr_stop_ratio_max,
+        )
+
+        if status == "modeled" and dist is not None:
+            return atr_stop_price(entry_price, direction, dist)
+
+        logger.debug(
+            "[ATR SL] unavailable for {} — falling back to structure SL {:.6f}",
+            pair or "unknown", structure_sl,
+        )
+        return structure_sl
 
     def _resolve_targets(
         self,
