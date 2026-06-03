@@ -261,7 +261,16 @@ class DerivConnector(BaseConnector):
 
     def get_account_info(self) -> AccountInfo:
         self._require_connection()
-        resp = self._sync_send({"balance": 1, "subscribe": 0})
+        # Deriv does not support subscribe=0 on the ticks endpoint (see
+        # get_price comment at L282).  The balance endpoint has the same
+        # limitation — omit subscribe to avoid silent rejection.
+        resp = self._sync_send({"balance": 1})
+        if resp.get("error"):
+            err = resp["error"]
+            raise RuntimeError(
+                f"Deriv balance error: code={err.get('code')}, "
+                f"message={err.get('message')}"
+            )
         bal = resp.get("balance", {})
         return AccountInfo(
             balance=float(bal.get("balance", 0)),
@@ -294,7 +303,12 @@ class DerivConnector(BaseConnector):
         prices = history.get("prices", [])
         times  = history.get("times", [])
         if not prices:
-            raise RuntimeError(f"No tick data from Deriv for {mapped}")
+            resp_keys = list(resp.keys())
+            echo = resp.get("echo_req", {})
+            raise RuntimeError(
+                f"No tick data from Deriv for {mapped} "
+                f"(resp_keys={resp_keys}, echo_req={echo})"
+            )
         quote = float(prices[-1])
         epoch = int(times[-1]) if times else 0
         # ticks_history returns mid price only — bid/ask not available.
@@ -331,7 +345,13 @@ class DerivConnector(BaseConnector):
             )
         candles = resp.get("candles", [])
         if not candles:
-            raise RuntimeError(f"No candle data for {mapped}/{timeframe}")
+            resp_keys = list(resp.keys())
+            echo = resp.get("echo_req", {})
+            raise RuntimeError(
+                f"No candle data for {mapped}/{timeframe} "
+                f"(granularity={granularity}, resp_keys={resp_keys}, "
+                f"echo_req={echo})"
+            )
 
         rows = []
         for c in candles:
