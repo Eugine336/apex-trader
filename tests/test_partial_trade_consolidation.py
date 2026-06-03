@@ -104,6 +104,75 @@ class TestConsolidatePartialRows:
         assert gbp[2] == pytest.approx(35.0)
         assert gbp[5] == pytest.approx(175.0)
 
+    def test_three_leg_chain_sums_all_pnl(self):
+        """marker→marker→final: all three legs' P&L must appear in the survivor."""
+        from brain.trade_journal import TradeJournal
+
+        rows = [
+            self._make_row("EURUSD", "BUY", 30.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=150.0),
+            self._make_row("EURUSD", "BUY", 20.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=100.0),
+            self._make_row("EURUSD", "BUY", -5.0, "BROKER_CLOSED", pnl_dollars=-25.0),
+        ]
+        consolidated = TradeJournal._consolidate_partial_rows(rows)
+        assert len(consolidated) == 1
+        merged = consolidated[0]
+        assert merged[2] == pytest.approx(45.0)
+        assert merged[5] == pytest.approx(225.0)
+        assert merged[4] == "BROKER_CLOSED"
+
+    def test_four_leg_chain_sums_all_pnl(self):
+        """marker→marker→marker→final: four legs collapse to one."""
+        from brain.trade_journal import TradeJournal
+
+        rows = [
+            self._make_row("EURUSD", "BUY", 30.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=150.0),
+            self._make_row("EURUSD", "BUY", 20.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=100.0),
+            self._make_row("EURUSD", "BUY", 10.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=50.0),
+            self._make_row("EURUSD", "BUY", -5.0, "TP2", pnl_dollars=-25.0),
+        ]
+        consolidated = TradeJournal._consolidate_partial_rows(rows)
+        assert len(consolidated) == 1
+        merged = consolidated[0]
+        assert merged[2] == pytest.approx(55.0)
+        assert merged[5] == pytest.approx(275.0)
+        assert merged[4] == "TP2"
+
+    def test_orphaned_marker_chain_collapses_to_one(self):
+        """marker→marker with no final: collapse to one row summing both."""
+        from brain.trade_journal import TradeJournal
+
+        rows = [
+            self._make_row("EURUSD", "BUY", 30.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=150.0),
+            self._make_row("EURUSD", "BUY", 20.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=100.0),
+        ]
+        consolidated = TradeJournal._consolidate_partial_rows(rows)
+        assert len(consolidated) == 1
+        merged = consolidated[0]
+        assert merged[2] == pytest.approx(50.0)
+        assert merged[5] == pytest.approx(250.0)
+
+    def test_interleaved_chains_independent(self):
+        """Two interleaved 3-leg chains for different pairs stay independent."""
+        from brain.trade_journal import TradeJournal
+
+        rows = [
+            self._make_row("EURUSD", "BUY", 30.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=150.0),
+            self._make_row("GBPUSD", "SELL", 25.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=120.0),
+            self._make_row("EURUSD", "BUY", 10.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=50.0),
+            self._make_row("GBPUSD", "SELL", -8.0, "SL", pnl_dollars=-40.0),
+            self._make_row("EURUSD", "BUY", -5.0, "BROKER_CLOSED", pnl_dollars=-25.0),
+        ]
+        consolidated = TradeJournal._consolidate_partial_rows(rows)
+        assert len(consolidated) == 2
+        eur = [r for r in consolidated if r[0] == "EURUSD"][0]
+        gbp = [r for r in consolidated if r[0] == "GBPUSD"][0]
+        assert eur[2] == pytest.approx(35.0)
+        assert eur[5] == pytest.approx(175.0)
+        assert eur[4] == "BROKER_CLOSED"
+        assert gbp[2] == pytest.approx(17.0)
+        assert gbp[5] == pytest.approx(80.0)
+        assert gbp[4] == "SL"
+
 
 class TestConsolidatePartialDicts:
     """Tests for the dict-based consolidation used by get_all_trades_as_dicts."""
@@ -167,6 +236,89 @@ class TestConsolidatePartialDicts:
         from brain.trade_journal import TradeJournal
 
         assert TradeJournal._consolidate_partial_dicts([]) == []
+
+    def test_three_leg_chain_sums_all_pnl(self):
+        """marker→marker→final: all three legs' P&L must appear in the survivor."""
+        from brain.trade_journal import TradeJournal
+
+        trades = [
+            self._make_trade("EURUSD", "BUY", 30.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=150.0),
+            self._make_trade("EURUSD", "BUY", 20.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=100.0),
+            self._make_trade("EURUSD", "BUY", -5.0, "BROKER_CLOSED", pnl_dollars=-25.0),
+        ]
+        consolidated = TradeJournal._consolidate_partial_dicts(trades)
+        assert len(consolidated) == 1
+        assert consolidated[0]["pnl"] == pytest.approx(45.0)
+        assert consolidated[0]["pnl_dollars"] == pytest.approx(225.0)
+        assert consolidated[0]["outcome"] == "BROKER_CLOSED"
+
+    def test_four_leg_chain_sums_all_pnl(self):
+        """marker→marker→marker→final: four legs collapse to one."""
+        from brain.trade_journal import TradeJournal
+
+        trades = [
+            self._make_trade("EURUSD", "BUY", 30.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=150.0),
+            self._make_trade("EURUSD", "BUY", 20.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=100.0),
+            self._make_trade("EURUSD", "BUY", 10.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=50.0),
+            self._make_trade("EURUSD", "BUY", -5.0, "TP2", pnl_dollars=-25.0),
+        ]
+        consolidated = TradeJournal._consolidate_partial_dicts(trades)
+        assert len(consolidated) == 1
+        assert consolidated[0]["pnl"] == pytest.approx(55.0)
+        assert consolidated[0]["pnl_dollars"] == pytest.approx(275.0)
+        assert consolidated[0]["outcome"] == "TP2"
+
+    def test_orphaned_marker_chain_collapses_to_one(self):
+        """marker→marker with no final: collapse to one row summing both."""
+        from brain.trade_journal import TradeJournal
+
+        trades = [
+            self._make_trade("EURUSD", "BUY", 30.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=150.0),
+            self._make_trade("EURUSD", "BUY", 20.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=100.0),
+        ]
+        consolidated = TradeJournal._consolidate_partial_dicts(trades)
+        assert len(consolidated) == 1
+        assert consolidated[0]["pnl"] == pytest.approx(50.0)
+        assert consolidated[0]["pnl_dollars"] == pytest.approx(250.0)
+
+    def test_interleaved_chains_independent(self):
+        """Two interleaved 3-leg chains for different pairs stay independent."""
+        from brain.trade_journal import TradeJournal
+
+        trades = [
+            self._make_trade("EURUSD", "BUY", 30.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=150.0),
+            self._make_trade("GBPUSD", "SELL", 25.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=120.0),
+            self._make_trade("EURUSD", "BUY", 10.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=50.0),
+            self._make_trade("GBPUSD", "SELL", -8.0, "SL", pnl_dollars=-40.0),
+            self._make_trade("EURUSD", "BUY", -5.0, "BROKER_CLOSED", pnl_dollars=-25.0),
+        ]
+        consolidated = TradeJournal._consolidate_partial_dicts(trades)
+        assert len(consolidated) == 2
+        eur = [t for t in consolidated if t["pair"] == "EURUSD"][0]
+        gbp = [t for t in consolidated if t["pair"] == "GBPUSD"][0]
+        assert eur["pnl"] == pytest.approx(35.0)
+        assert eur["pnl_dollars"] == pytest.approx(175.0)
+        assert eur["outcome"] == "BROKER_CLOSED"
+        assert gbp["pnl"] == pytest.approx(17.0)
+        assert gbp["pnl_dollars"] == pytest.approx(80.0)
+        assert gbp["outcome"] == "SL"
+
+    def test_original_not_mutated_chain(self):
+        """Chained consolidation must not mutate the caller's input dicts."""
+        from brain.trade_journal import TradeJournal
+
+        trades = [
+            self._make_trade("EURUSD", "BUY", 30.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=150.0),
+            self._make_trade("EURUSD", "BUY", 20.0, "TP1_FULL_CLOSE_REOPEN", pnl_dollars=100.0),
+            self._make_trade("EURUSD", "BUY", -5.0, "SL", pnl_dollars=-25.0),
+        ]
+        orig_pnl_0 = trades[0]["pnl"]
+        orig_pnl_1 = trades[1]["pnl"]
+        orig_pnl_2 = trades[2]["pnl"]
+        TradeJournal._consolidate_partial_dicts(trades)
+        assert trades[0]["pnl"] == orig_pnl_0
+        assert trades[1]["pnl"] == orig_pnl_1
+        assert trades[2]["pnl"] == orig_pnl_2
 
 
 class TestConsolidationEndToEnd:
