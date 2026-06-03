@@ -40,6 +40,7 @@ EXIT_CHECK_METHODS = [
     "_check_news_exit",
     "_check_session_close",
     "_check_spread_deterioration",
+    "_check_opportunity_cost_exit",
 ]
 
 ALL_MIXIN_METHODS = RECOVERY_METHODS + RISK_HEAT_METHODS + EXIT_CHECK_METHODS
