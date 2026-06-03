@@ -208,13 +208,15 @@ class TradeJournal:
             cursor = await db.execute(
                 """
                 SELECT pair, session, pnl, time_to_exit, outcome, pnl_dollars,
-                       swap_modeled, swap_status
+                       swap_modeled, swap_status, direction
                 FROM trades
                 WHERE outcome != 'LEGACY'
                 ORDER BY timestamp ASC
                 """
             )
-            rows = await cursor.fetchall()
+            raw_rows = await cursor.fetchall()
+
+        rows = self._consolidate_partial_rows(raw_rows)
 
         if not rows:
             return {
@@ -287,7 +289,7 @@ class TradeJournal:
                 "swap_modeled": r[13] if len(r) > 13 else None,
                 "swap_status": r[14] if len(r) > 14 else "unavailable",
             })
-        return result
+        return self._consolidate_partial_dicts(result)
 
     async def get_win_rate(self) -> float:
         stats = await self.get_performance_stats()
@@ -300,6 +302,133 @@ class TradeJournal:
     async def get_best_pair(self) -> Optional[str]:
         stats = await self.get_performance_stats()
         return stats["best_pair"]
+
+    # ── Partial-trade consolidation ──────────────────────────────────────
+
+    _PARTIAL_OUTCOME = "TP1_FULL_CLOSE_REOPEN"
+
+    @staticmethod
+    def _consolidate_partial_rows(rows: list[tuple]) -> list[tuple]:
+        """Merge TP1_FULL_CLOSE_REOPEN rows with their continuation trade.
+
+        Column layout assumed (get_performance_stats SELECT):
+          0=pair, 1=session, 2=pnl, 3=time_to_exit, 4=outcome,
+          5=pnl_dollars, 6=swap_modeled, 7=swap_status, 8=direction
+
+        Rows are already sorted by timestamp ASC.  For each partial-close
+        record, the next row with the same pair+direction is the continuation.
+        The two are merged: pnl and pnl_dollars are summed onto the
+        continuation row, and the partial row is dropped.  If no continuation
+        is found the partial row is kept as-is (it represents a real P&L).
+        """
+        _PAIR = 0
+        _PNL = 2
+        _OUTCOME = 4
+        _PNL_D = 5
+        _DIR = 8
+        MARKER = TradeJournal._PARTIAL_OUTCOME
+
+        if not rows:
+            return rows
+
+        skip: set[int] = set()
+        merge_into: dict[int, int] = {}
+
+        for i, row in enumerate(rows):
+            if row[_OUTCOME] != MARKER:
+                continue
+            pair = row[_PAIR]
+            direction = row[_DIR] if len(row) > _DIR else None
+            for j in range(i + 1, len(rows)):
+                if j in skip:
+                    continue
+                cand = rows[j]
+                if cand[_PAIR] != pair:
+                    continue
+                cand_dir = cand[_DIR] if len(cand) > _DIR else None
+                if direction is not None and cand_dir is not None and direction != cand_dir:
+                    continue
+                merge_into[i] = j
+                skip.add(i)
+                break
+
+        if not skip:
+            return rows
+
+        extra: dict[int, tuple[float, float]] = {}
+        for pi, ci in merge_into.items():
+            p = rows[pi]
+            pnl_add = float(p[_PNL])
+            pnl_d_add = float(p[_PNL_D]) if p[_PNL_D] is not None else float(p[_PNL])
+            prev = extra.get(ci, (0.0, 0.0))
+            extra[ci] = (prev[0] + pnl_add, prev[1] + pnl_d_add)
+
+        result: list[tuple] = []
+        for i, row in enumerate(rows):
+            if i in skip:
+                continue
+            if i in extra:
+                row = list(row)
+                row[_PNL] = float(row[_PNL]) + extra[i][0]
+                pnl_d = float(row[_PNL_D]) if row[_PNL_D] is not None else float(row[_PNL] - extra[i][0])
+                row[_PNL_D] = pnl_d + extra[i][1]
+                row = tuple(row)
+            result.append(row)
+        return result
+
+    @staticmethod
+    def _consolidate_partial_dicts(trades: list[dict]) -> list[dict]:
+        """Merge TP1_FULL_CLOSE_REOPEN dicts with their continuation trade.
+
+        Same algorithm as _consolidate_partial_rows but operates on the dict
+        representation returned by get_all_trades_as_dicts.  Trades are assumed
+        to be in insertion (chronological) order.
+        """
+        MARKER = TradeJournal._PARTIAL_OUTCOME
+        if not trades:
+            return trades
+
+        skip: set[int] = set()
+        merge_into: dict[int, int] = {}
+
+        for i, t in enumerate(trades):
+            if t.get("outcome") != MARKER:
+                continue
+            pair = t.get("pair")
+            direction = t.get("direction")
+            for j in range(i + 1, len(trades)):
+                if j in skip:
+                    continue
+                cand = trades[j]
+                if cand.get("pair") != pair:
+                    continue
+                if direction and cand.get("direction") and direction != cand.get("direction"):
+                    continue
+                merge_into[i] = j
+                skip.add(i)
+                break
+
+        if not skip:
+            return trades
+
+        extra: dict[int, tuple[float, float]] = {}
+        for pi, ci in merge_into.items():
+            p = trades[pi]
+            pnl_add = float(p.get("pnl", 0))
+            pnl_d_add = float(p.get("pnl_dollars", 0))
+            prev = extra.get(ci, (0.0, 0.0))
+            extra[ci] = (prev[0] + pnl_add, prev[1] + pnl_d_add)
+
+        result: list[dict] = []
+        for i, t in enumerate(trades):
+            if i in skip:
+                continue
+            if i in extra:
+                t = dict(t)
+                t["pnl"] = float(t.get("pnl", 0)) + extra[i][0]
+                t["pnl_dollars"] = float(t.get("pnl_dollars", 0)) + extra[i][1]
+            result.append(t)
+        return result
 
     def _sharpe_ratio(self, returns: list[float]) -> float:
         if len(returns) < 2:
