@@ -109,6 +109,7 @@ class PlatformManager:
                 login=cfg["login"],
                 password=cfg["password"],
                 server=cfg["server"],
+                reject_on_minlot_inflation=self.config.risk.reject_on_minlot_inflation,
             )
             for cfg in mt5_configs
         ]
