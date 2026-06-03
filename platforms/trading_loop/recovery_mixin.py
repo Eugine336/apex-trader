@@ -87,6 +87,7 @@ class RecoveryReconciliationMixin:
                     tm_trade.breakeven_active = True
                 pos.tm_trade_id = tm_trade.trade_id
                 self.managed_positions[pos.order_id] = pos
+                self._position_scores[pos.order_id] = [pos.score]
                 logger.info(
                     "🔄 RESTORED — {} {} | lots={} | SL={:.5f} | tp1_hit={}",
                     pos.direction,
@@ -189,6 +190,7 @@ class RecoveryReconciliationMixin:
             tm_trade = self.trade_manager.open_trade(tm_signal)
             managed.tm_trade_id = tm_trade.trade_id
             self.managed_positions[oid] = managed
+            self._position_scores[oid] = [managed.score]
             self.position_store.save_position(managed)
 
         for oid in persisted_ids & broker_ids:
