@@ -67,10 +67,13 @@ def _make_trade_history(n: int = 30, win_rate: float = 0.6) -> list[dict]:
     trades = []
     for i in range(n):
         won = (i % int(1 / win_rate)) != 0 if win_rate < 1 else True
+        pnl = 25.0 if won else -15.0
         trades.append({
             "pair": "EURUSD",
             "direction": "LONG",
-            "pnl": 25.0 if won else -15.0,
+            "pnl": pnl,
+            "pnl_dollars": pnl,
+            "risk_dollars": 15.0,
             "regime": "trending",
             "session": "london",
             "entry_type": "FVG_MIDPOINT",
@@ -210,7 +213,8 @@ class TestEVGatePipeline:
     def test_negative_ev_pair(self):
         estimator = EVEstimator(min_trades_for_gate=5)
         history = [
-            {"pair": "GBPNZD", "pnl": -20.0, "regime": "ranging", "session": "asian"}
+            {"pair": "GBPNZD", "pnl": -20.0, "pnl_dollars": -20.0,
+             "risk_dollars": 10.0, "regime": "ranging", "session": "asian"}
             for _ in range(20)
         ]
         estimate = estimator.estimate("GBPNZD", "ranging", "asian", history)
