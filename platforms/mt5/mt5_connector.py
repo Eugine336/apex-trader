@@ -18,6 +18,7 @@ from platforms.base_connector import (
     AccountInfo,
     BaseConnector,
     CloseResult,
+    DealCloseInfo,
     OrderResult,
     PositionInfo,
     TickData,
@@ -30,6 +31,20 @@ try:
     _MT5_AVAILABLE = True
 except ImportError:
     mt5 = None  # type: ignore[assignment]
+
+
+_MT5_DEAL_REASON_MAP: dict[int, str] = {
+    0: "MANUAL",           # DEAL_REASON_CLIENT
+    1: "MANUAL",           # DEAL_REASON_MOBILE
+    2: "MANUAL",           # DEAL_REASON_WEB
+    3: "ALGO",             # DEAL_REASON_EXPERT
+    4: "SL",               # DEAL_REASON_SL
+    5: "TP",               # DEAL_REASON_TP
+    6: "STOP_OUT",         # DEAL_REASON_SO
+    7: "ROLLOVER",         # DEAL_REASON_ROLLOVER
+    8: "VARIATION_MARGIN",  # DEAL_REASON_VMARGIN
+    9: "SPLIT",            # DEAL_REASON_SPLIT
+}
 
 
 _TF_MAP: dict[str, Any] = {}
@@ -664,6 +679,44 @@ class MT5Connector(BaseConnector):
             return round(total_pnl, 2)
         except Exception as exc:
             logger.warning("[mt5] PnL history deals fetch failed for ticket: {}", exc)
+            return None
+
+    def get_deal_close_info(self, order_id: str) -> Optional[DealCloseInfo]:
+        """Return structured close details from MT5 deal history."""
+        self._require_connection()
+        try:
+            ticket = int(order_id)
+            deals = mt5.history_deals_get(position=ticket)
+            if deals is None or len(deals) == 0:
+                return None
+            total_pnl = sum(d.profit + d.commission + d.swap + d.fee for d in deals)
+            closing_deal = None
+            for d in deals:
+                if getattr(d, "entry", None) == 1:  # DEAL_ENTRY_OUT
+                    closing_deal = d
+                    break
+            if closing_deal is None:
+                closing_deal = deals[-1]
+            reason_code = getattr(closing_deal, "reason", None)
+            comment = getattr(closing_deal, "comment", None)
+            exit_reason = _MT5_DEAL_REASON_MAP.get(reason_code, "BROKER_CLOSED_UNKNOWN")
+            fill_price = getattr(closing_deal, "price", None)
+            close_time_epoch = getattr(closing_deal, "time", None)
+            close_time = (
+                datetime.fromtimestamp(close_time_epoch, tz=timezone.utc)
+                if close_time_epoch
+                else None
+            )
+            return DealCloseInfo(
+                pnl=round(total_pnl, 2),
+                exit_reason=exit_reason,
+                raw_reason_code=reason_code,
+                raw_comment=comment or "",
+                close_price=fill_price,
+                close_time=close_time,
+            )
+        except Exception as exc:
+            logger.warning("[mt5] Deal close info fetch failed for ticket: {}", exc)
             return None
 
     # ── Symbol / timeframe mapping ───────────────────────────────────────

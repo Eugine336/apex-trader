@@ -33,6 +33,7 @@ from platforms.base_connector import (
     AccountInfo,
     BaseConnector,
     CloseResult,
+    DealCloseInfo,
     OrderResult,
     PositionInfo,
     TickData,
@@ -514,6 +515,10 @@ class PlatformManager:
     def get_realized_pnl(self, order_id: str, platform: str) -> Optional[float]:
         connector = self._connector_by_platform_str(platform)
         return connector.get_realized_pnl(order_id)
+
+    def get_deal_close_info(self, order_id: str, platform: str) -> Optional[DealCloseInfo]:
+        connector = self._connector_by_platform_str(platform)
+        return connector.get_deal_close_info(order_id)
 
     def _connector_by_platform_str(self, platform: str) -> BaseConnector:
         """Resolve "mt5", "mt5_0", "mt5_1", "deriv" to the right connector."""
