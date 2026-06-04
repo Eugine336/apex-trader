@@ -54,7 +54,7 @@ def _make_report(results):
     return SimpleNamespace(results=results)
 
 
-def _emit_setup_skipped(loop_state, report, store):
+def _emit_setup_skipped(loop_state, report, store, correlation_id=None):
     """Replicates the exact logic of TradingLoop._emit_setup_skipped
     without importing TradingLoop (avoids torch/heavy dep chain)."""
     if store is None:
@@ -72,6 +72,7 @@ def _emit_setup_skipped(loop_state, report, store):
                 event_type=SETUP_SKIPPED,
                 severity="DEBUG",
                 symbol=r.pair,
+                correlation_id=correlation_id,
                 source_module="platforms.main_loop",
                 payload={
                     "status": r.status,
@@ -216,3 +217,41 @@ class TestSetupSkippedSafety:
         report = _make_report([_make_result("EURUSD", "WAITING", 20)])
 
         _emit_setup_skipped(state, report, None)
+
+
+# ── Test 6: SETUP_SKIPPED carries correlation_id ────────────────────────────
+
+class TestSetupSkippedCorrelationId:
+    def test_skipped_event_carries_cycle_id(self, tmp_path):
+        store = _make_store(tmp_path)
+        try:
+            state: dict = {}
+            cycle_id = new_cycle_id()
+            report = _make_report([
+                _make_result("GBPUSD", "WATCHLIST", 65, "SHORT"),
+            ])
+
+            _emit_setup_skipped(state, report, store, correlation_id=cycle_id)
+
+            events = _flush_and_query(store, event_type=SETUP_SKIPPED)
+            assert len(events) == 1
+            assert events[0]["correlation_id"] == cycle_id
+            assert events[0]["correlation_id"] is not None
+        finally:
+            store.close()
+
+    def test_skipped_event_without_cycle_id_is_null(self, tmp_path):
+        store = _make_store(tmp_path)
+        try:
+            state: dict = {}
+            report = _make_report([
+                _make_result("EURUSD", "WAITING", 30),
+            ])
+
+            _emit_setup_skipped(state, report, store, correlation_id=None)
+
+            events = _flush_and_query(store, event_type=SETUP_SKIPPED)
+            assert len(events) == 1
+            assert events[0]["correlation_id"] is None
+        finally:
+            store.close()
