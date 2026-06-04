@@ -88,6 +88,17 @@ class CloseResult:
 
 
 @dataclass
+class DealCloseInfo:
+    """Broker-reported close details for a closed ticket."""
+    pnl: float
+    exit_reason: str
+    raw_reason_code: Optional[int] = None
+    raw_comment: Optional[str] = None
+    close_price: Optional[float] = None
+    close_time: Optional[datetime] = None
+
+
+@dataclass
 class PositionInfo:
     order_id: str
     symbol: str
@@ -211,6 +222,11 @@ class BaseConnector(ABC):
 
     def get_realized_pnl(self, order_id: str) -> Optional[float]:
         """Return broker-reported realized P&L for a closed ticket.
+        Returns None when unavailable (Deriv, unsupported)."""
+        return None
+
+    def get_deal_close_info(self, order_id: str) -> Optional[DealCloseInfo]:
+        """Return broker-reported close details including exit reason.
         Returns None when unavailable (Deriv, unsupported)."""
         return None
 
