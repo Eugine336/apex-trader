@@ -67,6 +67,9 @@ from platforms.trading_loop.recovery_mixin import RecoveryReconciliationMixin
 from platforms.trading_loop.risk_heat_mixin import RiskHeatMarginMixin
 from platforms.trading_loop.exit_checks_mixin import ExitChecksMixin
 
+from persistence.event_store import get_event_store, new_cycle_id, new_setup_id
+from persistence.domain_events import DECISION_REJECT, ORDER_SENT, ORDER_FILLED, TRADE_OPEN
+
 class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMixin):
     """
     Master trading loop — orchestrates the full pipeline.
@@ -247,6 +250,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
     def run_once(self) -> dict:
         """Single iteration — scan, enter, manage. Returns cycle summary."""
+        cycle_id = new_cycle_id()
+        with logger.contextualize(correlation_id=cycle_id, cycle_id=cycle_id):
+            return self._run_once_inner(cycle_id)
+
+    def _run_once_inner(self, cycle_id: str) -> dict:
+        self._current_cycle_id = cycle_id
+        self._current_setup_id = None
         now = datetime.now(timezone.utc)
         cycle: dict = {
             "timestamp": now.isoformat(),
@@ -509,6 +519,12 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 open_pairs.append(result.pair)
 
     def _execute_entry(self, result, session: str, now: datetime) -> bool:
+        setup_id = new_setup_id()
+        with logger.contextualize(setup_id=setup_id):
+            return self._execute_entry_inner(result, session, now, setup_id)
+
+    def _execute_entry_inner(self, result, session: str, now: datetime, setup_id: str) -> bool:
+        self._current_setup_id = setup_id
         pair = result.pair
         direction = result.direction
 
@@ -555,7 +571,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         )
 
         if isinstance(signal, EntryRejection):
-            self._log_rejection(pair, direction, result.score, signal.reason)
+            ctx = {}
+            if signal.entry_price is not None:
+                ctx["entry_price"] = signal.entry_price
+            if signal.stop_loss is not None:
+                ctx["stop_loss"] = signal.stop_loss
+            self._log_rejection(pair, direction, result.score, signal.reason,
+                                entry_context=ctx or None)
             return False
 
         spread = 0.0
@@ -731,6 +753,28 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 self.position_store.cancel_in_flight(idem_key)
             return False
 
+        try:
+            store = get_event_store()
+            store.emit(
+                event_type=ORDER_SENT,
+                severity="INFO",
+                symbol=pair,
+                correlation_id=getattr(self, "_current_cycle_id", None),
+                parent_id=getattr(self, "_current_setup_id", None),
+                source_module="platforms.main_loop",
+                payload={
+                    "direction": direction,
+                    "lots": adjusted_lots,
+                    "entry_price": signal.entry_price,
+                    "stop_loss": signal.stop_loss,
+                    "tp1": signal.tp1,
+                    "score": signal.score,
+                    "idempotency_key": idem_key,
+                },
+            )
+        except Exception:
+            pass
+
         order = self.platforms.execute_entry(
             pair,
             direction,
@@ -747,6 +791,31 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             if self.position_store:
                 self.position_store.cancel_in_flight(idem_key)
             return False
+
+        try:
+            store = get_event_store()
+            store.emit(
+                event_type=ORDER_FILLED,
+                severity="INFO",
+                symbol=pair,
+                correlation_id=getattr(self, "_current_cycle_id", None),
+                parent_id=getattr(self, "_current_setup_id", None),
+                source_module="platforms.main_loop",
+                payload={
+                    "direction": direction,
+                    "order_id": order.order_id,
+                    "fill_price": order.fill_price,
+                    "requested_price": signal.entry_price,
+                    "slippage_pips": order.slippage_pips,
+                    "lots": order.lots,
+                    "stop_loss": signal.stop_loss,
+                    "tp1": signal.tp1,
+                    "tp2": signal.tp2,
+                    "score": signal.score,
+                },
+            )
+        except Exception:
+            pass
 
         self._execution_breaker.record_success()
         if self.position_store:
@@ -837,6 +906,29 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             signal.tp2,
             signal.score,
         )
+        try:
+            store = get_event_store()
+            store.emit(
+                event_type=TRADE_OPEN,
+                severity="INFO",
+                symbol=pair,
+                correlation_id=getattr(self, "_current_cycle_id", None),
+                parent_id=getattr(self, "_current_setup_id", None),
+                source_module="platforms.main_loop",
+                payload={
+                    "direction": direction,
+                    "order_id": order.order_id,
+                    "fill_price": order.fill_price,
+                    "stop_loss": signal.stop_loss,
+                    "tp1": signal.tp1,
+                    "tp2": signal.tp2,
+                    "lots": order.lots,
+                    "score": signal.score,
+                    "session": session,
+                },
+            )
+        except Exception:
+            pass
         return True
 
     # ── Pending order management ────────────────────────────────────────
@@ -1656,7 +1748,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         if len(self.system_warnings) > self._MAX_WARNINGS:
             self.system_warnings = self.system_warnings[: self._MAX_WARNINGS]
 
-    def _log_rejection(self, pair: str, direction: str, score: int, reason: str) -> None:
+    def _log_rejection(self, pair: str, direction: str, score: int, reason: str,
+                       entry_context: dict | None = None) -> None:
         logger.debug("❌ REJECTED {} {} (score {}) — {}", direction, pair, score, reason)
         self._add_warning(
             level="rejection",
@@ -1670,6 +1763,26 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             reason_rejected=reason,
         )
         self._run_journal_async(self.journal.log_decision(decision))
+        try:
+            store = get_event_store()
+            payload = {
+                "direction": direction,
+                "score": score,
+                "reason": reason,
+            }
+            if entry_context:
+                payload.update(entry_context)
+            store.emit(
+                event_type=DECISION_REJECT,
+                severity="INFO",
+                symbol=pair,
+                correlation_id=getattr(self, "_current_cycle_id", None),
+                parent_id=getattr(self, "_current_setup_id", None),
+                source_module="platforms.main_loop",
+                payload=payload,
+            )
+        except Exception:
+            pass
 
     # ── Deriv multiplier lookup ──────────────────────────────────────────
 
