@@ -5,6 +5,7 @@ prune, loguru sink integration, and correlation-ID propagation.
 """
 
 import logging
+import sqlite3
 import threading
 import time
 
@@ -230,3 +231,65 @@ class TestStdlibIntercept:
         finally:
             logger.remove(sid)
             _es_mod._global_store = original
+
+
+# ── Writer-loop recursion safety ──────────────────────────────────────────────
+
+
+class _FailingConnection:
+    """Proxy that raises on executemany while forwarding everything else."""
+
+    def __init__(self, real_conn):
+        self._real = real_conn
+        self.fail = True
+
+    def executemany(self, *args, **kwargs):
+        if self.fail:
+            raise sqlite3.OperationalError("disk I/O error")
+        return self._real.executemany(*args, **kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self._real, name)
+
+
+class TestWriterRecursionSafety:
+    def test_persistent_write_failure_does_not_reenqueue(self, tmp_path):
+        """A persistent DB-write failure must NOT re-enter the loguru sink
+        and produce an unbounded stream of self-referential events."""
+        from persistence import event_store as _es_mod
+        from persistence.event_sink import event_store_sink
+
+        store = EventStore(db_path=str(tmp_path / "fail.db"))
+        original = _es_mod._global_store
+        _es_mod._global_store = store
+        sid = logger.add(event_store_sink, level="DEBUG")
+        try:
+            real_conn = store._conn
+            proxy = _FailingConnection(real_conn)
+            store._conn = proxy
+
+            store.emit("LOG", "INFO", payload={"msg": "trigger"})
+            time.sleep(1.0)
+
+            qsize = store._queue.qsize()
+            assert qsize <= 1, (
+                f"Queue grew to {qsize} — writer failure is re-enqueueing events"
+            )
+
+            proxy.fail = False
+            store._conn = real_conn
+            store.emit("LOG", "INFO", payload={"msg": "canary"})
+            store.flush()
+            rows = store.query(event_type="LOG")
+            failure_events = [
+                r for r in rows
+                if "write failed" in (r.get("payload_json") or "")
+                or "disk I/O" in (r.get("payload_json") or "")
+            ]
+            assert len(failure_events) == 0, (
+                "Writer failure message was persisted as an event — sink recursion still present"
+            )
+        finally:
+            logger.remove(sid)
+            _es_mod._global_store = original
+            store.close()
