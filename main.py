@@ -10,6 +10,7 @@ Usage:
 """
 
 import bootstrap.datadog_init  # noqa: F401
+import atexit
 import os
 import sys
 import threading
@@ -18,6 +19,13 @@ from dotenv import load_dotenv
 from loguru import logger
 
 load_dotenv()
+
+from persistence.event_sink import event_store_sink, install_stdlib_intercept
+from persistence.event_store import get_event_store, shutdown_event_store
+
+logger.add(event_store_sink, level="DEBUG")
+install_stdlib_intercept()
+atexit.register(shutdown_event_store)
 
 from config import AppConfig, get_instruments_by_category, INSTRUMENT_REGISTRY
 
