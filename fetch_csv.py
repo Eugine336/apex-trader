@@ -39,8 +39,8 @@ BROKER_DIR  = Path("config/brokers")
 DATA_DIR.mkdir(exist_ok=True)
 
 TIMEFRAMES = {
-    "H4":  (mt5.TIMEFRAME_H4,  30_000),   # ~7 years
-    "H1":  (mt5.TIMEFRAME_H1,  80_000),   # ~5.7 years
+    "H4":  (mt5.TIMEFRAME_H4,  10_000),   # ~7 years
+    "H1":  (mt5.TIMEFRAME_H1,  50_000),   # ~5.7 years
     "M15": (mt5.TIMEFRAME_M15, 50_000),   # ~520 days
     "M5":  (mt5.TIMEFRAME_M5,  50_000),   # ~174 days
     "M1":  (mt5.TIMEFRAME_M1,  50_000),   # ~35 days
@@ -129,14 +129,40 @@ def fetch(canonical: str, broker_symbol: str, tf_name: str,
     """
     Fetch from MT5 using broker_symbol.
     Save CSV under canonical name so APEX always finds it.
+    Retries with progressively smaller bar counts if broker
+    returns Invalid params or no data — gives whatever it has.
     """
     out = DATA_DIR / f"{canonical}_{tf_name}.csv"
 
-    rates = mt5.copy_rates_from_pos(broker_symbol, tf_const, 0, n_bars)
+    # Retry ladder — try requested amount first, then step down
+    candidates = [n_bars]
+    step = n_bars
+    while step > 5000:
+        step = step // 2
+        candidates.append(step)
+    candidates += [5000, 1000]
+
+    # Deduplicate preserving order
+    seen = set()
+    retry_counts = []
+    for c in candidates:
+        if c not in seen:
+            seen.add(c)
+            retry_counts.append(c)
+
+    rates = None
+    used_count = n_bars
+
+    for attempt_bars in retry_counts:
+        rates = mt5.copy_rates_from_pos(broker_symbol, tf_const, 0, attempt_bars)
+        if rates is not None and len(rates) > 0:
+            used_count = attempt_bars
+            break
+        time.sleep(0.1)
 
     if rates is None or len(rates) == 0:
         err = mt5.last_error()
-        print(f"    ✗ {tf_name}: no data ({err})")
+        print(f"    ✗ {tf_name}: no data after retries ({err})")
         return False
 
     df = pd.DataFrame(rates)
@@ -156,8 +182,10 @@ def fetch(canonical: str, broker_symbol: str, tf_name: str,
     df = df[cols]
     df.to_csv(out, index=False)
 
-    broker_note = f" (broker: {broker_symbol})" if broker_symbol != canonical else ""
-    print(f"    ✓ {tf_name}: {len(df):,} bars → {out}{broker_note}")
+    broker_note  = f" (broker: {broker_symbol})" if broker_symbol != canonical else ""
+    capped_note  = f" [capped at {used_count:,}]" if used_count < n_bars else ""
+    start_date   = df["time"].min().strftime("%Y-%m-%d")
+    print(f"    ✓ {tf_name}: {len(df):,} bars  from {start_date}{capped_note}{broker_note}")
     return True
 
 
