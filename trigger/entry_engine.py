@@ -52,6 +52,9 @@ class EntryRejection:
     reason: str
     score: int
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    entry_price: Optional[float] = None
+    stop_loss: Optional[float] = None
+    direction: Optional[str] = None
 
 
 class EntryEngine:
@@ -139,14 +142,14 @@ class EntryEngine:
 
         confirmed, pattern_desc = self.confirm_m1_entry(direction, m1_df, zone, pip_size, profile)
         if not confirmed:
-            # pattern_desc is empty string for both stale-feed and genuine rejection.
-            # The stale guard logs "stale feed detected" at DEBUG; we use a clear reason here.
             recent_closes = m1_df["close"].iloc[-5:].values if len(m1_df) >= 5 else []
             stale = len(recent_closes) > 0 and len(set(round(float(c), 5) for c in recent_closes)) == 1
             reason = "Stale M1 feed — broker not sending new ticks" if stale else "No micro-confirmation on M1"
             return EntryRejection(
                 pair=pair, reason=reason,
                 score=score, timestamp=now,
+                entry_price=zone.get("midpoint"),
+                direction=direction,
             )
         confluences.append(f"M1 confirmed: {pattern_desc}")
 
@@ -189,12 +192,14 @@ class EntryEngine:
             return EntryRejection(
                 pair=pair, reason="Risk distance too small — invalid zone",
                 score=score, timestamp=now,
+                entry_price=entry_price, stop_loss=stop_loss, direction=direction,
             )
         if risk_distance < min_risk_distance:
             return EntryRejection(
                 pair=pair,
                 reason=f"Risk distance {risk_distance/pip_size:.1f} pips below minimum {profile.min_risk_pips} for {category}",
                 score=score, timestamp=now,
+                entry_price=entry_price, stop_loss=stop_loss, direction=direction,
             )
 
         rr1 = abs(tp1 - entry_price) / risk_distance
@@ -204,6 +209,7 @@ class EntryEngine:
             return EntryRejection(
                 pair=pair, reason=f"Insufficient reward — R:R to TP1 is {rr1:.2f}",
                 score=score, timestamp=now,
+                entry_price=entry_price, stop_loss=stop_loss, direction=direction,
             )
 
         risk_pips = risk_distance / pip_size

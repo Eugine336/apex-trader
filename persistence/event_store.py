@@ -147,6 +147,10 @@ class EventStore:
     ) -> str:
         """Enqueue an event for background persistence.  Returns event_id."""
         eid = generate_id()
+        try:
+            payload_json = json.dumps(payload) if payload else None
+        except (TypeError, ValueError):
+            payload_json = json.dumps({"_serialization_error": True, "repr": repr(payload)[:500]})
         row = (
             eid,
             correlation_id,
@@ -156,7 +160,7 @@ class EventStore:
             severity,
             symbol,
             source_module,
-            json.dumps(payload) if payload else None,
+            payload_json,
         )
         try:
             self._queue.put_nowait(row)
