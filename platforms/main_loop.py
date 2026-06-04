@@ -68,7 +68,7 @@ from platforms.trading_loop.risk_heat_mixin import RiskHeatMarginMixin
 from platforms.trading_loop.exit_checks_mixin import ExitChecksMixin
 
 from persistence.event_store import get_event_store, new_cycle_id, new_setup_id
-from persistence.domain_events import DECISION_REJECT, ORDER_SENT, ORDER_FILLED, TRADE_OPEN
+from persistence.domain_events import DECISION_REJECT, ORDER_SENT, ORDER_FILLED, TRADE_OPEN, SETUP_SKIPPED
 
 class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMixin):
     """
@@ -166,6 +166,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._news_exit_protected: set[str] = set()            # oids already tightened for news
         self._last_market_data: dict = {}                       # most recent market data for in-trade analysis
         self._last_slot_blocked_candidate: dict | None = None    # best foregone candidate when slots full (F4)
+        self._last_skipped_state: dict[str, tuple[str, int]] = {}  # symbol → (status, score) for emit-on-change
 
         # ── Portfolio risk state machine (M8 Phase 4a + 4b + 4c) ────────────
         cfg_r = self.config.risk
@@ -408,6 +409,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         report = self.scanner.scan_all(market_data, currency_data=currency_data, utc_now=now)
         ready = self.scanner.get_ready_setups(report)
+        self._emit_setup_skipped(report)
 
         # Track opportunity density — feeds into position sizing
         self.density_tracker.record_scan(len(ready), utc_now=now)
@@ -517,6 +519,45 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             if filled:
                 cycle["entries_filled"] += 1
                 open_pairs.append(result.pair)
+
+    def _emit_setup_skipped(self, report) -> None:
+        """Emit SETUP_SKIPPED for non-READY, non-MARKET_CLOSED results on change."""
+        store = get_event_store()
+        if store is None:
+            return
+        current: dict[str, tuple[str, int]] = {}
+        for r in report.results:
+            if r.status == "READY" or r.status == "MARKET_CLOSED":
+                continue
+            current[r.pair] = (r.status, r.score)
+            prev = self._last_skipped_state.get(r.pair)
+            if prev == (r.status, r.score):
+                continue
+            try:
+                store.emit(
+                    event_type=SETUP_SKIPPED,
+                    severity="DEBUG",
+                    symbol=r.pair,
+                    source_module="platforms.main_loop",
+                    payload={
+                        "status": r.status,
+                        "score": r.score,
+                        "direction": r.direction,
+                        "trend_h4": r.trend_h4,
+                        "trend_h1": r.trend_h1,
+                        "bias_strength": r.bias_strength,
+                        "regime": r.regime,
+                        "session_active": r.session_active,
+                        "has_fvg": r.has_fvg,
+                        "has_order_block": r.has_order_block,
+                        "confluences": r.confluences,
+                        "instrument_category": r.instrument_category,
+                        "ev_estimate": r.ev_estimate,
+                    },
+                )
+            except Exception:
+                pass
+        self._last_skipped_state = current
 
     def _execute_entry(self, result, session: str, now: datetime) -> bool:
         setup_id = new_setup_id()
