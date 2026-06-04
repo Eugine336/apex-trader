@@ -214,6 +214,11 @@ class BaseConnector(ABC):
         Returns None when unavailable (Deriv, unsupported)."""
         return None
 
+    def get_deal_exit_info(self, order_id: str):
+        """Return ExitAttribution from broker deal history.
+        Returns None when unavailable. Override in subclass."""
+        return None
+
     # ── Concrete helpers (shared by all connectors) ──────────────────────
 
     def symbol_map(self, apex_symbol: str) -> str:

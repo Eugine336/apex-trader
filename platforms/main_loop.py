@@ -68,7 +68,10 @@ from platforms.trading_loop.risk_heat_mixin import RiskHeatMarginMixin
 from platforms.trading_loop.exit_checks_mixin import ExitChecksMixin
 
 from persistence.event_store import get_event_store, new_cycle_id, new_setup_id
-from persistence.domain_events import DECISION_REJECT, ORDER_SENT, ORDER_FILLED, TRADE_OPEN
+from persistence.domain_events import DECISION_REJECT, ORDER_SENT, ORDER_FILLED, TRADE_OPEN, SETUP_SKIPPED, TRADE_CLOSE
+from platforms.exit_attribution import (
+    ExitAttribution, attribute_from_trade_manager, attribute_unknown, reconcile,
+)
 
 class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMixin):
     """
@@ -166,6 +169,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._news_exit_protected: set[str] = set()            # oids already tightened for news
         self._last_market_data: dict = {}                       # most recent market data for in-trade analysis
         self._last_slot_blocked_candidate: dict | None = None    # best foregone candidate when slots full (F4)
+        self._last_skipped_state: dict[str, tuple[str, int]] = {}  # symbol → (status, score) for emit-on-change
 
         # ── Portfolio risk state machine (M8 Phase 4a + 4b + 4c) ────────────
         cfg_r = self.config.risk
@@ -408,6 +412,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         report = self.scanner.scan_all(market_data, currency_data=currency_data, utc_now=now)
         ready = self.scanner.get_ready_setups(report)
+        self._emit_setup_skipped(report)
 
         # Track opportunity density — feeds into position sizing
         self.density_tracker.record_scan(len(ready), utc_now=now)
@@ -517,6 +522,46 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             if filled:
                 cycle["entries_filled"] += 1
                 open_pairs.append(result.pair)
+
+    def _emit_setup_skipped(self, report) -> None:
+        """Emit SETUP_SKIPPED for non-READY, non-MARKET_CLOSED results on change."""
+        store = get_event_store()
+        if store is None:
+            return
+        current: dict[str, tuple[str, int]] = {}
+        for r in report.results:
+            if r.status == "READY" or r.status == "MARKET_CLOSED":
+                continue
+            current[r.pair] = (r.status, r.score)
+            prev = self._last_skipped_state.get(r.pair)
+            if prev == (r.status, r.score):
+                continue
+            try:
+                store.emit(
+                    event_type=SETUP_SKIPPED,
+                    severity="DEBUG",
+                    symbol=r.pair,
+                    correlation_id=getattr(self, "_current_cycle_id", None),
+                    source_module="platforms.main_loop",
+                    payload={
+                        "status": r.status,
+                        "score": r.score,
+                        "direction": r.direction,
+                        "trend_h4": r.trend_h4,
+                        "trend_h1": r.trend_h1,
+                        "bias_strength": r.bias_strength,
+                        "regime": r.regime,
+                        "session_active": r.session_active,
+                        "has_fvg": r.has_fvg,
+                        "has_order_block": r.has_order_block,
+                        "confluences": r.confluences,
+                        "instrument_category": r.instrument_category,
+                        "ev_estimate": r.ev_estimate,
+                    },
+                )
+            except Exception:
+                pass
+        self._last_skipped_state = current
 
     def _execute_entry(self, result, session: str, now: datetime) -> bool:
         setup_id = new_setup_id()
@@ -1083,6 +1128,19 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 except Exception as exc:
                     logger.debug("[Reconcile] close-price fetch failed for {} {}, using fallback price: {}", pos.direction, pos.symbol, exc)
                     pass
+
+                broker_attr = None
+                try:
+                    broker_attr = self.platforms.get_deal_exit_info(oid, pos.platform)
+                except Exception as exc:
+                    logger.debug("[Reconcile] deal exit info fetch failed for {}: {}", oid, exc)
+                if broker_attr is None:
+                    broker_attr = attribute_unknown(pos.platform)
+                if broker_attr.actual_fill_price is not None:
+                    close_price = broker_attr.actual_fill_price
+
+                exit_outcome = broker_attr.exit_reason
+
                 fake_close = CloseResult(
                     success=True,
                     order_id=oid,
@@ -1094,20 +1152,23 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 self._record_closed_trade(
                     pos,
                     close_price,
-                    "BROKER_CLOSED",
+                    exit_outcome,
                     close_result=fake_close if broker_pnl != 0.0 else None,
+                    exit_attribution=broker_attr,
                 )
                 to_remove.append(oid)
                 closed_count += 1
                 self._add_warning(
                     "info",
-                    f"{pos.direction} {pos.symbol} closed by broker (SL/TP/external)",
+                    f"{pos.direction} {pos.symbol} closed by broker ({exit_outcome})",
                     symbol=pos.symbol,
                 )
                 logger.info(
-                    "📋 BROKER CLOSED — {} {} | pnl={:.2f} — removed from management",
+                    "📋 BROKER CLOSED — {} {} | reason={} | source={} | pnl={:.2f} — removed from management",
                     pos.direction,
                     pos.symbol,
+                    exit_outcome,
+                    broker_attr.exit_reason_source,
                     broker_pnl,
                 )
             else:
@@ -1199,8 +1260,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 if is_stall_or_structure:
                     result = self.platforms.close_trade(oid, pos.platform)
                     if result.success:
+                        tm_attr = attribute_from_trade_manager(tm_trade.close_reason)
                         self._record_closed_trade(
-                            pos, result.close_price, tm_trade.close_reason or "CLOSED", close_result=result
+                            pos, result.close_price, tm_trade.close_reason or "CLOSED",
+                            close_result=result, exit_attribution=tm_attr,
                         )
                         to_remove.append(oid)
                         closed_count += 1
@@ -1219,8 +1282,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 else:
                     result = self.platforms.close_trade(oid, pos.platform)
                     if result.success:
+                        tm_attr = attribute_from_trade_manager(tm_trade.close_reason)
                         self._record_closed_trade(
-                            pos, result.close_price, tm_trade.close_reason or "CLOSED", close_result=result
+                            pos, result.close_price, tm_trade.close_reason or "CLOSED",
+                            close_result=result, exit_attribution=tm_attr,
                         )
                         to_remove.append(oid)
                         closed_count += 1
@@ -1243,7 +1308,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     result = self.platforms.close_trade(oid, pos.platform)
                     if result.success:
                         pos.tp1_hit = True
-                        self._record_closed_trade(pos, result.close_price, "TP1_FULL_CLOSE_REOPEN", close_result=result)
+                        tp1_attr = attribute_from_trade_manager("TP1_FULL_CLOSE_REOPEN")
+                        self._record_closed_trade(
+                            pos, result.close_price, "TP1_FULL_CLOSE_REOPEN",
+                            close_result=result, exit_attribution=tp1_attr,
+                        )
                         to_remove.append(oid)
                         closed_count += 1
                         try:
@@ -1358,8 +1427,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 if mode == "flatten":
                     result = self.platforms.close_trade(oid, pos.platform)
                     if result.success:
+                        wk_attr = attribute_from_trade_manager("WEEKEND_FLATTEN")
                         self._record_closed_trade(
-                            pos, result.close_price, "WEEKEND_FLATTEN", close_result=result,
+                            pos, result.close_price, "WEEKEND_FLATTEN",
+                            close_result=result, exit_attribution=wk_attr,
                         )
                         self.managed_positions.pop(oid, None)
                         self.position_store.remove_position(oid)
@@ -1651,6 +1722,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         close_price: float,
         outcome: str,
         close_result: Optional[CloseResult] = None,
+        exit_attribution: Optional[ExitAttribution] = None,
     ) -> None:
         pip_size = get_pip_size(pos.symbol)
         is_buy = pos.direction == "BUY"
@@ -1681,13 +1753,28 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         )
 
         hold_seconds = (datetime.now(timezone.utc) - pos.open_time).total_seconds()
+
+        exit_reason = outcome
+        exit_reason_source = "unknown"
+        raw_broker_reason = None
+        raw_broker_comment = None
+        discrepancy = False
+        if exit_attribution is not None:
+            exit_reason = exit_attribution.exit_reason
+            exit_reason_source = exit_attribution.exit_reason_source
+            raw_broker_reason = exit_attribution.raw_broker_reason
+            raw_broker_comment = exit_attribution.raw_broker_comment
+            discrepancy = exit_attribution.discrepancy
+
         logger.info(
-            "📊 TRADE CLOSED — {} {} | {:.1f}pip | {} | {:.0f}s",
+            "📊 TRADE CLOSED — {} {} | {:.1f}pip | {} | source={} | {:.0f}s{}",
             pos.direction,
             pos.symbol,
             pnl_pips,
-            outcome,
+            exit_reason,
+            exit_reason_source,
             hold_seconds,
+            " ⚠️ DISCREPANCY" if discrepancy else "",
         )
 
         swap_modeled = None
@@ -1725,7 +1812,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             entry_type=pos.entry_type,
             time_to_tp1=None,
             time_to_exit=hold_seconds / 60.0,
-            outcome=outcome,
+            outcome=exit_reason,
             pnl_dollars=pnl_dollars,
             swap_modeled=swap_modeled,
             swap_status=swap_status,
@@ -1733,6 +1820,34 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         )
         self._run_journal_async(self.journal.log_trade(trade_record))
         self.ml.register_new_trade()
+
+        try:
+            store = get_event_store()
+            if store is not None:
+                store.emit(
+                    event_type=TRADE_CLOSE,
+                    severity="INFO",
+                    symbol=pos.symbol,
+                    correlation_id=getattr(self, "_current_cycle_id", None),
+                    source_module="platforms.main_loop",
+                    payload={
+                        "order_id": pos.order_id,
+                        "direction": pos.direction,
+                        "entry_price": pos.entry_price,
+                        "close_price": close_price,
+                        "pnl_pips": round(pnl_pips, 2),
+                        "pnl_dollars": pnl_dollars,
+                        "hold_seconds": round(hold_seconds, 1),
+                        "exit_reason": exit_reason,
+                        "exit_reason_source": exit_reason_source,
+                        "raw_broker_reason": raw_broker_reason,
+                        "raw_broker_comment": raw_broker_comment,
+                        "discrepancy": discrepancy,
+                        "platform": pos.platform,
+                    },
+                )
+        except Exception:
+            pass
 
     def _add_warning(self, level: str, message: str, symbol: str = "") -> None:
         """Append a system event to the in-memory activity feed for the dashboard."""

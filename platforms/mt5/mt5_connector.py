@@ -666,6 +666,21 @@ class MT5Connector(BaseConnector):
             logger.warning("[mt5] PnL history deals fetch failed for ticket: {}", exc)
             return None
 
+    def get_deal_exit_info(self, order_id: str):
+        """Return ExitAttribution from MT5 deal history for a closed ticket.
+        Returns None if deal history isn't available."""
+        from platforms.exit_attribution import attribute_from_mt5_deals
+        self._require_connection()
+        try:
+            ticket = int(order_id)
+            deals = mt5.history_deals_get(position=ticket)
+            if deals is None or len(deals) == 0:
+                return None
+            return attribute_from_mt5_deals(deals)
+        except Exception as exc:
+            logger.warning("[mt5] Deal exit info fetch failed for ticket: {}", exc)
+            return None
+
     # ── Symbol / timeframe mapping ───────────────────────────────────────
 
     def symbol_map(self, apex_symbol: str) -> str:
