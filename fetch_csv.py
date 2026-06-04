@@ -10,8 +10,8 @@ CSV files are always saved under the canonical name (e.g. US100_H1.csv)
 so the rest of APEX can find them regardless of broker.
 
 Timeframes fetched:
-  H4  — 10,000 bars (~7 years)
-  H1  — 50,000 bars (~5.7 years)
+  H4  — 30,000 bars (~7 years)
+  H1  — 110,000 bars (~5.7 years)
   M15 — 50,000 bars (~520 days)
   M5  — 50,000 bars (~174 days)
   M1  — 50,000 bars (~35 days)
@@ -39,8 +39,8 @@ BROKER_DIR  = Path("config/brokers")
 DATA_DIR.mkdir(exist_ok=True)
 
 TIMEFRAMES = {
-    "H4":  (mt5.TIMEFRAME_H4,  10_000),   # ~7 years
-    "H1":  (mt5.TIMEFRAME_H1,  50_000),   # ~5.7 years
+    "H4":  (mt5.TIMEFRAME_H4,  30_000),   # ~7 years
+    "H1":  (mt5.TIMEFRAME_H1,  80_000),   # ~5.7 years
     "M15": (mt5.TIMEFRAME_M15, 50_000),   # ~520 days
     "M5":  (mt5.TIMEFRAME_M5,  50_000),   # ~174 days
     "M1":  (mt5.TIMEFRAME_M1,  50_000),   # ~35 days
