@@ -538,6 +538,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     event_type=SETUP_SKIPPED,
                     severity="DEBUG",
                     symbol=r.pair,
+                    correlation_id=getattr(self, "_current_cycle_id", None),
                     source_module="platforms.main_loop",
                     payload={
                         "status": r.status,
