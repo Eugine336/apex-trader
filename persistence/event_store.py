@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import queue
 import sqlite3
+import sys
 import threading
 import time
 import uuid
@@ -237,7 +238,7 @@ class EventStore:
             if deleted:
                 self._conn.commit()
         except Exception as exc:
-            logger.warning("EventStore prune failed: {}", exc)
+            print(f"[event_store] prune failed: {exc}", file=sys.stderr)
         return deleted
 
     # ── Background writer ─────────────────────────────────────────────────
@@ -268,7 +269,7 @@ class EventStore:
                 self._conn.executemany(insert_sql, batch)
                 self._conn.commit()
             except Exception as exc:
-                logger.warning("EventStore write failed (batch={}): {}", len(batch), exc)
+                print(f"[event_store] write failed (batch={len(batch)}): {exc}", file=sys.stderr)
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 
