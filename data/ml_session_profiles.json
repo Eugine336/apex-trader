@@ -1,13 +1,27 @@
 {
-  "london": {
-    "session": "london",
-    "win_rate": 0.6,
-    "avg_pnl": 1.8,
+  "SYDNEY": {
+    "session": "SYDNEY",
+    "win_rate": 0.3438,
+    "avg_pnl": 453.1709,
     "best_pairs": [
-      "EURUSD"
+      "V50_1S",
+      "JP225",
+      "BTCUSD",
+      "AUS200",
+      "XTIUSD"
+    ],
+    "optimal_scan_frequency": 300,
+    "total_trades": 32,
+    "recommendation": "AVOID"
+  },
+  "TOKYO": {
+    "session": "TOKYO",
+    "win_rate": 0.5,
+    "avg_pnl": -21.35,
+    "best_pairs": [
+      "ETHUSD"
     ],
     "optimal_scan_frequency": 30,
-<<<<<<< HEAD
     "total_trades": 2,
     "recommendation": "NORMAL"
   },
@@ -68,9 +82,6 @@
     ],
     "optimal_scan_frequency": 30,
     "total_trades": 4,
-=======
-    "total_trades": 5,
->>>>>>> 306423a05f5ca585c185a39e0fa47b326e31dfff
     "recommendation": "NORMAL"
   }
 }

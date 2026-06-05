@@ -1,5 +1,4 @@
 {
-<<<<<<< HEAD
   "BEARISH": {
     "regime": "BEARISH",
     "optimal_score_threshold": 90,
@@ -43,17 +42,5 @@
     "win_rate": 0.5,
     "sample_size": 2,
     "confidence": 0.02
-=======
-  "trending": {
-    "regime": "trending",
-    "optimal_score_threshold": 85,
-    "optimal_tp_multiplier": 1.2,
-    "optimal_sl_buffer_pips": 2.0,
-    "optimal_partial_close_ratio": 0.4,
-    "avg_hold_candles": 20,
-    "win_rate": 0.6,
-    "sample_size": 5,
-    "confidence": 0.05
->>>>>>> 306423a05f5ca585c185a39e0fa47b326e31dfff
   }
 }
