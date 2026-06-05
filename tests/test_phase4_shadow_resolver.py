@@ -374,6 +374,61 @@ class TestNoLookAhead:
         res = resolve_contract(c, future_bars, "M5")
         assert res.bars_replayed == 3
 
+    def test_lookahead_sl_before_tp_resolves_loss(self):
+        """TRUE NEGATIVE: bar 1 triggers SL, bar 2 would hit TP.
+        A leakage-free resolver MUST resolve LOSS on bar 1.
+        A look-ahead resolver that peeks bar 2's TP would incorrectly
+        resolve as WIN/PARTIAL — this test catches that."""
+        c = _make_contract(
+            direction="LONG", entry_price=1.1000,
+            stop_loss=1.0950, tp1=1.1075, tp2=1.1150,
+        )
+        bars = _make_bars_ohlc([
+            (1.1000, 1.1010, 1.0940, 1.0960),  # bar 1: low breaches SL
+            (1.0960, 1.1080, 1.0955, 1.1070),  # bar 2: high breaches TP1
+            (1.1070, 1.1155, 1.1065, 1.1150),  # bar 3: high breaches TP2
+        ])
+        res = resolve_contract(c, bars, "M5")
+        assert res.outcome == "LOSS", (
+            f"Expected LOSS (SL hit on bar 1), got {res.outcome} — "
+            "possible look-ahead: resolver may have peeked bar 2/3 TP"
+        )
+        assert res.bars_replayed == 1, (
+            f"Expected resolution on bar 1, got {res.bars_replayed} bars — "
+            "resolver continued past SL hit"
+        )
+
+    def test_lookahead_window_bound_spy(self):
+        """SPY: at each resolver step, _build_m5_window never includes bars
+        beyond the current step index. Directly fails if look-ahead is
+        introduced in the m5 window construction."""
+        import persistence.shadow_resolver as sr_mod
+
+        c = _make_contract(
+            direction="LONG", entry_price=1.1000, stop_loss=1.0950,
+        )
+        bars = _make_bars([1.1005, 1.1005, 1.1005, 1.1005, 1.1005])
+
+        real_fn = sr_mod._build_m5_window
+        violations = []
+
+        def spy(bars_df, current_idx, window=50):
+            result = real_fn(bars_df, current_idx, window)
+            if len(result) > current_idx + 1:
+                violations.append(
+                    f"step {current_idx}: window has {len(result)} bars "
+                    f"(max allowed {current_idx + 1})"
+                )
+            return result
+
+        with patch("persistence.shadow_resolver._build_m5_window", side_effect=spy):
+            res = resolve_contract(c, bars, "M5")
+
+        assert not violations, (
+            "Look-ahead detected in m5_window:\n" + "\n".join(violations)
+        )
+        assert res.bars_replayed == 5
+
 
 # ── Intra-bar detection ─────────────────────────────────────────────────────
 

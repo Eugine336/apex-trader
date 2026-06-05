@@ -62,7 +62,8 @@ def _load_forward_bars(
             if df.empty:
                 continue
             return df, tf
-        except Exception:
+        except Exception as exc:
+            logger.debug("[ShadowResolver] failed to load CSV {}: {}", csv_path, exc)
             continue
     return None, "NONE"
 
