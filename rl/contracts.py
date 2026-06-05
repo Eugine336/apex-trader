@@ -127,3 +127,18 @@ def assert_compatible(checkpoint_meta: dict) -> None:
             f"Checkpoint obs_schema_hash={ckpt_hash!r} != "
             f"expected {expected_hash!r}"
         )
+
+
+# ── Phase 2 additions ────────────────────────────────────────────────────────
+
+
+def build_symbol_vocab() -> list[str]:
+    """Sorted list of trainable symbols (excludes synthetics — no data)."""
+    try:
+        from config import INSTRUMENT_REGISTRY, InstrumentCategory
+        return sorted(
+            sym for sym, info in INSTRUMENT_REGISTRY.items()
+            if info.category != InstrumentCategory.SYNTHETIC
+        )
+    except ImportError:
+        return []
