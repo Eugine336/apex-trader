@@ -211,25 +211,30 @@ class TestI1_OneObservedClosePerTrade:
 
 
 class TestI2_NoExitReasonWithoutSource:
+    """Exercises real BackfillRunner.backfill_trades() output — not hand-seeded rows."""
+
     def test_all_close_events_have_source(self, tmp_dir):
         events_db = tmp_dir / "events.db"
-        conn = _create_events_db(events_db)
+        journal_db = tmp_dir / "journal.db"
+        _create_journal_db(journal_db, trades=[
+            {"pair": "EURUSD", "direction": "LONG", "entry": 1.1, "exit": 1.2,
+             "pnl": 100, "outcome": "WIN"},
+            {"pair": "GBPUSD", "direction": "SHORT", "entry": 1.3, "exit": 1.25,
+             "pnl": -50, "outcome": "LOSS"},
+        ], decisions=[])
 
-        _insert(conn, "e1", TRADE_CLOSE, payload={
-            "exit_reason": "UNKNOWN",
-            "exit_reason_source": "backfill_unrecoverable",
-            "origin": "backfill",
-        })
-        _insert(conn, "e2", TRADE_CLOSE, payload={
-            "exit_reason": "STOP_LOSS_HIT",
-            "exit_reason_source": "mt5_deal",
-            "origin": "live",
-        })
+        runner = BackfillRunner(
+            events_db=events_db, journal_db=journal_db,
+            position_db=tmp_dir / "np.db", shadow_db=tmp_dir / "ns.db",
+        )
+        runner.run()
 
+        conn = sqlite3.connect(str(events_db))
         rows = conn.execute(
             "SELECT event_id, payload_json FROM events WHERE event_type = ?",
             (TRADE_CLOSE,),
         ).fetchall()
+        assert len(rows) == 2, "BackfillRunner must produce one TRADE_CLOSE per trade"
 
         for eid, pj in rows:
             payload = json.loads(pj) if pj else {}
@@ -240,33 +245,106 @@ class TestI2_NoExitReasonWithoutSource:
             )
         conn.close()
 
-
-class TestI3_CorrelationIdOnDomainEvents:
-    def test_live_events_carry_correlation_id(self, tmp_dir):
+    def test_negative_missing_source_detected(self, tmp_dir):
+        """Proves the invariant check catches a non-compliant event."""
         events_db = tmp_dir / "events.db"
         conn = _create_events_db(events_db)
-
-        cid = uuid4().hex[:16]
-        _insert(conn, "o1", ORDER_SENT, correlation_id=cid, payload={"origin": "live"})
-        _insert(conn, "o2", ORDER_FILLED, correlation_id=cid, payload={"origin": "live"})
-        _insert(conn, "d1", DECISION_REJECT, correlation_id=cid, payload={"origin": "live"})
-        _insert(conn, "c1", TRADE_CLOSE, correlation_id=cid, payload={
-            "exit_reason": "SL", "exit_reason_source": "mt5", "origin": "live",
+        _insert(conn, "bad1", TRADE_CLOSE, payload={
+            "exit_reason": "STOP_LOSS_HIT",
         })
 
+        rows = conn.execute(
+            "SELECT event_id, payload_json FROM events WHERE event_type = ?",
+            (TRADE_CLOSE,),
+        ).fetchall()
+
+        violations = []
+        for eid, pj in rows:
+            payload = json.loads(pj) if pj else {}
+            has_reason = "exit_reason" in payload and payload["exit_reason"]
+            has_source = "exit_reason_source" in payload and payload["exit_reason_source"]
+            if has_reason and not has_source:
+                violations.append(eid)
+
+        assert len(violations) == 1, (
+            "Invariant check must detect exit_reason without exit_reason_source"
+        )
+        conn.close()
+
+
+class TestI3_CorrelationIdOnDomainEvents:
+    """Exercises the real EventStore.emit() path — not hand-inserted rows.
+    correlation_id is a live-runtime concern (not set by BackfillRunner for
+    trades/decisions), so this test uses EventStore.emit() directly to prove
+    the real persistence path honours the kwarg.
+    """
+
+    def test_live_events_carry_correlation_id(self, tmp_dir):
+        import time
+        from persistence.event_store import EventStore
+
+        events_db = tmp_dir / "events.db"
+        store = EventStore(db_path=str(events_db), max_queue=100)
+        try:
+            cid = uuid4().hex[:16]
+            for etype in (ORDER_SENT, ORDER_FILLED, DECISION_REJECT, TRADE_CLOSE):
+                store.emit(
+                    etype, "INFO",
+                    symbol="EURUSD",
+                    correlation_id=cid,
+                    source_module="test_i3",
+                    payload={"origin": "live"},
+                )
+            time.sleep(0.5)
+        finally:
+            store.close()
+
+        conn = sqlite3.connect(str(events_db))
         domain_types = (ORDER_SENT, ORDER_FILLED, DECISION_REJECT, TRADE_CLOSE)
         placeholders = ",".join("?" for _ in domain_types)
         rows = conn.execute(
             f"SELECT event_id, correlation_id FROM events "
             f"WHERE event_type IN ({placeholders}) "
-            f"AND json_extract(payload_json, '$.origin') = 'live'",
+            f"AND source_module = 'test_i3'",
             domain_types,
         ).fetchall()
+        assert len(rows) == 4, f"Expected 4 events from emit(), got {len(rows)}"
 
         for eid, corr in rows:
             assert corr is not None and corr != "", (
                 f"Live domain event {eid} missing correlation_id"
             )
+        conn.close()
+
+    def test_negative_null_correlation_detected(self, tmp_dir):
+        """Proves the invariant query catches a live emit without correlation_id."""
+        import time
+        from persistence.event_store import EventStore
+
+        events_db = tmp_dir / "events.db"
+        store = EventStore(db_path=str(events_db), max_queue=100)
+        try:
+            store.emit(
+                ORDER_SENT, "INFO",
+                symbol="EURUSD",
+                source_module="test_i3_neg",
+                payload={"origin": "live"},
+            )
+            time.sleep(0.5)
+        finally:
+            store.close()
+
+        conn = sqlite3.connect(str(events_db))
+        rows = conn.execute(
+            "SELECT event_id, correlation_id FROM events "
+            "WHERE source_module = 'test_i3_neg'",
+        ).fetchall()
+        assert len(rows) == 1
+
+        violations = [eid for eid, corr in rows if corr is None or corr == ""]
+        assert len(violations) == 1, (
+            "Invariant check must detect NULL correlation_id on live domain event"
+        )
         conn.close()
 
     def test_backfill_decisions_dont_require_correlation(self, tmp_dir):
@@ -292,27 +370,33 @@ class TestI3_CorrelationIdOnDomainEvents:
 
 
 class TestI4_ReconciliationDerivable:
+    """Exercises real BackfillRunner output — verifies exit_reason + exit_reason_source
+    are always present on TRADE_CLOSE events, making reconciliation derivable."""
+
     def test_every_close_has_reason_or_unknown(self, tmp_dir):
         events_db = tmp_dir / "events.db"
-        conn = _create_events_db(events_db)
+        journal_db = tmp_dir / "journal.db"
+        _create_journal_db(journal_db, trades=[
+            {"pair": "EURUSD", "direction": "LONG", "entry": 1.1, "exit": 1.2,
+             "pnl": 100, "outcome": "WIN"},
+            {"pair": "GBPUSD", "direction": "SHORT", "entry": 1.3, "exit": 1.25,
+             "pnl": -50, "outcome": "LOSS"},
+            {"pair": "USDJPY", "direction": "LONG", "entry": 150.0, "exit": 149.5,
+             "pnl": -80, "outcome": "LOSS"},
+        ], decisions=[])
 
-        _insert(conn, "c1", TRADE_CLOSE, payload={
-            "exit_reason": "UNKNOWN",
-            "exit_reason_source": "backfill_unrecoverable",
-            "raw_broker_reason": "BROKER_CLOSED",
-            "origin": "backfill",
-        })
-        _insert(conn, "c2", TRADE_CLOSE, payload={
-            "exit_reason": "STOP_LOSS_HIT",
-            "exit_reason_source": "mt5_deal",
-            "raw_broker_reason": "sl",
-            "origin": "live",
-        })
+        runner = BackfillRunner(
+            events_db=events_db, journal_db=journal_db,
+            position_db=tmp_dir / "np.db", shadow_db=tmp_dir / "ns.db",
+        )
+        runner.run()
 
+        conn = sqlite3.connect(str(events_db))
         rows = conn.execute(
             "SELECT event_id, payload_json FROM events WHERE event_type = ?",
             (TRADE_CLOSE,),
         ).fetchall()
+        assert len(rows) == 3, "BackfillRunner must produce one TRADE_CLOSE per trade"
 
         for eid, pj in rows:
             payload = json.loads(pj) if pj else {}
@@ -322,6 +406,32 @@ class TestI4_ReconciliationDerivable:
                 f"TRADE_CLOSE {eid}: reconciliation impossible — "
                 f"exit_reason={reason!r}, exit_reason_source={source!r}"
             )
+        conn.close()
+
+    def test_negative_missing_reason_detected(self, tmp_dir):
+        """Proves the invariant check catches a close event missing exit_reason."""
+        events_db = tmp_dir / "events.db"
+        conn = _create_events_db(events_db)
+        _insert(conn, "bad1", TRADE_CLOSE, payload={
+            "exit_reason_source": "mt5_deal",
+        })
+
+        rows = conn.execute(
+            "SELECT event_id, payload_json FROM events WHERE event_type = ?",
+            (TRADE_CLOSE,),
+        ).fetchall()
+
+        violations = []
+        for eid, pj in rows:
+            payload = json.loads(pj) if pj else {}
+            reason = payload.get("exit_reason", "")
+            source = payload.get("exit_reason_source", "")
+            if not reason or not source:
+                violations.append(eid)
+
+        assert len(violations) == 1, (
+            "Invariant check must detect missing exit_reason on TRADE_CLOSE"
+        )
         conn.close()
 
 
