@@ -21,7 +21,8 @@ class ShadowMixin:
             if not hasattr(self, "_shadow_store_inst"):
                 self._shadow_store_inst = ShadowStore()
             return self._shadow_store_inst
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Shadow store unavailable: {e}")
             return None
 
     def get_shadow_outcomes(self) -> dict:
