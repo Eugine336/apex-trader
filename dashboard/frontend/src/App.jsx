@@ -10,6 +10,8 @@ import RiskMonitor from './pages/RiskMonitor';
 import MLInsights from './pages/MLInsights';
 import Controls from './pages/Controls';
 import Activity from './pages/Activity';
+import ShadowOutcomes from './pages/ShadowOutcomes';
+import Reconciliation from './pages/Reconciliation';
 
 export default function App() {
   return (
@@ -25,6 +27,8 @@ export default function App() {
           <Route path="ml" element={<MLInsights />} />
           <Route path="controls" element={<Controls />} />
           <Route path="activity" element={<Activity />} />
+          <Route path="shadow" element={<ShadowOutcomes />} />
+          <Route path="reconciliation" element={<Reconciliation />} />
         </Route>
       </Routes>
     </BrowserRouter>

@@ -162,6 +162,13 @@ class HelpersMixin:
         raw_rows = self._refresh_journal_cache()
         rows: list[dict[str, Any]] = []
 
+        close_map: dict[str, dict] = {}
+        try:
+            from persistence.event_store import get_event_store
+            close_map = get_event_store().get_trade_close_map()
+        except Exception as e:
+            logger.debug(f"Event store close_map unavailable: {e}")
+
         for i, record in enumerate(raw_rows):
             if str(record.get("outcome", "")).upper() == "LEGACY":
                 continue
@@ -208,6 +215,9 @@ class HelpersMixin:
                     "score": int(round(safe_float(record.get("score", 0)))),
                     "outcome": outcome,
                     "opened_at": opened_at,
+                    "exit_reason": _exit_attr(close_map, record, "exit_reason"),
+                    "exit_reason_source": _exit_attr(close_map, record, "exit_reason_source"),
+                    "raw_broker_reason": _exit_attr(close_map, record, "raw_broker_reason"),
                 }
             )
 
@@ -226,3 +236,10 @@ class HelpersMixin:
             "session": 10 if bool(value(result, "session_active", default=False)) else 0,
             "strength": 10 if bool(value(result, "currency_strength_aligned", default=False)) else 0,
         }
+
+
+def _exit_attr(close_map: dict, record: dict, key: str) -> str:
+    """Look up a TRADE_CLOSE exit-attribution field by order_id."""
+    oid = str(record.get("id", ""))
+    payload = close_map.get(oid, {})
+    return payload.get(key, "")

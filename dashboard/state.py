@@ -4,7 +4,9 @@ Bridges TradingLoop / PlatformManager to dashboard API responses.
 
 Thin orchestrator — delegates to domain-specific mixins in
 state_status, state_trades, state_history, state_scanner,
-state_risk, state_performance, state_ml, and state_controls.
+state_risk, state_performance, state_ml, state_controls,
+state_events (Phase 5 — persistent event feed), and
+state_shadow (Phase 5 — rejected-setup outcomes).
 """
 
 import time as _time
@@ -20,6 +22,8 @@ from dashboard.state_risk import RiskMixin
 from dashboard.state_performance import PerformanceMixin
 from dashboard.state_ml import MLInsightsMixin
 from dashboard.state_controls import ControlsMixin
+from dashboard.state_events import EventsMixin
+from dashboard.state_shadow import ShadowMixin
 
 
 class LiveState(
@@ -31,6 +35,8 @@ class LiveState(
     PerformanceMixin,
     MLInsightsMixin,
     ControlsMixin,
+    EventsMixin,
+    ShadowMixin,
 ):
     """
     Central state provider for the dashboard.
@@ -49,6 +55,9 @@ class LiveState(
         self._journal_cache: list[dict] = []
         self._journal_cache_ts: float = 0.0
         self._journal_cache_ttl: float = 5.0
+        self._events_cache: list = []
+        self._events_cache_ts: float = 0.0
+        self._events_cache_ttl: float = 2.0
 
     def attach(
         self,
@@ -64,33 +73,28 @@ class LiveState(
 
     def get_activity(self) -> dict:
         """
-        Returns merged activity feed for the dashboard:
-        - Recent rejections (in-memory from TradingLoop + PlatformManager)
-        - System warnings (broker errors, unavailable symbols, etc.)
-        Sorted newest-first, capped at 100 entries.
+        Returns activity feed backed by the persistent event store.
+        Falls back to in-memory warnings if the store is unavailable.
+        Defaults to INFO+ (no DEBUG) for the fast WS channel.
         """
-        events: list[dict] = []
+        try:
+            result = self.get_events(severity_min="INFO", limit=100)
+            if result.get("source") != "error" and result.get("events"):
+                return result
+        except Exception as exc:
+            logger.debug("[dashboard] event store read failed, falling back: {}", exc)
 
-        # Rejections + warnings from TradingLoop
+        events: list[dict] = []
         loop_warnings = getattr(self._trading_loop, "system_warnings", []) if self._trading_loop else []
         events.extend(loop_warnings)
-
-        # Warnings from PlatformManager (broker errors, unavailable symbols)
         pm_warnings = getattr(self._platform_manager, "system_warnings", []) if self._platform_manager else []
         events.extend(pm_warnings)
-
-        # Sort newest-first and cap
         try:
             events.sort(key=lambda e: e.get("timestamp", ""), reverse=True)
         except Exception as exc:
             logger.debug("[dashboard] event sort failed: {}", exc)
-            pass
         events = events[:100]
-
-        return {
-            "events": events,
-            "total": len(events),
-        }
+        return {"events": events, "total": len(events), "source": "in_memory"}
 
     @property
     def is_live(self) -> bool:
