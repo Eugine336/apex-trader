@@ -21,3 +21,6 @@ TRADE_CLOSE = "TRADE_CLOSE"
 # ── Shadow resolver (Phase 4) ───────────────────────────────────────────────
 SHADOW_CONTRACT_CREATED = "SHADOW_CONTRACT_CREATED"
 SHADOW_RESOLVED = "SHADOW_RESOLVED"
+
+# ── Backfill (Phase 6) ─────────────────────────────────────────────────────
+TRADE_CLOSE_DERIVED = "TRADE_CLOSE_DERIVED"
