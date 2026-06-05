@@ -211,6 +211,103 @@ class EventStore:
             print(f"[event_store] query failed: {exc}", file=sys.stderr)
             return []
 
+    _SEVERITY_RANK = {"DEBUG": 0, "INFO": 1, "WARNING": 2, "ERROR": 3}
+
+    def query_events(
+        self,
+        *,
+        severity_min: str = "INFO",
+        event_types: Optional[List[str]] = None,
+        symbol: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+        since_ms: Optional[int] = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        """Dashboard-oriented read: severity-filtered, multi-type, paginated, newest-first."""
+        min_rank = self._SEVERITY_RANK.get(severity_min.upper(), 1)
+        allowed = [s for s, r in self._SEVERITY_RANK.items() if r >= min_rank]
+
+        clauses: List[str] = []
+        params: List[Any] = []
+
+        placeholders = ", ".join("?" for _ in allowed)
+        clauses.append(f"severity IN ({placeholders})")
+        params.extend(allowed)
+
+        if event_types:
+            tp = ", ".join("?" for _ in event_types)
+            clauses.append(f"event_type IN ({tp})")
+            params.extend(event_types)
+        if symbol is not None:
+            clauses.append("symbol = ?")
+            params.append(symbol)
+        if correlation_id is not None:
+            clauses.append("correlation_id = ?")
+            params.append(correlation_id)
+        if since_ms is not None:
+            clauses.append("ts_utc_ms >= ?")
+            params.append(since_ms)
+
+        where = " WHERE " + " AND ".join(clauses)
+        sql = (
+            f"SELECT * FROM events{where}"
+            f" ORDER BY ts_utc_ms DESC LIMIT ? OFFSET ?"
+        )
+        params.extend([limit, offset])
+
+        try:
+            cur = self._conn.execute(sql, params)
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+        except Exception as exc:
+            print(f"[event_store] query_events failed: {exc}", file=sys.stderr)
+            return []
+
+    def get_trade_close_map(self) -> Dict[str, Dict[str, Any]]:
+        """Return {order_id: payload} for all TRADE_CLOSE events (exit attribution)."""
+        try:
+            cur = self._conn.execute(
+                "SELECT payload_json FROM events WHERE event_type = 'TRADE_CLOSE'"
+            )
+            result: Dict[str, Dict[str, Any]] = {}
+            for (pj,) in cur.fetchall():
+                if pj:
+                    payload = json.loads(pj)
+                    oid = payload.get("order_id")
+                    if oid:
+                        result[str(oid)] = payload
+            return result
+        except Exception as exc:
+            print(f"[event_store] get_trade_close_map failed: {exc}", file=sys.stderr)
+            return {}
+
+    def get_reconciliation(self, limit: int = 200) -> List[Dict[str, Any]]:
+        """TRADE_CLOSE events where derived reason != broker reason, or reason missing."""
+        try:
+            rows = self.query_events(
+                severity_min="DEBUG",
+                event_types=["TRADE_CLOSE"],
+                limit=limit,
+            )
+            anomalies: List[Dict[str, Any]] = []
+            for row in rows:
+                pj = row.get("payload_json")
+                if not pj:
+                    anomalies.append(row)
+                    continue
+                payload = json.loads(pj) if isinstance(pj, str) else pj
+                derived = payload.get("exit_reason", "")
+                raw = payload.get("raw_broker_reason", "")
+                source = payload.get("exit_reason_source", "")
+                if not derived or source == "unknown" or (raw and derived != raw):
+                    row["_payload"] = payload
+                    anomalies.append(row)
+            return anomalies
+        except Exception as exc:
+            print(f"[event_store] get_reconciliation failed: {exc}", file=sys.stderr)
+            return []
+
     def count(self) -> int:
         """Total persisted event rows."""
         try:
