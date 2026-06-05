@@ -8,7 +8,7 @@ from persistence.event_store import EventStore, get_event_store, shutdown_event_
 from persistence.position_store import PositionStore
 from persistence.domain_events import (
     DECISION_REJECT, ORDER_SENT, ORDER_FILLED, TRADE_OPEN,
-    SHADOW_CONTRACT_CREATED, SHADOW_RESOLVED,
+    SHADOW_CONTRACT_CREATED, SHADOW_RESOLVED, TRADE_CLOSE_DERIVED,
 )
 from persistence.shadow_store import ShadowStore, ShadowContract, ShadowResolution, new_contract_id
 
@@ -25,6 +25,7 @@ __all__ = [
     "TRADE_OPEN",
     "SHADOW_CONTRACT_CREATED",
     "SHADOW_RESOLVED",
+    "TRADE_CLOSE_DERIVED",
     "ShadowStore",
     "ShadowContract",
     "ShadowResolution",
