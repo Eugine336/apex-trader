@@ -62,10 +62,11 @@ class SessionLearner:
     # ------------------------------------------------------------------
 
     def _save(self) -> None:
+        from persistence.atomic_write import atomic_write_text
+
         p = Path(self.SAVE_PATH)
-        p.parent.mkdir(parents=True, exist_ok=True)
         data = {k: asdict(v) for k, v in self._profiles.items()}
-        p.write_text(json.dumps(data, indent=2, default=str))
+        atomic_write_text(p, json.dumps(data, indent=2, default=str))
         logger.info(f"Session profiles saved to {self.SAVE_PATH}")
 
     def _load(self) -> None:
