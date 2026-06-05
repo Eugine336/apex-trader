@@ -221,9 +221,12 @@ class TestStdlibIntercept:
         original = _es_mod._global_store
         _es_mod._global_store = store
         sid = logger.add(event_store_sink, level="DEBUG")
+        stdlib_log = logging.getLogger("test.intercept.target")
+        orig_handlers = stdlib_log.handlers[:]
+        orig_level = stdlib_log.level
+        orig_propagate = stdlib_log.propagate
         install_stdlib_intercept(["test.intercept.target"])
         try:
-            stdlib_log = logging.getLogger("test.intercept.target")
             stdlib_log.info("from stdlib")
             store.flush()
             rows = store.query(event_type="LOG")
@@ -231,6 +234,9 @@ class TestStdlibIntercept:
         finally:
             logger.remove(sid)
             _es_mod._global_store = original
+            stdlib_log.handlers = orig_handlers
+            stdlib_log.level = orig_level
+            stdlib_log.propagate = orig_propagate
 
 
 # ── Writer-loop recursion safety ──────────────────────────────────────────────
