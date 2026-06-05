@@ -560,8 +560,8 @@ class PairScanner:
         # Periodic authority evaluation
         try:
             self._rl.evaluate_authority()
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("RL authority evaluation failed: {}", exc)
 
         report = ScanReport(
             timestamp=utc_now,
