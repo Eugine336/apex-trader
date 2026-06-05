@@ -288,6 +288,56 @@ class ShadowStore:
             logger.debug("[ShadowStore] count_by_status failed: {}", exc)
             return {}
 
+    def get_outcomes_by_gate(self) -> List[Dict[str, Any]]:
+        """Aggregate resolved+expired contracts grouped by rejecting_gate."""
+        if self._conn is None:
+            return []
+        try:
+            cur = self._conn.execute(
+                """SELECT rejecting_gate, outcome,
+                          COUNT(*) as cnt,
+                          AVG(r_multiple) as avg_r,
+                          AVG(bars_replayed) as avg_bars
+                   FROM shadow_contracts
+                   WHERE status IN ('RESOLVED', 'EXPIRED')
+                   GROUP BY rejecting_gate, outcome
+                   ORDER BY rejecting_gate, outcome"""
+            )
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+        except Exception as exc:
+            logger.debug("[ShadowStore] get_outcomes_by_gate failed: {}", exc)
+            return []
+
+    def get_all_contracts(
+        self,
+        status: Optional[str] = None,
+        rejecting_gate: Optional[str] = None,
+        limit: int = 200,
+    ) -> List[ShadowContract]:
+        """Get contracts with optional filters, newest-first."""
+        if self._conn is None:
+            return []
+        try:
+            clauses: List[str] = []
+            params: list = []
+            if status:
+                clauses.append("status = ?")
+                params.append(status)
+            if rejecting_gate:
+                clauses.append("rejecting_gate = ?")
+                params.append(rejecting_gate)
+            where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+            cur = self._conn.execute(
+                f"SELECT * FROM shadow_contracts{where} ORDER BY ts_utc_ms DESC LIMIT ?",
+                (*params, limit),
+            )
+            cols = [d[0] for d in cur.description]
+            return [ShadowContract(**dict(zip(cols, row))) for row in cur.fetchall()]
+        except Exception as exc:
+            logger.debug("[ShadowStore] get_all_contracts failed: {}", exc)
+            return []
+
     def close(self) -> None:
         if self._conn:
             try:
