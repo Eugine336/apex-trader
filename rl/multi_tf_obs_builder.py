@@ -1,172 +1,299 @@
 """
 APEX RL — Multi-Timeframe Observation Builder
 ===============================================
-Produces a ``(50, 48)`` observation by concatenating four timeframes
-``[M5 | M15 | H1 | H4]`` of 12 market features each.
+Produces the ``(50, 48)`` observation tensor and instrument-context vector
+defined by ``rl.contracts``.
 
-Two entry points with identical output (train/serve parity):
+Two entry points that MUST produce identical output on identical data
+(train/serve parity):
 
-*  ``from_frames(m5, m15, h1, h4, instrument)``
-     — batch/backtest path; takes four DataFrames.
+* ``build_from_frames``  — batch / training / backtest  (accepts DataFrames)
+* ``add_bar`` + ``build`` — incremental / live           (bar-by-bar feed)
 
-*  ``update(tf, bar)`` + ``build(instrument, in_trade)``
-     — live incremental path; one bar at a time.
-
-**Closed-bar alignment rule** (no-leakage invariant):
-    At M5 bar with timestamp *t*, the H4/H1/M15 data used is the
-    last fully-closed higher-TF bar whose ``close_time <= t``.
-    An in-progress higher-TF bar is **never** visible.
+Both converge on the same alignment and feature-construction path so there
+is exactly *one* code path that touches the observation shape.
 """
 
 from __future__ import annotations
 
-import numpy as np
-import pandas as pd
+import math
+from collections import defaultdict
+from datetime import datetime, timezone
 from typing import Optional
 
-from .obs_builder import ObservationBuilder
-from .contracts import (
-    TF_ORDER,
-    N_TF,
-    WINDOW,
-    N_MARKET_FEATURES,
+import numpy as np
+import pandas as pd
+
+from rl.contracts import (
+    CLOCK_TF,
+    INSTRUMENT_CONTEXT_FEATURES,
+    MARKET_FEATURES,
     N_CONTEXT_FEATURES,
-    OBS_FEATURES,
+    N_MARKET_FEATURES,
+    N_TIMEFRAMES,
+    OBS_SHAPE,
+    TF_ORDER,
+    TF_SECONDS,
+    WINDOW,
     ATR_PERIOD,
-    CATEGORY_MAP,
-    build_symbol_vocab,
 )
+from rl.obs_builder import ObservationBuilder
+
+
+# ── Symbol classification helpers ────────────────────────────────────────────
+
+_INDEX_SYMBOLS = frozenset([
+    "US100", "US30", "US500", "GER40", "UK100", "JP225",
+    "HK50", "AUS200", "FRA40",
+])
+
+_CRYPTO_SYMBOLS = frozenset([
+    "BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD", "ADAUSD",
+    "BNBUSD", "DOTUSD", "LTCUSD",
+])
+
+_METAL_SYMBOLS = frozenset(["XAUUSD", "XAGUSD"])
+
+_DEFAULT_PROFILE: dict[str, float] = {
+    "pip_size": 0.0001,
+    "typical_spread_pips": 1.5,
+    "pip_value": 10.0,
+}
+
+
+def _is_jpy_pair(symbol: str) -> bool:
+    return symbol.upper().endswith("JPY")
+
+
+def _is_metal(symbol: str) -> bool:
+    return symbol.upper() in _METAL_SYMBOLS
+
+
+def _is_index(symbol: str) -> bool:
+    return symbol.upper() in _INDEX_SYMBOLS
+
+
+def _is_crypto(symbol: str) -> bool:
+    return symbol.upper() in _CRYPTO_SYMBOLS
+
+
+def _safe_log(x: float) -> float:
+    return math.log(max(abs(x), 1e-12))
+
+
+# ── Alignment ────────────────────────────────────────────────────────────────
+
+
+def _parse_time(t) -> datetime:
+    """Accept datetime, pd.Timestamp, or ISO-format string → UTC datetime."""
+    if isinstance(t, datetime):
+        if t.tzinfo is None:
+            return t.replace(tzinfo=timezone.utc)
+        return t
+    if isinstance(t, pd.Timestamp):
+        dt = t.to_pydatetime()
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=timezone.utc)
+        return dt
+    return datetime.fromisoformat(str(t)).replace(tzinfo=timezone.utc)
+
+
+def _select_closed(
+    df: pd.DataFrame,
+    tf: str,
+    anchor_open: datetime,
+) -> pd.DataFrame:
+    """Return rows from *df* whose bars are fully closed at *anchor_open*.
+
+    For the clock TF (M5) the anchor bar itself is included (open <= anchor).
+    For higher TFs a bar with open T is included only if T + period <= anchor
+    (i.e. the bar has fully closed before the anchor opens).
+    """
+    times = pd.to_datetime(df["time"], utc=True)
+
+    if tf == CLOCK_TF:
+        mask = times <= anchor_open
+    else:
+        period = pd.Timedelta(seconds=TF_SECONDS[tf])
+        mask = (times + period) <= anchor_open
+
+    return df.loc[mask]
+
+
+# ── Context vector ───────────────────────────────────────────────────────────
+
+
+def build_context(
+    instrument: str,
+    profile: Optional[dict] = None,
+) -> np.ndarray:
+    """Return a float32 vector in ``INSTRUMENT_CONTEXT_FEATURES`` order."""
+    p = {**_DEFAULT_PROFILE, **(profile or {})}
+    sym = instrument.upper()
+
+    vec = np.array(
+        [
+            _safe_log(p.get("pip_size", _DEFAULT_PROFILE["pip_size"])),
+            float(p.get("typical_spread_pips", _DEFAULT_PROFILE["typical_spread_pips"])),
+            _safe_log(p.get("pip_value", _DEFAULT_PROFILE["pip_value"])),
+            float(_is_jpy_pair(sym)),
+            float(_is_metal(sym)),
+            float(_is_index(sym)),
+            float(_is_crypto(sym)),
+            float(p.get("is_always_open", _is_crypto(sym))),
+        ],
+        dtype=np.float32,
+    )
+    assert vec.shape == (N_CONTEXT_FEATURES,)
+    return vec
+
+
+def symbol_id_for(instrument: str, universe: Optional[list[str]] = None) -> int:
+    """Stable integer id: index in *universe* if given, else deterministic hash."""
+    sym = instrument.upper()
+    if universe is not None:
+        normed = [s.upper() for s in universe]
+        if sym in normed:
+            return normed.index(sym)
+    return int(hash(sym) % (2**31))
+
+
+# ── Builder ──────────────────────────────────────────────────────────────────
 
 
 class MultiTFObservationBuilder:
-    """Builds ``(WINDOW, OBS_FEATURES)`` observations from four timeframes."""
+    """Produce a ``(50, 48)`` MTF observation and context vector.
 
-    def __init__(self):
-        self._tf_builders: dict[str, ObservationBuilder] = {
-            tf: ObservationBuilder(window=WINDOW, atr_period=ATR_PERIOD)
-            for tf in TF_ORDER
-        }
-        self._symbol_vocab: list[str] = build_symbol_vocab()
+    Reuses ``ObservationBuilder`` per timeframe so the per-window z-norm
+    and feature construction is byte-identical to the existing live path.
+    """
 
-    # ── Batch path (training / backtest) ──────────────────────────────────
+    def __init__(self) -> None:
+        self._buffers: dict[str, list[dict]] = defaultdict(list)
+        self._max_buf = WINDOW + ATR_PERIOD + 30
 
-    def from_frames(
-        self,
-        m5_df: pd.DataFrame,
-        m15_df: pd.DataFrame,
-        h1_df: pd.DataFrame,
-        h4_df: pd.DataFrame,
-        instrument: str,
-        in_trade: float = 0.0,
-    ) -> tuple[Optional[np.ndarray], Optional[np.ndarray], int]:
-        """
-        Build one observation from four aligned DataFrames.
+    # ── Incremental / live path ──────────────────────────────────────────
 
-        Each DataFrame must have columns: time, open, high, low, close
-        (volume optional).  Higher-TF frames are filtered to closed bars
-        whose ``time <= last M5 bar time`` (the no-leakage invariant).
-
-        Returns
-        -------
-        obs : (50, 48) float32 or None if not enough data.
-        context : (N_CONTEXT_FEATURES,) float32.
-        symbol_id : int index into the symbol vocabulary.
-        """
-        if len(m5_df) == 0:
-            return None, None, 0
-
-        current_time = m5_df["time"].iloc[-1]
-
-        tf_frames = {
-            "M5": m5_df,
-            "M15": m15_df[m15_df["time"] <= current_time],
-            "H1": h1_df[h1_df["time"] <= current_time],
-            "H4": h4_df[h4_df["time"] <= current_time],
-        }
-
-        per_tf_obs: list[np.ndarray] = []
-        for tf in TF_ORDER:
-            builder = ObservationBuilder(window=WINDOW, atr_period=ATR_PERIOD)
-            obs_tf = builder.from_dataframe(tf_frames[tf])
-            if obs_tf is None:
-                return None, None, 0
-            if obs_tf.shape[-1] == N_MARKET_FEATURES:
-                obs_tf[:, -1] = np.clip(float(in_trade), -3.0, 3.0)
-            per_tf_obs.append(obs_tf)
-
-        obs = np.concatenate(per_tf_obs, axis=1).astype(np.float32)
-        context, symbol_id = self._build_context(instrument)
-        return obs, context, symbol_id
-
-    # ── Live incremental path ─────────────────────────────────────────────
-
-    def update(
+    def add_bar(
         self,
         tf: str,
+        time,
         open: float,
         high: float,
         low: float,
         close: float,
         volume: float = 1.0,
     ) -> None:
-        """Feed one closed bar for the given timeframe."""
-        if tf not in self._tf_builders:
-            return
-        self._tf_builders[tf].update(
-            open=open, high=high, low=low,
-            close=close, volume=volume, in_trade=0.0,
-        )
+        """Append one OHLCV bar for *tf*. Call ``build()`` after feeding bars."""
+        buf = self._buffers[tf]
+        buf.append({
+            "time": _parse_time(time),
+            "open": open,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": volume,
+        })
+        if len(buf) > self._max_buf * 2:
+            self._buffers[tf] = buf[-self._max_buf:]
 
     def build(
         self,
         instrument: str,
         in_trade: float = 0.0,
-    ) -> tuple[Optional[np.ndarray], Optional[np.ndarray], int]:
-        """
-        Assemble the current multi-TF observation from buffered bars.
+        profile: Optional[dict] = None,
+        universe: Optional[list[str]] = None,
+    ) -> Optional[tuple[np.ndarray, np.ndarray, int]]:
+        """Build from incrementally added bars.
 
-        Returns ``(obs, context, symbol_id)`` — same contract as ``from_frames``.
+        Returns ``(obs, context, symbol_id)`` or ``None`` if any TF has
+        insufficient data.
         """
-        per_tf_obs: list[np.ndarray] = []
+        if not self._buffers:
+            return None
+
+        m5_buf = self._buffers.get(CLOCK_TF)
+        if not m5_buf:
+            return None
+
+        anchor_open = m5_buf[-1]["time"]
+        frames: dict[str, pd.DataFrame] = {}
+
         for tf in TF_ORDER:
-            obs_tf = self._tf_builders[tf]._build(in_trade)
-            if obs_tf is None:
-                return None, None, 0
-            per_tf_obs.append(obs_tf)
+            buf = self._buffers.get(tf)
+            if not buf:
+                return None
+            df = pd.DataFrame(buf)
+            frames[tf] = df
 
-        obs = np.concatenate(per_tf_obs, axis=1).astype(np.float32)
-        context, symbol_id = self._build_context(instrument)
-        return obs, context, symbol_id
+        return self._assemble(frames, anchor_open, instrument, in_trade, profile, universe)
 
-    # ── Context vector ────────────────────────────────────────────────────
+    # ── Batch / training path ────────────────────────────────────────────
 
-    def _build_context(self, instrument: str) -> tuple[np.ndarray, int]:
+    def build_from_frames(
+        self,
+        frames: dict[str, pd.DataFrame],
+        instrument: str,
+        in_trade: float = 0.0,
+        profile: Optional[dict] = None,
+        universe: Optional[list[str]] = None,
+    ) -> Optional[tuple[np.ndarray, np.ndarray, int]]:
+        """Build from pre-loaded DataFrames keyed by TF name.
+
+        Each DataFrame must have columns ``time, open, high, low, close, volume``.
+        Returns ``(obs, context, symbol_id)`` or ``None`` if insufficient data.
         """
-        Build the instrument-context vector and symbol id.
+        m5 = frames.get(CLOCK_TF)
+        if m5 is None or m5.empty:
+            return None
 
-        Returns ``(context_vec, symbol_id)`` where ``context_vec`` has shape
-        ``(N_CONTEXT_FEATURES,)`` and ``symbol_id`` is an integer index.
-        """
-        try:
-            from config import INSTRUMENT_REGISTRY, is_session_gated, is_always_open
-        except ImportError:
-            return np.zeros(N_CONTEXT_FEATURES, dtype=np.float32), 0
+        anchor_open = _parse_time(m5["time"].iloc[-1])
+        return self._assemble(frames, anchor_open, instrument, in_trade, profile, universe)
 
-        sym = instrument.upper()
-        info = INSTRUMENT_REGISTRY.get(sym)
-        if info is None:
-            return np.zeros(N_CONTEXT_FEATURES, dtype=np.float32), 0
+    # ── Shared assembly ──────────────────────────────────────────────────
 
-        symbol_id = self._symbol_vocab.index(sym) if sym in self._symbol_vocab else 0
+    def _assemble(
+        self,
+        frames: dict[str, pd.DataFrame],
+        anchor_open: datetime,
+        instrument: str,
+        in_trade: float,
+        profile: Optional[dict],
+        universe: Optional[list[str]],
+    ) -> Optional[tuple[np.ndarray, np.ndarray, int]]:
+        blocks: list[np.ndarray] = []
+        it_idx = MARKET_FEATURES.index("in_trade")
+        clamped_it = float(np.clip(in_trade, -3, 3))
 
-        context = np.array([
-            float(symbol_id),
-            float(CATEGORY_MAP.get(info.category.value, 0)),
-            float(np.log10(max(info.pip_size, 1e-10))),
-            float(np.log10(info.typical_spread_pips + 1)),
-            float(np.log10(max(info.pip_value_per_lot, 1e-10))),
-            float(is_session_gated(sym)),
-            float(is_always_open(sym)),
-            0.0,
-        ], dtype=np.float32)
-        return context, symbol_id
+        for tf in TF_ORDER:
+            df = frames.get(tf)
+            if df is None or df.empty:
+                return None
+
+            selected = _select_closed(df, tf, anchor_open)
+
+            need = WINDOW + ATR_PERIOD
+            if len(selected) < need:
+                return None
+
+            builder = ObservationBuilder(window=WINDOW, atr_period=ATR_PERIOD)
+            block = builder.from_dataframe(selected)
+
+            if block is None:
+                return None
+
+            blocks.append(block)
+
+        obs = np.concatenate(blocks, axis=1).astype(np.float32)
+
+        for k in range(N_TIMEFRAMES):
+            obs[:, k * N_MARKET_FEATURES + it_idx] = clamped_it
+
+        np.nan_to_num(obs, copy=False)
+
+        assert obs.shape == OBS_SHAPE, f"Expected {OBS_SHAPE}, got {obs.shape}"
+
+        ctx = build_context(instrument, profile)
+        sid = symbol_id_for(instrument, universe)
+
+        return obs, ctx, sid

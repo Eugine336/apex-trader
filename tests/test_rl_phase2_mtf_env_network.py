@@ -18,7 +18,8 @@ import shutil
 import numpy as np
 import pandas as pd
 import pytest
-import torch
+
+torch = pytest.importorskip("torch")
 
 from rl.contracts import (
     OBS_CONTRACT_VERSION,
@@ -27,6 +28,8 @@ from rl.contracts import (
     N_MARKET_FEATURES,
     OBS_FEATURES,
     WINDOW,
+    N_TIMEFRAMES,
+    schema,
     schema_hash,
     assert_compatible,
     build_symbol_vocab,
@@ -77,15 +80,22 @@ class TestContracts:
         assert len(h1) == 16
 
     def test_assert_compatible_good(self):
-        meta = {"schema_hash": schema_hash()}
+        meta = {
+            "obs_contract_version": OBS_CONTRACT_VERSION,
+            "obs_schema_hash": schema_hash(),
+        }
         assert_compatible(meta)
 
     def test_assert_compatible_mismatch(self):
-        with pytest.raises(ValueError, match="schema mismatch"):
-            assert_compatible({"schema_hash": "0000000000000000"})
+        meta = {
+            "obs_contract_version": OBS_CONTRACT_VERSION,
+            "obs_schema_hash": "0000000000000000",
+        }
+        with pytest.raises(ValueError, match="obs_schema_hash"):
+            assert_compatible(meta)
 
     def test_assert_compatible_missing_hash(self):
-        with pytest.raises(ValueError, match="schema mismatch"):
+        with pytest.raises(ValueError, match="obs_contract_version"):
             assert_compatible({})
 
     def test_obs_shape_values(self):

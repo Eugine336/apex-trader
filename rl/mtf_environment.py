@@ -36,7 +36,7 @@ from .contracts import (
     N_CONTEXT_FEATURES,
     build_symbol_vocab,
 )
-from .multi_tf_obs_builder import MultiTFObservationBuilder
+from .multi_tf_obs_builder import MultiTFObservationBuilder, build_context, symbol_id_for
 
 
 SL_ATR_MULT  = 1.5
@@ -91,8 +91,13 @@ class ApexMultiTFTradingEnv:
         self._load_data(data_dir)
 
         self._obs_builder = MultiTFObservationBuilder()
-        self._symbol_vocab = build_symbol_vocab()
-        self._symbol_id = self._symbol_vocab.index(self.instrument) if self.instrument in self._symbol_vocab else 0
+        self._universe = build_symbol_vocab()
+        self._symbol_id = symbol_id_for(self.instrument, self._universe)
+        self._profile = {
+            "pip_size": self.pip_size,
+            "typical_spread_pips": self.typical_spread,
+            "pip_value": self.pip_value,
+        }
 
         self.reset()
 
@@ -208,35 +213,31 @@ class ApexMultiTFTradingEnv:
         if self.idx < 0 or self.idx >= len(self._m5_feat):
             return np.zeros(OBS_SHAPE, dtype=np.float32), np.zeros(N_CONTEXT_FEATURES, dtype=np.float32), self._symbol_id
 
-        current_time = self._m5_feat.iloc[self.idx]["time"]
         m5_slice = self._m5_raw.iloc[:self.idx + 1]
 
         tf_slices = {"M5": m5_slice}
         for tf in TF_ORDER:
             if tf == "M5":
                 continue
-            full = self._dfs[tf]
-            tf_slices[tf] = full[full["time"] <= current_time]
+            tf_slices[tf] = self._dfs[tf]
 
         in_trade = 0.0
         if self.trade is not None:
             close_now = float(self._m5_feat.iloc[self.idx]["close"])
             in_trade = self._unrealised_r(close_now)
 
-        obs, context, symbol_id = self._obs_builder.from_frames(
-            tf_slices["M5"],
-            tf_slices["M15"],
-            tf_slices["H1"],
-            tf_slices["H4"],
+        result = self._obs_builder.build_from_frames(
+            tf_slices,
             self.instrument,
             in_trade=in_trade,
+            profile=self._profile,
+            universe=self._universe,
         )
 
-        if obs is None:
-            obs = np.zeros(OBS_SHAPE, dtype=np.float32)
-            context = np.zeros(N_CONTEXT_FEATURES, dtype=np.float32)
-            symbol_id = self._symbol_id
+        if result is None:
+            return np.zeros(OBS_SHAPE, dtype=np.float32), np.zeros(N_CONTEXT_FEATURES, dtype=np.float32), self._symbol_id
 
+        obs, context, symbol_id = result
         return obs, context, symbol_id
 
     def _check_exit(self, bar: pd.Series) -> tuple[float, bool]:
