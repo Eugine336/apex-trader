@@ -185,6 +185,10 @@ class ValueHead(nn.Module):
 
 # ── Full Actor-Critic Model ───────────────────────────────────────────────────
 
+CONTEXT_EMBED_DIM = 16
+CONTEXT_PROJ_DIM  = 32
+
+
 class ApexRLAgent(nn.Module):
     """
     Complete actor-critic agent.
@@ -196,13 +200,43 @@ class ApexRLAgent(nn.Module):
     The encoder's learned representations are the emergence.
     The policy discovers what to do with those representations.
     The value head estimates expected R — this becomes the APEX signal.
+
+    When ``context_dim > 0`` the agent becomes a **symbol-conditioned
+    generalist**: a learned symbol embedding + context MLP is concatenated
+    to the latent before the policy/value heads.  When ``context_dim == 0``
+    (the default) the agent is byte-identical to the original 12-feature
+    single-instrument architecture.
     """
 
-    def __init__(self, n_features: int = 12, n_actions: int = 4):
+    def __init__(
+        self,
+        n_features: int = 12,
+        n_actions: int = 4,
+        context_dim: int = 0,
+        n_symbols: int = 0,
+    ):
         super().__init__()
+        self.context_dim = context_dim
+        self.n_symbols   = n_symbols
+
         self.encoder = MarketEncoder(n_features, LATENT_DIM)
-        self.policy  = PolicyHead(LATENT_DIM, n_actions)
-        self.value   = ValueHead(LATENT_DIM)
+
+        if context_dim > 0:
+            self.symbol_embed = nn.Embedding(max(n_symbols, 1), CONTEXT_EMBED_DIM) if n_symbols > 0 else None
+            raw_ctx_dim = context_dim + CONTEXT_EMBED_DIM if n_symbols > 0 else context_dim
+            self.context_proj = nn.Sequential(
+                nn.Linear(raw_ctx_dim, CONTEXT_PROJ_DIM),
+                nn.LayerNorm(CONTEXT_PROJ_DIM),
+                nn.GELU(),
+            )
+            head_input = LATENT_DIM + CONTEXT_PROJ_DIM
+        else:
+            self.symbol_embed = None
+            self.context_proj = None
+            head_input = LATENT_DIM
+
+        self.policy = PolicyHead(head_input, n_actions)
+        self.value  = ValueHead(head_input)
 
         self._init_weights()
 
@@ -212,23 +246,56 @@ class ApexRLAgent(nn.Module):
                 nn.init.orthogonal_(m.weight, gain=np.sqrt(2))
                 if m.bias is not None:
                     nn.init.zeros_(m.bias)
-        # Policy head last layer — small init for stable early training
         nn.init.orthogonal_(self.policy.net[-1].weight, gain=0.01)
         nn.init.orthogonal_(self.value.net[-1].weight,  gain=1.0)
+
+    def _fuse_context(
+        self,
+        latent: torch.Tensor,
+        context_vec: torch.Tensor | None = None,
+        symbol_id: torch.Tensor | None = None,
+    ) -> torch.Tensor:
+        """Concatenate context projection to the latent when context is active."""
+        if self.context_dim == 0 or self.context_proj is None:
+            return latent
+
+        if context_vec is None:
+            return latent
+
+        parts: list[torch.Tensor] = []
+        if self.symbol_embed is not None and symbol_id is not None:
+            sym_emb = self.symbol_embed(symbol_id.long())
+            parts = [context_vec, sym_emb]
+        else:
+            parts = [context_vec]
+
+        ctx_input = torch.cat(parts, dim=-1)
+        ctx_proj  = self.context_proj(ctx_input)
+        return torch.cat([latent, ctx_proj], dim=-1)
 
     def encode(self, obs: torch.Tensor) -> torch.Tensor:
         """Return learned market representation."""
         return self.encoder(obs)
 
-    def act(self, obs: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    def act(
+        self,
+        obs: torch.Tensor,
+        context_vec: torch.Tensor | None = None,
+        symbol_id: torch.Tensor | None = None,
+    ) -> tuple[torch.Tensor, torch.Tensor]:
         """Return (action_logits, value_estimate)."""
-        latent  = self.encoder(obs)
-        logits  = self.policy(latent)
-        val     = self.value(latent)
+        latent = self._fuse_context(self.encoder(obs), context_vec, symbol_id)
+        logits = self.policy(latent)
+        val    = self.value(latent)
         return logits, val
 
     @torch.no_grad()
-    def predict(self, obs: np.ndarray) -> tuple[int, float, float]:
+    def predict(
+        self,
+        obs: np.ndarray,
+        context_vec: np.ndarray | None = None,
+        symbol_id: int | None = None,
+    ) -> tuple[int, float, float]:
         """
         Inference — used during shadow trading and live signal generation.
 
@@ -239,14 +306,22 @@ class ApexRLAgent(nn.Module):
         """
         self.eval()
         t = torch.FloatTensor(obs).unsqueeze(0)
-        latent  = self.encoder(t)
-        logits  = self.policy(latent)
-        val     = self.value(latent)
 
-        probs   = F.softmax(logits, dim=-1).squeeze(0)
-        action  = int(probs.argmax().item())
-        conf    = float(probs[action].item())
-        exp_r   = float(val.item())
+        ctx_t = None
+        sym_t = None
+        if context_vec is not None:
+            ctx_t = torch.FloatTensor(context_vec).unsqueeze(0)
+        if symbol_id is not None:
+            sym_t = torch.LongTensor([symbol_id])
+
+        latent = self._fuse_context(self.encoder(t), ctx_t, sym_t)
+        logits = self.policy(latent)
+        val    = self.value(latent)
+
+        probs  = F.softmax(logits, dim=-1).squeeze(0)
+        action = int(probs.argmax().item())
+        conf   = float(probs[action].item())
+        exp_r  = float(val.item())
 
         return action, conf, exp_r
 
