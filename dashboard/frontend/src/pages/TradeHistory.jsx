@@ -88,16 +88,21 @@ export default function TradeHistory() {
                 <th className="right sortable" onClick={() => handleSort('pnl_dollars')}>P&L ($)</th>
                 <th className="right sortable" onClick={() => handleSort('duration_minutes')}>Duration</th>
                 <th className="right sortable" onClick={() => handleSort('score')}>Score</th>
+                <th>Exit Reason</th>
                 <th>Outcome</th>
               </tr>
             </thead>
             <tbody>
               {paged.length === 0 && (
-                <tr><td colSpan={10} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>No trades match filter</td></tr>
+                <tr><td colSpan={11} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 40 }}>No trades match filter</td></tr>
               )}
               {paged.map((t) => {
                 const pnl = t.pnl_dollars || 0;
                 const dir = (t.direction || '').toUpperCase();
+                const exitReason = t.exit_reason || '—';
+                const exitSource = t.exit_reason_source || '';
+                const rawBroker = t.raw_broker_reason || '';
+                const mismatch = rawBroker && exitReason !== rawBroker && exitReason !== '—';
                 return (
                   <tr key={t.id}>
                     <td className="text-col">{fmtDate(t.opened_at)}</td>
@@ -109,6 +114,11 @@ export default function TradeHistory() {
                     <td className={`right ${pnl >= 0 ? 'pnl-positive' : 'pnl-negative'}`}>${Math.abs(pnl).toFixed(2)}</td>
                     <td className="right">{fmtDur(t.duration_minutes)}</td>
                     <td className="right">{t.score || 0}</td>
+                    <td title={mismatch ? `Broker: ${rawBroker} | Source: ${exitSource}` : exitSource}>
+                      <span style={{ fontSize: 12, fontFamily: 'var(--font-mono)', color: mismatch ? 'var(--yellow-bright)' : 'var(--text-secondary)' }}>
+                        {mismatch ? '⚠ ' : ''}{exitReason}
+                      </span>
+                    </td>
                     <td><span className={`badge ${t.outcome === 'WIN' ? 'badge-green' : 'badge-red'}`}>{t.outcome}</span></td>
                   </tr>
                 );
