@@ -27,13 +27,14 @@
   },
   "OVERLAP_LONDON_TOKYO": {
     "session": "OVERLAP_LONDON_TOKYO",
-    "win_rate": 1.0,
-    "avg_pnl": 3.5333,
+    "win_rate": 0.75,
+    "avg_pnl": -42.35,
     "best_pairs": [
-      "GBPAUD"
+      "GBPAUD",
+      "V100_1S"
     ],
     "optimal_scan_frequency": 30,
-    "total_trades": 3,
+    "total_trades": 4,
     "recommendation": "NORMAL"
   },
   "LONDON": {

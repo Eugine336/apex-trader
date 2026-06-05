@@ -112,12 +112,12 @@
   "V100_1S": {
     "pair": "V100_1S",
     "win_rate": 0.0,
-    "avg_pnl": -20.0,
+    "avg_pnl": -73.3333,
     "best_session": "NEW_YORK",
     "best_regime": "BEARISH",
     "avg_spread_cost": 0.0,
-    "total_trades": 2,
-    "confidence": 0.025,
+    "total_trades": 3,
+    "confidence": 0.0375,
     "recommendation": "INSUFFICIENT_DATA"
   }
 }

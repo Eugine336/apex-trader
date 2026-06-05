@@ -6,9 +6,9 @@
     "optimal_sl_buffer_pips": 3.0,
     "optimal_partial_close_ratio": 0.5,
     "avg_hold_candles": 22,
-    "win_rate": 0.4242,
-    "sample_size": 33,
-    "confidence": 0.33
+    "win_rate": 0.4118,
+    "sample_size": 34,
+    "confidence": 0.34
   },
   "BULLISH": {
     "regime": "BULLISH",
