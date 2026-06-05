@@ -1,86 +1,13 @@
 {
-  "SYDNEY": {
-    "session": "SYDNEY",
-    "win_rate": 0.3438,
-    "avg_pnl": 453.1709,
+  "london": {
+    "session": "london",
+    "win_rate": 0.6,
+    "avg_pnl": 1.8,
     "best_pairs": [
-      "V50_1S",
-      "JP225",
-      "BTCUSD",
-      "AUS200",
-      "XTIUSD"
-    ],
-    "optimal_scan_frequency": 300,
-    "total_trades": 32,
-    "recommendation": "AVOID"
-  },
-  "TOKYO": {
-    "session": "TOKYO",
-    "win_rate": 0.5,
-    "avg_pnl": -21.35,
-    "best_pairs": [
-      "ETHUSD"
+      "EURUSD"
     ],
     "optimal_scan_frequency": 30,
-    "total_trades": 2,
-    "recommendation": "NORMAL"
-  },
-  "OVERLAP_LONDON_TOKYO": {
-    "session": "OVERLAP_LONDON_TOKYO",
-    "win_rate": 1.0,
-    "avg_pnl": 3.5333,
-    "best_pairs": [
-      "GBPAUD"
-    ],
-    "optimal_scan_frequency": 30,
-    "total_trades": 3,
-    "recommendation": "NORMAL"
-  },
-  "LONDON": {
-    "session": "LONDON",
-    "win_rate": 0.5,
-    "avg_pnl": 72671861.55,
-    "best_pairs": [
-      "V50_1S",
-      "GBPAUD",
-      "HK50"
-    ],
-    "optimal_scan_frequency": 30,
-    "total_trades": 4,
-    "recommendation": "NORMAL"
-  },
-  "UNKNOWN": {
-    "session": "UNKNOWN",
-    "win_rate": 0.3333,
-    "avg_pnl": -171.0,
-    "best_pairs": [
-      "XAUUSD"
-    ],
-    "optimal_scan_frequency": 30,
-    "total_trades": 3,
-    "recommendation": "NORMAL"
-  },
-  "OVERLAP_LONDON_NY": {
-    "session": "OVERLAP_LONDON_NY",
-    "win_rate": 0.0,
-    "avg_pnl": 0.0,
-    "best_pairs": [
-      "V50_1S"
-    ],
-    "optimal_scan_frequency": 30,
-    "total_trades": 1,
-    "recommendation": "NORMAL"
-  },
-  "NEW_YORK": {
-    "session": "NEW_YORK",
-    "win_rate": 0.25,
-    "avg_pnl": 5.25,
-    "best_pairs": [
-      "US100",
-      "V100_1S"
-    ],
-    "optimal_scan_frequency": 30,
-    "total_trades": 4,
+    "total_trades": 5,
     "recommendation": "NORMAL"
   }
 }
