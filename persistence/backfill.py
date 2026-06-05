@@ -31,6 +31,7 @@ from persistence.domain_events import (
     TRADE_CLOSE,
     TRADE_OPEN,
     SHADOW_RESOLVED,
+    TRADE_CLOSE_DERIVED,
 )
 
 _DATA_DIR = Path(__file__).parent.parent / "data"
@@ -54,7 +55,7 @@ CREATE TABLE IF NOT EXISTS events (
 )
 """
 
-BACKFILL_DERIVED_TYPE = "TRADE_CLOSE_DERIVED"
+BACKFILL_DERIVED_TYPE = TRADE_CLOSE_DERIVED
 
 
 def _deterministic_id(source_db: str, source_row_id: str, event_type: str) -> str:
