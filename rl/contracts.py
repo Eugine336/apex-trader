@@ -1,11 +1,13 @@
 """
-APEX RL — Observation Contract
-===============================
-Single source of truth for the multi-timeframe observation schema.
-Every component that produces or consumes RL observations references this.
+APEX RL — Multi-Timeframe Observation Contract
+================================================
+Single source of truth for the MTF observation format shared by
+the training environment, the live observation builder, and the
+bridge checkpoint loader.
 
-Checkpoint metadata MUST embed ``schema_hash()`` at save time.
-``assert_compatible()`` blocks loading a checkpoint whose schema diverges.
+Version: mtf-v1
+Shape  : (50, 48)  — 50 timesteps × (12 features × 4 timeframes)
+Context: float32 vector of instrument profile features
 """
 
 from __future__ import annotations
@@ -13,43 +15,122 @@ from __future__ import annotations
 import hashlib
 import json
 
+# ── Observation window ────────────────────────────────────────────────────────
+
 OBS_CONTRACT_VERSION = "mtf-v1"
 
-TF_ORDER = ["M5", "M15", "H1", "H4"]
-N_TF = len(TF_ORDER)
 WINDOW = 50
+ATR_PERIOD = 14
+N_MARKET_FEATURES = 12
 
 MARKET_FEATURES = [
-    "o_n", "h_n", "l_n", "c_n", "v_n", "atr_n",
-    "ret1", "ret5", "ret14",
-    "hl_ratio", "oc_ratio", "in_trade",
+    "o_n",
+    "h_n",
+    "l_n",
+    "c_n",
+    "v_n",
+    "atr_n",
+    "ret1",
+    "ret5",
+    "ret14",
+    "hl_ratio",
+    "oc_ratio",
+    "in_trade",
 ]
-N_MARKET_FEATURES = len(MARKET_FEATURES)  # 12
 
-OBS_FEATURES = N_TF * N_MARKET_FEATURES   # 48
-OBS_SHAPE = (WINDOW, OBS_FEATURES)         # (50, 48)
+assert len(MARKET_FEATURES) == N_MARKET_FEATURES
+
+# ── Timeframe ordering ────────────────────────────────────────────────────────
+
+TF_ORDER = ["M5", "M15", "H1", "H4"]
+CLOCK_TF = "M5"
+
+TF_SECONDS = {
+    "M1": 60,
+    "M5": 300,
+    "M15": 900,
+    "H1": 3600,
+    "H4": 14400,
+}
+
+N_TIMEFRAMES = len(TF_ORDER)
+OBS_FEATURES = N_MARKET_FEATURES * N_TIMEFRAMES  # 48 — Phase 2 convenience alias
+OBS_SHAPE = (WINDOW, N_MARKET_FEATURES * N_TIMEFRAMES)  # (50, 48)
+
+# ── Alignment rule ────────────────────────────────────────────────────────────
+# A higher-TF bar with open time T is *usable* at an M5 anchor bar with
+# open time t **iff** T + TF_SECONDS[tf] <= t  (the bar is fully closed).
+# For the clock TF (M5) itself the anchor bar IS included (T <= t).
+# This prevents look-ahead from in-progress higher-TF bars.
+
+ALIGNMENT_RULE = (
+    "A higher-TF bar with open_time T is usable at M5 anchor open_time t "
+    "iff T + TF_SECONDS[tf] <= t  (last fully CLOSED bar; never the "
+    "in-progress bar). For the clock TF (M5), the anchor bar itself is "
+    "included (T <= t)."
+)
+
+# ── Instrument context ────────────────────────────────────────────────────────
 
 INSTRUMENT_CONTEXT_FEATURES = [
-    "symbol_id",
-    "category_id",
-    "pip_size_log",
-    "typical_spread_log",
-    "pip_value_log",
-    "is_session_gated",
+    "log_pip_size",
+    "typical_spread_pips",
+    "log_pip_value",
+    "is_jpy_pair",
+    "is_metal",
+    "is_index",
+    "is_crypto",
     "is_always_open",
-    "volatility_class",
 ]
-N_CONTEXT_FEATURES = len(INSTRUMENT_CONTEXT_FEATURES)  # 8
 
-ATR_PERIOD = 14
+N_CONTEXT_FEATURES = len(INSTRUMENT_CONTEXT_FEATURES)
 
-CATEGORY_MAP = {
-    "forex": 0,
-    "commodity": 1,
-    "index": 2,
-    "synthetic": 3,
-    "crypto": 4,
-}
+# ── Schema hashing ────────────────────────────────────────────────────────────
+
+
+def schema() -> dict:
+    """Canonical, JSON-serialisable representation of the contract."""
+    return {
+        "version": OBS_CONTRACT_VERSION,
+        "window": WINDOW,
+        "atr_period": ATR_PERIOD,
+        "n_market_features": N_MARKET_FEATURES,
+        "market_features": MARKET_FEATURES,
+        "tf_order": TF_ORDER,
+        "clock_tf": CLOCK_TF,
+        "obs_shape": list(OBS_SHAPE),
+        "n_context_features": N_CONTEXT_FEATURES,
+        "context_features": INSTRUMENT_CONTEXT_FEATURES,
+    }
+
+
+def schema_hash() -> str:
+    """First 16 hex chars of SHA-256 over the canonical JSON schema."""
+    blob = json.dumps(schema(), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(blob.encode("utf-8")).hexdigest()[:16]
+
+
+def assert_compatible(checkpoint_meta: dict) -> None:
+    """Raise ``ValueError`` if *checkpoint_meta* is incompatible."""
+    expected_version = OBS_CONTRACT_VERSION
+    expected_hash = schema_hash()
+
+    ckpt_version = checkpoint_meta.get("obs_contract_version")
+    ckpt_hash = checkpoint_meta.get("obs_schema_hash")
+
+    if ckpt_version != expected_version:
+        raise ValueError(
+            f"Checkpoint obs_contract_version={ckpt_version!r} != "
+            f"expected {expected_version!r}"
+        )
+    if ckpt_hash != expected_hash:
+        raise ValueError(
+            f"Checkpoint obs_schema_hash={ckpt_hash!r} != "
+            f"expected {expected_hash!r}"
+        )
+
+
+# ── Phase 2 additions ────────────────────────────────────────────────────────
 
 
 def build_symbol_vocab() -> list[str]:
@@ -62,27 +143,3 @@ def build_symbol_vocab() -> list[str]:
         )
     except ImportError:
         return []
-
-
-def schema_hash() -> str:
-    """Deterministic hash of the observation schema for checkpoint gating."""
-    spec = json.dumps({
-        "version": OBS_CONTRACT_VERSION,
-        "tf_order": TF_ORDER,
-        "window": WINDOW,
-        "market_features": MARKET_FEATURES,
-        "context_features": INSTRUMENT_CONTEXT_FEATURES,
-        "obs_shape": list(OBS_SHAPE),
-    }, sort_keys=True)
-    return hashlib.sha256(spec.encode()).hexdigest()[:16]
-
-
-def assert_compatible(checkpoint_meta: dict) -> None:
-    """Raise if a checkpoint's schema doesn't match the current contract."""
-    ckpt_hash = checkpoint_meta.get("schema_hash", "")
-    current = schema_hash()
-    if ckpt_hash != current:
-        raise ValueError(
-            f"Checkpoint schema mismatch: checkpoint={ckpt_hash}, "
-            f"current={current}. Retrain with the current obs contract."
-        )

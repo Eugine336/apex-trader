@@ -223,7 +223,7 @@ class ApexRLAgent(nn.Module):
 
         if context_dim > 0:
             self.symbol_embed = nn.Embedding(max(n_symbols, 1), CONTEXT_EMBED_DIM) if n_symbols > 0 else None
-            raw_ctx_dim = (context_dim - 1) + CONTEXT_EMBED_DIM if n_symbols > 0 else context_dim
+            raw_ctx_dim = context_dim + CONTEXT_EMBED_DIM if n_symbols > 0 else context_dim
             self.context_proj = nn.Sequential(
                 nn.Linear(raw_ctx_dim, CONTEXT_PROJ_DIM),
                 nn.LayerNorm(CONTEXT_PROJ_DIM),
@@ -265,8 +265,7 @@ class ApexRLAgent(nn.Module):
         parts: list[torch.Tensor] = []
         if self.symbol_embed is not None and symbol_id is not None:
             sym_emb = self.symbol_embed(symbol_id.long())
-            ctx_raw = context_vec[:, 1:]
-            parts = [ctx_raw, sym_emb]
+            parts = [context_vec, sym_emb]
         else:
             parts = [context_vec]
 
