@@ -68,7 +68,11 @@ from platforms.trading_loop.risk_heat_mixin import RiskHeatMarginMixin
 from platforms.trading_loop.exit_checks_mixin import ExitChecksMixin
 
 from persistence.event_store import get_event_store, new_cycle_id, new_setup_id
-from persistence.domain_events import DECISION_REJECT, ORDER_SENT, ORDER_FILLED, TRADE_OPEN, TRADE_CLOSE, SETUP_SKIPPED
+from persistence.domain_events import (
+    DECISION_REJECT, ORDER_SENT, ORDER_FILLED, TRADE_OPEN, TRADE_CLOSE,
+    SETUP_SKIPPED, SHADOW_CONTRACT_CREATED,
+)
+from persistence.shadow_store import ShadowStore, ShadowContract, new_contract_id
 
 class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMixin):
     """
@@ -136,6 +140,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         )
         self._journal_loop = asyncio.new_event_loop()
         self.position_store = PositionStore()
+        self._shadow_store = ShadowStore()
 
         self.watchdog = HealthWatchdog()
         self.maintenance = DailyMaintenance()
@@ -620,6 +625,19 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 ctx["stop_loss"] = signal.stop_loss
             self._log_rejection(pair, direction, result.score, signal.reason,
                                 entry_context=ctx or None)
+            if signal.entry_price is not None and signal.stop_loss is not None and h1_df is not None:
+                try:
+                    _tp1, _tp2 = self.entry_engine.calculate_targets(
+                        pair, direction, signal.entry_price, signal.stop_loss,
+                        h1_df, get_pip_size(pair),
+                    )
+                    self._persist_shadow_contract(
+                        signal, rejecting_gate=f"entry_engine:{signal.reason}",
+                        entry_price=signal.entry_price, stop_loss=signal.stop_loss,
+                        tp1=_tp1, tp2=_tp2,
+                    )
+                except Exception:
+                    logger.debug("[ShadowContract] TP computation failed for entry rejection on {}", pair)
             return False
 
         spread = 0.0
@@ -641,6 +659,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         if not validation.valid:
             reasons = "; ".join(validation.checks_failed)
             self._log_rejection(pair, direction, signal.score, f"Validator: {reasons}")
+            self._persist_shadow_contract(signal, rejecting_gate=f"validator:{reasons}")
             return False
 
         pip_size = get_pip_size(pair)
@@ -650,6 +669,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         typical = ctx.typical_spread(pair, fallback=2.0)
         if spread > typical * self.config.risk.max_spread_multiplier:
             self._log_rejection(pair, direction, result.score, f"Spread too wide: {spread} (typical={typical})")
+            self._persist_shadow_contract(signal, rejecting_gate=f"spread:{spread:.1f}")
             return False
 
         assessment = self.risk_engine.assess(
@@ -668,6 +688,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         if not assessment.approved:
             reasons = "; ".join(assessment.rejections)
             self._log_rejection(pair, direction, signal.score, f"RiskEngine: {reasons}")
+            self._persist_shadow_contract(signal, rejecting_gate=f"risk_engine:{reasons}")
             return False
 
         # ── EV gate — skip when historical EV is negative at medium+ confidence ──
@@ -688,6 +709,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 self._log_rejection(
                     pair, direction, result.score, f"EV gate: negative EV ({ev_val:.4f}) + pair_mult={pair_mult:.2f}"
                 )
+                self._persist_shadow_contract(signal, rejecting_gate=f"ev_gate:ev={ev_val:.4f}")
                 return False
 
         try:
@@ -698,6 +720,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             )
             if not adjustments.should_trade:
                 self._log_rejection(pair, direction, result.score, f"ML: {adjustments.reason}")
+                self._persist_shadow_contract(signal, rejecting_gate=f"ml:{adjustments.reason}")
                 return False
             density_mult = self.density_tracker.get_size_multiplier()
             vol_mult = self.vol_monitor.get_size_multiplier()
@@ -1838,6 +1861,85 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self.system_warnings.insert(0, entry)
         if len(self.system_warnings) > self._MAX_WARNINGS:
             self.system_warnings = self.system_warnings[: self._MAX_WARNINGS]
+
+    def _persist_shadow_contract(
+        self, signal, rejecting_gate: str,
+        entry_price: Optional[float] = None,
+        stop_loss: Optional[float] = None,
+        tp1: Optional[float] = None,
+        tp2: Optional[float] = None,
+    ) -> None:
+        """Persist a shadow contract for a rejected setup (best-effort)."""
+        try:
+            ep = entry_price or getattr(signal, "entry_price", None)
+            sl = stop_loss or getattr(signal, "stop_loss", None)
+            t1 = tp1 or getattr(signal, "tp1", None)
+            t2 = tp2 or getattr(signal, "tp2", None)
+
+            if ep is None or sl is None or t1 is None or t2 is None:
+                return
+
+            pair = getattr(signal, "pair", None)
+            direction = getattr(signal, "direction", None)
+            if not pair or not direction:
+                return
+
+            pip_size = get_pip_size(pair)
+            risk_distance = abs(ep - sl)
+            is_long = direction.upper() in ("LONG", "BUY")
+            tp3 = None
+            if self.trade_manager.tp3_ladder_enabled and risk_distance > 0:
+                candidate = (
+                    ep + self.trade_manager.tp3_r_multiple * risk_distance
+                    if is_long
+                    else ep - self.trade_manager.tp3_r_multiple * risk_distance
+                )
+                beyond = (candidate > t2) if is_long else (candidate < t2)
+                if beyond:
+                    tp3 = candidate
+
+            contract = ShadowContract(
+                contract_id=new_contract_id(),
+                symbol=pair,
+                direction=direction,
+                entry_price=ep,
+                stop_loss=sl,
+                tp1=t1,
+                tp2=t2,
+                tp3=tp3,
+                pip_size=pip_size,
+                position_size=getattr(signal, "position_size_lots", 0.01),
+                entry_timeframe=getattr(signal, "entry_timeframe", "M5"),
+                rejecting_gate=rejecting_gate,
+                score=getattr(signal, "score", 0),
+                ts_utc_ms=int(datetime.now(timezone.utc).timestamp() * 1000),
+                correlation_id=getattr(self, "_current_cycle_id", None),
+                setup_id=getattr(self, "_current_setup_id", None),
+            )
+
+            cid = self._shadow_store.insert_contract(contract)
+            if cid:
+                store = get_event_store()
+                if store:
+                    store.emit(
+                        event_type=SHADOW_CONTRACT_CREATED,
+                        severity="INFO",
+                        symbol=pair,
+                        correlation_id=getattr(self, "_current_cycle_id", None),
+                        parent_id=getattr(self, "_current_setup_id", None),
+                        source_module="platforms.main_loop",
+                        payload={
+                            "contract_id": cid,
+                            "rejecting_gate": rejecting_gate,
+                            "entry_price": ep,
+                            "stop_loss": sl,
+                            "tp1": t1,
+                            "tp2": t2,
+                            "direction": direction,
+                        },
+                    )
+        except Exception:
+            logger.debug("[ShadowContract] persist failed for {}", getattr(signal, "pair", "?"))
 
     def _log_rejection(self, pair: str, direction: str, score: int, reason: str,
                        entry_context: dict | None = None) -> None:
