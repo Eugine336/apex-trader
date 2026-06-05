@@ -54,7 +54,6 @@ TF_SECONDS = {
 }
 
 N_TIMEFRAMES = len(TF_ORDER)
-OBS_FEATURES = N_MARKET_FEATURES * N_TIMEFRAMES  # 48 — Phase 2 convenience alias
 OBS_SHAPE = (WINDOW, N_MARKET_FEATURES * N_TIMEFRAMES)  # (50, 48)
 
 # ── Alignment rule ────────────────────────────────────────────────────────────
