@@ -207,7 +207,8 @@ class EventStore:
             cur = self._conn.execute(sql, params)
             cols = [d[0] for d in cur.description]
             return [dict(zip(cols, row)) for row in cur.fetchall()]
-        except Exception:
+        except Exception as exc:
+            print(f"[event_store] query failed: {exc}", file=sys.stderr)
             return []
 
     def count(self) -> int:
@@ -215,7 +216,8 @@ class EventStore:
         try:
             cur = self._conn.execute("SELECT COUNT(*) FROM events")
             return cur.fetchone()[0]
-        except Exception:
+        except Exception as exc:
+            print(f"[event_store] count failed: {exc}", file=sys.stderr)
             return 0
 
     # ── Retention / pruning ───────────────────────────────────────────────
@@ -259,9 +261,11 @@ class EventStore:
             batch: List[tuple] = []
             try:
                 row = self._queue.get(timeout=0.25)
-                batch.append(row)
             except queue.Empty:
+                row = None
+            if row is None:
                 continue
+            batch.append(row)
 
             while len(batch) < 200:
                 try:
@@ -306,8 +310,8 @@ class EventStore:
                     )
                     self._conn.commit()
                 self._conn.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                print(f"[event_store] close cleanup failed: {exc}", file=sys.stderr)
             self._conn = None
 
 
