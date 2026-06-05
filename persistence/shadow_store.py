@@ -293,7 +293,7 @@ class ShadowStore:
             try:
                 self._conn.close()
             except Exception:
-                pass
+                logger.debug("[ShadowStore] conn.close() failed during cleanup")
             self._conn = None
 
 
