@@ -556,8 +556,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         "ev_estimate": r.ev_estimate,
                     },
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("SETUP_SKIPPED emit failed: {}", exc)
         self._last_skipped_state = current
 
     def _execute_entry(self, result, session: str, now: datetime) -> bool:
@@ -814,8 +814,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     "idempotency_key": idem_key,
                 },
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("ORDER_SENT emit failed: {}", exc)
 
         order = self.platforms.execute_entry(
             pair,
@@ -856,8 +856,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     "score": signal.score,
                 },
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("ORDER_FILLED emit failed: {}", exc)
 
         self._execution_breaker.record_success()
         if self.position_store:
@@ -969,8 +969,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     "session": session,
                 },
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("TRADE_OPEN emit failed: {}", exc)
         return True
 
     # ── Pending order management ────────────────────────────────────────
@@ -1822,8 +1822,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     "platform": pos.platform,
                 },
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("TRADE_CLOSE emit failed: {}", exc)
 
     def _add_warning(self, level: str, message: str, symbol: str = "") -> None:
         """Append a system event to the in-memory activity feed for the dashboard."""
@@ -1872,8 +1872,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 source_module="platforms.main_loop",
                 payload=payload,
             )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("DECISION_REJECT emit failed: {}", exc)
 
     # ── Deriv multiplier lookup ──────────────────────────────────────────
 
