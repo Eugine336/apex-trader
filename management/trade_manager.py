@@ -215,6 +215,7 @@ class TradeManager:
         trade: ManagedTrade,
         current_price: float,
         current_df_m5: Optional[pd.DataFrame] = None,
+        bar_time: Optional[datetime] = None,
     ) -> ManagedTrade:
         if trade.status in TERMINAL_STATUSES:
             return trade
@@ -225,9 +226,9 @@ class TradeManager:
         self._update_pnl(trade)
         self._update_extremes(trade)
 
-        if self._check_stop_loss(trade):
+        if self._check_stop_loss(trade, bar_time=bar_time):
             return trade
-        if self._check_tp1(trade):
+        if self._check_tp1(trade, bar_time=bar_time):
             pass
         if trade.partial_closed and not trade.breakeven_active and trade.pnl_pips > 0:
             self._activate_breakeven(trade)
@@ -237,11 +238,11 @@ class TradeManager:
             self._adjust_tp2(trade, current_df_m5)
         if self._check_tp3(trade):
             pass
-        if self._check_tp2(trade):
+        if self._check_tp2(trade, bar_time=bar_time):
             return trade
-        if current_df_m5 is not None and self._check_structure_exit(trade, current_df_m5):
+        if current_df_m5 is not None and self._check_structure_exit(trade, current_df_m5, bar_time=bar_time):
             return trade
-        if self._check_stall(trade):
+        if self._check_stall(trade, bar_time=bar_time):
             return trade
 
         return trade
@@ -256,10 +257,11 @@ class TradeManager:
         reason: str,
         close_price: float,
         status: TradeStatus = TradeStatus.CLOSED,
+        bar_time: Optional[datetime] = None,
     ) -> ManagedTrade:
         trade.current_price = close_price
         trade.status = status
-        trade.close_time = datetime.now(timezone.utc)
+        trade.close_time = bar_time or datetime.now(timezone.utc)
         trade.close_reason = reason
         self._update_pnl(trade)
         logger.info(
@@ -321,7 +323,7 @@ class TradeManager:
         if trade.current_price < trade.lowest_price_since_entry:
             trade.lowest_price_since_entry = trade.current_price
 
-    def _check_stop_loss(self, trade: ManagedTrade) -> bool:
+    def _check_stop_loss(self, trade: ManagedTrade, bar_time: Optional[datetime] = None) -> bool:
         is_long = self._is_long(trade.direction)
         hit = (
             (is_long and trade.current_price <= trade.stop_loss)
@@ -332,10 +334,10 @@ class TradeManager:
             if trade.breakeven_active:
                 reason = "Stopped at breakeven"
                 trade.re_entry_eligible = True
-            self.close_trade(trade, reason, trade.current_price, TradeStatus.STOPPED)
+            self.close_trade(trade, reason, trade.current_price, TradeStatus.STOPPED, bar_time=bar_time)
         return hit
 
-    def _check_tp1(self, trade: ManagedTrade) -> bool:
+    def _check_tp1(self, trade: ManagedTrade, bar_time: Optional[datetime] = None) -> bool:
         if trade.partial_closed:
             return False
         if trade.tp1 is None or trade.tp1 <= 0:
@@ -351,7 +353,7 @@ class TradeManager:
             )
             trade.remaining_size_lots = lots_remain
             trade.partial_closed = True
-            trade.tp1_hit_time = datetime.now(timezone.utc)
+            trade.tp1_hit_time = bar_time or datetime.now(timezone.utc)
             trade.status = TradeStatus.TP1_HIT
             logger.info(
                 f"TP1 HIT: {trade.pair} — closed {self.partial_close_ratio:.0%} "
@@ -412,7 +414,7 @@ class TradeManager:
             )
         return hit
 
-    def _check_tp2(self, trade: ManagedTrade) -> bool:
+    def _check_tp2(self, trade: ManagedTrade, bar_time: Optional[datetime] = None) -> bool:
         if trade.tp2 is None or trade.tp2 <= 0:
             return False
         is_long = self._is_long(trade.direction)
@@ -421,16 +423,18 @@ class TradeManager:
             or (not is_long and trade.current_price <= trade.tp2)
         )
         if hit:
-            self.close_trade(trade, "TP2 hit", trade.current_price, TradeStatus.CLOSED)
+            self.close_trade(trade, "TP2 hit", trade.current_price, TradeStatus.CLOSED, bar_time=bar_time)
         return hit
 
     def _check_structure_exit(
         self, trade: ManagedTrade, df_m5: pd.DataFrame,
+        bar_time: Optional[datetime] = None,
     ) -> bool:
         """Exit if M5 structure shifts against the trade direction."""
         if trade.partial_closed:
             return False
-        stall_minutes = (datetime.now(timezone.utc) - trade.entry_time).total_seconds() / 60
+        now = bar_time or datetime.now(timezone.utc)
+        stall_minutes = (now - trade.entry_time).total_seconds() / 60
         if stall_minutes < 30:
             return False
         if len(df_m5) < 10:
@@ -444,6 +448,7 @@ class TradeManager:
                 f"Structure exit — bearish shift after {stall_minutes:.0f}min",
                 trade.current_price,
                 TradeStatus.TIME_EXIT,
+                bar_time=bar_time,
             )
             return True
         if not is_long and analysis.last_event in (StructureEvent.CHOCH_BULLISH, StructureEvent.BOS_BULLISH):
@@ -452,6 +457,7 @@ class TradeManager:
                 f"Structure exit — bullish shift after {stall_minutes:.0f}min",
                 trade.current_price,
                 TradeStatus.TIME_EXIT,
+                bar_time=bar_time,
             )
             return True
         return False
@@ -487,19 +493,21 @@ class TradeManager:
                 trade.pair, trade.tp2,
             )
 
-    def _check_stall(self, trade: ManagedTrade) -> bool:
+    def _check_stall(self, trade: ManagedTrade, bar_time: Optional[datetime] = None) -> bool:
         """Time-based stall exit — scales with entry timeframe."""
         if trade.partial_closed:
             return False
         stall_limits = {"M1": 30, "M5": 60, "M15": 90, "H1": 180, "H4": 360}
         stall_limit = stall_limits.get(trade.entry_timeframe, 75)
-        stall_minutes = (datetime.now(timezone.utc) - trade.entry_time).total_seconds() / 60
+        now = bar_time or datetime.now(timezone.utc)
+        stall_minutes = (now - trade.entry_time).total_seconds() / 60
         if stall_minutes > stall_limit and abs(trade.pnl_pips) < 5.0:
             self.close_trade(
                 trade,
                 f"Stall exit — {stall_minutes:.0f}min (limit {stall_limit}), {trade.pnl_pips:.1f}pip",
                 trade.current_price,
                 TradeStatus.TIME_EXIT,
+                bar_time=bar_time,
             )
             return True
         return False

@@ -17,3 +17,7 @@ ORDER_FILLED = "ORDER_FILLED"
 # ── Trade lifecycle (Phase 3+) ───────────────────────────────────────────────
 TRADE_OPEN = "TRADE_OPEN"
 TRADE_CLOSE = "TRADE_CLOSE"
+
+# ── Shadow resolver (Phase 4) ───────────────────────────────────────────────
+SHADOW_CONTRACT_CREATED = "SHADOW_CONTRACT_CREATED"
+SHADOW_RESOLVED = "SHADOW_RESOLVED"
