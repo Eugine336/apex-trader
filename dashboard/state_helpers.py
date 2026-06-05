@@ -166,8 +166,8 @@ class HelpersMixin:
         try:
             from persistence.event_store import get_event_store
             close_map = get_event_store().get_trade_close_map()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug(f"Event store close_map unavailable: {e}")
 
         for i, record in enumerate(raw_rows):
             if str(record.get("outcome", "")).upper() == "LEGACY":

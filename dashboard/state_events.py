@@ -26,7 +26,8 @@ class EventsMixin:
         try:
             from persistence.event_store import get_event_store
             return get_event_store()
-        except Exception:
+        except Exception as e:
+            logger.debug(f"Event store unavailable: {e}")
             return None
 
     def get_events(
