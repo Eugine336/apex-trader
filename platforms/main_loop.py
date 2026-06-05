@@ -70,7 +70,7 @@ from platforms.trading_loop.exit_checks_mixin import ExitChecksMixin
 from persistence.event_store import get_event_store, new_cycle_id, new_setup_id
 from persistence.domain_events import (
     DECISION_REJECT, ORDER_SENT, ORDER_FILLED, TRADE_OPEN, TRADE_CLOSE,
-    SETUP_SKIPPED, SHADOW_CONTRACT_CREATED,
+    SETUP_SKIPPED, SHADOW_CONTRACT_CREATED, BALANCE_UNAVAILABLE,
 )
 from persistence.shadow_store import ShadowStore, ShadowContract, new_contract_id
 
@@ -593,7 +593,25 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self._log_rejection(pair, direction, result.score, "Missing M5/M1/H1 data")
             return False
 
-        balance = self.platforms.get_platform_balance(pair) or 10_000.0
+        balance = self.platforms.get_platform_balance(pair)
+        if not balance:
+            logger.warning("⚠ Balance unavailable for {} — skipping entry (fail-closed)", pair)
+            try:
+                store = get_event_store()
+                if store:
+                    store.emit(
+                        event_type=BALANCE_UNAVAILABLE,
+                        severity="WARNING",
+                        symbol=pair,
+                        correlation_id=getattr(self, "_current_cycle_id", None),
+                        parent_id=getattr(self, "_current_setup_id", None),
+                        source_module="platforms.main_loop",
+                        payload={"reason": "balance_fetch_returned_falsy", "action": "entry_skipped"},
+                    )
+            except Exception as exc:
+                logger.debug("BALANCE_UNAVAILABLE emit failed: {}", exc)
+            self._log_rejection(pair, direction, result.score, "Balance unavailable — fail-closed")
+            return False
         self.risk_engine.balance = balance
 
         # Resolve actual risk % from current drawdown mode — never hardcode 0.02
@@ -1756,8 +1774,12 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 pip_value = info.pip_value_per_lot if info else 10.0
                 pnl_dollars = round(pnl_pips * pip_value * pos.lots, 2)
 
-        balance = self.platforms.get_platform_balance(pos.symbol) or 10_000.0
-        pnl_pct = pnl_dollars / balance if balance > 0 else 0.0
+        balance = self.platforms.get_platform_balance(pos.symbol)
+        if not balance:
+            logger.warning("⚠ Balance unavailable for {} at close — pnl_pct defaulted to 0.0", pos.symbol)
+            pnl_pct = 0.0
+        else:
+            pnl_pct = pnl_dollars / balance
 
         self.drawdown.register_trade_result(pnl_pct)
         self.risk_engine.record_trade_result(
