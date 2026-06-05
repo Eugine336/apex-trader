@@ -22,5 +22,8 @@ TRADE_CLOSE = "TRADE_CLOSE"
 SHADOW_CONTRACT_CREATED = "SHADOW_CONTRACT_CREATED"
 SHADOW_RESOLVED = "SHADOW_RESOLVED"
 
+# ── Safety events ──────────────────────────────────────────────────────────
+BALANCE_UNAVAILABLE = "BALANCE_UNAVAILABLE"
+
 # ── Backfill (Phase 6) ─────────────────────────────────────────────────────
 TRADE_CLOSE_DERIVED = "TRADE_CLOSE_DERIVED"
