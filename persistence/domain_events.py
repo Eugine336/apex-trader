@@ -16,3 +16,4 @@ ORDER_FILLED = "ORDER_FILLED"
 
 # ── Trade lifecycle (Phase 3+) ───────────────────────────────────────────────
 TRADE_OPEN = "TRADE_OPEN"
+TRADE_CLOSE = "TRADE_CLOSE"

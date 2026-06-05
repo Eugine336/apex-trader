@@ -68,7 +68,7 @@ from platforms.trading_loop.risk_heat_mixin import RiskHeatMarginMixin
 from platforms.trading_loop.exit_checks_mixin import ExitChecksMixin
 
 from persistence.event_store import get_event_store, new_cycle_id, new_setup_id
-from persistence.domain_events import DECISION_REJECT, ORDER_SENT, ORDER_FILLED, TRADE_OPEN, SETUP_SKIPPED
+from persistence.domain_events import DECISION_REJECT, ORDER_SENT, ORDER_FILLED, TRADE_OPEN, TRADE_CLOSE, SETUP_SKIPPED
 
 class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMixin):
     """
@@ -1115,16 +1115,31 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 continue
 
             if pos.platform in snap.confirmed_platforms:
-                realized = self.platforms.get_realized_pnl(oid, pos.platform)
-                broker_pnl = realized if realized is not None else pos.broker_pnl
-                close_price = pos.entry_price
-                try:
-                    tick = self.platforms.get_price(pos.symbol)
-                    is_buy = pos.direction == "BUY"
-                    close_price = tick.bid if is_buy else tick.ask
-                except Exception as exc:
-                    logger.debug("[Reconcile] close-price fetch failed for {} {}, using fallback price: {}", pos.direction, pos.symbol, exc)
-                    pass
+                deal_info = self.platforms.get_deal_close_info(oid, pos.platform)
+                if deal_info is not None:
+                    broker_pnl = deal_info.pnl
+                    exit_reason = deal_info.exit_reason
+                    exit_reason_source = "mt5_deal"
+                    raw_broker_reason = deal_info.raw_reason_code
+                    raw_broker_comment = deal_info.raw_comment
+                else:
+                    realized = self.platforms.get_realized_pnl(oid, pos.platform)
+                    broker_pnl = realized if realized is not None else pos.broker_pnl
+                    exit_reason = "BROKER_CLOSED_UNKNOWN"
+                    exit_reason_source = "unknown"
+                    raw_broker_reason = None
+                    raw_broker_comment = None
+                if deal_info is not None and deal_info.close_price is not None:
+                    close_price = deal_info.close_price
+                else:
+                    close_price = pos.entry_price
+                    try:
+                        tick = self.platforms.get_price(pos.symbol)
+                        is_buy = pos.direction == "BUY"
+                        close_price = tick.bid if is_buy else tick.ask
+                    except Exception as exc:
+                        logger.debug("[Reconcile] close-price fetch failed for {} {}, using fallback price: {}", pos.direction, pos.symbol, exc)
+                        pass
                 fake_close = CloseResult(
                     success=True,
                     order_id=oid,
@@ -1136,20 +1151,24 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 self._record_closed_trade(
                     pos,
                     close_price,
-                    "BROKER_CLOSED",
+                    exit_reason,
                     close_result=fake_close if broker_pnl != 0.0 else None,
+                    exit_reason_source=exit_reason_source,
+                    raw_broker_reason=raw_broker_reason,
+                    raw_broker_comment=raw_broker_comment,
                 )
                 to_remove.append(oid)
                 closed_count += 1
                 self._add_warning(
                     "info",
-                    f"{pos.direction} {pos.symbol} closed by broker (SL/TP/external)",
+                    f"{pos.direction} {pos.symbol} closed by broker ({exit_reason})",
                     symbol=pos.symbol,
                 )
                 logger.info(
-                    "📋 BROKER CLOSED — {} {} | pnl={:.2f} — removed from management",
+                    "📋 BROKER CLOSED — {} {} | reason={} | pnl={:.2f} — removed from management",
                     pos.direction,
                     pos.symbol,
+                    exit_reason,
                     broker_pnl,
                 )
             else:
@@ -1693,6 +1712,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         close_price: float,
         outcome: str,
         close_result: Optional[CloseResult] = None,
+        exit_reason_source: str = "trade_manager",
+        raw_broker_reason: Optional[int] = None,
+        raw_broker_comment: Optional[str] = None,
     ) -> None:
         pip_size = get_pip_size(pos.symbol)
         is_buy = pos.direction == "BUY"
@@ -1775,6 +1797,33 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         )
         self._run_journal_async(self.journal.log_trade(trade_record))
         self.ml.register_new_trade()
+
+        try:
+            store = get_event_store()
+            store.emit(
+                event_type=TRADE_CLOSE,
+                severity="INFO",
+                symbol=pos.symbol,
+                correlation_id=getattr(self, "_current_cycle_id", None),
+                source_module="platforms.main_loop",
+                payload={
+                    "order_id": getattr(pos, "order_id", None),
+                    "direction": pos.direction,
+                    "entry_price": pos.entry_price,
+                    "close_price": close_price,
+                    "exit_reason": outcome,
+                    "exit_reason_source": exit_reason_source,
+                    "raw_broker_reason": raw_broker_reason,
+                    "raw_broker_comment": raw_broker_comment,
+                    "pnl_pips": round(pnl_pips, 2),
+                    "pnl_dollars": pnl_dollars,
+                    "hold_seconds": round(hold_seconds, 1),
+                    "lots": pos.lots,
+                    "platform": pos.platform,
+                },
+            )
+        except Exception:
+            pass
 
     def _add_warning(self, level: str, message: str, symbol: str = "") -> None:
         """Append a system event to the in-memory activity feed for the dashboard."""
