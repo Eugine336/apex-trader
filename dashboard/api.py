@@ -144,6 +144,36 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
         """Live feed of rejections, warnings, and system events."""
         return _state.get_activity()
 
+    @app.get("/api/events")
+    def events(
+        severity_min: str = "INFO",
+        event_type: Optional[str] = None,
+        symbol: Optional[str] = None,
+        correlation_id: Optional[str] = None,
+        limit: int = 200,
+        offset: int = 0,
+    ):
+        """Persistent activity feed from the event store (all severities incl. DEBUG)."""
+        types = [event_type] if event_type else None
+        return _state.get_events(
+            severity_min=severity_min,
+            event_types=types,
+            symbol=symbol,
+            correlation_id=correlation_id,
+            limit=min(limit, 500),
+            offset=offset,
+        )
+
+    @app.get("/api/shadow")
+    def shadow_outcomes():
+        """Rejected/skipped setup outcomes grouped by rejecting gate."""
+        return _state.get_shadow_outcomes()
+
+    @app.get("/api/reconciliation")
+    def reconciliation():
+        """Broker-vs-derived exit reason discrepancies."""
+        return _state.get_reconciliation()
+
     @app.post("/api/control")
     async def control(body: dict):
         action = body.get("action", "")
@@ -216,7 +246,7 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
                     except Exception as exc:
                         logger.warning(f"WS broadcast error: {exc}")
 
-        # slow channel: scanner + performance every 5s
+        # slow channel: scanner + performance + shadow every 5s
         async def _slow_loop():
             while True:
                 await asyncio.sleep(5)
@@ -226,6 +256,7 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
                             "type": "scanner_update",
                             "scanner": _state.get_scanner_results(),
                             "performance": _state.get_performance(),
+                            "shadow": _state.get_shadow_outcomes(),
                         }
                         await manager.broadcast(payload)
                     except Exception as exc:
