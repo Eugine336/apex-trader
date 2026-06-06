@@ -160,7 +160,7 @@ def _build_orchestrator(
     from brain.regime_detector import MarketRegime, RegimeDetector
 
     regime_analysis = MagicMock()
-    regime_analysis.regime = MarketRegime.TRENDING
+    regime_analysis.regime = MarketRegime.TRENDING_STRONG
     real_regime_det = RegimeDetector()
     orch.regime_detector = MagicMock()
     orch.regime_detector.analyze.return_value = regime_analysis
@@ -581,9 +581,9 @@ class TestWeightsStoreFallback:
 class TestConfigFlag:
     """The use_adaptive_scoring_weights flag defaults to False in ScoringConfig."""
 
-    def test_default_is_false(self):
+    def test_default_is_true(self):
         from config import ScoringConfig
-        assert ScoringConfig().use_adaptive_scoring_weights is False
+        assert ScoringConfig().use_adaptive_scoring_weights is True
 
     def test_can_enable(self):
         from config import ScoringConfig

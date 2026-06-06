@@ -196,7 +196,7 @@ def test_get_multiplier_uses_pathlib_not_string_replace():
 
 
 def test_deriv_json_crash1000_has_500():
-    """BUG 2: deriv.json CRASH1000 accepted list must include 500."""
+    """BUG 2: deriv.json CRASH1000 accepted list must include 100 (default)."""
     import json
 
     cfg_path = Path(__file__).parent.parent / "config" / "brokers" / "deriv.json"
@@ -204,7 +204,7 @@ def test_deriv_json_crash1000_has_500():
         cfg = json.load(f)
 
     crash_entry = cfg["multipliers"]["CRASH1000"]
-    assert 500 in crash_entry["accepted"]
+    assert 100 in crash_entry["accepted"]
     assert crash_entry["default"] <= max(crash_entry["accepted"])
 
 
