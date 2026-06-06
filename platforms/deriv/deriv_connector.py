@@ -21,6 +21,7 @@ from platforms.base_connector import (
     AccountInfo,
     BaseConnector,
     CloseResult,
+    DealCloseInfo,
     OrderResult,
     PositionInfo,
     TickData,
@@ -713,6 +714,57 @@ class DerivConnector(BaseConnector):
             pnl=pnl,
             platform="deriv",
         )
+
+    def get_deal_close_info(self, order_id: str) -> Optional[DealCloseInfo]:
+        try:
+            self._require_connection()
+            resp = self._sync_send({
+                "proposal_open_contract": 1,
+                "contract_id": int(order_id),
+            })
+            if resp.get("error"):
+                return None
+            poc = resp.get("proposal_open_contract", {})
+
+            is_sold = poc.get("is_sold") == 1
+            settled_status = poc.get("status") in ("sold", "won", "lost")
+            if not (is_sold or settled_status):
+                return None
+
+            pnl = float(poc.get("profit", 0) or 0)
+            close_price = float(poc.get("sell_price", 0) or 0) or None
+            close_time = (
+                datetime.fromtimestamp(poc["sell_time"], tz=timezone.utc)
+                if poc.get("sell_time")
+                else None
+            )
+
+            local = self._positions.get(order_id, {})
+            local_sl = local.get("sl", 0) or 0
+            local_tp = local.get("tp", 0) or 0
+
+            exit_reason = "MANUAL"
+            if close_price is not None:
+                tol = max(abs(close_price) * 1e-4, 1e-9)
+                if local_sl and abs(close_price - local_sl) <= tol:
+                    exit_reason = "SL"
+                elif local_tp and abs(close_price - local_tp) <= tol:
+                    exit_reason = "TP"
+                elif poc.get("status") == "lost":
+                    exit_reason = "STOP_OUT"
+            elif poc.get("status") == "lost":
+                exit_reason = "STOP_OUT"
+
+            return DealCloseInfo(
+                pnl=pnl,
+                exit_reason=exit_reason,
+                close_price=close_price,
+                close_time=close_time,
+                raw_comment=str(poc.get("status", "")),
+            )
+        except Exception:
+            logger.debug("Deriv get_deal_close_info failed for {}", order_id)
+            return None
 
     # ── Positions ────────────────────────────────────────────────────────
 
