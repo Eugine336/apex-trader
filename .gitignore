@@ -29,6 +29,7 @@ data/
 !data/.gitkeep
 logs/
 *.log
+authority.db
 
 # ML Models (too large for git — use releases)
 ml/models/*.pkl
