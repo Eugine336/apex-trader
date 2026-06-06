@@ -29,6 +29,7 @@ from brain.wyckoff_engine import WyckoffEngine
 from brain.instrument_profile import get_profile
 from rl.bridge import RLBridge
 from rl.obs_builder import ObservationBuilder
+from rl.multi_tf_obs_builder import MultiTFObservationBuilder
 
 _MT5_AVAILABLE = False
 try:
@@ -141,6 +142,7 @@ class PairScanner:
 
         # ── RL subsystem ──────────────────────────────────────────────
         self._obs_builders: dict[str, ObservationBuilder] = {}
+        self._mtf_builders: dict[str, MultiTFObservationBuilder] = {}
         checkpoint = rl_checkpoint or "checkpoints/apex_rl_best.pt"
         try:
             self._rl = RLBridge(checkpoint=checkpoint)
@@ -406,25 +408,20 @@ class PairScanner:
         rl_stage      = self._rl.authority.stage
 
         try:
-            if pair not in self._obs_builders:
-                self._obs_builders[pair] = ObservationBuilder()
-
             close_now = float(m5_df["close"].iloc[-1])
-            # ATR from last 14 bars of M5
             tr = (m5_df["high"] - m5_df["low"]).abs().tail(14)
             atr_now = float(tr.mean()) if len(tr) > 0 else 0.0
 
-            obs = self._obs_builders[pair].update(
-                open=float(m5_df["open"].iloc[-1]),
-                high=float(m5_df["high"].iloc[-1]),
-                low=float(m5_df["low"].iloc[-1]),
-                close=close_now,
-                volume=float(m5_df.get("tick_volume", m5_df.get("volume", 1)).iloc[-1])
-                    if hasattr(m5_df, "get") else 1.0,
-                in_trade=0.0,
+            if pair not in self._mtf_builders:
+                self._mtf_builders[pair] = MultiTFObservationBuilder()
+
+            mtf_result = self._mtf_builders[pair].build_from_frames(
+                frames={"M5": m5_df, "M15": m15_df, "H1": h1_df, "H4": h4_df},
+                instrument=pair,
             )
 
-            if obs is not None:
+            if mtf_result is not None:
+                obs, ctx, sym_id = mtf_result
                 rl_result = self._rl.augment_score(
                     pair=pair,
                     base_score=float(score),
@@ -432,6 +429,8 @@ class PairScanner:
                     close=close_now,
                     atr=atr_now,
                     pip_size=pip_size,
+                    context_vec=ctx,
+                    symbol_id=sym_id,
                 )
 
                 if rl_result.vetoed:
@@ -542,6 +541,16 @@ class PairScanner:
                 result = self.scan_pair(pair, h4, h1, m15, m5, currency_data, utc_now)
                 results.append(result)
                 regimes[result.regime] = regimes.get(result.regime, 0) + 1
+
+                try:
+                    close_val = float(m5["close"].iloc[-1])
+                    high_val = float(m5["high"].iloc[-1])
+                    low_val = float(m5["low"].iloc[-1])
+                    tr_vals = (m5["high"] - m5["low"]).abs().tail(14)
+                    atr_val = float(tr_vals.mean()) if len(tr_vals) > 0 else 0.0
+                    self._rl.update_price(pair, high_val, low_val, close_val, atr_val, None)
+                except Exception as exc:
+                    logger.debug("[RL] update_price failed for {}: {}", pair, exc)
             except Exception as exc:
                 logger.error(f"Error scanning {pair}: {exc}")
 
