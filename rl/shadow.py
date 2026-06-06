@@ -95,7 +95,8 @@ class ShadowEngine:
     MIN_REGIMES_TESTED   = 3
 
     def __init__(self, checkpoint_path: str, db_path: str = "shadow_journal.db"):
-        self.agent = ApexRLAgent()
+        self.agent: ApexRLAgent | None = None
+        self._meta: dict = {}
         self._load(checkpoint_path)
         self.agent.eval()
 
@@ -107,18 +108,28 @@ class ShadowEngine:
 
     # ── Signal generation ─────────────────────────────────────────────────
 
-    def get_signal(self, pair: str, obs: np.ndarray) -> RLSignal:
+    def get_signal(
+        self,
+        pair: str,
+        obs: np.ndarray,
+        context_vec: Optional[np.ndarray] = None,
+        symbol_id: Optional[int] = None,
+    ) -> RLSignal:
         """
         Main interface. Call this from APEX scanner for each instrument.
 
         obs: numpy array of shape (WINDOW, N_FEATURES) — same format
              as the training environment observation.
+        context_vec: optional instrument context vector (float32).
+        symbol_id: optional integer symbol id for the embedding.
         """
         import torch
         with torch.no_grad():
             obs_t  = torch.FloatTensor(obs).unsqueeze(0)
             latent = self.agent.encoder(obs_t)
-            action, conf, exp_r = self.agent.predict(obs)
+            action, conf, exp_r = self.agent.predict(
+                obs, context_vec=context_vec, symbol_id=symbol_id,
+            )
             latent_list = latent.squeeze(0).tolist()
 
         signal = RLSignal(
@@ -347,6 +358,27 @@ class ShadowEngine:
 
     def _load(self, path: str):
         import torch
-        ckpt = torch.load(path, map_location="cpu")
+        from .contracts import assert_compatible
+
+        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        meta = ckpt.get("meta", {})
+
+        assert_compatible(meta)
+
+        n_features = meta.get("n_features", 12)
+        context_dim = meta.get("context_dim", 0)
+        n_symbols = meta.get("n_symbols", 0)
+
+        self.agent = ApexRLAgent(
+            n_features=n_features,
+            context_dim=context_dim,
+            n_symbols=n_symbols,
+        )
         self.agent.load_state_dict(ckpt["agent"])
-        print(f"[Shadow] Loaded checkpoint: step={ckpt.get('step', '?')}")
+        self._meta = meta
+
+        print(
+            f"[Shadow] Loaded checkpoint: step={ckpt.get('step', '?')}, "
+            f"version={meta.get('obs_contract_version', '?')}, "
+            f"features={n_features}, context={context_dim}"
+        )
