@@ -5,10 +5,10 @@
     "optimal_tp_multiplier": 1.0,
     "optimal_sl_buffer_pips": 3.0,
     "optimal_partial_close_ratio": 0.5,
-    "avg_hold_candles": 22,
-    "win_rate": 0.4118,
-    "sample_size": 34,
-    "confidence": 0.34
+    "avg_hold_candles": 21,
+    "win_rate": 0.4,
+    "sample_size": 35,
+    "confidence": 0.35
   },
   "BULLISH": {
     "regime": "BULLISH",
@@ -27,10 +27,10 @@
     "optimal_tp_multiplier": 0.8,
     "optimal_sl_buffer_pips": 3.0,
     "optimal_partial_close_ratio": 0.6,
-    "avg_hold_candles": 1,
-    "win_rate": 0.3333,
-    "sample_size": 3,
-    "confidence": 0.03
+    "avg_hold_candles": 0,
+    "win_rate": 0.1,
+    "sample_size": 10,
+    "confidence": 0.1
   },
   "": {
     "regime": "",
@@ -38,9 +38,9 @@
     "optimal_tp_multiplier": 1.0,
     "optimal_sl_buffer_pips": 3.0,
     "optimal_partial_close_ratio": 0.5,
-    "avg_hold_candles": 0,
-    "win_rate": 0.5,
-    "sample_size": 2,
-    "confidence": 0.02
+    "avg_hold_candles": 2,
+    "win_rate": 0.3707,
+    "sample_size": 116,
+    "confidence": 1.0
   }
 }

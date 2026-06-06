@@ -39,26 +39,28 @@
   },
   "LONDON": {
     "session": "LONDON",
-    "win_rate": 0.5,
-    "avg_pnl": 72671861.55,
+    "win_rate": 0.4,
+    "avg_pnl": 58137469.04,
     "best_pairs": [
       "V50_1S",
       "GBPAUD",
-      "HK50"
+      "HK50",
+      "XAGUSD"
     ],
     "optimal_scan_frequency": 30,
-    "total_trades": 4,
+    "total_trades": 5,
     "recommendation": "NORMAL"
   },
   "UNKNOWN": {
     "session": "UNKNOWN",
-    "win_rate": 0.3333,
-    "avg_pnl": -171.0,
+    "win_rate": 0.1,
+    "avg_pnl": -127.6,
     "best_pairs": [
+      "LTCUSD",
       "XAUUSD"
     ],
     "optimal_scan_frequency": 30,
-    "total_trades": 3,
+    "total_trades": 10,
     "recommendation": "NORMAL"
   },
   "OVERLAP_LONDON_NY": {
@@ -74,14 +76,29 @@
   },
   "NEW_YORK": {
     "session": "NEW_YORK",
-    "win_rate": 0.25,
-    "avg_pnl": 5.25,
+    "win_rate": 0.8125,
+    "avg_pnl": 45.1125,
     "best_pairs": [
+      "GER40",
       "US100",
+      "XTIUSD",
+      "SOLUSD",
       "V100_1S"
     ],
-    "optimal_scan_frequency": 30,
-    "total_trades": 4,
-    "recommendation": "NORMAL"
+    "optimal_scan_frequency": 10,
+    "total_trades": 16,
+    "recommendation": "AGGRESSIVE"
+  },
+  "WEEKEND": {
+    "session": "WEEKEND",
+    "win_rate": 0.2941,
+    "avg_pnl": -3.4341,
+    "best_pairs": [
+      "BTCUSD",
+      "SOLUSD"
+    ],
+    "optimal_scan_frequency": 300,
+    "total_trades": 102,
+    "recommendation": "AVOID"
   }
 }

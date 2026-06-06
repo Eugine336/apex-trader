@@ -1,14 +1,14 @@
 {
   "BTCUSD": {
     "pair": "BTCUSD",
-    "win_rate": 0.4,
-    "avg_pnl": 25.417,
+    "win_rate": 0.3797,
+    "avg_pnl": 8.2341,
     "best_session": "SYDNEY",
     "best_regime": "BEARISH",
     "avg_spread_cost": 0.0,
-    "total_trades": 10,
-    "confidence": 0.125,
-    "recommendation": "INSUFFICIENT_DATA"
+    "total_trades": 79,
+    "confidence": 0.9875,
+    "recommendation": "AVOID"
   },
   "V50_1S": {
     "pair": "V50_1S",
@@ -67,13 +67,13 @@
   },
   "XTIUSD": {
     "pair": "XTIUSD",
-    "win_rate": 0.0,
-    "avg_pnl": -17.0,
-    "best_session": "SYDNEY",
-    "best_regime": "BEARISH",
+    "win_rate": 0.5,
+    "avg_pnl": -6.0,
+    "best_session": "NEW_YORK",
+    "best_regime": "",
     "avg_spread_cost": 0.0,
-    "total_trades": 1,
-    "confidence": 0.0125,
+    "total_trades": 2,
+    "confidence": 0.025,
     "recommendation": "INSUFFICIENT_DATA"
   },
   "US100": {
@@ -118,6 +118,50 @@
     "avg_spread_cost": 0.0,
     "total_trades": 3,
     "confidence": 0.0375,
+    "recommendation": "INSUFFICIENT_DATA"
+  },
+  "XAGUSD": {
+    "pair": "XAGUSD",
+    "win_rate": 0.0,
+    "avg_pnl": -101.0,
+    "best_session": "LONDON",
+    "best_regime": "",
+    "avg_spread_cost": 0.0,
+    "total_trades": 1,
+    "confidence": 0.0125,
+    "recommendation": "INSUFFICIENT_DATA"
+  },
+  "GER40": {
+    "pair": "GER40",
+    "win_rate": 1.0,
+    "avg_pnl": 69.5,
+    "best_session": "NEW_YORK",
+    "best_regime": "",
+    "avg_spread_cost": 0.0,
+    "total_trades": 10,
+    "confidence": 0.125,
+    "recommendation": "INSUFFICIENT_DATA"
+  },
+  "SOLUSD": {
+    "pair": "SOLUSD",
+    "win_rate": 0.1471,
+    "avg_pnl": -21.9353,
+    "best_session": "NEW_YORK",
+    "best_regime": "",
+    "avg_spread_cost": 0.0,
+    "total_trades": 34,
+    "confidence": 0.425,
+    "recommendation": "AVOID"
+  },
+  "LTCUSD": {
+    "pair": "LTCUSD",
+    "win_rate": 0.0,
+    "avg_pnl": -109.0,
+    "best_session": "UNKNOWN",
+    "best_regime": "UNKNOWN",
+    "avg_spread_cost": 0.0,
+    "total_trades": 7,
+    "confidence": 0.0875,
     "recommendation": "INSUFFICIENT_DATA"
   }
 }
