@@ -15,6 +15,8 @@ from __future__ import annotations
 import hashlib
 import json
 
+from loguru import logger
+
 # ── Observation window ────────────────────────────────────────────────────────
 
 OBS_CONTRACT_VERSION = "mtf-v1"
@@ -144,4 +146,5 @@ def build_symbol_vocab() -> list[str]:
             if info.category != InstrumentCategory.SYNTHETIC
         )
     except ImportError:
+        logger.debug("INSTRUMENT_REGISTRY not available; returning empty symbol vocab")
         return []
