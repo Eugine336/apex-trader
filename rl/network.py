@@ -260,12 +260,14 @@ class ApexRLAgent(nn.Module):
             return latent
 
         if context_vec is None:
-            return latent
+            context_vec = torch.zeros(latent.shape[0], self.context_dim, device=latent.device)
 
         parts: list[torch.Tensor] = []
         if self.symbol_embed is not None and symbol_id is not None:
             sym_emb = self.symbol_embed(symbol_id.long())
             parts = [context_vec, sym_emb]
+        elif self.symbol_embed is not None:
+            parts = [context_vec, torch.zeros(latent.shape[0], CONTEXT_EMBED_DIM, device=latent.device)]
         else:
             parts = [context_vec]
 
