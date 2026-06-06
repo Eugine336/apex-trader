@@ -10,6 +10,8 @@ Tests cover:
 """
 
 import asyncio
+import tempfile
+import os
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -20,7 +22,21 @@ from brain.trade_journal import TradeJournal, TradeRecord
 # ── helpers ──────────────────────────────────────────────────────────────────
 
 def _run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro)
+    return asyncio.run(coro)
+
+
+def _make_journal():
+    """Create a TradeJournal backed by a temp file (not :memory:) so it survives across _run calls."""
+    tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+    tmp.close()
+    return TradeJournal(db_path=tmp.name), tmp.name
+
+
+def _cleanup(path):
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def _make_record(
@@ -63,7 +79,7 @@ def _make_record(
 class TestSingleTradeR:
     def test_basic_r_calculation(self):
         """R = 100 / 50 = 2.0"""
-        journal = TradeJournal(db_path=":memory:")
+        journal, _db_path = _make_journal()
         _run(journal.initialize())
         _run(journal.log_trade(_make_record(pnl_dollars=100.0, risk_dollars=50.0)))
         stats = _run(journal.get_performance_stats())
@@ -72,7 +88,7 @@ class TestSingleTradeR:
 
     def test_losing_trade_negative_r(self):
         """R = -30 / 50 = -0.6"""
-        journal = TradeJournal(db_path=":memory:")
+        journal, _db_path = _make_journal()
         _run(journal.initialize())
         _run(journal.log_trade(_make_record(pnl_dollars=-30.0, risk_dollars=50.0, outcome="LOSS")))
         stats = _run(journal.get_performance_stats())
@@ -106,7 +122,7 @@ class TestRUsesInitialRisk:
 class TestFallbackExclusion:
     def test_none_risk_excluded_from_r(self):
         """Trades with risk_dollars=None are included in dollar stats but not R."""
-        journal = TradeJournal(db_path=":memory:")
+        journal, _db_path = _make_journal()
         _run(journal.initialize())
         _run(journal.log_trade(_make_record(pnl_dollars=100.0, risk_dollars=50.0)))
         _run(journal.log_trade(_make_record(pnl_dollars=200.0, risk_dollars=None)))
@@ -117,7 +133,7 @@ class TestFallbackExclusion:
 
     def test_zero_risk_excluded_from_r(self):
         """Trades with risk_dollars=0 are excluded from R (division guard)."""
-        journal = TradeJournal(db_path=":memory:")
+        journal, _db_path = _make_journal()
         _run(journal.initialize())
         _run(journal.log_trade(_make_record(pnl_dollars=100.0, risk_dollars=0.0)))
         stats = _run(journal.get_performance_stats())
@@ -175,7 +191,7 @@ class TestConsolidationRisk:
 class TestRMultipleStats:
     def test_mixed_valid_and_null(self):
         """Three trades: two with risk, one without → R stats use only the two."""
-        journal = TradeJournal(db_path=":memory:")
+        journal, _db_path = _make_journal()
         _run(journal.initialize())
         _run(journal.log_trade(_make_record(pnl_dollars=100.0, risk_dollars=50.0, outcome="WIN")))
         _run(journal.log_trade(_make_record(pnl_dollars=-25.0, risk_dollars=50.0, outcome="LOSS")))
@@ -195,7 +211,7 @@ class TestRMultipleStats:
 
     def test_all_null_risk(self):
         """All trades missing risk → R stats = 0."""
-        journal = TradeJournal(db_path=":memory:")
+        journal, _db_path = _make_journal()
         _run(journal.initialize())
         _run(journal.log_trade(_make_record(pnl_dollars=100.0, risk_dollars=None)))
         stats = _run(journal.get_performance_stats())
@@ -205,7 +221,7 @@ class TestRMultipleStats:
 
     def test_empty_journal(self):
         """No trades → all stats zero including R."""
-        journal = TradeJournal(db_path=":memory:")
+        journal, _db_path = _make_journal()
         _run(journal.initialize())
         stats = _run(journal.get_performance_stats())
         assert stats["r_sample_size"] == 0
@@ -226,7 +242,7 @@ class TestOldRowBackwardCompat:
 
     def test_get_all_trades_old_schema_no_crash(self):
         """get_all_trades_as_dicts handles missing risk_dollars column."""
-        journal = TradeJournal(db_path=":memory:")
+        journal, _db_path = _make_journal()
         _run(journal.initialize())
         _run(journal.log_trade(_make_record(risk_dollars=None)))
         trades = _run(journal.get_all_trades_as_dicts())

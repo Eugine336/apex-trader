@@ -87,9 +87,11 @@ def _build_loop(*positions, reconcile_max_unconfirmed=20):
         risk=SimpleNamespace(
             margin_guardian_enabled=False,
             reconcile_max_unconfirmed_cycles=reconcile_max_unconfirmed,
+            model_swap_costs=False,
         ),
     )
     loop._last_reconcile_time = datetime.now(timezone.utc)
+    loop._position_scores = {}
     loop.platforms.get_platform_balance.return_value = 10000.0
 
     for args in positions:
@@ -125,6 +127,7 @@ class TestTotalFetchFailure:
         )
         loop.platforms.get_price.return_value = _make_tick()
         loop.platforms.get_realized_pnl.return_value = None
+        loop.platforms.get_deal_close_info.return_value = None
 
         loop._update_positions()
 
@@ -167,6 +170,7 @@ class TestPartialMultiBrokerFetch:
         )
         loop.platforms.get_price.return_value = _make_tick()
         loop.platforms.get_realized_pnl.return_value = None
+        loop.platforms.get_deal_close_info.return_value = None
 
         loop._update_positions()
 
@@ -187,6 +191,7 @@ class TestPartialMultiBrokerFetch:
         )
         loop.platforms.get_price.return_value = _make_tick()
         loop.platforms.get_realized_pnl.return_value = None
+        loop.platforms.get_deal_close_info.return_value = None
 
         to_remove = []
         loop._reconcile_externally_closed(to_remove)
@@ -211,6 +216,7 @@ class TestEmptyButConfirmed:
         )
         loop.platforms.get_price.return_value = _make_tick()
         loop.platforms.get_realized_pnl.return_value = 5.0
+        loop.platforms.get_deal_close_info.return_value = None
 
         loop._update_positions()
 
@@ -243,6 +249,7 @@ class TestRevalidationLifecycle:
         )
         loop.platforms.get_price.return_value = _make_tick()
         loop.platforms.get_realized_pnl.return_value = None
+        loop.platforms.get_deal_close_info.return_value = None
 
         loop.platforms.get_open_positions_snapshot.return_value = BrokerPositionsSnapshot(
             positions=[], confirmed_platforms=set(), failed_platforms={"mt5"},
@@ -265,6 +272,7 @@ class TestRevalidationLifecycle:
         )
         loop.platforms.get_price.return_value = _make_tick()
         loop.platforms.get_realized_pnl.return_value = None
+        loop.platforms.get_deal_close_info.return_value = None
 
         fail_snap = BrokerPositionsSnapshot(
             positions=[], confirmed_platforms=set(), failed_platforms={"deriv"},

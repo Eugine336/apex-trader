@@ -108,7 +108,9 @@ def _build_loop_with_position(
     loop.config = SimpleNamespace(risk=SimpleNamespace(
         margin_guardian_enabled=False,
         reconcile_max_unconfirmed_cycles=20,
+        model_swap_costs=False,
     ))
+    loop._position_scores = {}
 
     def _snapshot_from_legacy():
         from platforms.platform_manager import BrokerPositionsSnapshot
@@ -159,6 +161,7 @@ class TestBrokerSideCloseDetection:
         loop.platforms.get_price.return_value = _make_tick(1.1020, 1.1022)
         loop.platforms.get_platform_balance.return_value = 10000.0
         loop.platforms.get_realized_pnl.return_value = None
+        loop.platforms.get_deal_close_info.return_value = None
 
         # Mock the journal async call
         loop._run_journal_async = MagicMock()
@@ -166,7 +169,7 @@ class TestBrokerSideCloseDetection:
         closed = loop._update_positions()
 
         assert closed == 1
-        assert oid not in loop.managed_positions
+        assert pos.order_id not in loop.managed_positions
 
     def test_broker_pnl_used_in_close_record(self):
         loop, pos, tm_trade = _build_loop_with_position()
@@ -176,6 +179,7 @@ class TestBrokerSideCloseDetection:
         loop.platforms.get_price.return_value = _make_tick(1.1020, 1.1022)
         loop.platforms.get_platform_balance.return_value = 10000.0
         loop.platforms.get_realized_pnl.return_value = None
+        loop.platforms.get_deal_close_info.return_value = None
         loop._run_journal_async = MagicMock()
 
         loop._update_positions()
@@ -335,7 +339,7 @@ class TestValueAddManagement:
         closed = loop._update_positions()
 
         assert closed == 1
-        assert oid not in loop.managed_positions
+        assert pos.order_id not in loop.managed_positions
         loop.platforms.close_trade.assert_called_once()
 
 

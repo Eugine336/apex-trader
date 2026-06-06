@@ -173,6 +173,8 @@ class TestRecordClosedTradeUsesBrokerPnl:
             tm_trade_id="tm1",
             stake_usd=stake_usd,
             multiplier=multiplier,
+            broker_pnl=0.0,
+            confluences=[],
         )
         return pos
 
@@ -193,6 +195,7 @@ class TestRecordClosedTradeUsesBrokerPnl:
         loop.platforms.get_platform_balance.return_value = 10000.0
         loop.journal = MagicMock()
         loop.ml = MagicMock()
+        loop.config = SimpleNamespace(risk=SimpleNamespace(model_swap_costs=False))
         loop._journal_loop = asyncio.new_event_loop()
 
         pos = self._make_managed_position()
@@ -228,6 +231,7 @@ class TestRecordClosedTradeUsesBrokerPnl:
         loop.platforms.get_platform_balance.return_value = 10000.0
         loop.journal = MagicMock()
         loop.ml = MagicMock()
+        loop.config = SimpleNamespace(risk=SimpleNamespace(model_swap_costs=False))
         loop._journal_loop = asyncio.new_event_loop()
 
         pos = self._make_managed_position()
@@ -260,6 +264,7 @@ class TestLiveReconciliation:
         loop._MAX_WARNINGS = 200
         loop.config = SimpleNamespace(risk=SimpleNamespace(
             reconcile_max_unconfirmed_cycles=20,
+            model_swap_costs=False,
         ))
 
         pos = SimpleNamespace(
@@ -286,8 +291,11 @@ class TestLiveReconciliation:
             multiplier=100,
             revalidation_pending=False,
             unconfirmed_cycles=0,
+            broker_pnl=0.0,
+            confluences=[],
         )
         loop.managed_positions = {"T123": pos}
+        loop.platforms.get_deal_close_info.return_value = None
 
         to_remove = []
         loop._reconcile_externally_closed(to_remove)
@@ -312,6 +320,7 @@ class TestLiveReconciliation:
         loop.managed_positions = {"T123": pos_mock}
         loop.config = SimpleNamespace(risk=SimpleNamespace(
             reconcile_max_unconfirmed_cycles=20,
+            model_swap_costs=False,
         ))
 
         to_remove = []
@@ -350,6 +359,7 @@ class TestLiveReconciliation:
         loop.managed_positions = {"T123": pos_mock}
         loop.config = SimpleNamespace(risk=SimpleNamespace(
             reconcile_max_unconfirmed_cycles=20,
+            model_swap_costs=False,
         ))
 
         to_remove = []
