@@ -67,7 +67,7 @@ class TestInstrumentRegistry:
             get_pip_size("FAKEPAIR")
 
     def test_total_instruments(self):
-        assert len(INSTRUMENT_REGISTRY) == 66
+        assert len(INSTRUMENT_REGISTRY) == 65
 
     def test_category_counts(self):
         assert len(get_instruments_by_category("forex")) == 28

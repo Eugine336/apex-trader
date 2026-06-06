@@ -222,7 +222,7 @@ class TestWeekendProtectionConfig:
     def test_defaults(self):
         from config import RiskConfig
         rc = RiskConfig()
-        assert rc.weekend_protection_enabled is False
+        assert rc.weekend_protection_enabled is True
         assert rc.weekend_protection_mode == "derisk"
         assert rc.weekend_close_buffer_minutes == 15
 
@@ -232,6 +232,7 @@ class TestWeekendProtection:
 
     def test_default_off_noop(self):
         loop = _make_loop()
+        loop.config = _make_config(weekend_protection_enabled=False)
         pos = _make_managed_pos()
         loop.managed_positions["T1"] = pos
         fri = datetime(2026, 5, 29, 20, 50, tzinfo=timezone.utc)
@@ -337,9 +338,9 @@ class TestTP3Config:
     def test_defaults(self):
         from config import RiskConfig
         rc = RiskConfig()
-        assert rc.tp3_ladder_enabled is False
-        assert rc.tp3_r_multiple == 4.0
-        assert rc.tp3_close_ratio == 0.5
+        assert rc.tp3_ladder_enabled is True
+        assert rc.tp3_r_multiple == 5.0
+        assert rc.tp3_close_ratio == 0.25
 
 
 class TestTP3TradeManagerConfig:

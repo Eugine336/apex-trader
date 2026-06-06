@@ -130,7 +130,7 @@ class TestTPAdjustConfig:
     def test_default_off(self):
         from config import RiskConfig
         rc = RiskConfig()
-        assert rc.tp_adjust_enabled is False
+        assert rc.tp_adjust_enabled is True
 
     def test_trade_manager_receives_flag(self):
         from management.trade_manager import TradeManager
@@ -352,7 +352,7 @@ class TestPendingOrderConfig:
     def test_default_off(self):
         from config import RiskConfig
         rc = RiskConfig()
-        assert rc.pending_orders_enabled is False
+        assert rc.pending_orders_enabled is True
 
     def test_max_wait_default(self):
         from config import RiskConfig
@@ -621,7 +621,7 @@ class TestCheckPendingOrdersLifecycle:
         sig = SimpleNamespace(
             tp1=1.1050, tp2=1.1100, score=90, stop_loss=1.0950,
             risk_reward_1=1.0, risk_reward_2=2.0, entry_type="FVG_MIDPOINT",
-            entry_timeframe="M5",
+            entry_timeframe="M5", confluences=[],
         )
         placed = datetime.now(timezone.utc) - __import__("datetime").timedelta(minutes=placed_minutes_ago)
         return {

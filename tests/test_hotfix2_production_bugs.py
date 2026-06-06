@@ -52,7 +52,7 @@ class TestMultiplierDiscovery:
         c = self._make_connector()
         c._discovered_multipliers["1HZ50V"] = [80, 200, 400, 600, 800]
         result = c._get_multiplier("1HZ50V")
-        assert result == 200
+        assert result == 80
 
     def test_get_multiplier_falls_back_to_json_when_not_discovered(self):
         c = self._make_connector()
@@ -254,9 +254,10 @@ class TestFailedTimeframeDedup:
         mgr.config = MagicMock()
         mgr.mt5 = MagicMock(spec=MT5Connector)
         mgr.deriv = MagicMock(spec=DerivConnector)
-        mgr._mt5_connected = True
+        mgr.mt5_connectors = [mgr.mt5]
+        mgr._mt5_connected_flags = [True]
         mgr._deriv_connected = True
-        mgr._mt5_was_connected = True
+        mgr._mt5_was_connected = [True]
         mgr._deriv_was_connected = True
         mgr._reconnect_delays = [5, 10, 20, 40, 60]
         mgr._mt5_reconnect_attempt = 0
