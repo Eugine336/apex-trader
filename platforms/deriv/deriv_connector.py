@@ -156,7 +156,9 @@ class DerivConnector(BaseConnector):
             )
             with open(cfg_path) as f:
                 cfg = json.load(f)
-            symbols = list(cfg.get("multipliers", {}).keys())
+            mult_keys = set(cfg.get("multipliers", {}).keys())
+            override_vals = set(cfg.get("overrides", {}).values())
+            symbols = sorted((mult_keys | override_vals) - {"_default"})
         except Exception:
             symbols = []
 
@@ -545,6 +547,7 @@ class DerivConnector(BaseConnector):
                         "Update config/brokers/deriv.json!",
                         multiplier, mapped, corrected, valid,
                     )
+                    self._discovered_multipliers[mapped] = valid
                     if corrected > 0:
                         amount = round(max(_MIN_STAKE, amount * multiplier / corrected), 2)
                     multiplier = corrected
