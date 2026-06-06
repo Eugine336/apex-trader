@@ -54,7 +54,10 @@ TF_SECONDS = {
 }
 
 N_TIMEFRAMES = len(TF_ORDER)
-OBS_SHAPE = (WINDOW, N_MARKET_FEATURES * N_TIMEFRAMES)  # (50, 48)
+OBS_FEATURES = N_MARKET_FEATURES * N_TIMEFRAMES          # 48
+OBS_SHAPE = (WINDOW, OBS_FEATURES)                        # (50, 48)
+
+assert OBS_FEATURES == OBS_SHAPE[1]
 
 # ── Alignment rule ────────────────────────────────────────────────────────────
 # A higher-TF bar with open time T is *usable* at an M5 anchor bar with

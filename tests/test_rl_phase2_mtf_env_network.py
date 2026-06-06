@@ -104,6 +104,10 @@ class TestContracts:
         assert OBS_FEATURES == 48
         assert N_MARKET_FEATURES == 12
 
+    def test_obs_features_importable_and_consistent(self):
+        assert OBS_FEATURES == OBS_SHAPE[1]
+        assert OBS_FEATURES == N_MARKET_FEATURES * N_TIMEFRAMES
+
     def test_build_symbol_vocab_excludes_synthetics(self):
         vocab = build_symbol_vocab()
         assert len(vocab) > 0
@@ -204,6 +208,57 @@ class TestNetworkMTFContext:
         a = ApexRLAgent(n_features=48, n_actions=4, context_dim=0)
         b = ApexRLAgent(n_features=48, n_actions=4, context_dim=8, n_symbols=49)
         assert b.count_parameters() > a.count_parameters()
+
+
+# ── _fuse_context regression tests ──────────────────────────────────────────
+
+class TestFuseContextRegression:
+    """Guard against the silent context-slicing bug found during Phase 2 review.
+
+    The bug: ``_fuse_context`` sliced ``context_vec[:, 1:]`` under the
+    assumption that ``symbol_id`` was embedded inside the context vector.
+    It is not — ``symbol_id`` is a *separate* integer passed to a learned
+    embedding.  The full context vector must reach the projection MLP, and
+    the symbol embedding must be concatenated alongside it.
+    """
+
+    def test_full_context_vec_used(self):
+        agent = ApexRLAgent(n_features=48, n_actions=4, context_dim=8, n_symbols=49)
+        latent = torch.randn(1, LATENT_DIM)
+        ctx_a = torch.zeros(1, 8)
+        ctx_b = torch.zeros(1, 8)
+        ctx_b[0, 0] = 5.0
+        sym = torch.LongTensor([0])
+
+        out_a = agent._fuse_context(latent, context_vec=ctx_a, symbol_id=sym)
+        out_b = agent._fuse_context(latent, context_vec=ctx_b, symbol_id=sym)
+
+        assert not torch.allclose(out_a, out_b), (
+            "Changing context_vec[0] had no effect — element 0 is being "
+            "sliced away instead of used"
+        )
+
+    def test_symbol_id_fused_via_embedding(self):
+        agent = ApexRLAgent(n_features=48, n_actions=4, context_dim=8, n_symbols=49)
+        latent = torch.randn(1, LATENT_DIM)
+        ctx = torch.randn(1, 8)
+        sym_a = torch.LongTensor([0])
+        sym_b = torch.LongTensor([1])
+
+        out_a = agent._fuse_context(latent, context_vec=ctx, symbol_id=sym_a)
+        out_b = agent._fuse_context(latent, context_vec=ctx, symbol_id=sym_b)
+
+        assert not torch.allclose(out_a, out_b), (
+            "Different symbol_id produced identical output — symbol embedding "
+            "is not being fused"
+        )
+
+    def test_fuse_context_passthrough_without_context(self):
+        agent = ApexRLAgent(n_features=48, n_actions=4, context_dim=8, n_symbols=49)
+        latent = torch.randn(1, LATENT_DIM)
+
+        out = agent._fuse_context(latent, context_vec=None, symbol_id=None)
+        torch.testing.assert_close(out, latent)
 
 
 # ── MTF environment tests ────────────────────────────────────────────────────
