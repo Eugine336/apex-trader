@@ -189,7 +189,7 @@ class TestStartupCheckDegradedStore:
     def test_degraded_store_warns_on_zero_count(self, tmp_path):
         from platforms.startup_check import StartupCheck
 
-        with patch("platforms.startup_check.PositionStore") as MockStore:
+        with patch("persistence.position_store.PositionStore") as MockStore:
             instance = MockStore.return_value
             instance.count.return_value = 0
             instance.is_healthy.return_value = False
@@ -207,7 +207,7 @@ class TestStartupCheckDegradedStore:
     def test_healthy_store_normal_message(self, tmp_path):
         from platforms.startup_check import StartupCheck
 
-        with patch("platforms.startup_check.PositionStore") as MockStore:
+        with patch("persistence.position_store.PositionStore") as MockStore:
             instance = MockStore.return_value
             instance.count.return_value = 3
             instance.is_healthy.return_value = True

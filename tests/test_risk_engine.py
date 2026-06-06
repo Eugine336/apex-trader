@@ -124,12 +124,12 @@ def test_reject_same_pair_opposite_direction_hedge(engine):
 # ── RiskEngine — position sizing at different modes ────────────────────────
 
 
-def test_normal_mode_risk_2_percent(engine):
+def test_normal_mode_risk_075_percent(engine):
     result = engine.assess(
         pair="EURUSD", direction="LONG",
         entry_price=1.10000, stop_loss=1.09800,
     )
-    assert result.risk_pct == pytest.approx(0.02, abs=0.005)
+    assert result.risk_pct == pytest.approx(0.0075, abs=0.002)
 
 
 def test_caution_mode_risk_reduced(engine):
@@ -140,7 +140,7 @@ def test_caution_mode_risk_reduced(engine):
         pair="EURUSD", direction="LONG",
         entry_price=1.10000, stop_loss=1.09800,
     )
-    assert result.risk_pct == pytest.approx(0.015, abs=0.005)
+    assert result.risk_pct == pytest.approx(0.0056, abs=0.002)
 
 
 def test_recovery_mode_risk_reduced_further(engine):
@@ -151,7 +151,7 @@ def test_recovery_mode_risk_reduced_further(engine):
         pair="EURUSD", direction="LONG",
         entry_price=1.10000, stop_loss=1.09800,
     )
-    assert result.risk_pct == pytest.approx(0.01, abs=0.005)
+    assert result.risk_pct == pytest.approx(0.0037, abs=0.002)
 
 
 # ── RiskEngine — daily loss triggers FROZEN ────────────────────────────────

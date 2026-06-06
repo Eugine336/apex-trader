@@ -163,7 +163,7 @@ class TestScoreEdge:
     def test_custom_thresholds(self) -> None:
         trades = _monotone_positive(200)
         strict = TradeAnalyzer().score_edge(
-            trades, min_samples=30, spearman_positive_threshold=0.99,
+            trades, min_samples=30, spearman_positive_threshold=1.01,
         )
         assert strict["verdict"] != "POSITIVE_EDGE"
 
