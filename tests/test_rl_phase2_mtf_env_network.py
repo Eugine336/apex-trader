@@ -258,7 +258,8 @@ class TestFuseContextRegression:
         latent = torch.randn(1, LATENT_DIM)
 
         out = agent._fuse_context(latent, context_vec=None, symbol_id=None)
-        torch.testing.assert_close(out, latent)
+        assert out.shape == (1, LATENT_DIM + 32)
+        torch.testing.assert_close(out[:, :LATENT_DIM], latent)
 
 
 # ── MTF environment tests ────────────────────────────────────────────────────

@@ -27,6 +27,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+from loguru import logger
+
 from .contracts import (
     TF_ORDER,
     WINDOW,
@@ -315,6 +317,7 @@ class ApexMultiTFTradingEnv:
             )
             return abs(value) if value is not None else 0.0
         except Exception:
+            logger.debug("Swap estimation failed for {}", self.instrument)
             return 0.0
 
     def _unrealised_r(self, current_price: float) -> float:
