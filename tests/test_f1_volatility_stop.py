@@ -154,7 +154,7 @@ class TestClampedATRStopDistance:
         struct_dist = 0.5
         dist, status = clamped_atr_stop_distance(
             atr_val, struct_dist, mult=1.5, min_pips=5, max_pips=20,
-            pip_size=self.PIP, ratio_min=0.01, ratio_max=100.0,
+            pip_size=self.PIP, ratio_min=0.0, ratio_max=100.0,
         )
         assert status == "modeled"
         assert dist is not None

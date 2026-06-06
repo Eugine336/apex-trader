@@ -29,42 +29,43 @@ class TestAutoReconnect:
         mgr.config = MagicMock()
         mgr.mt5 = MagicMock()
         mgr.deriv = MagicMock()
-        mgr._mt5_connected = False
+        mgr.mt5_connectors = [mgr.mt5]
+        mgr._mt5_connected_flags = [False]
         mgr._deriv_connected = False
-        mgr._mt5_was_connected = True
+        mgr._mt5_was_connected = [True]
         mgr._deriv_was_connected = True
         mgr._reconnect_delays = [5, 10, 20, 40, 60]
-        mgr._mt5_reconnect_attempt = 0
+        mgr._mt5_reconnect_attempts = [0]
         mgr._deriv_reconnect_attempt = 0
-        mgr._mt5_next_reconnect = 0.0
+        mgr._mt5_next_reconnects = [0.0]
         mgr._deriv_next_reconnect = 0.0
         return mgr
 
     def test_reconnect_platform_success(self):
         mgr = self._make_manager()
-        mgr.mt5.connect.return_value = True
+        mgr.mt5_connectors[0].connect.return_value = True
         assert mgr.reconnect_platform("mt5") is True
         assert mgr._mt5_connected is True
-        assert mgr._mt5_reconnect_attempt == 0
+        assert mgr._mt5_reconnect_attempts[0] == 0
 
     def test_reconnect_platform_failure(self):
         mgr = self._make_manager()
-        mgr.mt5.connect.return_value = False
+        mgr.mt5_connectors[0].connect.return_value = False
         assert mgr.reconnect_platform("mt5") is False
         assert mgr._mt5_connected is False
-        assert mgr._mt5_reconnect_attempt == 1
+        assert mgr._mt5_reconnect_attempts[0] == 1
 
     def test_reconnect_exhausted(self):
         mgr = self._make_manager()
-        mgr._mt5_reconnect_attempt = 5
-        mgr.mt5.connect.return_value = False
+        mgr._mt5_reconnect_attempts = [5]
+        mgr.mt5_connectors[0].connect.return_value = False
         assert mgr.reconnect_platform("mt5") is False
 
     def test_check_connections_detects_drop(self):
         mgr = self._make_manager()
-        mgr._mt5_connected = True
+        mgr._mt5_connected_flags = [True]
         mgr._deriv_connected = True
-        mgr.mt5.is_connected.return_value = False
+        mgr.mt5_connectors[0].is_connected.return_value = False
         mgr.deriv.is_connected.return_value = True
         state = mgr.check_connections()
         assert state["mt5"] is False
@@ -73,17 +74,17 @@ class TestAutoReconnect:
 
     def test_should_attempt_reconnect_timing(self):
         mgr = self._make_manager()
-        mgr._mt5_connected = False
-        mgr._mt5_was_connected = True
-        mgr._mt5_next_reconnect = time.monotonic() + 100
+        mgr._mt5_connected_flags = [False]
+        mgr._mt5_was_connected = [True]
+        mgr._mt5_next_reconnects = [time.monotonic() + 100]
         assert mgr.should_attempt_reconnect("mt5") is False
-        mgr._mt5_next_reconnect = 0.0
+        mgr._mt5_next_reconnects = [0.0]
         assert mgr.should_attempt_reconnect("mt5") is True
 
     def test_should_not_reconnect_if_never_connected(self):
         mgr = self._make_manager()
-        mgr._mt5_connected = False
-        mgr._mt5_was_connected = False
+        mgr._mt5_connected_flags = [False]
+        mgr._mt5_was_connected = [False]
         assert mgr.should_attempt_reconnect("mt5") is False
 
     def test_reconnect_deriv_success(self):
@@ -95,12 +96,12 @@ class TestAutoReconnect:
 
     def test_reconnect_resets_on_success(self):
         mgr = self._make_manager()
-        mgr._mt5_reconnect_attempt = 3
-        mgr._mt5_next_reconnect = 999999
-        mgr.mt5.connect.return_value = True
+        mgr._mt5_reconnect_attempts = [3]
+        mgr._mt5_next_reconnects = [999999]
+        mgr.mt5_connectors[0].connect.return_value = True
         assert mgr.reconnect_platform("mt5") is True
-        assert mgr._mt5_reconnect_attempt == 0
-        assert mgr._mt5_next_reconnect == 0.0
+        assert mgr._mt5_reconnect_attempts[0] == 0
+        assert mgr._mt5_next_reconnects[0] == 0.0
 
 
 # ═══════════════════════════════════════════════════════════════════════

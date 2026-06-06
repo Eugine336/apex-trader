@@ -168,7 +168,9 @@ class TestPlatformManager:
         mgr.config.enabled_pairs = ["EURUSD", "V75_1S"]
         mgr.mt5 = MagicMock(spec=MT5Connector)
         mgr.deriv = MagicMock(spec=DerivConnector)
-        mgr._mt5_connected = True
+        mgr.mt5_connectors = [mgr.mt5]
+        mgr._mt5_connected_flags = [True]
+        mgr._mt5_was_connected = [False]
         mgr._deriv_connected = True
         return mgr
 
