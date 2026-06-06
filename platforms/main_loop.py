@@ -1160,7 +1160,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 if deal_info is not None:
                     broker_pnl = deal_info.pnl
                     exit_reason = deal_info.exit_reason
-                    exit_reason_source = "mt5_deal"
+                    exit_reason_source = "deriv_poc" if pos.platform.startswith("deriv") else "mt5_deal"
                     raw_broker_reason = deal_info.raw_reason_code
                     raw_broker_comment = deal_info.raw_comment
                 else:
