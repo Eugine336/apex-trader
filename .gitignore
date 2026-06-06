@@ -34,6 +34,7 @@ logs/
 ml/models/*.pkl
 ml/models/*.h5
 ml/models/*.joblib
+checkpoints/*.pt
 
 # MT5
 platforms/mt5/*.ex5

@@ -19,6 +19,7 @@ from __future__ import annotations
 import numpy as np
 import logging
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 from .shadow import ShadowEngine, RLSignal
@@ -88,11 +89,17 @@ class RLBridge:
     ):
         self.enabled   = enabled
         self.authority = AuthorityManager(authority_db)
+        self._shadow_store = None
 
         if enabled:
             try:
                 self.shadow = ShadowEngine(checkpoint, shadow_db)
                 logger.info(f"[RLBridge] Loaded. Stage: {self.authority.stage_label}")
+                try:
+                    from persistence.shadow_store import ShadowStore
+                    self._shadow_store = ShadowStore()
+                except Exception:
+                    logger.debug("[RLBridge] ShadowStore unavailable; RL shadow contracts will not be persisted to Phase 4 store")
             except Exception as e:
                 logger.warning(f"[RLBridge] Failed to load checkpoint: {e}. Disabling.")
                 self.enabled = False
@@ -110,6 +117,8 @@ class RLBridge:
         close:      float   = 0.0,
         atr:        float   = 0.0,
         pip_size:   float   = 0.0001,
+        context_vec: Optional[np.ndarray] = None,
+        symbol_id:  Optional[int] = None,
     ) -> AugmentedScore:
         """
         Primary method called per pair per scan cycle.
@@ -129,7 +138,9 @@ class RLBridge:
 
         # Get RL signal
         try:
-            signal = self.shadow.get_signal(pair, obs)
+            signal = self.shadow.get_signal(
+                pair, obs, context_vec=context_vec, symbol_id=symbol_id,
+            )
         except Exception as e:
             logger.error(f"[RLBridge] Signal error for {pair}: {e}")
             return self._passthrough(pair, base_score)
@@ -246,6 +257,7 @@ class RLBridge:
     ):
         if signal.action in (1, 2) and signal.confidence >= self.MIN_SIGNAL_CONFIDENCE:
             self.shadow.open_shadow_trade(pair, signal, close, atr, pip_size)
+            self._persist_rl_shadow_contract(pair, signal, close, atr, pip_size)
 
     def _passthrough(self, pair: str, base_score: float) -> AugmentedScore:
         return AugmentedScore(
@@ -255,3 +267,40 @@ class RLBridge:
             authority_stage=self.authority.stage,
             authority_label=self.authority.stage_label,
         )
+
+    def _persist_rl_shadow_contract(
+        self,
+        pair: str,
+        signal: RLSignal,
+        close: float,
+        atr: float,
+        pip_size: float,
+    ):
+        if self._shadow_store is None:
+            return
+        try:
+            from persistence.shadow_store import ShadowContract, new_contract_id
+
+            direction_int = 1 if signal.action == 1 else -1
+            spread = 1.5 * pip_size
+            entry = close + (spread if direction_int == 1 else -spread)
+            sl = entry - direction_int * 1.5 * atr
+            tp1 = entry + direction_int * 2.0 * atr
+            tp2 = entry + direction_int * 3.0 * atr
+
+            contract = ShadowContract(
+                contract_id=new_contract_id(),
+                symbol=pair,
+                direction="LONG" if direction_int == 1 else "SHORT",
+                entry_price=entry,
+                stop_loss=sl,
+                tp1=tp1,
+                tp2=tp2,
+                pip_size=pip_size,
+                rejecting_gate="rl_shadow",
+                ts_utc_ms=int(datetime.now(timezone.utc).timestamp() * 1000),
+                score=0,
+            )
+            self._shadow_store.insert_contract(contract)
+        except Exception as exc:
+            logger.debug("[RLBridge] Phase 4 shadow contract persistence failed: %s", exc)
