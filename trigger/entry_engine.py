@@ -3,8 +3,12 @@ APEX TRADER — Entry Engine
 The sniper's trigger finger. Takes a READY scan result and computes
 the exact entry price, stop loss, TP1, TP2, and position size.
 Fires only when all micro-confirmations align on M1.
+
+Live path inputs: H1, M5, M1 are required. H4 and M15 are optional —
+passed through for the H4 bias gate (when enabled) and future use.
 """
 
+import math
 import pandas as pd
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -85,6 +89,8 @@ class EntryEngine:
         h1_df: pd.DataFrame,
         scan_result,
         account_balance: float = 10000.0,
+        h4_df: Optional[pd.DataFrame] = None,
+        m15_df: Optional[pd.DataFrame] = None,
     ) -> Union[EntrySignal, EntryRejection]:
         if scan_result is None:
             raise ValueError("calculate_entry requires a scan_result; refusing to fabricate a score")
@@ -132,6 +138,28 @@ class EntryEngine:
 
         status = self.drawdown.get_status(now)
         risk_pct = status.current_risk_pct
+
+        # ── H4 bias gate (default OFF) ───────────────────────────────────
+        # When enabled, rejects entries where H4 trend directly contradicts
+        # the trade direction. Can only reject, never widen risk.
+        if (self.config.risk.h4_bias_gate_enabled
+                and h4_df is not None
+                and len(h4_df) >= 20):
+            from brain.structure_engine import StructureEngine as _SE
+            h4_structure = _SE(pip_size=pip_size).analyze(h4_df)
+            h4_trend = h4_structure.trend.value
+            if direction == "LONG" and h4_trend == "BEARISH":
+                return EntryRejection(
+                    pair=pair,
+                    reason=f"H4 bias gate — LONG entry rejected, H4 trend is BEARISH",
+                    score=score, timestamp=now, direction=direction,
+                )
+            if direction == "SHORT" and h4_trend == "BULLISH":
+                return EntryRejection(
+                    pair=pair,
+                    reason=f"H4 bias gate — SHORT entry rejected, H4 trend is BULLISH",
+                    score=score, timestamp=now, direction=direction,
+                )
 
         zone = self.find_entry_zone(pair, direction, m5_df, pip_size, profile)
         if zone["type"] == "NONE":
@@ -216,6 +244,26 @@ class EntryEngine:
         position_size = self.calculate_position_size(
             entry_price, stop_loss, risk_pct, account_balance, pip_size, pair,
         )
+
+        # ── Non-finite price guard ───────────────────────────────────────
+        _price_fields = {
+            "entry_price": entry_price, "stop_loss": stop_loss,
+            "tp1": tp1, "tp2": tp2, "risk_distance": risk_distance,
+            "rr1": rr1, "rr2": rr2,
+        }
+        for _name, _val in _price_fields.items():
+            if not math.isfinite(_val):
+                logger.error(
+                    "[{}] Non-finite {} ({}) in signal — rejecting", pair, _name, _val,
+                )
+                return EntryRejection(
+                    pair=pair,
+                    reason=f"Non-finite {_name} ({_val}) in signal — rejecting",
+                    score=score, timestamp=now,
+                    entry_price=entry_price if math.isfinite(entry_price) else None,
+                    stop_loss=stop_loss if math.isfinite(stop_loss) else None,
+                    direction=direction,
+                )
 
         zone_desc = self._describe_zone(zone, pip_size)
         entry_timeframe = self._determine_entry_timeframe(zone)
