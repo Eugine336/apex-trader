@@ -565,6 +565,58 @@ class MT5Connector(BaseConnector):
             platform="mt5",
         )
 
+    def _clamp_stop_distance(
+        self,
+        broker_symbol: str,
+        price: float,
+        sl: Optional[float],
+        tp: Optional[float],
+        is_buy: bool,
+    ) -> tuple[Optional[float], Optional[float], float]:
+        """Clamp SL/TP to the broker minimum stop distance.
+
+        Returns (clamped_sl, clamped_tp, min_distance).
+        """
+        cached = self._get_symbol_constraints(broker_symbol)
+        if cached:
+            stops_level = cached.get("stops_level", 0)
+            digits = cached.get("digits", 5)
+            point = cached.get("point", 0.00001)
+        else:
+            mt5.symbol_select(broker_symbol, True)
+            sym_info = mt5.symbol_info(broker_symbol)
+            if sym_info is not None:
+                stops_level = sym_info.trade_stops_level
+                digits = sym_info.digits
+                point = sym_info.point
+            else:
+                stops_level, digits, point = 0, 5, 0.00001
+
+        min_distance = stops_level * point if stops_level > 0 else 0.0
+
+        clamped_sl = sl
+        clamped_tp = tp
+        if min_distance > 0:
+            if sl is not None and abs(price - sl) < min_distance:
+                clamped_sl = round(
+                    (price - min_distance) if is_buy else (price + min_distance),
+                    digits,
+                )
+                logger.warning(
+                    "SL too close on modify for {} (min {:.5f}, got {:.5f}) — clamped to {:.5f}",
+                    broker_symbol, min_distance, abs(price - sl), clamped_sl,
+                )
+            if tp is not None and abs(tp - price) > 0 and abs(tp - price) < min_distance:
+                clamped_tp = round(
+                    (price + min_distance) if is_buy else (price - min_distance),
+                    digits,
+                )
+                logger.warning(
+                    "TP too close on modify for {} (min {:.5f}, got {:.5f}) — clamped to {:.5f}",
+                    broker_symbol, min_distance, abs(tp - price), clamped_tp,
+                )
+        return clamped_sl, clamped_tp, min_distance
+
     def modify_order(
         self,
         order_id: str,
@@ -577,12 +629,31 @@ class MT5Connector(BaseConnector):
             logger.error("MT5 modify — position {} not found", order_id)
             return False
 
+        is_buy = position.type == mt5.ORDER_TYPE_BUY
+        tick = mt5.symbol_info_tick(position.symbol)
+        if tick is None:
+            logger.error("MT5 modify — no tick for {} (position {})", position.symbol, order_id)
+            return False
+        current_price = tick.bid if is_buy else tick.ask
+
+        raw_sl = float(new_sl) if new_sl is not None else position.sl
+        raw_tp = float(new_tp) if new_tp is not None else position.tp
+
+        clamped_sl, clamped_tp, _ = self._clamp_stop_distance(
+            position.symbol, current_price,
+            raw_sl if new_sl is not None else None,
+            raw_tp if new_tp is not None else None,
+            is_buy,
+        )
+        final_sl = clamped_sl if new_sl is not None else raw_sl
+        final_tp = clamped_tp if new_tp is not None else raw_tp
+
         request = {
             "action": mt5.TRADE_ACTION_SLTP,
             "position": int(order_id),
             "symbol": position.symbol,
-            "sl": float(new_sl) if new_sl is not None else position.sl,
-            "tp": float(new_tp) if new_tp is not None else position.tp,
+            "sl": float(final_sl),
+            "tp": float(final_tp),
         }
         result = mt5.order_send(request)
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:

@@ -50,6 +50,11 @@ class ExitChecksMixin:
                     self.managed_positions.pop(oid, None)
                     self.position_store.remove_position(oid)
                     self._position_scores.pop(oid, None)
+                else:
+                    logger.warning(
+                        "🔴 INVALIDATION close FAILED — {} {} oid={} | position retained: {}",
+                        pos.direction, pos.symbol, oid, getattr(result, "error", "unknown"),
+                    )
                 return
 
         # Strong opposing signal — market has flipped
@@ -74,6 +79,11 @@ class ExitChecksMixin:
                 self.managed_positions.pop(oid, None)
                 self.position_store.remove_position(oid)
                 self._position_scores.pop(oid, None)
+            else:
+                logger.warning(
+                    "🔴 INVALIDATION (opposing) close FAILED — {} {} oid={} | position retained: {}",
+                    pos.direction, pos.symbol, oid, getattr(result, "error", "unknown"),
+                )
 
     def _check_conviction_collapse(
         self, oid: str, pos: ManagedPosition, now: datetime,
@@ -120,6 +130,11 @@ class ExitChecksMixin:
             self.managed_positions.pop(oid, None)
             self.position_store.remove_position(oid)
             self._position_scores.pop(oid, None)
+        else:
+            logger.warning(
+                "📉 CONVICTION COLLAPSE close FAILED — {} {} oid={} | position retained: {}",
+                pos.direction, pos.symbol, oid, getattr(result, "error", "unknown"),
+            )
 
     def _check_htf_candle_close(
         self,
@@ -195,6 +210,11 @@ class ExitChecksMixin:
             self.position_store.remove_position(oid)
             self._position_scores.pop(oid, None)
             self._position_last_h1_close.pop(oid, None)
+        else:
+            logger.warning(
+                "📊 HTF EXIT close FAILED — {} {} oid={} | position retained: {}",
+                pos.direction, pos.symbol, oid, getattr(result, "error", "unknown"),
+            )
 
     def _apply_dynamic_sl_tightening(self, oid: str, pos: ManagedPosition) -> None:
         """
@@ -258,6 +278,11 @@ class ExitChecksMixin:
                 "📈 DYNAMIC SL TIGHTEN — {} {} | {:.5f} → {:.5f} | {:.1f}R profit locked",
                 pos.direction, pos.symbol, old_sl, new_sl, profit_r,
             )
+        else:
+            logger.warning(
+                "📈 DYNAMIC SL TIGHTEN FAILED — {} {} oid={} | SL move to {:.5f} did NOT land, still at SL={:.5f}",
+                pos.direction, pos.symbol, oid, new_sl, pos.sl,
+            )
 
     def _check_news_exit(self, now: datetime) -> None:
         """
@@ -313,6 +338,14 @@ class ExitChecksMixin:
                         self.managed_positions.pop(oid, None)
                         self.position_store.remove_position(oid)
                         self._news_exit_protected.discard(oid)
+                    else:
+                        logger.error(
+                            "📰 NEWS EXIT close FAILED — {} {} oid={} | {} in {:.0f}min | "
+                            "position retained, UNPROTECTED from news: {}",
+                            pos.direction, pos.symbol, oid,
+                            getattr(event, 'name', 'event'), minutes_until,
+                            getattr(result, "error", "unknown"),
+                        )
 
                 elif cfg.news_exit_mode == "tighten":
                     # Move SL to breakeven to protect position
@@ -329,6 +362,13 @@ class ExitChecksMixin:
                         logger.info(
                             "📰 NEWS TIGHTEN — {} {} | SL→entry {:.5f} | {} in {:.0f}min",
                             pos.direction, pos.symbol, be_level,
+                            getattr(event, 'name', 'event'), minutes_until,
+                        )
+                    else:
+                        logger.error(
+                            "📰 NEWS TIGHTEN FAILED — {} {} oid={} | SL move to {:.5f} did NOT land, "
+                            "still at SL={:.5f} | {} in {:.0f}min",
+                            pos.direction, pos.symbol, oid, be_level, pos.sl,
                             getattr(event, 'name', 'event'), minutes_until,
                         )
 
@@ -390,6 +430,13 @@ class ExitChecksMixin:
                         self.managed_positions.pop(oid, None)
                         self.position_store.remove_position(oid)
                         self._position_scores.pop(oid, None)
+                    else:
+                        logger.error(
+                            "🕐 SESSION CLOSE close FAILED — {} {} oid={} | exchange closes in {}min | "
+                            "position retained, UNPROTECTED from session close: {}",
+                            pos.direction, symbol, oid, diff,
+                            getattr(result, "error", "unknown"),
+                        )
                     continue
 
             # Dead zone management for forex (00:00-02:00 UTC)
@@ -414,6 +461,12 @@ class ExitChecksMixin:
                             logger.info(
                                 "🌙 DEAD ZONE PROTECTION — {} {} | SL→BE {:.5f}",
                                 pos.direction, symbol, be_level,
+                            )
+                        else:
+                            logger.error(
+                                "🌙 DEAD ZONE BE FAILED — {} {} oid={} | SL move to {:.5f} did NOT land, "
+                                "still at SL={:.5f}",
+                                pos.direction, symbol, oid, be_level, pos.sl,
                             )
 
     def _check_spread_deterioration(self) -> None:
@@ -468,6 +521,12 @@ class ExitChecksMixin:
                         logger.warning(
                             "📊 SPREAD DETERIORATION — {} {} | spread {:.1f}× normal | SL→BE",
                             pos.direction, pos.symbol, spread_ratio,
+                        )
+                    else:
+                        logger.error(
+                            "📊 SPREAD DETERIORATION BE FAILED — {} {} oid={} | SL move to {:.5f} did NOT land, "
+                            "still at SL={:.5f} | spread {:.1f}× normal",
+                            pos.direction, pos.symbol, oid, be_level, pos.sl, spread_ratio,
                         )
             except Exception as exc:
                 logger.debug("Spread monitor error for {}: {}", pos.symbol, exc)
