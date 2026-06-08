@@ -274,12 +274,14 @@ class TestH4BiasGate:
             confidence=0.5,
         )
 
-    def test_h4_gate_disabled_by_default(self):
+    def test_h4_gate_enabled_by_default(self):
         engine = EntryEngine()
-        assert not engine.config.risk.h4_bias_gate_enabled
+        assert engine.config.risk.h4_bias_gate_enabled
 
     def test_h4_gate_off_allows_contradicting_trend(self):
-        engine = EntryEngine()
+        cfg = AppConfig()
+        cfg.risk.h4_bias_gate_enabled = False
+        engine = EntryEngine(config=cfg)
         m5 = _make_fvg_candles("LONG")
         m1 = _make_candles(base_price=1.27300, n=100, trend="up")
         h1 = _make_candles(base_price=1.27000, n=200, trend="up")
@@ -293,9 +295,7 @@ class TestH4BiasGate:
             "H4 bias gate should NOT fire when disabled"
 
     def test_h4_gate_on_rejects_long_against_bearish_h4(self):
-        cfg = AppConfig()
-        cfg.risk.h4_bias_gate_enabled = True
-        engine = EntryEngine(config=cfg)
+        engine = EntryEngine()
         m5 = _make_fvg_candles("LONG")
         m1 = _make_candles(base_price=1.27300, n=100, trend="up")
         h1 = _make_candles(base_price=1.27000, n=200, trend="up")
@@ -312,9 +312,7 @@ class TestH4BiasGate:
         assert "BEARISH" in result.reason
 
     def test_h4_gate_on_rejects_short_against_bullish_h4(self):
-        cfg = AppConfig()
-        cfg.risk.h4_bias_gate_enabled = True
-        engine = EntryEngine(config=cfg)
+        engine = EntryEngine()
         m5 = _make_fvg_candles("SHORT")
         m1 = _make_candles(base_price=1.26700, n=100, trend="down")
         h1 = _make_candles(base_price=1.27000, n=200, trend="down")
@@ -331,9 +329,7 @@ class TestH4BiasGate:
         assert "BULLISH" in result.reason
 
     def test_h4_gate_on_allows_aligned_trend(self):
-        cfg = AppConfig()
-        cfg.risk.h4_bias_gate_enabled = True
-        engine = EntryEngine(config=cfg)
+        engine = EntryEngine()
         m5 = _make_fvg_candles("LONG")
         m1 = _make_candles(base_price=1.27300, n=100, trend="up")
         h1 = _make_candles(base_price=1.27000, n=200, trend="up")
@@ -348,9 +344,7 @@ class TestH4BiasGate:
                 "H4 gate should not reject when H4 trend aligns with direction"
 
     def test_h4_gate_skipped_when_h4_df_none(self):
-        cfg = AppConfig()
-        cfg.risk.h4_bias_gate_enabled = True
-        engine = EntryEngine(config=cfg)
+        engine = EntryEngine()
         m5 = _make_fvg_candles("LONG")
         m1 = _make_candles(base_price=1.27300, n=100, trend="up")
         h1 = _make_candles(base_price=1.27000, n=200, trend="up")
@@ -363,9 +357,7 @@ class TestH4BiasGate:
             assert "H4 bias gate" not in result.reason
 
     def test_h4_gate_skipped_when_h4_df_too_short(self):
-        cfg = AppConfig()
-        cfg.risk.h4_bias_gate_enabled = True
-        engine = EntryEngine(config=cfg)
+        engine = EntryEngine()
         m5 = _make_fvg_candles("LONG")
         m1 = _make_candles(base_price=1.27300, n=100, trend="up")
         h1 = _make_candles(base_price=1.27000, n=200, trend="up")

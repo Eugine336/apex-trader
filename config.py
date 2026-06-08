@@ -428,7 +428,7 @@ class RiskConfig:
     # When enabled, rejects entries where H4 trend directly contradicts the
     # trade direction (e.g. LONG when H4 is BEARISH). Can only reject, never
     # widen risk. Default OFF — enable after strategy validation.
-    h4_bias_gate_enabled: bool = False
+    h4_bias_gate_enabled: bool = True
 
 
 # ---------------------------------------------------------------------------
