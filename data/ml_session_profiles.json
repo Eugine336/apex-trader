@@ -1,13 +1,104 @@
 {
-  "london": {
-    "session": "london",
-    "win_rate": 0.6,
-    "avg_pnl": 1.8,
+  "SYDNEY": {
+    "session": "SYDNEY",
+    "win_rate": 0.3438,
+    "avg_pnl": 453.1709,
     "best_pairs": [
-      "EURUSD"
+      "V50_1S",
+      "JP225",
+      "BTCUSD",
+      "AUS200",
+      "XTIUSD"
+    ],
+    "optimal_scan_frequency": 300,
+    "total_trades": 32,
+    "recommendation": "AVOID"
+  },
+  "TOKYO": {
+    "session": "TOKYO",
+    "win_rate": 0.5,
+    "avg_pnl": -21.35,
+    "best_pairs": [
+      "ETHUSD"
+    ],
+    "optimal_scan_frequency": 30,
+    "total_trades": 2,
+    "recommendation": "NORMAL"
+  },
+  "OVERLAP_LONDON_TOKYO": {
+    "session": "OVERLAP_LONDON_TOKYO",
+    "win_rate": 0.75,
+    "avg_pnl": -42.35,
+    "best_pairs": [
+      "GBPAUD",
+      "V100_1S"
+    ],
+    "optimal_scan_frequency": 30,
+    "total_trades": 4,
+    "recommendation": "NORMAL"
+  },
+  "LONDON": {
+    "session": "LONDON",
+    "win_rate": 0.4,
+    "avg_pnl": 58137469.04,
+    "best_pairs": [
+      "V50_1S",
+      "GBPAUD",
+      "HK50",
+      "XAGUSD"
     ],
     "optimal_scan_frequency": 30,
     "total_trades": 5,
     "recommendation": "NORMAL"
+  },
+  "UNKNOWN": {
+    "session": "UNKNOWN",
+    "win_rate": 0.1818,
+    "avg_pnl": -37.0,
+    "best_pairs": [
+      "XAUUSD",
+      "LTCUSD"
+    ],
+    "optimal_scan_frequency": 30,
+    "total_trades": 11,
+    "recommendation": "NORMAL"
+  },
+  "OVERLAP_LONDON_NY": {
+    "session": "OVERLAP_LONDON_NY",
+    "win_rate": 0.0,
+    "avg_pnl": 0.0,
+    "best_pairs": [
+      "V50_1S"
+    ],
+    "optimal_scan_frequency": 30,
+    "total_trades": 1,
+    "recommendation": "NORMAL"
+  },
+  "NEW_YORK": {
+    "session": "NEW_YORK",
+    "win_rate": 0.8125,
+    "avg_pnl": 45.1125,
+    "best_pairs": [
+      "GER40",
+      "US100",
+      "XTIUSD",
+      "SOLUSD",
+      "V100_1S"
+    ],
+    "optimal_scan_frequency": 10,
+    "total_trades": 16,
+    "recommendation": "AGGRESSIVE"
+  },
+  "WEEKEND": {
+    "session": "WEEKEND",
+    "win_rate": 0.2941,
+    "avg_pnl": -3.4341,
+    "best_pairs": [
+      "BTCUSD",
+      "SOLUSD"
+    ],
+    "optimal_scan_frequency": 300,
+    "total_trades": 102,
+    "recommendation": "AVOID"
   }
 }
