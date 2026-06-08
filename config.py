@@ -408,6 +408,12 @@ class RiskConfig:
     opportunity_cost_max_pnl_pips: float = 5.0
     opportunity_cost_min_hold_minutes: float = 20.0
 
+    # ── Tick freshness guard ─────────────────────────────────────────────
+    # Maximum acceptable age (seconds) of a tick before get_price rejects
+    # it as stale.  Generous default (120 s) tolerates quiet/illiquid
+    # instruments; override via this field or MAX_TICK_AGE_SECONDS env var.
+    max_tick_age_seconds: float = 120.0
+
     # ── Spread / slippage deterioration monitoring ────────────────────────
     spread_monitor_enabled: bool = True
     # If spread widens beyond N× normal for this instrument, tighten SL

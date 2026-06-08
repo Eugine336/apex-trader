@@ -4,6 +4,7 @@ Connects to Deriv via the official WebSocket API.
 Handles synthetics (V75, Boom/Crash) 24/7 and Forex on Deriv.
 """
 
+import os
 import asyncio
 import json
 import threading
@@ -61,9 +62,13 @@ class DerivConnector(BaseConnector):
         self,
         api_token: str = "",
         app_id: str = "",
+        max_tick_age_seconds: float = 120.0,
     ):
         self._api_token = api_token
         self._app_id = app_id
+        self._max_tick_age_seconds = float(
+            os.getenv("MAX_TICK_AGE_SECONDS", str(max_tick_age_seconds))
+        )
         self._ws: Any = None
         self._connected = False
         self._reconnecting = False
@@ -314,6 +319,34 @@ class DerivConnector(BaseConnector):
             )
         quote = float(prices[-1])
         epoch = int(times[-1]) if times else 0
+
+        if quote <= 0:
+            logger.warning(
+                "Non-positive tick for {}: quote={}", mapped, quote
+            )
+            raise RuntimeError(
+                f"Non-positive tick for {mapped}: quote={quote}"
+            )
+
+        if epoch <= 0:
+            logger.warning(
+                "Invalid tick timestamp for {}: epoch={}", mapped, epoch
+            )
+            raise RuntimeError(
+                f"Invalid tick timestamp for {mapped}: epoch={epoch}"
+            )
+        tick_time = datetime.fromtimestamp(epoch, tz=timezone.utc)
+        age = (datetime.now(timezone.utc) - tick_time).total_seconds()
+        if age > self._max_tick_age_seconds:
+            logger.warning(
+                "Stale tick for {}: {:.1f}s old (limit {}s)",
+                mapped, age, self._max_tick_age_seconds,
+            )
+            raise RuntimeError(
+                f"Stale tick for {mapped}: {age:.1f}s old "
+                f"(limit {self._max_tick_age_seconds}s)"
+            )
+
         # ticks_history returns mid price only — bid/ask not available.
         # Spread is effectively 0 from this endpoint; bootstrap uses it only
         # for instruments where bid/ask are unavailable. For spread purposes
@@ -322,7 +355,7 @@ class DerivConnector(BaseConnector):
             bid=quote,
             ask=quote,
             spread=0.0,
-            time=datetime.fromtimestamp(epoch, tz=timezone.utc),
+            time=tick_time,
         )
 
     def get_tick(self, symbol: str) -> TickData:
