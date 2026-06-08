@@ -267,9 +267,9 @@ class RiskEngine:
                 f"{size_result.lots} lots, max_loss=${size_result.max_loss:.2f}"
             )
 
-        if size_result.sizing_mode.endswith("_skip_micro"):
-            rejections.append("Account too small for this trade — position size below minimum")
-            logger.warning(f"[RiskEngine] REJECTED {pair}: micro account skip ({size_result.sizing_mode})")
+        if "skip" in size_result.sizing_mode:
+            rejections.append(f"Position sizing rejected ({size_result.sizing_mode})")
+            logger.warning(f"[RiskEngine] REJECTED {pair}: {size_result.sizing_mode}")
             return self._build_assessment(
                 False, 0.0, 0.0, 0.0, checks, rejections, mode,
                 dd_status, len(trades), now,

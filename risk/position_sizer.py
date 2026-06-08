@@ -70,16 +70,16 @@ class PositionSizer:
         risk_pips = abs(entry_price - stop_loss) / pip_size
 
         if risk_pips <= 0:
-            logger.warning("Risk pips is zero — returning minimum lot")
+            logger.warning("Risk pips is zero or negative — skipping trade (invalid stop)")
             return SizeResult(
-                lots=self.MIN_LOT,
+                lots=0.0,
                 stake_usd=0.0,
                 risk_amount=risk_amount,
                 risk_pips=0.0,
                 pip_value=pip_value_per_lot,
                 max_loss=0.0,
                 margin_estimate=0.0,
-                sizing_mode="lots",
+                sizing_mode="skip_invalid_stop",
             )
 
         lots = risk_amount / (risk_pips * pip_value_per_lot)
@@ -157,14 +157,18 @@ class PositionSizer:
         risk_amount: float,
         max_loss: float,
     ) -> tuple[float, str]:
-        if account_balance >= self.MICRO_THRESHOLD:
-            return lots, "lots"
-        if max_loss > risk_amount * 1.5:
+        if max_loss > risk_amount * 1.5 and lots > 0:
+            if account_balance < self.MICRO_THRESHOLD:
+                logger.warning(
+                    f"Micro account skip: max_loss ${max_loss:.2f} exceeds "
+                    f"1.5× risk_amount ${risk_amount:.2f} (clamped lot too large)"
+                )
+                return 0.0, "lots_skip_micro"
             logger.warning(
-                f"Micro account skip: max_loss ${max_loss:.2f} exceeds "
-                f"1.5× risk_amount ${risk_amount:.2f} (clamped lot too large)"
+                f"Min-lot over-risk skip: max_loss ${max_loss:.2f} exceeds "
+                f"1.5× risk_amount ${risk_amount:.2f} (floored lot too large for account)"
             )
-            return 0.0, "lots_skip_micro"
+            return 0.0, "skip_min_lot_over_risk"
         return lots, "lots"
 
     # ── Instrument-aware sizing ─────────────────────────────────────────
