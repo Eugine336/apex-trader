@@ -633,6 +633,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             h1_df=h1_df,
             scan_result=result,
             account_balance=balance,
+            h4_df=data.get("H4"),
+            m15_df=data.get("M15"),
         )
 
         if isinstance(signal, EntryRejection):

@@ -424,6 +424,12 @@ class RiskConfig:
     # Check H1 candle close direction — if against trade, exit
     htf_reassess_on_h1_close: bool = True
 
+    # ── H4 bias gate at entry ─────────────────────────────────────────────
+    # When enabled, rejects entries where H4 trend directly contradicts the
+    # trade direction (e.g. LONG when H4 is BEARISH). Can only reject, never
+    # widen risk. Default OFF — enable after strategy validation.
+    h4_bias_gate_enabled: bool = False
+
 
 # ---------------------------------------------------------------------------
 # Application config

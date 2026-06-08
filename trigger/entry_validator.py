@@ -7,6 +7,7 @@ and ensures the entry signal is still clean before execution.
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import math
 from typing import Optional
 from loguru import logger
 
@@ -95,6 +96,9 @@ class EntryValidator:
         (passed if ok else failed).append(msg)
 
         ok, msg = self.check_session(signal.pair, utc_now)
+        (passed if ok else failed).append(msg)
+
+        ok, msg = self.check_price_finiteness(signal)
         (passed if ok else failed).append(msg)
 
         is_valid = len(failed) == 0
@@ -275,3 +279,10 @@ class EntryValidator:
             return False, f"Session not active ({status.current_session})"
 
         return True, f"Session active ({status.current_session})"
+
+    def check_price_finiteness(self, signal: EntrySignal) -> tuple[bool, str]:
+        for name in ("entry_price", "stop_loss", "tp1", "tp2"):
+            val = getattr(signal, name, None)
+            if val is not None and not math.isfinite(val):
+                return False, f"Non-finite {name} ({val}) — signal corrupted"
+        return True, "Prices finite"
