@@ -856,7 +856,8 @@ class DerivConnector(BaseConnector):
 
         Returns the contract_id string if found, empty string otherwise.
         Uses the in-memory ``_positions`` dict first (fast path) then
-        falls back to a live portfolio query (handles crash restart).
+        falls back to a live portfolio query (handles crash restart),
+        then checks recent profit table for filled-then-closed contracts.
         """
         for cid, info in self._positions.items():
             if info.get("idem_key") == idem_key:
@@ -873,4 +874,21 @@ class DerivConnector(BaseConnector):
         except Exception as exc:
             logger.warning("[deriv] idempotency portfolio lookup failed: {}", exc)
             pass
+        try:
+            import time as _time_mod
+            now_epoch = int(_time_mod.time())
+            lookback_seconds = 900
+            resp = self._sync_send({
+                "profit_table": 1,
+                "date_from": now_epoch - lookback_seconds,
+                "date_to": now_epoch,
+                "limit": 50,
+                "sort": "DESC",
+            })
+            for txn in resp.get("profit_table", {}).get("transactions", []):
+                pt = txn.get("passthrough") or {}
+                if pt.get("idem_key") == idem_key:
+                    return str(txn.get("contract_id", txn.get("transaction_id", "")))
+        except Exception as exc:
+            logger.warning("[deriv] idempotency profit_table lookup failed (non-fatal): {}", exc)
         return ""

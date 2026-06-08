@@ -422,6 +422,25 @@ class PlatformManager:
 
     # ── Trade execution ──────────────────────────────────────────────────
 
+    def find_order_by_idem_key(self, idem_key: str):
+        """Search all connected platforms for an order matching *idem_key*."""
+        for i, conn in enumerate(self.mt5_connectors):
+            if self._mt5_connected_flags[i]:
+                try:
+                    result = conn._find_order_by_idem_key(idem_key)
+                    if result is not None:
+                        return result
+                except Exception:
+                    pass
+        if self._deriv_connected:
+            try:
+                cid = self.deriv._find_contract_by_idem_key(idem_key)
+                if cid:
+                    return cid
+            except Exception:
+                pass
+        return None
+
     def execute_entry(
         self,
         symbol: str,

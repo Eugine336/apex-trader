@@ -802,7 +802,7 @@ class MT5Connector(BaseConnector):
         return None
 
     def _find_order_by_idem_key(self, idem_key: str) -> Any:
-        """Check open positions and pending orders for an existing idem key."""
+        """Check open positions, pending orders, and recent history for an existing idem key."""
         positions = mt5.positions_get()
         if positions:
             for p in positions:
@@ -813,6 +813,25 @@ class MT5Connector(BaseConnector):
             for o in orders:
                 if idem_key in (getattr(o, "comment", "") or ""):
                     return o
+        try:
+            lookback_seconds = 900
+            from_dt = datetime.fromtimestamp(
+                datetime.now(timezone.utc).timestamp() - lookback_seconds,
+                tz=timezone.utc,
+            )
+            to_dt = datetime.now(timezone.utc)
+            deals = mt5.history_deals_get(from_dt, to_dt)
+            if deals:
+                for d in deals:
+                    if idem_key in (getattr(d, "comment", "") or ""):
+                        return d
+            hist_orders = mt5.history_orders_get(from_dt, to_dt)
+            if hist_orders:
+                for ho in hist_orders:
+                    if idem_key in (getattr(ho, "comment", "") or ""):
+                        return ho
+        except Exception as exc:
+            logger.warning("[mt5] history lookup for idem_key dedup failed (non-fatal): {}", exc)
         return None
 
     def _to_position_info(self, p: Any) -> PositionInfo:

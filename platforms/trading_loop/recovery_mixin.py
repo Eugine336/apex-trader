@@ -8,6 +8,7 @@ from loguru import logger
 
 from brain.symbol_mapper import resolve_to_internal
 from management.trade_manager import EntrySignal as TMEntrySignal
+from persistence.position_store import STORE_UNAVAILABLE
 from platforms.base_connector import OrderResult, CloseResult, PositionInfo
 from platforms.trading_loop.positions import ManagedPosition
 
@@ -67,6 +68,7 @@ class RecoveryReconciliationMixin:
             return
         self._restore_positions()
         self._reconcile_positions()
+        self._reconcile_in_flight_intents()
         self._last_reconcile_time = datetime.now(timezone.utc)
         self._recovery_completed = True
         logger.info("Startup recovery complete — periodic reconcile armed ({}s)", self._reconcile_interval_seconds)
@@ -300,6 +302,70 @@ class RecoveryReconciliationMixin:
             snap.failed_platforms or "none",
         )
 
+    def _reconcile_in_flight_intents(self) -> None:
+        """Resolve or cancel unresolved in-flight intents from a previous crash."""
+        if not self.position_store:
+            return
+        pending = self.position_store.get_all_pending_in_flight()
+        if pending is STORE_UNAVAILABLE:
+            logger.warning(
+                "[recovery] in-flight intent store unavailable — skipping reconciliation (fail-closed)"
+            )
+            return
+        if not pending:
+            logger.debug("[recovery] no pending in-flight intents to reconcile")
+            self.position_store.cleanup_stale_in_flight()
+            return
+
+        managed_ids = set(self.managed_positions.keys())
+        resolved = 0
+        cancelled = 0
+        for intent in pending:
+            idem_key = intent.get("idempotency_key", "")
+            symbol = intent.get("symbol", "")
+            direction = intent.get("direction", "")
+            if not idem_key:
+                continue
+            try:
+                broker_match = self.platforms.find_order_by_idem_key(idem_key)
+                if broker_match is not None:
+                    order_id = str(
+                        getattr(broker_match, "ticket", None)
+                        or getattr(broker_match, "order", None)
+                        or getattr(broker_match, "contract_id", "")
+                        or broker_match
+                    )
+                    self.position_store.resolve_in_flight(idem_key, order_id)
+                    resolved += 1
+                    if order_id and order_id not in managed_ids:
+                        logger.warning(
+                            "⚠️ IN-FLIGHT RESOLVED — {} {} idem_key={} filled as {} "
+                            "but not in managed positions — broker reconciliation will adopt",
+                            direction, symbol, idem_key, order_id,
+                        )
+                    else:
+                        logger.info(
+                            "📋 IN-FLIGHT RESOLVED — {} {} idem_key={} → order {}",
+                            direction, symbol, idem_key, order_id,
+                        )
+                else:
+                    self.position_store.cancel_in_flight(idem_key)
+                    cancelled += 1
+                    logger.info(
+                        "📋 IN-FLIGHT CANCELLED — {} {} idem_key={} (no broker trace found)",
+                        direction, symbol, idem_key,
+                    )
+            except Exception as exc:
+                logger.warning(
+                    "[recovery] in-flight reconciliation failed for idem_key={}: {}",
+                    idem_key, exc,
+                )
+        self.position_store.cleanup_stale_in_flight()
+        logger.info(
+            "In-flight reconciliation complete — {} resolved, {} cancelled",
+            resolved, cancelled,
+        )
+
     # ── Auto-reconnect ─────────────────────────────────────────────────
 
     def _reconcile_externally_closed(self, to_remove: list[str]) -> None:
@@ -375,6 +441,12 @@ class RecoveryReconciliationMixin:
                 pos.direction,
                 pos.symbol,
             )
+
+        if self.position_store:
+            try:
+                self.position_store.cleanup_stale_in_flight()
+            except Exception as exc:
+                logger.debug("[reconcile] stale in-flight cleanup failed: {}", exc)
 
     def _check_and_reconnect(self) -> None:
         """Non-blocking reconnect check — attempts only when backoff timer allows."""
