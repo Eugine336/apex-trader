@@ -6,7 +6,8 @@ Handles Forex, commodities, and indices on MT5.
 
 import platform as sys_platform
 import time as _time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from types import SimpleNamespace
 from typing import Any, Optional
 
 import pandas as pd
@@ -293,8 +294,8 @@ class MT5Connector(BaseConnector):
                 return OrderResult(
                     success=True,
                     order_id=str(dup.ticket),
-                    fill_price=dup.price_open,
-                    requested_price=dup.price_open,
+                    fill_price=dup.price,
+                    requested_price=dup.price,
                     slippage_pips=0.0,
                     lots=dup.volume,
                     symbol=symbol,
@@ -471,7 +472,7 @@ class MT5Connector(BaseConnector):
                 return OrderResult(
                     success=True,
                     order_id=str(dup.ticket),
-                    fill_price=dup.price_open,
+                    fill_price=dup.price,
                     requested_price=entry_price,
                     slippage_pips=0.0,
                     lots=dup.volume,
@@ -801,18 +802,66 @@ class MT5Connector(BaseConnector):
             return positions[0]
         return None
 
-    def _find_order_by_idem_key(self, idem_key: str) -> Any:
-        """Check open positions and pending orders for an existing idem key."""
+    def _find_order_by_idem_key(self, idem_key: str) -> Optional[SimpleNamespace]:
+        """Check positions, pending orders, and recent history for an existing idem key.
+
+        Returns a normalised SimpleNamespace(ticket, price, volume, sl, tp)
+        so every consumer sees the same shape regardless of source.
+        """
         positions = mt5.positions_get()
         if positions:
             for p in positions:
                 if idem_key in (getattr(p, "comment", "") or ""):
-                    return p
+                    return SimpleNamespace(
+                        ticket=p.ticket,
+                        price=p.price_open,
+                        volume=p.volume,
+                        sl=p.sl,
+                        tp=p.tp,
+                    )
         orders = mt5.orders_get()
         if orders:
             for o in orders:
                 if idem_key in (getattr(o, "comment", "") or ""):
-                    return o
+                    return SimpleNamespace(
+                        ticket=o.ticket,
+                        price=getattr(o, "price_open", 0.0),
+                        volume=getattr(o, "volume_current", getattr(o, "volume_initial", 0.0)),
+                        sl=getattr(o, "sl", 0.0),
+                        tp=getattr(o, "tp", 0.0),
+                    )
+        try:
+            since = datetime.now(timezone.utc) - timedelta(seconds=900)
+            now = datetime.now(timezone.utc)
+            deals = mt5.history_deals_get(since, now)
+            if deals:
+                for d in deals:
+                    if idem_key in (getattr(d, "comment", "") or ""):
+                        return SimpleNamespace(
+                            ticket=d.ticket,
+                            price=getattr(d, "price", 0.0),
+                            volume=getattr(d, "volume", 0.0),
+                            sl=0.0,
+                            tp=0.0,
+                        )
+        except Exception as exc:
+            logger.warning("MT5 history_deals_get failed during dedup: {}", exc)
+        try:
+            since = datetime.now(timezone.utc) - timedelta(seconds=900)
+            now = datetime.now(timezone.utc)
+            hist_orders = mt5.history_orders_get(since, now)
+            if hist_orders:
+                for ho in hist_orders:
+                    if idem_key in (getattr(ho, "comment", "") or ""):
+                        return SimpleNamespace(
+                            ticket=ho.ticket,
+                            price=getattr(ho, "price_open", 0.0),
+                            volume=getattr(ho, "volume_current", getattr(ho, "volume_initial", 0.0)),
+                            sl=getattr(ho, "sl", 0.0),
+                            tp=getattr(ho, "tp", 0.0),
+                        )
+        except Exception as exc:
+            logger.warning("MT5 history_orders_get failed during dedup: {}", exc)
         return None
 
     def _to_position_info(self, p: Any) -> PositionInfo:
