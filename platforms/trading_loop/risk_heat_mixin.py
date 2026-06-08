@@ -220,8 +220,9 @@ class RiskHeatMarginMixin:
 
             from management.partial_close import PartialCloseCalculator
             pip_size = tm_trade.pip_size if hasattr(tm_trade, 'pip_size') else 0.0001
+            direction_norm = "LONG" if pos.direction.upper() in ("BUY", "LONG") else "SHORT"
             be_level = PartialCloseCalculator.calculate_breakeven_level(
-                pos.entry_price, pos.direction, 2.0, pip_size,
+                pos.entry_price, direction_norm, 2.0, pip_size,
             )
             is_improvement = (
                 (pos.direction == "BUY" and be_level > pos.sl)
