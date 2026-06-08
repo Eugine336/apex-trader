@@ -100,13 +100,13 @@
   },
   "XAUUSD": {
     "pair": "XAUUSD",
-    "win_rate": 0.3333,
-    "avg_pnl": -171.0,
+    "win_rate": 0.5,
+    "avg_pnl": 89.0,
     "best_session": "UNKNOWN",
     "best_regime": "UNKNOWN",
     "avg_spread_cost": 0.0,
-    "total_trades": 3,
-    "confidence": 0.0375,
+    "total_trades": 4,
+    "confidence": 0.05,
     "recommendation": "INSUFFICIENT_DATA"
   },
   "V100_1S": {

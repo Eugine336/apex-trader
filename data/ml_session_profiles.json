@@ -53,14 +53,14 @@
   },
   "UNKNOWN": {
     "session": "UNKNOWN",
-    "win_rate": 0.1,
-    "avg_pnl": -127.6,
+    "win_rate": 0.1818,
+    "avg_pnl": -37.0,
     "best_pairs": [
-      "LTCUSD",
-      "XAUUSD"
+      "XAUUSD",
+      "LTCUSD"
     ],
     "optimal_scan_frequency": 30,
-    "total_trades": 10,
+    "total_trades": 11,
     "recommendation": "NORMAL"
   },
   "OVERLAP_LONDON_NY": {
