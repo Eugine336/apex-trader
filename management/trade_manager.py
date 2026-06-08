@@ -466,6 +466,8 @@ class TradeManager:
         self, trade: ManagedTrade, df_m5: pd.DataFrame,
     ) -> None:
         """Extend or tighten TP2 based on M5 structure when trailing is active."""
+        if trade.tp2 is None or trade.tp2 <= 0:
+            return
         if len(df_m5) < 10:
             return
         is_long = self._is_long(trade.direction)

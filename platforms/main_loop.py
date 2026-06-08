@@ -71,6 +71,7 @@ from persistence.event_store import get_event_store, new_cycle_id, new_setup_id
 from persistence.domain_events import (
     DECISION_REJECT, ORDER_SENT, ORDER_FILLED, TRADE_OPEN, TRADE_CLOSE,
     SETUP_SKIPPED, SHADOW_CONTRACT_CREATED, BALANCE_UNAVAILABLE,
+    PERSISTENCE_DEGRADED,
 )
 from persistence.shadow_store import ShadowStore, ShadowContract, new_contract_id
 
@@ -1000,6 +1001,32 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         self.managed_positions[order.order_id] = managed
         self.position_store.save_position(managed)
+        if not self.position_store.is_healthy():
+            reason = self.position_store.degraded_reason()
+            logger.error(
+                "🔴 PERSISTENCE DEGRADED — position {} ({} {}) is LIVE at broker but NOT persisted: {}",
+                order.order_id, pair, direction, reason,
+            )
+            try:
+                store = get_event_store()
+                if store:
+                    store.emit(
+                        event_type=PERSISTENCE_DEGRADED,
+                        severity="ERROR",
+                        symbol=pair,
+                        correlation_id=getattr(self, "_current_cycle_id", None),
+                        parent_id=getattr(self, "_current_setup_id", None),
+                        source_module="platforms.main_loop",
+                        payload={
+                            "order_id": order.order_id,
+                            "direction": direction,
+                            "lots": order.lots,
+                            "reason": reason,
+                            "action": "position_live_but_unpersisted",
+                        },
+                    )
+            except Exception as exc:
+                logger.debug("PERSISTENCE_DEGRADED emit failed: {}", exc)
         self._daily_trades += 1
 
         logger.info(
@@ -1118,6 +1145,32 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 managed.tm_trade_id = tm_trade.trade_id
                 self.managed_positions[oid] = managed
                 self.position_store.save_position(managed)
+                if not self.position_store.is_healthy():
+                    reason = self.position_store.degraded_reason()
+                    logger.error(
+                        "🔴 PERSISTENCE DEGRADED — position {} ({} {}) is LIVE at broker but NOT persisted: {}",
+                        oid, info["symbol"], info["direction"], reason,
+                    )
+                    try:
+                        store = get_event_store()
+                        if store:
+                            store.emit(
+                                event_type=PERSISTENCE_DEGRADED,
+                                severity="ERROR",
+                                symbol=info["symbol"],
+                                correlation_id=getattr(self, "_current_cycle_id", None),
+                                parent_id=getattr(self, "_current_setup_id", None),
+                                source_module="platforms.main_loop",
+                                payload={
+                                    "order_id": oid,
+                                    "direction": info["direction"],
+                                    "lots": bp.lots,
+                                    "reason": reason,
+                                    "action": "position_live_but_unpersisted",
+                                },
+                            )
+                    except Exception as exc:
+                        logger.debug("PERSISTENCE_DEGRADED emit failed: {}", exc)
                 self._daily_trades += 1
                 expired.append(oid)
             elif age_min > info["max_wait_minutes"]:

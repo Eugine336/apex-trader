@@ -57,6 +57,33 @@ class RecoveryReconciliationMixin:
             return round(entry_price + 1.5 * risk, 8)
         return round(entry_price - 1.5 * risk, 8)
 
+    @staticmethod
+    def _reconstructed_adopted_tp2(
+        direction: str,
+        entry_price: float,
+        sl: float,
+        tp1: float,
+    ) -> float:
+        """Derive a TP2 for an adopted orphan from the confirmed risk distance.
+
+        Returns entry ± 2.5 × risk (one R beyond the 1.5R TP1) on the
+        profitable side.  Falls back to 0.0 only when the risk distance
+        is unusable (no stop / zero distance) so the existing ``tp2 <= 0``
+        guards in trade_manager treat it as disabled.
+        """
+        is_long = direction.upper() in ("BUY", "LONG")
+        sl_usable = (
+            isinstance(sl, (int, float))
+            and sl > 0
+            and abs(sl - entry_price) > 1e-8
+        )
+        if not sl_usable:
+            return 0.0
+        risk = abs(entry_price - sl)
+        if is_long:
+            return round(entry_price + 2.5 * risk, 8)
+        return round(entry_price - 2.5 * risk, 8)
+
     def _perform_startup_recovery(self) -> None:
         """Restore persisted positions and reconcile with the broker.
 
@@ -246,21 +273,27 @@ class RecoveryReconciliationMixin:
                 managed = ManagedPosition(
                     order=dummy_order,
                     tp1=validated_tp1,
-                    tp2=0.0,
+                    tp2=self._reconstructed_adopted_tp2(
+                        bp.direction, bp.open_price, bp.sl, validated_tp1,
+                    ),
                     score=0,
                     regime="UNKNOWN",
                     session="UNKNOWN",
                     entry_type="ORPHAN_ADOPTED",
                 )
+                reconstructed_tp2 = managed.tp2
                 tm_signal = TMEntrySignal(
                     pair=internal_symbol,
                     direction=bp.direction,
                     entry_price=bp.open_price,
                     stop_loss=bp.sl,
                     tp1=validated_tp1,
-                    tp2=0.0,
+                    tp2=reconstructed_tp2,
                     risk_reward_1=1.0,
-                    risk_reward_2=1.0,
+                    risk_reward_2=1.0 if reconstructed_tp2 <= 0 else round(
+                        abs(bp.open_price - reconstructed_tp2)
+                        / max(abs(bp.open_price - bp.sl), 1e-8), 2
+                    ),
                     position_size_lots=bp.lots,
                     score=0,
                 )
