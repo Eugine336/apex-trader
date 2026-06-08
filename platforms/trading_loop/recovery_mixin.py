@@ -57,6 +57,34 @@ class RecoveryReconciliationMixin:
             return round(entry_price + 1.5 * risk, 8)
         return round(entry_price - 1.5 * risk, 8)
 
+    @staticmethod
+    def _reconstructed_adopted_tp2(
+        direction: str,
+        entry_price: float,
+        sl: float,
+        tp1: float,
+    ) -> float:
+        """Return a reconstructed TP2 for an adopted orphan position.
+
+        Derives TP2 as entry ± 2.5 × risk (a further R-multiple beyond TP1)
+        on the correct side for direction.  Returns 0.0 only when risk
+        cannot be derived (mirrors the TP1 sentinel pattern).
+        """
+        is_long = direction.upper() in ("BUY", "LONG")
+
+        sl_usable = (
+            isinstance(sl, (int, float))
+            and sl > 0
+            and abs(sl - entry_price) > 1e-8
+        )
+        if not sl_usable:
+            return 0.0
+
+        risk = abs(entry_price - sl)
+        if is_long:
+            return round(entry_price + 2.5 * risk, 8)
+        return round(entry_price - 2.5 * risk, 8)
+
     def _perform_startup_recovery(self) -> None:
         """Restore persisted positions and reconcile with the broker.
 
@@ -246,7 +274,9 @@ class RecoveryReconciliationMixin:
                 managed = ManagedPosition(
                     order=dummy_order,
                     tp1=validated_tp1,
-                    tp2=0.0,
+                    tp2=self._reconstructed_adopted_tp2(
+                        bp.direction, bp.open_price, bp.sl, validated_tp1,
+                    ),
                     score=0,
                     regime="UNKNOWN",
                     session="UNKNOWN",
@@ -258,7 +288,9 @@ class RecoveryReconciliationMixin:
                     entry_price=bp.open_price,
                     stop_loss=bp.sl,
                     tp1=validated_tp1,
-                    tp2=0.0,
+                    tp2=self._reconstructed_adopted_tp2(
+                        bp.direction, bp.open_price, bp.sl, validated_tp1,
+                    ),
                     risk_reward_1=1.0,
                     risk_reward_2=1.0,
                     position_size_lots=bp.lots,
