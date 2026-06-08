@@ -132,8 +132,14 @@ class TradeManager:
 
     @staticmethod
     def _is_long(direction: str) -> bool:
-        """Treat BUY/LONG as long, SELL/SHORT as short."""
-        return direction.upper() in ("LONG", "BUY")
+        """Treat BUY/LONG as long, SELL/SHORT as short. Fail loud on unknown."""
+        normalized = direction.strip().upper()
+        if normalized in ("LONG", "BUY"):
+            return True
+        if normalized in ("SHORT", "SELL"):
+            return False
+        logger.error("Unknown trade direction '{}' — cannot classify", direction)
+        raise ValueError(f"Unknown trade direction: {direction!r}")
 
     # ------------------------------------------------------------------
     # Open
