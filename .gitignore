@@ -62,3 +62,6 @@ Thumbs.db
 
 *.db
 data/backups/
+
+*.db
+data/backups/
