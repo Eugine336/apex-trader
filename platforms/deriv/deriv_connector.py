@@ -634,6 +634,7 @@ class DerivConnector(BaseConnector):
         self._positions[contract_id] = {
             "symbol": symbol, "direction": direction.upper(),
             "lots": lots, "sl": sl, "tp": tp, "open_price": price,
+            "stake": amount, "multiplier": multiplier,
             "idem_key": idempotency_key,
         }
 
@@ -665,12 +666,17 @@ class DerivConnector(BaseConnector):
         limit_order: dict[str, Any] = {}
         pos = self._positions.get(order_id, {})
         open_price = pos.get("open_price", 0)
-        lots = pos.get("lots", 1)
+        stake = pos.get("stake", 0)
+        multiplier = pos.get("multiplier", 0)
 
-        if new_sl is not None:
-            limit_order["stop_loss"] = round(abs(open_price - new_sl) * lots * 100, 2)
-        if new_tp is not None:
-            limit_order["take_profit"] = round(abs(new_tp - open_price) * lots * 100, 2)
+        if open_price > 0 and stake > 0 and multiplier > 0:
+            if new_sl is not None:
+                limit_order["stop_loss"] = round(abs(open_price - new_sl) / open_price * stake * multiplier, 2)
+            if new_tp is not None:
+                limit_order["take_profit"] = round(abs(new_tp - open_price) / open_price * stake * multiplier, 2)
+        else:
+            logger.error("Deriv modify_order missing position data for {} — open_price={} stake={} mult={}", order_id, open_price, stake, multiplier)
+            return False
 
         if not limit_order:
             return True
