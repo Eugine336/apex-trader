@@ -747,16 +747,35 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 2,
             )
             risk_ceiling = signal.position_size_lots
+            if assessment.position_size_lots > 0:
+                risk_ceiling = min(risk_ceiling, assessment.position_size_lots)
             if adjusted_lots > risk_ceiling:
                 logger.info(
                     "[RiskAuthority] {} — adaptive sizing capped {:.2f} → {:.2f} lots (risk ceiling)",
                     pair, adjusted_lots, risk_ceiling,
                 )
                 adjusted_lots = risk_ceiling
+            if adjusted_lots < 0.01 and assessment.position_size_lots > 0 and assessment.position_size_lots < signal.position_size_lots:
+                logger.warning(
+                    "[RiskAuthority] {} — daily-budget ceiling {:.4f} lots rounds below broker min 0.01 — REJECTING",
+                    pair, assessment.position_size_lots,
+                )
+                self._persist_shadow_contract(signal, rejecting_gate="daily_budget_below_min_lot")
+                return False
             adjusted_lots = max(0.01, adjusted_lots)
         except Exception as exc:
             logger.debug("ML adjustments error: {}", exc)
             adjusted_lots = signal.position_size_lots
+            if assessment.position_size_lots > 0:
+                adjusted_lots = min(adjusted_lots, assessment.position_size_lots)
+                if adjusted_lots < 0.01:
+                    logger.warning(
+                        "[RiskAuthority] {} — daily-budget ceiling {:.4f} lots rounds below broker min 0.01 — REJECTING",
+                        pair, assessment.position_size_lots,
+                    )
+                    self._persist_shadow_contract(signal, rejecting_gate="daily_budget_below_min_lot")
+                    return False
+            adjusted_lots = max(0.01, adjusted_lots)
 
         # Use the context to decide sizing path — no more string comparison
         stake_usd: float | None = None
@@ -982,7 +1001,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             "🎯 TRADE OPENED — {} {} {:.2f}lots @ {:.5f} | SL {:.5f} | TP1 {:.5f} | TP2 {:.5f} | Score {}",
             direction,
             pair,
-            signal.position_size_lots,
+            order.lots,
             order.fill_price,
             signal.stop_loss,
             signal.tp1,
