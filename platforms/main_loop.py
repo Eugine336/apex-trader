@@ -702,6 +702,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             account_balance=balance,
             context=ctx,
             current_spread_pips=spread if spread > 0 else None,
+            score=result.score,
+            regime=getattr(result, "regime", ""),
+            session=session,
         )
         if not assessment.approved:
             reasons = "; ".join(assessment.rejections)
