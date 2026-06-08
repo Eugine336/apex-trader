@@ -36,6 +36,7 @@ from typing import Optional
 
 from .environment import ApexTradingEnv
 from .network import ApexRLAgent, ACTION_LABELS
+from .contracts import OBS_CONTRACT_VERSION, schema_hash, schema
 
 
 # ── Hyperparameters ───────────────────────────────────────────────────────────
@@ -326,12 +327,21 @@ class PPOTrainer:
 
     def save(self, tag: str):
         path = Path(self.cfg.save_dir) / f"apex_rl_{tag}.pt"
+        meta = {
+            "obs_contract_version": OBS_CONTRACT_VERSION,
+            "obs_schema_hash": schema_hash(),
+            "obs_schema": schema(),
+            "n_features": self.env.N_FEATURES,
+            "context_dim": self.agent.context_dim,
+            "n_symbols": self.agent.n_symbols,
+        }
         torch.save({
             "step":          self.global_step,
             "agent":         self.agent.state_dict(),
             "optimizer":     self.opt.state_dict(),
             "best_reward":   self.best_reward,
             "cfg":           asdict(self.cfg),
+            "meta":          meta,
         }, path)
 
     def load(self, path: str):
