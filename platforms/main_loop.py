@@ -74,6 +74,32 @@ from persistence.domain_events import (
 )
 from persistence.shadow_store import ShadowStore, ShadowContract, new_contract_id
 
+
+def _validate_stop_target_sidedness(
+    direction: str,
+    entry_price: float,
+    stop_loss: float,
+    tp1: float,
+    tp2: float | None = None,
+) -> tuple[bool, str]:
+    is_long = direction.upper() in ("LONG", "BUY")
+    if is_long:
+        if not (stop_loss < entry_price):
+            return False, f"LONG but SL({stop_loss}) >= entry({entry_price})"
+        if not (entry_price < tp1):
+            return False, f"LONG but entry({entry_price}) >= TP1({tp1})"
+        if tp2 is not None and tp2 > 0 and not (tp1 <= tp2):
+            return False, f"LONG but TP1({tp1}) > TP2({tp2})"
+    else:
+        if not (stop_loss > entry_price):
+            return False, f"SHORT but SL({stop_loss}) <= entry({entry_price})"
+        if not (entry_price > tp1):
+            return False, f"SHORT but entry({entry_price}) <= TP1({tp1})"
+        if tp2 is not None and tp2 > 0 and not (tp2 <= tp1):
+            return False, f"SHORT but TP2({tp2}) > TP1({tp1})"
+    return True, ""
+
+
 class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMixin):
     """
     Master trading loop — orchestrates the full pipeline.
@@ -786,6 +812,24 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         stake_usd: float | None = None
         if ctx.uses_stake:
             stake_usd = assessment.stake_usd or assessment.max_loss_dollars
+
+        sided_ok, sided_reason = _validate_stop_target_sidedness(
+            direction, signal.entry_price, signal.stop_loss, signal.tp1,
+            getattr(signal, "tp2", None),
+        )
+        if not sided_ok:
+            logger.error(
+                "🚫 MIS-SIDED SL/TP — {} {} entry={} sl={} tp1={} tp2={} — {}",
+                direction, pair, signal.entry_price, signal.stop_loss,
+                signal.tp1, getattr(signal, "tp2", None), sided_reason,
+            )
+            self._log_rejection(pair, direction, signal.score, f"Mis-sided SL/TP: {sided_reason}",
+                                entry_context={"entry_price": signal.entry_price,
+                                               "stop_loss": signal.stop_loss,
+                                               "tp1": signal.tp1,
+                                               "tp2": getattr(signal, "tp2", None)})
+            self._persist_shadow_contract(signal, rejecting_gate=f"sidedness:{sided_reason}")
+            return False
 
         if not self._execution_breaker.can_execute():
             status = self._execution_breaker.get_status()
