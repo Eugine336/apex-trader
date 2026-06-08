@@ -358,7 +358,7 @@ class ShadowEngine:
 
     def _load(self, path: str):
         import torch
-        from .contracts import assert_compatible
+        from .contracts import assert_compatible, OBS_FEATURES, N_CONTEXT_FEATURES
 
         ckpt = torch.load(path, map_location="cpu", weights_only=True)
         meta = ckpt.get("meta", {})
@@ -368,6 +368,23 @@ class ShadowEngine:
         n_features = meta.get("n_features", 12)
         context_dim = meta.get("context_dim", 0)
         n_symbols = meta.get("n_symbols", 0)
+
+        if n_features != OBS_FEATURES:
+            raise ValueError(
+                f"Checkpoint/production dimension mismatch: "
+                f"checkpoint n_features={n_features}, "
+                f"production contract OBS_FEATURES={OBS_FEATURES}. "
+                f"See rl/contracts.py and docs/rl_obs_contract_decision.md "
+                f"for resolution options."
+            )
+        if context_dim != N_CONTEXT_FEATURES:
+            raise ValueError(
+                f"Checkpoint/production context mismatch: "
+                f"checkpoint context_dim={context_dim}, "
+                f"production contract N_CONTEXT_FEATURES={N_CONTEXT_FEATURES}. "
+                f"See rl/contracts.py and docs/rl_obs_contract_decision.md "
+                f"for resolution options."
+            )
 
         self.agent = ApexRLAgent(
             n_features=n_features,
