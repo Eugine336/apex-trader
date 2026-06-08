@@ -71,6 +71,7 @@ from persistence.event_store import get_event_store, new_cycle_id, new_setup_id
 from persistence.domain_events import (
     DECISION_REJECT, ORDER_SENT, ORDER_FILLED, TRADE_OPEN, TRADE_CLOSE,
     SETUP_SKIPPED, SHADOW_CONTRACT_CREATED, BALANCE_UNAVAILABLE,
+    PERSISTENCE_DEGRADED,
 )
 from persistence.shadow_store import ShadowStore, ShadowContract, new_contract_id
 
@@ -591,6 +592,35 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 logger.debug("SETUP_SKIPPED emit failed: {}", exc)
         self._last_skipped_state = current
 
+    def _save_position_checked(self, managed) -> None:
+        """Persist position and surface any store degradation loudly."""
+        self.position_store.save_position(managed)
+        if not self.position_store.is_healthy():
+            reason = self.position_store.degraded_reason()
+            logger.error(
+                "🔴 PERSISTENCE DEGRADED — position {} ({}) saved to memory but NOT persisted to disk: {}",
+                managed.order_id, managed.symbol, reason,
+            )
+            try:
+                store = get_event_store()
+                if store:
+                    store.emit(
+                        event_type=PERSISTENCE_DEGRADED,
+                        severity="ERROR",
+                        symbol=managed.symbol,
+                        correlation_id=getattr(self, "_current_cycle_id", None),
+                        parent_id=getattr(self, "_current_setup_id", None),
+                        source_module="platforms.main_loop",
+                        payload={
+                            "order_id": managed.order_id,
+                            "symbol": managed.symbol,
+                            "reason": reason,
+                            "action": "position_retained_in_memory",
+                        },
+                    )
+            except Exception as exc:
+                logger.debug("PERSISTENCE_DEGRADED emit failed: {}", exc)
+
     def _execute_entry(self, result, session: str, now: datetime) -> bool:
         setup_id = new_setup_id()
         with logger.contextualize(setup_id=setup_id):
@@ -1043,7 +1073,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         managed.tm_trade_id = tm_trade.trade_id
 
         self.managed_positions[order.order_id] = managed
-        self.position_store.save_position(managed)
+        self._save_position_checked(managed)
         self._daily_trades += 1
 
         logger.info(
@@ -1161,7 +1191,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 tm_trade = self.trade_manager.open_trade(tm_signal)
                 managed.tm_trade_id = tm_trade.trade_id
                 self.managed_positions[oid] = managed
-                self.position_store.save_position(managed)
+                self._save_position_checked(managed)
                 self._daily_trades += 1
                 expired.append(oid)
             elif age_min > info["max_wait_minutes"]:
