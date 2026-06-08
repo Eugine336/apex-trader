@@ -393,7 +393,7 @@ class ExitChecksMixin:
                     continue
 
             # Dead zone management for forex (00:00-02:00 UTC)
-            if cfg.dead_zone_management and pos.symbol.find("USD") >= 0 or pos.symbol.find("JPY") >= 0:
+            if cfg.dead_zone_management and (pos.symbol.find("USD") >= 0 or pos.symbol.find("JPY") >= 0):
                 in_dead_zone = (utc_hour == 0 or (utc_hour == 1 and utc_minute <= 59))
                 if in_dead_zone:
                     tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
@@ -401,8 +401,9 @@ class ExitChecksMixin:
                         # Move to breakeven during dead zone — don't hold unprotected
                         from management.partial_close import PartialCloseCalculator
                         pip_size = tm_trade.pip_size if hasattr(tm_trade, 'pip_size') else 0.0001
+                        direction_norm = "LONG" if pos.direction.upper() in ("BUY", "LONG") else "SHORT"
                         be_level = PartialCloseCalculator.calculate_breakeven_level(
-                            pos.entry_price, pos.direction, 2.0, pip_size,
+                            pos.entry_price, direction_norm, 2.0, pip_size,
                         )
                         success = self.platforms.modify_trade(oid, pos.platform, new_sl=be_level)
                         if success:
@@ -447,8 +448,9 @@ class ExitChecksMixin:
                     # Tighten SL to breakeven as protection
                     from management.partial_close import PartialCloseCalculator
                     pip_size = tm_trade.pip_size if hasattr(tm_trade, 'pip_size') else 0.0001
+                    direction_norm = "LONG" if pos.direction.upper() in ("BUY", "LONG") else "SHORT"
                     be_level = PartialCloseCalculator.calculate_breakeven_level(
-                        pos.entry_price, pos.direction, 2.0, pip_size,
+                        pos.entry_price, direction_norm, 2.0, pip_size,
                     )
                     is_improvement = (
                         (pos.direction == "BUY" and be_level > pos.sl)

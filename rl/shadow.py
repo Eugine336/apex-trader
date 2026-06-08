@@ -360,7 +360,7 @@ class ShadowEngine:
         import torch
         from .contracts import assert_compatible
 
-        ckpt = torch.load(path, map_location="cpu", weights_only=False)
+        ckpt = torch.load(path, map_location="cpu", weights_only=True)
         meta = ckpt.get("meta", {})
 
         assert_compatible(meta)
