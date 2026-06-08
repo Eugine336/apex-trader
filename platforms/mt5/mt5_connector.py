@@ -4,6 +4,7 @@ Connects to MetaTrader 5 via the official Python package.
 Handles Forex, commodities, and indices on MT5.
 """
 
+import os
 import platform as sys_platform
 import time as _time
 from datetime import datetime, timedelta, timezone
@@ -91,6 +92,7 @@ class MT5Connector(BaseConnector):
         magic: int = 202500,
         broker_name: str = "auto",  # "auto" = detect from terminal info on connect
         reject_on_minlot_inflation: bool = False,
+        max_tick_age_seconds: float = 120.0,
     ):
         self._login = login
         self._password = password
@@ -102,6 +104,9 @@ class MT5Connector(BaseConnector):
         self._not_found_warned: set[str] = set()  # warn once then silent
         self._broker_name = broker_name
         self._reject_on_minlot_inflation = reject_on_minlot_inflation
+        self._max_tick_age_seconds = float(
+            os.getenv("MAX_TICK_AGE_SECONDS", str(max_tick_age_seconds))
+        )
         # Defer SymbolMapper creation when broker_name is "auto".
         # connect() will detect the real broker name and create the mapper then.
         # Creating it now with "auto" would trigger a "no config" warning.
@@ -206,12 +211,37 @@ class MT5Connector(BaseConnector):
         tick = mt5.symbol_info_tick(mapped)
         if tick is None:
             raise RuntimeError(f"No tick data for {mapped}: {mt5.last_error()}")
+
+        if tick.bid <= 0 or tick.ask <= 0:
+            logger.warning(
+                "Non-positive tick for {}: bid={}, ask={}", mapped, tick.bid, tick.ask
+            )
+            raise RuntimeError(
+                f"Non-positive tick for {mapped}: bid={tick.bid}, ask={tick.ask}"
+            )
+
+        tick_time = datetime.fromtimestamp(tick.time, tz=timezone.utc)
+        if tick.time <= 0:
+            logger.warning("Invalid tick timestamp for {}: epoch={}", mapped, tick.time)
+            raise RuntimeError(
+                f"Invalid tick timestamp for {mapped}: epoch={tick.time}"
+            )
+        age = (datetime.now(timezone.utc) - tick_time).total_seconds()
+        if age > self._max_tick_age_seconds:
+            logger.warning(
+                "Stale tick for {}: {:.1f}s old (limit {}s)",
+                mapped, age, self._max_tick_age_seconds,
+            )
+            raise RuntimeError(
+                f"Stale tick for {mapped}: {age:.1f}s old (limit {self._max_tick_age_seconds}s)"
+            )
+
         pip_size = get_pip_size(symbol)
         return TickData(
             bid=tick.bid,
             ask=tick.ask,
             spread=round((tick.ask - tick.bid) / pip_size, 1),
-            time=datetime.fromtimestamp(tick.time, tz=timezone.utc),
+            time=tick_time,
         )
 
     def get_tick(self, symbol: str) -> TickData:
