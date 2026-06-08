@@ -21,6 +21,15 @@ _state = LiveState()
 _FRONTEND_BUILD = os.path.join(os.path.dirname(__file__), "frontend", "build")
 _API_KEY = os.getenv("DD_DASHBOARD_API_KEY", "")
 
+_ALLOWED_ORIGINS = [
+    o.strip()
+    for o in os.getenv(
+        "DD_DASHBOARD_ALLOWED_ORIGINS",
+        "http://localhost:8000,http://127.0.0.1:8000",
+    ).split(",")
+    if o.strip()
+]
+
 _MUTATING_PATHS = {
     "/api/control",
     "/api/control/pause",
@@ -72,7 +81,7 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
 
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
+        allow_origins=_ALLOWED_ORIGINS,
         allow_methods=["*"],
         allow_headers=["*"],
     )
