@@ -432,6 +432,29 @@ class PositionStore:
                 logger.error("[position_store] stale in-flight cleanup commit failed: {}", exc)
                 pass
 
+    def get_all_pending_in_flight(
+        self,
+    ) -> Union[list[dict], _StoreUnavailableSentinel]:
+        """Return all PENDING in-flight intents, or STORE_UNAVAILABLE on DB error."""
+        with self._lock:
+            try:
+                cursor = self._conn.execute(
+                    "SELECT * FROM in_flight_intents WHERE status = 'PENDING'",
+                )
+                rows = cursor.fetchall()
+                self._record_success()
+                if not rows:
+                    return []
+                columns = [desc[0] for desc in cursor.description]
+                return [dict(zip(columns, row)) for row in rows]
+            except Exception as exc:
+                self._record_failure(f"get_all_pending_in_flight: {exc}")
+                logger.warning(
+                    "[position_store] pending in-flight fetch failed — returning STORE_UNAVAILABLE: {}",
+                    exc,
+                )
+                return STORE_UNAVAILABLE
+
     def close(self) -> None:
         """Close the database connection."""
         with self._lock:
