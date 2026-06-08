@@ -1,7 +1,8 @@
 """
 APEX TRADER — Multi-Timeframe Orchestrator
-This is the conductor: H4 bias, H1 confirmation, M15/M5 zone selection,
-M1 trigger timing. The sniper fires only when the entire stack aligns.
+Used by the scanner/backtest path. The live executor (EntryEngine) receives
+H1, M5, M1 as required inputs and H4, M15 as optional — H4 is used for the
+bias gate (when enabled); M15 is accepted but currently unused.
 """
 
 from dataclasses import dataclass
