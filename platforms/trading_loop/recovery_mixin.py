@@ -482,6 +482,11 @@ class RecoveryReconciliationMixin:
 
     def _check_and_reconnect(self) -> None:
         """Non-blocking reconnect check — attempts only when backoff timer allows."""
+        try:
+            self.platforms.check_connections()
+        except Exception as exc:
+            logger.error("Connection probe failed — continuing cycle: {}", exc)
+
         for platform in ("mt5", "deriv"):
             if self.platforms.should_attempt_reconnect(platform):
                 success = self.platforms.reconnect_platform(platform)
