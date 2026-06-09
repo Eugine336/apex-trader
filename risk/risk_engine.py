@@ -118,6 +118,16 @@ class RiskEngine:
     ) -> RiskAssessment:
         now = datetime.now(timezone.utc)
         balance = account_balance or self.balance
+        if not balance or balance <= 0:
+            logger.warning(
+                f"[RiskEngine] REJECTED {pair}: account balance unavailable "
+                f"or non-positive ({balance!r}) — refusing to size"
+            )
+            return self._build_assessment(
+                False, 0.0, 0.0, 0.0,
+                [], ["Account balance unavailable or non-positive — refusing to size"],
+                "NORMAL", self.drawdown_guard.get_status(now), 0, now,
+            )
         trades = open_trades or []
         checks: list[str] = []
         rejections: list[str] = []
@@ -150,12 +160,14 @@ class RiskEngine:
             )
         checks.append(f"Daily P&L: {pnl_snap.daily_total_pct:.2f}% (limit: -{daily_loss_limit}%)")
 
-        if self.pnl_tracker.is_weekly_limit_hit(8.0, balance, timestamp=now):
+        if self.pnl_tracker.is_weekly_limit_hit(self.risk_cfg.max_weekly_drawdown_pct, balance, timestamp=now):
             if self.drawdown_guard.mode not in {DrawdownMode.RECOVERY, DrawdownMode.FROZEN}:
                 self.drawdown_guard.mode = DrawdownMode.RECOVERY
                 risk_pct_decimal = self.drawdown_guard.risk_map[DrawdownMode.RECOVERY]
                 mode = DrawdownMode.RECOVERY.value
-            checks.append("Weekly loss > 8% — RECOVERY mode engaged")
+            checks.append(
+                f"Weekly loss > {self.risk_cfg.max_weekly_drawdown_pct}% — RECOVERY mode engaged"
+            )
         else:
             checks.append(f"Weekly P&L: {pnl_snap.weekly_total_pct:.2f}%")
 
@@ -236,6 +248,15 @@ class RiskEngine:
             context = build_context_for_symbol(pair)
 
         info = INSTRUMENT_REGISTRY.get(pair.upper())
+        if info is None and not context.uses_stake:
+            rejections.append(
+                f"Unknown instrument {pair} — refusing to size on assumed pip economics"
+            )
+            logger.warning(f"[RiskEngine] REJECTED {pair}: not in INSTRUMENT_REGISTRY")
+            return self._build_assessment(
+                False, 0.0, 0.0, 0.0, checks, rejections, mode,
+                dd_status, len(trades), now,
+            )
         pip_size = info.pip_size if info else 0.0001
         pip_value = info.pip_value_per_lot if info else 10.0
 
@@ -386,7 +407,7 @@ class RiskEngine:
         dd_status = self.drawdown_guard.get_status(now)
 
         daily_limit_dollars = self.risk_cfg.max_daily_drawdown_pct / 100.0 * balance
-        weekly_limit_dollars = 0.08 * balance
+        weekly_limit_dollars = self.risk_cfg.max_weekly_drawdown_pct / 100.0 * balance
 
         return AccountSnapshot(
             balance=round(balance, 2),

@@ -261,6 +261,7 @@ class ConfirmationPenaltyConfig:
 class RiskConfig:
     risk_per_trade_pct: float = 0.75
     max_daily_drawdown_pct: float = 3.0
+    max_weekly_drawdown_pct: float = 8.0
     max_open_trades: int = 3
     max_correlated_trades: int = 1
     min_risk_reward: float = 1.8
