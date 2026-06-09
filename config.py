@@ -481,6 +481,7 @@ class AppConfig:
     risk: RiskConfig = field(default_factory=RiskConfig)
     confirmation_penalties: ConfirmationPenaltyConfig = field(default_factory=ConfirmationPenaltyConfig)
     scan_interval_seconds: int = 10
+    max_consecutive_cycle_failures: int = 5
     log_level: str = "INFO"
 
     @property
