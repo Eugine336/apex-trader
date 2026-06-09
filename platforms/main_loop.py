@@ -554,10 +554,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             _regime_det = RegimeDetector()
             _vol_analyses = []
             for pair, frames in market_data.items():
-                h4 = frames.get("H4")
-                if h4 is not None and len(h4) >= 50:
+                vol_df = self._select_vol_timeframe(frames)
+                if vol_df is not None:
                     try:
-                        _vol_analyses.append(_regime_det.analyze(h4))
+                        _vol_analyses.append(_regime_det.analyze(vol_df))
                     except Exception as exc:
                         logger.debug("[scan] volatility regime analysis failed for pair: {}", exc)
                         pass
@@ -652,6 +652,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             if filled:
                 cycle["entries_filled"] += 1
                 open_pairs.append(result.pair)
+
+    def _select_vol_timeframe(self, frames: dict) -> "pd.DataFrame | None":
+        """Pick the timeframe for SYSTEM-WIDE volatility detection.
+        Prefer M15 (responsive to intraday shocks); fall back to H1 then H4
+        if a faster frame is unavailable for this symbol."""
+        for tf in ("M15", "H1", "H4"):
+            df = frames.get(tf)
+            if df is not None and len(df) >= 50:
+                return df
+        return None
 
     def _emit_setup_skipped(self, report) -> None:
         """Emit SETUP_SKIPPED for non-READY, non-MARKET_CLOSED results on change."""
