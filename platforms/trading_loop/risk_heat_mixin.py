@@ -584,6 +584,10 @@ class RiskHeatMarginMixin:
         self.managed_positions.clear()
         self.position_store.clear_all()
         from brain.drawdown_guard import DrawdownMode
-        self.drawdown._mode = DrawdownMode.FROZEN
+        self.drawdown.mode = DrawdownMode.FROZEN
         logger.critical("🚨 MARGIN FLATTEN COMPLETE — {} positions closed, risk FROZEN", closed)
+        try:
+            self.position_store.save_guard_state(self.drawdown.to_state())
+        except Exception as exc:
+            logger.error("Guard state persist after margin flatten failed: {}", exc)
 
