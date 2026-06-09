@@ -487,7 +487,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._emit_setup_skipped(report)
 
         # Track opportunity density — feeds into position sizing
-        self.density_tracker.record_scan(len(ready), utc_now=now)
+        self.density_tracker.record_scan([r.pair for r in ready], utc_now=now)
 
         # Update system-wide volatility state — reduce all sizes during market vol spikes
         try:
