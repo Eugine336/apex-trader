@@ -1503,6 +1503,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                             "✅ TP3 HIT (partial) — {} {} | {:.0%} of runner closed",
                             pos.direction, pos.symbol, self.config.risk.tp3_close_ratio,
                         )
+                    else:
+                        logger.error(
+                            "🔴 TP3 PARTIAL CLOSE FAILED — {} {} oid={} | attempted {:.2f} lots — rolling back shadow state for retry",
+                            pos.direction, pos.symbol, oid, tp3_lots,
+                        )
+                        tm_trade.tp3_hit = was_tp3_hit
+                        tm_trade.remaining_size_lots = prev_remaining
 
             sl_changed = tm_trade.stop_loss != prev_sl
             tp_changed = tm_trade.tp2 != prev_tp2
@@ -1710,6 +1717,50 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 logger.debug("In-trade analysis error for {}: {}", pair, exc)
 
 
+    def _submit_scale_in(
+        self,
+        pos: ManagedPosition,
+        add_lots: float,
+        new_sl: float,
+        new_tp: float,
+        score_tag: str,
+    ) -> bool:
+        idem_key = generate_idempotency_key(pos.symbol, pos.direction, add_lots)
+        try:
+            if self.position_store:
+                self.position_store.record_in_flight(idem_key, pos.symbol, pos.direction, add_lots)
+        except Exception as exc:
+            logger.warning("[scale-in] in-flight record failed (proceeding): {}", exc)
+
+        order = self.platforms.execute_entry(
+            pos.symbol,
+            pos.direction,
+            add_lots,
+            new_sl,
+            new_tp,
+            comment=build_order_comment("APEX", idem_key, pos.score, score_tag),
+            idempotency_key=idem_key,
+        )
+        if order.success:
+            try:
+                if self.position_store:
+                    self.position_store.resolve_in_flight(idem_key, order.order_id)
+            except Exception as exc:
+                logger.warning("[scale-in] resolve_in_flight failed: {}", exc)
+            pos.scale_in_count += 1
+            return True
+
+        try:
+            if self.position_store:
+                self.position_store.cancel_in_flight(idem_key)
+        except Exception as exc:
+            logger.warning("[scale-in] cancel_in_flight failed: {}", exc)
+        logger.error(
+            "🔴 SCALE-IN FAILED — {} {} | attempted {:.2f} lots — broker rejected",
+            pos.direction, pos.symbol, add_lots,
+        )
+        return False
+
     def _check_scale_in_on_scan(self, oid: str, pos: ManagedPosition, scan_result) -> None:
         """
         Scale-in wired to live scanner data.
@@ -1749,7 +1800,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         # Must be at minimum profit R
         is_long_trade = self.trade_manager._is_long(tm_trade.direction)
-        risk_distance = abs(tm_trade.entry_price - tm_trade.stop_loss)
+        risk_distance = abs(tm_trade.entry_price - tm_trade.original_stop_loss)
         if risk_distance < 1e-8:
             return
 
@@ -1767,7 +1818,6 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         if profit_r < cfg.scale_in_min_profit_r:
             return
 
-        # Correlation check
         _current_risk = self.risk_engine.drawdown_guard.risk_map.get(
             self.risk_engine.drawdown_guard.mode, 0.005,
         )
@@ -1795,16 +1845,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         if ctx.uses_stake:
             return  # Deriv stake-based — scale-in not supported
 
-        order = self.platforms.execute_entry(
-            pos.symbol,
-            pos.direction,
-            add_lots,
-            tm_trade.stop_loss,
-            tm_trade.tp2,
-            comment=f"APEX|SCALEIN_SCAN|{pos.score}|{scan_result.score}",
-        )
-        if order.success:
-            pos.scale_in_count += 1
+        if self._submit_scale_in(pos, add_lots, tm_trade.stop_loss, tm_trade.tp2, f"SCAN|{scan_result.score}"):
             logger.info(
                 "📈 SCALE-IN (scan-wired) — {} {} | +{} lots (add #{}) | fresh score={}",
                 pos.direction, pos.symbol, add_lots, pos.scale_in_count, scan_result.score,
@@ -1845,7 +1886,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     {"pair": p.symbol, "direction": p.direction}
                     for p in self.managed_positions.values()
                 ]
-                if not self.correlation.can_open_trade(pos.symbol, pos.direction, open_trades_list):
+                can_open, _reason = self.correlation.can_open_trade(pos.symbol, pos.direction, open_trades_list)
+                if not can_open:
                     continue
                 if len(self.managed_positions) >= self.config.risk.max_open_trades:
                     continue
@@ -1855,16 +1897,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         continue
                 add_lots = round(pos.lots * self.config.risk.scale_in_add_ratio, 2)
                 add_lots = max(0.01, add_lots)
-                order = self.platforms.execute_entry(
-                    pos.symbol,
-                    pos.direction,
-                    add_lots,
-                    tm_trade.stop_loss,
-                    tm_trade.tp2,
-                    comment=f"APEX|SCALEIN|{pos.score}",
-                )
-                if order.success:
-                    pos.scale_in_count += 1
+                if self._submit_scale_in(pos, add_lots, tm_trade.stop_loss, tm_trade.tp2, "SCALEIN"):
                     logger.info(
                         "📈 SCALE-IN — {} {} | +{} lots (add #{})",
                         pos.direction, pos.symbol, add_lots, pos.scale_in_count,
