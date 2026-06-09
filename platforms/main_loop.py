@@ -847,8 +847,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 return False
             density_mult = self.density_tracker.get_size_multiplier()
             vol_mult = self.vol_monitor.get_size_multiplier()
+            exec_mult = (
+                self.execution_monitor.get_size_multiplier(pair)
+                if self.config.risk.execution_quality_sizing_enabled
+                else 1.0
+            )
             adjusted_lots = round(
-                signal.position_size_lots * adjustments.position_size_multiplier * density_mult * vol_mult,
+                signal.position_size_lots * adjustments.position_size_multiplier * density_mult * vol_mult * exec_mult,
                 2,
             )
             risk_ceiling = signal.position_size_lots
@@ -1072,6 +1077,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 spread=spread,
                 requote=False,
                 pip_size=get_pip_size(pair),
+                symbol=pair,
             )
 
         if self.execution_monitor.should_alert():
