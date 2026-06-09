@@ -101,6 +101,35 @@ def _validate_stop_target_sidedness(
     return True, ""
 
 
+_HARD_LEVEL_REASONS = {"SL", "TP", "STOP_OUT"}
+_BENIGN_BROKER_REASONS = {
+    "BROKER_CLOSED_UNKNOWN", "ALGO", "MANUAL",
+    "ROLLOVER", "VARIATION_MARGIN", "SPLIT",
+}
+_DISCRETIONARY_KEYWORDS = ("stall", "structure", "spread", "news", "session", "opportunity")
+_SIMULATED_SL_KEYWORDS = ("stop loss", "stop_loss")
+_SIMULATED_TP_KEYWORDS = ("tp2", "tp1", "take profit", "take_profit")
+
+
+def _exit_reasons_conflict(broker_reason: str, manager_reason: str) -> bool:
+    if not manager_reason:
+        return False
+    br = broker_reason.upper().strip()
+    mr = manager_reason.lower().strip()
+    if br in _BENIGN_BROKER_REASONS:
+        return False
+    is_discretionary = any(kw in mr for kw in _DISCRETIONARY_KEYWORDS)
+    if is_discretionary and br in _HARD_LEVEL_REASONS:
+        return True
+    is_sim_sl = any(kw in mr for kw in _SIMULATED_SL_KEYWORDS)
+    is_sim_tp = any(kw in mr for kw in _SIMULATED_TP_KEYWORDS)
+    if is_sim_sl and br in _HARD_LEVEL_REASONS and br != "SL":
+        return True
+    if is_sim_tp and br in _HARD_LEVEL_REASONS and br != "TP":
+        return True
+    return False
+
+
 class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMixin):
     """
     Master trading loop — orchestrates the full pipeline.
@@ -1309,6 +1338,12 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     except Exception as exc:
                         logger.debug("[Reconcile] close-price fetch failed for {} {}, using fallback price: {}", pos.direction, pos.symbol, exc)
                         pass
+                manager_intent = None
+                exit_reason_discrepancy = False
+                tm_trade = self.trade_manager.get_trade(pos.tm_trade_id) if pos.tm_trade_id else None
+                if tm_trade is not None and tm_trade.close_reason:
+                    manager_intent = tm_trade.close_reason
+                    exit_reason_discrepancy = _exit_reasons_conflict(exit_reason, tm_trade.close_reason)
                 fake_close = CloseResult(
                     success=True,
                     order_id=oid,
@@ -1325,6 +1360,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     exit_reason_source=exit_reason_source,
                     raw_broker_reason=raw_broker_reason,
                     raw_broker_comment=raw_broker_comment,
+                    manager_intent=manager_intent,
+                    exit_reason_discrepancy=exit_reason_discrepancy,
                 )
                 to_remove.append(oid)
                 closed_count += 1
@@ -1933,6 +1970,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         exit_reason_source: str = "trade_manager",
         raw_broker_reason: Optional[int] = None,
         raw_broker_comment: Optional[str] = None,
+        manager_intent: Optional[str] = None,
+        exit_reason_discrepancy: bool = False,
     ) -> None:
         pip_size = get_pip_size(pos.symbol)
         is_buy = pos.direction == "BUY"
@@ -2020,6 +2059,12 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._run_journal_async(self.journal.log_trade(trade_record))
         self.ml.register_new_trade()
 
+        if exit_reason_discrepancy:
+            logger.warning(
+                "⚠️ EXIT ATTRIBUTION DISCREPANCY — {} {}: broker={} but manager intended '{}'",
+                pos.direction, pos.symbol, outcome, manager_intent,
+            )
+
         try:
             store = get_event_store()
             store.emit(
@@ -2037,6 +2082,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     "exit_reason_source": exit_reason_source,
                     "raw_broker_reason": raw_broker_reason,
                     "raw_broker_comment": raw_broker_comment,
+                    "manager_intent": manager_intent,
+                    "exit_reason_discrepancy": exit_reason_discrepancy,
                     "pnl_pips": round(pnl_pips, 2),
                     "pnl_dollars": pnl_dollars,
                     "hold_seconds": round(hold_seconds, 1),
