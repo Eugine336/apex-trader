@@ -275,8 +275,22 @@ class SystemVolatilityMonitor:
             self._last_state = state
             return state
 
-        n = len(analyses)
-        ratios = [a.volatility_ratio for a in analyses]
+        classifiable = [a for a in analyses if a.volatility_ratio > 0.0]
+
+        if not classifiable:
+            state = SystemVolatilityState(
+                state="NORMAL",
+                avg_volatility_ratio=0.0,
+                spike_pair_count=0,
+                total_pairs_checked=0,
+                size_multiplier=self.NORMAL_MULTIPLIER,
+                note="No classifiable pairs (all volatility_ratio <= 0) — defaulting to NORMAL",
+            )
+            self._last_state = state
+            return state
+
+        n = len(classifiable)
+        ratios = [a.volatility_ratio for a in classifiable]
         avg_ratio = sum(ratios) / n
         spike_count = sum(1 for r in ratios if r > self.SPIKE_RATIO_THRESHOLD)
         elevated_count = sum(1 for r in ratios if r > self.ELEVATED_RATIO_THRESHOLD)
