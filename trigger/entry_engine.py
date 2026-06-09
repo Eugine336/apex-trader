@@ -139,6 +139,17 @@ class EntryEngine:
         status = self.drawdown.get_status(now)
         risk_pct = status.current_risk_pct
 
+        effective_min_score = max(
+            self.config.scoring.min_entry_score,
+            status.current_score_threshold,
+        )
+        if score < effective_min_score:
+            return EntryRejection(
+                pair=pair,
+                reason=f"score {score} < drawdown floor {effective_min_score} (mode={status.mode})",
+                score=score, timestamp=now,
+            )
+
         # ── H4 bias gate (default OFF) ───────────────────────────────────
         # When enabled, rejects entries where H4 trend directly contradicts
         # the trade direction. Can only reject, never widen risk.
