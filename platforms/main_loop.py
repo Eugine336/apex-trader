@@ -384,12 +384,25 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self.running = False
         n_positions = len(self.managed_positions)
         for pos in self.managed_positions.values():
-            self.position_store.save_position(pos)
-        logger.info(
-            "APEX TRADER SHUTTING DOWN — {} positions persisted for restart recovery, {} trades today",
-            n_positions,
-            self._daily_trades,
-        )
+            try:
+                self._save_position_checked(pos)
+            except Exception as exc:
+                logger.error(
+                    "🔴 SHUTDOWN SAVE FAILED for {} ({}) — {}", pos.order_id, pos.symbol, exc,
+                )
+        if self.position_store.is_healthy():
+            logger.info(
+                "APEX TRADER SHUTTING DOWN — {} positions persisted for restart recovery, {} trades today",
+                n_positions,
+                self._daily_trades,
+            )
+        else:
+            logger.error(
+                "🔴 APEX TRADER SHUTTING DOWN — persistence degraded, {} positions may NOT be on disk. "
+                "Restart recovery will rely on broker reconciliation. {} trades today",
+                n_positions,
+                self._daily_trades,
+            )
         self.position_store.close()
         self.platforms.disconnect_all()
         try:
