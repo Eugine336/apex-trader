@@ -237,6 +237,10 @@ class SystemVolatilityMonitor:
     computes a system-wide volatility state.
 
     Integration point: call `update(analyses)` after each full scan.
+    The analyses are computed from an intraday timeframe (M15 preferred,
+    falling back to H1 then H4) so SPIKE detection responds within ~1 hour
+    of a news shock rather than lagging by hours on H4 ATR.
+
     Use `get_size_multiplier()` as an additional sizing gate alongside
     OpportunityDensityTracker.
 
