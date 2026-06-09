@@ -15,6 +15,7 @@ from loguru import logger
 from config import (
     AppConfig, get_instrument, get_pip_size,
     is_always_open, is_session_gated,
+    ConfirmationPenaltyConfig,
 )
 from brain.structure_engine import StructureEngine
 from brain.fvg_detector import FVGDetector
@@ -27,6 +28,10 @@ from brain.volume_analyzer import VolumeAnalyzer
 from brain.inducement_detector import InducementDetector
 from brain.wyckoff_engine import WyckoffEngine
 from brain.instrument_profile import get_profile
+from brain.session_vwap import session_vwap_penalty
+from brain.momentum_divergence import momentum_divergence_penalty
+from brain.atr_percentile import atr_percentile_penalty
+from brain.volume_profile import volume_profile_poc_penalty
 from rl.bridge import RLBridge
 from rl.obs_builder import ObservationBuilder
 from rl.multi_tf_obs_builder import MultiTFObservationBuilder
@@ -381,6 +386,79 @@ class PairScanner:
                 logger.debug(f"Wyckoff analysis error for {pair}: {exc}")
         else:
             logger.debug(f"{pair} — Wyckoff disabled for {category} instruments")
+
+        # ── Confirmation-only penalties (subtract only, never add) ────
+        # NOTE: when penalties go active (shadow_mode=False), the penalised
+        # score feeds RL augment_score — RL may need a freeze/retrain.
+        cp_cfg = self.config.confirmation_penalties
+        if cp_cfg.enabled and trade_dir in ("LONG", "SHORT"):
+            total_penalty = 0
+            penalty_notes: list[str] = []
+
+            try:
+                pts, reason = session_vwap_penalty(
+                    m5_df, trade_dir,
+                    session_status.session_open_minutes,
+                    penalty_points=cp_cfg.vwap_wrong_side_penalty,
+                    min_session_minutes=cp_cfg.vwap_min_session_minutes,
+                )
+                if pts > 0:
+                    total_penalty += pts
+                    penalty_notes.append(f"⚠️ VWAP wrong-side (−{pts})")
+            except Exception as exc:
+                logger.debug(f"[CONFIRM] VWAP error for {pair}: {exc}")
+
+            try:
+                pts, reason = momentum_divergence_penalty(
+                    m5_df, h1_df, trade_dir,
+                    both_tf_penalty=cp_cfg.divergence_both_tf_penalty,
+                    single_tf_penalty=cp_cfg.divergence_single_tf_penalty,
+                    rsi_period=cp_cfg.rsi_period,
+                    macd_fast=cp_cfg.macd_fast,
+                    macd_slow=cp_cfg.macd_slow,
+                    macd_signal=cp_cfg.macd_signal,
+                )
+                if pts > 0:
+                    total_penalty += pts
+                    penalty_notes.append(f"⚠️ {reason} (−{pts})")
+            except Exception as exc:
+                logger.debug(f"[CONFIRM] Divergence error for {pair}: {exc}")
+
+            try:
+                pts, reason = atr_percentile_penalty(
+                    m5_df,
+                    penalty_points=cp_cfg.atr_dead_regime_penalty,
+                    window=cp_cfg.atr_percentile_window,
+                    dead_percentile=cp_cfg.atr_dead_percentile,
+                )
+                if pts > 0:
+                    total_penalty += pts
+                    penalty_notes.append(f"⚠️ {reason} (−{pts})")
+            except Exception as exc:
+                logger.debug(f"[CONFIRM] ATR-pctl error for {pair}: {exc}")
+
+            try:
+                pts, reason = volume_profile_poc_penalty(
+                    h4_df, trade_dir, category,
+                    penalty_points=cp_cfg.vp_poc_trap_penalty,
+                    lookback=cp_cfg.vp_poc_lookback,
+                    proximity_pct=cp_cfg.vp_poc_proximity_pct,
+                )
+                if pts > 0:
+                    total_penalty += pts
+                    penalty_notes.append(f"⚠️ {reason} (−{pts})")
+            except Exception as exc:
+                logger.debug(f"[CONFIRM] VP-POC error for {pair}: {exc}")
+
+            if total_penalty > 0:
+                if cp_cfg.shadow_mode:
+                    logger.info(
+                        f"[CONFIRM-SHADOW] {pair} would subtract {total_penalty} "
+                        f"({', '.join(penalty_notes)})"
+                    )
+                else:
+                    score = max(score - total_penalty, 0)
+                    confluences.extend(penalty_notes)
 
         # ── Regime caps ───────────────────────────────────────────────
         regime = bias["h4_trend"]
