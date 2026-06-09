@@ -1387,6 +1387,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             prev_sl = tm_trade.stop_loss
             prev_tp2 = tm_trade.tp2
             was_partial = tm_trade.partial_closed
+            prev_remaining = tm_trade.remaining_size_lots
+            prev_status = tm_trade.status
             was_tp3_hit = getattr(tm_trade, "tp3_hit", False)
 
             # Feed the price to the trade manager for value-add management
@@ -1452,6 +1454,14 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         pos.lots = round(pos.lots - partial_lots, 2)
                         self.position_store.update_position(oid, tp1_hit=True, lots=pos.lots)
                         logger.info("✅ TP1 HIT (MT5 partial) — {} {} | 50% closed", pos.direction, pos.symbol)
+                    else:
+                        logger.error(
+                            "🔴 TP1 PARTIAL CLOSE FAILED — {} {} oid={} | attempted {:.2f} lots — rolling back shadow state for retry",
+                            pos.direction, pos.symbol, oid, partial_lots,
+                        )
+                        tm_trade.partial_closed = was_partial
+                        tm_trade.remaining_size_lots = prev_remaining
+                        tm_trade.status = prev_status
                 else:
                     result = self.platforms.close_trade(oid, pos.platform)
                     if result.success:
@@ -1501,28 +1511,34 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 new_sl = tm_trade.stop_loss if sl_changed else None
                 new_tp = tm_trade.tp2 if tp_changed else None
                 if pos_ctx.supports_modify:
-                    self.platforms.modify_trade(oid, pos.platform, new_sl=new_sl, new_tp=new_tp)
-                    if sl_changed:
-                        pos.sl = tm_trade.stop_loss
-                    if tp_changed:
-                        pos.tp2 = tm_trade.tp2
-                    if tm_trade.breakeven_active and not pos.at_breakeven:
-                        pos.at_breakeven = True
-                        self.position_store.update_position(oid, sl=pos.sl, at_breakeven=True)
-                        logger.info(
-                            "✅ BREAKEVEN (MT5 modify) — {} {} | SL→{:.5f}",
-                            pos.direction,
-                            pos.symbol,
-                            tm_trade.stop_loss,
-                        )
+                    modified = self.platforms.modify_trade(oid, pos.platform, new_sl=new_sl, new_tp=new_tp)
+                    if modified:
+                        if sl_changed:
+                            pos.sl = tm_trade.stop_loss
+                        if tp_changed:
+                            pos.tp2 = tm_trade.tp2
+                        if tm_trade.breakeven_active and not pos.at_breakeven:
+                            pos.at_breakeven = True
+                            self.position_store.update_position(oid, sl=pos.sl, at_breakeven=True)
+                            logger.info(
+                                "✅ BREAKEVEN (MT5 modify) — {} {} | SL→{:.5f}",
+                                pos.direction,
+                                pos.symbol,
+                                tm_trade.stop_loss,
+                            )
+                        else:
+                            self.position_store.update_position(oid, sl=pos.sl)
+                        if tp_changed:
+                            logger.info(
+                                "✅ TP MODIFIED — {} {} | TP2→{:.5f}",
+                                pos.direction,
+                                pos.symbol,
+                                tm_trade.tp2,
+                            )
                     else:
-                        self.position_store.update_position(oid, sl=pos.sl)
-                    if tp_changed:
-                        logger.info(
-                            "✅ TP MODIFIED — {} {} | TP2→{:.5f}",
-                            pos.direction,
-                            pos.symbol,
-                            tm_trade.tp2,
+                        logger.error(
+                            "🔴 SL/TP MODIFY FAILED — {} {} oid={} | attempted SL={} TP={} — broker rejected, keeping current SL={:.5f}",
+                            pos.direction, pos.symbol, oid, new_sl, new_tp, pos.sl,
                         )
                 else:
                     if sl_changed:
