@@ -15,7 +15,7 @@ from typing import Optional
 
 from loguru import logger
 
-from persistence.position_store import PositionStore
+from persistence.position_store import PositionStore, STORE_UNAVAILABLE
 from platforms.circuit_breaker import CircuitBreaker
 from platforms.health_watchdog import HealthWatchdog
 from platforms.maintenance import DailyMaintenance
@@ -884,6 +884,23 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         pre_exec_ts = datetime.now(timezone.utc)
         idem_key = generate_idempotency_key(pair, direction, adjusted_lots, pre_exec_ts)
+
+        if self.position_store:
+            pending = self.position_store.find_pending_in_flight(pair, direction)
+            if pending is STORE_UNAVAILABLE:
+                logger.warning(
+                    "[entry] in-flight store unavailable — skipping {} {} this cycle to avoid double-submit",
+                    pair, direction,
+                )
+                return False
+            stale = [p for p in pending if p.get("idempotency_key") != idem_key]
+            if stale:
+                stale_keys = [p.get("idempotency_key", "?") for p in stale]
+                logger.warning(
+                    "[entry] unresolved in-flight intent(s) for {} {} — skipping to avoid double-submit (stale keys: {})",
+                    pair, direction, stale_keys,
+                )
+                return False
 
         if self.position_store:
             self.position_store.record_in_flight(idem_key, pair, direction, adjusted_lots)
