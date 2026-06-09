@@ -71,7 +71,7 @@ from persistence.event_store import get_event_store, new_cycle_id, new_setup_id
 from persistence.domain_events import (
     DECISION_REJECT, ORDER_SENT, ORDER_FILLED, TRADE_OPEN, TRADE_CLOSE,
     SETUP_SKIPPED, SHADOW_CONTRACT_CREATED, BALANCE_UNAVAILABLE,
-    PERSISTENCE_DEGRADED,
+    PERSISTENCE_DEGRADED, CYCLE_FAILED, TRADING_LOOP_HALTED,
 )
 from persistence.shadow_store import ShadowStore, ShadowContract, new_contract_id
 
@@ -213,6 +213,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._pending_orders: dict[str, dict] = {}
         self._weekend_protected_oids: set[str] = set()
         self.running = False
+        self._consecutive_cycle_failures = 0
         self._last_scan_time: Optional[datetime] = None
         self._daily_trades = 0
         self._last_reset_day: Optional[str] = None
@@ -302,14 +303,71 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         try:
             while self.running:
-                self._check_daily_reset()
-                self.run_once()
+                self._run_supervised_cycle()
                 interval = self._get_sleep_interval()
                 _time.sleep(interval)
         except KeyboardInterrupt:
             logger.info("Shutdown signal received")
         finally:
             self.stop()
+
+    def _run_supervised_cycle(self) -> None:
+        """Run exactly one cycle with per-cycle isolation.
+
+        Absorbs non-fatal exceptions so a single bad cycle cannot kill
+        the entire trading loop.  After *max_consecutive_cycle_failures*
+        back-to-back failures the loop is halted to protect capital.
+        """
+        try:
+            self._check_daily_reset()
+            self.run_once()
+            self._consecutive_cycle_failures = 0
+        except KeyboardInterrupt:
+            raise
+        except Exception as exc:
+            self._consecutive_cycle_failures += 1
+            logger.exception(
+                "🔴 Cycle exception ({}/{} consecutive): {}",
+                self._consecutive_cycle_failures,
+                self.config.max_consecutive_cycle_failures,
+                exc,
+            )
+            try:
+                get_event_store().emit(
+                    event_type=CYCLE_FAILED,
+                    severity="ERROR",
+                    symbol=None,
+                    correlation_id=getattr(self, "_current_cycle_id", None),
+                    source_module="platforms.main_loop",
+                    payload={
+                        "consecutive_failures": self._consecutive_cycle_failures,
+                        "max_allowed": self.config.max_consecutive_cycle_failures,
+                        "error": str(exc),
+                    },
+                )
+            except Exception as emit_exc:
+                logger.debug("CYCLE_FAILED emit failed: {}", emit_exc)
+
+            if self._consecutive_cycle_failures >= self.config.max_consecutive_cycle_failures:
+                logger.critical(
+                    "🚨 TRADING LOOP HALTED — {} consecutive cycle failures exceeded threshold ({})",
+                    self._consecutive_cycle_failures,
+                    self.config.max_consecutive_cycle_failures,
+                )
+                try:
+                    get_event_store().emit(
+                        event_type=TRADING_LOOP_HALTED,
+                        severity="CRITICAL",
+                        symbol=None,
+                        correlation_id=getattr(self, "_current_cycle_id", None),
+                        source_module="platforms.main_loop",
+                        payload={
+                            "consecutive_failures": self._consecutive_cycle_failures,
+                        },
+                    )
+                except Exception as emit_exc:
+                    logger.debug("TRADING_LOOP_HALTED emit failed: {}", emit_exc)
+                self.running = False
 
     def run_once(self) -> dict:
         """Single iteration — scan, enter, manage. Returns cycle summary."""

@@ -33,19 +33,20 @@ from config import AppConfig, get_instruments_by_category, INSTRUMENT_REGISTRY
 def _start_trading_loop(trading_loop) -> None:
     """Run the TradingLoop cycle in a background thread.
 
-    Uses run_once() directly instead of run() to avoid double-connecting
-    platforms that were already connected in main().
+    Uses _run_supervised_cycle() so a single bad cycle cannot kill
+    the thread — the supervisor absorbs per-cycle exceptions and only
+    halts after max_consecutive_cycle_failures back-to-back failures.
     """
     import time as _time
 
     try:
         while trading_loop.running:
-            trading_loop._check_daily_reset()
-            trading_loop.run_once()
-            interval = trading_loop._get_sleep_interval()
-            _time.sleep(interval)
+            trading_loop._run_supervised_cycle()
+            _time.sleep(trading_loop._get_sleep_interval())
+    except KeyboardInterrupt:
+        trading_loop.running = False
     except Exception as exc:
-        logger.error("Trading loop crashed: {}", exc)
+        logger.error("Trading loop thread unexpected escape: {}", exc)
         trading_loop.running = False
 
 
@@ -140,11 +141,20 @@ def main() -> None:
         import uvicorn
         from dashboard.state import LiveState
         from dashboard.api import create_app
+        from platforms.startup_check import StartupCheck
 
         state = LiveState()
         state.attach(trading_loop, platform_manager, connection_status)
 
         if platform_manager.any_connected:
+            passed, results = StartupCheck().run_all()
+            for r in results:
+                lvl = "INFO" if r.passed else "ERROR"
+                logger.log(lvl, "  [{}] {} — {} ({:.0f}ms)", "✅" if r.passed else "❌", r.name, r.message, r.duration_ms)
+            if not passed:
+                logger.error("Startup self-test FAILED — refusing to start dashboard trading to protect capital")
+                return
+
             trading_loop.running = True
             trading_loop._perform_startup_recovery()
             t = threading.Thread(target=_start_trading_loop, args=(trading_loop,), daemon=True)
@@ -166,7 +176,10 @@ def main() -> None:
             return
 
         logger.info("Launching dashboard on http://{}:{}", bind_host, bind_port)
-        uvicorn.run(app, host=bind_host, port=bind_port, log_level="info")
+        try:
+            uvicorn.run(app, host=bind_host, port=bind_port, log_level="info")
+        finally:
+            trading_loop.running = False
     else:
         if not platform_manager.any_connected:
             logger.error("No platforms connected — cannot trade. Set DERIV_API_TOKEN and DERIV_APP_ID in .env")

@@ -98,4 +98,4 @@ class LiveState(
 
     @property
     def is_live(self) -> bool:
-        return self._trading_loop is not None and self._running
+        return self._trading_loop is not None and bool(getattr(self._trading_loop, "running", False))

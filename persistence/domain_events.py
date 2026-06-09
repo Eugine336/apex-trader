@@ -25,6 +25,8 @@ SHADOW_RESOLVED = "SHADOW_RESOLVED"
 # ── Safety events ──────────────────────────────────────────────────────────
 BALANCE_UNAVAILABLE = "BALANCE_UNAVAILABLE"
 PERSISTENCE_DEGRADED = "PERSISTENCE_DEGRADED"
+CYCLE_FAILED = "CYCLE_FAILED"
+TRADING_LOOP_HALTED = "TRADING_LOOP_HALTED"
 
 # ── Backfill (Phase 6) ─────────────────────────────────────────────────────
 TRADE_CLOSE_DERIVED = "TRADE_CLOSE_DERIVED"
