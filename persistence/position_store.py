@@ -455,6 +455,31 @@ class PositionStore:
                 )
                 return STORE_UNAVAILABLE
 
+    def find_pending_in_flight(
+        self, symbol: str, direction: str,
+    ) -> Union[list[dict], _StoreUnavailableSentinel]:
+        """Return PENDING in-flight intents for *symbol* + *direction*,
+        or :data:`STORE_UNAVAILABLE` on DB error."""
+        with self._lock:
+            try:
+                cursor = self._conn.execute(
+                    "SELECT * FROM in_flight_intents WHERE symbol = ? AND direction = ? AND status = 'PENDING'",
+                    (symbol, direction),
+                )
+                rows = cursor.fetchall()
+                self._record_success()
+                if not rows:
+                    return []
+                columns = [desc[0] for desc in cursor.description]
+                return [dict(zip(columns, row)) for row in rows]
+            except Exception as exc:
+                self._record_failure(f"find_pending_in_flight {symbol}/{direction}: {exc}")
+                logger.warning(
+                    "[position_store] pending in-flight lookup failed — returning STORE_UNAVAILABLE: {}",
+                    exc,
+                )
+                return STORE_UNAVAILABLE
+
     def close(self) -> None:
         """Close the database connection."""
         with self._lock:
