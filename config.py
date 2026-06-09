@@ -454,6 +454,12 @@ class RiskConfig:
     # widen risk. Default OFF — enable after strategy validation.
     h4_bias_gate_enabled: bool = True
 
+    # ── Execution-quality size throttle ────────────────────────────────
+    # When enabled, degraded execution quality (high slippage/latency/spread)
+    # reduces position size via get_size_multiplier.  Default OFF — enable
+    # after observing live execution logs to validate grade thresholds.
+    execution_quality_sizing_enabled: bool = False
+
 
 # ---------------------------------------------------------------------------
 # Application config
