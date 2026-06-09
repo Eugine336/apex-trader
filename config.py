@@ -227,6 +227,30 @@ class ScoringConfig:
 
 
 # ---------------------------------------------------------------------------
+# Confirmation-only penalties (VWAP, RSI/MACD, ATR percentile, VP-POC)
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ConfirmationPenaltyConfig:
+    enabled: bool = False
+    shadow_mode: bool = True
+    vwap_wrong_side_penalty: int = 15
+    divergence_both_tf_penalty: int = 15
+    divergence_single_tf_penalty: int = 7
+    atr_dead_regime_penalty: int = 10
+    vp_poc_trap_penalty: int = 10
+    atr_dead_percentile: float = 20.0
+    atr_percentile_window: int = 100
+    rsi_period: int = 14
+    macd_fast: int = 12
+    macd_slow: int = 26
+    macd_signal: int = 9
+    vwap_min_session_minutes: int = 30
+    vp_poc_lookback: int = 100
+    vp_poc_proximity_pct: float = 0.5
+
+
+# ---------------------------------------------------------------------------
 # Risk parameters
 # ---------------------------------------------------------------------------
 
@@ -449,6 +473,7 @@ class AppConfig:
     )
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
+    confirmation_penalties: ConfirmationPenaltyConfig = field(default_factory=ConfirmationPenaltyConfig)
     scan_interval_seconds: int = 10
     log_level: str = "INFO"
 
