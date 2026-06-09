@@ -97,6 +97,19 @@ class EntryEngine:
         now = datetime.now(timezone.utc)
         score = scan_result.score
         confluences = list(scan_result.confluences)
+        try:
+            get_instrument(pair)
+        except KeyError:
+            logger.warning(
+                f"[{pair}] Entry rejected — unknown instrument, not in registry, "
+                "refusing to assume economics"
+            )
+            return EntryRejection(
+                pair=pair,
+                reason="Unknown instrument — not in registry, refusing to assume economics",
+                score=scan_result.score,
+                timestamp=now,
+            )
         pip_size = self._pip_size(pair)
         category = self._category(pair)
         profile = get_profile(pair)

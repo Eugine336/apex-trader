@@ -94,7 +94,7 @@ class StartupCheck:
         """Verify INSTRUMENT_REGISTRY has expected instruments."""
         t0 = _time.monotonic()
         try:
-            from config import INSTRUMENT_REGISTRY
+            from config import INSTRUMENT_REGISTRY, AppConfig
             count = len(INSTRUMENT_REGISTRY)
             elapsed = (_time.monotonic() - t0) * 1000
 
@@ -115,11 +115,32 @@ class StartupCheck:
                     message=f"Missing core instruments: {missing}",
                     duration_ms=elapsed,
                 )
+
+            try:
+                cfg = AppConfig()
+                enabled = cfg.enabled_pairs
+                unresolved = [
+                    s for s in enabled
+                    if s.upper().replace("/", "") not in INSTRUMENT_REGISTRY
+                ]
+                if unresolved:
+                    return CheckResult(
+                        name="instrument_registry",
+                        passed=False,
+                        message=(
+                            f"Enabled pairs not in INSTRUMENT_REGISTRY: {unresolved} "
+                            "— refusing to trade with assumed economics"
+                        ),
+                        duration_ms=(_time.monotonic() - t0) * 1000,
+                    )
+            except Exception:
+                pass
+
             return CheckResult(
                 name="instrument_registry",
                 passed=True,
                 message=f"{count} instruments registered",
-                duration_ms=elapsed,
+                duration_ms=(_time.monotonic() - t0) * 1000,
             )
         except Exception as exc:
             elapsed = (_time.monotonic() - t0) * 1000
