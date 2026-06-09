@@ -89,6 +89,14 @@ _MIGRATE_INITIAL_RISK = (
     "ALTER TABLE managed_positions ADD COLUMN initial_risk_dollars REAL"
 )
 
+_CREATE_GUARD_STATE = """
+CREATE TABLE IF NOT EXISTS guard_state (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    payload     TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+)
+"""
+
 
 class PositionStore:
     """Thread-safe SQLite store for managed positions."""
@@ -111,6 +119,7 @@ class PositionStore:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute(_CREATE_TABLE)
         self._conn.execute(_CREATE_IN_FLIGHT)
+        self._conn.execute(_CREATE_GUARD_STATE)
         self._migrate_schema()
         self._conn.commit()
         logger.debug("PositionStore opened — {}", self._db_path)
@@ -479,6 +488,35 @@ class PositionStore:
                     exc,
                 )
                 return STORE_UNAVAILABLE
+
+    def save_guard_state(self, payload: dict) -> None:
+        with self._lock:
+            try:
+                self._conn.execute(
+                    "INSERT OR REPLACE INTO guard_state (id, payload, updated_at) VALUES (1, ?, ?)",
+                    (json.dumps(payload), datetime.now(timezone.utc).isoformat()),
+                )
+                self._conn.commit()
+                self._record_success()
+            except Exception as exc:
+                self._record_failure(f"save_guard_state: {exc}")
+                logger.error("Guard state save failed: {}", exc)
+
+    def load_guard_state(self) -> Optional[dict]:
+        with self._lock:
+            try:
+                cursor = self._conn.execute(
+                    "SELECT payload FROM guard_state WHERE id = 1"
+                )
+                row = cursor.fetchone()
+                self._record_success()
+                if row is None:
+                    return None
+                return json.loads(row[0])
+            except Exception as exc:
+                self._record_failure(f"load_guard_state: {exc}")
+                logger.warning("Guard state load failed — starting fresh: {}", exc)
+                return None
 
     def close(self) -> None:
         """Close the database connection."""

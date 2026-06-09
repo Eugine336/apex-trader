@@ -228,6 +228,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._last_market_data: dict = {}                       # most recent market data for in-trade analysis
         self._last_slot_blocked_candidate: dict | None = None    # best foregone candidate when slots full (F4)
         self._last_skipped_state: dict[str, tuple[str, int]] = {}  # symbol → (status, score) for emit-on-change
+        self._last_known_balance: float = 0.0
 
         # ── Portfolio risk state machine (M8 Phase 4a + 4b + 4c) ────────────
         cfg_r = self.config.risk
@@ -710,6 +711,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 logger.debug("BALANCE_UNAVAILABLE emit failed: {}", exc)
             self._log_rejection(pair, direction, result.score, "Balance unavailable — fail-closed")
             return False
+        self._last_known_balance = balance
         self.risk_engine.balance = balance
 
         # Resolve actual risk % from current drawdown mode — never hardcode 0.02
@@ -1849,7 +1851,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             return
 
         # Score must be strong — don't add to a fading winner
-        if scan_result.score < self.config.scoring.min_entry_score:
+        dd_status = self.drawdown.get_status()
+        effective_min = max(self.config.scoring.min_entry_score, dd_status.current_score_threshold)
+        if scan_result.score < effective_min:
             return
 
         # Must be at minimum profit R
@@ -1991,13 +1995,27 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 pnl_dollars = round(pnl_pips * pip_value * pos.lots, 2)
 
         balance = self.platforms.get_platform_balance(pos.symbol)
-        if not balance:
-            logger.warning("⚠ Balance unavailable for {} at close — pnl_pct defaulted to 0.0", pos.symbol)
-            pnl_pct = 0.0
-        else:
+        if balance:
+            self._last_known_balance = balance
             pnl_pct = pnl_dollars / balance
+        elif self._last_known_balance > 0:
+            pnl_pct = pnl_dollars / self._last_known_balance
+            logger.warning(
+                "⚠ Balance unavailable for {} at close — using last known balance {:.2f}",
+                pos.symbol, self._last_known_balance,
+            )
+        else:
+            logger.warning(
+                "⚠ Balance unavailable for {} at close and no last known balance — "
+                "drawdown guard did NOT see this trade's result", pos.symbol,
+            )
+            pnl_pct = 0.0
 
         self.drawdown.register_trade_result(pnl_pct)
+        try:
+            self.position_store.save_guard_state(self.drawdown.to_state())
+        except Exception as exc:
+            logger.error("Guard state persist after trade close failed: {}", exc)
         self.risk_engine.record_trade_result(
             pnl_dollars=pnl_dollars,
             pnl_pips=pnl_pips,

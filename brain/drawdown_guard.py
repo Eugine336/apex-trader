@@ -215,3 +215,36 @@ class DrawdownGuard:
         x = np.arange(len(y), dtype=float)
         slope = np.polyfit(x, y, 1)[0]
         return float(slope)
+
+    def to_state(self) -> dict:
+        return {
+            "mode": self.mode.value,
+            "consecutive_losses": self.consecutive_losses,
+            "consecutive_wins": self.consecutive_wins,
+            "daily_pnl_history": dict(self.daily_pnl_history),
+            "weekly_pnl_history": dict(self.weekly_pnl_history),
+            "equity_points": list(self.equity_points),
+            "last_trade_day": self.last_trade_day,
+            "high_water_mark": self.high_water_mark,
+            "hwm_timestamp": self.hwm_timestamp,
+        }
+
+    def restore_state(self, state: dict) -> None:
+        mode_str = state.get("mode", "NORMAL")
+        try:
+            self.mode = DrawdownMode(mode_str)
+        except (ValueError, KeyError):
+            self.mode = DrawdownMode.NORMAL
+        self.consecutive_losses = int(state.get("consecutive_losses", 0))
+        self.consecutive_wins = int(state.get("consecutive_wins", 0))
+        self.daily_pnl_history = {
+            str(k): float(v) for k, v in state.get("daily_pnl_history", {}).items()
+        }
+        self.weekly_pnl_history = {
+            str(k): float(v) for k, v in state.get("weekly_pnl_history", {}).items()
+        }
+        raw_points = state.get("equity_points", [])
+        self.equity_points = [(str(p[0]), float(p[1])) for p in raw_points if len(p) >= 2]
+        self.last_trade_day = state.get("last_trade_day")
+        self.high_water_mark = float(state.get("high_water_mark", 0.0))
+        self.hwm_timestamp = state.get("hwm_timestamp")

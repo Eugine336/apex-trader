@@ -94,6 +94,18 @@ class RecoveryReconciliationMixin:
         """
         if self._recovery_completed:
             return
+        if self.position_store:
+            try:
+                state = self.position_store.load_guard_state()
+                if state is not None:
+                    self.drawdown.restore_state(state)
+                    logger.info(
+                        "Drawdown guard restored — mode={}, daily_pnl={}",
+                        self.drawdown.mode.value,
+                        self.drawdown.daily_pnl_history,
+                    )
+            except Exception as exc:
+                logger.warning("Drawdown guard restore failed — starting fresh: {}", exc)
         self._restore_positions()
         self._reconcile_positions()
         self._reconcile_in_flight_intents()
