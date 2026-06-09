@@ -34,7 +34,7 @@ class StartupCheck:
         results.append(self._check_database())
         results.append(self._check_disk_space())
 
-        critical = {"imports", "config", "instrument_registry"}
+        critical = {"imports", "config", "instrument_registry", "database"}
         all_critical_passed = all(
             r.passed for r in results if r.name in critical
         )
@@ -140,14 +140,13 @@ class StartupCheck:
             healthy = store.is_healthy()
             store.close()
             elapsed = (_time.monotonic() - t0) * 1000
-            if not healthy and count == 0:
+            if not healthy:
                 return CheckResult(
                     name="database",
-                    passed=True,
+                    passed=False,
                     message=(
-                        f"SQLite reachable but DEGRADED — count returned 0 "
-                        f"which may be inaccurate ({store.degraded_reason()}). "
-                        f"Persisted positions may exist but could not be verified."
+                        f"Position store DEGRADED — {store.degraded_reason()}. "
+                        f"Cannot verify duplicate-order protection or persisted state."
                     ),
                     duration_ms=elapsed,
                 )
