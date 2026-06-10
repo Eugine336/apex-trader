@@ -540,6 +540,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         ready = self.scanner.get_ready_setups(report)
         self._emit_setup_skipped(report)
 
+        qf, qt = self.scanner.get_quality_failure_stats()
+        if qf > 0:
+            self.watchdog.record_quality_failures(qf, qt)
+            if qf == qt and qt > 0:
+                self._add_warning(
+                    "error",
+                    f"OQ/EQ quality computation failed on ALL {qf} directional setups — zero trades can reach READY",
+                )
+        self.scanner.reset_quality_failure_stats()
+
         # Track opportunity density — feeds into position sizing
         self.density_tracker.record_scan([r.pair for r in ready], utc_now=now)
 

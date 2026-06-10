@@ -173,6 +173,10 @@ class PairScanner:
         self._mt5_connector = mt5_connector
         self._adaptive_weights = scoring_weights
 
+        # ── Quality failure tracking ──────────────────────────────────
+        self._quality_failures: int = 0
+        self._quality_scans: int = 0
+
         # ── RL subsystem ──────────────────────────────────────────────
         self._obs_builders: dict[str, ObservationBuilder] = {}
         self._mtf_builders: dict[str, MultiTFObservationBuilder] = {}
@@ -183,6 +187,19 @@ class PairScanner:
         except Exception as exc:
             logger.warning(f"[scanner] RL subsystem unavailable: {exc}")
             self._rl = RLBridge(checkpoint=checkpoint, enabled=False)
+
+    # ------------------------------------------------------------------
+    # Quality failure tracking
+    # ------------------------------------------------------------------
+
+    def get_quality_failure_stats(self) -> tuple[int, int]:
+        """Return (failures, total_scans) since last reset."""
+        return self._quality_failures, self._quality_scans
+
+    def reset_quality_failure_stats(self) -> None:
+        """Reset quality failure counters (called by main loop after each scan cycle)."""
+        self._quality_failures = 0
+        self._quality_scans = 0
 
     # ------------------------------------------------------------------
     # Single-pair scan
@@ -736,6 +753,7 @@ class PairScanner:
         eq_score = 0.0
 
         if ld_cfg.enabled and trade_dir in ("LONG", "SHORT"):
+            self._quality_scans += 1
             try:
                 tr_series = (m5_df["high"] - m5_df["low"]).abs().tail(14)
                 _atr_pips = float(tr_series.mean()) / pip_size if len(tr_series) > 0 and pip_size > 0 else None
@@ -822,7 +840,8 @@ class PairScanner:
                 eq_score = eq.score
 
             except Exception as exc:
-                logger.warning("[quality] OQ/EQ computation failed for {}: {}", pair, exc)
+                logger.error("[quality] OQ/EQ computation failed for {}: {}", pair, exc)
+                self._quality_failures += 1
                 oq_score = 0.0
                 eq_score = 0.0
 
