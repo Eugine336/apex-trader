@@ -256,9 +256,9 @@ class ConfirmationPenaltyConfig:
 # ---------------------------------------------------------------------------
 
 _DEFAULT_CONSENSUS_WEIGHTS: dict[str, float] = {
-    "structure": 3.0,
-    "currency_strength": 2.0,
-    "wyckoff": 1.5,
+    "structure": 1.0,
+    "currency_strength": 1.0,
+    "wyckoff": 1.0,
     "volume": 1.0,
     "order_block": 1.0,
     "fvg": 1.0,
@@ -273,9 +273,9 @@ class ConsensusConfig:
     enabled: bool = True
     weights: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_CONSENSUS_WEIGHTS))
     min_net_score: float = 1.5
-    min_agreement: float = 0.6
+    min_agreement: float = 0.67
     high_authority_modules: list[str] = field(
-        default_factory=lambda: ["structure", "currency_strength"]
+        default_factory=lambda: ["currency_strength"]
     )
     high_authority_oppose_confidence: float = 0.6
     min_contributors: int = 2
