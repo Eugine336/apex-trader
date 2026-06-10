@@ -1388,12 +1388,14 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 deal_info = self.platforms.get_deal_close_info(oid, pos.platform)
                 if deal_info is not None:
                     broker_pnl = deal_info.pnl
+                    pnl_from_broker = True
                     exit_reason = deal_info.exit_reason
                     exit_reason_source = "deriv_poc" if pos.platform.startswith("deriv") else "mt5_deal"
                     raw_broker_reason = deal_info.raw_reason_code
                     raw_broker_comment = deal_info.raw_comment
                 else:
                     realized = self.platforms.get_realized_pnl(oid, pos.platform)
+                    pnl_from_broker = realized is not None
                     broker_pnl = realized if realized is not None else pos.broker_pnl
                     exit_reason = "BROKER_CLOSED_UNKNOWN"
                     exit_reason_source = "unknown"
@@ -1428,7 +1430,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     pos,
                     close_price,
                     exit_reason,
-                    close_result=fake_close if broker_pnl != 0.0 else None,
+                    close_result=fake_close if pnl_from_broker else None,
                     exit_reason_source=exit_reason_source,
                     raw_broker_reason=raw_broker_reason,
                     raw_broker_comment=raw_broker_comment,
@@ -2051,7 +2053,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         is_buy = pos.direction == "BUY"
         pnl_pips = (close_price - pos.entry_price) / pip_size if is_buy else (pos.entry_price - close_price) / pip_size
 
-        if close_result is not None and close_result.pnl != 0.0:
+        if close_result is not None:
             pnl_dollars = round(close_result.pnl, 2)
         else:
             pos_ctx = build_context_for_symbol(pos.symbol)
@@ -2063,6 +2065,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 info = INSTRUMENT_REGISTRY.get(pos.symbol.upper())
                 pip_value = info.pip_value_per_lot if info else 10.0
                 pnl_dollars = round(pnl_pips * pip_value * pos.lots, 2)
+            logger.warning(
+                "[pnl] Broker PnL unavailable for {} {} — using formula fallback (pnl_dollars={:.2f})",
+                pos.direction, pos.symbol, pnl_dollars,
+            )
 
         balance = self.platforms.get_platform_balance(pos.symbol)
         if balance:
