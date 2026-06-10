@@ -233,7 +233,7 @@ class ScoringConfig:
 
 @dataclass
 class ConfirmationPenaltyConfig:
-    enabled: bool = False
+    enabled: bool = True
     shadow_mode: bool = True
     vwap_wrong_side_penalty: int = 15
     divergence_both_tf_penalty: int = 15
