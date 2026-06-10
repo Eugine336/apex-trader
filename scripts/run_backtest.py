@@ -17,6 +17,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from brain.backtest_engine import BacktestEngine, DataLoader
+from config import AppConfig
 from loguru import logger
 
 
@@ -70,7 +71,9 @@ def main():
         account_login = account.login if account else "unknown"
         logger.info(f"MT5 initialized — account {account_login}")
 
+    config = AppConfig()
     engine = BacktestEngine(
+        config=config,
         starting_balance=args.balance,
         risk_per_trade=args.risk,
         slippage_pips=args.slippage,
