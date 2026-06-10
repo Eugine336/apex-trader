@@ -278,8 +278,14 @@ class ConsensusConfig:
         default_factory=lambda: ["structure", "currency_strength"]
     )
     high_authority_oppose_confidence: float = 0.6
+    min_contributors: int = 2
 
     def __post_init__(self) -> None:
+        if not isinstance(self.min_contributors, int) or self.min_contributors < 1:
+            raise ValueError(
+                f"ConsensusConfig.min_contributors must be an int >= 1, "
+                f"got {self.min_contributors!r}"
+            )
         for name, w in self.weights.items():
             if not isinstance(w, (int, float)) or not math.isfinite(w) or w < 0:
                 raise ValueError(
