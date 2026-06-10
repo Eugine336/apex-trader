@@ -278,29 +278,23 @@ def vote_from_fvg(fvgs: list, current_price: float, proximity: float) -> tuple[s
     return "NEUTRAL", 0.0
 
 
-def vote_from_liquidity(liq_map, sweep_is_reversal: bool = True) -> tuple[str, float]:
+def vote_from_liquidity(liq_mapper, m5_df, pip_size: float = 0.0001) -> tuple[str, float]:
     """
-    Extract from LiquidityMap.liquidity_bias.
-    When sweep_is_reversal (ICT logic): sell-side sweep → LONG, buy-side → SHORT.
+    Vote from the observed post-sweep price reaction — no static assumption.
+
+    Calls liq_mapper.classify_sweep_reaction to determine whether the most
+    recent interaction with a liquidity zone was a REVERSAL, CONTINUATION,
+    or NONE, and votes accordingly.
     """
-    bias = getattr(liq_map, "liquidity_bias", "NEUTRAL")
-    if bias == "NEUTRAL":
+    try:
+        kind, direction, conf = liq_mapper.classify_sweep_reaction(m5_df, pip_size)
+    except Exception:
         return "NEUTRAL", 0.0
 
-    conf = 0.6
+    if kind == "NONE" or direction == "NEUTRAL":
+        return "NEUTRAL", 0.0
 
-    if sweep_is_reversal:
-        if bias == "SELL_SIDE_SWEEP_LIKELY":
-            return "LONG", conf
-        elif bias == "BUY_SIDE_SWEEP_LIKELY":
-            return "SHORT", conf
-    else:
-        if bias == "SELL_SIDE_SWEEP_LIKELY":
-            return "SHORT", conf
-        elif bias == "BUY_SIDE_SWEEP_LIKELY":
-            return "LONG", conf
-
-    return "NEUTRAL", 0.0
+    return direction, max(0.0, min(conf, 1.0))
 
 
 def vote_from_momentum(

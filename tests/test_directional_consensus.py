@@ -254,23 +254,32 @@ class TestVoteFromWyckoff:
 
 
 class TestVoteFromLiquidity:
-    def test_sell_side_sweep_reversal(self):
-        from types import SimpleNamespace
-        lm = SimpleNamespace(liquidity_bias="SELL_SIDE_SWEEP_LIKELY")
-        d, c = vote_from_liquidity(lm, sweep_is_reversal=True)
-        assert d == "LONG"
+    def test_reaction_based_vote_returns_valid(self):
+        """vote_from_liquidity returns a valid (direction, confidence) tuple."""
+        import pandas as pd
+        from brain.liquidity_mapper import LiquidityMapper
+        rows = []
+        for i in range(30):
+            c = 1.0500 + i * 0.0003
+            rows.append({"open": c, "high": c + 0.0010, "low": c - 0.0010, "close": c, "time": pd.Timestamp.now()})
+        df = pd.DataFrame(rows)
+        mapper = LiquidityMapper()
+        d, c = vote_from_liquidity(mapper, df, pip_size=0.0001)
+        assert d in ("LONG", "SHORT", "NEUTRAL")
+        assert 0.0 <= c <= 1.0
 
-    def test_buy_side_sweep_reversal(self):
-        from types import SimpleNamespace
-        lm = SimpleNamespace(liquidity_bias="BUY_SIDE_SWEEP_LIKELY")
-        d, c = vote_from_liquidity(lm, sweep_is_reversal=True)
-        assert d == "SHORT"
+    def test_fail_closed_on_none(self):
+        from brain.liquidity_mapper import LiquidityMapper
+        mapper = LiquidityMapper()
+        d, c = vote_from_liquidity(mapper, None, pip_size=0.0001)
+        assert d == "NEUTRAL"
+        assert c == 0.0
 
-    def test_continuation_mode(self):
-        from types import SimpleNamespace
-        lm = SimpleNamespace(liquidity_bias="SELL_SIDE_SWEEP_LIKELY")
-        d, c = vote_from_liquidity(lm, sweep_is_reversal=False)
-        assert d == "SHORT"
+    def test_no_sweep_is_reversal_param(self):
+        """The static bias flag must be gone from the signature."""
+        import inspect
+        sig = inspect.signature(vote_from_liquidity)
+        assert "sweep_is_reversal" not in sig.parameters
 
 
 class TestVoteFromOrderBlocks:
