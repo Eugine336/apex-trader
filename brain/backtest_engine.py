@@ -329,6 +329,19 @@ class BacktestEngine:
         self.commission_per_lot = commission_per_lot
         self.broker_loader = broker_loader or BrokerDataLoader()
 
+    def _require_decision_engine(self) -> None:
+        """Raise loudly if the live decision engine is unavailable."""
+        missing = []
+        if self.scanner is None:
+            missing.append("PairScanner")
+        if self.entry_engine is None:
+            missing.append("EntryEngine")
+        if missing:
+            raise RuntimeError(
+                f"Backtest decision engine unavailable ({', '.join(missing)} "
+                f"failed to construct); cannot run a representative backtest"
+            )
+
     def run(
         self,
         pair: str,
@@ -342,6 +355,7 @@ class BacktestEngine:
         atr_stop_ratio_max: float = 2.0,
         atr_stop_max_risk_mult: float = 4.0,
     ) -> BacktestResult:
+        self._require_decision_engine()
         if "M1" not in data_by_timeframe:
             raise ValueError("M1 timeframe is required for replay execution")
 
@@ -580,6 +594,7 @@ class BacktestEngine:
             overlapping).  When *n_folds* == 1, *folds* contains one
             entry and *aggregate* equals the single test result.
         """
+        self._require_decision_engine()
         m1 = data_by_timeframe["M1"].sort_values("time").reset_index(drop=True)
         total_bars = len(m1)
         usable_start = self.min_history
@@ -722,7 +737,7 @@ class BacktestEngine:
                 utc_now=now,
             )
         except Exception as exc:
-            logger.debug("[backtest] scan_pair failed for {}: {}", pair, exc)
+            logger.warning("[backtest] scan_pair failed for {}: {}", pair, exc)
             return None
 
         if result.status != "READY" or result.direction not in ("LONG", "SHORT"):
@@ -743,7 +758,7 @@ class BacktestEngine:
                 m15_df=m15,
             )
         except Exception as exc:
-            logger.debug("[backtest] calculate_entry failed for {}: {}", pair, exc)
+            logger.warning("[backtest] calculate_entry failed for {}: {}", pair, exc)
             return None
 
         from trigger.entry_engine import EntrySignal, EntryRejection
