@@ -396,6 +396,75 @@ class ShadowEngine:
         con.close()
         return [{"actual_r": r[0]} for r in rows]
 
+    def reconcile_with_phase4(self, shadow_store) -> dict:
+        """
+        Compare RL shadow trades with Phase 4 shadow contracts
+        tagged with rejecting_gate='rl_shadow'.
+
+        Returns diagnostic summary — not a live path.
+        """
+        try:
+            con = sqlite3.connect(self.db_path)
+            rl_rows = con.execute(
+                "SELECT pair, entry, actual_r, close_time, close_reason "
+                "FROM shadow_trades WHERE closed=1 "
+                "ORDER BY close_time DESC LIMIT 500"
+            ).fetchall()
+            con.close()
+        except Exception:
+            return {"error": "failed to read RL shadow trades"}
+
+        rl_by_pair: dict[str, list] = {}
+        for r in rl_rows:
+            pair = r[0]
+            if pair not in rl_by_pair:
+                rl_by_pair[pair] = []
+            rl_by_pair[pair].append({
+                "entry": r[1], "actual_r": r[2],
+                "close_time": r[3], "reason": r[4],
+            })
+
+        try:
+            p4_contracts = shadow_store.fetch_resolved(gate="rl_shadow", limit=500)
+        except Exception:
+            p4_contracts = []
+
+        p4_by_pair: dict[str, list] = {}
+        for c in p4_contracts:
+            sym = c.get("symbol", c.get("pair", ""))
+            if sym not in p4_by_pair:
+                p4_by_pair[sym] = []
+            p4_by_pair[sym].append(c)
+
+        matched = 0
+        rl_only_pairs = set(rl_by_pair.keys()) - set(p4_by_pair.keys())
+        p4_only_pairs = set(p4_by_pair.keys()) - set(rl_by_pair.keys())
+        both_pairs = set(rl_by_pair.keys()) & set(p4_by_pair.keys())
+
+        r_rl = []
+        r_p4 = []
+        for pair in both_pairs:
+            n = min(len(rl_by_pair[pair]), len(p4_by_pair[pair]))
+            matched += n
+            for i in range(n):
+                r_rl.append(rl_by_pair[pair][i]["actual_r"])
+                r_p4.append(p4_by_pair[pair][i].get("r_multiple", 0.0))
+
+        correlation = None
+        if len(r_rl) >= 5:
+            r_rl_a = np.array(r_rl)
+            r_p4_a = np.array(r_p4)
+            std_prod = r_rl_a.std() * r_p4_a.std()
+            if std_prod > 1e-8:
+                correlation = float(np.corrcoef(r_rl_a, r_p4_a)[0, 1])
+
+        return {
+            "matched": matched,
+            "rl_only": len(rl_only_pairs),
+            "phase4_only": len(p4_only_pairs),
+            "r_multiple_correlation": correlation,
+        }
+
     def _load(self, path: str):
         import torch
         from .contracts import assert_compatible, OBS_FEATURES, N_CONTEXT_FEATURES
