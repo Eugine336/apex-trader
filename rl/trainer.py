@@ -355,7 +355,3 @@ class PPOTrainer:
     def _flush_log(self):
         with open(self.cfg.log_path, "w") as f:
             json.dump(self.log, f, indent=2)
-
-
-# Missing import
-import torch.nn.functional as F
