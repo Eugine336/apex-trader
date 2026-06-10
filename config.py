@@ -256,9 +256,9 @@ class ConfirmationPenaltyConfig:
 # ---------------------------------------------------------------------------
 
 _DEFAULT_CONSENSUS_WEIGHTS: dict[str, float] = {
-    "structure": 3.0,
-    "currency_strength": 2.0,
-    "wyckoff": 1.5,
+    "structure": 1.0,
+    "currency_strength": 1.0,
+    "wyckoff": 1.0,
     "volume": 1.0,
     "order_block": 1.0,
     "fvg": 1.0,
@@ -275,11 +275,17 @@ class ConsensusConfig:
     min_net_score: float = 1.5
     min_agreement: float = 0.6
     high_authority_modules: list[str] = field(
-        default_factory=lambda: ["structure", "currency_strength"]
+        default_factory=lambda: ["currency_strength"]
     )
     high_authority_oppose_confidence: float = 0.6
+    min_contributors: int = 2
 
     def __post_init__(self) -> None:
+        if not isinstance(self.min_contributors, int) or self.min_contributors < 1:
+            raise ValueError(
+                f"ConsensusConfig.min_contributors must be an int >= 1, "
+                f"got {self.min_contributors!r}"
+            )
         for name, w in self.weights.items():
             if not isinstance(w, (int, float)) or not math.isfinite(w) or w < 0:
                 raise ValueError(

@@ -353,6 +353,7 @@ class PairScanner:
                 min_agreement=cc.min_agreement,
                 high_authority_modules=cc.high_authority_modules,
                 high_authority_oppose_confidence=cc.high_authority_oppose_confidence,
+                min_contributors=cc.min_contributors,
             )
             trade_dir = decision.direction
             logger.info("[consensus] {} — {}", pair, decision.summary)
