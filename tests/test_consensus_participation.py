@@ -171,3 +171,34 @@ class TestConsensusConfigMinContributors:
     def test_min_contributors_one_accepted(self):
         cc = ConsensusConfig(min_contributors=1)
         assert cc.min_contributors == 1
+
+
+# ── Default config assertions ────────────────────────────────────────────
+
+class TestConsensusConfigDefaults:
+    """Assert the production defaults: equal weights, no structure veto, 0.67 agreement."""
+
+    def test_all_weights_equal_one(self):
+        cc = ConsensusConfig()
+        for module, weight in cc.weights.items():
+            assert weight == 1.0, f"{module} weight should be 1.0, got {weight}"
+
+    def test_nine_modules_present(self):
+        cc = ConsensusConfig()
+        expected = {
+            "structure", "currency_strength", "wyckoff", "volume",
+            "order_block", "fvg", "liquidity", "momentum", "vwap",
+        }
+        assert set(cc.weights.keys()) == expected
+
+    def test_high_authority_is_currency_strength_only(self):
+        cc = ConsensusConfig()
+        assert cc.high_authority_modules == ["currency_strength"]
+
+    def test_structure_not_in_high_authority(self):
+        cc = ConsensusConfig()
+        assert "structure" not in cc.high_authority_modules
+
+    def test_min_agreement_is_067(self):
+        cc = ConsensusConfig()
+        assert cc.min_agreement == 0.67
