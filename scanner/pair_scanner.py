@@ -303,7 +303,7 @@ class PairScanner:
             # Liquidity vote
             liq_map = self.liquidity.map(h1_df, pip_size)
             try:
-                l_dir, l_conf = vote_from_liquidity(liq_map, cc.liquidity_sweep_is_reversal)
+                l_dir, l_conf = vote_from_liquidity(self.liquidity, m5_df, pip_size)
                 dir_votes.append(Vote("liquidity", l_dir, l_conf, cc.weights.get("liquidity", 1.0)))
             except Exception as exc:
                 logger.warning("[consensus] liquidity vote failed, abstaining: {}", exc)

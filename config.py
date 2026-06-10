@@ -278,7 +278,6 @@ class ConsensusConfig:
         default_factory=lambda: ["structure", "currency_strength"]
     )
     high_authority_oppose_confidence: float = 0.6
-    liquidity_sweep_is_reversal: bool = True
 
     def __post_init__(self) -> None:
         for name, w in self.weights.items():
