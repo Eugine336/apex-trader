@@ -5,6 +5,7 @@ risk parameters, and the complete instrument registry covering Forex,
 commodities, indices, and Deriv synthetics.
 """
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from loguru import logger
@@ -463,6 +464,57 @@ class RiskConfig:
     # reduces position size via get_size_multiplier.  Default OFF — enable
     # after observing live execution logs to validate grade thresholds.
     execution_quality_sizing_enabled: bool = False
+
+    def __post_init__(self) -> None:
+        def _check_finite_positive(name: str, val: float) -> None:
+            if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
+                raise ValueError(
+                    f"RiskConfig.{name} must be a finite number > 0, got {val!r}"
+                )
+
+        def _check_finite_non_negative(name: str, val: float) -> None:
+            if not isinstance(val, (int, float)) or not math.isfinite(val) or val < 0:
+                raise ValueError(
+                    f"RiskConfig.{name} must be a finite number >= 0, got {val!r}"
+                )
+
+        _check_finite_positive("risk_per_trade_pct", self.risk_per_trade_pct)
+        if self.risk_per_trade_pct >= 100:
+            raise ValueError(
+                f"RiskConfig.risk_per_trade_pct must be < 100, got {self.risk_per_trade_pct!r}"
+            )
+        _check_finite_positive("max_daily_drawdown_pct", self.max_daily_drawdown_pct)
+        _check_finite_positive("max_weekly_drawdown_pct", self.max_weekly_drawdown_pct)
+        _check_finite_positive("min_risk_reward", self.min_risk_reward)
+        _check_finite_positive("max_spread_multiplier", self.max_spread_multiplier)
+        _check_finite_positive("deriv_min_stake_usd", self.deriv_min_stake_usd)
+        _check_finite_positive("backtest_starting_balance_usd", self.backtest_starting_balance_usd)
+        _check_finite_positive("margin_warn_pct", self.margin_warn_pct)
+        _check_finite_positive("margin_block_entry_pct", self.margin_block_entry_pct)
+        _check_finite_positive("margin_flatten_pct", self.margin_flatten_pct)
+        _check_finite_non_negative("micro_account_threshold_usd", self.micro_account_threshold_usd)
+
+        if not isinstance(self.max_open_trades, int) or self.max_open_trades < 1:
+            raise ValueError(
+                f"RiskConfig.max_open_trades must be an int >= 1, got {self.max_open_trades!r}"
+            )
+        if not isinstance(self.max_correlated_trades, int) or self.max_correlated_trades < 0:
+            raise ValueError(
+                f"RiskConfig.max_correlated_trades must be an int >= 0, got {self.max_correlated_trades!r}"
+            )
+
+        if self.max_weekly_drawdown_pct < self.max_daily_drawdown_pct:
+            raise ValueError(
+                f"RiskConfig.max_weekly_drawdown_pct ({self.max_weekly_drawdown_pct}) "
+                f"must be >= max_daily_drawdown_pct ({self.max_daily_drawdown_pct})"
+            )
+        if not (self.margin_warn_pct >= self.margin_block_entry_pct >= self.margin_flatten_pct):
+            raise ValueError(
+                f"RiskConfig margin levels must be descending: "
+                f"margin_warn_pct ({self.margin_warn_pct}) >= "
+                f"margin_block_entry_pct ({self.margin_block_entry_pct}) >= "
+                f"margin_flatten_pct ({self.margin_flatten_pct})"
+            )
 
 
 # ---------------------------------------------------------------------------
