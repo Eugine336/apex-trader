@@ -18,6 +18,8 @@ class HealthReport:
     cycles_since_last_scan: int
     consecutive_scan_failures: int
     consecutive_trade_failures: int
+    quality_failures_total: int = 0
+    quality_all_failed_cycles: int = 0
     warnings: list[str] = field(default_factory=list)
 
 
@@ -41,6 +43,8 @@ class HealthWatchdog:
         self._cycles_since_scan = 0
         self._consecutive_scan_failures = 0
         self._consecutive_trade_failures = 0
+        self._quality_failures_total = 0
+        self._quality_all_failed_cycles = 0
 
     def record_scan_success(self) -> None:
         self._last_successful_scan = datetime.now(timezone.utc)
@@ -56,6 +60,14 @@ class HealthWatchdog:
 
     def record_trade_check_failure(self) -> None:
         self._consecutive_trade_failures += 1
+
+    def record_quality_failures(self, failures: int, total_scans: int) -> None:
+        """Record OQ/EQ quality computation failures from a scan cycle."""
+        self._quality_failures_total += failures
+        if total_scans > 0 and failures == total_scans:
+            self._quality_all_failed_cycles += 1
+        else:
+            self._quality_all_failed_cycles = 0
 
     def record_cycle(self) -> None:
         self._cycles += 1
@@ -112,6 +124,13 @@ class HealthWatchdog:
                 f"{self._consecutive_trade_failures} consecutive trade check failures"
             )
 
+        if self._quality_all_failed_cycles >= 2:
+            warnings.append(
+                f"OQ/EQ quality computation failing on ALL setups for "
+                f"{self._quality_all_failed_cycles} consecutive cycles "
+                f"({self._quality_failures_total} total failures) — no trades can reach READY"
+            )
+
         is_healthy = len(warnings) == 0
 
         return HealthReport(
@@ -122,5 +141,7 @@ class HealthWatchdog:
             cycles_since_last_scan=self._cycles_since_scan,
             consecutive_scan_failures=self._consecutive_scan_failures,
             consecutive_trade_failures=self._consecutive_trade_failures,
+            quality_failures_total=self._quality_failures_total,
+            quality_all_failed_cycles=self._quality_all_failed_cycles,
             warnings=warnings,
         )
