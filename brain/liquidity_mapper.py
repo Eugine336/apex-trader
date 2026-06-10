@@ -246,6 +246,136 @@ class LiquidityMapper:
 
         return False
 
+    def classify_sweep_reaction(
+        self, df: pd.DataFrame, pip_size: float = 0.0001
+    ) -> tuple[str, str, float]:
+        """
+        Classify the most recent liquidity interaction from observed price action.
+
+        Maps zones from all bars EXCEPT the last (so zones reflect pre-reaction
+        state), then classifies the last bar's interaction with those zones.
+
+        Returns (kind, direction, confidence):
+            kind:       "REVERSAL" | "CONTINUATION" | "NONE"
+            direction:  "LONG" | "SHORT" | "NEUTRAL"
+            confidence: 0.0 .. 1.0
+        """
+        try:
+            if df is None or len(df) < 5:
+                return ("NONE", "NEUTRAL", 0.0)
+
+            close_vals = df["close"].values
+            if np.isnan(close_vals[-1]):
+                return ("NONE", "NEUTRAL", 0.0)
+
+            pre_reaction = df.iloc[:-1]
+            if len(pre_reaction) < 3:
+                return ("NONE", "NEUTRAL", 0.0)
+
+            self.equal_threshold = 3.0 * pip_size
+            equal_highs = self._find_equal_levels(pre_reaction, "high")
+            equal_lows = self._find_equal_levels(pre_reaction, "low")
+            swing_highs = self._find_swing_liquidity(pre_reaction, "high")
+            swing_lows = self._find_swing_liquidity(pre_reaction, "low")
+            all_zones = equal_highs + swing_highs + equal_lows + swing_lows
+
+            if not all_zones:
+                return ("NONE", "NEUTRAL", 0.0)
+
+            atr = self._recent_atr(df, pip_size)
+            if atr <= 0:
+                return ("NONE", "NEUTRAL", 0.0)
+
+            best_kind = "NONE"
+            best_dir = "NEUTRAL"
+            best_conf = 0.0
+
+            for zone in all_zones:
+                kind, direction, conf = self._classify_zone_reaction(
+                    df, zone, pip_size, atr
+                )
+                if conf > best_conf:
+                    best_kind = kind
+                    best_dir = direction
+                    best_conf = conf
+
+            return (best_kind, best_dir, best_conf)
+
+        except Exception as exc:
+            from loguru import logger
+            logger.warning("[liquidity] classify_sweep_reaction failed, returning NONE: {}", exc)
+            return ("NONE", "NEUTRAL", 0.0)
+
+    def _classify_zone_reaction(
+        self,
+        df: pd.DataFrame,
+        zone: LiquidityZone,
+        pip_size: float,
+        atr: float,
+    ) -> tuple[str, str, float]:
+        """Classify the reaction to a single zone from the last few candles."""
+        threshold = 2 * pip_size
+        last = df.iloc[-1]
+        prev = df.iloc[-2]
+
+        if zone.kind == "BUY_SIDE":
+            wick_pierced = last["high"] >= zone.price - threshold
+            prev_below = prev["close"] < zone.price
+
+            if wick_pierced and prev_below:
+                closed_below = last["close"] < zone.price
+                if closed_below:
+                    wick_above = last["high"] - zone.price
+                    conf = min(max(wick_above / atr, 0.0), 1.0) if atr > 0 else 0.0
+                    conf = max(conf, 0.3)
+                    return ("REVERSAL", "SHORT", conf)
+
+                displacement = last["close"] - zone.price
+                body = abs(last["close"] - last["open"])
+                if displacement > threshold and body > threshold:
+                    conf = min(displacement / atr, 1.0) if atr > 0 else 0.0
+                    conf = max(conf, 0.3)
+                    return ("CONTINUATION", "LONG", conf)
+
+        elif zone.kind == "SELL_SIDE":
+            wick_pierced = last["low"] <= zone.price + threshold
+            prev_above = prev["close"] > zone.price
+
+            if wick_pierced and prev_above:
+                closed_above = last["close"] > zone.price
+                if closed_above:
+                    wick_below = zone.price - last["low"]
+                    conf = min(max(wick_below / atr, 0.0), 1.0) if atr > 0 else 0.0
+                    conf = max(conf, 0.3)
+                    return ("REVERSAL", "LONG", conf)
+
+                displacement = zone.price - last["close"]
+                body = abs(last["close"] - last["open"])
+                if displacement > threshold and body > threshold:
+                    conf = min(displacement / atr, 1.0) if atr > 0 else 0.0
+                    conf = max(conf, 0.3)
+                    return ("CONTINUATION", "SHORT", conf)
+
+        return ("NONE", "NEUTRAL", 0.0)
+
+    @staticmethod
+    def _recent_atr(df: pd.DataFrame, pip_size: float, period: int = 14) -> float:
+        """Simple ATR from the last N candles."""
+        if len(df) < period + 1:
+            return 0.0
+        highs = df["high"].values[-(period + 1):]
+        lows = df["low"].values[-(period + 1):]
+        closes = df["close"].values[-(period + 1):]
+        trs = []
+        for i in range(1, len(highs)):
+            tr = max(
+                highs[i] - lows[i],
+                abs(highs[i] - closes[i - 1]),
+                abs(lows[i] - closes[i - 1]),
+            )
+            trs.append(tr)
+        return float(np.mean(trs)) if trs else 0.0
+
     def get_nearest_liquidity(
         self, liq_map: LiquidityMap, direction: str
     ) -> Optional[LiquidityZone]:
