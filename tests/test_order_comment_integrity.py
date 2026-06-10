@@ -29,7 +29,7 @@ class TestBuildOrderComment:
         comment = build_order_comment("APND", key, score=70, session="NY")
         assert len(comment) <= _MT5_COMMENT_MAX
         assert key in comment
-        assert comment.startswith("APND|")
+        assert comment.startswith("APND-")
 
     def test_max_length_never_exceeded(self):
         key = "abcdef012345"
@@ -39,13 +39,13 @@ class TestBuildOrderComment:
     def test_no_score_no_session(self):
         key = "abcdef012345"
         comment = build_order_comment("APEX", key)
-        assert comment == "APEX|abcdef012345"
+        assert comment == "APEX-abcdef012345"
         assert len(comment) <= _MT5_COMMENT_MAX
 
     def test_idem_key_always_at_index_1(self):
         key = "a1b2c3d4e5f6"
         comment = build_order_comment("APEX", key, score=92, session="AS")
-        parts = comment.split("|")
+        parts = comment.split("-")
         assert parts[1] == key
 
     def test_idem_key_survives_long_session(self):
@@ -73,7 +73,7 @@ class TestSanitization:
     def test_pipe_in_session_removed(self):
         key = "a1b2c3d4e5f6"
         comment = build_order_comment("APEX", key, session="LN|NY")
-        parts = comment.split("|")
+        parts = comment.split("-")
         assert parts[1] == key
         assert len(comment) <= _MT5_COMMENT_MAX
 
@@ -81,7 +81,7 @@ class TestSanitization:
         key = "a1b2c3d4e5f6"
         comment = build_order_comment("APEX!!!", key, score=85, session="test@#$")
         for ch in comment:
-            assert ch == "|" or ch.isalnum() or ch in (".", "-", "_"), f"Unsafe char: {ch!r}"
+            assert ch.isalnum() or ch in (".", "-", "_"), f"Unsafe char: {ch!r}"
 
 
 class TestRoundTrip:
