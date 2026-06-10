@@ -310,6 +310,63 @@ class ConsensusConfig:
 
 
 # ---------------------------------------------------------------------------
+# Layered decision — Opportunity Quality + Entry Quality gates
+# ---------------------------------------------------------------------------
+
+_DEFAULT_OQ_WEIGHTS: dict[str, float] = {
+    "volatility": 1.5,
+    "spread": 1.5,
+    "news": 1.0,
+    "session": 1.5,
+    "reward_risk": 2.0,
+    "historical_ev": 1.0,
+    "volume_health": 1.0,
+}
+
+_DEFAULT_EQ_WEIGHTS: dict[str, float] = {
+    "ob_proximity": 2.0,
+    "fvg_proximity": 1.5,
+    "liquidity_proximity": 1.0,
+    "atr_extension": 1.5,
+    "stop_quality": 2.0,
+}
+
+
+@dataclass
+class LayeredDecisionConfig:
+    enabled: bool = True
+    opportunity_quality_min: float = 5.0
+    entry_quality_min: float = 5.0
+    oq_weights: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_OQ_WEIGHTS))
+    eq_weights: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_EQ_WEIGHTS))
+
+    def __post_init__(self) -> None:
+        for name, val in [
+            ("opportunity_quality_min", self.opportunity_quality_min),
+            ("entry_quality_min", self.entry_quality_min),
+        ]:
+            if not isinstance(val, (int, float)) or not math.isfinite(val):
+                raise ValueError(
+                    f"LayeredDecisionConfig.{name} must be finite, got {val!r}"
+                )
+            if val < 0 or val > 10:
+                raise ValueError(
+                    f"LayeredDecisionConfig.{name} must be in [0, 10], got {val!r}"
+                )
+
+        for label, wdict in [("oq_weights", self.oq_weights), ("eq_weights", self.eq_weights)]:
+            for k, w in wdict.items():
+                if not isinstance(w, (int, float)) or not math.isfinite(w) or w < 0:
+                    raise ValueError(
+                        f"LayeredDecisionConfig.{label}['{k}'] must be finite >= 0, got {w!r}"
+                    )
+            if not any(w > 0 for w in wdict.values()):
+                raise ValueError(
+                    f"LayeredDecisionConfig.{label} must have at least one weight > 0"
+                )
+
+
+# ---------------------------------------------------------------------------
 # Risk parameters
 # ---------------------------------------------------------------------------
 
@@ -595,6 +652,7 @@ class AppConfig:
     risk: RiskConfig = field(default_factory=RiskConfig)
     confirmation_penalties: ConfirmationPenaltyConfig = field(default_factory=ConfirmationPenaltyConfig)
     consensus: ConsensusConfig = field(default_factory=ConsensusConfig)
+    layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     scan_interval_seconds: int = 10
     max_consecutive_cycle_failures: int = 5
     log_level: str = "INFO"
