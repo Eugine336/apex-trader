@@ -146,7 +146,7 @@ class ApexMultiTFTradingEnv:
                 size = risk_amt / risk_dist if risk_dist > 0 else 0.0
 
                 if size > 0:
-                    comm = self.commission_per_lot * size
+                    comm = self.commission_per_lot * (size / 100_000)
                     self.balance -= comm
                     self.trade = MTFTrade(
                         direction=direction,
@@ -279,7 +279,7 @@ class ApexMultiTFTradingEnv:
         spread = self.typical_spread * self.pip_size
         exit_adj = exit_price - (spread if t.direction == 1 else -spread)
 
-        comm_close = self.commission_per_lot * t.size
+        comm_close = self.commission_per_lot * (t.size / 100_000)
         self.balance -= comm_close
 
         swap_cost = self._estimate_swap(t, current_time)
