@@ -698,6 +698,7 @@ class PairScanner:
                     pip_size=pip_size,
                     context_vec=ctx,
                     symbol_id=sym_id,
+                    base_direction=1 if trade_dir == "LONG" else (-1 if trade_dir == "SHORT" else 0),
                 )
 
                 if rl_result.vetoed:
