@@ -283,6 +283,9 @@ class RiskConfig:
     weekend_protection_enabled: bool = True
     weekend_protection_mode: str = "derisk"
     weekend_close_buffer_minutes: int = 15
+    micro_account_threshold_usd: float = 100.0
+    deriv_min_stake_usd: float = 0.35
+    backtest_starting_balance_usd: float = 10_000.0
     tp3_ladder_enabled: bool = True
     tp3_r_multiple: float = 5.0
     tp3_close_ratio: float = 0.25
