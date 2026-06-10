@@ -81,6 +81,7 @@ class ApexMultiTFTradingEnv:
         commission_per_lot: float = 3.5,
         slippage_factor: float = 0.3,
         swap_rates: dict | None = None,
+        reward_shaping: dict | None = None,
     ):
         self.instrument     = instrument.upper()
         self.initial_bal    = initial_balance
@@ -88,6 +89,7 @@ class ApexMultiTFTradingEnv:
         self.commission_per_lot = commission_per_lot
         self.slippage_factor = slippage_factor
         self.swap_rates      = swap_rates or {}
+        self._reward_shaping = reward_shaping or {}
 
         self._load_instrument_info()
         self._load_data(data_dir)
@@ -157,6 +159,10 @@ class ApexMultiTFTradingEnv:
                         open_time=current_time if current_time is not None else datetime.now(timezone.utc),
                         commission=comm,
                     )
+
+        if self._reward_shaping:
+            if self.trade is None:
+                reward += self._reward_shaping.get("hold_penalty", 0.0)
 
         equity = self._equity(close)
         self.equity_curve.append(equity)
@@ -299,7 +305,16 @@ class ApexMultiTFTradingEnv:
         })
 
         self.trade = None
-        return float(np.clip(r_multiple, -3.0, 3.0))
+        shaped_r = float(np.clip(r_multiple, -3.0, 3.0))
+
+        if self._reward_shaping:
+            bars_held = self.idx - t.open_bar
+            if reason == "sl" and bars_held <= 5:
+                shaped_r += self._reward_shaping.get("quick_loss_penalty", 0.0)
+            if reason == "timeout":
+                shaped_r += self._reward_shaping.get("timeout_penalty", 0.0)
+
+        return shaped_r
 
     def _estimate_swap(self, t: MTFTrade, close_time) -> float:
         if not self.swap_rates or close_time is None:

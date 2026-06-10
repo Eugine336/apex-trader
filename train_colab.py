@@ -40,15 +40,18 @@ import os
 # If running from Colab, clone or upload the rl/ package first
 # sys.path.insert(0, '/content/apex_rl')
 
-from rl.trainer import PPOTrainer, PPOConfig
+from rl.mtf_trainer import MTFPPOTrainer, MTFPPOConfig
 
 # ── Configure ────────────────────────────────────────────────────────────────
 
-CSV_PATH  = "EURUSD_H1.csv"     # change to your uploaded file
-PIP_SIZE  = 0.0001              # forex major pairs
-SAVE_DIR  = "checkpoints"
+DATA_DIR    = "data"
+INSTRUMENT  = "EURUSD"
+SAVE_DIR    = "checkpoints"
 
-cfg = PPOConfig(
+cfg = MTFPPOConfig(
+    data_dir       = DATA_DIR,
+    instrument     = INSTRUMENT,
+
     # Rollout
     rollout_steps  = 2048,
     n_epochs       = 10,
@@ -57,7 +60,7 @@ cfg = PPOConfig(
     # PPO
     clip_eps       = 0.2,
     vf_coef        = 0.5,
-    ent_coef       = 0.01,       # increase if agent stops exploring
+    ent_coef       = 0.01,
 
     # Learning
     lr             = 3e-4,
@@ -67,8 +70,7 @@ cfg = PPOConfig(
     gamma          = 0.99,
     gae_lambda     = 0.95,
 
-    # Duration — 2M steps is a good first run
-    # Increase to 5M+ for more emergence
+    # Duration
     total_steps    = 2_000_000,
 
     # Logging
@@ -77,12 +79,19 @@ cfg = PPOConfig(
     eval_interval  = 50_000,
 
     save_dir       = SAVE_DIR,
-    log_path       = "training_log.json",
+    log_path       = "training_log_mtf.json",
+
+    # Reward shaping (optional)
+    reward_shaping = {
+        "hold_penalty": -0.001,
+        "quick_loss_penalty": -0.5,
+        "timeout_penalty": -0.3,
+    },
 )
 
 # ── Train ────────────────────────────────────────────────────────────────────
 
-trainer = PPOTrainer(cfg, csv_path=CSV_PATH, pip_size=PIP_SIZE)
+trainer = MTFPPOTrainer(cfg)
 trainer.train()
 
 # ── Download checkpoint ───────────────────────────────────────────────────────
@@ -125,17 +134,23 @@ if log:
 import numpy as np
 import torch
 from rl.network import ApexRLAgent, ACTION_LABELS
+from rl.contracts import OBS_FEATURES, N_CONTEXT_FEATURES, build_symbol_vocab
 
-agent = ApexRLAgent()
-ckpt  = torch.load(f"{SAVE_DIR}/apex_rl_best.pt", map_location="cpu")
+vocab = build_symbol_vocab()
+agent = ApexRLAgent(
+    n_features=OBS_FEATURES,
+    context_dim=N_CONTEXT_FEATURES,
+    n_symbols=len(vocab),
+)
+ckpt  = torch.load(f"{SAVE_DIR}/apex_rl_mtf_best.pt", map_location="cpu")
 agent.load_state_dict(ckpt["agent"])
 agent.eval()
 
-# Dummy observation — replace with real obs from ObservationBuilder
-obs = np.random.randn(50, 12).astype(np.float32)
-action, confidence, expected_r = agent.predict(obs)
+obs = np.random.randn(50, OBS_FEATURES).astype(np.float32)
+ctx = np.zeros(N_CONTEXT_FEATURES, dtype=np.float32)
+action, confidence, expected_r = agent.predict(obs, context_vec=ctx, symbol_id=0)
 
-print(f"\nInference test:")
+print(f"\nInference test (MTF):")
 print(f"  Action     : {ACTION_LABELS[action]}")
 print(f"  Confidence : {confidence:.3f}")
 print(f"  Expected R : {expected_r:.3f}")

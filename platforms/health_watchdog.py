@@ -20,6 +20,10 @@ class HealthReport:
     consecutive_trade_failures: int
     quality_failures_total: int = 0
     quality_all_failed_cycles: int = 0
+    rl_enabled: bool = False
+    rl_stage: int = 0
+    rl_checkpoint_loaded: bool = False
+    rl_signal_failures: int = 0
     warnings: list[str] = field(default_factory=list)
 
 
@@ -45,6 +49,10 @@ class HealthWatchdog:
         self._consecutive_trade_failures = 0
         self._quality_failures_total = 0
         self._quality_all_failed_cycles = 0
+        self._rl_enabled = False
+        self._rl_stage = 0
+        self._rl_checkpoint_loaded = False
+        self._rl_consecutive_signal_failures = 0
 
     def record_scan_success(self) -> None:
         self._last_successful_scan = datetime.now(timezone.utc)
@@ -68,6 +76,18 @@ class HealthWatchdog:
             self._quality_all_failed_cycles += 1
         else:
             self._quality_all_failed_cycles = 0
+
+    def record_rl_status(self, enabled: bool, stage: int, checkpoint_loaded: bool) -> None:
+        """Record RL subsystem status."""
+        self._rl_enabled = enabled
+        self._rl_stage = stage
+        self._rl_checkpoint_loaded = checkpoint_loaded
+
+    def record_rl_signal_failure(self) -> None:
+        self._rl_consecutive_signal_failures += 1
+
+    def record_rl_signal_success(self) -> None:
+        self._rl_consecutive_signal_failures = 0
 
     def record_cycle(self) -> None:
         self._cycles += 1
@@ -131,6 +151,14 @@ class HealthWatchdog:
                 f"({self._quality_failures_total} total failures) — no trades can reach READY"
             )
 
+        if self._rl_enabled and not self._rl_checkpoint_loaded:
+            warnings.append("RL bridge enabled but checkpoint not loaded")
+
+        if self._rl_consecutive_signal_failures >= 5:
+            warnings.append(
+                f"RL signal generation failing: {self._rl_consecutive_signal_failures} consecutive failures"
+            )
+
         is_healthy = len(warnings) == 0
 
         return HealthReport(
@@ -143,5 +171,9 @@ class HealthWatchdog:
             consecutive_trade_failures=self._consecutive_trade_failures,
             quality_failures_total=self._quality_failures_total,
             quality_all_failed_cycles=self._quality_all_failed_cycles,
+            rl_enabled=self._rl_enabled,
+            rl_stage=self._rl_stage,
+            rl_checkpoint_loaded=self._rl_checkpoint_loaded,
+            rl_signal_failures=self._rl_consecutive_signal_failures,
             warnings=warnings,
         )
