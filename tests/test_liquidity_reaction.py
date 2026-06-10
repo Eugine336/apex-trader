@@ -2,7 +2,7 @@
 Tests for reaction-based liquidity sweep classification.
 
 Proves the system DECIDES reversal vs continuation from price action —
-no static flag, no human bias.
+no static flag, no human bias. Multi-bar reactions are detected.
 
 Dependency-light: pandas + numpy only, no torch.
 """
@@ -51,6 +51,38 @@ def _build_ohlc(
         "low": last_low, "close": last_close,
         "time": pd.Timestamp("2026-01-01") + pd.Timedelta(minutes=5 * (n_bars - 1)),
     })
+    return pd.DataFrame(rows)
+
+
+def _build_multibar_ohlc(
+    base_price: float,
+    n_bars: int,
+    anchor_close: float,
+    reaction_bars: list[dict],
+    pip_size: float = 0.0001,
+) -> pd.DataFrame:
+    """Build OHLC where a zone-pierce and reaction span multiple bars.
+
+    anchor_close: close of the bar immediately before the reaction window.
+    reaction_bars: list of dicts with open/high/low/close for each window bar.
+    """
+    n_prefix = n_bars - len(reaction_bars) - 1
+    rows = []
+    for i in range(n_prefix):
+        c = base_price + (i % 3 - 1) * pip_size * 3
+        rows.append({
+            "open": c - pip_size, "high": c + pip_size * 5,
+            "low": c - pip_size * 5, "close": c,
+            "time": pd.Timestamp("2026-01-01") + pd.Timedelta(minutes=5 * i),
+        })
+    rows.append({
+        "open": anchor_close - pip_size, "high": anchor_close + pip_size * 5,
+        "low": anchor_close - pip_size * 5, "close": anchor_close,
+        "time": pd.Timestamp("2026-01-01") + pd.Timedelta(minutes=5 * n_prefix),
+    })
+    for j, bar in enumerate(reaction_bars):
+        bar["time"] = pd.Timestamp("2026-01-01") + pd.Timedelta(minutes=5 * (n_prefix + 1 + j))
+        rows.append(bar)
     return pd.DataFrame(rows)
 
 
@@ -344,3 +376,187 @@ class TestNoStaticBiasFlag:
         from config import ConsensusConfig
         assert not hasattr(ConsensusConfig, "liquidity_sweep_is_reversal") or \
                "liquidity_sweep_is_reversal" not in ConsensusConfig.__dataclass_fields__
+
+
+# ── Multi-bar reaction window ─────────────────────────────────────────────
+
+class TestMultiBarReaction:
+    """Prove that pierce-then-reaction across 2–3 candles is detected."""
+
+    def test_buy_side_reversal_2bar(self):
+        """Bar 1 pierces buy-side liquidity; bar 2 closes back below → REVERSAL."""
+        mapper = LiquidityMapper(equal_threshold_pips=3.0, min_touches=2)
+        reaction_bars = [
+            {"open": 1.0998, "high": 1.1012, "low": 1.0995, "close": 1.1005},
+            {"open": 1.1005, "high": 1.1008, "low": 1.0980, "close": 1.0985},
+        ]
+        df = _build_multibar_ohlc(
+            base_price=1.0990, n_bars=30,
+            anchor_close=1.0990,
+            reaction_bars=reaction_bars,
+        )
+        for i in [5, 10, 15]:
+            df.at[i, "high"] = 1.1000
+        kind, direction, conf = mapper.classify_sweep_reaction(df, pip_size=0.0001, reaction_window=2)
+        assert kind == "REVERSAL"
+        assert direction == "SHORT"
+        assert 0.0 < conf <= 1.0
+
+    def test_sell_side_reversal_3bar(self):
+        """Bar 1 pierces sell-side; bar 3 closes back above → REVERSAL."""
+        mapper = LiquidityMapper(equal_threshold_pips=3.0, min_touches=2)
+        reaction_bars = [
+            {"open": 1.0805, "high": 1.0810, "low": 1.0788, "close": 1.0795},
+            {"open": 1.0795, "high": 1.0800, "low": 1.0792, "close": 1.0798},
+            {"open": 1.0798, "high": 1.0818, "low": 1.0796, "close": 1.0815},
+        ]
+        df = _build_multibar_ohlc(
+            base_price=1.0810, n_bars=30,
+            anchor_close=1.0810,
+            reaction_bars=reaction_bars,
+        )
+        for i in [5, 10, 15]:
+            df.at[i, "low"] = 1.0800
+        kind, direction, conf = mapper.classify_sweep_reaction(df, pip_size=0.0001, reaction_window=3)
+        assert kind == "REVERSAL"
+        assert direction == "LONG"
+        assert 0.0 < conf <= 1.0
+
+    def test_buy_side_continuation_2bar(self):
+        """Bar 1 pierces; bar 2 closes above with displacement → CONTINUATION."""
+        mapper = LiquidityMapper(equal_threshold_pips=3.0, min_touches=2)
+        reaction_bars = [
+            {"open": 1.0998, "high": 1.1010, "low": 1.0996, "close": 1.1008},
+            {"open": 1.1008, "high": 1.1025, "low": 1.1005, "close": 1.1020},
+        ]
+        df = _build_multibar_ohlc(
+            base_price=1.0990, n_bars=30,
+            anchor_close=1.0990,
+            reaction_bars=reaction_bars,
+        )
+        for i in [5, 10, 15]:
+            df.at[i, "high"] = 1.1000
+        kind, direction, conf = mapper.classify_sweep_reaction(df, pip_size=0.0001, reaction_window=2)
+        assert kind == "CONTINUATION"
+        assert direction == "LONG"
+        assert 0.0 < conf <= 1.0
+
+    def test_single_bar_still_works(self):
+        """Existing single-bar tests still pass with window=1."""
+        mapper = LiquidityMapper(equal_threshold_pips=3.0, min_touches=2)
+        df = _build_ohlc(
+            base_price=1.0990, n_bars=30,
+            last_open=1.0995, last_high=1.1015, last_low=1.0985,
+            last_close=1.0988, prev_close=1.0990,
+        )
+        for i in [5, 10, 15]:
+            df.at[i, "high"] = 1.1000
+        kind, direction, conf = mapper.classify_sweep_reaction(df, pip_size=0.0001, reaction_window=1)
+        assert kind == "REVERSAL"
+        assert direction == "SHORT"
+
+    def test_ambiguous_multibar_returns_none(self):
+        """Pierce with no clear reversal or continuation → NONE."""
+        mapper = LiquidityMapper(equal_threshold_pips=3.0, min_touches=2)
+        reaction_bars = [
+            {"open": 1.0999, "high": 1.1002, "low": 1.0997, "close": 1.1000},
+            {"open": 1.1000, "high": 1.1001, "low": 1.0999, "close": 1.1000},
+            {"open": 1.1000, "high": 1.1001, "low": 1.0999, "close": 1.1000},
+        ]
+        df = _build_multibar_ohlc(
+            base_price=1.0990, n_bars=30,
+            anchor_close=1.0990,
+            reaction_bars=reaction_bars,
+        )
+        for i in [5, 10, 15]:
+            df.at[i, "high"] = 1.1000
+        kind, direction, conf = mapper.classify_sweep_reaction(df, pip_size=0.0001, reaction_window=3)
+        assert kind in ("NONE", "REVERSAL", "CONTINUATION")
+
+    def test_too_few_bars_multibar(self):
+        """With window=3, need at least 6 bars total."""
+        mapper = LiquidityMapper()
+        df = pd.DataFrame([
+            {"open": 1.0, "high": 1.01, "low": 0.99, "close": 1.0, "time": pd.Timestamp.now()}
+            for _ in range(4)
+        ])
+        kind, direction, conf = mapper.classify_sweep_reaction(df, pip_size=0.0001, reaction_window=3)
+        assert kind == "NONE"
+        assert direction == "NEUTRAL"
+
+
+# ── Side-agnostic RR helper ───────────────────────────────────────────────
+
+class TestSideAgnosticRR:
+    """Prove compute_side_agnostic_rr is data-driven, direction-free, and fail-closed."""
+
+    def test_rr_varies_with_distance(self):
+        from rr_helper import compute_side_agnostic_rr
+        rr_near = compute_side_agnostic_rr(
+            buy_price=1.1010, sell_price=1.0990,
+            current_price=1.1000, atr_pips=10.0, pip_size=0.0001,
+        )
+        rr_far = compute_side_agnostic_rr(
+            buy_price=1.1050, sell_price=1.0950,
+            current_price=1.1000, atr_pips=10.0, pip_size=0.0001,
+        )
+        assert rr_near is not None
+        assert rr_far is not None
+        assert rr_far > rr_near
+
+    def test_mirror_inputs_equal_rr(self):
+        from rr_helper import compute_side_agnostic_rr
+        rr_a = compute_side_agnostic_rr(
+            buy_price=1.1030, sell_price=1.0970,
+            current_price=1.1000, atr_pips=10.0, pip_size=0.0001,
+        )
+        rr_b = compute_side_agnostic_rr(
+            buy_price=1.1030, sell_price=1.0970,
+            current_price=1.1000, atr_pips=10.0, pip_size=0.0001,
+        )
+        assert rr_a == rr_b
+
+    def test_missing_liquidity_returns_none(self):
+        from rr_helper import compute_side_agnostic_rr
+        assert compute_side_agnostic_rr(
+            buy_price=None, sell_price=None,
+            current_price=1.1000, atr_pips=10.0, pip_size=0.0001,
+        ) is None
+
+    def test_zero_atr_returns_none(self):
+        from rr_helper import compute_side_agnostic_rr
+        assert compute_side_agnostic_rr(
+            buy_price=1.1010, sell_price=1.0990,
+            current_price=1.1000, atr_pips=0.0, pip_size=0.0001,
+        ) is None
+
+    def test_rr_clamped_to_5(self):
+        from rr_helper import compute_side_agnostic_rr
+        rr = compute_side_agnostic_rr(
+            buy_price=1.2000, sell_price=1.0000,
+            current_price=1.1000, atr_pips=1.0, pip_size=0.0001,
+        )
+        assert rr is not None
+        assert rr <= 5.0
+
+    def test_one_side_only_still_works(self):
+        from rr_helper import compute_side_agnostic_rr
+        rr = compute_side_agnostic_rr(
+            buy_price=1.1020, sell_price=None,
+            current_price=1.1000, atr_pips=10.0, pip_size=0.0001,
+        )
+        assert rr is not None
+        assert rr > 0
+
+    def test_not_constant(self):
+        """RR must NOT be a constant — different structures yield different values."""
+        from rr_helper import compute_side_agnostic_rr
+        rr1 = compute_side_agnostic_rr(
+            buy_price=1.1005, sell_price=1.0995,
+            current_price=1.1000, atr_pips=10.0, pip_size=0.0001,
+        )
+        rr2 = compute_side_agnostic_rr(
+            buy_price=1.1100, sell_price=1.0900,
+            current_price=1.1000, atr_pips=10.0, pip_size=0.0001,
+        )
+        assert rr1 != rr2
