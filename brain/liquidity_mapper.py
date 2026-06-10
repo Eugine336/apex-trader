@@ -247,13 +247,15 @@ class LiquidityMapper:
         return False
 
     def classify_sweep_reaction(
-        self, df: pd.DataFrame, pip_size: float = 0.0001
+        self, df: pd.DataFrame, pip_size: float = 0.0001,
+        reaction_window: int = 3,
     ) -> tuple[str, str, float]:
         """
         Classify the most recent liquidity interaction from observed price action.
 
-        Maps zones from all bars EXCEPT the last (so zones reflect pre-reaction
-        state), then classifies the last bar's interaction with those zones.
+        Maps zones from bars BEFORE the reaction window (so zones reflect
+        pre-reaction state), then inspects the last *reaction_window* bars for
+        a pierce-then-reaction sequence across multiple candles.
 
         Returns (kind, direction, confidence):
             kind:       "REVERSAL" | "CONTINUATION" | "NONE"
@@ -261,14 +263,18 @@ class LiquidityMapper:
             confidence: 0.0 .. 1.0
         """
         try:
-            if df is None or len(df) < 5:
+            if reaction_window < 1:
+                reaction_window = 3
+
+            min_bars = max(5, reaction_window + 3)
+            if df is None or len(df) < min_bars:
                 return ("NONE", "NEUTRAL", 0.0)
 
             close_vals = df["close"].values
             if np.isnan(close_vals[-1]):
                 return ("NONE", "NEUTRAL", 0.0)
 
-            pre_reaction = df.iloc[:-1]
+            pre_reaction = df.iloc[:-reaction_window]
             if len(pre_reaction) < 3:
                 return ("NONE", "NEUTRAL", 0.0)
 
@@ -286,13 +292,16 @@ class LiquidityMapper:
             if atr <= 0:
                 return ("NONE", "NEUTRAL", 0.0)
 
+            window_df = df.iloc[-reaction_window:]
+            anchor_close = df.iloc[-(reaction_window + 1)]["close"]
+
             best_kind = "NONE"
             best_dir = "NEUTRAL"
             best_conf = 0.0
 
             for zone in all_zones:
                 kind, direction, conf = self._classify_zone_reaction(
-                    df, zone, pip_size, atr
+                    window_df, zone, pip_size, atr, anchor_close,
                 )
                 if conf > best_conf:
                     best_kind = kind
@@ -308,55 +317,97 @@ class LiquidityMapper:
 
     def _classify_zone_reaction(
         self,
-        df: pd.DataFrame,
+        window_df: pd.DataFrame,
         zone: LiquidityZone,
         pip_size: float,
         atr: float,
+        anchor_close: float,
     ) -> tuple[str, str, float]:
-        """Classify the reaction to a single zone from the last few candles."""
+        """Classify the reaction to a single zone across a multi-bar window.
+
+        Scans the window for: (a) a pierce of the zone, then (b) on a
+        subsequent or same bar, a reversal (close back on original side)
+        or continuation (close beyond with displacement).  Returns the
+        highest-confidence classification found.
+        """
         threshold = 2 * pip_size
-        last = df.iloc[-1]
-        prev = df.iloc[-2]
+        highs = window_df["high"].values
+        lows = window_df["low"].values
+        opens = window_df["open"].values
+        closes = window_df["close"].values
+        n = len(window_df)
+
+        best = ("NONE", "NEUTRAL", 0.0)
 
         if zone.kind == "BUY_SIDE":
-            wick_pierced = last["high"] >= zone.price - threshold
-            prev_below = prev["close"] < zone.price
+            anchor_below = anchor_close < zone.price
+            if not anchor_below:
+                return best
 
-            if wick_pierced and prev_below:
-                closed_below = last["close"] < zone.price
-                if closed_below:
-                    wick_above = last["high"] - zone.price
-                    conf = min(max(wick_above / atr, 0.0), 1.0) if atr > 0 else 0.0
-                    conf = max(conf, 0.3)
-                    return ("REVERSAL", "SHORT", conf)
+            pierce_idx = -1
+            for i in range(n):
+                if highs[i] >= zone.price - threshold:
+                    pierce_idx = i
+                    break
 
-                displacement = last["close"] - zone.price
-                body = abs(last["close"] - last["open"])
+            if pierce_idx < 0:
+                return best
+
+            wick_above = float(max(highs[pierce_idx:]) - zone.price)
+            last_close = float(closes[-1])
+
+            if last_close < zone.price:
+                conf = min(max(wick_above / atr, 0.0), 1.0) if atr > 0 else 0.0
+                bars_to_reclaim = n - pierce_idx
+                if bars_to_reclaim > 1:
+                    speed_bonus = max(0.0, 0.1 * (3 - bars_to_reclaim))
+                    conf = min(conf + speed_bonus, 1.0)
+                conf = max(conf, 0.3)
+                best = ("REVERSAL", "SHORT", conf)
+            else:
+                displacement = last_close - zone.price
+                body = abs(last_close - float(opens[-1]))
                 if displacement > threshold and body > threshold:
                     conf = min(displacement / atr, 1.0) if atr > 0 else 0.0
                     conf = max(conf, 0.3)
-                    return ("CONTINUATION", "LONG", conf)
+                    if conf > best[2]:
+                        best = ("CONTINUATION", "LONG", conf)
 
         elif zone.kind == "SELL_SIDE":
-            wick_pierced = last["low"] <= zone.price + threshold
-            prev_above = prev["close"] > zone.price
+            anchor_above = anchor_close > zone.price
+            if not anchor_above:
+                return best
 
-            if wick_pierced and prev_above:
-                closed_above = last["close"] > zone.price
-                if closed_above:
-                    wick_below = zone.price - last["low"]
-                    conf = min(max(wick_below / atr, 0.0), 1.0) if atr > 0 else 0.0
-                    conf = max(conf, 0.3)
-                    return ("REVERSAL", "LONG", conf)
+            pierce_idx = -1
+            for i in range(n):
+                if lows[i] <= zone.price + threshold:
+                    pierce_idx = i
+                    break
 
-                displacement = zone.price - last["close"]
-                body = abs(last["close"] - last["open"])
+            if pierce_idx < 0:
+                return best
+
+            wick_below = float(zone.price - min(lows[pierce_idx:]))
+            last_close = float(closes[-1])
+
+            if last_close > zone.price:
+                conf = min(max(wick_below / atr, 0.0), 1.0) if atr > 0 else 0.0
+                bars_to_reclaim = n - pierce_idx
+                if bars_to_reclaim > 1:
+                    speed_bonus = max(0.0, 0.1 * (3 - bars_to_reclaim))
+                    conf = min(conf + speed_bonus, 1.0)
+                conf = max(conf, 0.3)
+                best = ("REVERSAL", "LONG", conf)
+            else:
+                displacement = zone.price - last_close
+                body = abs(last_close - float(opens[-1]))
                 if displacement > threshold and body > threshold:
                     conf = min(displacement / atr, 1.0) if atr > 0 else 0.0
                     conf = max(conf, 0.3)
-                    return ("CONTINUATION", "SHORT", conf)
+                    if conf > best[2]:
+                        best = ("CONTINUATION", "SHORT", conf)
 
-        return ("NONE", "NEUTRAL", 0.0)
+        return best
 
     @staticmethod
     def _recent_atr(df: pd.DataFrame, pip_size: float, period: int = 14) -> float:
