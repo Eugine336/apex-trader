@@ -2,20 +2,23 @@
 APEX TRADER — Backtest Engine
 Replays historical candles candle-by-candle so every decision can be stress-tested
 before real capital is exposed.
+
+Drives the LIVE decision path (PairScanner → EntryEngine) so backtest results
+are representative of the strategy actually traded in production.
 """
 
 import asyncio
 import copy
 import os
 import random
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Union
 
 import numpy as np
 import pandas as pd
 
-from brain.mtf_orchestrator import MTFOrchestrator, TradeSetup
+from brain.session_engine import SessionEngine
 from brain.trade_journal import TradeJournal, TradeRecord
 from loguru import logger
 
@@ -68,6 +71,26 @@ class BacktestResult:
     gross_profit_factor: float = 0.0
     net_profit_factor: float = 0.0
     atr_comparison: Optional[ATRComparisonResult] = None
+
+
+@dataclass
+class BacktestSetup:
+    """Internal bridge: holds the fields the simulation reads, populated from
+    PairScanResult (direction/score/regime) + EntrySignal (prices/targets)."""
+    direction: str
+    entry_price: float
+    stop_loss: float
+    tp1: float
+    tp2: float
+    score: int
+    confluences: list[str] = field(default_factory=list)
+    regime: str = ""
+    bias_strength: str = ""
+    timestamp: datetime = field(default_factory=lambda: datetime.now())
+    entry_type: str = "MARKET"
+    opportunity_quality: float = 0.0
+    entry_quality: float = 0.0
+    consensus_agreement: float = 0.0
 
 
 class DataLoader:
@@ -260,7 +283,9 @@ class BacktestEngine:
 
     def __init__(
         self,
-        orchestrator: Optional[MTFOrchestrator] = None,
+        config=None,
+        scanner=None,
+        entry_engine=None,
         journal: Optional[TradeJournal] = None,
         starting_balance: float = 10_000.0,
         risk_per_trade: float = 0.02,
@@ -270,9 +295,31 @@ class BacktestEngine:
         commission_per_lot: float = 3.5,
         broker_loader: Optional[BrokerDataLoader] = None,
     ):
-        self.orchestrator = orchestrator or MTFOrchestrator(
-            min_entry_score=65, pip_size=pip_size,
-        )
+        from config import AppConfig
+
+        self.config = config or AppConfig()
+
+        if scanner is not None:
+            self.scanner = scanner
+        else:
+            try:
+                from scanner.pair_scanner import PairScanner
+                self.scanner = PairScanner(config=self.config)
+            except Exception as exc:
+                logger.warning("[backtest] PairScanner unavailable ({}), backtest disabled", exc)
+                self.scanner = None
+
+        if entry_engine is not None:
+            self.entry_engine = entry_engine
+        else:
+            try:
+                from trigger.entry_engine import EntryEngine
+                self.entry_engine = EntryEngine(config=self.config)
+            except Exception as exc:
+                logger.warning("[backtest] EntryEngine unavailable ({}), backtest disabled", exc)
+                self.entry_engine = None
+
+        self.session_engine = SessionEngine()
         self.journal = journal
         self.starting_balance = starting_balance
         self.risk_per_trade = risk_per_trade
@@ -340,9 +387,7 @@ class BacktestEngine:
                 continue
 
             if open_trade is None:
-                setup = self.orchestrator.build_setup(
-                    pair=pair, data_by_timeframe=slices, utc_now=now
-                )
+                setup = self._decide_setup(pair, slices, now, balance)
                 if setup:
                     open_trade = self._open_trade(setup, now)
 
@@ -362,7 +407,7 @@ class BacktestEngine:
                             ratio_max=atr_stop_ratio_max,
                         )
                         if status == "modeled" and dist is not None:
-                            direction = setup.direction
+                            direction = open_trade["setup"].direction
                             atr_sl = atr_stop_price(open_trade["entry_price"], direction, dist)
                             atr_risk = dist
                             if atr_risk <= 0:
@@ -651,7 +696,80 @@ class BacktestEngine:
             slices[tf] = view.reset_index(drop=True)
         return slices
 
-    def _open_trade(self, setup: TradeSetup, now: datetime) -> dict:
+    def _decide_setup(
+        self,
+        pair: str,
+        slices: dict[str, pd.DataFrame],
+        now: datetime,
+        balance: float,
+    ) -> Optional[BacktestSetup]:
+        """Run the LIVE two-phase decision: PairScanner → EntryEngine."""
+        if self.scanner is None or self.entry_engine is None:
+            return None
+
+        h4 = slices.get("H4")
+        h1 = slices.get("H1")
+        m15 = slices.get("M15")
+        m5 = slices.get("M5")
+        m1 = slices.get("M1")
+
+        if h4 is None or h1 is None or m15 is None or m5 is None or m1 is None:
+            return None
+
+        try:
+            result = self.scanner.scan_pair(
+                pair=pair, h4_df=h4, h1_df=h1, m15_df=m15, m5_df=m5,
+                utc_now=now,
+            )
+        except Exception as exc:
+            logger.debug("[backtest] scan_pair failed for {}: {}", pair, exc)
+            return None
+
+        if result.status != "READY" or result.direction not in ("LONG", "SHORT"):
+            return None
+
+        try:
+            from trigger.entry_engine import EntrySignal, EntryRejection
+
+            signal = self.entry_engine.calculate_entry(
+                pair=pair,
+                direction=result.direction,
+                m5_df=m5,
+                m1_df=m1,
+                h1_df=h1,
+                scan_result=result,
+                account_balance=balance,
+                h4_df=h4,
+                m15_df=m15,
+            )
+        except Exception as exc:
+            logger.debug("[backtest] calculate_entry failed for {}: {}", pair, exc)
+            return None
+
+        from trigger.entry_engine import EntrySignal, EntryRejection
+
+        if isinstance(signal, EntryRejection):
+            # backtest: live-equivalent rejection, skip bar
+            return None
+
+        return BacktestSetup(
+            direction=signal.direction,
+            entry_price=signal.entry_price,
+            stop_loss=signal.stop_loss,
+            tp1=signal.tp1,
+            tp2=signal.tp2,
+            score=result.score,
+            confluences=list(signal.confluences),
+            regime=result.regime,
+            bias_strength=result.bias_strength,
+            timestamp=now,
+            entry_type=getattr(signal, "entry_type", "MARKET"),
+            opportunity_quality=getattr(result, "opportunity_quality", 0.0),
+            entry_quality=getattr(result, "entry_quality", 0.0),
+            consensus_agreement=getattr(result, "consensus_agreement", 0.0),
+        )
+
+    def _open_trade(self, setup: BacktestSetup, now: datetime) -> dict:
         slippage_distance = self.slippage_pips * self.pip_size
         if setup.direction == "LONG":
             actual_entry = setup.entry_price + slippage_distance
@@ -672,7 +790,7 @@ class BacktestEngine:
             "risk": risk,
             "tp1_hit": False,
             "realized_r": 0.0,
-            "session": self.orchestrator.session_engine.get_status(now).current_session,
+            "session": self.session_engine.get_status(now).current_session,
             "entry_type": self._resolve_entry_type(setup),
             "slippage_cost": slippage_distance,
         }
@@ -794,7 +912,7 @@ class BacktestEngine:
             exit=trade["entry_price"] + (close_event["pnl_r"] * trade["risk"]),
             pnl=close_event["pnl_r"],
             score=setup.score,
-            confluences=[f"{c.name}:{c.score}" for c in setup.confluences],
+            confluences=list(setup.confluences),
             regime=setup.regime,
             session=trade["session"],
             spread=0.0,
@@ -814,13 +932,13 @@ class BacktestEngine:
         except RuntimeError:
             asyncio.run(self.journal.log_trade(record))
 
-    def _resolve_entry_type(self, setup: TradeSetup) -> str:
-        score_map = {c.name: c.score for c in setup.confluences}
-        if score_map.get("Liquidity Sweep", 0) > 0:
+    def _resolve_entry_type(self, setup) -> str:
+        et = getattr(setup, "entry_type", "")
+        if "SWEEP" in et:
             return "SWEEP"
-        if score_map.get("FVG Zone", 0) > 0:
+        if "FVG" in et:
             return "FVG"
-        if score_map.get("Order Block", 0) > 0:
+        if "OB" in et:
             return "OB"
         return "MARKET"
 
