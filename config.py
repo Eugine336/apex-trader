@@ -273,7 +273,7 @@ class ConsensusConfig:
     enabled: bool = True
     weights: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_CONSENSUS_WEIGHTS))
     min_net_score: float = 1.5
-    min_agreement: float = 0.6
+    min_agreement: float = 0.67
     high_authority_modules: list[str] = field(
         default_factory=lambda: ["currency_strength"]
     )

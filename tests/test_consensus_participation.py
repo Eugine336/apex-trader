@@ -250,3 +250,88 @@ class TestEqualWeightConfig:
         )
         assert d.direction == "NEUTRAL"
         assert "currency_strength" in d.opposed_by
+
+
+# ── Config: agreement threshold (2/3 majority) ──────────────────────────
+
+class TestAgreementThreshold:
+    def test_default_min_agreement_is_067(self):
+        cc = ConsensusConfig()
+        assert cc.min_agreement == 0.67
+
+    def test_60_pct_split_now_neutral(self):
+        """3 LONG vs 2 SHORT = 60% agreement → below 0.67 → NEUTRAL."""
+        cc = ConsensusConfig()
+        votes = [
+            Vote("structure", "LONG", 0.8, 1.0),
+            Vote("currency_strength", "LONG", 0.8, 1.0),
+            Vote("volume", "LONG", 0.8, 1.0),
+            Vote("wyckoff", "SHORT", 0.8, 1.0),
+            Vote("fvg", "SHORT", 0.8, 1.0),
+        ]
+        d = decide(
+            votes,
+            min_net_score=cc.min_net_score,
+            min_agreement=cc.min_agreement,
+            high_authority_modules=[],
+            high_authority_oppose_confidence=cc.high_authority_oppose_confidence,
+            min_contributors=cc.min_contributors,
+        )
+        assert d.direction == "NEUTRAL"
+
+    def test_67_pct_split_trades(self):
+        """3 LONG vs 1 SHORT = 75% agreement → above 0.67 → trades."""
+        cc = ConsensusConfig()
+        votes = [
+            Vote("structure", "LONG", 0.8, 1.0),
+            Vote("volume", "LONG", 0.8, 1.0),
+            Vote("wyckoff", "LONG", 0.8, 1.0),
+            Vote("fvg", "SHORT", 0.8, 1.0),
+        ]
+        d = decide(
+            votes,
+            min_net_score=0.1,
+            min_agreement=cc.min_agreement,
+            high_authority_modules=[],
+            high_authority_oppose_confidence=cc.high_authority_oppose_confidence,
+            min_contributors=cc.min_contributors,
+        )
+        assert d.direction == "LONG"
+
+    def test_bare_two_thirds_is_neutral(self):
+        """2 LONG vs 1 SHORT = 66.7% agreement → just below 0.67 → NEUTRAL."""
+        cc = ConsensusConfig()
+        votes = [
+            Vote("structure", "LONG", 0.8, 1.0),
+            Vote("volume", "LONG", 0.8, 1.0),
+            Vote("wyckoff", "SHORT", 0.8, 1.0),
+        ]
+        d = decide(
+            votes,
+            min_net_score=0.1,
+            min_agreement=cc.min_agreement,
+            high_authority_modules=[],
+            high_authority_oppose_confidence=cc.high_authority_oppose_confidence,
+            min_contributors=cc.min_contributors,
+        )
+        assert d.direction == "NEUTRAL"
+
+    def test_clear_majority_still_trades(self):
+        """4 LONG vs 1 SHORT = 80% agreement → well above threshold."""
+        cc = ConsensusConfig()
+        votes = [
+            Vote("structure", "LONG", 0.8, 1.0),
+            Vote("volume", "LONG", 0.8, 1.0),
+            Vote("wyckoff", "LONG", 0.8, 1.0),
+            Vote("fvg", "LONG", 0.8, 1.0),
+            Vote("order_block", "SHORT", 0.8, 1.0),
+        ]
+        d = decide(
+            votes,
+            min_net_score=0.1,
+            min_agreement=cc.min_agreement,
+            high_authority_modules=[],
+            high_authority_oppose_confidence=cc.high_authority_oppose_confidence,
+            min_contributors=cc.min_contributors,
+        )
+        assert d.direction == "LONG"
