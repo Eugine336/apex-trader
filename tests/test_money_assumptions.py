@@ -154,6 +154,7 @@ class TestUnknownInstrumentEntryEngine:
             m1_df=m1,
             h1_df=h1,
             scan_result=_make_scan_result(pair="FAKEXYZ"),
+            account_balance=10_000.0,
         )
         assert isinstance(result, EntryRejection)
         assert "not in registry" in result.reason.lower() or "unknown" in result.reason.lower()

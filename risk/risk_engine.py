@@ -76,11 +76,15 @@ class RiskEngine:
     def __init__(
         self,
         config: AppConfig | None = None,
-        starting_balance: float = 10_000.0,
+        starting_balance: float | None = None,
     ):
         cfg = config or AppConfig()
         self.risk_cfg: RiskConfig = cfg.risk
-        self.balance = starting_balance
+        self.balance = (
+            starting_balance
+            if starting_balance is not None
+            else self.risk_cfg.backtest_starting_balance_usd
+        )
 
         self.drawdown_guard = DrawdownGuard(base_risk_pct=self.risk_cfg.risk_per_trade_pct / 100.0)
         self.correlation_engine = CorrelationEngine(
@@ -88,15 +92,18 @@ class RiskEngine:
             max_correlated_trades=self.risk_cfg.max_correlated_trades,
             allow_intentional_hedge=cfg.risk.allow_intentional_hedge,
         )
-        self.position_sizer = PositionSizer()
-        self.pnl_tracker = PnLTracker(starting_balance=starting_balance)
+        self.position_sizer = PositionSizer(
+            micro_account_threshold_usd=self.risk_cfg.micro_account_threshold_usd,
+            deriv_min_stake_usd=self.risk_cfg.deriv_min_stake_usd,
+        )
+        self.pnl_tracker = PnLTracker(starting_balance=self.balance)
         self.spread_monitor = SpreadMonitor(
             max_multiplier=self.risk_cfg.max_spread_multiplier,
         )
         self.ev_estimator = EVEstimator()
 
         logger.info(
-            f"RiskEngine initialized — balance=${starting_balance:,.2f}, "
+            f"RiskEngine initialized — balance=${self.balance:,.2f}, "
             f"risk={self.risk_cfg.risk_per_trade_pct}%, "
             f"max_daily_dd={self.risk_cfg.max_daily_drawdown_pct}%"
         )

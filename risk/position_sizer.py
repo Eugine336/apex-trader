@@ -38,8 +38,14 @@ class PositionSizer:
 
     MIN_LOT = 0.01
     MAX_LOT = 100.0
-    MICRO_THRESHOLD = 100.0
-    DERIV_MIN_STAKE = 0.35
+
+    def __init__(
+        self,
+        micro_account_threshold_usd: float = 100.0,
+        deriv_min_stake_usd: float = 0.35,
+    ):
+        self.micro_account_threshold_usd = micro_account_threshold_usd
+        self.deriv_min_stake_usd = deriv_min_stake_usd
 
     # ── MT5 lot-based sizing ─────────────────────────────────────────────
 
@@ -122,9 +128,9 @@ class PositionSizer:
         risk_distance = abs(entry_price - stop_loss)
         stake = round(risk_amount, 2)
 
-        if account_balance < self.MICRO_THRESHOLD and stake < self.DERIV_MIN_STAKE:
+        if account_balance < self.micro_account_threshold_usd and stake < self.deriv_min_stake_usd:
             logger.warning(
-                f"Micro account skip: stake ${stake:.2f} below Deriv minimum ${self.DERIV_MIN_STAKE}"
+                f"Micro account skip: stake ${stake:.2f} below Deriv minimum ${self.deriv_min_stake_usd}"
             )
             return SizeResult(
                 lots=0.0,
@@ -158,7 +164,7 @@ class PositionSizer:
         max_loss: float,
     ) -> tuple[float, str]:
         if max_loss > risk_amount * 1.5 and lots > 0:
-            if account_balance < self.MICRO_THRESHOLD:
+            if account_balance < self.micro_account_threshold_usd:
                 logger.warning(
                     f"Micro account skip: max_loss ${max_loss:.2f} exceeds "
                     f"1.5× risk_amount ${risk_amount:.2f} (clamped lot too large)"
