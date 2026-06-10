@@ -290,6 +290,8 @@ class AuthorityManager:
 
     def _init_db(self):
         con = sqlite3.connect(self.db_path)
+        con.execute("PRAGMA journal_mode=WAL")
+        con.execute("PRAGMA synchronous=NORMAL")
         con.execute("""
             CREATE TABLE IF NOT EXISTS authority_state (
                 id INTEGER PRIMARY KEY,

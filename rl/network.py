@@ -327,6 +327,44 @@ class ApexRLAgent(nn.Module):
 
         return action, conf, exp_r
 
+    @torch.no_grad()
+    def predict_full(
+        self,
+        obs: np.ndarray,
+        context_vec: np.ndarray | None = None,
+        symbol_id: int | None = None,
+    ) -> tuple[int, float, float, list]:
+        """
+        Inference with latent — single forward pass.
+
+        Returns:
+            action     : int   — 0=HOLD, 1=BUY, 2=SELL, 3=CLOSE
+            confidence : float — probability of chosen action
+            expected_r : float — estimated R-multiple
+            latent_list: list  — learned market representation
+        """
+        self.eval()
+        t = torch.FloatTensor(obs).unsqueeze(0)
+
+        ctx_t = None
+        sym_t = None
+        if context_vec is not None:
+            ctx_t = torch.FloatTensor(context_vec).unsqueeze(0)
+        if symbol_id is not None:
+            sym_t = torch.LongTensor([symbol_id])
+
+        enc_out = self.encoder(t)
+        latent  = self._fuse_context(enc_out, ctx_t, sym_t)
+        logits  = self.policy(latent)
+        val     = self.value(latent)
+
+        probs  = F.softmax(logits, dim=-1).squeeze(0)
+        action = int(probs.argmax().item())
+        conf   = float(probs[action].item())
+        exp_r  = float(val.item())
+
+        return action, conf, exp_r, enc_out.squeeze(0).tolist()
+
     def count_parameters(self) -> int:
         return sum(p.numel() for p in self.parameters() if p.requires_grad)
 
