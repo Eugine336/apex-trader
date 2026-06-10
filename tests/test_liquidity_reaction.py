@@ -490,8 +490,17 @@ class TestMultiBarReaction:
 class TestSideAgnosticRR:
     """Prove compute_side_agnostic_rr is data-driven, direction-free, and fail-closed."""
 
+    @staticmethod
+    def _load():
+        import importlib.util, os
+        path = os.path.join(os.path.dirname(__file__), os.pardir, "scanner", "rr_helper.py")
+        spec = importlib.util.spec_from_file_location("scanner.rr_helper", path)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        return mod.compute_side_agnostic_rr
+
     def test_rr_varies_with_distance(self):
-        from rr_helper import compute_side_agnostic_rr
+        compute_side_agnostic_rr = self._load()
         rr_near = compute_side_agnostic_rr(
             buy_price=1.1010, sell_price=1.0990,
             current_price=1.1000, atr_pips=10.0, pip_size=0.0001,
@@ -505,7 +514,7 @@ class TestSideAgnosticRR:
         assert rr_far > rr_near
 
     def test_mirror_inputs_equal_rr(self):
-        from rr_helper import compute_side_agnostic_rr
+        compute_side_agnostic_rr = self._load()
         rr_a = compute_side_agnostic_rr(
             buy_price=1.1030, sell_price=1.0970,
             current_price=1.1000, atr_pips=10.0, pip_size=0.0001,
@@ -517,21 +526,21 @@ class TestSideAgnosticRR:
         assert rr_a == rr_b
 
     def test_missing_liquidity_returns_none(self):
-        from rr_helper import compute_side_agnostic_rr
+        compute_side_agnostic_rr = self._load()
         assert compute_side_agnostic_rr(
             buy_price=None, sell_price=None,
             current_price=1.1000, atr_pips=10.0, pip_size=0.0001,
         ) is None
 
     def test_zero_atr_returns_none(self):
-        from rr_helper import compute_side_agnostic_rr
+        compute_side_agnostic_rr = self._load()
         assert compute_side_agnostic_rr(
             buy_price=1.1010, sell_price=1.0990,
             current_price=1.1000, atr_pips=0.0, pip_size=0.0001,
         ) is None
 
     def test_rr_clamped_to_5(self):
-        from rr_helper import compute_side_agnostic_rr
+        compute_side_agnostic_rr = self._load()
         rr = compute_side_agnostic_rr(
             buy_price=1.2000, sell_price=1.0000,
             current_price=1.1000, atr_pips=1.0, pip_size=0.0001,
@@ -540,7 +549,7 @@ class TestSideAgnosticRR:
         assert rr <= 5.0
 
     def test_one_side_only_still_works(self):
-        from rr_helper import compute_side_agnostic_rr
+        compute_side_agnostic_rr = self._load()
         rr = compute_side_agnostic_rr(
             buy_price=1.1020, sell_price=None,
             current_price=1.1000, atr_pips=10.0, pip_size=0.0001,
@@ -550,7 +559,7 @@ class TestSideAgnosticRR:
 
     def test_not_constant(self):
         """RR must NOT be a constant — different structures yield different values."""
-        from rr_helper import compute_side_agnostic_rr
+        compute_side_agnostic_rr = self._load()
         rr1 = compute_side_agnostic_rr(
             buy_price=1.1005, sell_price=1.0995,
             current_price=1.1000, atr_pips=10.0, pip_size=0.0001,
