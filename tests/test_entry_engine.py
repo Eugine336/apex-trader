@@ -213,7 +213,7 @@ class TestEntryEngine:
         m5 = _make_fvg_candles("LONG")
         m1 = _make_engulfing_m1("LONG")
         h1 = _make_candles(n=50, trend="up")
-        result = self.engine.calculate_entry("EURUSD", "LONG", m5, m1, h1, scan_result=_make_scan_result())
+        result = self.engine.calculate_entry("EURUSD", "LONG", m5, m1, h1, scan_result=_make_scan_result(), account_balance=10_000.0)
         if isinstance(result, EntrySignal):
             assert result.entry_price > 0
             assert result.stop_loss > 0
@@ -225,7 +225,7 @@ class TestEntryEngine:
         m5 = _make_fvg_candles("SHORT")
         m1 = _make_engulfing_m1("SHORT")
         h1 = _make_candles(n=50, trend="down")
-        result = self.engine.calculate_entry("EURUSD", "SHORT", m5, m1, h1, scan_result=_make_scan_result(direction="SHORT"))
+        result = self.engine.calculate_entry("EURUSD", "SHORT", m5, m1, h1, scan_result=_make_scan_result(direction="SHORT"), account_balance=10_000.0)
         if isinstance(result, EntrySignal):
             assert result.stop_loss > result.entry_price
             assert result.tp1 < result.entry_price
@@ -235,7 +235,7 @@ class TestEntryEngine:
         m5 = _make_fvg_candles("LONG")
         m1 = _make_engulfing_m1("LONG")
         h1 = _make_candles(n=50, trend="up")
-        result = self.engine.calculate_entry("EURUSD", "LONG", m5, m1, h1, scan_result=_make_scan_result())
+        result = self.engine.calculate_entry("EURUSD", "LONG", m5, m1, h1, scan_result=_make_scan_result(), account_balance=10_000.0)
         assert isinstance(result, EntryRejection)
         assert "freeze" in result.reason.lower() or "frozen" in result.reason.lower() or "wait" in result.reason.lower()
 
@@ -266,7 +266,7 @@ class TestEntryEngine:
         m5 = _make_fvg_candles("LONG")
         m1 = _make_candles(n=3, base_price=1.5, trend="flat")
         h1 = _make_candles(n=50, trend="up")
-        result = self.engine.calculate_entry("EURUSD", "LONG", m5, m1, h1, scan_result=_make_scan_result())
+        result = self.engine.calculate_entry("EURUSD", "LONG", m5, m1, h1, scan_result=_make_scan_result(), account_balance=10_000.0)
         if isinstance(result, EntryRejection):
             assert "m1" in result.reason.lower() or "micro" in result.reason.lower() or "zone" in result.reason.lower()
 
@@ -355,7 +355,7 @@ class TestIntegration:
         m1 = _make_engulfing_m1("LONG")
         h1 = _make_candles(n=50, trend="up")
 
-        result = engine.calculate_entry("EURUSD", "LONG", m5, m1, h1, scan_result=_make_scan_result())
+        result = engine.calculate_entry("EURUSD", "LONG", m5, m1, h1, scan_result=_make_scan_result(), account_balance=10_000.0)
         if isinstance(result, EntrySignal):
             validation = validator.validate(result, current_spread_pips=1.0)
             assert isinstance(validation, ValidationResult)
@@ -367,7 +367,7 @@ class TestIntegration:
         m1 = _make_engulfing_m1("SHORT")
         h1 = _make_candles(n=50, trend="down")
 
-        result = engine.calculate_entry("EURUSD", "SHORT", m5, m1, h1, scan_result=_make_scan_result(direction="SHORT"))
+        result = engine.calculate_entry("EURUSD", "SHORT", m5, m1, h1, scan_result=_make_scan_result(direction="SHORT"), account_balance=10_000.0)
         if isinstance(result, EntrySignal):
             validation = validator.validate(result, current_spread_pips=1.0)
             assert isinstance(validation, ValidationResult)
@@ -385,4 +385,4 @@ class TestIntegration:
         m1 = _make_engulfing_m1("LONG")
         h1 = _make_candles(n=50, trend="up")
         with pytest.raises(ValueError, match="scan_result"):
-            engine.calculate_entry("EURUSD", "LONG", m5, m1, h1, scan_result=None)
+            engine.calculate_entry("EURUSD", "LONG", m5, m1, h1, scan_result=None, account_balance=10_000.0)

@@ -88,7 +88,7 @@ class EntryEngine:
         m1_df: pd.DataFrame,
         h1_df: pd.DataFrame,
         scan_result,
-        account_balance: float = 10000.0,
+        account_balance: float,
         h4_df: Optional[pd.DataFrame] = None,
         m15_df: Optional[pd.DataFrame] = None,
     ) -> Union[EntrySignal, EntryRejection]:
