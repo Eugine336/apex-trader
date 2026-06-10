@@ -120,9 +120,10 @@ class StructureEngine:
             # Swing High: highest point in window
             window_highs = df["high"].iloc[i - lb: i + lb + 1]
             if df["high"].iloc[i] == window_highs.max():
-                # Filter out tiny swings that are just spread noise
-                swing_size = df["high"].iloc[i] - df["low"].iloc[i]
-                if swing_size >= self.min_swing_size:
+                # Filter by prominence: how far this pivot stands above neighbours
+                nbr = list(window_highs.iloc[:lb]) + list(window_highs.iloc[lb + 1:])
+                prominence = (df["high"].iloc[i] - max(nbr)) if nbr else 0.0
+                if prominence >= self.min_swing_size:
                     swings.append({
                         "index": i,
                         "price": df["high"].iloc[i],
@@ -133,8 +134,9 @@ class StructureEngine:
             # Swing Low: lowest point in window
             window_lows = df["low"].iloc[i - lb: i + lb + 1]
             if df["low"].iloc[i] == window_lows.min():
-                swing_size = df["high"].iloc[i] - df["low"].iloc[i]
-                if swing_size >= self.min_swing_size:
+                nbr = list(window_lows.iloc[:lb]) + list(window_lows.iloc[lb + 1:])
+                prominence = (min(nbr) - df["low"].iloc[i]) if nbr else 0.0
+                if prominence >= self.min_swing_size:
                     swings.append({
                         "index": i,
                         "price": df["low"].iloc[i],

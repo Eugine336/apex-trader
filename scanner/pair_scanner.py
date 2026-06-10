@@ -754,13 +754,7 @@ class PairScanner:
                 if hasattr(news_status, "next_high_impact") and news_status.next_high_impact:
                     _news_mins = news_status.next_high_impact.minutes_away
 
-                _rr_magnitude = None
-                _close_price = float(m5_df["close"].iloc[-1])
-                _local_ob = ob_det.get_entry_ob(m5_obs + h1_obs, trade_dir, _close_price)
-                if _local_ob is not None and pip_size > 0:
-                    _risk_dist = abs(_local_ob.midpoint - _close_price)
-                    if _risk_dist > 0 and _atr_pips is not None and _atr_pips > 0:
-                        _rr_magnitude = (_atr_pips * pip_size * 1.5) / _risk_dist
+                _rr_magnitude = 1.5
 
                 oq = compute_opportunity_quality(
                     atr_value=_atr_pips,
