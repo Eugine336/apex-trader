@@ -802,9 +802,9 @@ class PairScanner:
 
                 _liq_dist = None
                 if trade_dir == "LONG" and liq_map.nearest_sell_liq and pip_size > 0:
-                    _liq_dist = abs(current_price - liq_map.nearest_sell_liq.level) / pip_size
+                    _liq_dist = abs(current_price - liq_map.nearest_sell_liq.price) / pip_size
                 elif trade_dir == "SHORT" and liq_map.nearest_buy_liq and pip_size > 0:
-                    _liq_dist = abs(current_price - liq_map.nearest_buy_liq.level) / pip_size
+                    _liq_dist = abs(current_price - liq_map.nearest_buy_liq.price) / pip_size
 
                 _stop_dist = _atr_pips * 1.5 if _atr_pips else None
 
