@@ -252,6 +252,64 @@ class ConfirmationPenaltyConfig:
 
 
 # ---------------------------------------------------------------------------
+# Directional consensus — weighted signed voting across brain modules
+# ---------------------------------------------------------------------------
+
+_DEFAULT_CONSENSUS_WEIGHTS: dict[str, float] = {
+    "structure": 3.0,
+    "currency_strength": 2.0,
+    "wyckoff": 1.5,
+    "volume": 1.0,
+    "order_block": 1.0,
+    "fvg": 1.0,
+    "liquidity": 1.0,
+    "momentum": 1.0,
+    "vwap": 1.0,
+}
+
+
+@dataclass
+class ConsensusConfig:
+    enabled: bool = True
+    weights: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_CONSENSUS_WEIGHTS))
+    min_net_score: float = 1.5
+    min_agreement: float = 0.6
+    high_authority_modules: list[str] = field(
+        default_factory=lambda: ["structure", "currency_strength"]
+    )
+    high_authority_oppose_confidence: float = 0.6
+    liquidity_sweep_is_reversal: bool = True
+
+    def __post_init__(self) -> None:
+        for name, w in self.weights.items():
+            if not isinstance(w, (int, float)) or not math.isfinite(w) or w < 0:
+                raise ValueError(
+                    f"ConsensusConfig.weights['{name}'] must be finite >= 0, got {w!r}"
+                )
+        if not any(w > 0 for w in self.weights.values()):
+            raise ValueError("ConsensusConfig.weights must have at least one weight > 0")
+        if not (0 < self.min_agreement <= 1.0):
+            raise ValueError(
+                f"ConsensusConfig.min_agreement must be in (0, 1], got {self.min_agreement!r}"
+            )
+        if not isinstance(self.min_net_score, (int, float)) or self.min_net_score < 0:
+            raise ValueError(
+                f"ConsensusConfig.min_net_score must be >= 0, got {self.min_net_score!r}"
+            )
+        if not (0 < self.high_authority_oppose_confidence <= 1.0):
+            raise ValueError(
+                f"ConsensusConfig.high_authority_oppose_confidence must be in (0, 1], "
+                f"got {self.high_authority_oppose_confidence!r}"
+            )
+        for mod in self.high_authority_modules:
+            if mod not in self.weights:
+                raise ValueError(
+                    f"ConsensusConfig.high_authority_modules entry '{mod}' "
+                    f"not present in weights: {list(self.weights.keys())}"
+                )
+
+
+# ---------------------------------------------------------------------------
 # Risk parameters
 # ---------------------------------------------------------------------------
 
@@ -536,6 +594,7 @@ class AppConfig:
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     confirmation_penalties: ConfirmationPenaltyConfig = field(default_factory=ConfirmationPenaltyConfig)
+    consensus: ConsensusConfig = field(default_factory=ConsensusConfig)
     scan_interval_seconds: int = 10
     max_consecutive_cycle_failures: int = 5
     log_level: str = "INFO"
