@@ -16,6 +16,7 @@ from config import (
     AppConfig, get_instrument, get_pip_size,
     is_always_open, is_session_gated,
     ConfirmationPenaltyConfig,
+    LayeredDecisionConfig,
 )
 from brain.structure_engine import StructureEngine
 from brain.fvg_detector import FVGDetector
@@ -39,6 +40,9 @@ from brain.session_vwap import session_vwap_penalty
 from brain.momentum_divergence import momentum_divergence_penalty
 from brain.atr_percentile import atr_percentile_penalty
 from brain.volume_profile import volume_profile_poc_penalty
+from brain.setup_quality import (
+    compute_opportunity_quality, compute_entry_quality,
+)
 from rl.bridge import RLBridge
 from rl.obs_builder import ObservationBuilder
 from rl.multi_tf_obs_builder import MultiTFObservationBuilder
@@ -117,6 +121,8 @@ class PairScanResult:
     consensus_direction: str = ""
     consensus_net: float = 0.0
     consensus_agreement: float = 0.0
+    opportunity_quality: float = 0.0
+    entry_quality: float = 0.0
 
 
 @dataclass
@@ -692,6 +698,8 @@ class PairScanner:
                         consensus_direction=decision.direction if decision else trade_dir,
                         consensus_net=decision.net_score if decision else 0.0,
                         consensus_agreement=decision.agreement if decision else 0.0,
+                        opportunity_quality=0.0,
+                        entry_quality=0.0,
                     )
 
                 score        = int(rl_result.final_score)
@@ -709,14 +717,132 @@ class PairScanner:
         except Exception as exc:
             logger.debug(f"[RL] augmentation error for {pair}: {exc}")
 
+        # ── Layered quality gates (OQ + EQ) ───────────────────────────
+        ld_cfg = self.config.layered_decision
+        oq_score = 0.0
+        eq_score = 0.0
+
+        if ld_cfg.enabled and trade_dir in ("LONG", "SHORT"):
+            try:
+                tr_series = (m5_df["high"] - m5_df["low"]).abs().tail(14)
+                _atr_pips = float(tr_series.mean()) / pip_size if len(tr_series) > 0 and pip_size > 0 else None
+
+                _atr_pct = None
+                if _atr_pips is not None:
+                    try:
+                        from brain.atr_percentile import compute_atr_percentile
+                        _atr_pct = compute_atr_percentile(m5_df, window=100)
+                    except Exception:
+                        pass
+
+                try:
+                    _inst = get_instrument(pair)
+                    _spread_typical = _inst.typical_spread_pips
+                except KeyError:
+                    _spread_typical = None
+
+                _spread_current = None
+                try:
+                    _ask = float(m5_df["high"].iloc[-1])
+                    _bid = float(m5_df["low"].iloc[-1])
+                    if pip_size > 0:
+                        _spread_current = (_ask - _bid) / pip_size
+                except Exception:
+                    pass
+
+                _news_mins = None
+                if hasattr(news_status, "next_high_impact") and news_status.next_high_impact:
+                    _news_mins = news_status.next_high_impact.minutes_away
+
+                _rr_magnitude = None
+                _close_price = float(m5_df["close"].iloc[-1])
+                _local_ob = ob_det.get_entry_ob(m5_obs + h1_obs, trade_dir, _close_price)
+                if _local_ob is not None and pip_size > 0:
+                    _risk_dist = abs(_local_ob.midpoint - _close_price)
+                    if _risk_dist > 0 and _atr_pips is not None and _atr_pips > 0:
+                        _rr_magnitude = (_atr_pips * pip_size * 1.5) / _risk_dist
+
+                oq = compute_opportunity_quality(
+                    atr_value=_atr_pips,
+                    atr_percentile=_atr_pct,
+                    spread_current=_spread_current,
+                    spread_typical=_spread_typical,
+                    news_is_clear=news_status.is_clear if news_status else None,
+                    news_minutes_to_next_high=_news_mins,
+                    session_liquidity=session_status.liquidity if session_status else None,
+                    session_is_tradeable=session_active,
+                    reward_risk_magnitude=_rr_magnitude,
+                    ev_estimate=ev_estimate,
+                    volume_ratio=vol_analysis.volume_ratio if vol_analysis else None,
+                    volume_climax=vol_analysis.climax_detected if vol_analysis else None,
+                    oq_weights=ld_cfg.oq_weights,
+                )
+                oq_score = oq.score
+
+                _ob_dist = None
+                entry_ob_ref = None
+                if trade_dir != "NEUTRAL":
+                    entry_ob_ref = ob_det.get_entry_ob(m5_obs + h1_obs, trade_dir, current_price)
+                    if entry_ob_ref and pip_size > 0:
+                        _ob_dist = abs(current_price - entry_ob_ref.midpoint) / pip_size
+
+                _fvg_dist = None
+                if trade_dir != "NEUTRAL":
+                    _entry_fvg_ref = fvg_det.get_entry_fvg(m5_fvgs + m15_fvgs, trade_dir, current_price)
+                    if _entry_fvg_ref and pip_size > 0:
+                        fvg_mid = (_entry_fvg_ref.top + _entry_fvg_ref.bottom) / 2
+                        _fvg_dist = abs(current_price - fvg_mid) / pip_size
+
+                _liq_dist = None
+                if trade_dir == "LONG" and liq_map.nearest_sell_liq and pip_size > 0:
+                    _liq_dist = abs(current_price - liq_map.nearest_sell_liq.level) / pip_size
+                elif trade_dir == "SHORT" and liq_map.nearest_buy_liq and pip_size > 0:
+                    _liq_dist = abs(current_price - liq_map.nearest_buy_liq.level) / pip_size
+
+                _stop_dist = _atr_pips * 1.5 if _atr_pips else None
+
+                eq = compute_entry_quality(
+                    trade_dir=trade_dir,
+                    current_price=current_price,
+                    entry_price=entry_ob_ref.midpoint if entry_ob_ref else current_price,
+                    nearest_ob_distance_pips=_ob_dist,
+                    nearest_fvg_distance_pips=_fvg_dist,
+                    nearest_liq_distance_pips=_liq_dist,
+                    atr_pips=_atr_pips,
+                    stop_distance_pips=_stop_dist,
+                    eq_weights=ld_cfg.eq_weights,
+                )
+                eq_score = eq.score
+
+            except Exception as exc:
+                logger.warning("[quality] OQ/EQ computation failed for {}: {}", pair, exc)
+                oq_score = 0.0
+                eq_score = 0.0
+
         # ── Status ────────────────────────────────────────────────────
-        effective_min_score = profile.min_entry_score
-        if score >= effective_min_score:
-            status = "READY"
-        elif score >= scoring.watchlist_score:
-            status = "WATCHLIST"
+        if ld_cfg.enabled:
+            if trade_dir not in ("LONG", "SHORT"):
+                status = "WAITING"
+            elif oq_score >= ld_cfg.opportunity_quality_min and eq_score >= ld_cfg.entry_quality_min:
+                status = "READY"
+            elif oq_score >= ld_cfg.opportunity_quality_min or eq_score >= ld_cfg.entry_quality_min:
+                status = "WATCHLIST"
+            else:
+                status = "WAITING"
+            logger.info(
+                "[layered] {} — dir={} agree={:.2f} OQ={:.2f} EQ={:.2f} -> {}",
+                pair, trade_dir,
+                decision.agreement if decision else 0.0,
+                oq_score, eq_score, status,
+            )
         else:
-            status = "WAITING"
+            effective_min_score = profile.min_entry_score
+            if score >= effective_min_score:
+                status = "READY"
+            elif score >= scoring.watchlist_score:
+                status = "WATCHLIST"
+            else:
+                status = "WAITING"
 
         return PairScanResult(
             pair=pair,
@@ -747,6 +873,8 @@ class PairScanner:
             consensus_direction=decision.direction if decision else trade_dir,
             consensus_net=decision.net_score if decision else 0.0,
             consensus_agreement=decision.agreement if decision else 0.0,
+            opportunity_quality=oq_score,
+            entry_quality=eq_score,
         )
 
     # ------------------------------------------------------------------
@@ -791,7 +919,15 @@ class PairScanner:
             except Exception as exc:
                 logger.error(f"Error scanning {pair}: {exc}")
 
-        results.sort(key=lambda r: r.score, reverse=True)
+        if self.config.layered_decision.enabled:
+            results.sort(
+                key=lambda r: (
+                    r.consensus_agreement + r.opportunity_quality + r.entry_quality
+                ),
+                reverse=True,
+            )
+        else:
+            results.sort(key=lambda r: r.score, reverse=True)
 
         ready = [r for r in results if r.status == "READY"]
         watch = [r for r in results if r.status == "WATCHLIST"]
