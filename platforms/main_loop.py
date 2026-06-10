@@ -25,7 +25,6 @@ from brain import (
     CorrelationEngine,
     DrawdownGuard,
     ExecutionMonitor,
-    MTFOrchestrator,
     OpenTrade,
     SessionEngine,
     NewsGuard,
@@ -153,17 +152,6 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self.scanner = PairScanner(self.config, scoring_weights=_scanner_weights_dict)
         self.ranker = PairRanker()
         self.scheduler = ScanScheduler()
-        self.orchestrator = MTFOrchestrator(
-            min_entry_score=self.config.scoring.min_entry_score,
-            use_adaptive_weights=self.config.scoring.use_adaptive_scoring_weights,
-            scoring_weights=_adaptive_weights,
-            volatility_stop_mode=self.config.risk.volatility_stop_mode,
-            atr_stop_period=self.config.risk.atr_stop_period,
-            atr_stop_mult=self.config.risk.atr_stop_mult,
-            atr_stop_ratio_min=self.config.risk.atr_stop_ratio_min,
-            atr_stop_ratio_max=self.config.risk.atr_stop_ratio_max,
-            atr_stop_max_risk_mult=self.config.risk.atr_stop_max_risk_mult,
-        )
         self.entry_engine = EntryEngine(config=self.config)
         self.drawdown = DrawdownGuard()
         self.correlation = CorrelationEngine(
@@ -397,6 +385,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 for w in report.warnings:
                     logger.warning("⚠️ HEALTH: {}", w)
 
+        blind, blind_reason = self.watchdog.is_scanner_blind()
+        if blind:
+            logger.error("🔴 HEALTH BLOCK: scanner blind ({}), new entries suspended this cycle", blind_reason)
+            cycle["health_blocked"] = True
+
         session_status = self.session_engine.get_status(now)
         news_status = self.news_guard.check(self.config.enabled_pairs, now)
 
@@ -407,32 +400,35 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self._check_weekend_protection()
             self._update_positions()
         else:
-            should_scan = self.scheduler.should_scan_now(
-                self._last_scan_time,
-                session_status,
-                news_status,
-                has_active_positions=len(self.managed_positions) > 0,
-            )
+            health_blocked = cycle.get("health_blocked", False)
+
+            if not health_blocked:
+                should_scan = self.scheduler.should_scan_now(
+                    self._last_scan_time,
+                    session_status,
+                    news_status,
+                    has_active_positions=len(self.managed_positions) > 0,
+                )
 
 
-            if should_scan and (session_status.is_tradeable or self._has_always_open_instruments()):
-                if self._scan_breaker.can_execute():
-                    cycle["scanned"] = True
-                    try:
-                        self._scan_and_enter(session_status, news_status, now, cycle)
-                        self._scan_breaker.record_success()
-                        self.watchdog.record_scan_success()
-                    except Exception as exc:
-                        logger.error("Scan cycle error: {}", exc)
-                        self._scan_breaker.record_failure()
-                        self.watchdog.record_scan_failure()
-                    self._last_scan_time = now
-                else:
-                    status = self._scan_breaker.get_status()
-                    logger.debug(
-                        "Scan circuit OPEN — cooldown {:.0f}s remaining",
-                        status.cooldown_remaining_seconds,
-                    )
+                if should_scan and (session_status.is_tradeable or self._has_always_open_instruments()):
+                    if self._scan_breaker.can_execute():
+                        cycle["scanned"] = True
+                        try:
+                            self._scan_and_enter(session_status, news_status, now, cycle)
+                            self._scan_breaker.record_success()
+                            self.watchdog.record_scan_success()
+                        except Exception as exc:
+                            logger.error("Scan cycle error: {}", exc)
+                            self._scan_breaker.record_failure()
+                            self.watchdog.record_scan_failure()
+                        self._last_scan_time = now
+                    else:
+                        status = self._scan_breaker.get_status()
+                        logger.debug(
+                            "Scan circuit OPEN — cooldown {:.0f}s remaining",
+                            status.cooldown_remaining_seconds,
+                        )
 
             try:
                 self._check_pending_orders()
