@@ -22,6 +22,13 @@ from brain.fvg_detector import FVGDetector
 from brain.order_block import OrderBlockDetector, OBStatus
 from brain.liquidity_mapper import LiquidityMapper
 from brain.currency_strength import CurrencyStrengthMeter, CURRENCY_PAIRS
+from brain.directional_consensus import (
+    Vote, decide,
+    vote_from_structure, vote_from_currency_strength,
+    vote_from_volume, vote_from_wyckoff,
+    vote_from_order_blocks, vote_from_fvg,
+    vote_from_liquidity, vote_from_momentum, vote_from_vwap,
+)
 from brain.session_engine import SessionEngine, NewsGuard
 from adaptive.ev_estimator import EVEstimator
 from brain.volume_analyzer import VolumeAnalyzer
@@ -107,6 +114,9 @@ class PairScanResult:
     rl_confidence: float = 0.0
     rl_expected_r: float = 0.0
     rl_stage: int = 1
+    consensus_direction: str = ""
+    consensus_net: float = 0.0
+    consensus_agreement: float = 0.0
 
 
 @dataclass
@@ -205,25 +215,169 @@ class PairScanner:
 
         # ── 1. Structure bias (H4 + H1) ──────────────────────────────
         bias = self.structure.get_bias(h4_df, h1_df)
-        direction = bias["direction"]
-        trade_dir = {"BULLISH": "LONG", "BEARISH": "SHORT"}.get(direction, "NEUTRAL")
+
+        # ── Directional consensus voting ─────────────────────────────
+        # Each brain module casts a direction-independent signed vote.
+        # Direction is the weighted net; disagreement kills the trade.
+        cc = self.config.consensus
+        if cc.enabled:
+            dir_votes: list[Vote] = []
+
+            # Structure vote
+            try:
+                s_dir, s_conf = vote_from_structure(bias)
+                dir_votes.append(Vote("structure", s_dir, s_conf, cc.weights.get("structure", 3.0)))
+            except Exception as exc:
+                logger.warning("[consensus] structure vote failed, abstaining: {}", exc)
+                dir_votes.append(Vote("structure", "NEUTRAL", 0.0, 0.0))
+
+            # Currency strength vote (direction-independent)
+            try:
+                if currency_data and pair in CURRENCY_PAIRS:
+                    strength = self.strength_meter.calculate(currency_data)
+                    cs_dir, cs_conf = vote_from_currency_strength(pair, strength, CURRENCY_PAIRS)
+                    dir_votes.append(Vote("currency_strength", cs_dir, cs_conf, cc.weights.get("currency_strength", 2.0)))
+                else:
+                    strength = None
+            except Exception as exc:
+                logger.warning("[consensus] currency_strength vote failed, abstaining: {}", exc)
+                strength = None
+
+            # Volume vote
+            vol_analysis = None
+            try:
+                vol_analysis = self.volume.analyze(m5_df)
+                v_dir, v_conf = vote_from_volume(vol_analysis)
+                dir_votes.append(Vote("volume", v_dir, v_conf, cc.weights.get("volume", 1.0)))
+            except Exception as exc:
+                logger.warning("[consensus] volume vote failed, abstaining: {}", exc)
+
+            # Wyckoff vote
+            wyckoff_analysis = None
+            try:
+                if profile.wyckoff_enabled:
+                    wyck = WyckoffEngine(pip_size=pip_size)
+                    wyckoff_analysis = wyck.analyze(h1_df)
+                    w_dir, w_conf = vote_from_wyckoff(wyckoff_analysis)
+                    dir_votes.append(Vote("wyckoff", w_dir, w_conf, cc.weights.get("wyckoff", 1.5)))
+            except Exception as exc:
+                logger.warning("[consensus] wyckoff vote failed, abstaining: {}", exc)
+
+            # Order-block vote (direction-independent: score both sides)
+            ob_det = OrderBlockDetector(
+                pip_size=pip_size,
+                min_impulse_pips=profile.ob_min_impulse_pips,
+                buffer_pips=profile.ob_buffer_pips,
+            )
+            h1_obs = ob_det.detect(h1_df, timeframe="H1")
+            m5_obs = ob_det.detect(m5_df, timeframe="M5")
+            try:
+                current_price = float(m5_df["close"].iloc[-1])
+                all_obs = h1_obs + m5_obs
+                ob_dir, ob_conf = vote_from_order_blocks(all_obs, current_price)
+                dir_votes.append(Vote("order_block", ob_dir, ob_conf, cc.weights.get("order_block", 1.0)))
+            except Exception as exc:
+                logger.warning("[consensus] order_block vote failed, abstaining: {}", exc)
+                current_price = float(m5_df["close"].iloc[-1])
+
+            # FVG vote (direction-independent: score both sides)
+            fvg_det = FVGDetector(
+                pip_size=pip_size,
+                proximity_pips=profile.fvg_proximity_pips,
+                min_size_pips=profile.fvg_min_size_pips,
+            )
+            m5_fvgs = fvg_det.detect(m5_df, timeframe="M5")
+            m15_fvgs = fvg_det.detect(m15_df, timeframe="M15")
+            try:
+                f_dir, f_conf = vote_from_fvg(m5_fvgs + m15_fvgs, current_price, fvg_det.proximity)
+                dir_votes.append(Vote("fvg", f_dir, f_conf, cc.weights.get("fvg", 1.0)))
+            except Exception as exc:
+                logger.warning("[consensus] fvg vote failed, abstaining: {}", exc)
+
+            # Liquidity vote
+            liq_map = self.liquidity.map(h1_df, pip_size)
+            try:
+                l_dir, l_conf = vote_from_liquidity(liq_map, cc.liquidity_sweep_is_reversal)
+                dir_votes.append(Vote("liquidity", l_dir, l_conf, cc.weights.get("liquidity", 1.0)))
+            except Exception as exc:
+                logger.warning("[consensus] liquidity vote failed, abstaining: {}", exc)
+
+            # Momentum vote
+            try:
+                cp_cfg = self.config.confirmation_penalties
+                mom_dir, mom_conf = vote_from_momentum(
+                    m5_df, h1_df,
+                    rsi_period=cp_cfg.rsi_period,
+                    macd_fast=cp_cfg.macd_fast,
+                    macd_slow=cp_cfg.macd_slow,
+                    macd_signal=cp_cfg.macd_signal,
+                )
+                dir_votes.append(Vote("momentum", mom_dir, mom_conf, cc.weights.get("momentum", 1.0)))
+            except Exception as exc:
+                logger.warning("[consensus] momentum vote failed, abstaining: {}", exc)
+
+            # VWAP vote
+            try:
+                session_status = self.session.get_status(utc_now)
+                vwap_dir, vwap_conf = vote_from_vwap(
+                    m5_df,
+                    session_status.session_open_minutes,
+                    current_price,
+                    min_session_minutes=cp_cfg.vwap_min_session_minutes,
+                )
+                dir_votes.append(Vote("vwap", vwap_dir, vwap_conf, cc.weights.get("vwap", 1.0)))
+            except Exception as exc:
+                logger.warning("[consensus] vwap vote failed, abstaining: {}", exc)
+
+            decision = decide(
+                dir_votes,
+                min_net_score=cc.min_net_score,
+                min_agreement=cc.min_agreement,
+                high_authority_modules=cc.high_authority_modules,
+                high_authority_oppose_confidence=cc.high_authority_oppose_confidence,
+            )
+            trade_dir = decision.direction
+            logger.info("[consensus] {} — {}", pair, decision.summary)
+        else:
+            # Fallback: legacy single-module direction
+            direction = bias["direction"]
+            trade_dir = {"BULLISH": "LONG", "BEARISH": "SHORT"}.get(direction, "NEUTRAL")
+            decision = None
+            # Lazy-init analysis objects for the scoring section below
+            strength = None
+            vol_analysis = None
+            wyckoff_analysis = None
+            ob_det = OrderBlockDetector(
+                pip_size=pip_size,
+                min_impulse_pips=profile.ob_min_impulse_pips,
+                buffer_pips=profile.ob_buffer_pips,
+            )
+            h1_obs = ob_det.detect(h1_df, timeframe="H1")
+            m5_obs = ob_det.detect(m5_df, timeframe="M5")
+            current_price = float(m5_df["close"].iloc[-1])
+            fvg_det = FVGDetector(
+                pip_size=pip_size,
+                proximity_pips=profile.fvg_proximity_pips,
+                min_size_pips=profile.fvg_min_size_pips,
+            )
+            m5_fvgs = fvg_det.detect(m5_df, timeframe="M5")
+            m15_fvgs = fvg_det.detect(m15_df, timeframe="M15")
+            liq_map = self.liquidity.map(h1_df, pip_size)
 
         score = 0
         confluences: list[str] = []
         scoring = self.config.scoring
         _w = self._adaptive_weights
 
+        if decision is not None:
+            confluences.append(decision.summary)
+
         if bias["tradeable"]:
             score += _w["structure"] if _w else scoring.structure_points
             confluences.append(f"Structure aligned ({bias['strength']})")
 
         # ── 2a. H1 Order blocks (directional bias) ───────────────────
-        ob_det = OrderBlockDetector(
-            pip_size=pip_size,
-            min_impulse_pips=profile.ob_min_impulse_pips,
-            buffer_pips=profile.ob_buffer_pips,
-        )
-        h1_obs = ob_det.detect(h1_df, timeframe="H1")
+        # h1_obs and ob_det already computed above (consensus or fallback)
         has_h1_ob = False
         if trade_dir != "NEUTRAL":
             entry_ob = ob_det.get_entry_ob(h1_obs, trade_dir, h1_df["close"].iloc[-1])
@@ -238,7 +392,7 @@ class PairScanner:
                 confluences.append(f"H1 OB bias ({entry_ob.strength}, +{h1_ob_pts})")
 
         # ── 2b. M5 Order blocks (entry zone) ─────────────────────────
-        m5_obs = ob_det.detect(m5_df, timeframe="M5")
+        # m5_obs already computed above
         has_m5_ob = False
         if trade_dir != "NEUTRAL":
             m5_entry_ob = ob_det.get_entry_ob(m5_obs, trade_dir, m5_df["close"].iloc[-1])
@@ -255,13 +409,7 @@ class PairScanner:
         has_ob = has_h1_ob or has_m5_ob
 
         # ── 3. Fair value gaps (strength-based) ──────────────────────
-        fvg_det = FVGDetector(
-            pip_size=pip_size,
-            proximity_pips=profile.fvg_proximity_pips,
-            min_size_pips=profile.fvg_min_size_pips,
-        )
-        m5_fvgs = fvg_det.detect(m5_df, timeframe="M5")
-        m15_fvgs = fvg_det.detect(m15_df, timeframe="M15")
+        # fvg_det, m5_fvgs, m15_fvgs already computed above
         has_fvg = False
         if trade_dir != "NEUTRAL":
             entry_fvg = fvg_det.get_entry_fvg(m5_fvgs + m15_fvgs, trade_dir, m5_df["close"].iloc[-1])
@@ -287,7 +435,8 @@ class PairScanner:
             confluences.append("Multi-TF FVG confluence")
 
         # ── 5. Session timing ─────────────────────────────────────────
-        session_status = self.session.get_status(utc_now)
+        if not cc.enabled:
+            session_status = self.session.get_status(utc_now)
 
         if is_always_open(pair):
             session_active = session_status.current_session not in ("DEAD", "WEEKEND")
@@ -310,7 +459,8 @@ class PairScanner:
         # ── 7. Currency strength alignment ────────────────────────────
         cs_aligned = False
         if profile.currency_strength_enabled and currency_data and pair in CURRENCY_PAIRS:
-            strength = self.strength_meter.calculate(currency_data)
+            if strength is None:
+                strength = self.strength_meter.calculate(currency_data)
             alignment = self.strength_meter.get_pair_alignment(pair, strength, trade_dir)
             if alignment["aligned"]:
                 cs_aligned = True
@@ -318,7 +468,7 @@ class PairScanner:
                 confluences.append(f"Currency strength ({alignment['reason']})")
 
         # ── 8. Liquidity ──────────────────────────────────────────────
-        liq_map = self.liquidity.map(h1_df, pip_size)
+        # liq_map already computed above
         has_liq = liq_map.nearest_buy_liq is not None or liq_map.nearest_sell_liq is not None
 
         sweep = False
@@ -337,7 +487,8 @@ class PairScanner:
         # ── 9. Volume confirmation ────────────────────────────────────
         volume_confirmed = False
         try:
-            vol_analysis = self.volume.analyze(m5_df)
+            if vol_analysis is None:
+                vol_analysis = self.volume.analyze(m5_df)
             if vol_analysis.has_spike and vol_analysis.confirmation_bias != "NEUTRAL":
                 if (
                     (trade_dir == "LONG" and vol_analysis.confirmation_bias == "BULLISH")
@@ -375,8 +526,9 @@ class PairScanner:
         wyckoff_phase = "N/A"
         if profile.wyckoff_enabled:
             try:
-                wyck = WyckoffEngine(pip_size=pip_size)
-                wyckoff_analysis = wyck.analyze(h1_df)
+                if wyckoff_analysis is None:
+                    wyck = WyckoffEngine(pip_size=pip_size)
+                    wyckoff_analysis = wyck.analyze(h1_df)
                 wyckoff_phase = wyckoff_analysis.phase
                 if wyckoff_analysis.sub_phase in ("SPRING", "UPTHRUST"):
                     _wyck_pts = _w["wyckoff"] if _w else 5
@@ -390,7 +542,8 @@ class PairScanner:
         # ── Confirmation-only penalties (subtract only, never add) ────
         # NOTE: when penalties go active (shadow_mode=False), the penalised
         # score feeds RL augment_score — RL may need a freeze/retrain.
-        cp_cfg = self.config.confirmation_penalties
+        if not cc.enabled:
+            cp_cfg = self.config.confirmation_penalties
         if cp_cfg.enabled and trade_dir in ("LONG", "SHORT"):
             total_penalty = 0
             penalty_notes: list[str] = []
@@ -536,6 +689,9 @@ class PairScanner:
                         rl_confidence=rl_result.rl_confidence,
                         rl_expected_r=rl_result.rl_expected_r,
                         rl_stage=rl_stage,
+                        consensus_direction=decision.direction if decision else trade_dir,
+                        consensus_net=decision.net_score if decision else 0.0,
+                        consensus_agreement=decision.agreement if decision else 0.0,
                     )
 
                 score        = int(rl_result.final_score)
@@ -588,6 +744,9 @@ class PairScanner:
             rl_confidence=rl_confidence,
             rl_expected_r=rl_expected_r,
             rl_stage=rl_stage,
+            consensus_direction=decision.direction if decision else trade_dir,
+            consensus_net=decision.net_score if decision else 0.0,
+            consensus_agreement=decision.agreement if decision else 0.0,
         )
 
     # ------------------------------------------------------------------
