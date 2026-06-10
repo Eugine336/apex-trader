@@ -24,7 +24,6 @@ _PATCHES = [
     "platforms.main_loop.PairScanner",
     "platforms.main_loop.PairRanker",
     "platforms.main_loop.ScanScheduler",
-    "platforms.main_loop.MTFOrchestrator",
     "platforms.main_loop.EntryEngine",
     "platforms.main_loop.DrawdownGuard",
     "platforms.main_loop.CorrelationEngine",

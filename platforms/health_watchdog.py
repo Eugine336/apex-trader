@@ -61,6 +61,17 @@ class HealthWatchdog:
         self._cycles += 1
         self._cycles_since_scan += 1
 
+    def is_scanner_blind(self) -> tuple[bool, str]:
+        """Return (True, reason) if the scanner is too degraded to trust."""
+        if self._consecutive_scan_failures >= self._max_consecutive_failures:
+            return True, f"{self._consecutive_scan_failures} consecutive scan failures"
+        if self._last_successful_scan:
+            now = datetime.now(timezone.utc)
+            age = (now - self._last_successful_scan).total_seconds()
+            if age > self._max_scan_gap:
+                return True, f"no successful scan for {age:.0f}s (max {self._max_scan_gap:.0f}s)"
+        return False, ""
+
     def check_health(self) -> HealthReport:
         now = datetime.now(timezone.utc)
         uptime = (now - self._start_time).total_seconds()
