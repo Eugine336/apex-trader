@@ -373,3 +373,49 @@ def test_mtf_trainer_save_meta_compatible():
             assert_compatible(meta)
             assert meta["n_features"] == OBS_FEATURES
             assert meta["context_dim"] == N_CONTEXT_FEATURES
+
+
+# ── 10. Commission calculation uses lots, not units ──────────────────────────
+
+
+def test_commission_divides_by_lot_size():
+    """Commission must be per-lot, not per-unit — a 2.79 lot trade should
+    cost ~$9.77 in commission at $3.50/lot, not $976K."""
+    _real_torch()
+    from rl.mtf_environment import ApexMultiTFTradingEnv
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        _setup_test_data(tmp_path, "EURUSD")
+
+        with patch("rl.mtf_environment.INSTRUMENT_REGISTRY", {
+            "EURUSD": type("Info", (), {
+                "pip_size": 0.0001,
+                "typical_spread_pips": 1.0,
+                "pip_value_per_lot": 10.0,
+                "category": type("Cat", (), {"value": "forex"})(),
+            })(),
+        }):
+            env = ApexMultiTFTradingEnv(
+                data_dir=tmp,
+                instrument="EURUSD",
+                initial_balance=10_000.0,
+                commission_per_lot=3.5,
+            )
+            env.reset()
+
+            initial_bal = env.balance
+            # Step until a trade opens (action 1 = buy, 2 = sell)
+            for _ in range(200):
+                obs, reward, done, info = env.step(1)
+                if env.trade is not None:
+                    break
+
+            if env.trade is not None:
+                comm_paid = initial_bal - env.balance
+                # Commission on a forex trade should be < $50, never > $1000
+                assert comm_paid < 50.0, (
+                    f"Commission ${comm_paid:.2f} is absurdly high — "
+                    f"units ({env.trade.size:.0f}) treated as lots?"
+                )
+                assert comm_paid >= 0, "Commission should be non-negative"
