@@ -139,7 +139,7 @@ class ScanReport:
 
 def _side_agnostic_rr(liq_map, atr_pips, pip_size: float) -> float | None:
     """Compute a direction-agnostic reward/risk magnitude from structural objectives."""
-    from rr_helper import compute_side_agnostic_rr
+    from scanner.rr_helper import compute_side_agnostic_rr
     return compute_side_agnostic_rr(
         buy_price=liq_map.nearest_buy_liq.price if liq_map.nearest_buy_liq is not None else None,
         sell_price=liq_map.nearest_sell_liq.price if liq_map.nearest_sell_liq is not None else None,
