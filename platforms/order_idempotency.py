@@ -15,6 +15,8 @@ _MT5_COMMENT_MAX = 31
 
 _SAFE_RE = re.compile(r"[^A-Za-z0-9._\-]")
 
+_DELIM = "-"
+
 _VALID_PREFIXES = ("APEX", "APND")
 
 _LEGACY_PREFIXES = ("APEX", "APEX_PEND")
@@ -54,7 +56,7 @@ def build_order_comment(
 ) -> str:
     """Build an MT5-safe order comment that fits within 31 chars.
 
-    Layout: ``<PREFIX>|<idem_key>|<score>|<session>``
+    Layout: ``<PREFIX>-<idem_key>-<score>-<session>``
 
     The idem_key occupies a fixed position (field 1) and is NEVER
     truncated.  Score and session are sanitized and trimmed from the
@@ -67,13 +69,13 @@ def build_order_comment(
     pfx = _sanitize(prefix)[:4] or "APEX"
     key = _sanitize(idem_key)[:12]
 
-    fixed = f"{pfx}|{key}"
+    fixed = f"{pfx}{_DELIM}{key}"
     budget = _MT5_COMMENT_MAX - len(fixed)
 
     tail = ""
     if score is not None and budget > 1:
         s = _sanitize(str(int(score)))
-        candidate = f"|{s}"
+        candidate = f"{_DELIM}{s}"
         if len(candidate) <= budget:
             tail += candidate
             budget -= len(candidate)
@@ -83,7 +85,7 @@ def build_order_comment(
 
     if session and budget > 1:
         s = _sanitize(str(session))
-        candidate = f"|{s}"
+        candidate = f"{_DELIM}{s}"
         if len(candidate) <= budget:
             tail += candidate
         else:
@@ -96,18 +98,20 @@ def build_order_comment(
 def extract_idempotency_key(comment: str) -> str | None:
     """Parse an APEX order comment and return the embedded idem key.
 
-    Current format: ``<PREFIX>|<idem_key>|...``
+    Current format: ``<PREFIX>-<idem_key>-...``
        where PREFIX is APEX or APND, idem_key is at index 1.
 
-    Legacy format: ``<PREFIX>|<score>|<session>|<idem_key>``
-       where PREFIX is APEX or APEX_PEND, idem_key is at index 3.
+    Legacy format (pipe-delimited): ``<PREFIX>|<idem_key>|...``
+       or ``<PREFIX>|<score>|<session>|<idem_key>``
+       where PREFIX is APEX/APEX_PEND, idem_key is at index 1 or 3.
     """
-    parts = comment.split("|")
-    if len(parts) < 2:
-        return None
-    prefix = parts[0]
-    if prefix in _VALID_PREFIXES and len(parts) >= 2 and len(parts[1]) == 12:
-        return parts[1]
-    if prefix in _LEGACY_PREFIXES and len(parts) >= 4:
-        return parts[3]
+    for delim in (_DELIM, "|"):
+        parts = comment.split(delim)
+        if len(parts) < 2:
+            continue
+        prefix = parts[0]
+        if prefix in _VALID_PREFIXES and len(parts) >= 2 and len(parts[1]) == 12:
+            return parts[1]
+        if prefix in _LEGACY_PREFIXES and len(parts) >= 4:
+            return parts[3]
     return None
