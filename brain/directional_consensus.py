@@ -58,6 +58,7 @@ def decide(
     min_agreement: float,
     high_authority_modules: list[str],
     high_authority_oppose_confidence: float,
+    min_contributors: int = 1,
 ) -> DirectionDecision:
     """
     Compute consensus direction from a list of weighted signed votes.
@@ -66,10 +67,18 @@ def decide(
     - |net| < min_net_score
     - agreement < min_agreement
     - a high-authority module opposes the net direction with high confidence
+    - fewer than min_contributors modules cast a non-NEUTRAL vote
     """
     non_neutral = [v for v in votes if v.direction != "NEUTRAL"]
+    neutral_modules = [v.module for v in votes if v.direction == "NEUTRAL"]
+    non_neutral_modules = [v.module for v in non_neutral]
 
     if not non_neutral:
+        logger.info(
+            "[consensus] participation: {}/{} voted | non-neutral: [none] | "
+            "abstained: [{}] | net=0.00 agree=0% → NEUTRAL",
+            0, len(votes), ", ".join(v.module for v in votes),
+        )
         return DirectionDecision(
             direction="NEUTRAL",
             net_score=0.0,
@@ -128,6 +137,22 @@ def decide(
             ", ".join(opposed_by),
         )
         direction = "NEUTRAL"
+    elif len(non_neutral) < min_contributors:
+        logger.info(
+            "[consensus] NEUTRAL — only {} non-neutral voter(s), "
+            "min_contributors requires {}",
+            len(non_neutral), min_contributors,
+        )
+        direction = "NEUTRAL"
+
+    logger.info(
+        "[consensus] participation: {}/{} voted | non-neutral: [{}] | "
+        "abstained: [{}] | net={:+.2f} agree={:.0%} → {}",
+        len(non_neutral), len(votes),
+        ", ".join(non_neutral_modules),
+        ", ".join(neutral_modules) if neutral_modules else "none",
+        net, agreement, direction,
+    )
 
     return DirectionDecision(
         direction=direction,
