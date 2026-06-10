@@ -137,6 +137,18 @@ class ScanReport:
     regime_distribution: dict[str, int] = field(default_factory=dict)
 
 
+def _side_agnostic_rr(liq_map, atr_pips, pip_size: float) -> float | None:
+    """Compute a direction-agnostic reward/risk magnitude from structural objectives."""
+    from rr_helper import compute_side_agnostic_rr
+    return compute_side_agnostic_rr(
+        buy_price=liq_map.nearest_buy_liq.price if liq_map.nearest_buy_liq is not None else None,
+        sell_price=liq_map.nearest_sell_liq.price if liq_map.nearest_sell_liq is not None else None,
+        current_price=liq_map.current_price,
+        atr_pips=atr_pips,
+        pip_size=pip_size,
+    )
+
+
 class PairScanner:
     """
     Always watching. Scans every enabled instrument, runs the full brain
@@ -754,7 +766,7 @@ class PairScanner:
                 if hasattr(news_status, "next_high_impact") and news_status.next_high_impact:
                     _news_mins = news_status.next_high_impact.minutes_away
 
-                _rr_magnitude = 1.5
+                _rr_magnitude = _side_agnostic_rr(liq_map, _atr_pips, pip_size)
 
                 oq = compute_opportunity_quality(
                     atr_value=_atr_pips,
