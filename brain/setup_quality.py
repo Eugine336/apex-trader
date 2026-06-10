@@ -359,7 +359,6 @@ def compute_entry_quality(
             components["atr_extension"] = 5.0
             reasons.append("extension: no data, neutral")
         else:
-            ext = abs(c_price - e_price) / (atr * _safe_finite(None, 1.0))
             pip_ext = abs(c_price - e_price)
             atr_ratio = pip_ext / atr if atr > 0 else 999.0
             if atr_ratio <= 0.3:
