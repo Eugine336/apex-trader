@@ -90,6 +90,7 @@ class RLBridge:
         self.enabled   = enabled
         self.authority = AuthorityManager(authority_db)
         self._shadow_store = None
+        self._live_trade_count = 0
 
         if enabled:
             try:
@@ -119,6 +120,7 @@ class RLBridge:
         pip_size:   float   = 0.0001,
         context_vec: Optional[np.ndarray] = None,
         symbol_id:  Optional[int] = None,
+        base_direction: Optional[int] = None,
     ) -> AugmentedScore:
         """
         Primary method called per pair per scan cycle.
@@ -156,11 +158,10 @@ class RLBridge:
 
         # ── Stage 3+: confidence signal contributes to score ─────────────
         elif perms.stage >= 3 and signal.confidence >= self.MIN_SIGNAL_CONFIDENCE:
-            # Score boost/penalty based on RL alignment with base_score
-            base_direction = 1 if base_score >= 60 else -1
+            resolved_dir = base_direction if base_direction is not None else (1 if base_score >= 60 else -1)
             rl_direction   = 1 if signal.action == 1 else (-1 if signal.action == 2 else 0)
 
-            alignment = base_direction * rl_direction  # +1 agree, -1 disagree, 0 neutral
+            alignment = resolved_dir * rl_direction  # +1 agree, -1 disagree, 0 neutral
 
             rl_delta = (
                 alignment
@@ -175,14 +176,14 @@ class RLBridge:
 
         # ── Stage 5+: veto authority ──────────────────────────────────────
         if perms.can_veto and signal.confidence >= self.VETO_CONFIDENCE_THRESHOLD:
-            base_direction = 1 if base_score >= 60 else -1
+            resolved_dir_veto = base_direction if base_direction is not None else (1 if base_score >= 60 else -1)
             rl_direction   = 1 if signal.action == 1 else (-1 if signal.action == 2 else 0)
 
             # Veto only when RL strongly disagrees with scanner direction
-            if rl_direction != 0 and rl_direction != base_direction:
+            if rl_direction != 0 and rl_direction != resolved_dir_veto:
                 vetoed = True
                 logger.info(
-                    f"[RLBridge] VETO {pair} | scanner={'BUY' if base_direction==1 else 'SELL'} "
+                    f"[RLBridge] VETO {pair} | scanner={'BUY' if resolved_dir_veto==1 else 'SELL'} "
                     f"rl={signal.action_label} conf={signal.confidence:.2f}"
                 )
 
@@ -224,7 +225,7 @@ class RLBridge:
             return {"action": "DISABLED"}
 
         metrics = self.shadow.shadow_score()
-        metrics["n_live_trades"] = 0  # TODO: wire live trade counter at Stage 6
+        metrics["n_live_trades"] = self._live_trade_count
 
         result = self.authority.evaluate(metrics)
         logger.info(f"[RLBridge] Authority eval: {result}")
@@ -244,6 +245,10 @@ class RLBridge:
             "max_pos_pct":    perms.max_position_pct,
             "shadow_score":   score,
         }
+
+    def record_live_trade(self):
+        """Increment the live trade counter (resets on restart)."""
+        self._live_trade_count += 1
 
     # ── Internal ─────────────────────────────────────────────────────────
 

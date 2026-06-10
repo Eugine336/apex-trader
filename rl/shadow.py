@@ -68,6 +68,7 @@ class ShadowTrade:
     close_time: str    = ""
     actual_r:   float  = 0.0
     close_reason: str  = ""
+    db_id:      int | None = None
 
 
 # ── Shadow Engine ─────────────────────────────────────────────────────────────
@@ -105,6 +106,7 @@ class ShadowEngine:
 
         self.open_trades: dict[str, ShadowTrade] = {}
         self.bar_counter: dict[str, int]          = {}
+        self._reload_open_trades()
 
     # ── Signal generation ─────────────────────────────────────────────────
 
@@ -125,12 +127,9 @@ class ShadowEngine:
         """
         import torch
         with torch.no_grad():
-            obs_t  = torch.FloatTensor(obs).unsqueeze(0)
-            latent = self.agent.encoder(obs_t)
-            action, conf, exp_r = self.agent.predict(
+            action, conf, exp_r, latent_list = self.agent.predict_full(
                 obs, context_vec=context_vec, symbol_id=symbol_id,
             )
-            latent_list = latent.squeeze(0).tolist()
 
         signal = RLSignal(
             pair=pair,
@@ -306,6 +305,39 @@ class ShadowEngine:
         con.commit()
         con.close()
 
+    def _reload_open_trades(self):
+        """Recover unclosed shadow trades from DB on restart."""
+        import logging
+        _logger = logging.getLogger("apex.rl.shadow")
+        try:
+            con = sqlite3.connect(self.db_path)
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                "SELECT id, pair, direction, entry, sl, tp, open_time, "
+                "expected_r, confidence FROM shadow_trades WHERE closed=0"
+            ).fetchall()
+            con.close()
+            for r in rows:
+                t = ShadowTrade(
+                    pair=r["pair"],
+                    direction=r["direction"],
+                    entry=r["entry"],
+                    sl=r["sl"],
+                    tp=r["tp"],
+                    open_time=r["open_time"],
+                    open_bar=0,
+                    expected_r=r["expected_r"],
+                    confidence=r["confidence"],
+                    db_id=r["id"],
+                )
+                self.open_trades[t.pair] = t
+                self.bar_counter[t.pair] = 0
+            if rows:
+                _logger.info(f"[Shadow] Recovered {len(rows)} open shadow trade(s) from DB")
+        except Exception as e:
+            import logging
+            logging.getLogger("apex.rl.shadow").warning(f"[Shadow] Failed to reload open trades: {e}")
+
     def _log_signal(self, s: RLSignal):
         con = sqlite3.connect(self.db_path)
         con.execute("""
@@ -319,12 +351,13 @@ class ShadowEngine:
 
     def _save_trade(self, t: ShadowTrade):
         con = sqlite3.connect(self.db_path)
-        con.execute("""
+        cur = con.execute("""
             INSERT INTO shadow_trades
             (pair, direction, entry, sl, tp, open_time, expected_r, confidence)
             VALUES (?,?,?,?,?,?,?,?)
         """, (t.pair, t.direction, t.entry, t.sl, t.tp,
               t.open_time, t.expected_r, t.confidence))
+        t.db_id = cur.lastrowid
         con.commit()
         con.close()
 
@@ -339,12 +372,19 @@ class ShadowEngine:
         t.close_reason = reason
 
         con = sqlite3.connect(self.db_path)
-        con.execute("""
-            UPDATE shadow_trades SET
-                closed=1, exit=?, close_time=?, actual_r=?, close_reason=?
-            WHERE pair=? AND closed=0
-            ORDER BY id DESC LIMIT 1
-        """, (exit_price, t.close_time, t.actual_r, reason, pair))
+        if t.db_id is not None:
+            con.execute("""
+                UPDATE shadow_trades SET
+                    closed=1, exit=?, close_time=?, actual_r=?, close_reason=?
+                WHERE id=?
+            """, (exit_price, t.close_time, t.actual_r, reason, t.db_id))
+        else:
+            con.execute("""
+                UPDATE shadow_trades SET
+                    closed=1, exit=?, close_time=?, actual_r=?, close_reason=?
+                WHERE pair=? AND closed=0
+                ORDER BY id DESC LIMIT 1
+            """, (exit_price, t.close_time, t.actual_r, reason, pair))
         con.commit()
         con.close()
 
