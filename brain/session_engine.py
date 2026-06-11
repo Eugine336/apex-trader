@@ -107,7 +107,7 @@ class SessionEngine:
             if self._time_in_range(current_time, session["open"], session["close"]):
                 open_mins = self._minutes_since(current_time, session["open"])
                 liquidity = "HIGH" if name in ["LONDON", "NEW_YORK"] else "MEDIUM"
-                tradeable = name in ["LONDON", "NEW_YORK"] or open_mins <= 60
+                tradeable = True
 
                 return SessionStatus(
                     current_session=name,
