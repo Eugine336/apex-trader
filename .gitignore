@@ -65,3 +65,5 @@ data/backups/
 
 *.db
 data/backups/
+*.zip
+node_modules/
