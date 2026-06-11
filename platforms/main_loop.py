@@ -75,9 +75,9 @@ from persistence.domain_events import (
 )
 from persistence.shadow_store import ShadowStore, ShadowContract, new_contract_id
 
-from decision.context import TradeContext
+from decision.context import EntryContext, TradeContext
 from decision.situation import SituationEngine, SituationAssessment
-from decision.actions import Action, ManagementDecision
+from decision.actions import Action, EntryAction, ManagementDecision
 from decision.engine import DecisionEngine
 from decision.governor import RiskGovernor
 from decision.journal import DecisionJournal
@@ -922,7 +922,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # Fetch more M1 bars than other timeframes — CHoCH detection needs
         # sufficient swing structure. 200 M1 bars = 3.3hrs, too few for Gold.
         # Fetch H4/H1/M15/M5 at 200, M1 at 400 (6.5hrs of micro structure).
-        base_data = self.platforms.fetch_market_data(pair, ["H4", "H1", "M15", "M5"])
+        # D1 for higher-timeframe bias context in the decision engine.
+        base_data = self.platforms.fetch_market_data(pair, ["D1", "H4", "H1", "M15", "M5"])
         m1_data = self.platforms.fetch_market_data(pair, ["M1"], count=400)
         data = {**base_data, **m1_data}
         if len(data) < 4:
@@ -1012,6 +1013,46 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             logger.warning("[entry] spread fetch failed, proceeding with zero spread: {}", exc)
             pass
 
+        # ── Decision Engine entry path ────────────────────────────────────
+        if self._decision_enabled:
+            try:
+                entry_ctx = self._build_entry_context(
+                    result, signal, data, balance, session, spread, ctx, _exec_risk, now,
+                )
+                sa = self._situation_engine.assess_entry(entry_ctx)
+                entry_decision = self._decision_engine.decide_entry(entry_ctx, sa)
+
+                governor_changed = False
+                if self._risk_governor is not None:
+                    reviewed = self._risk_governor.review_entry(entry_decision, entry_ctx, sa)
+                    if reviewed.action != entry_decision.action:
+                        governor_changed = True
+                    entry_decision = reviewed
+
+                if self._decision_journal is not None:
+                    self._decision_journal.log_entry(entry_ctx, sa, entry_decision, governor_changed)
+
+                if not entry_decision.should_enter:
+                    self._log_rejection(
+                        pair, direction, result.score,
+                        f"Decision Engine: {entry_decision.reason}",
+                    )
+                    self._persist_shadow_contract(
+                        signal,
+                        rejecting_gate=f"decision_engine:{entry_decision.action.value}",
+                    )
+                    return False
+
+                # Apply conviction-based sizing
+                conviction_mult = entry_decision.size_multiplier
+                if entry_decision.is_market:
+                    signal.entry_mode = "MARKET"
+            except Exception as exc:
+                logger.warning("[DecisionEngine] entry error — falling back to legacy gates: {}", exc)
+                conviction_mult = 1.0
+        else:
+            conviction_mult = 1.0
+
         validation = self.validator.validate(
             signal=signal,
             current_spread_pips=spread,
@@ -1098,7 +1139,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 else 1.0
             )
             adjusted_lots = round(
-                signal.position_size_lots * adjustments.position_size_multiplier * density_mult * vol_mult * exec_mult,
+                signal.position_size_lots * adjustments.position_size_multiplier * density_mult * vol_mult * exec_mult * conviction_mult,
                 2,
             )
             risk_ceiling = signal.position_size_lots
@@ -2154,6 +2195,114 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 "[DecisionEngine] error for {} ({}) — falling back to legacy: {}",
                 pos.symbol, oid, exc,
             )
+
+    def _build_entry_context(
+        self,
+        result,
+        signal,
+        data: dict,
+        balance: float,
+        session: str,
+        spread: float,
+        platform_ctx,
+        exec_risk: float,
+        now,
+    ) -> EntryContext:
+        """Build rich EntryContext from scan result + signal + market data."""
+        ctx = EntryContext(
+            symbol=result.pair,
+            direction=result.direction,
+            scan_score=result.score,
+            scan_direction=result.direction,
+            entry_type=getattr(signal, "entry_type", ""),
+            entry_price=signal.entry_price,
+            stop_loss=signal.stop_loss,
+            tp1=signal.tp1,
+            tp2=signal.tp2,
+            risk_reward_1=signal.risk_reward_1,
+            risk_reward_2=signal.risk_reward_2,
+            risk_pips=signal.risk_pips,
+            entry_mode=getattr(signal, "entry_mode", "PENDING"),
+            micro_confirmation=getattr(signal, "micro_confirmation", ""),
+            base_lots=signal.position_size_lots,
+            account_balance=balance,
+            risk_pct=exec_risk,
+            session_name=session,
+            open_trade_count=len(self.managed_positions),
+            max_open_trades=self.config.risk.max_open_trades,
+            current_spread=spread,
+            typical_spread=platform_ctx.typical_spread(result.pair, fallback=2.0) if platform_ctx else 2.0,
+            regime=getattr(result, "regime", ""),
+            ev_estimate=getattr(result, "ev_estimate", 0.0),
+            confluences=getattr(result, "confluences", []),
+        )
+
+        try:
+            ctx.pair_multiplier = self.ml.pair_learner.get_pair_multiplier(result.pair)
+        except Exception:
+            pass
+
+        try:
+            prsm = getattr(self, "_portfolio_risk_sm", None)
+            if prsm is not None:
+                ctx.portfolio_heat_pct = getattr(prsm, "_last_heat_pct", 0.0)
+        except Exception:
+            pass
+
+        try:
+            session_status = self.session_engine.get_status(now)
+            ctx.session_tradeable = session_status.is_tradeable
+        except Exception:
+            pass
+
+        try:
+            open_pairs = [p.symbol for p in self.managed_positions.values()]
+            ns = self.news_guard.check(open_pairs + [result.pair], now)
+            if hasattr(ns, "upcoming_events"):
+                for evt in ns.upcoming_events:
+                    if result.pair in getattr(evt, "affected_pairs", []):
+                        mins = getattr(evt, "minutes_until", 999.0)
+                        impact = getattr(evt, "impact", "LOW")
+                        if mins < ctx.minutes_to_high_impact_news:
+                            ctx.minutes_to_high_impact_news = mins
+                            ctx.news_impact = impact
+        except Exception:
+            pass
+
+        # Multi-TF structure analysis
+        for tf_key, attr_prefix in [("D1", "d1"), ("H4", "h4"), ("H1", "h1"), ("M1", "m1")]:
+            df = data.get(tf_key)
+            if df is None or len(df) < 5:
+                continue
+            try:
+                analysis = self.scanner.structure.analyze(df)
+                setattr(ctx, f"{attr_prefix}_trend", analysis.trend)
+                setattr(ctx, f"{attr_prefix}_confidence", analysis.confidence)
+                event = "NONE"
+                if analysis.last_choch:
+                    event = f"CHOCH_{analysis.trend}"
+                elif analysis.last_bos:
+                    event = f"BOS_{analysis.trend}"
+                setattr(ctx, f"{attr_prefix}_event", event)
+            except Exception:
+                pass
+
+        # M1 aligned count
+        if "M1" in data and data["M1"] is not None and len(data["M1"]) >= 5:
+            try:
+                m1_df = data["M1"]
+                recent = m1_df.tail(5)
+                is_long = result.direction.upper() in ("BUY", "LONG")
+                aligned = sum(
+                    1 for _, c in recent.iterrows()
+                    if (is_long and float(c.get("close", 0)) > float(c.get("open", 0)))
+                    or (not is_long and float(c.get("close", 0)) < float(c.get("open", 0)))
+                )
+                ctx.m1_aligned_count = aligned
+            except Exception:
+                pass
+
+        return ctx
 
     def _build_trade_context(
         self,
