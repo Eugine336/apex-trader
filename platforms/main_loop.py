@@ -153,12 +153,21 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self.scanner = PairScanner(self.config, scoring_weights=_scanner_weights_dict)
         self.ranker = PairRanker()
         self.scheduler = ScanScheduler()
-        self.entry_engine = EntryEngine(config=self.config)
+        risk_cfg = self.config.risk
+        self.entry_engine = EntryEngine(
+            config=self.config,
+            volatility_stop_mode=risk_cfg.volatility_stop_mode,
+            atr_stop_period=risk_cfg.atr_stop_period,
+            atr_stop_mult=risk_cfg.atr_stop_mult,
+            atr_stop_ratio_min=risk_cfg.atr_stop_ratio_min,
+            atr_stop_ratio_max=risk_cfg.atr_stop_ratio_max,
+            atr_stop_max_risk_mult=risk_cfg.atr_stop_max_risk_mult,
+        )
         self.drawdown = DrawdownGuard()
         self.correlation = CorrelationEngine(
-            max_correlated_trades=self.config.risk.max_correlated_trades,
-            max_cluster_same_direction=self.config.risk.max_cluster_same_direction,
-            allow_intentional_hedge=self.config.risk.allow_intentional_hedge,
+            max_correlated_trades=risk_cfg.max_correlated_trades,
+            max_cluster_same_direction=risk_cfg.max_cluster_same_direction,
+            allow_intentional_hedge=risk_cfg.allow_intentional_hedge,
         )
         self.risk_engine = RiskEngine(config=self.config)
         self.execution_monitor = ExecutionMonitor()

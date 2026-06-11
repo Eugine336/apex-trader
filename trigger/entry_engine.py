@@ -74,13 +74,49 @@ class EntryEngine:
     Uses M1 micro-confirmation as a graded score adjustment.
     """
 
-    def __init__(self, config: Optional[AppConfig] = None):
+    def __init__(
+        self,
+        config: Optional[AppConfig] = None,
+        volatility_stop_mode: Optional[str] = None,
+        atr_stop_period: Optional[int] = None,
+        atr_stop_mult: Optional[float] = None,
+        atr_stop_ratio_min: Optional[float] = None,
+        atr_stop_ratio_max: Optional[float] = None,
+        atr_stop_max_risk_mult: Optional[float] = None,
+    ):
         self.config = config or AppConfig()
         self.structure = StructureEngine()
         self.drawdown = DrawdownGuard()
         self.pattern_detector = EntryPatternDetector()
         self.news_guard = NewsGuard()
         self.session_engine = SessionEngine()
+        risk_cfg = self.config.risk
+        self._volatility_stop_mode = (
+            volatility_stop_mode
+            if volatility_stop_mode is not None
+            else risk_cfg.volatility_stop_mode
+        ).lower()
+        self._atr_stop_period = int(
+            atr_stop_period if atr_stop_period is not None else risk_cfg.atr_stop_period
+        )
+        self._atr_stop_mult = float(
+            atr_stop_mult if atr_stop_mult is not None else risk_cfg.atr_stop_mult
+        )
+        self._atr_stop_ratio_min = float(
+            atr_stop_ratio_min
+            if atr_stop_ratio_min is not None
+            else risk_cfg.atr_stop_ratio_min
+        )
+        self._atr_stop_ratio_max = float(
+            atr_stop_ratio_max
+            if atr_stop_ratio_max is not None
+            else risk_cfg.atr_stop_ratio_max
+        )
+        self._atr_stop_max_risk_mult = float(
+            atr_stop_max_risk_mult
+            if atr_stop_max_risk_mult is not None
+            else risk_cfg.atr_stop_max_risk_mult
+        )
 
     # ------------------------------------------------------------------
     # Main entry calculation
@@ -292,7 +328,15 @@ class EntryEngine:
             confluences.append("Liquidity sweep confirmed at entry zone")
 
         entry_price = zone["midpoint"]
-        stop_loss = self.calculate_stop_loss(direction, zone, pip_size, profile.sl_buffer_pips)
+        stop_loss = self.calculate_stop_loss(
+            direction,
+            zone,
+            pip_size,
+            profile.sl_buffer_pips,
+            entry_price=entry_price,
+            pair=pair,
+            m5_df=m5_df,
+        )
         risk_distance = abs(entry_price - stop_loss)
 
         # ── SL floor for synthetics and crypto — MUST run before calculate_targets ──
@@ -620,13 +664,134 @@ class EntryEngine:
     # ------------------------------------------------------------------
 
     def calculate_stop_loss(
-        self, direction: str, entry_zone: dict, pip_size: float, buffer_pips: float = 2.0,
+        self,
+        direction: str,
+        entry_zone: dict,
+        pip_size: float,
+        buffer_pips: float = 2.0,
+        *,
+        entry_price: Optional[float] = None,
+        pair: str = "",
+        m5_df: Optional[pd.DataFrame] = None,
+    ) -> float:
+        structure_sl = self._calculate_structure_stop_loss(
+            direction, entry_zone, pip_size, buffer_pips,
+        )
+        if self._volatility_stop_mode != "on":
+            return structure_sl
+        if entry_price is None or m5_df is None:
+            return structure_sl
+
+        return self._calculate_volatility_stop_loss(
+            direction=direction,
+            entry_price=float(entry_price),
+            structure_sl=structure_sl,
+            m5_df=m5_df,
+            pair=pair,
+            pip_size=pip_size,
+        )
+
+    def _calculate_structure_stop_loss(
+        self,
+        direction: str,
+        entry_zone: dict,
+        pip_size: float,
+        buffer_pips: float = 2.0,
     ) -> float:
         buffer = buffer_pips * pip_size
         if direction == "LONG":
             return entry_zone["bottom"] - buffer
-        else:
-            return entry_zone["top"] + buffer
+        return entry_zone["top"] + buffer
+
+    def _calculate_volatility_stop_loss(
+        self,
+        *,
+        direction: str,
+        entry_price: float,
+        structure_sl: float,
+        m5_df: pd.DataFrame,
+        pair: str,
+        pip_size: float,
+    ) -> float:
+        from brain.volatility_stop import latest_atr
+
+        if len(m5_df) < self._atr_stop_period:
+            logger.debug(
+                "[ATR SL] {} has {} M5 bars (< {}) — using structure SL {:.6f}",
+                pair or "unknown",
+                len(m5_df),
+                self._atr_stop_period,
+                structure_sl,
+            )
+            return structure_sl
+
+        atr_value = latest_atr(m5_df, self._atr_stop_period)
+        if atr_value is None:
+            logger.debug(
+                "[ATR SL] ATR unavailable for {} — using structure SL {:.6f}",
+                pair or "unknown",
+                structure_sl,
+            )
+            return structure_sl
+
+        structure_distance = abs(entry_price - structure_sl)
+        if not math.isfinite(structure_distance) or structure_distance <= 0:
+            return structure_sl
+
+        atr_distance = float(atr_value) * self._atr_stop_mult
+        if not math.isfinite(atr_distance) or atr_distance <= 0:
+            return structure_sl
+
+        raw_ratio = atr_distance / structure_distance
+        clamped_ratio = max(
+            self._atr_stop_ratio_min,
+            min(raw_ratio, self._atr_stop_ratio_max),
+        )
+        final_distance = structure_distance * clamped_ratio
+        max_allowed_distance = structure_distance * self._atr_stop_max_risk_mult
+        if final_distance > max_allowed_distance:
+            logger.debug(
+                "[ATR SL] {} ATR distance {:.6f} exceeds max {:.6f} (x{:.2f}) "
+                "— using structure SL {:.6f}",
+                pair or "unknown",
+                final_distance,
+                max_allowed_distance,
+                self._atr_stop_max_risk_mult,
+                structure_sl,
+            )
+            return structure_sl
+
+        if not math.isfinite(final_distance) or final_distance <= 0:
+            return structure_sl
+
+        atr_sl = (
+            entry_price - final_distance
+            if direction.upper() in ("LONG", "BUY")
+            else entry_price + final_distance
+        )
+        if not math.isfinite(atr_sl):
+            return structure_sl
+        if direction.upper() in ("LONG", "BUY") and atr_sl >= entry_price:
+            return structure_sl
+        if direction.upper() in ("SHORT", "SELL") and atr_sl <= entry_price:
+            return structure_sl
+
+        if abs(atr_sl - structure_sl) > 1e-12:
+            risk_delta_pips = 0.0
+            if pip_size > 0:
+                risk_delta_pips = (
+                    abs(entry_price - atr_sl) - abs(entry_price - structure_sl)
+                ) / pip_size
+            logger.info(
+                "[{}] ATR stop override — structure {:.5f} -> ATR {:.5f} "
+                "(risk delta {:+.1f} pips)",
+                pair or "unknown",
+                structure_sl,
+                atr_sl,
+                risk_delta_pips,
+            )
+
+        return atr_sl
 
     def calculate_targets(
         self,
