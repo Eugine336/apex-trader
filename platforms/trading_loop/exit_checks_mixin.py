@@ -20,6 +20,7 @@ class ExitChecksMixin:
         pos: ManagedPosition,
         scan_result,
         now: datetime,
+        opposing_score_boost: int = 0,
     ) -> None:
         """
         Exit early if the market is now showing a strong setup AGAINST our position.
@@ -62,18 +63,19 @@ class ExitChecksMixin:
             (is_long and result_direction == "SHORT")
             or (not is_long and result_direction == "LONG")
         )
-        if opposing and scan_result.score >= cfg.opposing_signal_threshold:
+        effective_opposing_score = min(100, int(scan_result.score + max(0, opposing_score_boost)))
+        if opposing and effective_opposing_score >= cfg.opposing_signal_threshold:
             tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
             pnl_pips = tm_trade.pnl_pips if tm_trade else 0.0
             result = self.platforms.close_trade(oid, pos.platform)
             if result.success:
                 logger.info(
-                    "🔴 INVALIDATION EXIT (opposing signal) — {} {} | opposing={} score={} | pnl={:.1f}pip",
-                    pos.direction, pos.symbol, result_direction, scan_result.score, pnl_pips,
+                    "🔴 INVALIDATION EXIT (opposing signal) — {} {} | opposing={} score={} (ctx+{}) | pnl={:.1f}pip",
+                    pos.direction, pos.symbol, result_direction, scan_result.score, max(0, opposing_score_boost), pnl_pips,
                 )
                 self._record_closed_trade(
                     pos, result.close_price,
-                    f"INVALIDATION_OPPOSING({result_direction}@{scan_result.score})",
+                    f"INVALIDATION_OPPOSING({result_direction}@{effective_opposing_score})",
                     close_result=result,
                 )
                 self.managed_positions.pop(oid, None)
