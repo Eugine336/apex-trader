@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-from decision.context import TradeContext
+from decision.context import EntryContext, TradeContext
 
 
 @dataclass
@@ -105,6 +105,128 @@ class SituationEngine:
         sa.primary_label = self._derive_label(sa, ctx)
         sa.evidence = evidence
         return sa
+
+    def assess_entry(self, ctx: EntryContext) -> SituationAssessment:
+        """Compute situation dimensions for a potential entry."""
+        sa = SituationAssessment()
+        evidence: list[str] = []
+
+        is_long = ctx.is_long
+
+        # ── 1. Timeframe alignment ───────────────────────────────────────
+        d1 = self._trend_alignment_score(ctx.d1_trend, ctx.d1_confidence, is_long)
+        h4 = self._trend_alignment_score(ctx.h4_trend, ctx.h4_confidence, is_long)
+        h1 = self._trend_alignment_score(ctx.h1_trend, ctx.h1_confidence, is_long)
+        sa.tf_alignment = max(-1.0, min(1.0,
+            d1 * self._D1_WEIGHT + h4 * self._H4_WEIGHT + h1 * self._H1_WEIGHT
+        ))
+        parts = []
+        if abs(d1) > 0.1:
+            parts.append(f"D1={'support' if d1 > 0 else 'oppose'}({ctx.d1_confidence:.2f})")
+        if abs(h4) > 0.1:
+            parts.append(f"H4={'support' if h4 > 0 else 'oppose'}({ctx.h4_confidence:.2f})")
+        if abs(h1) > 0.1:
+            parts.append(f"H1={'support' if h1 > 0 else 'oppose'}({ctx.h1_confidence:.2f})")
+        if parts:
+            evidence.append(f"tf_alignment={sa.tf_alignment:+.2f} [{', '.join(parts)}]")
+
+        # ── 2. Momentum (M1 candles + structural events) ────────────────
+        m = 0.0
+        candle_m = (ctx.m1_aligned_count - 2.5) / 2.5
+        m += candle_m * 0.50
+        m1_event = ctx.m1_event
+        opposing_events = {"BOS_BEARISH", "CHOCH_BEARISH"} if is_long else {"BOS_BULLISH", "CHOCH_BULLISH"}
+        supporting_events = {"BOS_BULLISH", "CHOCH_BULLISH"} if is_long else {"BOS_BEARISH", "CHOCH_BEARISH"}
+        if m1_event in opposing_events:
+            m -= 0.30
+        elif m1_event in supporting_events:
+            m += 0.25
+        sa.momentum = max(-1.0, min(1.0, m))
+        if abs(sa.momentum) > 0.1:
+            evidence.append(f"momentum={sa.momentum:+.2f} [M1 {ctx.m1_aligned_count}/5, event={m1_event}]")
+
+        # ── 3. Structure integrity (zone quality + HTF events) ──────────
+        integrity = 0.5
+        zone_type = ctx.entry_type
+        if zone_type == "FVG_OB_OVERLAP":
+            integrity += 0.30
+            evidence.append("FVG+OB overlap zone (highest quality)")
+        elif zone_type == "OB_MIDPOINT":
+            integrity += 0.20
+            evidence.append("Order Block zone")
+        elif zone_type == "FVG_MIDPOINT":
+            integrity += 0.15
+            evidence.append("FVG zone")
+        elif zone_type == "SWEEP_REVERSAL":
+            integrity += 0.25
+            evidence.append("Sweep reversal zone")
+
+        h4_opposing = (
+            (is_long and ctx.h4_event in ("BOS_BEARISH", "CHOCH_BEARISH"))
+            or (not is_long and ctx.h4_event in ("BOS_BULLISH", "CHOCH_BULLISH"))
+        )
+        if h4_opposing:
+            integrity -= 0.30
+            evidence.append(f"H4 opposing event: {ctx.h4_event}")
+
+        d1_opposing = (
+            (is_long and ctx.d1_event in ("BOS_BEARISH", "CHOCH_BEARISH"))
+            or (not is_long and ctx.d1_event in ("BOS_BULLISH", "CHOCH_BULLISH"))
+        )
+        if d1_opposing:
+            integrity -= 0.25
+            evidence.append(f"D1 opposing event: {ctx.d1_event}")
+        sa.structure_integrity = max(0.0, min(1.0, integrity))
+
+        # ── 4. No profit state for entries ───────────────────────────────
+        sa.profit_state = 0.0
+
+        # ── 5. Urgency ──────────────────────────────────────────────────
+        u = 0.0
+        if ctx.minutes_to_high_impact_news < 15:
+            u = max(u, 1.0 - ctx.minutes_to_high_impact_news / 15.0)
+            evidence.append(f"news in {ctx.minutes_to_high_impact_news:.0f}min ({ctx.news_impact})")
+        if not ctx.session_tradeable:
+            u = max(u, 0.6)
+            evidence.append("session not tradeable")
+        sa.urgency = min(1.0, u)
+
+        # ── 6. No maturity for entries ───────────────────────────────────
+        sa.maturity = 0.0
+
+        # ── 7. Read confidence ───────────────────────────────────────────
+        c = 0.3
+        if ctx.d1_trend != "UNKNOWN":
+            c += 0.25
+        if ctx.h4_trend != "UNKNOWN":
+            c += 0.20
+        if ctx.m1_trend != "UNKNOWN":
+            c += 0.15
+        if ctx.entry_type:
+            c += 0.10
+        sa.read_confidence = min(1.0, c)
+
+        # ── 8. Label ────────────────────────────────────────────────────
+        sa.primary_label = self._derive_entry_label(sa, ctx)
+        sa.evidence = evidence
+        return sa
+
+    def _derive_entry_label(
+        self, sa: SituationAssessment, ctx: EntryContext,
+    ) -> str:
+        if sa.urgency > 0.7:
+            return "URGENT_RISK"
+        if sa.structure_integrity < 0.2:
+            return "WEAK_STRUCTURE"
+        if sa.tf_alignment > 0.4 and sa.momentum > 0.1:
+            return "TREND_CONTINUATION"
+        if sa.tf_alignment > 0.3 and sa.momentum < -0.2:
+            return "COUNTER_MOMENTUM"
+        if abs(sa.tf_alignment) < 0.2:
+            return "RANGE_ENTRY"
+        if sa.tf_alignment < -0.3:
+            return "COUNTER_TREND"
+        return "MIXED"
 
     # ── Private helpers ──────────────────────────────────────────────────
 
