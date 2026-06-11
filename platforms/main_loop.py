@@ -2397,9 +2397,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         except Exception:
             current_price = pos.entry_price
 
-        original_risk = abs(pos.entry_price - getattr(pos, 'sl_original', pos.sl))
+        _pip_sz = get_pip_size(pos.symbol)
+        original_risk = abs(pos.entry_price - getattr(pos, 'sl_original', pos.sl)) / _pip_sz
         if original_risk < 1e-8:
-            original_risk = abs(pos.entry_price - pos.sl)
+            original_risk = abs(pos.entry_price - pos.sl) / _pip_sz
 
         ctx = TradeContext(
             symbol=pos.symbol,
