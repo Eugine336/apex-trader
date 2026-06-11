@@ -83,16 +83,7 @@ class EntryValidator:
         ok, msg = self.check_risk_reward(signal)
         (passed if ok else failed).append(msg)
 
-        ok, msg = self.check_drawdown()
-        (passed if ok else failed).append(msg)
-
         ok, msg = self.check_expiry(signal, utc_now)
-        (passed if ok else failed).append(msg)
-
-        ok, msg = self.check_max_trades(open_trades)
-        (passed if ok else failed).append(msg)
-
-        ok, msg = self.check_correlation(signal.pair, signal.direction, open_trades)
         (passed if ok else failed).append(msg)
 
         ok, msg = self.check_session(signal.pair, utc_now)
@@ -209,6 +200,8 @@ class EntryValidator:
             return False, f"R:R to TP2 below minimum ({signal.risk_reward_2:.2f} < {min_rr})"
         return True, f"R:R OK (TP1={signal.risk_reward_1:.2f}, TP2={signal.risk_reward_2:.2f})"
 
+    # NOTE: Removed from validate() — risk_engine.assess_trade() performs this check.
+    # Kept for backward compatibility with tests.
     def check_drawdown(self) -> tuple[bool, str]:
         can_trade, reason = self.drawdown.can_trade()
         if not can_trade:
@@ -223,12 +216,16 @@ class EntryValidator:
         remaining = (signal.valid_until - utc_now).total_seconds()
         return True, f"Signal valid ({remaining:.0f}s remaining)"
 
+    # NOTE: Removed from validate() — risk_engine.assess_trade() performs this check.
+    # Kept for backward compatibility with tests.
     def check_max_trades(self, open_trades: list) -> tuple[bool, str]:
         max_trades = self.config.risk.max_open_trades
         if len(open_trades) >= max_trades:
             return False, f"Max open trades reached ({len(open_trades)}/{max_trades})"
         return True, f"Trade slots available ({len(open_trades)}/{max_trades})"
 
+    # NOTE: Removed from validate() — risk_engine.assess_trade() performs this check.
+    # Kept for backward compatibility with tests.
     def check_correlation(
         self, pair: str, direction: str, open_trades: list,
     ) -> tuple[bool, str]:
