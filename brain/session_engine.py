@@ -241,6 +241,16 @@ class NewsGuard:
         # Fetch news events (with cache)
         events = self._fetch_events(utc_now)
 
+        # Feed failure with no cache — fail closed until calendar data returns.
+        if events is None:
+            return NewsStatus(
+                is_clear=False,
+                events_nearby=[],
+                next_high_impact=None,
+                affected_currencies=affected_currencies,
+                warning_message="⚠️ NEWS FEED UNAVAILABLE — blocking trades until calendar data is available",
+            )
+
         # Filter to relevant events
         nearby = []
         for event in events:
@@ -288,11 +298,12 @@ class NewsGuard:
                 currencies.add(quote)
         return list(currencies)
 
-    def _fetch_events(self, utc_now: datetime) -> list[NewsEvent]:
+    def _fetch_events(self, utc_now: datetime) -> Optional[list[NewsEvent]]:
         """
         Fetch economic calendar events.
         Uses ForexFactory RSS feed as primary source.
-        Falls back to empty list if unavailable.
+        Falls back to cache if available. Returns None when unavailable and
+        no cache exists so callers can fail closed.
         """
         # Return cached events if fresh (< 30 min old)
         if (self._cache_time and
@@ -337,5 +348,10 @@ class NewsGuard:
             return events
 
         except Exception as e:
-            logger.warning(f"News feed unavailable: {e}")
-            return self._cache or []
+            logger.warning("News feed unavailable: {}", e)
+            if self._cache:
+                return self._cache
+            logger.error(
+                "NEWS FEED DOWN with no cache — trading will be blocked until feed recovers"
+            )
+            return None
