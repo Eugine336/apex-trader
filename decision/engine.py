@@ -11,8 +11,8 @@ from __future__ import annotations
 
 from loguru import logger
 
-from decision.actions import Action, ManagementDecision
-from decision.context import TradeContext
+from decision.actions import Action, EntryAction, EntryDecision, ManagementDecision
+from decision.context import EntryContext, TradeContext
 from decision.situation import SituationAssessment
 
 
@@ -239,3 +239,147 @@ class DecisionEngine:
             f"urgency={sa.urgency:.2f} confidence={sa.read_confidence:.2f} "
             f"margin={margin:.2f}"
         )
+
+    # ── Entry decisions ─────────────────────────────────────────────────
+
+    def decide_entry(
+        self,
+        ctx: EntryContext,
+        sa: SituationAssessment,
+    ) -> EntryDecision:
+        """Score ENTER vs SKIP using situation dimensions — no hard thresholds."""
+        evidence: list[str] = []
+
+        # ── ENTER score ──────────────────────────────────────────────────
+        enter_score = 0.20  # baseline: slight inclination to trade
+
+        if sa.tf_alignment > 0.2:
+            contrib = sa.tf_alignment * 0.35
+            enter_score += contrib
+            evidence.append(f"HTF aligned ({sa.tf_alignment:+.2f}) +{contrib:.2f}")
+
+        if sa.structure_integrity > 0.5:
+            contrib = (sa.structure_integrity - 0.5) * 0.40
+            enter_score += contrib
+            evidence.append(f"structure quality ({sa.structure_integrity:.2f}) +{contrib:.2f}")
+
+        if sa.momentum > 0.1:
+            contrib = sa.momentum * 0.15
+            enter_score += contrib
+            evidence.append(f"supportive momentum ({sa.momentum:+.2f}) +{contrib:.2f}")
+
+        if ctx.risk_reward_2 > 2.0:
+            rr_bonus = min((ctx.risk_reward_2 - 2.0) * 0.05, 0.15)
+            enter_score += rr_bonus
+            evidence.append(f"good R:R ({ctx.risk_reward_2:.1f}) +{rr_bonus:.2f}")
+
+        if sa.read_confidence > 0.7:
+            enter_score += 0.05
+            evidence.append(f"high data confidence ({sa.read_confidence:.2f})")
+
+        # ── SKIP score ───────────────────────────────────────────────────
+        skip_score = 0.0
+        skip_parts: list[str] = []
+
+        if sa.tf_alignment < -0.1:
+            penalty = abs(sa.tf_alignment) * 0.35
+            skip_score += penalty
+            skip_parts.append(f"HTF opposing ({sa.tf_alignment:+.2f}) +{penalty:.2f}")
+
+        if sa.structure_integrity < 0.3:
+            penalty = (0.3 - sa.structure_integrity) * 0.60
+            skip_score += penalty
+            skip_parts.append(f"weak structure ({sa.structure_integrity:.2f}) +{penalty:.2f}")
+
+        if sa.momentum < -0.2:
+            penalty = abs(sa.momentum) * 0.20
+            skip_score += penalty
+            skip_parts.append(f"opposing momentum ({sa.momentum:+.2f}) +{penalty:.2f}")
+
+        if sa.urgency > 0.5:
+            penalty = sa.urgency * 0.25
+            skip_score += penalty
+            skip_parts.append(f"high urgency ({sa.urgency:.2f}) +{penalty:.2f}")
+
+        if sa.read_confidence < 0.4:
+            penalty = (0.4 - sa.read_confidence) * 0.30
+            skip_score += penalty
+            skip_parts.append(f"low confidence ({sa.read_confidence:.2f}) +{penalty:.2f}")
+
+        if ctx.risk_reward_2 < 1.5:
+            penalty = (1.5 - ctx.risk_reward_2) * 0.20
+            skip_score += penalty
+            skip_parts.append(f"weak R:R ({ctx.risk_reward_2:.1f}) +{penalty:.2f}")
+
+        # ── Pick winner ──────────────────────────────────────────────────
+        margin = enter_score - skip_score
+        if margin <= 0:
+            reason = (
+                f"[{sa.primary_label}] SKIP: {'; '.join(skip_parts)} | "
+                f"enter={enter_score:.2f} skip={skip_score:.2f} margin={margin:.2f}"
+            )
+            return EntryDecision(
+                action=EntryAction.SKIP,
+                reason=reason,
+                confidence=min(1.0, abs(margin) + 0.3),
+                conviction=0.0,
+                size_multiplier=0.0,
+                evidence=skip_parts,
+            )
+
+        # ── Decide MARKET vs PENDING ─────────────────────────────────────
+        entry_action = self._decide_entry_action(ctx, sa)
+
+        conviction = self.compute_conviction(sa)
+        size_mult = self._conviction_to_size_multiplier(conviction)
+
+        reason = (
+            f"[{sa.primary_label}] {entry_action.value}: "
+            f"{'; '.join(evidence[:4])} | "
+            f"enter={enter_score:.2f} skip={skip_score:.2f} margin={margin:.2f} "
+            f"conviction={conviction:.2f} size×{size_mult:.2f}"
+        )
+        return EntryDecision(
+            action=entry_action,
+            reason=reason,
+            confidence=min(1.0, margin + 0.3),
+            conviction=conviction,
+            size_multiplier=size_mult,
+            evidence=evidence,
+        )
+
+    def _decide_entry_action(
+        self, ctx: EntryContext, sa: SituationAssessment,
+    ) -> EntryAction:
+        """Choose MARKET vs PENDING based on situation, not fixed rules."""
+        if ctx.entry_mode == "MARKET":
+            return EntryAction.ENTER_MARKET
+
+        market_score = 0.0
+        if sa.momentum > 0.3:
+            market_score += 0.30
+        if sa.tf_alignment > 0.5:
+            market_score += 0.20
+        if ctx.micro_confirmation in ("choch_bos", "engulfing", "pin_bar"):
+            market_score += 0.25
+        if ctx.scan_score >= 80:
+            market_score += 0.15
+
+        if market_score >= 0.40:
+            return EntryAction.ENTER_MARKET
+        return EntryAction.ENTER_PENDING
+
+    def compute_conviction(self, sa: SituationAssessment) -> float:
+        """Continuous conviction score from situation dimensions."""
+        c = (
+            (sa.tf_alignment + 1.0) / 2.0 * 0.40
+            + sa.structure_integrity * 0.30
+            + (sa.momentum + 1.0) / 2.0 * 0.20
+            + sa.read_confidence * 0.10
+        )
+        return max(0.0, min(1.0, c))
+
+    @staticmethod
+    def _conviction_to_size_multiplier(conviction: float) -> float:
+        """Map conviction 0–1 to size multiplier 0.5–1.5."""
+        return round(0.5 + conviction, 2)
