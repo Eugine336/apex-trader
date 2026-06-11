@@ -75,6 +75,13 @@ from persistence.domain_events import (
 )
 from persistence.shadow_store import ShadowStore, ShadowContract, new_contract_id
 
+from decision.context import TradeContext
+from decision.situation import SituationEngine, SituationAssessment
+from decision.actions import Action, ManagementDecision
+from decision.engine import DecisionEngine
+from decision.governor import RiskGovernor
+from decision.journal import DecisionJournal
+
 
 def _validate_stop_target_sidedness(
     direction: str,
@@ -247,6 +254,14 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._reduction_actions_this_hour: list[float] = []  # monotonic timestamps of trims
         self._emergency_action_timestamps: dict[str, float] = {}  # oid → monotonic time of last emergency close
         self._emergency_closes_this_hour: list[float] = []  # monotonic timestamps of emergency closes
+
+        # ── Decision Intelligence System ────────────────────────────────
+        dcfg = self.config.decision
+        self._decision_enabled = dcfg.enabled
+        self._situation_engine = SituationEngine()
+        self._decision_engine = DecisionEngine()
+        self._risk_governor = RiskGovernor() if dcfg.governor_enabled else None
+        self._decision_journal = DecisionJournal(dcfg.journal_dir) if dcfg.journal_enabled else None
 
     # ── Thread-safe position accessors ──────────────────────────────────
 
@@ -2038,43 +2053,58 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
                 hold_minutes = (now - pos.open_time).total_seconds() / 60
 
-                # ── 1. Early invalidation exit ─────────────────────────────
-                if cfg.continuous_analysis_enabled and hold_minutes >= cfg.invalidation_min_hold_minutes:
-                    self._check_invalidation(
-                        oid,
-                        pos,
-                        scan_result,
-                        now,
-                        opposing_score_boost=opposing_boost,
+                # ── Decision Intelligence System ───────────────────────
+                if self._decision_enabled:
+                    self._run_decision_engine(
+                        oid, pos, scan_result, sa_data={
+                            "d1": d1, "h4": h4, "h1": h1, "m1": m1,
+                        },
+                        hold_minutes=hold_minutes,
+                        pressure=pressure,
+                        opposing_boost=opposing_boost,
+                        pressure_details=details,
+                        now=now,
                     )
                     if oid not in self.managed_positions:
-                        continue  # was closed
-
-                # ── 2. Conviction monitoring ───────────────────────────────
-                if cfg.conviction_monitoring_enabled and hold_minutes >= cfg.invalidation_min_hold_minutes:
-                    self._check_conviction_collapse(oid, pos, now)
-                    if oid not in self.managed_positions:
                         continue
+                else:
+                    # ── Legacy rule-based checks (fallback) ────────────
+                    if cfg.continuous_analysis_enabled and hold_minutes >= cfg.invalidation_min_hold_minutes:
+                        self._check_invalidation(
+                            oid,
+                            pos,
+                            scan_result,
+                            now,
+                            opposing_score_boost=opposing_boost,
+                        )
+                        if oid not in self.managed_positions:
+                            continue  # was closed
 
-                # ── 3. HTF candle close reassessment ──────────────────────
-                if cfg.htf_reassessment_enabled and cfg.htf_reassess_on_h1_close:
-                    self._check_htf_candle_close(oid, pos, h1, now)
-                    if oid not in self.managed_positions:
-                        continue
+                    # ── 2. Conviction monitoring ───────────────────────────────
+                    if cfg.conviction_monitoring_enabled and hold_minutes >= cfg.invalidation_min_hold_minutes:
+                        self._check_conviction_collapse(oid, pos, now)
+                        if oid not in self.managed_positions:
+                            continue
 
-                # ── 4. Dynamic SL tightening ──────────────────────────────
-                if cfg.dynamic_sl_tightening_enabled:
-                    self._apply_dynamic_sl_tightening(oid, pos)
+                    # ── 3. HTF candle close reassessment ──────────────────────
+                    if cfg.htf_reassessment_enabled and cfg.htf_reassess_on_h1_close:
+                        self._check_htf_candle_close(oid, pos, h1, now)
+                        if oid not in self.managed_positions:
+                            continue
 
-                # ── 5. Opportunity-cost exit detection (F4 shadow) ─────────
-                if cfg.opportunity_cost_exit_mode != "off":
-                    self._check_opportunity_cost_exit(oid, pos, now)
-                    if oid not in self.managed_positions:
-                        continue
+                    # ── 4. Dynamic SL tightening ──────────────────────────────
+                    if cfg.dynamic_sl_tightening_enabled:
+                        self._apply_dynamic_sl_tightening(oid, pos)
 
-                # ── 6. Scale-in on strength (wired to live scan) ───────────
-                if cfg.scale_in_enabled:
-                    self._check_scale_in_on_scan(oid, pos, scan_result)
+                    # ── 5. Opportunity-cost exit detection (F4 shadow) ─────────
+                    if cfg.opportunity_cost_exit_mode != "off":
+                        self._check_opportunity_cost_exit(oid, pos, now)
+                        if oid not in self.managed_positions:
+                            continue
+
+                    # ── 6. Scale-in on strength (wired to live scan) ───────────
+                    if cfg.scale_in_enabled:
+                        self._check_scale_in_on_scan(oid, pos, scan_result)
 
             except Exception as exc:
                 logger.warning(
@@ -2082,6 +2112,242 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     pair, oid, exc,
                 )
 
+    # ── Decision Intelligence System helpers ─────────────────────────────
+
+    def _run_decision_engine(
+        self,
+        oid: str,
+        pos: ManagedPosition,
+        scan_result,
+        sa_data: dict,
+        hold_minutes: float,
+        pressure: int,
+        opposing_boost: int,
+        pressure_details: list[str],
+        now: datetime,
+    ) -> None:
+        """Build context → assess situation → decide → governor review → execute."""
+        try:
+            ctx = self._build_trade_context(
+                oid, pos, scan_result, sa_data,
+                hold_minutes=hold_minutes,
+                pressure=pressure,
+                opposing_boost=opposing_boost,
+                pressure_details=pressure_details,
+            )
+            sa = self._situation_engine.assess_open_trade(ctx)
+            decision = self._decision_engine.decide_management(ctx, sa)
+
+            governor_changed = False
+            if self._risk_governor is not None:
+                reviewed = self._risk_governor.review(decision, ctx, sa)
+                if reviewed.action != decision.action:
+                    governor_changed = True
+                decision = reviewed
+
+            if self._decision_journal is not None:
+                self._decision_journal.log(ctx, sa, decision, governor_changed)
+
+            self._execute_management_decision(oid, pos, decision, now)
+        except Exception as exc:
+            logger.warning(
+                "[DecisionEngine] error for {} ({}) — falling back to legacy: {}",
+                pos.symbol, oid, exc,
+            )
+
+    def _build_trade_context(
+        self,
+        oid: str,
+        pos: ManagedPosition,
+        scan_result,
+        sa_data: dict,
+        hold_minutes: float = 0.0,
+        pressure: int = 0,
+        opposing_boost: int = 0,
+        pressure_details: list[str] | None = None,
+    ) -> TradeContext:
+        """Assemble the full TradeContext from all available data sources."""
+        tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+        pnl_pips = tm_trade.pnl_pips if tm_trade else 0.0
+        pnl_dollars = tm_trade.pnl_dollars if tm_trade and hasattr(tm_trade, 'pnl_dollars') else 0.0
+        partial_closed = tm_trade.partial_closed if tm_trade else False
+
+        try:
+            tick = self.platforms.get_price(pos.symbol)
+            current_price = tick.bid if pos.direction == "BUY" else tick.ask
+        except Exception:
+            current_price = pos.entry_price
+
+        original_risk = abs(pos.entry_price - getattr(pos, 'sl_original', pos.sl))
+        if original_risk < 1e-8:
+            original_risk = abs(pos.entry_price - pos.sl)
+
+        ctx = TradeContext(
+            symbol=pos.symbol,
+            order_id=oid,
+            direction=pos.direction,
+            entry_type=getattr(pos, 'entry_type', ''),
+            entry_price=pos.entry_price,
+            current_price=current_price,
+            current_sl=pos.sl,
+            pnl_pips=pnl_pips,
+            pnl_dollars=pnl_dollars,
+            hold_minutes=hold_minutes,
+            at_breakeven=pos.at_breakeven,
+            tp1_hit=pos.tp1_hit,
+            trailing=pos.trailing,
+            partial_closed=partial_closed,
+            lots=pos.lots,
+            original_risk_pips=original_risk,
+            scan_score=int(scan_result.score),
+            scan_direction=getattr(scan_result, 'direction', ''),
+            score_history=list(self._position_scores.get(oid, [])),
+            open_trade_count=len(self.managed_positions),
+            max_open_trades=self.config.risk.max_open_trades,
+            context_pressure=pressure,
+            opposing_boost=opposing_boost,
+            pressure_details=list(pressure_details or []),
+            confluences=list(getattr(scan_result, 'confluences', [])),
+        )
+
+        # ── Extract structure from analysis DataFrames ───────────────────
+        for tf_key, tf_name in [("d1", "d1"), ("h4", "h4"), ("h1", "h1"), ("m1", "m1")]:
+            df = sa_data.get(tf_key)
+            if df is None:
+                continue
+            try:
+                analysis = self.scanner.structure.analyze(df)
+                trend = getattr(analysis.trend, "value", str(analysis.trend))
+                conf = float(getattr(analysis, "confidence", 0.0) or 0.0)
+                event = getattr(analysis.last_event, "value", "NONE")
+                setattr(ctx, f"{tf_name}_trend", trend)
+                setattr(ctx, f"{tf_name}_confidence", conf)
+                setattr(ctx, f"{tf_name}_event", event)
+                if hasattr(analysis, "swing_high") and analysis.swing_high is not None:
+                    setattr(ctx, f"{tf_name}_swing_high", analysis.swing_high)
+                if hasattr(analysis, "swing_low") and analysis.swing_low is not None:
+                    setattr(ctx, f"{tf_name}_swing_low", analysis.swing_low)
+            except Exception:
+                pass
+
+        # H1 last candle direction
+        h1_df = sa_data.get("h1")
+        if h1_df is not None and len(h1_df) >= 3:
+            try:
+                last_closed = h1_df.iloc[-2]
+                c_open = float(last_closed.get("open", 0))
+                c_close = float(last_closed.get("close", 0))
+                if c_open > 0 and c_close > 0:
+                    body = abs(c_close - c_open)
+                    rng = float(last_closed.get("high", c_close)) - float(last_closed.get("low", c_open))
+                    ctx.h1_last_candle_doji = rng > 0 and (body / rng) < 0.3
+                    ctx.h1_last_candle_bearish = c_close < c_open
+            except Exception:
+                pass
+
+        # M1 aligned candle count
+        m1_df = sa_data.get("m1")
+        if m1_df is not None and len(m1_df) >= 5:
+            try:
+                recent = m1_df.tail(5)
+                is_long = pos.direction == "BUY"
+                aligned = sum(
+                    1 for _, row in recent.iterrows()
+                    if (is_long and float(row.get("close", 0)) > float(row.get("open", 0)))
+                    or (not is_long and float(row.get("close", 0)) < float(row.get("open", 0)))
+                )
+                ctx.m1_aligned_count = aligned
+            except Exception:
+                pass
+
+        # ── Session / News ───────────────────────────────────────────────
+        try:
+            sess = self.session_engine.get_status(datetime.now(timezone.utc))
+            ctx.session_name = getattr(sess, 'name', 'UNKNOWN')
+            ctx.session_tradeable = getattr(sess, 'is_tradeable', True)
+        except Exception:
+            pass
+
+        # ── Portfolio heat ───────────────────────────────────────────────
+        if self._portfolio_risk_sm is not None:
+            try:
+                ctx.portfolio_heat_pct = getattr(self._portfolio_risk_sm, '_last_heat_pct', 0.0) or 0.0
+            except Exception:
+                pass
+
+        return ctx
+
+    def _execute_management_decision(
+        self,
+        oid: str,
+        pos: ManagedPosition,
+        decision: ManagementDecision,
+        now: datetime,
+    ) -> None:
+        """Map a ManagementDecision to execution actions."""
+        if decision.action == Action.CLOSE:
+            result = self.platforms.close_trade(oid, pos.platform)
+            if result.success:
+                reason = f"DECISION_ENGINE({decision.reason[:100]})"
+                logger.info(
+                    "🧠 DECISION CLOSE — {} {} | {}",
+                    pos.direction, pos.symbol, reason,
+                )
+                self._record_closed_trade(pos, result.close_price, reason, close_result=result)
+                self.managed_positions.pop(oid, None)
+                self.position_store.remove_position(oid)
+                self._position_scores.pop(oid, None)
+            else:
+                logger.warning(
+                    "🧠 DECISION CLOSE FAILED — {} {} oid={} | {}",
+                    pos.direction, pos.symbol, oid, getattr(result, "error", "unknown"),
+                )
+
+        elif decision.action == Action.TIGHTEN_SL and decision.new_sl is not None:
+            success = self.platforms.modify_trade(oid, pos.platform, new_sl=decision.new_sl)
+            if success:
+                old_sl = pos.sl
+                pos.sl = decision.new_sl
+                tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+                if tm_trade:
+                    tm_trade.stop_loss = decision.new_sl
+                self.position_store.update_position(oid, sl=decision.new_sl)
+                logger.info(
+                    "🧠 DECISION TIGHTEN — {} {} | SL {:.5f}→{:.5f} | {}",
+                    pos.direction, pos.symbol, old_sl, decision.new_sl,
+                    decision.reason[:80],
+                )
+
+        elif decision.action == Action.SET_PROTECTIVE_STOP and decision.new_sl is not None:
+            success = self.platforms.modify_trade(oid, pos.platform, new_sl=decision.new_sl)
+            if success:
+                old_sl = pos.sl
+                pos.sl = decision.new_sl
+                tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+                if tm_trade:
+                    tm_trade.stop_loss = decision.new_sl
+                self.position_store.update_position(oid, sl=decision.new_sl)
+                logger.info(
+                    "🧠 PROTECTIVE STOP — {} {} | SL {:.5f}→{:.5f} | {}",
+                    pos.direction, pos.symbol, old_sl, decision.new_sl,
+                    decision.reason[:80],
+                )
+
+        elif decision.action == Action.MOVE_TO_BREAKEVEN and not pos.at_breakeven:
+            be_level = pos.entry_price
+            success = self.platforms.modify_trade(oid, pos.platform, new_sl=be_level)
+            if success:
+                pos.sl = be_level
+                pos.at_breakeven = True
+                tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+                if tm_trade:
+                    tm_trade.stop_loss = be_level
+                    tm_trade.breakeven_active = True
+                self.position_store.update_position(oid, sl=be_level, at_breakeven=True)
+                logger.info(
+                    "🧠 DECISION BE — {} {} | SL→{:.5f} | {}",
+                    pos.direction, pos.symbol, be_level, decision.reason[:80],
+                )
 
     def _submit_scale_in(
         self,
