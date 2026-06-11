@@ -250,6 +250,7 @@ class PairScanner:
                     timestamp=utc_now,
                     confluences=["Market closed — exchange hours"],
                     instrument_category=category,
+                    trend_d1="UNKNOWN",
                 )
 
         # ── 1. Structure bias (H4 + H1 + D1 context) ─────────────────
