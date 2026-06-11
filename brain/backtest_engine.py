@@ -314,7 +314,16 @@ class BacktestEngine:
         else:
             try:
                 from trigger.entry_engine import EntryEngine
-                self.entry_engine = EntryEngine(config=self.config)
+                risk_cfg = self.config.risk
+                self.entry_engine = EntryEngine(
+                    config=self.config,
+                    volatility_stop_mode=risk_cfg.volatility_stop_mode,
+                    atr_stop_period=risk_cfg.atr_stop_period,
+                    atr_stop_mult=risk_cfg.atr_stop_mult,
+                    atr_stop_ratio_min=risk_cfg.atr_stop_ratio_min,
+                    atr_stop_ratio_max=risk_cfg.atr_stop_ratio_max,
+                    atr_stop_max_risk_mult=risk_cfg.atr_stop_max_risk_mult,
+                )
             except Exception as exc:
                 logger.warning("[backtest] EntryEngine unavailable ({}), backtest disabled", exc)
                 self.entry_engine = None

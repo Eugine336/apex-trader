@@ -410,7 +410,7 @@ class RiskConfig:
     tp3_ladder_enabled: bool = True
     tp3_r_multiple: float = 5.0
     tp3_close_ratio: float = 0.25
-    scale_in_enabled: bool = False
+    scale_in_enabled: bool = True
     scale_in_max_adds: int = 1
     scale_in_min_profit_r: float = 1.0
     scale_in_add_ratio: float = 0.5
@@ -529,7 +529,7 @@ class RiskConfig:
     # When enabled, estimates overnight financing from a user-supplied
     # rate table and journals the result alongside each closed trade.
     # Does NOT alter pnl_dollars, sizing, scoring, or any exit decision.
-    model_swap_costs: bool = False
+    model_swap_costs: bool = True
     swap_rates_path: str = "data/swap_rates.json"
     swap_rollover_hour_utc: int = 21
     swap_triple_weekday: int = 2  # Wednesday (Mon=0)
@@ -540,7 +540,7 @@ class RiskConfig:
     # (byte-for-byte identical to pre-PR-B behavior).  "on" = live SL
     # is replaced by a clamped ATR stop when ATR data is available,
     # falling back to the structure SL otherwise.
-    volatility_stop_mode: str = "off"
+    volatility_stop_mode: str = "on"
     atr_stop_period: int = 14
     atr_stop_mult: float = 1.5
     atr_stop_ratio_min: float = 0.5
@@ -552,7 +552,7 @@ class RiskConfig:
     # are full and the weakest held position is stagnant.  Shadow mode
     # only LOGS the would-fire event; it NEVER closes a position.
     # "active" closes the position via the soft-close idiom.
-    opportunity_cost_exit_mode: str = "shadow"  # "off" | "shadow" | "active"
+    opportunity_cost_exit_mode: str = "active"  # "off" | "shadow" | "active"
     opportunity_cost_score_margin: float = 10.0
     opportunity_cost_max_pnl_pips: float = 5.0
     opportunity_cost_min_hold_minutes: float = 20.0
