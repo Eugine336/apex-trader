@@ -2162,6 +2162,22 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         )
         self._run_journal_async(self.journal.log_trade(trade_record))
         self.ml.register_new_trade()
+        try:
+            trade_summary = {
+                "pair": pos.symbol,
+                "direction": pos.direction,
+                "regime": pos.regime,
+                "session": pos.session,
+                "pnl_dollars": pnl_dollars,
+                "risk_dollars": getattr(pos, "initial_risk_dollars", None),
+                "pnl": round(pnl_pips, 2),
+                "outcome": outcome,
+            }
+            self.scanner._trade_history.append(trade_summary)
+            if len(self.scanner._trade_history) > 500:
+                self.scanner._trade_history = self.scanner._trade_history[-500:]
+        except Exception as exc:
+            logger.debug("[record_trade] scanner trade history append failed: {}", exc)
 
         if exit_reason_discrepancy:
             logger.warning(
