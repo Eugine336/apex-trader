@@ -490,12 +490,12 @@ class TestTP3Check:
 # =====================================================================
 
 class TestScaleInConfig:
-    """Config flags default OFF."""
+    """Scale-in defaults are tuned for live use."""
 
     def test_defaults(self):
         from config import RiskConfig
         rc = RiskConfig()
-        assert rc.scale_in_enabled is False
+        assert rc.scale_in_enabled is True
         assert rc.scale_in_max_adds == 1
         assert rc.scale_in_min_profit_r == 1.0
         assert rc.scale_in_add_ratio == 0.5
