@@ -73,6 +73,34 @@ class TestTradeJournalPnlDollars:
         assert rows[0]["pnl_dollars"] == 42.50
         assert rows[0]["pnl"] == 100.0  # pips preserved separately
 
+    def test_get_all_trades_includes_id_entry_exit(self, journal):
+        from brain.trade_journal import TradeRecord
+
+        trade = TradeRecord(
+            pair="EURUSD",
+            direction="BUY",
+            entry=1.08,
+            exit=1.09,
+            pnl=100.0,
+            score=90,
+            confluences=[],
+            regime="TRENDING",
+            session="LONDON",
+            spread=1.0,
+            slippage=0.5,
+            entry_type="FVG",
+            time_to_tp1=5.0,
+            time_to_exit=10.0,
+            outcome="WIN",
+            pnl_dollars=42.50,
+        )
+        self._run(journal.log_trade(trade))
+        rows = self._run(journal.get_all_trades_as_dicts())
+        assert len(rows) == 1
+        assert rows[0]["id"] is not None
+        assert rows[0]["entry"] == pytest.approx(1.08)
+        assert rows[0]["exit"] == pytest.approx(1.09)
+
     def test_legacy_rows_default_pnl_dollars_zero(self, journal):
         """Rows without pnl_dollars (pre-migration) return 0.0."""
         self._run(journal.initialize())
@@ -378,6 +406,24 @@ class TestLiveReconciliation:
         loop._reconcile_externally_closed(to_remove)
 
         loop.platforms.get_open_positions_snapshot.assert_not_called()
+
+
+class TestRunJournalAsyncRecovery:
+    def test_closed_loop_is_recreated_and_logged_as_error(self):
+        from platforms.main_loop import TradingLoop
+
+        loop = TradingLoop.__new__(TradingLoop)
+        closed_loop = asyncio.new_event_loop()
+        closed_loop.close()
+        loop._journal_loop = closed_loop
+
+        with patch("platforms.main_loop.logger.error") as error_log:
+            loop._run_journal_async(asyncio.sleep(0))
+
+        assert loop._journal_loop is not closed_loop
+        assert loop._journal_loop.is_closed() is False
+        assert error_log.called
+        loop._journal_loop.close()
 
 
 # ── Bug 4: Deriv floating P&L ───────────────────────────────────────────
