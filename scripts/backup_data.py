@@ -1,134 +1,199 @@
 """
 APEX TRADER — Data Backup to GitHub
 
-Pushes the data/ directory to an orphan `data-backup` branch
-on the same GitHub remote.  Can be run standalone or imported
-from the trading loop for periodic auto-backup.
+Pushes irreplaceable runtime data (decision journal, trade journal, event
+store, shadow contracts) to a ``data-backup`` orphan branch on the repo's
+GitHub remote.
+
+Files that exceed ``max_file_size_mb`` or match ``exclude_patterns`` are
+silently skipped — this avoids GitHub's 100 MB file-size limit and keeps
+re-downloadable market-data CSVs out of the backup.
 
 Usage:
-    python scripts/backup_data.py          # one-shot backup
-    python scripts/backup_data.py --force  # skip "nothing changed" check
+    python scripts/backup_data.py
+    python scripts/backup_data.py --force
 """
 
 from __future__ import annotations
 
 import argparse
+import fnmatch
 import os
 import shutil
 import subprocess
 import sys
 import tempfile
-from datetime import datetime, timezone
 from pathlib import Path
 
 from loguru import logger
 
-REPO_ROOT = Path(__file__).resolve().parent.parent
-DATA_DIR = REPO_ROOT / "data"
-BRANCH = "data-backup"
-LAST_BACKUP_MARKER = DATA_DIR / ".last_backup_ts"
+_DATA_DIR = Path("data")
+_BRANCH = "data-backup"
+_DEFAULT_MAX_FILE_SIZE_MB: float = 95.0
+_DEFAULT_EXCLUDE_PATTERNS: list[str] = ["*.csv"]
 
 
-def _git(*args: str, cwd: Path = REPO_ROOT, check: bool = True) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["git", *args],
-        cwd=cwd,
-        capture_output=True,
-        text=True,
-        check=check,
-    )
+# ── Filtering helpers ────────────────────────────────────────────────────
 
 
-def _has_remote() -> bool:
-    result = _git("remote", check=False)
-    return result.returncode == 0 and bool(result.stdout.strip())
-
-
-def _data_changed_since_last_backup() -> bool:
-    if not LAST_BACKUP_MARKER.exists():
-        return True
-    marker_mtime = LAST_BACKUP_MARKER.stat().st_mtime
-    for root, _dirs, files in os.walk(DATA_DIR):
-        for f in files:
-            fp = Path(root) / f
-            if fp == LAST_BACKUP_MARKER:
-                continue
-            if fp.stat().st_mtime > marker_mtime:
-                return True
-    return False
-
-
-def run_backup(*, force: bool = False) -> str:
-    """Push data/ contents to the orphan data-backup branch.
-
-    Returns a short status message.
-    """
-    if not DATA_DIR.exists() or not any(DATA_DIR.iterdir()):
-        return "skip: data/ directory is empty or missing"
-
-    if not _has_remote():
-        return "skip: no git remote configured"
-
-    if not force and not _data_changed_since_last_backup():
-        return "skip: no data changes since last backup"
-
-    now = datetime.now(timezone.utc)
-    commit_msg = f"data backup {now.strftime('%Y-%m-%dT%H:%M:%SZ')}"
-
-    tmp = Path(tempfile.mkdtemp(prefix="apex_backup_"))
+def _should_skip(
+    file_path: Path,
+    max_bytes: int,
+    exclude_patterns: list[str],
+) -> str | None:
+    """Return a reason string if *file_path* should be excluded, else None."""
+    name = file_path.name
+    for pat in exclude_patterns:
+        if fnmatch.fnmatch(name, pat):
+            return f"matches exclude pattern '{pat}'"
     try:
-        _git("init", cwd=tmp)
+        size = file_path.stat().st_size
+    except OSError:
+        return "stat failed"
+    if size > max_bytes:
+        mb = size / (1024 * 1024)
+        return f"size {mb:.1f} MB exceeds limit"
+    return None
 
-        origin_url = _git("remote", "get-url", "origin").stdout.strip()
-        _git("remote", "add", "origin", origin_url, cwd=tmp)
 
-        _git("checkout", "--orphan", BRANCH, cwd=tmp)
+def _copy_filtered(
+    src: Path,
+    dest: Path,
+    max_bytes: int,
+    exclude_patterns: list[str],
+) -> tuple[int, int]:
+    """Copy *src* tree to *dest*, skipping oversized / excluded files.
 
-        dest = tmp / "data"
-        shutil.copytree(DATA_DIR, dest, dirs_exist_ok=True)
+    Returns ``(copied, skipped)`` counts.
+    """
+    copied = skipped = 0
+    for root, dirs, files in os.walk(src):
+        rel_root = Path(root).relative_to(src)
+        dest_root = dest / rel_root
+        dest_root.mkdir(parents=True, exist_ok=True)
+        for fname in files:
+            src_file = Path(root) / fname
+            reason = _should_skip(src_file, max_bytes, exclude_patterns)
+            if reason:
+                logger.debug("[backup] skip {}: {}", src_file, reason)
+                skipped += 1
+                continue
+            shutil.copy2(str(src_file), str(dest_root / fname))
+            copied += 1
+    return copied, skipped
 
-        marker = dest / ".last_backup_ts"
-        if marker.exists():
-            marker.unlink()
 
-        _git("add", "-A", cwd=tmp)
+# ── Git helpers ──────────────────────────────────────────────────────────
 
-        status = _git("status", "--porcelain", cwd=tmp)
-        if not status.stdout.strip():
-            return "skip: nothing staged (data identical to last push)"
 
-        _git(
-            "-c", "user.name=APEX Backup",
-            "-c", "user.email=backup@apex-trader.local",
-            "commit", "-m", commit_msg,
-            cwd=tmp,
+def _get_remote_url() -> str | None:
+    try:
+        return (
+            subprocess.check_output(
+                ["git", "remote", "get-url", "origin"],
+                stderr=subprocess.DEVNULL,
+            )
+            .decode()
+            .strip()
+        )
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        return None
+
+
+def _run_git(args: list[str], cwd: str) -> tuple[bool, str]:
+    try:
+        out = subprocess.check_output(
+            ["git"] + args,
+            cwd=cwd,
+            stderr=subprocess.STDOUT,
+        ).decode()
+        return True, out
+    except subprocess.CalledProcessError as exc:
+        return False, exc.output.decode() if exc.output else str(exc)
+
+
+# ── Public API ───────────────────────────────────────────────────────────
+
+
+def run_backup(
+    *,
+    force: bool = False,
+    max_file_size_mb: float = _DEFAULT_MAX_FILE_SIZE_MB,
+    exclude_patterns: list[str] | None = None,
+) -> str:
+    """Push filtered ``data/`` contents to the *data-backup* branch.
+
+    Returns a short summary string.
+    """
+    if exclude_patterns is None:
+        exclude_patterns = list(_DEFAULT_EXCLUDE_PATTERNS)
+
+    if not _DATA_DIR.is_dir():
+        return "no data directory"
+
+    remote_url = _get_remote_url()
+    if not remote_url:
+        return "no git remote"
+
+    max_bytes = int(max_file_size_mb * 1024 * 1024)
+
+    tmpdir = tempfile.mkdtemp(prefix="apex_backup_")
+    try:
+        _run_git(["init"], tmpdir)
+        _run_git(["checkout", "--orphan", _BRANCH], tmpdir)
+
+        dest = Path(tmpdir) / "data"
+        copied, skipped = _copy_filtered(
+            _DATA_DIR, dest, max_bytes, exclude_patterns,
         )
 
-        push_result = _git(
-            "push", "--force", "origin", BRANCH,
-            cwd=tmp,
-            check=False,
+        if copied == 0:
+            return "nothing to back up"
+
+        logger.info(
+            "[data-backup] copied {} files, skipped {} (>{:.0f} MB or excluded)",
+            copied, skipped, max_file_size_mb,
         )
-        if push_result.returncode != 0:
-            return f"push failed: {push_result.stderr.strip()}"
 
-        LAST_BACKUP_MARKER.parent.mkdir(parents=True, exist_ok=True)
-        LAST_BACKUP_MARKER.write_text(now.isoformat())
+        _run_git(["add", "-A"], tmpdir)
 
-        return f"ok: pushed to {BRANCH} at {now.strftime('%H:%M:%S')} UTC"
+        ok, diff_out = _run_git(["diff", "--cached", "--stat"], tmpdir)
+        if not force and ok and not diff_out.strip():
+            return "no changes"
+
+        from datetime import datetime, timezone
+
+        ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        _run_git(
+            ["commit", "-m", f"data backup {ts}", "--allow-empty"],
+            tmpdir,
+        )
+
+        _run_git(["remote", "add", "origin", remote_url], tmpdir)
+        ok, push_out = _run_git(
+            ["push", "--force", "origin", _BRANCH], tmpdir,
+        )
+        if not ok:
+            logger.warning("[data-backup] push failed: {}", push_out)
+            return f"push failed: {push_out.splitlines()[0] if push_out else 'unknown'}"
+
+        return f"backed up {copied} files ({skipped} skipped)"
     finally:
-        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.rmtree(tmpdir, ignore_errors=True)
+
+
+# ── CLI ──────────────────────────────────────────────────────────────────
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Backup data/ to GitHub data-backup branch")
-    parser.add_argument("--force", action="store_true", help="Skip the 'nothing changed' check")
+    parser = argparse.ArgumentParser(description="Back up APEX data to GitHub")
+    parser.add_argument(
+        "--force", action="store_true", help="Push even if nothing changed",
+    )
     args = parser.parse_args()
 
     result = run_backup(force=args.force)
     logger.info("[data-backup] {}", result)
-    if result.startswith("push failed"):
-        sys.exit(1)
 
 
 if __name__ == "__main__":
