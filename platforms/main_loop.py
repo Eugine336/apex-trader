@@ -1245,23 +1245,28 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 pip_size = get_pip_size(pair)
                 distance_pips = abs(current - signal.entry_price) / pip_size
                 is_buy = direction == "LONG"
-                # Only place a pending if price hasn't already run past the zone.
-                # If distance is > 3 pips, a limit/stop at the zone midpoint makes sense.
-                # If price has blown past the entry (e.g. SELL_STOP when current already
-                # far below entry), we fall back to market to avoid a bad fill later.
+                # Pending orders: only when price hasn't already moved past the zone
+                # in the trade direction.  If price IS past the zone, a limit order
+                # would bet on retrace against the thesis — fall through to market.
                 if distance_pips > 3.0:
-                    if is_buy and current > signal.entry_price:
-                        order_kind = "BUY_LIMIT"
-                        use_pending = True
-                    elif not is_buy and current < signal.entry_price:
-                        order_kind = "SELL_LIMIT"
-                        use_pending = True
-                    elif is_buy and current < signal.entry_price:
+                    if is_buy and current < signal.entry_price:
                         order_kind = "BUY_STOP"
                         use_pending = True
                     elif not is_buy and current > signal.entry_price:
                         order_kind = "SELL_STOP"
                         use_pending = True
+                    elif is_buy and current > signal.entry_price:
+                        logger.info(
+                            "[entry] {} LONG — price {:.5f} already above entry "
+                            "{:.5f}, using market instead of BUY_LIMIT",
+                            pair, current, signal.entry_price,
+                        )
+                    elif not is_buy and current < signal.entry_price:
+                        logger.info(
+                            "[entry] {} SHORT — price {:.5f} already below entry "
+                            "{:.5f}, using market instead of SELL_LIMIT",
+                            pair, current, signal.entry_price,
+                        )
             except Exception as exc:
                 logger.debug("[entry] pending order distance check failed, using market order: {}", exc)
 
