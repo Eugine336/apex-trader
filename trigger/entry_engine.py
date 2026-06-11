@@ -662,7 +662,21 @@ class EntryEngine:
             )
             return "MARKET"
 
-        # Rule 8: place pending order, wait for retrace
+        # Rule 8: price already moved past zone in trade direction — pending useless
+        price_past_short = direction == "SHORT" and current_price < zone_bottom
+        price_past_long = direction == "LONG" and current_price > zone_top
+        if price_past_short or price_past_long:
+            logger.debug(
+                "[entry_mode] MARKET — price {:.5f} already past zone "
+                "[{:.5f}-{:.5f}] in {} direction",
+                current_price,
+                zone_bottom,
+                zone_top,
+                direction,
+            )
+            return "MARKET"
+
+        # Rule 9: place pending order, wait for retrace
         logger.debug(
             "[entry_mode] PENDING — {:.1f} pips from zone, confirmation={}, "
             "sweep={}, score={}, rr={:.2f}, momentum_score={:+d}",
@@ -965,15 +979,15 @@ class EntryEngine:
             ):  # must give at least 2.5R
                 tp2 = tp2_candidate
             else:
-                tp2 = entry_price + risk * 3.0  # guaranteed 3R fallback
+                tp2 = max(entry_price + risk * 3.0, tp1 + risk * 1.5)
 
             # Final sanity: if tp1 or tp2 ended up on wrong side, force correct direction
             if tp1 <= entry_price:
                 tp1 = entry_price + risk * 1.5
                 logger.warning("TP1 sanity fix on LONG {} — was below entry, reset to 1.5R", pair)
             if tp2 <= tp1:
-                tp2 = entry_price + risk * 3.0
-                logger.warning("TP2 sanity fix on LONG {} — was below TP1, reset to 3R", pair)
+                tp2 = max(entry_price + risk * 3.0, tp1 + risk * 1.5)
+                logger.warning("TP2 sanity fix on LONG {} — was below TP1, reset beyond TP1", pair)
 
         else:  # SHORT
             tp1_liq = liq_map.nearest_sell_liq
@@ -992,15 +1006,15 @@ class EntryEngine:
             ):  # must give at least 2.5R
                 tp2 = tp2_candidate
             else:
-                tp2 = entry_price - risk * 3.0  # guaranteed 3R fallback
+                tp2 = min(entry_price - risk * 3.0, tp1 - risk * 1.5)
 
             # Final sanity: if tp1 or tp2 ended up on wrong side, force correct direction
             if tp1 >= entry_price:
                 tp1 = entry_price - risk * 1.5
                 logger.warning("TP1 sanity fix on SHORT {} — was above entry, reset to 1.5R", pair)
             if tp2 >= tp1:
-                tp2 = entry_price - risk * 3.0
-                logger.warning("TP2 sanity fix on SHORT {} — was above TP1, reset to 3R", pair)
+                tp2 = min(entry_price - risk * 3.0, tp1 - risk * 1.5)
+                logger.warning("TP2 sanity fix on SHORT {} — was above TP1, reset beyond TP1", pair)
 
         return tp1, tp2
 

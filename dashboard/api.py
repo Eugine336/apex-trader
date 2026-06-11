@@ -183,6 +183,20 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
         """Broker-vs-derived exit reason discrepancies."""
         return _state.get_reconciliation()
 
+    @app.get("/api/decisions")
+    def decisions(
+        limit: int = 50,
+        decision_type: str = "",
+        symbol: str = "",
+    ):
+        """Recent decisions from the Decision Intelligence layer."""
+        return _state.get_decisions(limit=limit, decision_type=decision_type, symbol=symbol)
+
+    @app.get("/api/decisions/stats")
+    def decision_stats():
+        """Aggregated decision statistics — action counts, situation breakdown, governor vetoes."""
+        return _state.get_decision_stats()
+
     @app.post("/api/control")
     async def control(body: dict):
         action = body.get("action", "")
@@ -255,7 +269,7 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
                     except Exception as exc:
                         logger.warning(f"WS broadcast error: {exc}")
 
-        # slow channel: scanner + performance + shadow every 5s
+        # slow channel: scanner + performance + shadow + decisions every 5s
         async def _slow_loop():
             while True:
                 await asyncio.sleep(5)
@@ -266,6 +280,7 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
                             "scanner": _state.get_scanner_results(),
                             "performance": _state.get_performance(),
                             "shadow": _state.get_shadow_outcomes(),
+                            "decisions": _state.get_decisions(limit=20),
                         }
                         await manager.broadcast(payload)
                     except Exception as exc:
