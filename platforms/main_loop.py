@@ -232,6 +232,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._position_last_h1_close: dict[str, datetime] = {} # last H1 candle time seen
         self._news_exit_protected: set[str] = set()            # oids already tightened for news
         self._last_market_data: dict = {}                       # most recent scan market data cache
+        self._d1_cache: dict[str, pd.DataFrame] = {}             # D1 data cache (changes once/day)
+        self._d1_cache_time: datetime | None = None              # when D1 cache was last refreshed
         self._last_slot_blocked_candidate: dict | None = None    # best foregone candidate when slots full (F4)
         self._last_skipped_state: dict[str, tuple[str, int]] = {}  # symbol → (status, score) for emit-on-change
         self._last_known_balance: float = 0.0
@@ -593,7 +595,28 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         if not market_data:
             return
 
-        for sym, d1_df in d1_data.items():
+        # ── D1 cache: fetch once per hour, merge into market_data ─────
+        d1_stale = (
+            self._d1_cache_time is None
+            or (now - self._d1_cache_time).total_seconds() > 3600
+        )
+        if d1_stale:
+            try:
+                d1_data = self.platforms.fetch_all_market_data(
+                    timeframes=["D1"], count=100, now_utc=now,
+                )
+                if d1_data:
+                    self._d1_cache = {
+                        sym: frames["D1"]
+                        for sym, frames in d1_data.items()
+                        if "D1" in frames
+                    }
+                    self._d1_cache_time = now
+                    logger.info("[D1 cache] refreshed {} symbols", len(self._d1_cache))
+            except Exception as exc:
+                logger.warning("[D1 cache] fetch failed, using stale cache: {}", exc)
+
+        for sym, d1_df in self._d1_cache.items():
             if sym in market_data:
                 market_data[sym]["D1"] = d1_df
 
