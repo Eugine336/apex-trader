@@ -48,6 +48,12 @@ class EntrySignal:
     valid_until: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     instrument_category: str = "forex"
     entry_timeframe: str = "M5"
+    # ── Entry mode decision ─────────────────────────────────────────────
+    # Set by EntryEngine._decide_entry_mode(). Tells execution layer whether
+    # to fire a market order immediately or place a limit/stop pending order.
+    # "MARKET"  — price is inside or right at the zone; enter now
+    # "PENDING" — price has not yet reached the zone; wait for retrace
+    entry_mode: str = "PENDING"   # default conservative; engine overrides this
 
 
 @dataclass
@@ -374,6 +380,24 @@ class EntryEngine:
         }.get(entry_timeframe, 25)
         valid_until = now + timedelta(minutes=expiry_minutes)
 
+        # ── Intelligent entry mode decision ──────────────────────────────
+        # Decide HERE in the brain — not blindly in the execution layer.
+        # The execution layer reads signal.entry_mode and honours it.
+        try:
+            current_tick = m1_df["close"].iloc[-1]
+        except Exception:
+            current_tick = entry_price  # fallback: treat as at-price
+
+        entry_mode = self._decide_entry_mode(
+            direction=direction,
+            current_price=float(current_tick),
+            entry_price=entry_price,
+            zone=zone,
+            micro_confirmation=micro_confirmation,
+            has_sweep=bool(zone.get("has_sweep")),
+            pip_size=pip_size,
+        )
+
         signal = EntrySignal(
             pair=pair,
             direction=direction,
@@ -394,15 +418,87 @@ class EntryEngine:
             valid_until=valid_until,
             instrument_category=category,
             entry_timeframe=entry_timeframe,
+            entry_mode=entry_mode,
         )
 
         logger.info(
             f"[{pair}] ENTRY SIGNAL — {direction} @ {signal.entry_price} | "
             f"SL {signal.stop_loss} | TP1 {signal.tp1} | TP2 {signal.tp2} | "
             f"R:R {signal.risk_reward_1}/{signal.risk_reward_2} | "
-            f"{signal.position_size_lots} lots | Score {score}"
+            f"{signal.position_size_lots} lots | Score {score} | "
+            f"entry_mode={entry_mode}"
         )
         return signal
+
+    # ------------------------------------------------------------------
+    # Intelligent entry mode decision
+    # ------------------------------------------------------------------
+
+    def _decide_entry_mode(
+        self,
+        direction: str,
+        current_price: float,
+        entry_price: float,
+        zone: dict,
+        micro_confirmation: str,
+        has_sweep: bool,
+        pip_size: float,
+    ) -> str:
+        """
+        Decide whether to enter at market NOW or place a pending limit/stop order.
+
+        Returns "MARKET" or "PENDING".
+
+        Rules (priority order):
+        1. MARKET — Price is already inside the zone. A limit would never fill cleanly.
+        2. MARKET — Price within 3 pips of zone AND strong M1 confirmation
+                    (choch_bos, engulfing, pin_bar, rejection_wick).
+                    Zone is being actively tested — don't wait, momentum is here.
+        3. MARKET — Liquidity sweep confirmed at zone within 5 pips.
+                    Sweep+rejection is the top-tier SMC trigger; price won't
+                    come back to midpoint — take market now.
+        4. PENDING — Price more than 3 pips away. Wait for retrace to zone.
+        5. PENDING — Price close but confirmation is weak (momentum_only / none).
+                    Don't chase — let price come to the zone cleanly.
+        """
+        zone_top    = zone.get("top", entry_price)
+        zone_bottom = zone.get("bottom", entry_price)
+        distance_pips = abs(current_price - entry_price) / pip_size
+
+        # Rule 1: price already inside zone
+        if zone_bottom <= current_price <= zone_top:
+            logger.debug(
+                "[entry_mode] MARKET — price {:.5f} inside zone [{:.5f}-{:.5f}]",
+                current_price, zone_bottom, zone_top,
+            )
+            return "MARKET"
+
+        strong_confirmation = micro_confirmation in (
+            "choch_bos", "engulfing", "pin_bar", "rejection_wick"
+        )
+
+        # Rule 2: close to zone + strong confirmation
+        if distance_pips <= 3.0 and strong_confirmation:
+            logger.debug(
+                "[entry_mode] MARKET — {:.1f} pips from zone, confirmation={}",
+                distance_pips, micro_confirmation,
+            )
+            return "MARKET"
+
+        # Rule 3: sweep confirmed at zone
+        if has_sweep and distance_pips <= 5.0:
+            logger.debug(
+                "[entry_mode] MARKET — sweep confirmed at zone, {:.1f} pips from midpoint",
+                distance_pips,
+            )
+            return "MARKET"
+
+        # Rules 4 & 5: place pending order, wait for retrace
+        logger.debug(
+            "[entry_mode] PENDING — {:.1f} pips from zone, confirmation={}, sweep={}",
+            distance_pips, micro_confirmation, has_sweep,
+        )
+        return "PENDING"
 
     # ------------------------------------------------------------------
     # Entry zone discovery on M5
