@@ -324,16 +324,14 @@ class StructureEngine:
             confidence=0.0,
         )
 
-    def get_bias(
-        self,
-        h4_df: pd.DataFrame,
-        h1_df: pd.DataFrame,
-        d1_df: Optional[pd.DataFrame] = None,
-    ) -> dict:
+    def get_bias(self, h4_df: pd.DataFrame, h1_df: pd.DataFrame,
+                  d1_df: Optional[pd.DataFrame] = None) -> dict:
         """
-        Combined D1 + H4 + H1 bias.
-        D1 (when available) is the highest-priority directional authority.
-        H4 gives the big picture direction. H1 gives precision.
+        Combined H4 + H1 bias with optional D1 context.
+        Direction is ALWAYS decided by H4 + H1 only.
+        D1 provides conviction context (alignment, confidence) — it never
+        overrides direction because counter-trend trades are valid
+        (H4 CHoCH against D1 is how daily trends reverse).
         """
         h4 = self.analyze(h4_df)
         h1 = self.analyze(h1_df)
@@ -343,17 +341,8 @@ class StructureEngine:
         d1_event_val = d1.last_event.value if d1 is not None else "NONE"
         d1_conf = d1.confidence if d1 is not None else 0.0
 
-        if d1 is not None and d1.trend != Trend.RANGING:
-            if h4.trend == d1.trend:
-                bias_strength = "STRONG"
-                direction = d1.trend
-            elif h4.trend == Trend.RANGING:
-                bias_strength = "STRONG"
-                direction = d1.trend
-            else:
-                bias_strength = "MODERATE"
-                direction = d1.trend
-        elif h4.trend == h1.trend and h4.trend != Trend.RANGING:
+        # ── Direction decided by H4 + H1 ONLY ──────────────────────────
+        if h4.trend == h1.trend and h4.trend != Trend.RANGING:
             bias_strength = "STRONG"
             direction = h4.trend
         elif h4.trend != Trend.RANGING and h1.trend == Trend.RANGING:
@@ -369,14 +358,27 @@ class StructureEngine:
             bias_strength = "NONE"
             direction = Trend.RANGING
 
-        if d1 is not None:
-            confidence = round(d1_conf * 0.4 + h4.confidence * 0.35 + h1.confidence * 0.25, 2)
+        # ── D1 alignment context (scoring input, never changes direction)
+        d1_aligned = False
+        if d1 is not None and d1.trend != Trend.RANGING:
+            d1_aligned = (d1.trend == direction)
+
+        if d1 is not None and d1.trend != Trend.RANGING:
+            if d1_aligned:
+                confidence = round(
+                    d1_conf * 0.4 + h4.confidence * 0.35 + h1.confidence * 0.25, 2
+                )
+            else:
+                base_confidence = (h4.confidence + h1.confidence) / 2
+                confidence = round(base_confidence * 0.85, 2)
         else:
             confidence = round((h4.confidence + h1.confidence) / 2, 2)
 
         return {
             "direction": direction.value,
             "d1_trend": d1_trend_val,
+            "d1_aligned": d1_aligned,
+            "d1_confidence": round(d1_conf, 2),
             "h4_trend": h4.trend.value,
             "h1_trend": h1.trend.value,
             "strength": bias_strength,

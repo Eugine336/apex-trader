@@ -124,6 +124,8 @@ class PairScanResult:
     opportunity_quality: float = 0.0
     entry_quality: float = 0.0
     trend_d1: str = "UNKNOWN"
+    d1_aligned: bool = False
+    d1_confidence: float = 0.0
 
 
 @dataclass
@@ -251,7 +253,7 @@ class PairScanner:
                     trend_d1="UNKNOWN",
                 )
 
-        # ── 1. Structure bias (H4 + H1 + optional D1) ────────────────
+        # ── 1. Structure bias (H4 + H1 + D1 context) ─────────────────
         bias = self.structure.get_bias(h4_df, h1_df, d1_df=d1_df)
 
         # ── Directional consensus voting ─────────────────────────────
@@ -906,6 +908,8 @@ class PairScanner:
             opportunity_quality=oq_score,
             entry_quality=eq_score,
             trend_d1=bias.get("d1_trend", "UNKNOWN"),
+            d1_aligned=bias.get("d1_aligned", False),
+            d1_confidence=bias.get("d1_confidence", 0.0),
         )
 
     # ------------------------------------------------------------------
