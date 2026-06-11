@@ -1016,14 +1016,26 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self.position_store.record_in_flight(idem_key, pair, direction, adjusted_lots)
 
         use_pending = False
-        if self.config.risk.pending_orders_enabled and not ctx.uses_stake:
+        # ── Intelligent entry mode ────────────────────────────────────────
+        # entry_mode is set by EntryEngine._decide_entry_mode() based on:
+        #   • whether price is already inside the FVG/OB zone
+        #   • M1 confirmation strength (choch_bos, engulfing, sweep, etc.)
+        #   • liquidity sweep detected at the zone
+        # "MARKET" = enter immediately; "PENDING" = wait for retrace to zone.
+        brain_wants_market = getattr(signal, "entry_mode", "PENDING") == "MARKET"
+
+        if self.config.risk.pending_orders_enabled and not ctx.uses_stake and not brain_wants_market:
             try:
                 tick = self.platforms.get_price(pair)
                 current = tick.ask if direction == "LONG" else tick.bid
                 pip_size = get_pip_size(pair)
                 distance_pips = abs(current - signal.entry_price) / pip_size
+                is_buy = direction == "LONG"
+                # Only place a pending if price hasn't already run past the zone.
+                # If distance is > 3 pips, a limit/stop at the zone midpoint makes sense.
+                # If price has blown past the entry (e.g. SELL_STOP when current already
+                # far below entry), we fall back to market to avoid a bad fill later.
                 if distance_pips > 3.0:
-                    is_buy = direction == "LONG"
                     if is_buy and current > signal.entry_price:
                         order_kind = "BUY_LIMIT"
                         use_pending = True
@@ -1038,7 +1050,14 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         use_pending = True
             except Exception as exc:
                 logger.debug("[entry] pending order distance check failed, using market order: {}", exc)
-                pass
+
+        if brain_wants_market:
+            logger.info(
+                "[entry] {} {} — brain decided MARKET entry (mode={}, confirmation={})",
+                pair, direction,
+                getattr(signal, "entry_mode", "?"),
+                getattr(signal, "micro_confirmation", "?"),
+            )
 
         if use_pending:
             order = self.platforms.place_pending_entry(
