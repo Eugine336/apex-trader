@@ -651,13 +651,15 @@ class DecisionConfig:
 
 
 # ---------------------------------------------------------------------------
-# Data backup
+# Data backup — push irreplaceable runtime data to GitHub
 # ---------------------------------------------------------------------------
 
 @dataclass
 class DataBackupConfig:
     enabled: bool = True
-    interval_minutes: int = 60
+    interval_hours: int = 1
+    max_file_size_mb: float = 95.0
+    exclude_patterns: list[str] = field(default_factory=lambda: ["*.csv"])
 
 
 # ---------------------------------------------------------------------------
