@@ -213,7 +213,7 @@ def get_all_symbols() -> list[str]:
 
 @dataclass
 class ScoringConfig:
-    min_entry_score: int = 70
+    min_entry_score: int = 65
     watchlist_score: int = 55
     structure_points: int = 20
     order_block_points: int = 20
@@ -273,7 +273,7 @@ class ConsensusConfig:
     enabled: bool = True
     weights: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_CONSENSUS_WEIGHTS))
     min_net_score: float = 1.5
-    min_agreement: float = 0.67
+    min_agreement: float = 0.55
     high_authority_modules: list[str] = field(
         default_factory=lambda: ["currency_strength"]
     )
@@ -383,8 +383,8 @@ class RiskConfig:
     risk_per_trade_pct: float = 0.75
     max_daily_drawdown_pct: float = 3.0
     max_weekly_drawdown_pct: float = 8.0
-    max_open_trades: int = 3
-    max_correlated_trades: int = 1
+    max_open_trades: int = 5
+    max_correlated_trades: int = 2
     min_risk_reward: float = 1.8
     # How many times the instrument's typical spread we allow before rejecting.
     # 3.0 gives headroom for indices (US100 widens ~10 pts off-hours vs typical 1.5)
