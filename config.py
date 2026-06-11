@@ -651,6 +651,18 @@ class DecisionConfig:
 
 
 # ---------------------------------------------------------------------------
+# Data backup — push irreplaceable runtime data to GitHub
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DataBackupConfig:
+    enabled: bool = True
+    interval_hours: int = 1
+    max_file_size_mb: float = 95.0
+    exclude_patterns: list[str] = field(default_factory=lambda: ["*.csv"])
+
+
+# ---------------------------------------------------------------------------
 # Application config
 # ---------------------------------------------------------------------------
 
@@ -672,6 +684,7 @@ class AppConfig:
     consensus: ConsensusConfig = field(default_factory=ConsensusConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
+    data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)
     scan_interval_seconds: int = 10
     max_consecutive_cycle_failures: int = 5
     log_level: str = "INFO"
