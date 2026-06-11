@@ -192,8 +192,9 @@ class DecisionEngine:
     def _compute_tightened_sl(self, ctx: TradeContext) -> float | None:
         if ctx.original_risk_pips < 1e-8:
             return None
-        pip_size = ctx.original_risk_pips  # already in price terms
-        tighten_distance = pip_size * 0.5
+        from config import get_pip_size
+        risk_price = ctx.original_risk_pips * get_pip_size(ctx.symbol)
+        tighten_distance = risk_price * 0.5
         if ctx.is_long:
             new_sl = ctx.current_price - tighten_distance
             if new_sl <= ctx.current_sl:
