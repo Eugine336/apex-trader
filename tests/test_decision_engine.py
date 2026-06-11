@@ -32,7 +32,7 @@ def _make_ctx(**overrides) -> TradeContext:
         tp1_hit=False,
         trailing=False,
         lots=0.1,
-        original_risk_pips=0.0030,
+        original_risk_pips=30.0,
         scan_score=60,
         scan_direction="LONG",
         d1_trend="BULLISH",
@@ -134,7 +134,7 @@ class TestDecisionEngine:
             h4_trend="BULLISH", h4_confidence=0.70,
             h1_trend="BULLISH", h1_confidence=0.65,
             pnl_pips=-5.0,
-            original_risk_pips=0.0030,
+            original_risk_pips=30.0,
         )
         sa = self.se.assess_open_trade(ctx)
         decision = self.de.decide_management(ctx, sa)
@@ -152,7 +152,7 @@ class TestDecisionEngine:
             h4_event="BOS_BEARISH",
             d1_event="BOS_BEARISH",
             pnl_pips=-15.0,
-            original_risk_pips=0.0030,
+            original_risk_pips=30.0,
         )
         sa = self.se.assess_open_trade(ctx)
         decision = self.de.decide_management(ctx, sa)
@@ -163,7 +163,7 @@ class TestDecisionEngine:
     def test_profit_with_fading_momentum_tightens(self):
         ctx = _make_ctx(
             pnl_pips=50.0,
-            original_risk_pips=0.0030,
+            original_risk_pips=30.0,
             m1_aligned_count=1,
             m1_event="NONE",
             d1_trend="BULLISH", d1_confidence=0.5,
@@ -196,7 +196,7 @@ class TestDecisionEngine:
             d1_event="BOS_BEARISH",
             h4_event="BOS_BEARISH",
             pnl_pips=-20.0,
-            original_risk_pips=0.003,
+            original_risk_pips=30.0,
         )
         sa = self.se.assess_open_trade(ctx)
         decision = self.de.decide_management(ctx, sa)
@@ -232,7 +232,7 @@ class TestRiskGovernor:
             h4_event="BOS_BEARISH",
             d1_event="BOS_BEARISH",
             pnl_pips=-50.0,
-            original_risk_pips=0.003,
+            original_risk_pips=30.0,
         )
         sa = self.se.assess_open_trade(ctx)
         decision = ManagementDecision(
