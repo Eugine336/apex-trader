@@ -224,7 +224,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._position_scores: dict[str, list[int]] = {}       # recent N scores per position
         self._position_last_h1_close: dict[str, datetime] = {} # last H1 candle time seen
         self._news_exit_protected: set[str] = set()            # oids already tightened for news
-        self._last_market_data: dict = {}                       # most recent market data for in-trade analysis
+        self._last_market_data: dict = {}                       # most recent scan market data cache
         self._last_slot_blocked_candidate: dict | None = None    # best foregone candidate when slots full (F4)
         self._last_skipped_state: dict[str, tuple[str, int]] = {}  # symbol → (status, score) for emit-on-change
         self._last_known_balance: float = 0.0
@@ -451,8 +451,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     self._check_session_close(now)
                     self._check_portfolio_heat()
                     self._check_spread_deterioration()
-                    if self._last_market_data:
-                        self._analyse_open_trades(self._last_market_data, now)
+                    open_trade_data = self._fetch_open_trade_market_data(now)
+                    if open_trade_data:
+                        self._analyse_open_trades(open_trade_data, now)
+                    else:
+                        logger.warning(
+                            "[management] open-trade strategic analysis skipped — fresh full-timeframe data unavailable",
+                        )
                 self.watchdog.record_trade_check_success()
             except Exception as exc:
                 logger.error("Position update error: {}", exc)
@@ -668,6 +673,147 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             if filled:
                 cycle["entries_filled"] += 1
                 open_pairs.append(result.pair)
+
+    def _fetch_open_trade_market_data(self, now: datetime) -> dict[str, dict[str, pd.DataFrame]]:
+        if not self.managed_positions:
+            return {}
+
+        symbols = sorted({pos.symbol for pos in self.managed_positions.values()})
+        if not symbols:
+            return {}
+
+        try:
+            base_data = self.platforms.fetch_all_market_data(
+                symbols=symbols,
+                timeframes=["D1", "H4", "H1", "M15", "M5"],
+                count=200,
+                now_utc=now,
+            )
+        except Exception as exc:
+            logger.error(
+                "[management] fresh open-trade base data fetch failed for {} symbols: {}",
+                len(symbols), exc,
+            )
+            return {}
+
+        try:
+            m1_data = self.platforms.fetch_all_market_data(
+                symbols=symbols,
+                timeframes=["M1"],
+                count=400,
+                now_utc=now,
+            )
+        except Exception as exc:
+            logger.error(
+                "[management] fresh open-trade M1 fetch failed for {} symbols: {}",
+                len(symbols), exc,
+            )
+            return {}
+
+        merged: dict[str, dict[str, pd.DataFrame]] = {}
+        for symbol in symbols:
+            frames: dict[str, pd.DataFrame] = {}
+            if symbol in base_data:
+                frames.update(base_data[symbol])
+            else:
+                logger.warning(
+                    "[management] fresh open-trade data missing base frames for {}",
+                    symbol,
+                )
+
+            if symbol in m1_data:
+                frames.update(m1_data[symbol])
+            else:
+                logger.warning(
+                    "[management] fresh open-trade data missing M1 for {}",
+                    symbol,
+                )
+
+            if frames:
+                merged[symbol] = frames
+
+        return merged
+
+    def _compute_in_trade_context_pressure(
+        self,
+        pos: ManagedPosition,
+        d1_df: Optional[pd.DataFrame],
+        m1_df: Optional[pd.DataFrame],
+    ) -> tuple[int, int, list[str]]:
+        pressure = 0
+        opposing_boost = 0
+        details: list[str] = []
+        is_long = pos.direction == "BUY"
+
+        if d1_df is not None:
+            try:
+                d1 = self.scanner.structure.analyze(d1_df)
+                d1_trend = getattr(d1.trend, "value", str(d1.trend))
+                d1_conf = float(getattr(d1, "confidence", 0.0) or 0.0)
+                if d1_trend in ("BULLISH", "BEARISH"):
+                    aligned = (is_long and d1_trend == "BULLISH") or (not is_long and d1_trend == "BEARISH")
+                    if aligned:
+                        support = 2 if d1_conf >= 0.6 else 1
+                        pressure -= support
+                        details.append(f"D1 support {d1_trend} ({d1_conf:.2f})")
+                    else:
+                        d1_pressure = 8 if d1_conf >= 0.65 else 5
+                        pressure += d1_pressure
+                        opposing_boost += max(1, d1_pressure // 2)
+                        details.append(f"D1 pressure {d1_trend} ({d1_conf:.2f})")
+            except Exception as exc:
+                logger.warning("[management] D1 context analysis failed for {}: {}", pos.symbol, exc)
+
+        if m1_df is not None:
+            try:
+                m1 = self.scanner.structure.analyze(m1_df)
+                m1_trend = getattr(m1.trend, "value", str(m1.trend))
+                m1_conf = float(getattr(m1, "confidence", 0.0) or 0.0)
+                if m1_trend in ("BULLISH", "BEARISH"):
+                    aligned = (is_long and m1_trend == "BULLISH") or (not is_long and m1_trend == "BEARISH")
+                    if aligned:
+                        pressure -= 1
+                        details.append(f"M1 trend support {m1_trend} ({m1_conf:.2f})")
+                    else:
+                        m1_trend_pressure = 4 if m1_conf >= 0.55 else 2
+                        pressure += m1_trend_pressure
+                        opposing_boost += 2
+                        details.append(f"M1 trend pressure {m1_trend} ({m1_conf:.2f})")
+
+                event = getattr(getattr(m1, "last_event", None), "value", "NONE")
+                opposing_event = (is_long and event in ("BOS_BEARISH", "CHOCH_BEARISH")) or (
+                    (not is_long) and event in ("BOS_BULLISH", "CHOCH_BULLISH")
+                )
+                supporting_event = (is_long and event in ("BOS_BULLISH", "CHOCH_BULLISH")) or (
+                    (not is_long) and event in ("BOS_BEARISH", "CHOCH_BEARISH")
+                )
+                if opposing_event:
+                    pressure += 4
+                    opposing_boost += 3
+                    details.append(f"M1 adverse event {event}")
+                elif supporting_event:
+                    pressure -= 2
+                    details.append(f"M1 supportive event {event}")
+
+                if len(m1_df) >= 6:
+                    last5 = m1_df.tail(5)
+                    if "open" in last5.columns and "close" in last5.columns:
+                        if is_long:
+                            aligned_count = int((last5["close"] > last5["open"]).sum())
+                        else:
+                            aligned_count = int((last5["close"] < last5["open"]).sum())
+                        momentum_pressure_map = {5: -3, 4: -2, 3: 0, 2: 3, 1: 6, 0: 8}
+                        momentum_pressure = momentum_pressure_map.get(aligned_count, 0)
+                        pressure += momentum_pressure
+                        if momentum_pressure > 0:
+                            opposing_boost += max(1, momentum_pressure // 2)
+                        details.append(f"M1 momentum {aligned_count}/5 ({momentum_pressure:+d})")
+            except Exception as exc:
+                logger.warning("[management] M1 context analysis failed for {}: {}", pos.symbol, exc)
+
+        pressure = max(-6, min(18, pressure))
+        opposing_boost = max(0, min(10, opposing_boost))
+        return pressure, opposing_boost, details
 
     def _select_vol_timeframe(self, frames: dict) -> "pd.DataFrame | None":
         """Pick the timeframe for SYSTEM-WIDE volatility detection.
@@ -1825,20 +1971,62 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             pair = pos.symbol
             frames = market_data.get(pair)
             if not frames:
+                logger.warning(
+                    "[management] skipping strategic analysis for {} ({}) — no fresh frames returned",
+                    pair, oid,
+                )
                 continue
 
             h4 = frames.get("H4")
             h1 = frames.get("H1")
             m15 = frames.get("M15")
             m5 = frames.get("M5")
-            if h4 is None or h1 is None or m15 is None or m5 is None:
+            d1 = frames.get("D1")
+            m1 = frames.get("M1")
+
+            required_frames = {
+                "H4": h4,
+                "H1": h1,
+                "M15": m15,
+                "M5": m5,
+            }
+            missing = [tf for tf, df in required_frames.items() if df is None]
+            if missing:
+                logger.warning(
+                    "[management] skipping strategic analysis for {} ({}) — missing frames: {}",
+                    pair, oid, ",".join(missing),
+                )
                 continue
+
+            if d1 is None:
+                logger.warning(
+                    "[management] {} ({}) fresh analysis running without D1 context",
+                    pair, oid,
+                )
+            if m1 is None:
+                logger.warning(
+                    "[management] {} ({}) fresh analysis running without M1 context",
+                    pair, oid,
+                )
 
             try:
                 # ── Re-score this instrument with fresh data ───────────────
                 scan_result = self.scanner.scan_pair(
                     pair, h4, h1, m15, m5, currency_data, now,
                 )
+
+                pressure, opposing_boost, details = self._compute_in_trade_context_pressure(
+                    pos=pos,
+                    d1_df=d1,
+                    m1_df=m1,
+                )
+                raw_score = int(scan_result.score)
+                adjusted_score = max(0, min(100, raw_score - pressure))
+                if adjusted_score != raw_score:
+                    details.insert(0, f"In-trade context pressure {pressure:+d} ({raw_score}→{adjusted_score})")
+                    scan_result.score = adjusted_score
+                if details:
+                    scan_result.confluences.extend(details)
 
                 # Track score history for conviction monitoring
                 if oid not in self._position_scores:
@@ -1852,7 +2040,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
                 # ── 1. Early invalidation exit ─────────────────────────────
                 if cfg.continuous_analysis_enabled and hold_minutes >= cfg.invalidation_min_hold_minutes:
-                    self._check_invalidation(oid, pos, scan_result, now)
+                    self._check_invalidation(
+                        oid,
+                        pos,
+                        scan_result,
+                        now,
+                        opposing_score_boost=opposing_boost,
+                    )
                     if oid not in self.managed_positions:
                         continue  # was closed
 
@@ -1883,7 +2077,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     self._check_scale_in_on_scan(oid, pos, scan_result)
 
             except Exception as exc:
-                logger.debug("In-trade analysis error for {}: {}", pair, exc)
+                logger.warning(
+                    "In-trade analysis error for {} (oid={}): {}",
+                    pair, oid, exc,
+                )
 
 
     def _submit_scale_in(
