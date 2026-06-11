@@ -123,6 +123,9 @@ class PairScanResult:
     consensus_agreement: float = 0.0
     opportunity_quality: float = 0.0
     entry_quality: float = 0.0
+    trend_d1: str = "UNKNOWN"
+    d1_aligned: bool = False
+    d1_confidence: float = 0.0
 
 
 @dataclass
@@ -214,6 +217,7 @@ class PairScanner:
         m5_df: pd.DataFrame,
         currency_data: Optional[dict[str, pd.DataFrame]] = None,
         utc_now: Optional[datetime] = None,
+        d1_df: Optional[pd.DataFrame] = None,
     ) -> PairScanResult:
         utc_now = utc_now or datetime.now(timezone.utc)
         pip_size = self._pip_size(pair)
@@ -248,8 +252,8 @@ class PairScanner:
                     instrument_category=category,
                 )
 
-        # ── 1. Structure bias (H4 + H1) ──────────────────────────────
-        bias = self.structure.get_bias(h4_df, h1_df)
+        # ── 1. Structure bias (H4 + H1 + D1 context) ─────────────────
+        bias = self.structure.get_bias(h4_df, h1_df, d1_df=d1_df)
 
         # ── Directional consensus voting ─────────────────────────────
         # Each brain module casts a direction-independent signed vote.
@@ -902,6 +906,9 @@ class PairScanner:
             consensus_agreement=decision.agreement if decision else 0.0,
             opportunity_quality=oq_score,
             entry_quality=eq_score,
+            trend_d1=bias.get("d1_trend", "UNKNOWN"),
+            d1_aligned=bias.get("d1_aligned", False),
+            d1_confidence=bias.get("d1_confidence", 0.0),
         )
 
     # ------------------------------------------------------------------
@@ -926,11 +933,12 @@ class PairScanner:
                 h1 = frames.get("H1")
                 m15 = frames.get("M15")
                 m5 = frames.get("M5")
+                d1 = frames.get("D1")
                 if h4 is None or h1 is None or m15 is None or m5 is None:
                     logger.warning(f"Skipping {pair} — missing timeframe data")
                     continue
 
-                result = self.scan_pair(pair, h4, h1, m15, m5, currency_data, utc_now)
+                result = self.scan_pair(pair, h4, h1, m15, m5, currency_data, utc_now, d1_df=d1)
                 results.append(result)
                 regimes[result.regime] = regimes.get(result.regime, 0) + 1
 
