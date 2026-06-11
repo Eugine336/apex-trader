@@ -104,13 +104,70 @@ class TradeContext:
 
 @dataclass
 class EntryContext:
-    """Full context for an entry decision (future expansion)."""
+    """Full context for an entry decision — rich, uncompressed."""
+
+    # ── Signal identity ──────────────────────────────────────────────────
     symbol: str = ""
-    direction: str = ""
+    direction: str = ""           # "LONG" or "SHORT"
     scan_score: int = 0
     scan_direction: str = ""
+
+    # ── Entry zone quality ───────────────────────────────────────────────
+    entry_type: str = ""          # "FVG_MIDPOINT", "OB_MIDPOINT", etc.
+    entry_price: float = 0.0
+    stop_loss: float = 0.0
+    tp1: float = 0.0
+    tp2: float = 0.0
+    risk_reward_1: float = 0.0
+    risk_reward_2: float = 0.0
+    risk_pips: float = 0.0
+    entry_mode: str = "PENDING"   # from EntryEngine
+    micro_confirmation: str = ""
+
+    # ── Position sizing inputs ───────────────────────────────────────────
+    base_lots: float = 0.0
+    account_balance: float = 0.0
+    risk_pct: float = 0.0
+
+    # ── Multi-timeframe structure ────────────────────────────────────────
     d1_trend: str = "UNKNOWN"
+    d1_confidence: float = 0.0
+    d1_event: str = "NONE"
+
     h4_trend: str = "UNKNOWN"
+    h4_confidence: float = 0.0
+    h4_event: str = "NONE"
+
     h1_trend: str = "UNKNOWN"
+    h1_confidence: float = 0.0
+    h1_event: str = "NONE"
+
+    m1_trend: str = "UNKNOWN"
+    m1_confidence: float = 0.0
+    m1_event: str = "NONE"
+    m1_aligned_count: int = 0
+
+    # ── Session / News ───────────────────────────────────────────────────
     session_name: str = "UNKNOWN"
+    session_tradeable: bool = True
+    minutes_to_high_impact_news: float = 999.0
+    news_impact: str = "NONE"
+
+    # ── Portfolio context ────────────────────────────────────────────────
     open_trade_count: int = 0
+    max_open_trades: int = 5
+    portfolio_heat_pct: float = 0.0
+    current_spread: float = 0.0
+    typical_spread: float = 0.0
+
+    # ── Regime / adaptive ────────────────────────────────────────────────
+    regime: str = ""
+    ev_estimate: float = 0.0
+    pair_multiplier: float = 1.0
+
+    # ── Confluences from scan ────────────────────────────────────────────
+    confluences: list[str] = field(default_factory=list)
+
+    @property
+    def is_long(self) -> bool:
+        return self.direction.upper() in ("BUY", "LONG")

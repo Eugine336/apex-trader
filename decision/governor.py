@@ -8,8 +8,8 @@ from __future__ import annotations
 
 from loguru import logger
 
-from decision.actions import Action, ManagementDecision
-from decision.context import TradeContext
+from decision.actions import Action, EntryAction, EntryDecision, ManagementDecision
+from decision.context import EntryContext, TradeContext
 from decision.situation import SituationAssessment
 
 
@@ -98,5 +98,54 @@ class RiskGovernor:
                         confidence=decision.confidence,
                         evidence=decision.evidence + ["governor_blocked: sl_worsening"],
                     )
+
+        return decision
+
+    def review_entry(
+        self,
+        decision: EntryDecision,
+        ctx: EntryContext,
+        sa: SituationAssessment,
+    ) -> EntryDecision:
+        """Safety vetoes for entry decisions.  Physical/broker constraints only."""
+        if not decision.should_enter:
+            return decision
+
+        vetoed = False
+        veto_reason = ""
+
+        if ctx.open_trade_count >= ctx.max_open_trades:
+            vetoed = True
+            veto_reason = f"max trades reached ({ctx.open_trade_count}/{ctx.max_open_trades})"
+
+        if not vetoed and ctx.portfolio_heat_pct >= 1.8:
+            vetoed = True
+            veto_reason = f"portfolio heat {ctx.portfolio_heat_pct:.1f}% >= 1.8%"
+
+        if not vetoed and ctx.typical_spread > 0:
+            spread_ratio = ctx.current_spread / ctx.typical_spread if ctx.typical_spread > 0 else 0
+            if spread_ratio > 3.0:
+                vetoed = True
+                veto_reason = f"spread {ctx.current_spread:.1f} is {spread_ratio:.1f}× typical"
+
+        if not vetoed and ctx.risk_reward_2 < 1.0:
+            vetoed = True
+            veto_reason = f"R:R to TP2 below 1:1 ({ctx.risk_reward_2:.2f})"
+
+        if vetoed:
+            logger.info(
+                "[RiskGovernor] VETO entry {} {} — {}",
+                ctx.direction, ctx.symbol, veto_reason,
+            )
+            return EntryDecision(
+                action=EntryAction.SKIP,
+                reason=f"[GOVERNOR VETO] {veto_reason}. Original: {decision.reason}",
+                confidence=decision.confidence,
+                conviction=0.0,
+                size_multiplier=0.0,
+                evidence=decision.evidence + [f"governor_veto: {veto_reason}"],
+                governor_vetoed=True,
+                governor_reason=veto_reason,
+            )
 
         return decision
