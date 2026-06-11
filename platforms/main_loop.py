@@ -1240,7 +1240,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 adjusted_lots,
                 signal.stop_loss,
                 signal.tp1,
-                comment=build_order_comment("APND", idem_key, signal.score, session),
+                comment=build_order_comment("APND", idem_key),
                 idempotency_key=idem_key,
             )
             if order.success:
