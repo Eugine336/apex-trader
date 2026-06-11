@@ -288,9 +288,9 @@ class ExitChecksMixin:
 
     def _check_news_exit(self, now: datetime) -> None:
         """
-        Close or tighten open trades before high-impact news events.
-        A real trader checks their economic calendar before every news event
-        and manages their exposure accordingly.
+        Contextual news exit — decides per-trade based on profit state.
+        A 3R winner gets tightened. A breakeven trade gets closed.
+        A trade deep in profit with aligned direction holds with protection.
         """
         cfg = self.config.risk
         if not cfg.news_exit_enabled:
@@ -324,17 +324,55 @@ class ExitChecksMixin:
                 if oid in self._news_exit_protected:
                     continue
 
-                if cfg.news_exit_mode == "close":
+                tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+                pnl_pips = tm_trade.pnl_pips if tm_trade else 0.0
+                original_risk = abs(pos.entry_price - (getattr(pos, "sl_original", pos.sl) or pos.sl)) if pos.sl else 1.0
+                profit_r = (pnl_pips * (getattr(pos, "_pip_size", 0.0001) or 0.0001)) / original_risk if original_risk > 1e-8 else 0.0
+
+                event_name = getattr(event, "name", "event")
+
+                if profit_r >= 2.0:
+                    if tm_trade is not None and not tm_trade.breakeven_active:
+                        be_level = pos.entry_price
+                        success = self.platforms.modify_trade(oid, pos.platform, new_sl=be_level)
+                        if success:
+                            pos.sl = be_level
+                            tm_trade.stop_loss = be_level
+                            self._news_exit_protected.add(oid)
+                            self.position_store.update_position(oid, sl=be_level)
+                            logger.info(
+                                "📰 NEWS PROTECT (winner) — {} {} | +{:.1f}R | SL→BE {:.5f} | {} in {:.0f}min",
+                                pos.direction, pos.symbol, profit_r, be_level, event_name, minutes_until,
+                            )
+                    else:
+                        self._news_exit_protected.add(oid)
+                        logger.info(
+                            "📰 NEWS HOLD (winner) — {} {} | +{:.1f}R already at BE | {} in {:.0f}min",
+                            pos.direction, pos.symbol, profit_r, event_name, minutes_until,
+                        )
+                elif profit_r >= 0.5:
+                    if tm_trade is not None:
+                        be_level = pos.entry_price
+                        success = self.platforms.modify_trade(oid, pos.platform, new_sl=be_level)
+                        if success:
+                            pos.sl = be_level
+                            tm_trade.stop_loss = be_level
+                            self._news_exit_protected.add(oid)
+                            self.position_store.update_position(oid, sl=be_level)
+                            logger.info(
+                                "📰 NEWS TIGHTEN (small profit) — {} {} | +{:.1f}R | SL→entry {:.5f} | {} in {:.0f}min",
+                                pos.direction, pos.symbol, profit_r, be_level, event_name, minutes_until,
+                            )
+                else:
                     result = self.platforms.close_trade(oid, pos.platform)
                     if result.success:
                         logger.info(
-                            "📰 NEWS EXIT — {} {} | {} in {:.0f}min | closed @ {:.5f}",
-                            pos.direction, pos.symbol, getattr(event, 'name', 'event'),
-                            minutes_until, result.close_price,
+                            "📰 NEWS EXIT (flat/loss) — {} {} | {:.1f}R | {} in {:.0f}min | closed @ {:.5f}",
+                            pos.direction, pos.symbol, profit_r, event_name, minutes_until, result.close_price,
                         )
                         self._record_closed_trade(
                             pos, result.close_price,
-                            f"NEWS_EXIT({getattr(event, 'name', 'event')})",
+                            f"NEWS_EXIT({event_name},pnl={profit_r:.1f}R)",
                             close_result=result,
                         )
                         self.managed_positions.pop(oid, None)
@@ -345,33 +383,8 @@ class ExitChecksMixin:
                             "📰 NEWS EXIT close FAILED — {} {} oid={} | {} in {:.0f}min | "
                             "position retained, UNPROTECTED from news: {}",
                             pos.direction, pos.symbol, oid,
-                            getattr(event, 'name', 'event'), minutes_until,
+                            event_name, minutes_until,
                             getattr(result, "error", "unknown"),
-                        )
-
-                elif cfg.news_exit_mode == "tighten":
-                    # Move SL to breakeven to protect position
-                    tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
-                    if tm_trade is None:
-                        continue
-                    be_level = pos.entry_price
-                    success = self.platforms.modify_trade(oid, pos.platform, new_sl=be_level)
-                    if success:
-                        pos.sl = be_level
-                        tm_trade.stop_loss = be_level
-                        self._news_exit_protected.add(oid)
-                        self.position_store.update_position(oid, sl=be_level)
-                        logger.info(
-                            "📰 NEWS TIGHTEN — {} {} | SL→entry {:.5f} | {} in {:.0f}min",
-                            pos.direction, pos.symbol, be_level,
-                            getattr(event, 'name', 'event'), minutes_until,
-                        )
-                    else:
-                        logger.error(
-                            "📰 NEWS TIGHTEN FAILED — {} {} oid={} | SL move to {:.5f} did NOT land, "
-                            "still at SL={:.5f} | {} in {:.0f}min",
-                            pos.direction, pos.symbol, oid, be_level, pos.sl,
-                            getattr(event, 'name', 'event'), minutes_until,
                         )
 
     def _check_session_close(self, now: datetime) -> None:

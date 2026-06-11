@@ -13,8 +13,8 @@ from pathlib import Path
 
 from loguru import logger
 
-from decision.actions import ManagementDecision
-from decision.context import TradeContext
+from decision.actions import EntryDecision, ManagementDecision
+from decision.context import EntryContext, TradeContext
 from decision.situation import SituationAssessment
 
 
@@ -100,6 +100,85 @@ class DecisionJournal:
             sa.primary_label, decision.action.value,
             "GOVERNOR" if governor_changed else "ENGINE",
             ctx.pnl_pips, sa.tf_alignment, sa.structure_integrity,
+            decision.reason[:120],
+        )
+
+    def log_entry(
+        self,
+        ctx: EntryContext,
+        sa: SituationAssessment,
+        decision: EntryDecision,
+        governor_changed: bool = False,
+    ) -> None:
+        now = datetime.now(timezone.utc)
+        record = {
+            "timestamp": now.isoformat(),
+            "decision_type": "ENTRY",
+            "symbol": ctx.symbol,
+            "direction": ctx.direction,
+            "scan_score": ctx.scan_score,
+            "entry_type": ctx.entry_type,
+            "entry_price": ctx.entry_price,
+            "stop_loss": ctx.stop_loss,
+            "risk_reward_2": round(ctx.risk_reward_2, 2),
+            "risk_pips": round(ctx.risk_pips, 2),
+            "regime": ctx.regime,
+            "situation": {
+                "label": sa.primary_label,
+                "tf_alignment": round(sa.tf_alignment, 3),
+                "momentum": round(sa.momentum, 3),
+                "structure_integrity": round(sa.structure_integrity, 3),
+                "urgency": round(sa.urgency, 3),
+                "read_confidence": round(sa.read_confidence, 3),
+                "evidence": sa.evidence,
+            },
+            "context": {
+                "d1_trend": ctx.d1_trend,
+                "d1_confidence": round(ctx.d1_confidence, 2),
+                "h4_trend": ctx.h4_trend,
+                "h4_confidence": round(ctx.h4_confidence, 2),
+                "h1_trend": ctx.h1_trend,
+                "h1_confidence": round(ctx.h1_confidence, 2),
+                "m1_trend": ctx.m1_trend,
+                "m1_event": ctx.m1_event,
+                "m1_aligned": ctx.m1_aligned_count,
+                "session": ctx.session_name,
+                "portfolio_heat_pct": round(ctx.portfolio_heat_pct, 2),
+                "spread": round(ctx.current_spread, 2),
+                "typical_spread": round(ctx.typical_spread, 2),
+                "ev_estimate": round(ctx.ev_estimate, 4),
+                "pair_multiplier": round(ctx.pair_multiplier, 2),
+            },
+            "decision": {
+                "action": decision.action.value,
+                "reason": decision.reason,
+                "confidence": round(decision.confidence, 3),
+                "conviction": round(decision.conviction, 3),
+                "size_multiplier": round(decision.size_multiplier, 2),
+                "governor_changed": governor_changed,
+                "governor_vetoed": decision.governor_vetoed,
+                "governor_reason": decision.governor_reason,
+                "evidence": decision.evidence,
+            },
+        }
+
+        try:
+            date_str = now.strftime("%Y-%m-%d")
+            if date_str != self._current_date:
+                self._rotate_file(date_str)
+            if self._file is not None:
+                self._file.write(json.dumps(record, default=str) + "\n")
+                self._file.flush()
+        except Exception as exc:
+            logger.warning("[DecisionJournal] entry write failed: {}", exc)
+
+        logger.info(
+            "[ENTRY DECISION] {} {} | {} → {} | {} | score={} align={:+.2f} struct={:.2f} conv={:.2f} | {}",
+            ctx.direction, ctx.symbol,
+            sa.primary_label, decision.action.value,
+            "GOVERNOR" if governor_changed else "ENGINE",
+            ctx.scan_score, sa.tf_alignment, sa.structure_integrity,
+            decision.conviction,
             decision.reason[:120],
         )
 

@@ -5,7 +5,7 @@ Situation-aware decision layer between analysis and execution.
 
 from decision.context import TradeContext, EntryContext
 from decision.situation import SituationEngine, SituationAssessment
-from decision.actions import Action, ManagementDecision
+from decision.actions import Action, ManagementDecision, EntryAction, EntryDecision
 from decision.engine import DecisionEngine
 from decision.governor import RiskGovernor
 from decision.journal import DecisionJournal
@@ -17,6 +17,8 @@ __all__ = [
     "SituationAssessment",
     "Action",
     "ManagementDecision",
+    "EntryAction",
+    "EntryDecision",
     "DecisionEngine",
     "RiskGovernor",
     "DecisionJournal",
