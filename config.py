@@ -638,6 +638,19 @@ class RiskConfig:
 
 
 # ---------------------------------------------------------------------------
+# Decision Intelligence System
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DecisionConfig:
+    enabled: bool = True
+    journal_enabled: bool = True
+    journal_dir: str = "data/decision_journal"
+    governor_enabled: bool = True
+    adopted_observation_minutes: float = 10.0
+
+
+# ---------------------------------------------------------------------------
 # Application config
 # ---------------------------------------------------------------------------
 
@@ -658,6 +671,7 @@ class AppConfig:
     confirmation_penalties: ConfirmationPenaltyConfig = field(default_factory=ConfirmationPenaltyConfig)
     consensus: ConsensusConfig = field(default_factory=ConsensusConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
+    decision: DecisionConfig = field(default_factory=DecisionConfig)
     scan_interval_seconds: int = 10
     max_consecutive_cycle_failures: int = 5
     log_level: str = "INFO"
