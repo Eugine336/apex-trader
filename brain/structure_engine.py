@@ -324,33 +324,44 @@ class StructureEngine:
             confidence=0.0,
         )
 
-    def get_bias(self, h4_df: pd.DataFrame, h1_df: pd.DataFrame) -> dict:
+    def get_bias(
+        self,
+        h4_df: pd.DataFrame,
+        h1_df: pd.DataFrame,
+        d1_df: Optional[pd.DataFrame] = None,
+    ) -> dict:
         """
-        Combined H4 + H1 bias.
+        Combined D1 + H4 + H1 bias.
+        D1 (when available) is the highest-priority directional authority.
         H4 gives the big picture direction. H1 gives precision.
-        FIX: original code always used h4.trend as direction, so when H4 was
-        RANGING but H1 had a clear trend, the pair was marked RANGING + not
-        tradeable and scored 0 on structure — blocking perfectly valid setups.
-        Now: if H4 is ranging but H1 has a clear trend, use H1 direction at
-        MODERATE strength. This allows H1-driven entries which are valid.
         """
         h4 = self.analyze(h4_df)
         h1 = self.analyze(h1_df)
+        d1 = self.analyze(d1_df) if d1_df is not None and len(d1_df) >= 5 else None
 
-        # Both timeframes agree — strongest signal
-        if h4.trend == h1.trend and h4.trend != Trend.RANGING:
+        d1_trend_val = d1.trend.value if d1 is not None else "UNKNOWN"
+        d1_event_val = d1.last_event.value if d1 is not None else "NONE"
+        d1_conf = d1.confidence if d1 is not None else 0.0
+
+        if d1 is not None and d1.trend != Trend.RANGING:
+            if h4.trend == d1.trend:
+                bias_strength = "STRONG"
+                direction = d1.trend
+            elif h4.trend == Trend.RANGING:
+                bias_strength = "STRONG"
+                direction = d1.trend
+            else:
+                bias_strength = "MODERATE"
+                direction = d1.trend
+        elif h4.trend == h1.trend and h4.trend != Trend.RANGING:
             bias_strength = "STRONG"
             direction = h4.trend
-        # H4 clear trend, H1 ranging — still tradeable (pullback entry)
         elif h4.trend != Trend.RANGING and h1.trend == Trend.RANGING:
             bias_strength = "MODERATE"
             direction = h4.trend
-        # FIX: H4 ranging but H1 has clear trend — use H1 direction at MODERATE
-        # Previously this fell into CONFLICTED and returned direction=RANGING
         elif h4.trend == Trend.RANGING and h1.trend != Trend.RANGING:
             bias_strength = "MODERATE"
-            direction = h1.trend  # H1 is leading — respect it
-        # Both ranging or opposite trends
+            direction = h1.trend
         elif h4.trend != h1.trend:
             bias_strength = "CONFLICTED"
             direction = Trend.RANGING
@@ -358,15 +369,22 @@ class StructureEngine:
             bias_strength = "NONE"
             direction = Trend.RANGING
 
+        if d1 is not None:
+            confidence = round(d1_conf * 0.4 + h4.confidence * 0.35 + h1.confidence * 0.25, 2)
+        else:
+            confidence = round((h4.confidence + h1.confidence) / 2, 2)
+
         return {
             "direction": direction.value,
+            "d1_trend": d1_trend_val,
             "h4_trend": h4.trend.value,
             "h1_trend": h1.trend.value,
             "strength": bias_strength,
+            "d1_event": d1_event_val,
             "h4_event": h4.last_event.value,
             "h1_event": h1.last_event.value,
             "swing_high": h1.swing_high,
             "swing_low": h1.swing_low,
-            "confidence": round((h4.confidence + h1.confidence) / 2, 2),
+            "confidence": confidence,
             "tradeable": bias_strength in ["STRONG", "MODERATE"],
         }
