@@ -2,7 +2,7 @@
 APEX TRADER — Entry Engine
 The sniper's trigger finger. Takes a READY scan result and computes
 the exact entry price, stop loss, TP1, TP2, and position size.
-Fires only when all micro-confirmations align on M1.
+Uses M1 micro-confirmation as a graduated score contributor.
 
 Live path inputs: H1, M5, M1 are required. H4 and M15 are optional —
 passed through for the H4 bias gate (when enabled) and future use.
@@ -65,7 +65,7 @@ class EntryEngine:
     """
     APEX TRADER — The Trigger.
     Takes READY scan results and computes precise entries.
-    Only fires when every micro-confirmation aligns on M1.
+    Uses M1 micro-confirmation as a graded score adjustment.
     """
 
     def __init__(self, config: Optional[AppConfig] = None):
@@ -175,13 +175,13 @@ class EntryEngine:
             if direction == "LONG" and h4_trend == "BEARISH":
                 return EntryRejection(
                     pair=pair,
-                    reason=f"H4 bias gate — LONG entry rejected, H4 trend is BEARISH",
+                    reason="H4 bias gate — LONG entry rejected, H4 trend is BEARISH",
                     score=score, timestamp=now, direction=direction,
                 )
             if direction == "SHORT" and h4_trend == "BULLISH":
                 return EntryRejection(
                     pair=pair,
-                    reason=f"H4 bias gate — SHORT entry rejected, H4 trend is BULLISH",
+                    reason="H4 bias gate — SHORT entry rejected, H4 trend is BULLISH",
                     score=score, timestamp=now, direction=direction,
                 )
 
@@ -192,18 +192,95 @@ class EntryEngine:
                 score=score, timestamp=now,
             )
 
-        confirmed, pattern_desc = self.confirm_m1_entry(direction, m1_df, zone, pip_size, profile)
-        if not confirmed:
-            recent_closes = m1_df["close"].iloc[-5:].values if len(m1_df) >= 5 else []
-            stale = len(recent_closes) > 0 and len(set(round(float(c), 5) for c in recent_closes)) == 1
-            reason = "Stale M1 feed — broker not sending new ticks" if stale else "No micro-confirmation on M1"
+        if len(m1_df) < 3:
             return EntryRejection(
-                pair=pair, reason=reason,
+                pair=pair,
+                reason=f"Insufficient M1 bars ({len(m1_df)}) for momentum scoring",
                 score=score, timestamp=now,
                 entry_price=zone.get("midpoint"),
                 direction=direction,
             )
-        confluences.append(f"M1 confirmed: {pattern_desc}")
+
+        recent_closes = m1_df["close"].iloc[-5:].values if len(m1_df) >= 5 else []
+        stale = len(recent_closes) > 0 and len(set(round(float(c), 5) for c in recent_closes)) == 1
+        if stale:
+            return EntryRejection(
+                pair=pair,
+                reason="Stale M1 feed — broker not sending new ticks",
+                score=score, timestamp=now,
+                entry_price=zone.get("midpoint"),
+                direction=direction,
+            )
+
+        zone_top = zone["top"]
+        zone_bottom = zone["bottom"]
+        pattern_name, _pattern_desc = self.pattern_detector.get_best_pattern(
+            drop_forming_bar(m1_df), direction, zone_top, zone_bottom, pip_size,
+        )
+        choch_or_bos = self._detect_m1_choch(
+            m1_df, direction, profile=profile, entry_zone=zone, pip_size=pip_size,
+        )
+
+        pattern_scores = {
+            "engulfing": 3,
+            "pin_bar": 2,
+            "rejection_wick": 2,
+            "volume_spike": 1,
+            "inside_bar_breakout": 1,
+        }
+        pattern_score = pattern_scores.get(pattern_name, 0)
+        pattern_label = pattern_name or "none"
+        if choch_or_bos and pattern_score < 5:
+            pattern_score = 5
+            pattern_label = "choch_bos"
+
+        recent = m1_df.iloc[-5:] if len(m1_df) >= 5 else m1_df.iloc[-3:]
+        n = len(recent)
+        if direction == "LONG":
+            aligned = sum(1 for _, row in recent.iterrows() if float(row["close"]) > float(row["open"]))
+        else:
+            aligned = sum(1 for _, row in recent.iterrows() if float(row["close"]) < float(row["open"]))
+
+        ratio = aligned / n if n else 0.0
+        if ratio >= 1.0:
+            momentum_score = 5
+        elif ratio >= 0.8:
+            momentum_score = 3
+        elif ratio >= 0.6:
+            momentum_score = 0
+        elif ratio >= 0.4:
+            momentum_score = -5
+        elif ratio >= 0.2:
+            momentum_score = -10
+        else:
+            momentum_score = -15
+
+        m1_adjustment = max(-15, min(10, pattern_score + momentum_score))
+        score += m1_adjustment
+
+        aligned_on_five = int(round(ratio * 5))
+        confluences.append(f"M1 pattern: {pattern_label} ({pattern_score:+d})")
+        confluences.append(f"M1 momentum: {aligned_on_five}/5 ({momentum_score:+d})")
+        confluences.append(f"M1 net adjustment: {m1_adjustment:+d}")
+
+        if score < effective_min_score:
+            return EntryRejection(
+                pair=pair,
+                reason=(
+                    f"Score {score} dropped below {effective_min_score} "
+                    f"after M1 adjustment ({m1_adjustment:+d})"
+                ),
+                score=score, timestamp=now,
+                entry_price=zone.get("midpoint"),
+                direction=direction,
+            )
+
+        if pattern_label != "none":
+            micro_confirmation = pattern_label
+        elif momentum_score > 0:
+            micro_confirmation = "momentum_only"
+        else:
+            micro_confirmation = "no_confirmation"
 
         if zone.get("has_sweep"):
             confluences.append("Liquidity sweep confirmed at entry zone")
@@ -312,7 +389,7 @@ class EntryEngine:
             score=score,
             confluences=confluences,
             entry_zone=zone_desc,
-            micro_confirmation=pattern_desc,
+            micro_confirmation=micro_confirmation,
             timestamp=now,
             valid_until=valid_until,
             instrument_category=category,
