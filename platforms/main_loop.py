@@ -236,6 +236,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._last_skipped_state: dict[str, tuple[str, int]] = {}  # symbol → (status, score) for emit-on-change
         self._last_known_balance: float = 0.0
 
+        # ── D1 cache — daily candles change once/day, refresh hourly ──
+        self._d1_cache: dict[str, "pd.DataFrame"] = {}
+        self._d1_cache_ts: float = 0.0
+        self._d1_cache_ttl: float = 3600.0
+
         # ── Portfolio risk state machine (M8 Phase 4a + 4b + 4c) ────────────
         cfg_r = self.config.risk
         if cfg_r.portfolio_risk_engine_enabled:
@@ -550,7 +555,35 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         Keeps the scan loop alive during FX dead zones. Reads from instrument registry."""
         return any(is_always_open(pair) for pair in self.config.enabled_pairs)
 
+    def _get_d1_cached(self, symbols: list[str]) -> dict:
+        """Return cached D1 DataFrames, refreshing at most once per hour."""
+        import time as _time
+
+        now_mono = _time.monotonic()
+        if self._d1_cache and (now_mono - self._d1_cache_ts) < self._d1_cache_ttl:
+            return self._d1_cache
+
+        try:
+            d1_data = self.platforms.fetch_all_market_data(
+                symbols=symbols, timeframes=["D1"],
+            )
+            fresh: dict = {}
+            for sym, frames in d1_data.items():
+                df = frames.get("D1")
+                if df is not None and len(df) >= 5:
+                    fresh[sym] = df
+            if fresh:
+                self._d1_cache = fresh
+                self._d1_cache_ts = now_mono
+                logger.debug("D1 cache refreshed — {} symbols", len(fresh))
+        except Exception as exc:
+            logger.warning("D1 cache refresh failed (using stale): {}", exc)
+
+        return self._d1_cache
+
     def _scan_and_enter(self, session_status, news_status, now: datetime, cycle: dict) -> None:
+        d1_data = self._get_d1_cached(self.config.enabled_pairs)
+
         try:
             market_data = self.platforms.fetch_all_market_data(now_utc=now)
         except Exception as exc:
@@ -559,6 +592,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         if not market_data:
             return
+
+        for sym, d1_df in d1_data.items():
+            if sym in market_data:
+                market_data[sym]["D1"] = d1_df
 
         # Store for in-trade analysis this cycle
         self._last_market_data = market_data
@@ -981,6 +1018,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             account_balance=balance,
             h4_df=data.get("H4"),
             m15_df=data.get("M15"),
+            d1_df=data.get("D1"),
         )
 
         if isinstance(signal, EntryRejection):
@@ -2073,7 +2111,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             try:
                 # ── Re-score this instrument with fresh data ───────────────
                 scan_result = self.scanner.scan_pair(
-                    pair, h4, h1, m15, m5, currency_data, now,
+                    pair, h4, h1, m15, m5, currency_data, now, d1_df=d1,
                 )
 
                 pressure, opposing_boost, details = self._compute_in_trade_context_pressure(

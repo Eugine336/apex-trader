@@ -121,6 +121,7 @@ class EntryEngine:
         account_balance: float,
         h4_df: Optional[pd.DataFrame] = None,
         m15_df: Optional[pd.DataFrame] = None,
+        d1_df: Optional[pd.DataFrame] = None,
     ) -> Union[EntrySignal, EntryRejection]:
         if scan_result is None:
             raise ValueError("calculate_entry requires a scan_result; refusing to fabricate a score")
