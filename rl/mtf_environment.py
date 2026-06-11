@@ -174,6 +174,10 @@ class ApexMultiTFTradingEnv:
         self.idx += 1
         done = self.idx >= len(self._m5_feat) - 1
 
+        if self.balance <= 0 and not done:
+            done = True
+            reward = -1.0
+
         info = {
             "balance":  self.balance,
             "equity":   equity,
