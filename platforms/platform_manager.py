@@ -682,27 +682,53 @@ class PlatformManager:
         if isinstance(connector, MT5Connector):
             idx = self._connector_index(connector)
             if idx is not None and self._mt5_connected_flags[idx]:
+                for attempt in range(2):
+                    try:
+                        balance = float(connector.get_account_info().balance)
+                        logger.debug(
+                            "Balance for {} → {} platform: ${:.2f}",
+                            symbol, platform_name, balance,
+                        )
+                        return balance
+                    except Exception as exc:
+                        if attempt == 0:
+                            logger.debug(
+                                "MT5 balance fetch attempt 1 failed for {}: {} — retrying",
+                                symbol,
+                                exc,
+                            )
+                            _time.sleep(1)
+                        else:
+                            logger.warning(
+                                "MT5 balance fetch failed for {} after 2 attempts: {}",
+                                symbol,
+                                exc,
+                            )
+            return 0.0
+
+        if isinstance(connector, DerivConnector) and self._deriv_connected:
+            for attempt in range(2):
                 try:
-                    balance = float(connector.get_account_info().balance)
+                    balance = float(self.deriv.get_account_info().balance)
                     logger.debug(
                         "Balance for {} → {} platform: ${:.2f}",
                         symbol, platform_name, balance,
                     )
                     return balance
                 except Exception as exc:
-                    logger.warning("MT5 balance fetch error for {}: {}", symbol, exc)
-            return 0.0
-
-        if isinstance(connector, DerivConnector) and self._deriv_connected:
-            try:
-                balance = float(self.deriv.get_account_info().balance)
-                logger.debug(
-                    "Balance for {} → {} platform: ${:.2f}",
-                    symbol, platform_name, balance,
-                )
-                return balance
-            except Exception as exc:
-                logger.warning("Deriv balance fetch error for {}: {}", symbol, exc)
+                    if attempt == 0:
+                        logger.debug(
+                            "Deriv balance fetch attempt 1 failed for {}: {} — retrying",
+                            symbol,
+                            exc,
+                        )
+                        _time.sleep(1)
+                    else:
+                        logger.warning(
+                            "Deriv balance fetch failed for {} after 2 attempts: {}",
+                            symbol,
+                            exc,
+                        )
 
         return 0.0
 
