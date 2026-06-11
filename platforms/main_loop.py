@@ -11,8 +11,9 @@ import threading
 import time as _time
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Optional
+from typing import Optional, Any
 
+import pandas as pd
 from loguru import logger
 
 from persistence.position_store import PositionStore, STORE_UNAVAILABLE
@@ -583,13 +584,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             return
 
         # Portfolio risk state gate — freeze entries in DEFENSIVE or REDUCING
-        if (
-            getattr(self, '_portfolio_risk_sm', None) is not None
-            and self._portfolio_risk_sm.state in (PortfolioRiskState.DEFENSIVE, PortfolioRiskState.REDUCING)
-        ):
+        prsm: Optional[PortfolioRiskStateMachine] = getattr(self, '_portfolio_risk_sm', None)
+        if prsm is None:
+            pass
+        elif prsm.state in (PortfolioRiskState.DEFENSIVE, PortfolioRiskState.REDUCING):
             logger.info(
                 "[PortfolioRisk] {} — new entries frozen (heat={:.2f}%)",
-                self._portfolio_risk_sm.state.name,
+                prsm.state.name,
                 getattr(self, '_current_portfolio_heat', 0.0),
             )
             return
@@ -812,13 +813,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         )
 
         if isinstance(signal, EntryRejection):
-            ctx = {}
+            entry_context: dict[str, Any] = {}
             if signal.entry_price is not None:
-                ctx["entry_price"] = signal.entry_price
+                entry_context["entry_price"] = signal.entry_price
             if signal.stop_loss is not None:
-                ctx["stop_loss"] = signal.stop_loss
+                entry_context["stop_loss"] = signal.stop_loss
             self._log_rejection(pair, direction, result.score, signal.reason,
-                                entry_context=ctx or None)
+                                entry_context=entry_context or None)
             if signal.entry_price is not None and signal.stop_loss is not None and h1_df is not None:
                 try:
                     _tp1, _tp2 = self.entry_engine.calculate_targets(
@@ -1002,6 +1003,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     "[entry] in-flight store unavailable — skipping {} {} this cycle to avoid double-submit",
                     pair, direction,
                 )
+                return False
+            if not isinstance(pending, list):
                 return False
             stale = [p for p in pending if p.get("idempotency_key") != idem_key]
             if stale:
@@ -1364,7 +1367,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     connector = self.platforms.get_connector(info["symbol"])
                     if isinstance(connector, MT5Connector):
                         import MetaTrader5 as mt5
-                        mt5.order_send({
+                        mt5.order_send({  # type: ignore[attr-defined]
                             "action": mt5.TRADE_ACTION_REMOVE,
                             "order": int(oid),
                         })
@@ -1635,7 +1638,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                                 tm_trade.stop_loss,
                                 tm_trade.tp2,
                                 comment=f"APEX|TP1_REOPEN|{pos.score}",
-                                stake_usd=half_stake if half_stake > 0 else None,
+                                stake_usd=half_stake if (half_stake is not None and half_stake > 0) else None,
                             )
                             if reopen_order.success:
                                 logger.info(
@@ -1928,10 +1931,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
           - Trade is at N× profit (configurable)
           - Correlation and margin still allow it
         """
-        if (
-            getattr(self, '_portfolio_risk_sm', None) is not None
-            and self._portfolio_risk_sm.state in (PortfolioRiskState.DEFENSIVE, PortfolioRiskState.REDUCING)
-        ):
+        prsm: Optional[PortfolioRiskStateMachine] = getattr(self, '_portfolio_risk_sm', None)
+        if prsm is None:
+            pass
+        elif prsm.state in (PortfolioRiskState.DEFENSIVE, PortfolioRiskState.REDUCING):
             return
         cfg = self.config.risk
         tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
@@ -2014,10 +2017,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
     def _check_scale_in(self):
         if not self.config.risk.scale_in_enabled:
             return
-        if (
-            getattr(self, '_portfolio_risk_sm', None) is not None
-            and self._portfolio_risk_sm.state in (PortfolioRiskState.DEFENSIVE, PortfolioRiskState.REDUCING)
-        ):
+        prsm: Optional[PortfolioRiskStateMachine] = getattr(self, '_portfolio_risk_sm', None)
+        if prsm is None:
+            pass
+        elif prsm.state in (PortfolioRiskState.DEFENSIVE, PortfolioRiskState.REDUCING):
             return
         for oid, pos in list(self.managed_positions.items()):
             try:

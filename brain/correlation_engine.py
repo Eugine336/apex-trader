@@ -7,6 +7,7 @@ and synthetics.
 """
 
 from dataclasses import dataclass
+from typing import Sequence
 
 from loguru import logger
 
@@ -70,7 +71,7 @@ class CorrelationEngine:
         self.max_cluster_same_direction = max_cluster_same_direction
         self.allow_intentional_hedge = allow_intentional_hedge
 
-    def calculate_exposure(self, open_trades: list[OpenTrade | dict]) -> ExposureMap:
+    def calculate_exposure(self, open_trades: Sequence[OpenTrade | dict]) -> ExposureMap:
         exposures: dict[str, float] = {}
         normalized = [self._normalize_trade(t) for t in open_trades]
 
@@ -105,7 +106,7 @@ class CorrelationEngine:
         self,
         pair: str,
         direction: str,
-        open_trades: list[OpenTrade | dict],
+        open_trades: Sequence[OpenTrade | dict],
         risk_pct: float = 0.02,
     ) -> tuple[bool, str]:
         candidate = OpenTrade(pair=pair, direction=direction, risk_pct=risk_pct)
