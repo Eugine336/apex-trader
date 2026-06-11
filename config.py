@@ -222,7 +222,7 @@ class ScoringConfig:
     session_points: int = 10
     news_points: int = 10
     currency_strength_points: int = 10
-    ranging_score_cap: int = 50  # Tighter cap — ranging pairs need stronger confluences
+    ranging_score_cap: int = 85  # Must exceed DrawdownGuard score floors (65/70/75) to allow ranging trades
     volatile_score_cap: int = 100  # FIX: was 0 — killed all volatile-regime trades
     use_adaptive_scoring_weights: bool = True
 
