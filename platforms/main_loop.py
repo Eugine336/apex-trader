@@ -222,6 +222,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._last_scan_time: Optional[datetime] = None
         self._daily_trades = 0
         self._last_reset_day: Optional[str] = None
+        self._last_backup_time: float = 0.0
         # Live reconciliation heartbeat
         self._last_reconcile_time: Optional[datetime] = None
         self._reconcile_interval_seconds: int = 30
@@ -3096,6 +3097,29 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         if self.ml.should_retrain():
             self._run_ml_optimization()
+
+        self._maybe_backup_data()
+
+    def _maybe_backup_data(self) -> None:
+        """Push data/ to GitHub every ``interval_hours`` if backup is enabled."""
+        cfg = self.config.data_backup
+        if not cfg.enabled:
+            return
+        now = _time.time()
+        interval_secs = cfg.interval_hours * 3600
+        if now - self._last_backup_time < interval_secs:
+            return
+        self._last_backup_time = now
+        try:
+            from scripts.backup_data import run_backup
+
+            result = run_backup(
+                max_file_size_mb=cfg.max_file_size_mb,
+                exclude_patterns=cfg.exclude_patterns,
+            )
+            logger.info("💾 Data backup — {}", result)
+        except Exception as exc:
+            logger.warning("Data backup failed: {}", exc)
 
     def _get_sleep_interval(self) -> float:
         now = datetime.now(timezone.utc)
