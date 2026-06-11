@@ -651,6 +651,16 @@ class DecisionConfig:
 
 
 # ---------------------------------------------------------------------------
+# Data backup
+# ---------------------------------------------------------------------------
+
+@dataclass
+class DataBackupConfig:
+    enabled: bool = True
+    interval_minutes: int = 60
+
+
+# ---------------------------------------------------------------------------
 # Application config
 # ---------------------------------------------------------------------------
 
@@ -672,6 +682,7 @@ class AppConfig:
     consensus: ConsensusConfig = field(default_factory=ConsensusConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
+    data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)
     scan_interval_seconds: int = 10
     max_consecutive_cycle_failures: int = 5
     log_level: str = "INFO"

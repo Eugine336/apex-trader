@@ -270,6 +270,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._risk_governor = RiskGovernor() if dcfg.governor_enabled else None
         self._decision_journal = DecisionJournal(dcfg.journal_dir) if dcfg.journal_enabled else None
 
+        # ── Data backup ──────────────────────────────────────────────────
+        self._last_data_backup_ts: float = 0.0
+
     # ── Thread-safe position accessors ──────────────────────────────────
 
     def get_positions_snapshot(self) -> dict[str, ManagedPosition]:
@@ -3096,6 +3099,27 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         if self.ml.should_retrain():
             self._run_ml_optimization()
+
+        self._maybe_backup_data()
+
+    def _maybe_backup_data(self) -> None:
+        """Push data/ to the data-backup branch if interval has elapsed."""
+        bcfg = self.config.data_backup
+        if not bcfg.enabled:
+            return
+        now_mono = _time.monotonic()
+        interval = bcfg.interval_minutes * 60.0
+        if now_mono - self._last_data_backup_ts < interval:
+            return
+        try:
+            from scripts.backup_data import run_backup
+
+            result = run_backup()
+            logger.info("[data-backup] {}", result)
+            self._last_data_backup_ts = now_mono
+        except Exception as exc:
+            logger.debug("[data-backup] failed: {}", exc)
+            self._last_data_backup_ts = now_mono
 
     def _get_sleep_interval(self) -> float:
         now = datetime.now(timezone.utc)
