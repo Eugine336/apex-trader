@@ -298,12 +298,14 @@ class TradeJournal:
                 cursor = await db.execute(
                     "SELECT pair, direction, pnl, score, confluences, regime, "
                     "session, spread, entry_type, time_to_exit, outcome, pnl_dollars, "
-                    "timestamp, swap_modeled, swap_status, risk_dollars FROM trades"
+                    "timestamp, swap_modeled, swap_status, risk_dollars, id, entry, exit FROM trades"
                 )
             except Exception:
                 cursor = await db.execute(
                     "SELECT pair, direction, pnl, score, confluences, regime, "
-                    "session, spread, entry_type, time_to_exit, outcome FROM trades"
+                    "session, spread, entry_type, time_to_exit, outcome, timestamp, "
+                    "NULL as swap_modeled, 'unavailable' as swap_status, NULL as risk_dollars, "
+                    "rowid as id, NULL as entry, NULL as exit FROM trades"
                 )
             rows = await cursor.fetchall()
         result = []
@@ -325,6 +327,9 @@ class TradeJournal:
                 "swap_modeled": r[13] if len(r) > 13 else None,
                 "swap_status": r[14] if len(r) > 14 else "unavailable",
                 "risk_dollars": r[15] if len(r) > 15 else None,
+                "id": r[16] if len(r) > 16 else None,
+                "entry": r[17] if len(r) > 17 else None,
+                "exit": r[18] if len(r) > 18 else None,
             })
         return self._consolidate_partial_dicts(result)
 

@@ -236,6 +236,36 @@ class TestEmptyButConfirmed:
         assert "1" not in loop.managed_positions
         loop.position_store.remove_position.assert_called_once_with("1")
 
+    def test_startup_reconcile_confirmed_empty_records_offline_close(self):
+        loop = _build_loop(
+            ("1", "EURUSD", "BUY", 1.1, 0.1, 1.09, 1.12, 1.13, "mt5"),
+        )
+        loop._record_closed_trade = MagicMock()
+        loop.platforms.get_open_positions_snapshot.return_value = BrokerPositionsSnapshot(
+            positions=[], confirmed_platforms={"mt5"}, failed_platforms=set(),
+        )
+        loop.platforms.get_deal_close_info.return_value = None
+        loop.platforms.get_realized_pnl.return_value = 5.25
+        loop.platforms.get_price.return_value = _make_tick(bid=1.1015, ask=1.1017)
+
+        loop._reconcile_positions()
+
+        loop.platforms.get_deal_close_info.assert_called_once_with("1", "mt5")
+        loop.platforms.get_realized_pnl.assert_called_once_with("1", "mt5")
+        loop._record_closed_trade.assert_called_once()
+        args, kwargs = loop._record_closed_trade.call_args
+        assert args[0].order_id == "1"
+        assert args[1] == 1.1015
+        assert args[2] == "CLOSED_WHILE_OFFLINE"
+        assert kwargs.get("exit_reason_source") == "broker_history"
+        close_result = kwargs.get("close_result")
+        assert close_result is not None
+        assert close_result.order_id == "1"
+        assert close_result.pnl == 5.25
+        assert close_result.platform == "mt5"
+        assert "1" not in loop.managed_positions
+        loop.position_store.remove_position.assert_called_once_with("1")
+
 
 # ── Revalidation flag lifecycle ─────────────────────────────────────
 

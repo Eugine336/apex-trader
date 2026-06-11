@@ -2424,7 +2424,29 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         try:
             self._journal_loop.run_until_complete(coro)
         except Exception as exc:
-            logger.warning("Journal async error: {}", exc)
+            if asyncio.iscoroutine(coro):
+                try:
+                    coro.close()
+                except Exception:
+                    pass
+
+            err = str(exc).lower()
+            if isinstance(exc, RuntimeError) and "closed" in err:
+                try:
+                    self._journal_loop = asyncio.new_event_loop()
+                    logger.error(
+                        "Journal async error: event loop was closed and has been recreated; "
+                        "journal write failed and may be lost: {}",
+                        exc,
+                    )
+                except Exception as recreate_exc:
+                    logger.error(
+                        "Journal async error: event loop was closed and recreation failed; "
+                        "journal write failed and may be lost: {}",
+                        recreate_exc,
+                    )
+            else:
+                logger.error("Journal async error: write failed and may be lost: {}", exc)
 
     # ── ML optimisation ───────────────────────────────────────────────
 

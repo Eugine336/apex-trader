@@ -219,6 +219,73 @@ class RecoveryReconciliationMixin:
                         pos.direction,
                         pos.symbol,
                     )
+                    deal_close_info = None
+                    close_price = pos.entry_price
+                    realized_pnl = None
+                    raw_reason_code = None
+                    raw_comment = None
+
+                    try:
+                        deal_close_info = self.platforms.get_deal_close_info(oid, pos.platform)
+                    except Exception as exc:
+                        logger.debug(
+                            "[Reconcile] deal-close info fetch failed for {} {} ({}): {}",
+                            pos.direction, pos.symbol, oid, exc,
+                        )
+
+                    if deal_close_info is not None:
+                        realized_pnl = deal_close_info.pnl
+                        raw_reason_code = deal_close_info.raw_reason_code
+                        raw_comment = deal_close_info.raw_comment
+                        if deal_close_info.close_price is not None:
+                            close_price = float(deal_close_info.close_price)
+
+                    if realized_pnl is None:
+                        try:
+                            realized_pnl = self.platforms.get_realized_pnl(oid, pos.platform)
+                        except Exception as exc:
+                            logger.debug(
+                                "[Reconcile] realized-pnl fetch failed for {} {} ({}): {}",
+                                pos.direction, pos.symbol, oid, exc,
+                            )
+
+                    if close_price == pos.entry_price:
+                        try:
+                            tick = self.platforms.get_price(pos.symbol)
+                            is_buy = pos.direction == "BUY"
+                            close_price = tick.bid if is_buy else tick.ask
+                        except Exception as exc:
+                            logger.debug(
+                                "[Reconcile] close-price fetch failed for {} {} ({}), using entry fallback: {}",
+                                pos.direction, pos.symbol, oid, exc,
+                            )
+
+                    close_result = None
+                    if realized_pnl is not None:
+                        close_result = CloseResult(
+                            success=True,
+                            order_id=oid,
+                            close_price=close_price,
+                            lots_closed=pos.lots,
+                            pnl=float(realized_pnl),
+                            platform=pos.platform,
+                        )
+
+                    try:
+                        self._record_closed_trade(
+                            pos,
+                            close_price,
+                            "CLOSED_WHILE_OFFLINE",
+                            close_result=close_result,
+                            exit_reason_source="broker_history",
+                            raw_broker_reason=raw_reason_code,
+                            raw_broker_comment=raw_comment,
+                        )
+                    except Exception as exc:
+                        logger.error(
+                            "[Reconcile] failed to journal offline close for {} {} ({}): {}",
+                            pos.direction, pos.symbol, oid, exc,
+                        )
                     self.managed_positions.pop(oid, None)
                     self.position_store.remove_position(oid)
                     removed_count += 1
