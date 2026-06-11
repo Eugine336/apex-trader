@@ -271,6 +271,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._risk_governor = RiskGovernor() if dcfg.governor_enabled else None
         self._decision_journal = DecisionJournal(dcfg.journal_dir) if dcfg.journal_enabled else None
 
+        # ── Data backup ──────────────────────────────────────────────────
+        self._last_data_backup_ts: float = 0.0
+
     # ── Thread-safe position accessors ──────────────────────────────────
 
     def get_positions_snapshot(self) -> dict[str, ManagedPosition]:
