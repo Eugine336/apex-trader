@@ -30,8 +30,8 @@ from trigger.entry_patterns import EntryPatternDetector
 @dataclass
 class EntrySignal:
     pair: str
-    direction: str                      # "LONG" or "SHORT"
-    entry_type: str                     # "FVG_MIDPOINT", "OB_MIDPOINT", "FVG_OB_OVERLAP", "SWEEP_REVERSAL"
+    direction: str  # "LONG" or "SHORT"
+    entry_type: str  # "FVG_MIDPOINT", "OB_MIDPOINT", "FVG_OB_OVERLAP", "SWEEP_REVERSAL"
     entry_price: float
     stop_loss: float
     tp1: float
@@ -53,7 +53,7 @@ class EntrySignal:
     # to fire a market order immediately or place a limit/stop pending order.
     # "MARKET"  — price is inside or right at the zone; enter now
     # "PENDING" — price has not yet reached the zone; wait for retrace
-    entry_mode: str = "PENDING"   # default conservative; engine overrides this
+    entry_mode: str = "PENDING"  # default conservative; engine overrides this
 
 
 @dataclass
@@ -92,30 +92,18 @@ class EntryEngine:
         self.session_engine = SessionEngine()
         risk_cfg = self.config.risk
         self._volatility_stop_mode = (
-            volatility_stop_mode
-            if volatility_stop_mode is not None
-            else risk_cfg.volatility_stop_mode
+            volatility_stop_mode if volatility_stop_mode is not None else risk_cfg.volatility_stop_mode
         ).lower()
-        self._atr_stop_period = int(
-            atr_stop_period if atr_stop_period is not None else risk_cfg.atr_stop_period
-        )
-        self._atr_stop_mult = float(
-            atr_stop_mult if atr_stop_mult is not None else risk_cfg.atr_stop_mult
-        )
+        self._atr_stop_period = int(atr_stop_period if atr_stop_period is not None else risk_cfg.atr_stop_period)
+        self._atr_stop_mult = float(atr_stop_mult if atr_stop_mult is not None else risk_cfg.atr_stop_mult)
         self._atr_stop_ratio_min = float(
-            atr_stop_ratio_min
-            if atr_stop_ratio_min is not None
-            else risk_cfg.atr_stop_ratio_min
+            atr_stop_ratio_min if atr_stop_ratio_min is not None else risk_cfg.atr_stop_ratio_min
         )
         self._atr_stop_ratio_max = float(
-            atr_stop_ratio_max
-            if atr_stop_ratio_max is not None
-            else risk_cfg.atr_stop_ratio_max
+            atr_stop_ratio_max if atr_stop_ratio_max is not None else risk_cfg.atr_stop_ratio_max
         )
         self._atr_stop_max_risk_mult = float(
-            atr_stop_max_risk_mult
-            if atr_stop_max_risk_mult is not None
-            else risk_cfg.atr_stop_max_risk_mult
+            atr_stop_max_risk_mult if atr_stop_max_risk_mult is not None else risk_cfg.atr_stop_max_risk_mult
         )
 
     # ------------------------------------------------------------------
@@ -143,8 +131,7 @@ class EntryEngine:
             get_instrument(pair)
         except KeyError:
             logger.warning(
-                f"[{pair}] Entry rejected — unknown instrument, not in registry, "
-                "refusing to assume economics"
+                f"[{pair}] Entry rejected — unknown instrument, not in registry, refusing to assume economics"
             )
             return EntryRejection(
                 pair=pair,
@@ -181,9 +168,11 @@ class EntryEngine:
 
         session_status = self.session_engine.get_status(now)
         # Guard applies only to FX pairs — reads from instrument registry
-        if (spread_open_guard_applies(pair)
-                and session_status.current_session in ("LONDON", "NEW_YORK")
-                and session_status.session_open_minutes <= 15):
+        if (
+            spread_open_guard_applies(pair)
+            and session_status.current_session in ("LONDON", "NEW_YORK")
+            and session_status.session_open_minutes <= 15
+        ):
             return EntryRejection(
                 pair=pair,
                 reason=f"Session {session_status.current_session} just opened ({session_status.session_open_minutes}min) — waiting for spread stabilization",
@@ -202,43 +191,50 @@ class EntryEngine:
             return EntryRejection(
                 pair=pair,
                 reason=f"score {score} < drawdown floor {effective_min_score} (mode={status.mode})",
-                score=score, timestamp=now,
+                score=score,
+                timestamp=now,
             )
 
         # ── H4 bias gate (default OFF) ───────────────────────────────────
         # When enabled, rejects entries where H4 trend directly contradicts
         # the trade direction. Can only reject, never widen risk.
-        if (self.config.risk.h4_bias_gate_enabled
-                and h4_df is not None
-                and len(h4_df) >= 20):
+        if self.config.risk.h4_bias_gate_enabled and h4_df is not None and len(h4_df) >= 20:
             from brain.structure_engine import StructureEngine as _SE
+
             h4_structure = _SE(pip_size=pip_size).analyze(h4_df)
             h4_trend = h4_structure.trend.value
             if direction == "LONG" and h4_trend == "BEARISH":
                 return EntryRejection(
                     pair=pair,
                     reason="H4 bias gate — LONG entry rejected, H4 trend is BEARISH",
-                    score=score, timestamp=now, direction=direction,
+                    score=score,
+                    timestamp=now,
+                    direction=direction,
                 )
             if direction == "SHORT" and h4_trend == "BULLISH":
                 return EntryRejection(
                     pair=pair,
                     reason="H4 bias gate — SHORT entry rejected, H4 trend is BULLISH",
-                    score=score, timestamp=now, direction=direction,
+                    score=score,
+                    timestamp=now,
+                    direction=direction,
                 )
 
         zone = self.find_entry_zone(pair, direction, m5_df, pip_size, profile)
         if zone["type"] == "NONE":
             return EntryRejection(
-                pair=pair, reason="No valid entry zone (FVG or OB) found on M5",
-                score=score, timestamp=now,
+                pair=pair,
+                reason="No valid entry zone (FVG or OB) found on M5",
+                score=score,
+                timestamp=now,
             )
 
         if len(m1_df) < 3:
             return EntryRejection(
                 pair=pair,
                 reason=f"Insufficient M1 bars ({len(m1_df)}) for momentum scoring",
-                score=score, timestamp=now,
+                score=score,
+                timestamp=now,
                 entry_price=zone.get("midpoint"),
                 direction=direction,
             )
@@ -249,7 +245,8 @@ class EntryEngine:
             return EntryRejection(
                 pair=pair,
                 reason="Stale M1 feed — broker not sending new ticks",
-                score=score, timestamp=now,
+                score=score,
+                timestamp=now,
                 entry_price=zone.get("midpoint"),
                 direction=direction,
             )
@@ -257,10 +254,18 @@ class EntryEngine:
         zone_top = zone["top"]
         zone_bottom = zone["bottom"]
         pattern_name, _pattern_desc = self.pattern_detector.get_best_pattern(
-            drop_forming_bar(m1_df), direction, zone_top, zone_bottom, pip_size,
+            drop_forming_bar(m1_df),
+            direction,
+            zone_top,
+            zone_bottom,
+            pip_size,
         )
         choch_or_bos = self._detect_m1_choch(
-            m1_df, direction, profile=profile, entry_zone=zone, pip_size=pip_size,
+            m1_df,
+            direction,
+            profile=profile,
+            entry_zone=zone,
+            pip_size=pip_size,
         )
 
         pattern_scores = {
@@ -308,11 +313,9 @@ class EntryEngine:
         if score < effective_min_score:
             return EntryRejection(
                 pair=pair,
-                reason=(
-                    f"Score {score} dropped below {effective_min_score} "
-                    f"after M1 adjustment ({m1_adjustment:+d})"
-                ),
-                score=score, timestamp=now,
+                reason=(f"Score {score} dropped below {effective_min_score} after M1 adjustment ({m1_adjustment:+d})"),
+                score=score,
+                timestamp=now,
                 entry_price=zone.get("midpoint"),
                 direction=direction,
             )
@@ -327,100 +330,126 @@ class EntryEngine:
         if zone.get("has_sweep"):
             confluences.append("Liquidity sweep confirmed at entry zone")
 
-        entry_price = zone["midpoint"]
-        stop_loss = self.calculate_stop_loss(
-            direction,
-            zone,
-            pip_size,
-            profile.sl_buffer_pips,
-            entry_price=entry_price,
-            pair=pair,
-            m5_df=m5_df,
-        )
-        risk_distance = abs(entry_price - stop_loss)
-
-        # ── SL floor for synthetics and crypto — MUST run before calculate_targets ──
-        # calculate_targets uses risk_distance to validate the 2.5R minimum for TP2.
-        # If the floor widens the SL AFTER targets are set, the effective R:R collapses
-        # and the validator rejects a perfectly good setup with "R:R to TP2 below minimum".
-        # Fix: apply the floor here so calculate_targets sees the real risk distance.
-        if category == "synthetic":
-            pct_floor = entry_price * 0.003   # 0.3%
-            if risk_distance < pct_floor:
-                stop_loss = (
-                    entry_price - pct_floor if direction == "LONG"
-                    else entry_price + pct_floor
-                )
-                risk_distance = pct_floor
-        elif category == "crypto":
-            pct_floor = entry_price * 0.0015  # 0.15%
-            if risk_distance < pct_floor:
-                stop_loss = (
-                    entry_price - pct_floor if direction == "LONG"
-                    else entry_price + pct_floor
-                )
-                risk_distance = pct_floor
-
-        tp1, tp2 = self.calculate_targets(pair, direction, entry_price, stop_loss, h1_df, pip_size)
-
         min_risk_distance = profile.min_risk_pips * pip_size
 
-        # Percentage-based SL floor already applied above — skip duplicate block.
-
-        if risk_distance < pip_size:
-            return EntryRejection(
-                pair=pair, reason="Risk distance too small — invalid zone",
-                score=score, timestamp=now,
-                entry_price=entry_price, stop_loss=stop_loss, direction=direction,
-            )
-        if risk_distance < min_risk_distance:
-            return EntryRejection(
+        def _compute_pricing(target_entry_price: float):
+            stop_loss_local = self.calculate_stop_loss(
+                direction,
+                zone,
+                pip_size,
+                profile.sl_buffer_pips,
+                entry_price=target_entry_price,
                 pair=pair,
-                reason=f"Risk distance {risk_distance/pip_size:.1f} pips below minimum {profile.min_risk_pips} for {category}",
-                score=score, timestamp=now,
-                entry_price=entry_price, stop_loss=stop_loss, direction=direction,
+                m5_df=m5_df,
+            )
+            risk_distance_local = abs(target_entry_price - stop_loss_local)
+
+            # ── SL floor for synthetics and crypto — MUST run before calculate_targets ──
+            # calculate_targets uses risk_distance to validate the 2.5R minimum for TP2.
+            # If the floor widens the SL AFTER targets are set, the effective R:R collapses
+            # and the validator rejects a perfectly good setup with "R:R to TP2 below minimum".
+            # Fix: apply the floor here so calculate_targets sees the real risk distance.
+            if category == "synthetic":
+                pct_floor = target_entry_price * 0.003  # 0.3%
+                if risk_distance_local < pct_floor:
+                    stop_loss_local = (
+                        target_entry_price - pct_floor if direction == "LONG" else target_entry_price + pct_floor
+                    )
+                    risk_distance_local = pct_floor
+            elif category == "crypto":
+                pct_floor = target_entry_price * 0.0015  # 0.15%
+                if risk_distance_local < pct_floor:
+                    stop_loss_local = (
+                        target_entry_price - pct_floor if direction == "LONG" else target_entry_price + pct_floor
+                    )
+                    risk_distance_local = pct_floor
+
+            tp1_local, tp2_local = self.calculate_targets(
+                pair, direction, target_entry_price, stop_loss_local, h1_df, pip_size
             )
 
-        rr1 = abs(tp1 - entry_price) / risk_distance
-        rr2 = abs(tp2 - entry_price) / risk_distance
-
-        if rr1 < 1.0:
-            return EntryRejection(
-                pair=pair, reason=f"Insufficient reward — R:R to TP1 is {rr1:.2f}",
-                score=score, timestamp=now,
-                entry_price=entry_price, stop_loss=stop_loss, direction=direction,
-            )
-
-        risk_pips = risk_distance / pip_size
-        position_size = self.calculate_position_size(
-            entry_price, stop_loss, risk_pct, account_balance, pip_size, pair,
-        )
-
-        # ── Non-finite price guard ───────────────────────────────────────
-        _price_fields = {
-            "entry_price": entry_price, "stop_loss": stop_loss,
-            "tp1": tp1, "tp2": tp2, "risk_distance": risk_distance,
-            "rr1": rr1, "rr2": rr2,
-        }
-        for _name, _val in _price_fields.items():
-            if not math.isfinite(_val):
-                logger.error(
-                    "[{}] Non-finite {} ({}) in signal — rejecting", pair, _name, _val,
-                )
+            # Percentage-based SL floor already applied above — skip duplicate block.
+            if risk_distance_local < pip_size:
                 return EntryRejection(
                     pair=pair,
-                    reason=f"Non-finite {_name} ({_val}) in signal — rejecting",
-                    score=score, timestamp=now,
-                    entry_price=entry_price if math.isfinite(entry_price) else None,
-                    stop_loss=stop_loss if math.isfinite(stop_loss) else None,
+                    reason="Risk distance too small — invalid zone",
+                    score=score,
+                    timestamp=now,
+                    entry_price=target_entry_price,
+                    stop_loss=stop_loss_local,
                     direction=direction,
                 )
+            if risk_distance_local < min_risk_distance:
+                return EntryRejection(
+                    pair=pair,
+                    reason=f"Risk distance {risk_distance_local / pip_size:.1f} pips below minimum {profile.min_risk_pips} for {category}",
+                    score=score,
+                    timestamp=now,
+                    entry_price=target_entry_price,
+                    stop_loss=stop_loss_local,
+                    direction=direction,
+                )
+
+            rr1_local = abs(tp1_local - target_entry_price) / risk_distance_local
+            rr2_local = abs(tp2_local - target_entry_price) / risk_distance_local
+
+            if rr1_local < 1.0:
+                return EntryRejection(
+                    pair=pair,
+                    reason=f"Insufficient reward — R:R to TP1 is {rr1_local:.2f}",
+                    score=score,
+                    timestamp=now,
+                    entry_price=target_entry_price,
+                    stop_loss=stop_loss_local,
+                    direction=direction,
+                )
+
+            risk_pips_local = risk_distance_local / pip_size
+            position_size_local = self.calculate_position_size(
+                target_entry_price,
+                stop_loss_local,
+                risk_pct,
+                account_balance,
+                pip_size,
+                pair,
+            )
+            return (
+                target_entry_price,
+                stop_loss_local,
+                tp1_local,
+                tp2_local,
+                risk_distance_local,
+                rr1_local,
+                rr2_local,
+                risk_pips_local,
+                position_size_local,
+            )
+
+        zone_midpoint = float(zone["midpoint"])
+        pricing = _compute_pricing(zone_midpoint)
+        if isinstance(pricing, EntryRejection):
+            return pricing
+        (
+            entry_price,
+            stop_loss,
+            tp1,
+            tp2,
+            risk_distance,
+            rr1,
+            rr2,
+            risk_pips,
+            position_size,
+        ) = pricing
 
         zone_desc = self._describe_zone(zone, pip_size)
         entry_timeframe = self._determine_entry_timeframe(zone)
 
         expiry_minutes = {
-            "M1": 10, "M5": 20, "M15": 45, "H1": 120, "H4": 240,
+            "M1": 10,
+            "M5": 20,
+            "M15": 45,
+            "H1": 120,
+            "H4": 240,
         }.get(entry_timeframe, 25)
         valid_until = now + timedelta(minutes=expiry_minutes)
 
@@ -430,17 +459,66 @@ class EntryEngine:
         try:
             current_tick = m1_df["close"].iloc[-1]
         except Exception:
-            current_tick = entry_price  # fallback: treat as at-price
+            current_tick = zone_midpoint  # fallback: treat as at-price
 
         entry_mode = self._decide_entry_mode(
             direction=direction,
             current_price=float(current_tick),
-            entry_price=entry_price,
+            entry_price=zone_midpoint,
             zone=zone,
             micro_confirmation=micro_confirmation,
             has_sweep=bool(zone.get("has_sweep")),
             pip_size=pip_size,
+            score=score,
+            risk_reward=rr1,
+            momentum_score=momentum_score,
         )
+
+        if entry_mode == "MARKET":
+            market_entry = float(current_tick)
+            if math.isfinite(market_entry):
+                market_pricing = _compute_pricing(market_entry)
+                if isinstance(market_pricing, EntryRejection):
+                    return market_pricing
+                (
+                    entry_price,
+                    stop_loss,
+                    tp1,
+                    tp2,
+                    risk_distance,
+                    rr1,
+                    rr2,
+                    risk_pips,
+                    position_size,
+                ) = market_pricing
+
+        # ── Non-finite price guard ───────────────────────────────────────
+        _price_fields = {
+            "entry_price": entry_price,
+            "stop_loss": stop_loss,
+            "tp1": tp1,
+            "tp2": tp2,
+            "risk_distance": risk_distance,
+            "rr1": rr1,
+            "rr2": rr2,
+        }
+        for _name, _val in _price_fields.items():
+            if not math.isfinite(_val):
+                logger.error(
+                    "[{}] Non-finite {} ({}) in signal — rejecting",
+                    pair,
+                    _name,
+                    _val,
+                )
+                return EntryRejection(
+                    pair=pair,
+                    reason=f"Non-finite {_name} ({_val}) in signal — rejecting",
+                    score=score,
+                    timestamp=now,
+                    entry_price=entry_price if math.isfinite(entry_price) else None,
+                    stop_loss=stop_loss if math.isfinite(stop_loss) else None,
+                    direction=direction,
+                )
 
         signal = EntrySignal(
             pair=pair,
@@ -487,6 +565,10 @@ class EntryEngine:
         micro_confirmation: str,
         has_sweep: bool,
         pip_size: float,
+        *,
+        score: int = 0,
+        risk_reward: float = 0.0,
+        momentum_score: int = 0,
     ) -> str:
         """
         Decide whether to enter at market NOW or place a pending limit/stop order.
@@ -495,17 +577,18 @@ class EntryEngine:
 
         Rules (priority order):
         1. MARKET — Price is already inside the zone. A limit would never fill cleanly.
-        2. MARKET — Price within 3 pips of zone AND strong M1 confirmation
+        2. MARKET — High-score momentum continuation:
+                    score >= 80, momentum_only, momentum score >= +3, and <= 5 pips away.
+        3. MARKET — Good at-market economics:
+                    R:R >= 2.5 and <= 3 pips from zone midpoint.
+        4. MARKET — Price within 3 pips AND strong M1 confirmation
                     (choch_bos, engulfing, pin_bar, rejection_wick).
-                    Zone is being actively tested — don't wait, momentum is here.
-        3. MARKET — Liquidity sweep confirmed at zone within 5 pips.
-                    Sweep+rejection is the top-tier SMC trigger; price won't
-                    come back to midpoint — take market now.
-        4. PENDING — Price more than 3 pips away. Wait for retrace to zone.
-        5. PENDING — Price close but confirmation is weak (momentum_only / none).
-                    Don't chase — let price come to the zone cleanly.
+        5. MARKET — Price within 2 pips AND moderate confirmation (momentum_only).
+        6. MARKET — Liquidity sweep confirmed at zone within 5 pips.
+        7. MARKET — Sweep + any confirmation within 7 pips.
+        8. PENDING — Otherwise, wait for retrace to zone.
         """
-        zone_top    = zone.get("top", entry_price)
+        zone_top = zone.get("top", entry_price)
         zone_bottom = zone.get("bottom", entry_price)
         distance_pips = abs(current_price - entry_price) / pip_size
 
@@ -513,23 +596,57 @@ class EntryEngine:
         if zone_bottom <= current_price <= zone_top:
             logger.debug(
                 "[entry_mode] MARKET — price {:.5f} inside zone [{:.5f}-{:.5f}]",
-                current_price, zone_bottom, zone_top,
+                current_price,
+                zone_bottom,
+                zone_top,
             )
             return "MARKET"
 
-        strong_confirmation = micro_confirmation in (
-            "choch_bos", "engulfing", "pin_bar", "rejection_wick"
-        )
+        moderate_confirmation = micro_confirmation == "momentum_only"
+        strong_momentum = moderate_confirmation and momentum_score >= 3
+        effective_rr = risk_reward if math.isfinite(risk_reward) else 0.0
 
-        # Rule 2: close to zone + strong confirmation
+        # Rule 2: high-score momentum continuation near the zone
+        if score >= 80 and strong_momentum and distance_pips <= 5.0:
+            logger.debug(
+                "[entry_mode] MARKET — high-score momentum continuation "
+                "(score={}, momentum_score={}, distance={:.1f}p)",
+                score,
+                momentum_score,
+                distance_pips,
+            )
+            return "MARKET"
+
+        # Rule 3: strong R:R even at market
+        if effective_rr >= 2.5 and distance_pips <= 3.0:
+            logger.debug(
+                "[entry_mode] MARKET — at-market R:R {:.2f} with distance {:.1f}p",
+                effective_rr,
+                distance_pips,
+            )
+            return "MARKET"
+
+        strong_confirmation = micro_confirmation in ("choch_bos", "engulfing", "pin_bar", "rejection_wick")
+
+        # Rule 4: close to zone + strong confirmation
         if distance_pips <= 3.0 and strong_confirmation:
             logger.debug(
                 "[entry_mode] MARKET — {:.1f} pips from zone, confirmation={}",
-                distance_pips, micro_confirmation,
+                distance_pips,
+                micro_confirmation,
             )
             return "MARKET"
 
-        # Rule 3: sweep confirmed at zone
+        # Rule 5: close to zone + moderate confirmation
+        if distance_pips <= 2.0 and moderate_confirmation:
+            logger.debug(
+                "[entry_mode] MARKET — {:.1f} pips from zone, moderate confirmation={}",
+                distance_pips,
+                micro_confirmation,
+            )
+            return "MARKET"
+
+        # Rule 6: sweep confirmed at zone
         if has_sweep and distance_pips <= 5.0:
             logger.debug(
                 "[entry_mode] MARKET — sweep confirmed at zone, {:.1f} pips from midpoint",
@@ -537,10 +654,24 @@ class EntryEngine:
             )
             return "MARKET"
 
-        # Rules 4 & 5: place pending order, wait for retrace
+        # Rule 7: sweep + any confirmation can still justify market execution
+        if has_sweep and micro_confirmation != "no_confirmation" and distance_pips <= 7.0:
+            logger.debug(
+                "[entry_mode] MARKET — sweep+confirmation, {:.1f} pips from midpoint",
+                distance_pips,
+            )
+            return "MARKET"
+
+        # Rule 8: place pending order, wait for retrace
         logger.debug(
-            "[entry_mode] PENDING — {:.1f} pips from zone, confirmation={}, sweep={}",
-            distance_pips, micro_confirmation, has_sweep,
+            "[entry_mode] PENDING — {:.1f} pips from zone, confirmation={}, "
+            "sweep={}, score={}, rr={:.2f}, momentum_score={:+d}",
+            distance_pips,
+            micro_confirmation,
+            has_sweep,
+            score,
+            effective_rr,
+            momentum_score,
         )
         return "PENDING"
 
@@ -549,10 +680,15 @@ class EntryEngine:
     # ------------------------------------------------------------------
 
     def find_entry_zone(
-        self, pair: str, direction: str, m5_df: pd.DataFrame, pip_size: float,
+        self,
+        pair: str,
+        direction: str,
+        m5_df: pd.DataFrame,
+        pip_size: float,
         profile: Optional["InstrumentProfile"] = None,
     ) -> dict:
         from brain.instrument_profile import get_profile as _gp
+
         profile = profile or _gp(pair)
         current_price = m5_df["close"].iloc[-1]
         fvg_det = FVGDetector(
@@ -617,7 +753,11 @@ class EntryEngine:
     # ------------------------------------------------------------------
 
     def confirm_m1_entry(
-        self, direction: str, m1_df: pd.DataFrame, entry_zone: dict, pip_size: float,
+        self,
+        direction: str,
+        m1_df: pd.DataFrame,
+        entry_zone: dict,
+        pip_size: float,
         profile: Optional["InstrumentProfile"] = None,
     ) -> tuple[bool, str]:
         if len(m1_df) < 3:
@@ -645,14 +785,17 @@ class EntryEngine:
         )
 
         pattern_name, pattern_desc = self.pattern_detector.get_best_pattern(
-            drop_forming_bar(m1_df), direction, zone_top, zone_bottom, pip_size,
+            drop_forming_bar(m1_df),
+            direction,
+            zone_top,
+            zone_bottom,
+            pip_size,
         )
         logger.debug(f"M1 pattern result — name='{pattern_name}' desc='{pattern_desc}'")
         if pattern_name:
             return True, pattern_desc
 
-        choch = self._detect_m1_choch(m1_df, direction, profile=profile,
-                                      entry_zone=entry_zone, pip_size=pip_size)
+        choch = self._detect_m1_choch(m1_df, direction, profile=profile, entry_zone=entry_zone, pip_size=pip_size)
         logger.debug(f"M1 CHoCH result — {choch}")
         if choch:
             return True, f"M1 Change of Character — {direction.lower()} shift"
@@ -675,7 +818,10 @@ class EntryEngine:
         m5_df: Optional[pd.DataFrame] = None,
     ) -> float:
         structure_sl = self._calculate_structure_stop_loss(
-            direction, entry_zone, pip_size, buffer_pips,
+            direction,
+            entry_zone,
+            pip_size,
+            buffer_pips,
         )
         if self._volatility_stop_mode != "on":
             return structure_sl
@@ -751,8 +897,7 @@ class EntryEngine:
         max_allowed_distance = structure_distance * self._atr_stop_max_risk_mult
         if final_distance > max_allowed_distance:
             logger.debug(
-                "[ATR SL] {} ATR distance {:.6f} exceeds max {:.6f} (x{:.2f}) "
-                "— using structure SL {:.6f}",
+                "[ATR SL] {} ATR distance {:.6f} exceeds max {:.6f} (x{:.2f}) — using structure SL {:.6f}",
                 pair or "unknown",
                 final_distance,
                 max_allowed_distance,
@@ -764,11 +909,7 @@ class EntryEngine:
         if not math.isfinite(final_distance) or final_distance <= 0:
             return structure_sl
 
-        atr_sl = (
-            entry_price - final_distance
-            if direction.upper() in ("LONG", "BUY")
-            else entry_price + final_distance
-        )
+        atr_sl = entry_price - final_distance if direction.upper() in ("LONG", "BUY") else entry_price + final_distance
         if not math.isfinite(atr_sl):
             return structure_sl
         if direction.upper() in ("LONG", "BUY") and atr_sl >= entry_price:
@@ -779,12 +920,9 @@ class EntryEngine:
         if abs(atr_sl - structure_sl) > 1e-12:
             risk_delta_pips = 0.0
             if pip_size > 0:
-                risk_delta_pips = (
-                    abs(entry_price - atr_sl) - abs(entry_price - structure_sl)
-                ) / pip_size
+                risk_delta_pips = (abs(entry_price - atr_sl) - abs(entry_price - structure_sl)) / pip_size
             logger.info(
-                "[{}] ATR stop override — structure {:.5f} -> ATR {:.5f} "
-                "(risk delta {:+.1f} pips)",
+                "[{}] ATR stop override — structure {:.5f} -> ATR {:.5f} (risk delta {:+.1f} pips)",
                 pair or "unknown",
                 structure_sl,
                 atr_sl,
@@ -819,13 +957,15 @@ class EntryEngine:
             structure = StructureEngine(pip_size=pip_size)
             h1_analysis = structure.analyze(h1_df)
             tp2_candidate = h1_analysis.swing_high
-            if (tp2_candidate
-                    and tp2_candidate > tp1                          # must be beyond TP1
-                    and tp2_candidate > entry_price                  # SANITY: must be above entry on LONG
-                    and (tp2_candidate - entry_price) / risk >= 2.5): # must give at least 2.5R
+            if (
+                tp2_candidate
+                and tp2_candidate > tp1  # must be beyond TP1
+                and tp2_candidate > entry_price  # SANITY: must be above entry on LONG
+                and (tp2_candidate - entry_price) / risk >= 2.5
+            ):  # must give at least 2.5R
                 tp2 = tp2_candidate
             else:
-                tp2 = entry_price + risk * 3.0   # guaranteed 3R fallback
+                tp2 = entry_price + risk * 3.0  # guaranteed 3R fallback
 
             # Final sanity: if tp1 or tp2 ended up on wrong side, force correct direction
             if tp1 <= entry_price:
@@ -844,13 +984,15 @@ class EntryEngine:
             structure = StructureEngine(pip_size=pip_size)
             h1_analysis = structure.analyze(h1_df)
             tp2_candidate = h1_analysis.swing_low
-            if (tp2_candidate
-                    and tp2_candidate < tp1                          # must be beyond TP1
-                    and tp2_candidate < entry_price                  # SANITY: must be below entry on SHORT
-                    and (entry_price - tp2_candidate) / risk >= 2.5): # must give at least 2.5R
+            if (
+                tp2_candidate
+                and tp2_candidate < tp1  # must be beyond TP1
+                and tp2_candidate < entry_price  # SANITY: must be below entry on SHORT
+                and (entry_price - tp2_candidate) / risk >= 2.5
+            ):  # must give at least 2.5R
                 tp2 = tp2_candidate
             else:
-                tp2 = entry_price - risk * 3.0   # guaranteed 3R fallback
+                tp2 = entry_price - risk * 3.0  # guaranteed 3R fallback
 
             # Final sanity: if tp1 or tp2 ended up on wrong side, force correct direction
             if tp1 >= entry_price:
@@ -878,6 +1020,7 @@ class EntryEngine:
         """
         # Lazy import — must stay inside the function, not at module level
         from platform_context import build_context_for_symbol  # noqa: PLC0415
+
         ctx = build_context_for_symbol(pair)
         if ctx.uses_stake:
             # Deriv: sizing is handled downstream by RiskEngine.calculate_stake()
@@ -899,7 +1042,11 @@ class EntryEngine:
     # ------------------------------------------------------------------
 
     def _check_sweep_near_zone(
-        self, df: pd.DataFrame, fvg: Optional[FairValueGap], ob: Optional[OrderBlock], pip_size: float,
+        self,
+        df: pd.DataFrame,
+        fvg: Optional[FairValueGap],
+        ob: Optional[OrderBlock],
+        pip_size: float,
     ) -> bool:
         if len(df) < 3:
             return False
@@ -912,10 +1059,14 @@ class EntryEngine:
                 return True
         return False
 
-    def _detect_m1_choch(self, df: pd.DataFrame, direction: str,
-                          profile: Optional["InstrumentProfile"] = None,
-                          entry_zone: Optional[dict] = None,
-                          pip_size: float = 0.0001) -> bool:
+    def _detect_m1_choch(
+        self,
+        df: pd.DataFrame,
+        direction: str,
+        profile: Optional["InstrumentProfile"] = None,
+        entry_zone: Optional[dict] = None,
+        pip_size: float = 0.0001,
+    ) -> bool:
         if len(df) < 10:
             return False
         # M1 CHoCH uses a FIXED small lookback regardless of instrument category.
@@ -972,10 +1123,14 @@ class EntryEngine:
         # 3 consecutive candles closing in the trade direction = momentum shift.
         return self._detect_momentum_confirmation(df, direction, entry_zone, pip_size, profile=profile)
 
-    def _detect_momentum_confirmation(self, df: pd.DataFrame, direction: str,
-                                       entry_zone: Optional[dict] = None,
-                                       pip_size: float = 0.0001,
-                                       profile: Optional["InstrumentProfile"] = None) -> bool:
+    def _detect_momentum_confirmation(
+        self,
+        df: pd.DataFrame,
+        direction: str,
+        entry_zone: Optional[dict] = None,
+        pip_size: float = 0.0001,
+        profile: Optional["InstrumentProfile"] = None,
+    ) -> bool:
         """
         Fallback micro-confirmation using momentum candles.
         Requires price to be near the entry zone (zone proximity gate)
@@ -1006,7 +1161,7 @@ class EntryEngine:
 
         recent = df.iloc[-5:]
         closes = recent["close"].values
-        opens  = recent["open"].values
+        opens = recent["open"].values
 
         # ── Volume filter ────────────────────────────────────────────────
         # At least one of the momentum candles should have tick_volume above
@@ -1019,10 +1174,7 @@ class EntryEngine:
                 momentum_mask = [c > o for c, o in zip(closes, opens)]
             else:
                 momentum_mask = [c < o for c, o in zip(closes, opens)]
-            has_vol_candle = any(
-                m and float(v) > avg_vol
-                for m, v in zip(momentum_mask, recent_vols)
-            )
+            has_vol_candle = any(m and float(v) > avg_vol for m, v in zip(momentum_mask, recent_vols))
             volume_ok = has_vol_candle
 
         if not volume_ok:
