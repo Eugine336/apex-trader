@@ -211,7 +211,9 @@ class ApexMultiTFTradingEnv:
             path = d / f"{self.instrument}_{tf}.csv"
             if not path.exists():
                 raise FileNotFoundError(f"Missing {path}")
-            df = pd.read_csv(str(path), parse_dates=["time"])
+            df = pd.read_csv(
+                str(path), parse_dates=["time"], date_format="%Y-%m-%d %H:%M:%S%z"
+            )
             df.columns = df.columns.str.lower()
             if "volume" not in df.columns:
                 df["volume"] = 1.0
