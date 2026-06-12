@@ -37,7 +37,30 @@ except ImportError:
     websockets = None  # type: ignore[assignment]
     _WS_AVAILABLE = False
 
-_DERIV_WS_URL = "wss://ws.derivws.com/websockets/v3?app_id={app_id}"
+try:
+    import aiohttp  # type: ignore[import-untyped]
+
+    _AIOHTTP_AVAILABLE = True
+except ImportError:
+    aiohttp = None  # type: ignore[assignment]
+    _AIOHTTP_AVAILABLE = False
+
+# ── New Deriv API (June 2026 migration) ──────────────────────────────────────
+# Authentication moved from the legacy `{"authorize": token}` WebSocket message
+# to an OAuth2 access-token + REST OTP flow:
+#   1. GET  /trading/v1/options/accounts        (Bearer access_token) -> accountId
+#   2. POST /trading/v1/options/accounts/{id}/otp                     -> pre-authed WS URL
+#   3. open WebSocket using that OTP URL (no authorize message needed)
+# OTPs are single-use, so a fresh one must be fetched before each (re)connect.
+_DERIV_REST_BASE = "https://api.derivws.com"
+_DERIV_ACCOUNTS_URL = f"{_DERIV_REST_BASE}/trading/v1/options/accounts"
+_DERIV_OTP_URL = f"{_DERIV_REST_BASE}/trading/v1/options/accounts/{{account_id}}/otp"
+_DERIV_HEALTH_URL = f"{_DERIV_REST_BASE}/v1/health"
+
+_REST_TIMEOUT = 20
+# Refresh/expiry warning window: warn when the access token is within this many
+# seconds of expiry, since a reconnect after expiry cannot self-recover.
+_TOKEN_EXPIRY_WARN_SECONDS = 300
 
 _GRANULARITY_MAP: dict[str, int] = {
     "M1": 60,
@@ -60,12 +83,29 @@ class DerivConnector(BaseConnector):
 
     def __init__(
         self,
-        api_token: str = "",
+        client_id: str = "",
+        access_token: str = "",
+        account_type: str = "demo",
+        token_expires_in: float = 3600.0,
         app_id: str = "",
         max_tick_age_seconds: float = 120.0,
     ):
-        self._api_token = api_token
+        # New API: OAuth2 access token + REST OTP flow.
+        # client_id     — OAuth2 client id (from the Deriv Developer Dashboard)
+        # access_token  — short-lived OAuth2 access token (ory_at_...)
+        # account_type  — "demo" or "real" (selects which account to use)
+        # app_id        — value for the optional Deriv-App-ID REST header
+        self._client_id = client_id
+        self._access_token = access_token
+        self._account_type = (account_type or "demo").strip().lower()
         self._app_id = app_id
+        # Track token expiry so we can warn before a reconnect would fail.
+        try:
+            self._token_expires_at: float = _time.time() + float(token_expires_in)
+        except (TypeError, ValueError):
+            self._token_expires_at = _time.time() + 3600.0
+        self._token_expiry_warned = False
+
         self._max_tick_age_seconds = float(
             os.getenv("MAX_TICK_AGE_SECONDS", str(max_tick_age_seconds))
         )
@@ -103,21 +143,43 @@ class DerivConnector(BaseConnector):
         if not _WS_AVAILABLE:
             logger.error("websockets package not installed")
             return False
-        if not self._app_id:
-            logger.error("Deriv app_id not provided")
+        if not _AIOHTTP_AVAILABLE:
+            logger.error("aiohttp package not installed — required for Deriv OAuth2/OTP flow")
+            return False
+        if not self._access_token:
+            logger.error("Deriv access_token not provided (set DERIV_ACCESS_TOKEN)")
             return False
         try:
             future = asyncio.run_coroutine_threadsafe(self._connect_async(), self._loop)
-            return future.result(timeout=30)
+            return future.result(timeout=60)
         except Exception as exc:
             logger.error("Deriv connect error: {}", exc)
             return False
 
     async def _connect_async(self) -> bool:
-        url = _DERIV_WS_URL.format(app_id=self._app_id)
+        # ── New API flow ────────────────────────────────────────────────────
+        # 1. Verify the access token has not expired (a reconnect cannot
+        #    self-recover without a fresh token).
+        # 2. Resolve our accountId via REST (cached after the first success).
+        # 3. Fetch a fresh, single-use OTP WebSocket URL via REST.
+        # 4. Open the WebSocket — it is pre-authenticated, so no authorize
+        #    message is sent.
+        if not self._check_token_valid():
+            return False
+
+        if not self._account_id:
+            account_id = await self._get_account_id()
+            if not account_id:
+                return False
+            self._account_id = account_id
+
+        ws_url = await self._get_otp_ws_url(self._account_id)
+        if not ws_url:
+            return False
+
         try:
             self._ws = await websockets.connect(
-                url,
+                ws_url,
                 ping_interval=_PING_INTERVAL,
                 ping_timeout=_PING_TIMEOUT,
                 close_timeout=10,
@@ -127,25 +189,214 @@ class DerivConnector(BaseConnector):
             logger.error("Deriv WS connect failed: {}", exc)
             return False
 
-        if self._api_token:
-            resp = await self._send({"authorize": self._api_token})
-            if resp.get("error"):
-                logger.error("Deriv auth failed: {}", resp["error"].get("message"))
-                await self._ws.close()
-                return False
-            auth = resp.get("authorize", {})
-            self._account_id = auth.get("loginid", "")
-            self._authorized = True
-            logger.info(
-                "Deriv connected — account {} | balance {} {}",
-                self._account_id,
-                auth.get("balance", 0),
-                auth.get("currency", "USD"),
-            )
+        # The OTP-authenticated socket needs no authorize message.
+        self._authorized = True
         self._connected = True
+        logger.info(
+            "Deriv connected — account {} ({}), OTP-authenticated WebSocket",
+            self._account_id,
+            self._account_type,
+        )
 
         await self._discover_multipliers()
         return True
+
+    # ── REST auth helpers (new API) ──────────────────────────────────────
+
+    def _check_token_valid(self) -> bool:
+        """Return True if the access token is still usable.
+
+        Logs a WARNING when the token is approaching expiry and a CRITICAL
+        error once it has expired — at that point the bot cannot recover the
+        WebSocket without a freshly issued access token.
+        """
+        if not self._access_token:
+            logger.critical("Deriv access_token missing — cannot authenticate")
+            return False
+        remaining = self._token_expires_at - _time.time()
+        if remaining <= 0:
+            logger.critical(
+                "Deriv access_token has EXPIRED ({}s ago) — reconnect cannot "
+                "succeed until DERIV_ACCESS_TOKEN is refreshed",
+                int(abs(remaining)),
+            )
+            return False
+        if remaining <= _TOKEN_EXPIRY_WARN_SECONDS:
+            if not self._token_expiry_warned:
+                logger.warning(
+                    "Deriv access_token expires in {}s — refresh DERIV_ACCESS_TOKEN soon",
+                    int(remaining),
+                )
+                self._token_expiry_warned = True
+        else:
+            self._token_expiry_warned = False
+        return True
+
+    def _rest_headers(self) -> dict[str, str]:
+        headers = {
+            "Authorization": f"Bearer {self._access_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json",
+        }
+        if self._app_id:
+            headers["Deriv-App-ID"] = self._app_id
+        return headers
+
+    async def _rest_request(
+        self, method: str, url: str, *, auth: bool = True
+    ) -> Optional[dict]:
+        """Perform a REST call against the Deriv API.
+
+        Returns the parsed JSON dict on success, or None on any failure.
+        A 401 is logged as CRITICAL because it means the access token is no
+        longer valid and the bot cannot self-recover.
+        """
+        headers = self._rest_headers() if auth else {"Accept": "application/json"}
+        timeout = aiohttp.ClientTimeout(total=_REST_TIMEOUT)
+        try:
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.request(method, url, headers=headers) as resp:
+                    status = resp.status
+                    try:
+                        body = await resp.json(content_type=None)
+                    except Exception:
+                        body = {"raw": await resp.text()}
+                    if status == 401:
+                        logger.critical(
+                            "Deriv REST {} {} → 401 Unauthorized. Access token is "
+                            "invalid/expired — refresh DERIV_ACCESS_TOKEN.",
+                            method, url,
+                        )
+                        return None
+                    if status == 429:
+                        logger.warning(
+                            "Deriv REST {} {} → 429 rate limited (limit ~60 req/min)",
+                            method, url,
+                        )
+                        return None
+                    if status >= 400:
+                        logger.error(
+                            "Deriv REST {} {} → HTTP {}: {}",
+                            method, url, status, body,
+                        )
+                        return None
+                    return body if isinstance(body, dict) else {"data": body}
+        except Exception as exc:
+            logger.error("Deriv REST {} {} failed: {}", method, url, exc)
+            return None
+
+    async def _check_health(self) -> bool:
+        """Best-effort health probe. Returns True unless the API explicitly
+        reports unhealthy; never blocks connection on a missing/ambiguous
+        response."""
+        body = await self._rest_request("GET", _DERIV_HEALTH_URL, auth=False)
+        if body is None:
+            return True  # probe failed — don't block, the connect will surface real errors
+        status = str(body.get("status", body.get("health", ""))).lower()
+        if status and status not in ("ok", "up", "healthy", "pass", "available"):
+            logger.error("Deriv health check reports unhealthy: {}", body)
+            return False
+        return True
+
+    @staticmethod
+    def _extract_accounts(body: dict) -> list[dict]:
+        """Normalise the various shapes the accounts payload may take."""
+        if not isinstance(body, dict):
+            return []
+        for key in ("accounts", "data", "items", "results"):
+            val = body.get(key)
+            if isinstance(val, list):
+                return [a for a in val if isinstance(a, dict)]
+        # Single-account payload returned directly.
+        if any(k in body for k in ("accountId", "account_id", "loginid")):
+            return [body]
+        return []
+
+    async def _get_account_id(self) -> str:
+        """Resolve the accountId for the configured account type via REST."""
+        body = await self._rest_request("GET", _DERIV_ACCOUNTS_URL)
+        if body is None:
+            logger.error("Deriv accounts lookup failed — cannot resolve accountId")
+            return ""
+        accounts = self._extract_accounts(body)
+        if not accounts:
+            logger.error("Deriv accounts response contained no accounts: {}", body)
+            return ""
+
+        def _acct_id(acct: dict) -> str:
+            return str(
+                acct.get("accountId")
+                or acct.get("account_id")
+                or acct.get("loginid")
+                or ""
+            ).strip()
+
+        def _acct_type(acct: dict) -> str:
+            raw = (
+                acct.get("type")
+                or acct.get("account_type")
+                or acct.get("category")
+                or ""
+            )
+            is_virtual = acct.get("is_virtual")
+            if is_virtual in (1, True):
+                return "demo"
+            if is_virtual in (0, False) and not raw:
+                return "real"
+            return str(raw).strip().lower()
+
+        # Prefer an account whose type matches the configured account_type.
+        for acct in accounts:
+            atype = _acct_type(acct)
+            if self._account_type == "demo" and atype in ("demo", "virtual"):
+                aid = _acct_id(acct)
+                if aid:
+                    return aid
+            if self._account_type == "real" and atype in ("real", "live"):
+                aid = _acct_id(acct)
+                if aid:
+                    return aid
+
+        # Fall back to the first account with a usable id.
+        for acct in accounts:
+            aid = _acct_id(acct)
+            if aid:
+                logger.warning(
+                    "Deriv: no account matched type '{}', using first available ({})",
+                    self._account_type, aid,
+                )
+                return aid
+
+        logger.error("Deriv accounts response had no usable accountId: {}", accounts)
+        return ""
+
+    async def _get_otp_ws_url(self, account_id: str) -> str:
+        """Fetch a fresh, single-use OTP WebSocket URL for *account_id*."""
+        url = _DERIV_OTP_URL.format(account_id=account_id)
+        body = await self._rest_request("POST", url)
+        if body is None:
+            logger.error("Deriv OTP request failed for account {}", account_id)
+            return ""
+        # The OTP endpoint returns a ready-to-use, pre-authenticated WS URL.
+        ws_url = (
+            body.get("ws_url")
+            or body.get("url")
+            or body.get("websocket_url")
+            or body.get("websocketUrl")
+        )
+        if not ws_url:
+            data = body.get("data")
+            if isinstance(data, dict):
+                ws_url = (
+                    data.get("ws_url")
+                    or data.get("url")
+                    or data.get("websocket_url")
+                    or data.get("websocketUrl")
+                )
+        if not ws_url or not isinstance(ws_url, str):
+            logger.error("Deriv OTP response missing WebSocket URL: {}", body)
+            return ""
+        return ws_url
 
     @staticmethod
     async def _make_lock() -> asyncio.Lock:
@@ -222,12 +473,31 @@ class DerivConnector(BaseConnector):
     async def _reconnect(self) -> bool:
         self._reconnecting = True
         self._connected = False
+        self._authorized = False
+        # Close any stale socket so we don't leak connections (Deriv allows
+        # only 5 concurrent connections per user).
+        if self._ws is not None:
+            try:
+                await self._ws.close()
+            except Exception:
+                pass
+            self._ws = None
         try:
             for attempt in range(1, _MAX_RECONNECT_ATTEMPTS + 1):
                 logger.warning("Deriv reconnect attempt {}/{}", attempt, _MAX_RECONNECT_ATTEMPTS)
+                # _connect_async fetches a FRESH single-use OTP every call, so
+                # each reconnect attempt gets a new pre-authenticated WS URL.
                 ok = await self._connect_async()
                 if ok:
                     return True
+                # If the access token has expired, further attempts are futile
+                # until DERIV_ACCESS_TOKEN is refreshed — stop early.
+                if self._token_expires_at - _time.time() <= 0:
+                    logger.critical(
+                        "Deriv reconnect aborted — access token expired. "
+                        "Refresh DERIV_ACCESS_TOKEN to restore the connection."
+                    )
+                    return False
                 await asyncio.sleep(_RECONNECT_DELAY * attempt)
             logger.error("Deriv reconnect failed after {} attempts", _MAX_RECONNECT_ATTEMPTS)
             return False
