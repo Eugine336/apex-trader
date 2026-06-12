@@ -82,6 +82,13 @@ from decision.actions import Action, EntryAction, ManagementDecision
 from decision.engine import DecisionEngine
 from decision.governor import RiskGovernor
 from decision.journal import DecisionJournal
+from planning import (
+    Calibrator,
+    OutcomeLogger,
+    PlannerConfig,
+    TradePlanContext,
+    TradePlanner,
+)
 
 
 def _validate_stop_target_sidedness(
@@ -278,6 +285,18 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._decision_engine = DecisionEngine()
         self._risk_governor = RiskGovernor() if dcfg.governor_enabled else None
         self._decision_journal = DecisionJournal(dcfg.journal_dir) if dcfg.journal_enabled else None
+
+        # ── Trade Planner — coordinator between advisors and execution ───
+        pcfg = getattr(self.config, "planner", None) or PlannerConfig()
+        # Prefer a calibrated config persisted from a previous run.
+        persisted = PlannerConfig.load()
+        # Only adopt the persisted config when the feature is enabled in code config.
+        planner_cfg = persisted if pcfg.enabled else pcfg
+        planner_cfg.enabled = pcfg.enabled
+        self._planner_enabled = planner_cfg.enabled
+        self._planner = TradePlanner(planner_cfg)
+        self._outcome_logger = OutcomeLogger(planner_cfg.journal_path) if planner_cfg.enabled else None
+        self._calibrator = Calibrator(planner_cfg) if planner_cfg.enabled else None
 
         # ── Data backup ──────────────────────────────────────────────────
         self._last_data_backup_ts: float = 0.0
@@ -1153,6 +1172,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             pass
 
         # ── Decision Engine entry path ────────────────────────────────────
+        plan_to_store: tuple | None = None
         if self._decision_enabled:
             try:
                 entry_ctx = self._build_entry_context(
@@ -1186,6 +1206,41 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 conviction_mult = entry_decision.size_multiplier
                 if entry_decision.is_market:
                     signal.entry_mode = "MARKET"
+
+                # ── Trade Planner coordinator ────────────────────────────
+                # The planner reads every advisor (scanner, DE, RL, adaptive,
+                # portfolio, timing) and produces a complete plan. It refines
+                # sizing/entry-mode and can SKIP or WAIT with a logged reason.
+                if self._planner_enabled:
+                    try:
+                        plan_ctx = self._build_plan_context(
+                            result, signal, entry_ctx, sa, spread, _exec_risk, now,
+                        )
+                        plan = self._planner.plan_trade(plan_ctx)
+                        if plan.action == "SKIP":
+                            self._log_rejection(
+                                pair, direction, result.score,
+                                f"Planner SKIP: {plan.reasoning}",
+                            )
+                            self._persist_shadow_contract(signal, rejecting_gate="planner:SKIP")
+                            return False
+                        if plan.action == "WAIT":
+                            logger.info(
+                                "[Planner] WAIT {} {} — {} (re-evaluated next scan)",
+                                direction, pair, plan.wait_reason,
+                            )
+                            self._log_rejection(
+                                pair, direction, result.score,
+                                f"Planner WAIT: {plan.reasoning}",
+                            )
+                            return False
+                        # ENTER — adopt the plan's sizing and entry mode.
+                        base_pct = max(_exec_risk * 100.0, 1e-6)
+                        conviction_mult = max(0.3, min(2.0, plan.risk_pct / base_pct))
+                        signal.entry_mode = "MARKET" if plan.is_market else signal.entry_mode
+                        plan_to_store = (plan, plan_ctx)
+                    except Exception as exc:
+                        logger.warning("[Planner] error — keeping decision-engine sizing: {}", exc)
             except Exception as exc:
                 logger.warning("[DecisionEngine] entry error — falling back to legacy gates: {}", exc)
                 conviction_mult = 1.0
@@ -1640,6 +1695,17 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         )
         tm_trade = self.trade_manager.open_trade(tm_signal)
         managed.tm_trade_id = tm_trade.trade_id
+
+        # ── Link this position to its trade plan for outcome learning ────
+        if plan_to_store is not None:
+            try:
+                _plan, _plan_ctx = plan_to_store
+                managed.plan_id = _plan.plan_id
+                managed.plan_sl_pips = float(_plan.sl_pips or 0.0)
+                if self._outcome_logger is not None:
+                    self._outcome_logger.log_plan(_plan, _plan_ctx)
+            except Exception as exc:
+                logger.debug("[Planner] plan link/log failed for {}: {}", pair, exc)
 
         self.managed_positions[order.order_id] = managed
         self._save_position_checked(managed)
@@ -2605,6 +2671,126 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         return ctx
 
+    def _build_plan_context(
+        self,
+        result,
+        signal,
+        entry_ctx: EntryContext,
+        sa: SituationAssessment,
+        spread: float,
+        exec_risk: float,
+        now,
+    ) -> TradePlanContext:
+        """Gather every advisor's analysis into one TradePlanContext.
+
+        Reuses the rich EntryContext + SituationAssessment that the decision
+        engine already produced (no duplicate analysis), and folds in the RL
+        signal carried on the scan result plus portfolio/timing state.
+        """
+        pip_size = get_pip_size(result.pair)
+        # ATR in pips from the entry engine's risk distance when available.
+        atr_pips = 0.0
+        try:
+            atr_pips = float(getattr(signal, "risk_pips", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            atr_pips = 0.0
+
+        try:
+            tick = self.platforms.get_price(result.pair)
+            current_price = tick.ask if entry_ctx.is_long else tick.bid
+        except Exception:
+            current_price = signal.entry_price
+
+        # Daily P&L in R from the risk engine's running tally (best-effort).
+        daily_pnl_r = 0.0
+        try:
+            daily_pnl_r = float(getattr(self.risk_engine, "daily_pnl_r", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            daily_pnl_r = 0.0
+
+        # Correlated exposure: fraction of open trades sharing a currency leg.
+        correlated = 0.0
+        try:
+            open_syms = [p.symbol for p in self.managed_positions.values()]
+            if open_syms:
+                legs = {result.pair[:3], result.pair[3:6]}
+                shared = sum(
+                    1 for s in open_syms
+                    if {s[:3], s[3:6]} & legs
+                )
+                correlated = min(1.0, shared / max(1, len(open_syms)))
+        except Exception:
+            correlated = 0.0
+
+        dd_pct = 0.0
+        try:
+            dd_pct = abs(float(getattr(self.drawdown, "current_drawdown_pct", 0.0) or 0.0))
+        except (TypeError, ValueError):
+            dd_pct = 0.0
+
+        session_wr = 0.5
+        try:
+            prof = self.ml.session_learner.get_session_aggression(entry_ctx.session_name)
+            session_wr = {"AGGRESSIVE": 0.6, "NORMAL": 0.5, "CAUTIOUS": 0.42, "AVOID": 0.3}.get(prof, 0.5)
+        except Exception:
+            session_wr = 0.5
+
+        pair_wr = 0.5
+        try:
+            profile = self.ml.pair_learner._profiles.get(result.pair)
+            if profile is not None and profile.total_trades > 0:
+                pair_wr = float(profile.win_rate)
+        except Exception:
+            pair_wr = 0.5
+
+        zone_quality = max(0.0, min(1.0, sa.structure_integrity))
+
+        return TradePlanContext(
+            symbol=result.pair,
+            pip_size=pip_size,
+            spread_pips=spread,
+            atr_pips=atr_pips,
+            current_price=current_price,
+            direction=result.direction,
+            scanner_score=float(result.score),
+            zone_type=getattr(signal, "entry_type", ""),
+            zone_quality=zone_quality,
+            zone_entry_price=signal.entry_price,
+            de_confidence=self._decision_engine.compute_conviction(sa),
+            de_tf_alignment=sa.tf_alignment,
+            de_structure_score=sa.structure_integrity,
+            de_momentum_score=sa.momentum,
+            rl_action=int(getattr(result, "rl_action", 0) or 0),
+            rl_confidence=float(getattr(result, "rl_confidence", 0.0) or 0.0),
+            rl_expected_r=float(getattr(result, "rl_expected_r", 0.0) or 0.0),
+            rl_stage=int(getattr(result, "rl_stage", 1) or 1),
+            pair_multiplier=entry_ctx.pair_multiplier,
+            ev_estimate=entry_ctx.ev_estimate,
+            pair_win_rate=pair_wr,
+            session_win_rate=session_wr,
+            proposed_sl_price=signal.stop_loss,
+            proposed_sl_pips=float(getattr(signal, "risk_pips", 0.0) or 0.0),
+            proposed_tp1_price=signal.tp1,
+            proposed_tp2_price=signal.tp2,
+            risk_reward_1=signal.risk_reward_1,
+            risk_reward_2=signal.risk_reward_2,
+            structure_sl_available=getattr(signal, "entry_type", "") not in ("", None),
+            micro_confirmation=getattr(signal, "micro_confirmation", ""),
+            brain_entry_mode=getattr(signal, "entry_mode", "PENDING"),
+            open_positions=len(self.managed_positions),
+            correlated_exposure=correlated,
+            daily_pnl_r=daily_pnl_r,
+            max_positions=self.config.risk.max_open_trades,
+            session=entry_ctx.session_name,
+            day_of_week=now.weekday(),
+            minutes_to_news=entry_ctx.minutes_to_high_impact_news,
+            is_news_window=entry_ctx.minutes_to_high_impact_news < 15,
+            account_balance=float(entry_ctx.account_balance or 0.0),
+            base_risk_pct=exec_risk * 100.0,
+            current_drawdown_pct=dd_pct,
+            situation_label=sa.primary_label,
+        )
+
     def _build_trade_context(
         self,
         oid: str,
@@ -3153,6 +3339,26 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         except Exception as exc:
             logger.debug("[record_trade] scanner trade history append failed: {}", exc)
 
+        # ── Link the realised outcome back to its trade plan ─────────────
+        if self._outcome_logger is not None and getattr(pos, "plan_id", ""):
+            try:
+                plan_sl = float(getattr(pos, "plan_sl_pips", 0.0) or 0.0)
+                pnl_r = round(pnl_pips / plan_sl, 3) if plan_sl > 1e-8 else 0.0
+                self._outcome_logger.log_outcome(
+                    pos.plan_id,
+                    {
+                        "pnl_r": pnl_r,
+                        "pnl_pips": round(pnl_pips, 2),
+                        "pnl_dollars": pnl_dollars,
+                        "outcome": outcome,
+                        "duration_minutes": round(hold_seconds / 60.0, 1),
+                        "symbol": pos.symbol,
+                        "direction": pos.direction,
+                    },
+                )
+            except Exception as exc:
+                logger.debug("[Planner] outcome log failed for {}: {}", pos.symbol, exc)
+
         if exit_reason_discrepancy:
             logger.warning(
                 "⚠️ EXIT ATTRIBUTION DISCREPANCY — {} {}: broker={} but manager intended '{}'",
@@ -3362,7 +3568,27 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         if self.ml.should_retrain():
             self._run_ml_optimization()
 
+        self._maybe_calibrate_planner()
+
         self._maybe_backup_data()
+
+    def _maybe_calibrate_planner(self) -> None:
+        """Evolve PlannerConfig from realised plan→outcome data."""
+        if self._calibrator is None or self._outcome_logger is None:
+            return
+        try:
+            completed = self._outcome_logger.get_completed_trades(
+                lookback=self._planner.config.calibration_lookback_trades
+            )
+            if not self._calibrator.should_calibrate(len(completed)):
+                return
+            new_cfg = self._calibrator.calibrate(completed)
+            new_cfg.enabled = self._planner_enabled
+            self._planner.update_config(new_cfg)
+            new_cfg.save()
+            logger.info("🎯 Planner calibrated from {} completed plans", len(completed))
+        except Exception as exc:
+            logger.warning("Planner calibration failed: {}", exc)
 
     def _maybe_backup_data(self) -> None:
         """Push data/ to GitHub every ``interval_hours`` if backup is enabled."""
