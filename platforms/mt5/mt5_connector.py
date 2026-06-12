@@ -343,7 +343,7 @@ class MT5Connector(BaseConnector):
         order_type = mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL
         price = tick.ask if is_buy else tick.bid
 
-        order_comment = comment or "APEX"
+        order_comment = str(comment or "APEX")[:31]
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
