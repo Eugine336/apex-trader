@@ -9,6 +9,7 @@ Pip sizes come from the instrument registry — NEVER hardcoded.
 import pandas as pd
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 from loguru import logger
 
@@ -152,6 +153,24 @@ def _side_agnostic_rr(liq_map, atr_pips, pip_size: float) -> float | None:
     )
 
 
+def _resolve_rl_checkpoint(explicit: Optional[str] = None) -> str:
+    """
+    Resolve the RL checkpoint path the live system should load.
+
+    If *explicit* is given it is used as-is. Otherwise prefer the curriculum
+    /multi-timeframe output (``apex_rl_mtf_best.pt``) when present and fall
+    back to ``apex_rl_best.pt`` so either filename works without a manual
+    rename.
+    """
+    if explicit:
+        return explicit
+    ckpt_dir = Path("checkpoints")
+    mtf_best = ckpt_dir / "apex_rl_mtf_best.pt"
+    if mtf_best.exists():
+        return str(mtf_best)
+    return str(ckpt_dir / "apex_rl_best.pt")
+
+
 class PairScanner:
     """
     Always watching. Scans every enabled instrument, runs the full brain
@@ -183,7 +202,7 @@ class PairScanner:
         # ── RL subsystem ──────────────────────────────────────────────
         self._obs_builders: dict[str, ObservationBuilder] = {}
         self._mtf_builders: dict[str, MultiTFObservationBuilder] = {}
-        checkpoint = rl_checkpoint or "checkpoints/apex_rl_best.pt"
+        checkpoint = _resolve_rl_checkpoint(rl_checkpoint)
         try:
             self._rl = RLBridge(checkpoint=checkpoint)
             logger.info(f"[scanner] RL subsystem loaded — stage {self._rl.authority.stage_label}")
