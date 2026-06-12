@@ -26,6 +26,7 @@ from torch.distributions import Categorical
 
 from .mtf_environment import ApexMultiTFTradingEnv
 from .network import ApexRLAgent, ACTION_LABELS
+from .vec_env import make_vec_env, has_instrument_data
 from .contracts import (
     OBS_CONTRACT_VERSION,
     OBS_FEATURES,
@@ -46,7 +47,15 @@ class MTFPPOConfig:
 
     rollout_steps: int = 2048
     n_epochs: int = 10
-    batch_size: int = 256
+    batch_size: int = 512
+
+    # Parallel rollout collection. ``n_envs`` copies of the environment are
+    # stepped simultaneously (in separate processes when > 1) to keep the GPU
+    # fed. ``n_envs=1`` runs the in-process fallback and is equivalent to the
+    # original single-environment trainer. ``vec_start_method`` overrides the
+    # multiprocessing start method ("fork"/"spawn"/"forkserver"); None auto-picks.
+    n_envs: int = 8
+    vec_start_method: Optional[str] = None
 
     clip_eps: float = 0.2
     vf_coef: float = 0.5
@@ -137,6 +146,92 @@ class MTFRolloutBuffer:
         self.ptr = 0
 
 
+class MTFVecRolloutBuffer:
+    """Rollout storage for ``n_envs`` environments stepped in parallel.
+
+    Stores tensors of shape ``(steps, n_envs, ...)``. GAE is computed per
+    environment column (episode boundaries are independent across envs) using
+    the same convention as :class:`MTFRolloutBuffer`, and advantages are
+    normalised globally over the full ``steps * n_envs`` batch — so with
+    ``n_envs == 1`` the maths is identical to the single-env buffer.
+    """
+
+    def __init__(self, steps: int, n_envs: int, obs_shape: tuple, context_dim: int, device: torch.device):
+        self.steps = steps
+        self.n_envs = n_envs
+        self.device = device
+        self.obs = torch.zeros(steps, n_envs, *obs_shape)
+        self.contexts = torch.zeros(steps, n_envs, context_dim)
+        self.symbol_ids = torch.zeros(steps, n_envs, dtype=torch.long)
+        self.actions = torch.zeros(steps, n_envs, dtype=torch.long)
+        self.log_probs = torch.zeros(steps, n_envs)
+        self.rewards = torch.zeros(steps, n_envs)
+        self.values = torch.zeros(steps, n_envs)
+        self.dones = torch.zeros(steps, n_envs)
+        self.returns: Optional[torch.Tensor] = None
+        self.advantages: Optional[torch.Tensor] = None
+        self.ptr = 0
+
+    def add(self, obs, contexts, symbol_ids, actions, log_probs, rewards, values, dones):
+        """Append one parallel transition; every argument is shape ``(n_envs, ...)``."""
+        i = self.ptr
+        self.obs[i] = torch.as_tensor(np.asarray(obs), dtype=torch.float32)
+        self.contexts[i] = torch.as_tensor(np.asarray(contexts), dtype=torch.float32)
+        self.symbol_ids[i] = torch.as_tensor(np.asarray(symbol_ids), dtype=torch.long)
+        self.actions[i] = torch.as_tensor(np.asarray(actions), dtype=torch.long)
+        self.log_probs[i] = torch.as_tensor(np.asarray(log_probs), dtype=torch.float32)
+        self.rewards[i] = torch.as_tensor(np.asarray(rewards), dtype=torch.float32)
+        self.values[i] = torch.as_tensor(np.asarray(values), dtype=torch.float32)
+        self.dones[i] = torch.as_tensor(np.asarray(dones), dtype=torch.float32)
+        self.ptr += 1
+
+    def compute_returns(self, last_values, gamma: float, gae_lambda: float):
+        last_values = torch.as_tensor(np.asarray(last_values), dtype=torch.float32).reshape(self.n_envs)
+        advantages = torch.zeros(self.steps, self.n_envs)
+        last_gae = torch.zeros(self.n_envs)
+        for t in reversed(range(self.steps)):
+            if t == self.steps - 1:
+                next_val = last_values
+                next_done = torch.zeros(self.n_envs)
+            else:
+                next_val = self.values[t + 1]
+                next_done = self.dones[t + 1]
+            delta = (
+                self.rewards[t]
+                + gamma * next_val * (1 - next_done)
+                - self.values[t]
+            )
+            last_gae = delta + gamma * gae_lambda * (1 - next_done) * last_gae
+            advantages[t] = last_gae
+        self.returns = advantages + self.values
+        self.advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+    def get_batches(self, batch_size: int):
+        total = self.steps * self.n_envs
+        obs = self.obs.reshape(total, *self.obs.shape[2:])
+        contexts = self.contexts.reshape(total, self.contexts.shape[2])
+        symbol_ids = self.symbol_ids.reshape(total)
+        actions = self.actions.reshape(total)
+        log_probs = self.log_probs.reshape(total)
+        returns = self.returns.reshape(total)
+        advantages = self.advantages.reshape(total)
+        idx = torch.randperm(total)
+        for start in range(0, total, batch_size):
+            b = idx[start : start + batch_size]
+            yield (
+                obs[b].to(self.device),
+                contexts[b].to(self.device),
+                symbol_ids[b].to(self.device),
+                actions[b].to(self.device),
+                log_probs[b].to(self.device),
+                returns[b].to(self.device),
+                advantages[b].to(self.device),
+            )
+
+    def reset(self):
+        self.ptr = 0
+
+
 class MTFPPOTrainer:
     """
     Trains the full MTF agent via PPO.
@@ -170,89 +265,167 @@ class MTFPPOTrainer:
         print(f"[MTFTrainer] Agent parameters: {self.agent.count_parameters():,}")
 
         self.opt = optim.Adam(self.agent.parameters(), lr=cfg.lr, eps=1e-5)
-        self.buffer = MTFRolloutBuffer(
-            cfg.rollout_steps,
-            OBS_SHAPE,
-            N_CONTEXT_FEATURES,
-            self.device,
-        )
 
         Path(cfg.save_dir).mkdir(exist_ok=True)
         self.log: list[dict] = []
         self.global_step = 0
         self.best_reward = -np.inf
 
+    def _env_kwargs(self, instrument: str) -> dict:
+        """Picklable kwargs to construct one environment for *instrument*."""
+        return {
+            "data_dir": self.cfg.data_dir,
+            "instrument": instrument,
+            "commission_per_lot": self.cfg.commission_per_lot,
+            "slippage_factor": self.cfg.slippage_factor,
+            "reward_shaping": self.cfg.reward_shaping,
+        }
+
     def train(self):
-        obs, ctx, sym_id = self.env.reset()
+        """Train on the single configured instrument with ``n_envs`` parallel copies."""
+        kwargs_list = [self._env_kwargs(self.cfg.instrument) for _ in range(max(1, self.cfg.n_envs))]
+        vec = make_vec_env(kwargs_list, start_method=self.cfg.vec_start_method)
+        try:
+            self._run_loop(vec, self.cfg.total_steps, label=f" ({self.cfg.instrument})")
+            self.save("final")
+            self._flush_log()
+        finally:
+            vec.close()
+        print(f"[MTFTrainer] Training complete. Best reward: {self.best_reward:.4f}")
+
+    def train_curriculum(self, instruments: list[str]):
+        """Round-robin curriculum: one stage per instrument, shared agent.
+
+        A single worker pool of ``n_envs`` processes is created once and its
+        environments are rebuilt (``reload``) for each instrument, avoiding the
+        cost of respawning processes 49 times.
+        """
+        valid = [
+            inst for inst in instruments
+            if has_instrument_data(self.cfg.data_dir, inst)
+        ]
+        skipped = [inst for inst in instruments if inst not in valid]
+        for inst in skipped:
+            print(f"[MTFTrainer] Skipping {inst}: missing timeframe data")
+
+        if not valid:
+            raise RuntimeError("No instruments loaded for curriculum training")
+
+        print(f"[MTFTrainer] Curriculum: {valid}")
+        steps_per_instrument = max(1, self.cfg.total_steps // len(valid))
+
+        n_envs = max(1, self.cfg.n_envs)
+        vec = make_vec_env(
+            [self._env_kwargs(valid[0]) for _ in range(n_envs)],
+            start_method=self.cfg.vec_start_method,
+        )
+        try:
+            for i, inst in enumerate(valid):
+                print(f"\n[MTFTrainer] Training on {inst} ({steps_per_instrument:,} steps)")
+                if i > 0:
+                    vec.reload([self._env_kwargs(inst) for _ in range(n_envs)])
+                target = self.global_step + steps_per_instrument
+                self._run_loop(vec, target, label=f" ({inst})")
+
+            self.save("curriculum_final")
+            self._flush_log()
+        finally:
+            vec.close()
+        print(f"[MTFTrainer] Curriculum complete. Best reward: {self.best_reward:.4f}")
+
+    def _run_loop(self, vec_env, target_step: int, label: str = ""):
+        """Collect parallel rollouts from *vec_env* and run PPO until *target_step*.
+
+        ``self.global_step`` counts total environment transitions and advances by
+        ``vec_env.num_envs`` per parallel step, so the wall-clock time to reach a
+        given step budget shrinks ~``n_envs``×.
+        """
+        n = vec_env.num_envs
+        buffer = MTFVecRolloutBuffer(
+            self.cfg.rollout_steps, n, OBS_SHAPE, N_CONTEXT_FEATURES, self.device
+        )
+
+        obs, ctx, sym = vec_env.reset()  # arrays shape (n, ...)
         ep_rewards: list[float] = []
-        ep_r = 0.0
+        ep_r = np.zeros(n, dtype=np.float64)
+        last_info: list[dict] = [{} for _ in range(n)]
+
         t0 = time.time()
+        start_step = self.global_step
+        last_log = self.global_step
+        last_save = self.global_step
 
-        print(f"[MTFTrainer] Starting — target {self.cfg.total_steps:,} steps")
+        print(f"[MTFTrainer] Starting{label} — target {target_step:,} steps")
 
-        while self.global_step < self.cfg.total_steps:
-            self.buffer.reset()
+        while self.global_step < target_step:
+            buffer.reset()
             self.agent.eval()
 
             for _ in range(self.cfg.rollout_steps):
                 with torch.no_grad():
-                    obs_t = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
-                    ctx_t = torch.FloatTensor(ctx).unsqueeze(0).to(self.device)
-                    sym_t = torch.LongTensor([sym_id]).to(self.device)
-                    logits, value = self.agent.act(obs_t, ctx_t, sym_t)
+                    obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
+                    ctx_t = torch.as_tensor(ctx, dtype=torch.float32, device=self.device)
+                    sym_t = torch.as_tensor(sym, dtype=torch.long, device=self.device)
+                    logits, values = self.agent.act(obs_t, ctx_t, sym_t)
                     dist = Categorical(logits=logits)
-                    action = dist.sample()
-                    lp = dist.log_prob(action)
+                    actions = dist.sample()
+                    log_probs = dist.log_prob(actions)
 
-                (next_obs, next_ctx, next_sym), reward, done, info = self.env.step(int(action.item()))
-                ep_r += reward
+                actions_np = actions.cpu().numpy()
+                next_obs, next_ctx, next_sym, rewards, dones, infos = vec_env.step(actions_np)
 
-                self.buffer.add(
-                    obs, ctx, sym_id,
-                    int(action.item()), float(lp.item()),
-                    reward, float(value.item()), float(done),
+                buffer.add(
+                    obs, ctx, sym,
+                    actions_np, log_probs.cpu().numpy(),
+                    rewards, values.cpu().numpy(), dones,
                 )
 
-                obs, ctx, sym_id = next_obs, next_ctx, next_sym
-                self.global_step += 1
+                ep_r += rewards
+                for i in range(n):
+                    last_info[i] = infos[i]
+                    if dones[i]:
+                        ep_rewards.append(float(ep_r[i]))
+                        ep_r[i] = 0.0
 
-                if done:
-                    ep_rewards.append(ep_r)
-                    ep_r = 0.0
-                    obs, ctx, sym_id = self.env.reset()
+                obs, ctx, sym = next_obs, next_ctx, next_sym
+                self.global_step += n
 
             with torch.no_grad():
-                obs_t = torch.FloatTensor(obs).unsqueeze(0).to(self.device)
-                ctx_t = torch.FloatTensor(ctx).unsqueeze(0).to(self.device)
-                sym_t = torch.LongTensor([sym_id]).to(self.device)
-                _, last_val = self.agent.act(obs_t, ctx_t, sym_t)
-            self.buffer.compute_returns(float(last_val.item()), self.cfg.gamma, self.cfg.gae_lambda)
+                obs_t = torch.as_tensor(obs, dtype=torch.float32, device=self.device)
+                ctx_t = torch.as_tensor(ctx, dtype=torch.float32, device=self.device)
+                sym_t = torch.as_tensor(sym, dtype=torch.long, device=self.device)
+                _, last_vals = self.agent.act(obs_t, ctx_t, sym_t)
+            buffer.compute_returns(last_vals.cpu().numpy(), self.cfg.gamma, self.cfg.gae_lambda)
 
-            metrics = self._update()
+            metrics = self._update(buffer)
 
             if self.cfg.lr_anneal:
-                frac = 1.0 - self.global_step / self.cfg.total_steps
+                frac = max(0.0, 1.0 - self.global_step / max(1, target_step))
                 for g in self.opt.param_groups:
                     g["lr"] = self.cfg.lr * frac
 
-            if self.global_step % self.cfg.log_interval < self.cfg.rollout_steps:
+            if self.global_step - last_log >= self.cfg.log_interval:
+                last_log = self.global_step
                 elapsed = time.time() - t0
-                sps = self.global_step / elapsed if elapsed > 0 else 0
+                sps = (self.global_step - start_step) / elapsed if elapsed > 0 else 0
                 mean_ep = np.mean(ep_rewards[-50:]) if ep_rewards else 0.0
+                total_trades = sum(int(inf.get("n_trades", 0)) for inf in last_info)
+                mean_bal = float(np.mean([inf.get("balance", 0.0) for inf in last_info]))
                 entry = {
                     "step": self.global_step,
                     "mean_reward": round(float(mean_ep), 4),
-                    "n_trades": len(self.env.trades_log),
-                    "balance": round(self.env.balance, 2),
+                    "n_trades": total_trades,
+                    "balance": round(mean_bal, 2),
                     "sps": round(sps, 0),
+                    "n_envs": n,
                     **metrics,
                 }
                 self.log.append(entry)
                 print(
                     f"[{self.global_step:>8,}] "
                     f"reward={mean_ep:+.3f}  "
-                    f"trades={len(self.env.trades_log)}  "
-                    f"bal={self.env.balance:,.0f}  "
+                    f"trades={total_trades}  "
+                    f"bal={mean_bal:,.0f}  "
                     f"sps={sps:.0f}  "
                     f"loss_p={metrics['policy_loss']:.4f}  "
                     f"loss_v={metrics['value_loss']:.4f}"
@@ -261,55 +434,17 @@ class MTFPPOTrainer:
                     self.best_reward = float(mean_ep)
                     self.save("best")
 
-            if self.global_step % self.cfg.save_interval < self.cfg.rollout_steps:
+            if self.global_step - last_save >= self.cfg.save_interval:
+                last_save = self.global_step
                 self.save(f"step_{self.global_step}")
                 self._flush_log()
 
-        self.save("final")
-        self._flush_log()
-        print(f"[MTFTrainer] Training complete. Best reward: {self.best_reward:.4f}")
-
-    def train_curriculum(self, instruments: list[str]):
-        """Round-robin curriculum: one epoch per instrument, shared agent."""
-        envs: dict[str, ApexMultiTFTradingEnv] = {}
-        for inst in instruments:
-            try:
-                envs[inst] = ApexMultiTFTradingEnv(
-                    data_dir=self.cfg.data_dir,
-                    instrument=inst,
-                    commission_per_lot=self.cfg.commission_per_lot,
-                    slippage_factor=self.cfg.slippage_factor,
-                )
-                if self.cfg.reward_shaping:
-                    envs[inst]._reward_shaping = self.cfg.reward_shaping
-            except Exception as e:
-                print(f"[MTFTrainer] Skipping {inst}: {e}")
-                continue
-
-        if not envs:
-            raise RuntimeError("No instruments loaded for curriculum training")
-
-        print(f"[MTFTrainer] Curriculum: {list(envs.keys())}")
-        steps_per_instrument = max(1, self.cfg.total_steps // len(envs))
-
-        for inst, env in envs.items():
-            print(f"\n[MTFTrainer] Training on {inst} ({steps_per_instrument:,} steps)")
-            self.env = env
-            saved_total = self.cfg.total_steps
-            self.cfg.total_steps = self.global_step + steps_per_instrument
-            self.train()
-            self.cfg.total_steps = saved_total
-
-        self.save("curriculum_final")
-        self._flush_log()
-        print(f"[MTFTrainer] Curriculum complete. Best reward: {self.best_reward:.4f}")
-
-    def _update(self) -> dict:
+    def _update(self, buffer) -> dict:
         self.agent.train()
         pg_losses, vf_losses, ent_losses, clip_fracs = [], [], [], []
 
         for _ in range(self.cfg.n_epochs):
-            for obs_b, ctx_b, sym_b, act_b, old_lp_b, ret_b, adv_b in self.buffer.get_batches(
+            for obs_b, ctx_b, sym_b, act_b, old_lp_b, ret_b, adv_b in buffer.get_batches(
                 self.cfg.batch_size
             ):
                 logits, values = self.agent.act(obs_b, ctx_b, sym_b)
