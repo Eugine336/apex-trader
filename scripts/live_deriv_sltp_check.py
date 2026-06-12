@@ -12,8 +12,9 @@ Flow:
 
 Usage::
 
-    $env:DERIV_APP_ID="<your_app_id>"
-    $env:DERIV_API_TOKEN="<your_demo_token>"
+    $env:DERIV_CLIENT_ID="<your_oauth2_client_id>"
+    $env:DERIV_ACCESS_TOKEN="<your_demo_access_token>"
+    $env:DERIV_ACCOUNT_TYPE="demo"
     python scripts/live_deriv_sltp_check.py --i-understand-this-places-a-real-order
 
 See scripts/README_live_deriv_sltp_check.md for full runbook.
@@ -88,16 +89,15 @@ def _parse_args() -> argparse.Namespace:
     return p.parse_args()
 
 
-def _check_env() -> tuple[str, str, str]:
+def _check_env() -> tuple[str, str, str, str]:
+    client_id = os.environ.get("DERIV_CLIENT_ID", "").strip()
+    access_token = os.environ.get("DERIV_ACCESS_TOKEN", "").strip()
     app_id = os.environ.get("DERIV_APP_ID", "").strip()
-    token = os.environ.get("DERIV_API_TOKEN", "").strip()
     acct_type = os.environ.get("DERIV_ACCOUNT_TYPE", "demo").strip().lower()
 
     missing = []
-    if not app_id:
-        missing.append("DERIV_APP_ID")
-    if not token:
-        missing.append("DERIV_API_TOKEN")
+    if not access_token:
+        missing.append("DERIV_ACCESS_TOKEN")
     if missing:
         logger.error(
             "Missing required environment variables: {}. "
@@ -106,7 +106,7 @@ def _check_env() -> tuple[str, str, str]:
         )
         sys.exit(1)
 
-    return app_id, token, acct_type
+    return client_id, access_token, app_id, acct_type
 
 
 def main() -> None:
@@ -120,7 +120,7 @@ def main() -> None:
         sys.exit(1)
 
     # ── Safety gate 2: environment variables ────────────────────────────
-    app_id, token, acct_type = _check_env()
+    client_id, access_token, app_id, acct_type = _check_env()
 
     # ── Safety gate 3: demo-only unless --allow-real ────────────────────
     if acct_type != "demo" and not args.allow_real:
@@ -144,7 +144,12 @@ def main() -> None:
     # ── Import connector (after sys.path is set) ────────────────────────
     from platforms.deriv.deriv_connector import DerivConnector
 
-    conn = DerivConnector(api_token=token, app_id=app_id)
+    conn = DerivConnector(
+        client_id=client_id,
+        access_token=access_token,
+        account_type=acct_type,
+        app_id=app_id,
+    )
     contract_id: str = ""
     passed = False
 

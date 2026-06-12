@@ -100,16 +100,18 @@ class TestDerivConnector:
 
     def test_init_defaults(self):
         c = DerivConnector()
-        assert c._api_token == ""
-        assert c._app_id == ""
+        assert c._access_token == ""
+        assert c._client_id == ""
+        assert c._account_type == "demo"
         assert c._connected is False
 
     def test_init_with_credentials(self):
-        c = DerivConnector(api_token="tok", app_id="999")
-        assert c._api_token == "tok"
-        assert c._app_id == "999"
+        c = DerivConnector(client_id="cid", access_token="tok", account_type="real")
+        assert c._client_id == "cid"
+        assert c._access_token == "tok"
+        assert c._account_type == "real"
 
-    def test_connect_no_app_id_returns_false(self):
+    def test_connect_no_access_token_returns_false(self):
         c = DerivConnector()
         assert c.connect() is False
 
