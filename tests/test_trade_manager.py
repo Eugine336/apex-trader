@@ -369,3 +369,79 @@ class TestTerminalTrades:
         old_pnl = trade.pnl_pips
         tm.update(trade, 1.20000)
         assert trade.pnl_pips == old_pnl
+
+
+# ===================================================================
+# Plan-aware management — per-trade overrides from the Trade Planner
+# ===================================================================
+
+def _plan_signal(
+    *,
+    plan_be_trigger_r=None,
+    plan_trail_activation_r=None,
+    plan_trail_strategy=None,
+    plan_partial_ratio=None,
+    **kw,
+) -> EntrySignal:
+    sig = _signal(**kw)
+    sig.plan_be_trigger_r = plan_be_trigger_r
+    sig.plan_trail_activation_r = plan_trail_activation_r
+    sig.plan_trail_strategy = plan_trail_strategy
+    sig.plan_partial_ratio = plan_partial_ratio
+    return sig
+
+
+class TestPlanAwareManagement:
+    # ── Resolver fall-back: no plan → global config ──────────────────
+    def test_resolvers_fall_back_to_global_without_plan(self):
+        tm = TradeManager(partial_close_ratio=0.5, breakeven_min_profit_r=0.5)
+        trade = tm.open_trade(_signal())
+        assert trade.plan_be_trigger_r is None
+        assert tm._eff_partial_ratio(trade) == 0.5
+        assert tm._eff_be_trigger_r(trade) == 0.5
+        # No plan trail params → trailing allowed (same as today).
+        assert tm._should_trail(trade, 0.0) is True
+
+    def test_eff_resolvers_use_plan_values(self):
+        tm = TradeManager(partial_close_ratio=0.5, breakeven_min_profit_r=0.5)
+        trade = tm.open_trade(
+            _plan_signal(plan_be_trigger_r=1.2, plan_partial_ratio=0.8)
+        )
+        assert tm._eff_be_trigger_r(trade) == 1.2
+        assert tm._eff_partial_ratio(trade) == 0.8
+
+    def test_should_trail_strategy_none_disables(self):
+        tm = TradeManager()
+        trade = tm.open_trade(_plan_signal(plan_trail_strategy="none"))
+        assert tm._should_trail(trade, 5.0) is False
+
+    def test_should_trail_activation_gate(self):
+        tm = TradeManager()
+        trade = tm.open_trade(_plan_signal(plan_trail_activation_r=2.0))
+        assert tm._should_trail(trade, 1.0) is False   # below activation
+        assert tm._should_trail(trade, 2.5) is True     # above activation
+
+    # ── Integration: high BE trigger blocks the early breakeven snap ──
+    def test_plan_be_trigger_blocks_early_breakeven(self):
+        tm = TradeManager(breakeven_min_profit_r=0.5)
+        # Plan demands 2R before BE; entry→tp1 is only 1R.
+        trade = tm.open_trade(_plan_signal(plan_be_trigger_r=2.0, lots=1.0))
+        tm.update(trade, 1.10200)  # TP1 hit (=1R)
+        assert trade.partial_closed is True
+        assert trade.breakeven_active is False  # 1R < 2R plan trigger
+
+    def test_global_be_trigger_still_activates_without_plan(self):
+        tm = TradeManager(breakeven_min_profit_r=0.5)
+        trade = tm.open_trade(_signal(lots=1.0))
+        tm.update(trade, 1.10200)  # TP1 hit (=1R ≥ 0.5R)
+        assert trade.breakeven_active is True
+
+    # ── Integration: plan partial ratio drives the TP1 close size ─────
+    def test_plan_partial_ratio_applied_at_tp1(self):
+        tm = TradeManager(partial_close_ratio=0.5)
+        trade = tm.open_trade(_plan_signal(plan_partial_ratio=0.8, lots=1.0))
+        tm.update(trade, 1.10200)  # TP1 hit
+        assert trade.partial_closed is True
+        # 80% closed → 20% remains.
+        assert abs(trade.remaining_size_lots - 0.20) < 1e-6
+
