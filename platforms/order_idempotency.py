@@ -13,9 +13,9 @@ _KEY_WINDOW_SECONDS = 300
 
 _MT5_COMMENT_MAX = 31
 
-_SAFE_RE = re.compile(r"[^A-Za-z0-9._\-]")
+_SAFE_RE = re.compile(r"[^A-Za-z0-9._-]")
 
-_DELIM = "-"
+_DELIM = "_"
 
 _VALID_PREFIXES = ("APEX", "APND")
 
