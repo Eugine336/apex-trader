@@ -54,6 +54,13 @@ class EntrySignal:
     entry_zone: str = ""
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     entry_timeframe: str = "M5"
+    # Trade Planner per-trade management overrides — primitive values only so
+    # the management package stays free of any planning import. ``None`` means
+    # "use the TradeManager's global default" (backward compatible).
+    plan_be_trigger_r: Optional[float] = None
+    plan_trail_activation_r: Optional[float] = None
+    plan_trail_strategy: Optional[str] = None
+    plan_partial_ratio: Optional[float] = None
 
 
 @dataclass
@@ -93,6 +100,13 @@ class ManagedTrade:
     tp3: Optional[float] = None
     original_tp3: Optional[float] = None
     tp3_hit: bool = False
+    # Trade Planner per-trade management overrides — ``None`` means the trade
+    # was not opened by the planner (or the field was unset) and the manager's
+    # global config value is used instead.
+    plan_be_trigger_r: Optional[float] = None
+    plan_trail_activation_r: Optional[float] = None
+    plan_trail_strategy: Optional[str] = None
+    plan_partial_ratio: Optional[float] = None
 
 
 class TradeManager:
@@ -145,6 +159,36 @@ class TradeManager:
             return False
         logger.error("Unknown trade direction '{}' — cannot classify", direction)
         raise ValueError(f"Unknown trade direction: {direction!r}")
+
+    # ------------------------------------------------------------------
+    # Plan-aware parameter resolution
+    #
+    # When a trade was opened by the Trade Planner it carries per-trade
+    # management overrides. These resolvers return the plan value when present
+    # and finite, otherwise the manager's global config default — so positions
+    # without a plan behave exactly as before.
+    # ------------------------------------------------------------------
+
+    def _eff_partial_ratio(self, trade: ManagedTrade) -> float:
+        val = trade.plan_partial_ratio
+        if val is not None and 0.0 < val <= 1.0:
+            return val
+        return self.partial_close_ratio
+
+    def _eff_be_trigger_r(self, trade: ManagedTrade) -> float:
+        val = trade.plan_be_trigger_r
+        if val is not None and val >= 0.0:
+            return val
+        return self.breakeven_min_profit_r
+
+    def _should_trail(self, trade: ManagedTrade, pnl_r: float) -> bool:
+        """Whether trailing should run this tick given the trade's plan."""
+        if trade.plan_trail_strategy == "none":
+            return False
+        activation = trade.plan_trail_activation_r
+        if activation is not None and pnl_r < activation:
+            return False
+        return True
 
     # ------------------------------------------------------------------
     # Open
@@ -209,6 +253,31 @@ class TradeManager:
                 trade.tp3 = candidate
                 trade.original_tp3 = candidate
 
+        # Carry any Trade Planner per-trade management overrides onto the trade.
+        # Positions without a plan leave these as None and use global config.
+        trade.plan_be_trigger_r = getattr(signal, "plan_be_trigger_r", None)
+        trade.plan_trail_activation_r = getattr(signal, "plan_trail_activation_r", None)
+        trade.plan_trail_strategy = getattr(signal, "plan_trail_strategy", None)
+        trade.plan_partial_ratio = getattr(signal, "plan_partial_ratio", None)
+        if any(
+            v is not None
+            for v in (
+                trade.plan_be_trigger_r,
+                trade.plan_trail_activation_r,
+                trade.plan_trail_strategy,
+                trade.plan_partial_ratio,
+            )
+        ):
+            logger.debug(
+                "[TradeManager] plan-aware management for {} — "
+                "BE@{}R trail={}@{}R partial={}",
+                signal.pair,
+                trade.plan_be_trigger_r,
+                trade.plan_trail_strategy,
+                trade.plan_trail_activation_r,
+                trade.plan_partial_ratio,
+            )
+
         self._trades[trade_id] = trade
         logger.info(
             f"TRADE OPENED: {signal.pair} {signal.direction} @ {signal.entry_price}, "
@@ -243,12 +312,17 @@ class TradeManager:
             pass
         # P12: don't snap to breakeven on the first profitable tick after TP1 —
         # require a minimum profit in R so the runner survives a normal retest.
+        # A Trade Plan may override the global R threshold per trade.
+        risk_pips = abs(trade.entry_price - trade.original_stop_loss) / trade.pip_size
+        pnl_r = (trade.pnl_pips / risk_pips) if risk_pips > 1e-9 else 0.0
         if trade.partial_closed and not trade.breakeven_active:
-            risk_pips = abs(trade.entry_price - trade.original_stop_loss) / trade.pip_size
-            pnl_r = (trade.pnl_pips / risk_pips) if risk_pips > 1e-9 else 0.0
-            if pnl_r >= self.breakeven_min_profit_r:
+            if pnl_r >= self._eff_be_trigger_r(trade):
                 self._activate_breakeven(trade)
-        if trade.breakeven_active and current_df_m5 is not None:
+        if (
+            trade.breakeven_active
+            and current_df_m5 is not None
+            and self._should_trail(trade, pnl_r)
+        ):
             self._update_trailing(trade, current_df_m5)
         if self.tp_adjust_enabled and trade.partial_closed and current_df_m5 is not None:
             self._adjust_tp2(trade, current_df_m5)
@@ -364,15 +438,16 @@ class TradeManager:
             or (not is_long and trade.current_price <= trade.tp1)
         )
         if hit:
+            partial_ratio = self._eff_partial_ratio(trade)
             lots_close, lots_remain = self.partial_calc.calculate_partial(
-                trade.remaining_size_lots, self.partial_close_ratio,
+                trade.remaining_size_lots, partial_ratio,
             )
             trade.remaining_size_lots = lots_remain
             trade.partial_closed = True
             trade.tp1_hit_time = bar_time or datetime.now(timezone.utc)
             trade.status = TradeStatus.TP1_HIT
             logger.info(
-                f"TP1 HIT: {trade.pair} — closed {self.partial_close_ratio:.0%} "
+                f"TP1 HIT: {trade.pair} — closed {partial_ratio:.0%} "
                 f"({lots_close} lots) at {trade.tp1}, +{trade.pnl_pips:.1f} pips"
             )
         return hit

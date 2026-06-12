@@ -13,6 +13,7 @@ const NAV = [
   { to: '/risk', icon: '🛡', label: 'Risk Monitor' },
   { to: '/ml', icon: '🧠', label: 'ML Insights' },
   { to: '/decisions', icon: '🎯', label: 'Decisions' },
+  { to: '/planner', icon: '🗺', label: 'Planner' },
   { to: '/activity', icon: '🔔', label: 'Activity' },
   { to: '/shadow', icon: '👻', label: 'Shadow Outcomes' },
   { to: '/reconciliation', icon: '⚖', label: 'Reconciliation' },
