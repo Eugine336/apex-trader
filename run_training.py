@@ -178,6 +178,13 @@ def main() -> None:
     )
     parser.add_argument("--data-dir", type=str, default="data", help="Directory with the CSV data.")
     parser.add_argument(
+        "--n-envs",
+        type=int,
+        default=8,
+        help="Parallel environments for rollout collection (1 = single-process "
+             "fallback). Higher values keep the GPU fed and scale throughput ~N×.",
+    )
+    parser.add_argument(
         "--gpu",
         action="store_true",
         help="Require a CUDA GPU; warn (do not abort) if unavailable.",
@@ -207,6 +214,10 @@ def main() -> None:
     if total_steps <= 0:
         print("ERROR: --steps must be positive.")
         sys.exit(1)
+
+    n_envs = max(1, args.n_envs)
+    if n_envs != args.n_envs:
+        print(f"[train] n_envs floored to {n_envs} (must be >= 1)")
 
     reward_shaping = {
         "hold_penalty": -0.001,
@@ -238,13 +249,14 @@ def main() -> None:
     print(
         f"\n[train] mode={'single' if args.instrument else 'curriculum'} | "
         f"symbols={len(train_symbols)} | total_steps={total_steps:,} | "
-        f"smoke={args.smoke}"
+        f"n_envs={n_envs} | smoke={args.smoke}"
     )
 
     cfg = MTFPPOConfig(
         data_dir=args.data_dir,
         instrument=start_instrument,
         total_steps=total_steps,
+        n_envs=n_envs,
         save_dir="checkpoints",
         log_path="training_log_mtf.json",
         reward_shaping=reward_shaping,
