@@ -154,7 +154,7 @@ def _deriv_context(broker: str, typical_spreads: dict[str, float]) -> PlatformCo
         broker=broker or "deriv",
         sizing_mode="stake",
         supports_partial_close=False,
-        supports_modify=False,      # Deriv multiplier contracts cannot be modified
+        supports_modify=True,       # Deriv multiplier SL/TP can be modified via contract_update
         sl_unit="dollars",
         typical_spreads=typical_spreads,
         min_lot=0.0,
