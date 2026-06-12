@@ -695,6 +695,16 @@ class DataBackupConfig:
 # Application config
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# Trade Planner — the coordinator between advisors and execution.
+# The tunable parameters themselves live in planning.trade_planner.PlannerConfig
+# (self-contained + serialisable so calibration persists). It is imported here
+# so the planner is configured through the single AppConfig like everything else.
+# ---------------------------------------------------------------------------
+
+from planning.trade_planner import PlannerConfig  # noqa: E402  (leaf import, no cycle)
+
+
 @dataclass
 class AppConfig:
     # All 4 categories enabled — forex, commodity, index, synthetic
@@ -714,6 +724,7 @@ class AppConfig:
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)
+    planner: PlannerConfig = field(default_factory=PlannerConfig)
     scan_interval_seconds: int = 10
     max_consecutive_cycle_failures: int = 5
     log_level: str = "INFO"
