@@ -1722,6 +1722,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             confluences=list(signal.confluences),
             entry_zone=signal.entry_zone,
             entry_timeframe=signal.entry_timeframe,
+            platform=order.platform,
             plan_be_trigger_r=plan_be_trigger_r,
             plan_trail_activation_r=plan_trail_activation_r,
             plan_trail_strategy=plan_trail_strategy,
@@ -1857,6 +1858,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     position_size_lots=bp.lots,
                     score=sig.score,
                     entry_timeframe=sig.entry_timeframe,
+                    platform="deriv" if pend_ctx.uses_stake else "mt5",
                 )
                 tm_trade = self.trade_manager.open_trade(tm_signal)
                 managed.tm_trade_id = tm_trade.trade_id
@@ -2211,6 +2213,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                                     position_size_lots=reopen_order.lots,
                                     score=pos.score,
                                     confluences=list(pos.confluences),
+                                    platform=pos.platform,
                                 )
                                 runner_tm = self.trade_manager.open_trade(runner_signal)
                                 runner_tm.partial_closed = True
@@ -2247,6 +2250,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         )
                         tm_trade.tp3_hit = was_tp3_hit
                         tm_trade.remaining_size_lots = prev_remaining
+                else:
+                    # Deriv stake contracts are all-or-nothing — there is no
+                    # partial-close primitive for a TP3 bank. The runner keeps
+                    # running under TP2 / trailing / decision-engine management.
+                    # Log it so the skip is visible rather than silent.
+                    logger.info(
+                        "ℹ️ TP3 banking skipped for Deriv {} {} — stake contract has no "
+                        "partial close; runner continues under TP2/trailing management",
+                        pos.direction, pos.symbol,
+                    )
 
             sl_changed = tm_trade.stop_loss != prev_sl
             tp_changed = tm_trade.tp2 != prev_tp2

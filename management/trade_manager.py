@@ -54,6 +54,10 @@ class EntrySignal:
     entry_zone: str = ""
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     entry_timeframe: str = "M5"
+    # Execution platform ("mt5" | "deriv"). Deriv uses all-or-nothing stake
+    # contracts, so lot-based partial math must be skipped for it. Defaults to
+    # "mt5" for backward compatibility with existing call sites.
+    platform: str = "mt5"
     # Trade Planner per-trade management overrides — primitive values only so
     # the management package stays free of any planning import. ``None`` means
     # "use the TradeManager's global default" (backward compatible).
@@ -100,6 +104,9 @@ class ManagedTrade:
     tp3: Optional[float] = None
     original_tp3: Optional[float] = None
     tp3_hit: bool = False
+    # Execution platform ("mt5" | "deriv"). Used to guard against running
+    # lot-based partial math on Deriv stake contracts.
+    platform: str = "mt5"
     # Trade Planner per-trade management overrides — ``None`` means the trade
     # was not opened by the planner (or the field was unset) and the manager's
     # global config value is used instead.
@@ -236,6 +243,7 @@ class TradeManager:
             confluences=list(signal.confluences),
             entry_zone=signal.entry_zone,
             entry_timeframe=getattr(signal, "entry_timeframe", "M5"),
+            platform=getattr(signal, "platform", "mt5"),
         )
 
         if self.tp3_ladder_enabled:
@@ -438,6 +446,20 @@ class TradeManager:
             or (not is_long and trade.current_price <= trade.tp1)
         )
         if hit:
+            # Hardening: Deriv stake contracts are all-or-nothing — there is no
+            # lot-based partial. The main loop intercepts TP1 (via the
+            # partial_closed flag) and handles the stake reduction with a
+            # close+reopen. Flag the hit so that intercept fires, but skip the
+            # lot-based partial math which is meaningless for stake positions.
+            if getattr(trade, "platform", "mt5") == "deriv":
+                trade.partial_closed = True
+                trade.tp1_hit_time = bar_time or datetime.now(timezone.utc)
+                trade.status = TradeStatus.TP1_HIT
+                logger.info(
+                    f"TP1 HIT: {trade.pair} (deriv stake) — flagged for "
+                    f"close+reopen, +{trade.pnl_pips:.1f} pips"
+                )
+                return hit
             partial_ratio = self._eff_partial_ratio(trade)
             lots_close, lots_remain = self.partial_calc.calculate_partial(
                 trade.remaining_size_lots, partial_ratio,
