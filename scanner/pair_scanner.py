@@ -46,6 +46,7 @@ from brain.setup_quality import (
 from rl.bridge import RLBridge
 from rl.obs_builder import ObservationBuilder
 from rl.multi_tf_obs_builder import MultiTFObservationBuilder
+from rl.contracts import build_symbol_vocab
 
 _MT5_AVAILABLE = False
 try:
@@ -183,6 +184,11 @@ class PairScanner:
         # ── RL subsystem ──────────────────────────────────────────────
         self._obs_builders: dict[str, ObservationBuilder] = {}
         self._mtf_builders: dict[str, MultiTFObservationBuilder] = {}
+        # Canonical symbol vocabulary used during RL training. Passing this as
+        # the universe makes symbol_id a stable index into the agent's symbol
+        # embedding table. Without it, symbol_id falls back to a large hash and
+        # the embedding lookup raises "index out of range in self".
+        self._symbol_universe = build_symbol_vocab()
         checkpoint = rl_checkpoint or "checkpoints/apex_rl_best.pt"
         try:
             self._rl = RLBridge(checkpoint=checkpoint)
@@ -690,6 +696,7 @@ class PairScanner:
             mtf_result = self._mtf_builders[pair].build_from_frames(
                 frames={"M5": m5_df, "M15": m15_df, "H1": h1_df, "H4": h4_df},
                 instrument=pair,
+                universe=self._symbol_universe,
             )
 
             if mtf_result is not None:

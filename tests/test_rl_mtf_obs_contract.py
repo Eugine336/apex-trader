@@ -390,6 +390,13 @@ class TestContextDistinguishes:
         assert a == b
         assert a != symbol_id_for("USDJPY")
 
+    def test_symbol_id_unknown_in_universe_returns_sentinel(self):
+        # A symbol that is not part of the supplied universe must return the
+        # -1 "unknown" sentinel rather than a large hash that would overflow
+        # the agent's symbol embedding table.
+        universe = ["EURUSD", "USDJPY", "BTCUSD"]
+        assert symbol_id_for("AUDNZD", universe) == -1
+
 
 # ── (g) Schema hash deterministic; assert_compatible ─────────────────────────
 

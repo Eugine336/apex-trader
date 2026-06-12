@@ -93,6 +93,34 @@ class TestPredictFull:
         result = agent.predict_full(obs, context_vec=ctx, symbol_id=3)
         assert len(result) == 4
 
+    def test_out_of_range_symbol_id_does_not_crash(self):
+        """A symbol_id >= n_symbols (e.g. a hash from a missing universe) must
+        not raise 'index out of range in self' — it is treated as unknown."""
+        pytest.importorskip("torch")
+        from rl.network import ApexRLAgent
+        agent = ApexRLAgent(n_features=12, context_dim=8, n_symbols=10)
+        obs = np.random.randn(50, 12).astype(np.float32)
+        ctx = np.random.randn(8).astype(np.float32)
+        # Way out of range and negative ("unknown" sentinel) both must be safe.
+        for bad_id in (999_999, -1):
+            result = agent.predict_full(obs, context_vec=ctx, symbol_id=bad_id)
+            assert len(result) == 4
+
+    def test_unknown_symbol_matches_no_symbol_embedding(self):
+        """An out-of-range id yields the same zero-embedding path as passing
+        no symbol_id at all (deterministic, unknown == zero embedding)."""
+        pytest.importorskip("torch")
+        from rl.network import ApexRLAgent
+        agent = ApexRLAgent(n_features=12, context_dim=8, n_symbols=10)
+        agent.eval()
+        obs = np.random.randn(50, 12).astype(np.float32)
+        ctx = np.random.randn(8).astype(np.float32)
+        none_action, none_conf, none_r, _ = agent.predict_full(obs, context_vec=ctx, symbol_id=None)
+        bad_action, bad_conf, bad_r, _ = agent.predict_full(obs, context_vec=ctx, symbol_id=999_999)
+        assert none_action == bad_action
+        assert abs(none_conf - bad_conf) < 1e-5
+        assert abs(none_r - bad_r) < 1e-5
+
 
 # ──────────────────────────────────────────────────────────────────────────────
 # Fix 3: live trade counter replaces hardcoded 0

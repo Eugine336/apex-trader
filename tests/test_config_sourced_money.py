@@ -67,25 +67,43 @@ class TestPositionSizerThresholds:
 
     def test_micro_skip_boundary_shifts_with_config(self):
         sizer = PositionSizer(micro_account_threshold_usd=500.0)
+        # max_loss 40 on a 400 account = 10% risk, above the 5% per-trade cap
+        # → rejected. Account is below the micro threshold → micro label.
         result = sizer._adjust_for_account_size(
             lots=0.01,
             account_balance=400.0,
             risk_amount=2.0,
-            max_loss=5.0,
+            max_loss=40.0,
         )
         assert result[0] == 0.0
         assert "micro" in result[1]
 
     def test_micro_skip_not_triggered_above_threshold(self):
         sizer = PositionSizer(micro_account_threshold_usd=200.0)
+        # max_loss 40 on a 300 account = 13.3% risk, above the 5% cap →
+        # rejected. Account is above the micro threshold → non-micro label.
         result = sizer._adjust_for_account_size(
             lots=0.01,
             account_balance=300.0,
             risk_amount=2.0,
-            max_loss=5.0,
+            max_loss=40.0,
         )
         assert result[0] == 0.0
         assert "skip_min_lot_over_risk" in result[1]
+
+    def test_micro_account_trades_when_min_lot_risk_within_cap(self):
+        # max_loss 5 on a 400 account = 1.25% risk, within the 5% cap →
+        # the trade is allowed at min lot even though it exceeds the soft
+        # 1.5× risk_amount tolerance.
+        sizer = PositionSizer(micro_account_threshold_usd=500.0)
+        result = sizer._adjust_for_account_size(
+            lots=0.01,
+            account_balance=400.0,
+            risk_amount=2.0,
+            max_loss=5.0,
+        )
+        assert result[0] == 0.01
+        assert result[1] == "lots"
 
     def test_deriv_min_stake_boundary_shifts_with_config(self):
         sizer = PositionSizer(
