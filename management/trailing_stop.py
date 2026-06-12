@@ -19,10 +19,17 @@ class StructureTrailingStop:
     Only ever moves the stop in the profit direction — never backwards.
     """
 
-    def __init__(self, buffer_pips: float = 3.0, min_pips_to_trail: float = 10.0):
+    def __init__(
+        self,
+        buffer_pips: float = 3.0,
+        min_pips_to_trail: float = 10.0,
+        swing_lookback: int = 12,
+    ):
         self.buffer_pips = buffer_pips
         self.min_pips_to_trail = min_pips_to_trail
-        self._engine = StructureEngine(swing_lookback=3)
+        # P13: a 3-bar lookback trails on intracandle noise (~15min of M5).
+        # 12 bars ≈ 1h of M5 structure, giving runners room to reach H1 swings.
+        self._engine = StructureEngine(swing_lookback=swing_lookback)
 
     def calculate_trail(
         self,

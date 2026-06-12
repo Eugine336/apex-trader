@@ -117,6 +117,8 @@ class TradeManager:
         tp3_ladder_enabled: bool = False,
         tp3_r_multiple: float = 4.0,
         tp3_close_ratio: float = 0.5,
+        breakeven_min_profit_r: float = 0.5,
+        trailing_swing_lookback: int = 12,
     ):
         self.max_stall_candles = max_stall_candles
         self.partial_close_ratio = partial_close_ratio
@@ -126,7 +128,10 @@ class TradeManager:
         self.tp3_ladder_enabled = tp3_ladder_enabled
         self.tp3_r_multiple = tp3_r_multiple
         self.tp3_close_ratio = tp3_close_ratio
-        self.trailing = StructureTrailingStop()
+        # P12: require this much profit (in R) before BE activates, so a normal
+        # post-TP1 retest doesn't immediately stop the runner at breakeven.
+        self.breakeven_min_profit_r = breakeven_min_profit_r
+        self.trailing = StructureTrailingStop(swing_lookback=trailing_swing_lookback)
         self.partial_calc = PartialCloseCalculator()
         self._trades: dict[str, ManagedTrade] = {}
 
@@ -236,8 +241,13 @@ class TradeManager:
             return trade
         if self._check_tp1(trade, bar_time=bar_time):
             pass
-        if trade.partial_closed and not trade.breakeven_active and trade.pnl_pips > 0:
-            self._activate_breakeven(trade)
+        # P12: don't snap to breakeven on the first profitable tick after TP1 —
+        # require a minimum profit in R so the runner survives a normal retest.
+        if trade.partial_closed and not trade.breakeven_active:
+            risk_pips = abs(trade.entry_price - trade.original_stop_loss) / trade.pip_size
+            pnl_r = (trade.pnl_pips / risk_pips) if risk_pips > 1e-9 else 0.0
+            if pnl_r >= self.breakeven_min_profit_r:
+                self._activate_breakeven(trade)
         if trade.breakeven_active and current_df_m5 is not None:
             self._update_trailing(trade, current_df_m5)
         if self.tp_adjust_enabled and trade.partial_closed and current_df_m5 is not None:

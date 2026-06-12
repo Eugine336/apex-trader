@@ -44,6 +44,8 @@ class ManagedPosition:
         "unconfirmed_cycles",
         "confluences",
         "initial_risk_dollars",
+        "entry_spread",
+        "entry_slippage_pips",
     )
 
     def __init__(
@@ -90,6 +92,9 @@ class ManagedPosition:
         self.unconfirmed_cycles = 0
         self.confluences = list(confluences) if confluences else []
         self.initial_risk_dollars: float | None = None
+        # P4: entry execution quality captured at fill time (pips).
+        self.entry_spread: float = 0.0
+        self.entry_slippage_pips: float = 0.0
 
 
 class _LockedPositions:
