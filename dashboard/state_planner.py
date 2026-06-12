@@ -18,6 +18,7 @@ class PlannerMixin:
     """Reads the Trade Planner journal for dashboard display."""
 
     _PLAN_JOURNAL = Path("data/plan_journal.jsonl")
+    _PLANNER_CONFIG = Path("data/planner_config.json")
     _PLANNER_CACHE_TTL = 3.0
 
     def get_planner(self, limit: int = 50, symbol: str = "") -> dict:
@@ -41,6 +42,7 @@ class PlannerMixin:
         result = {
             "plans": joined,
             "stats": self._compute_stats(plans, outcomes),
+            "calibration": self._calibration_status(len(outcomes)),
             "total": len(joined),
         }
         self._planner_cache = result
@@ -50,7 +52,9 @@ class PlannerMixin:
 
     def get_planner_stats(self) -> dict:
         plans, outcomes = self._read_plan_journal()
-        return self._compute_stats(plans, outcomes)
+        stats = self._compute_stats(plans, outcomes)
+        stats["calibration"] = self._calibration_status(len(outcomes))
+        return stats
 
     # ── Internal ─────────────────────────────────────────────────────────
 
@@ -136,4 +140,62 @@ class PlannerMixin:
             "entry_mode_stats": _bucket("entry_mode"),
             "sl_strategy_stats": _bucket("sl_strategy"),
             "tp_strategy_stats": _bucket("tp_strategy"),
+        }
+
+    def _calibration_status(self, completed_count: int) -> dict:
+        """Current planner config thresholds + self-tuning progress.
+
+        Thresholds are read from the persisted ``planner_config.json`` so the
+        dashboard shows the *live* (possibly calibrated) values. The config is
+        re-saved after each calibration, so its file mtime is a faithful proxy
+        for the last calibration time.
+        """
+        cfg: dict = {}
+        last_calibrated_ts: float | None = None
+        if self._PLANNER_CONFIG.exists():
+            try:
+                cfg = json.loads(self._PLANNER_CONFIG.read_text(encoding="utf-8"))
+                last_calibrated_ts = self._PLANNER_CONFIG.stat().st_mtime
+            except Exception as exc:
+                logger.debug("[dashboard] planner config read failed: {}", exc)
+
+        enabled = bool(cfg.get("calibration_enabled", True))
+        min_trades = int(cfg.get("calibration_min_trades", 50))
+        interval = int(cfg.get("calibration_interval_trades", 25))
+
+        # Next calibration fires once we clear the min, then every `interval`.
+        if completed_count < min_trades:
+            next_at = min_trades
+        else:
+            cycles = (completed_count - min_trades) // max(interval, 1) + 1
+            next_at = min_trades + cycles * interval
+
+        thresholds = {
+            k: cfg[k]
+            for k in (
+                "min_confidence_to_enter",
+                "min_advisor_agreement",
+                "prefer_structure_sl_within_atr",
+                "default_sl_atr_multiplier",
+                "default_tp1_rr",
+                "default_tp2_rr",
+                "default_runner_pct",
+                "default_be_trigger_r",
+                "default_trail_activation_r",
+                "limit_order_zone_distance_atr",
+                "max_risk_pct",
+                "high_conviction_size_boost",
+            )
+            if k in cfg
+        }
+
+        return {
+            "calibration_enabled": enabled,
+            "completed_outcomes": completed_count,
+            "calibration_min_trades": min_trades,
+            "calibration_interval_trades": interval,
+            "next_calibration_at": next_at,
+            "trades_until_next": max(0, next_at - completed_count),
+            "last_calibrated_ts": last_calibrated_ts,
+            "thresholds": thresholds,
         }
