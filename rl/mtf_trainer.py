@@ -332,10 +332,10 @@ class MTFPPOTrainer:
                 self.opt.step()
 
                 clip_frac = ((ratio - 1).abs() > self.cfg.clip_eps).float().mean()
-                pg_losses.append(float(pg_loss))
-                vf_losses.append(float(vf_loss))
-                ent_losses.append(float(entropy))
-                clip_fracs.append(float(clip_frac))
+                pg_losses.append(float(pg_loss.detach()))
+                vf_losses.append(float(vf_loss.detach()))
+                ent_losses.append(float(entropy.detach()))
+                clip_fracs.append(float(clip_frac.detach()))
 
         return {
             "policy_loss": round(np.mean(pg_losses), 6),
