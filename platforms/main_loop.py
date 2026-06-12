@@ -2759,9 +2759,22 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         dd_pct = 0.0
         try:
-            dd_pct = abs(float(getattr(self.drawdown, "current_drawdown_pct", 0.0) or 0.0))
-        except (TypeError, ValueError):
+            # DrawdownGuard exposes drawdown via get_status().drawdown_from_peak_pct
+            # (a 0–1 fraction). The planner compares against a percent threshold
+            # (drawdown_size_reduction_threshold defaults to 5.0), so scale ×100.
+            dd_status = self.drawdown.get_status(now)
+            dd_pct = abs(float(dd_status.drawdown_from_peak_pct)) * 100.0
+        except Exception:
             dd_pct = 0.0
+
+        # Minutes until the next session boundary — drives the planner's
+        # WAIT-for-better-session logic. Without this it stays at its 999
+        # default and the WAIT path can never trigger.
+        mins_to_session = 999
+        try:
+            mins_to_session = int(self.session_engine.get_status(now).minutes_to_next_session)
+        except Exception:
+            mins_to_session = 999
 
         session_wr = 0.5
         try:
@@ -2821,6 +2834,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             ],
             session=entry_ctx.session_name,
             day_of_week=now.weekday(),
+            minutes_to_session_change=mins_to_session,
             minutes_to_news=entry_ctx.minutes_to_high_impact_news,
             is_news_window=entry_ctx.minutes_to_high_impact_news < 15,
             account_balance=float(entry_ctx.account_balance or 0.0),
