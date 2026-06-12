@@ -11,6 +11,7 @@ import MLInsights from './pages/MLInsights';
 import Controls from './pages/Controls';
 import Activity from './pages/Activity';
 import Decisions from './pages/Decisions';
+import Governor from './pages/Governor';
 import Planner from './pages/Planner';
 import ShadowOutcomes from './pages/ShadowOutcomes';
 import Reconciliation from './pages/Reconciliation';
@@ -28,6 +29,7 @@ export default function App() {
           <Route path="risk" element={<RiskMonitor />} />
           <Route path="ml" element={<MLInsights />} />
           <Route path="decisions" element={<Decisions />} />
+          <Route path="governor" element={<Governor />} />
           <Route path="planner" element={<Planner />} />
           <Route path="controls" element={<Controls />} />
           <Route path="activity" element={<Activity />} />

@@ -48,6 +48,7 @@ class ManagedPosition:
         "entry_slippage_pips",
         "plan_id",
         "plan_sl_pips",
+        "plan_scale_in_allowed",
     )
 
     def __init__(
@@ -100,6 +101,8 @@ class ManagedPosition:
         # Trade Planner — links this position to its plan for outcome learning.
         self.plan_id: str = ""
         self.plan_sl_pips: float = 0.0
+        # Per-trade scale-in directive from the plan (None = use global config).
+        self.plan_scale_in_allowed: bool | None = None
 
 
 class _LockedPositions:

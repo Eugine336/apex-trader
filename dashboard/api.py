@@ -207,6 +207,11 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
         """Aggregated planner statistics — action / entry-mode / SL / TP strategy win rates."""
         return _state.get_planner_stats()
 
+    @app.get("/api/governor")
+    def governor():
+        """Portfolio Governor state — daily loss cap, exposure breakdowns, recent blocks."""
+        return _state.get_governor()
+
     @app.post("/api/control")
     async def control(body: dict):
         action = body.get("action", "")
