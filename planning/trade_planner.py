@@ -123,11 +123,18 @@ class PlannerConfig:
 class TradePlanner:
     """Reads a `TradePlanContext` and produces a complete `TradePlan`."""
 
-    def __init__(self, config: PlannerConfig | None = None) -> None:
+    def __init__(self, config: PlannerConfig | None = None, governor=None) -> None:
         self.config = config or PlannerConfig()
+        # Portfolio Governor (duck-typed: any object with a .check() returning
+        # an object carrying .allowed/.reason/.blocked_by).  Optional — when
+        # absent the planner applies no portfolio-level limits.
+        self._governor = governor
 
     def update_config(self, config: PlannerConfig) -> None:
         self.config = config
+
+    def set_governor(self, governor) -> None:
+        self._governor = governor
 
     # ── Main entry point ─────────────────────────────────────────────────
 
@@ -162,6 +169,28 @@ class TradePlanner:
                 f"(retry in ~{wait_minutes}min)"
             )
             return plan
+
+        # ── 1b. Portfolio Governor — portfolio-level risk veto ───────────
+        if self._governor is not None:
+            try:
+                verdict = self._governor.check(
+                    ctx.symbol,
+                    plan.direction,
+                    ctx.open_position_book,
+                    ctx.account_balance,
+                )
+            except Exception as exc:  # fail-open — governor must never block on error
+                logger.warning("[Planner] governor check error — allowing: {}", exc)
+                verdict = None
+            if verdict is not None and not getattr(verdict, "allowed", True):
+                plan.action = "SKIP"
+                plan.governor_blocked_by = getattr(verdict, "blocked_by", None)
+                plan.reasoning = (
+                    f"[{ctx.situation_label}] SKIP — governor "
+                    f"({getattr(verdict, 'blocked_by', 'portfolio')}): "
+                    f"{getattr(verdict, 'reason', 'portfolio limit')}"
+                )
+                return plan
 
         plan.action = "ENTER"
 

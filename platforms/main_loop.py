@@ -89,6 +89,7 @@ from planning import (
     TradePlanContext,
     TradePlanner,
 )
+from governor import PortfolioGovernor
 
 
 def _validate_stop_target_sidedness(
@@ -297,6 +298,12 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._planner = TradePlanner(planner_cfg)
         self._outcome_logger = OutcomeLogger(planner_cfg.journal_path) if planner_cfg.enabled else None
         self._calibrator = Calibrator(planner_cfg) if planner_cfg.enabled else None
+
+        # ── Portfolio Governor — portfolio-level risk limits ─────────────
+        gcfg = getattr(self.config, "governor", None)
+        self._governor = PortfolioGovernor(gcfg) if (gcfg is None or gcfg.enabled) else None
+        if self._governor is not None:
+            self._planner.set_governor(self._governor)
 
         # ── Data backup ──────────────────────────────────────────────────
         self._last_data_backup_ts: float = 0.0
@@ -1729,6 +1736,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 _plan, _plan_ctx = plan_to_store
                 managed.plan_id = _plan.plan_id
                 managed.plan_sl_pips = float(_plan.sl_pips or 0.0)
+                managed.plan_scale_in_allowed = bool(_plan.scale_in_allowed)
                 if self._outcome_logger is not None:
                     self._outcome_logger.log_plan(_plan, _plan_ctx)
             except Exception as exc:
@@ -2808,6 +2816,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             correlated_exposure=correlated,
             daily_pnl_r=daily_pnl_r,
             max_positions=self.config.risk.max_open_trades,
+            open_position_book=[
+                (p.symbol, p.direction) for p in self.managed_positions.values()
+            ],
             session=entry_ctx.session_name,
             day_of_week=now.weekday(),
             minutes_to_news=entry_ctx.minutes_to_high_impact_news,
@@ -3057,6 +3068,50 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         )
         return False
 
+    def _scale_in_allowed_for(self, pos: ManagedPosition) -> bool:
+        """Per-position scale-in gate.
+
+        The trade plan can refine the global ``scale_in_enabled`` switch for a
+        specific position.  ``plan_scale_in_allowed`` of ``None`` means the plan
+        gave no directive — defer to the global behaviour (already gated by the
+        caller).  ``False`` blocks scale-in for this position; ``True`` permits
+        it (still subject to the usual safety checks downstream).
+        """
+        plan_flag = getattr(pos, "plan_scale_in_allowed", None)
+        if plan_flag is None:
+            return True
+        if not plan_flag:
+            logger.debug("[scale-in] plan disallows scale-in for {} — skipping", pos.symbol)
+        return bool(plan_flag)
+
+    def _governor_allows_add(self, pos: ManagedPosition) -> bool:
+        """Portfolio Governor gate for adding to an existing position.
+
+        Excludes the position itself from the book so a same-symbol add is not
+        blocked by its own currency/sector footprint — the governor mainly
+        enforces the daily-loss-cap halt here.  Fail-open on any error.
+        """
+        gov = getattr(self, "_governor", None)
+        if gov is None:
+            return True
+        try:
+            balance = self._last_known_balance or 0.0
+            others = [
+                p for p in self.managed_positions.values()
+                if getattr(p, "order_id", None) != getattr(pos, "order_id", None)
+            ]
+            verdict = gov.check(pos.symbol, pos.direction, others, balance)
+            if not getattr(verdict, "allowed", True):
+                logger.info(
+                    "[Governor] add to {} {} blocked — {}",
+                    pos.direction, pos.symbol, getattr(verdict, "reason", ""),
+                )
+                return False
+            return True
+        except Exception as exc:
+            logger.debug("[Governor] add-check failed (allowing): {}", exc)
+            return True
+
     def _check_scale_in_on_scan(self, oid: str, pos: ManagedPosition, scan_result) -> None:
         """
         Scale-in wired to live scanner data.
@@ -3079,6 +3134,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         if not tm_trade.partial_closed or not tm_trade.breakeven_active:
             return
         if pos.scale_in_count >= cfg.scale_in_max_adds:
+            return
+
+        # Plan-aware gate: the trade plan can disallow scale-in for this
+        # specific position (None = no directive, defer to global behaviour).
+        if not self._scale_in_allowed_for(pos):
             return
 
         # Scanner must agree with our direction
@@ -3143,6 +3203,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         if ctx.uses_stake:
             return  # Deriv stake-based — scale-in not supported
 
+        # Portfolio Governor — respect daily-loss-cap halt / exposure limits.
+        if not self._governor_allows_add(pos):
+            return
+
         if self._submit_scale_in(pos, add_lots, tm_trade.stop_loss, tm_trade.tp2, f"SCAN|{scan_result.score}"):
             logger.info(
                 "📈 SCALE-IN (scan-wired) — {} {} | +{} lots (add #{}) | fresh score={}",
@@ -3170,6 +3234,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     continue
                 if pos.scale_in_count >= self.config.risk.scale_in_max_adds:
                     continue
+                if not self._scale_in_allowed_for(pos):
+                    continue
                 risk_distance = abs(tm_trade.entry_price - tm_trade.original_stop_loss)
                 if risk_distance < 1e-8:
                     continue
@@ -3195,6 +3261,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         continue
                 add_lots = round(pos.lots * self.config.risk.scale_in_add_ratio, 2)
                 add_lots = max(0.01, add_lots)
+                if not self._governor_allows_add(pos):
+                    continue
                 if self._submit_scale_in(pos, add_lots, tm_trade.stop_loss, tm_trade.tp2, "SCALEIN"):
                     logger.info(
                         "📈 SCALE-IN — {} {} | +{} lots (add #{})",
@@ -3273,6 +3341,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             pair=pos.symbol,
             direction=pos.direction,
         )
+
+        # Portfolio Governor — fold realised P&L into the daily tally so the
+        # daily-loss-cap halt can engage / lift.
+        if getattr(self, "_governor", None) is not None:
+            try:
+                if balance:
+                    self._governor.set_reference_balance(balance)
+                self._governor.update_daily_pnl(pnl_dollars)
+            except Exception as exc:
+                logger.debug("[Governor] daily pnl update failed: {}", exc)
 
         hold_seconds = (datetime.now(timezone.utc) - pos.open_time).total_seconds()
         logger.info(
@@ -3585,6 +3663,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self._daily_trades = 0
             self._last_reset_day = today
 
+            if getattr(self, "_governor", None) is not None:
+                try:
+                    self._governor.reset_daily()
+                except Exception as exc:
+                    logger.debug("[Governor] daily reset failed: {}", exc)
             if self.maintenance.should_run():
                 try:
                     maint_result = self.maintenance.run()
@@ -3707,6 +3790,14 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             )
             opp = self.re_entry.check_re_entry(trade_obj, m5_df)
             if opp.eligible:
+                # Re-entry must respect the Portfolio Governor — a daily-loss
+                # halt or exposure limit blocks re-entering just like a fresh entry.
+                if not self._governor_allows_add(pos):
+                    logger.info(
+                        "🔄 RE-ENTRY suppressed by governor — {} {}",
+                        pos.direction, pos.symbol,
+                    )
+                    return
                 logger.info(
                     "🔄 RE-ENTRY eligible — {} {} — {}",
                     pos.direction,
