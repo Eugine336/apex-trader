@@ -7,6 +7,7 @@ Tests for production bug fixes:
 """
 
 import asyncio
+import copy
 import os
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -115,6 +116,31 @@ class TestDerivStakeCapRetry:
             )
         assert result.success is False
         assert "Insufficient balance" in result.error
+
+    def test_input_validation_failed_parameters_retries_without_limit_order(self):
+        """Deriv 'Input validation failed: parameters' should retry without limit_order."""
+        responses = [
+            {"error": {"message": "Input validation failed: parameters"}},
+            {"buy": {"contract_id": "123", "buy_price": 1.0}},
+        ]
+        conn = self._build_connector(responses)
+        sent_requests = []
+
+        def capture_send(payload):
+            sent_requests.append(copy.deepcopy(payload))
+            return responses[len(sent_requests) - 1]
+
+        conn._sync_send = capture_send
+        with patch.object(conn, "_get_multiplier", return_value=1000):
+            result = conn.place_order(
+                "V10_1S", "LONG", 0.01, sl=10176.0, tp=10250.0, stake_usd=47.54
+            )
+
+        assert result.success is True
+        assert result.order_id == "123"
+        assert len(sent_requests) == 2
+        assert "limit_order" in sent_requests[0]["parameters"]
+        assert "limit_order" not in sent_requests[1]["parameters"]
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
