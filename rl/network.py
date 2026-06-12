@@ -264,7 +264,18 @@ class ApexRLAgent(nn.Module):
 
         parts: list[torch.Tensor] = []
         if self.symbol_embed is not None and symbol_id is not None:
-            sym_emb = self.symbol_embed(symbol_id.long())
+            # Guard against out-of-range symbol ids (e.g. a symbol not in the
+            # training vocab, or a hash-derived id from a missing universe).
+            # An invalid id would otherwise raise "index out of range in self"
+            # inside nn.Embedding. Treat unknown symbols as a zero embedding,
+            # identical to the "no symbol_id" path below.
+            ids = symbol_id.long()
+            n_embed = self.symbol_embed.num_embeddings
+            valid = (ids >= 0) & (ids < n_embed)
+            safe_ids = torch.where(valid, ids, torch.zeros_like(ids))
+            sym_emb = self.symbol_embed(safe_ids)
+            if not bool(valid.all()):
+                sym_emb = sym_emb * valid.unsqueeze(-1).to(sym_emb.dtype)
             parts = [context_vec, sym_emb]
         elif self.symbol_embed is not None:
             parts = [context_vec, torch.zeros(latent.shape[0], CONTEXT_EMBED_DIM, device=latent.device)]

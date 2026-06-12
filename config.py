@@ -406,6 +406,13 @@ class RiskConfig:
     weekend_close_buffer_minutes: int = 15
     micro_account_threshold_usd: float = 100.0
     deriv_min_stake_usd: float = 0.35
+    # Hard ceiling on the ACTUAL fraction of the account a single trade may
+    # risk when the broker minimum lot floors the position size upward.
+    # On micro accounts ($5–$200) the 0.01 min lot almost always exceeds the
+    # ideal risk_amount; rather than rejecting every trade, allow it as long
+    # as the real risk stays within this cap. Trades whose min-lot risk would
+    # exceed this (e.g. 0.01 lot of Gold on a $5 account) are still rejected.
+    max_risk_pct_per_trade: float = 5.0
     backtest_starting_balance_usd: float = 10_000.0
     tp3_ladder_enabled: bool = True
     tp3_r_multiple: float = 5.0

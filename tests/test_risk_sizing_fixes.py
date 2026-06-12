@@ -184,11 +184,28 @@ class TestMinLotOverRisk:
         assert result.sizing_mode == "lots"
         assert result.max_loss <= result.risk_amount * 1.5
 
+    def test_micro_account_trades_when_min_lot_risk_within_cap(self):
+        """$211 account, min-lot risk ~0.6% → allowed (the live scenario)."""
+        sizer = PositionSizer()
+        result = sizer.calculate(
+            account_balance=211.75,
+            risk_pct=0.00375,           # score-scaled risk → ~$0.79 target
+            entry_price=0.90000,
+            stop_loss=0.89880,          # 12-pip stop
+            pip_size=0.0001,
+            pip_value_per_lot=10.0,
+        )
+        # Min lot 0.01 → max_loss = 0.01 * 12 * 10 = $1.20 = 0.57% of account,
+        # well within the 5% cap → trade allowed instead of rejected.
+        assert result.lots == 0.01
+        assert result.sizing_mode == "lots"
+        assert (result.max_loss / 211.75) * 100 <= 5.0
+
     def test_over_risk_reported_correctly(self):
         """When skipped, risk_amount is still reported (for logging)."""
         sizer = PositionSizer()
         result = sizer.calculate(
-            account_balance=200.0,
+            account_balance=100.0,
             risk_pct=0.001,
             entry_price=1.10000,
             stop_loss=1.09000,
