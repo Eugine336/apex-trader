@@ -46,6 +46,8 @@ class ManagedPosition:
         "initial_risk_dollars",
         "entry_spread",
         "entry_slippage_pips",
+        "plan_id",
+        "plan_sl_pips",
     )
 
     def __init__(
@@ -95,6 +97,9 @@ class ManagedPosition:
         # P4: entry execution quality captured at fill time (pips).
         self.entry_spread: float = 0.0
         self.entry_slippage_pips: float = 0.0
+        # Trade Planner — links this position to its plan for outcome learning.
+        self.plan_id: str = ""
+        self.plan_sl_pips: float = 0.0
 
 
 class _LockedPositions:

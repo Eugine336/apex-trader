@@ -197,6 +197,16 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
         """Aggregated decision statistics — action counts, situation breakdown, governor vetoes."""
         return _state.get_decision_stats()
 
+    @app.get("/api/planner")
+    def planner(limit: int = 50, symbol: str = ""):
+        """Recent trade plans from the Trade Planner with their outcomes."""
+        return _state.get_planner(limit=limit, symbol=symbol)
+
+    @app.get("/api/planner/stats")
+    def planner_stats():
+        """Aggregated planner statistics — action / entry-mode / SL / TP strategy win rates."""
+        return _state.get_planner_stats()
+
     @app.post("/api/control")
     async def control(body: dict):
         action = body.get("action", "")
