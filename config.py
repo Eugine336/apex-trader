@@ -704,6 +704,14 @@ class DataBackupConfig:
 
 from planning.trade_planner import PlannerConfig  # noqa: E402  (leaf import, no cycle)
 
+# ---------------------------------------------------------------------------
+# Portfolio Governor — portfolio-level risk limits (advisory to the planner).
+# The dataclass lives in governor.models (leaf, no config import) so it is
+# imported here to keep all configuration under the single AppConfig.
+# ---------------------------------------------------------------------------
+
+from governor.models import GovernorConfig  # noqa: E402  (leaf import, no cycle)
+
 
 @dataclass
 class AppConfig:
@@ -725,6 +733,7 @@ class AppConfig:
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)
     planner: PlannerConfig = field(default_factory=PlannerConfig)
+    governor: GovernorConfig = field(default_factory=GovernorConfig)
     scan_interval_seconds: int = 10
     max_consecutive_cycle_failures: int = 5
     log_level: str = "INFO"
