@@ -121,6 +121,125 @@ def test_mtf_rollout_buffer_get_batches():
         break
 
 
+# ── 2b. MTFVecRolloutBuffer (parallel rollout storage) ───────────────────────
+
+
+def test_mtf_vec_rollout_buffer_shapes_and_batches():
+    """MTFVecRolloutBuffer stores (steps, n_envs, ...) and yields flat 7-tuples."""
+    torch = _real_torch()
+    from rl.mtf_trainer import MTFVecRolloutBuffer
+
+    steps, n_envs = 4, 3
+    buf = MTFVecRolloutBuffer(
+        steps=steps, n_envs=n_envs, obs_shape=(50, 48), context_dim=8,
+        device=torch.device("cpu"),
+    )
+    for _ in range(steps):
+        buf.add(
+            obs=np.zeros((n_envs, 50, 48), dtype=np.float32),
+            contexts=np.ones((n_envs, 8), dtype=np.float32),
+            symbol_ids=np.arange(n_envs),
+            actions=np.zeros(n_envs),
+            log_probs=np.full(n_envs, -1.0),
+            rewards=np.zeros(n_envs),
+            values=np.zeros(n_envs),
+            dones=np.zeros(n_envs),
+        )
+    assert buf.ptr == steps
+    buf.compute_returns(np.zeros(n_envs), gamma=0.99, gae_lambda=0.95)
+
+    total = steps * n_envs
+    seen = 0
+    for batch in buf.get_batches(batch_size=5):
+        assert len(batch) == 7
+        obs_b, ctx_b, sym_b, act_b, lp_b, ret_b, adv_b = batch
+        assert obs_b.shape[1:] == (50, 48)
+        assert ctx_b.shape[1] == 8
+        assert sym_b.dtype == torch.long
+        seen += obs_b.shape[0]
+    assert seen == total
+
+
+def test_mtf_vec_buffer_matches_single_env_buffer():
+    """With n_envs=1 the vectorized buffer must produce identical returns and
+    advantages to the original single-env MTFRolloutBuffer (behavioral parity)."""
+    torch = _real_torch()
+    from rl.mtf_trainer import MTFRolloutBuffer, MTFVecRolloutBuffer
+
+    rng = np.random.default_rng(0)
+    steps = 8
+    rewards = rng.normal(size=steps).astype(np.float32)
+    values = rng.normal(size=steps).astype(np.float32)
+    dones = np.array([0, 0, 0, 1, 0, 0, 0, 0], dtype=np.float32)
+    last_value = 0.42
+
+    single = MTFRolloutBuffer(steps, (50, 48), 8, torch.device("cpu"))
+    vec = MTFVecRolloutBuffer(steps, 1, (50, 48), 8, torch.device("cpu"))
+    for t in range(steps):
+        single.add(
+            np.zeros((50, 48), dtype=np.float32), np.zeros(8, dtype=np.float32), 0,
+            action=0, log_prob=-1.0, reward=float(rewards[t]),
+            value=float(values[t]), done=float(dones[t]),
+        )
+        vec.add(
+            np.zeros((1, 50, 48), dtype=np.float32), np.zeros((1, 8), dtype=np.float32),
+            np.zeros(1), np.zeros(1), np.full(1, -1.0),
+            rewards[t : t + 1], values[t : t + 1], dones[t : t + 1],
+        )
+
+    single.compute_returns(last_value, gamma=0.99, gae_lambda=0.95)
+    vec.compute_returns(np.array([last_value]), gamma=0.99, gae_lambda=0.95)
+
+    assert torch.allclose(single.returns, vec.returns.reshape(steps), atol=1e-5)
+    assert torch.allclose(single.advantages, vec.advantages.reshape(steps), atol=1e-5)
+
+
+# ── 2c. Vectorized environment wrappers ──────────────────────────────────────
+
+
+def test_make_vec_env_picks_dummy_for_single_env():
+    """A single environment uses the in-process DummyVecEnv (no subprocesses)."""
+    pytest.importorskip("pandas")
+    from rl.vec_env import make_vec_env, DummyVecEnv, has_instrument_data
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        _setup_test_data(tmp_path, "EURUSD")
+        assert has_instrument_data(tmp, "EURUSD")
+        kwargs = {"data_dir": tmp, "instrument": "EURUSD"}
+        vec = make_vec_env([kwargs])
+        try:
+            assert isinstance(vec, DummyVecEnv)
+            assert vec.num_envs == 1
+        finally:
+            vec.close()
+
+
+def test_dummy_vec_env_step_returns_batched_arrays():
+    """DummyVecEnv.step returns stacked (n_envs, ...) observations and infos."""
+    pytest.importorskip("pandas")
+    from rl.vec_env import DummyVecEnv
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        _setup_test_data(tmp_path, "EURUSD")
+        kwargs = {"data_dir": tmp, "instrument": "EURUSD"}
+        vec = DummyVecEnv([kwargs, kwargs])
+        try:
+            obs, ctx, sym = vec.reset()
+            assert obs.shape[0] == 2
+            assert ctx.shape[0] == 2
+            assert sym.shape[0] == 2
+
+            obs, ctx, sym, rewards, dones, infos = vec.step(np.array([0, 1]))
+            assert obs.shape[0] == 2 and obs.shape[1:] == (50, 48)
+            assert rewards.shape == (2,)
+            assert dones.shape == (2,)
+            assert len(infos) == 2
+        finally:
+            vec.close()
+
+
 # ── 3. EvalReport ────────────────────────────────────────────────────────────
 
 
