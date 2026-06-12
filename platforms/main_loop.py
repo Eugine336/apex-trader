@@ -1676,6 +1676,29 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         )
         managed.initial_risk_dollars = risk_d if not is_fb else None
 
+        # ── Derive per-trade management overrides from the plan (if any) ──
+        # These are primitive values handed to the TradeManager so management
+        # follows the plan's BE/trailing/partial rules instead of globals.
+        # A position without a plan leaves them None → global config applies.
+        plan_be_trigger_r = None
+        plan_trail_activation_r = None
+        plan_trail_strategy = None
+        plan_partial_ratio = None
+        if plan_to_store is not None:
+            try:
+                _mplan = plan_to_store[0]
+                plan_be_trigger_r = float(_mplan.be_trigger_r)
+                plan_trail_activation_r = float(_mplan.trail_activation_r)
+                plan_trail_strategy = _mplan.trail_strategy
+                # runner_pct = fraction left to run; the partial close at TP1
+                # banks (1 - runner_pct). A zero runner means "no explicit
+                # partial plan" → fall back to the global ratio.
+                runner = float(_mplan.runner_pct or 0.0)
+                if runner > 0.0:
+                    plan_partial_ratio = max(0.1, min(1.0, 1.0 - runner))
+            except Exception as exc:
+                logger.debug("[Planner] management-param derive failed for {}: {}", pair, exc)
+
         tm_signal = TMEntrySignal(
             pair=pair,
             direction=direction,
@@ -1692,6 +1715,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             confluences=list(signal.confluences),
             entry_zone=signal.entry_zone,
             entry_timeframe=signal.entry_timeframe,
+            plan_be_trigger_r=plan_be_trigger_r,
+            plan_trail_activation_r=plan_trail_activation_r,
+            plan_trail_strategy=plan_trail_strategy,
+            plan_partial_ratio=plan_partial_ratio,
         )
         tm_trade = self.trade_manager.open_trade(tm_signal)
         managed.tm_trade_id = tm_trade.trade_id
