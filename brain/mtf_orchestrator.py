@@ -76,7 +76,7 @@ class MTFOrchestrator:
         volatility_stop_mode: str = "off",
         atr_stop_period: int = 14,
         atr_stop_mult: float = 1.5,
-        atr_stop_ratio_min: float = 0.5,
+        atr_stop_ratio_min: float = 1.0,
         atr_stop_ratio_max: float = 2.0,
         atr_stop_max_risk_mult: float = 4.0,
     ):

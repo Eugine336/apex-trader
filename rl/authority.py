@@ -202,7 +202,21 @@ class AuthorityManager:
             return result
 
         req = STAGE_MAP[next_stage]
-        passed, reason = self._check_requirements(metrics, req)
+        if next_stage == 2:
+            # P11: the Stage 1→2 transition must NOT gate on shadow-trade count.
+            # Shadow trades are only produced once the agent is already at
+            # stage ≥ 2, so requiring 50 of them to *reach* stage 2 is an
+            # unbreakable deadlock. Instead, promote to SHADOW_COMPARE as soon
+            # as a trained checkpoint is loaded — that is the real precondition
+            # for shadow comparison to begin.
+            if metrics.get("checkpoint_loaded", False):
+                passed, reason = True, ""
+            else:
+                passed, reason = False, (
+                    "no trained checkpoint loaded (checkpoints/apex_rl_best.pt)"
+                )
+        else:
+            passed, reason = self._check_requirements(metrics, req)
 
         if passed:
             self._set_stage(next_stage)

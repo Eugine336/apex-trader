@@ -226,6 +226,9 @@ class RLBridge:
 
         metrics = self.shadow.shadow_score()
         metrics["n_live_trades"] = self._live_trade_count
+        # P11: the bridge only stays enabled when a checkpoint loaded, so its
+        # presence is the gate the authority needs for the Stage 1→2 promotion.
+        metrics["checkpoint_loaded"] = True
 
         result = self.authority.evaluate(metrics)
         logger.info(f"[RLBridge] Authority eval: {result}")
