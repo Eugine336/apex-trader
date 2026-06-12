@@ -195,6 +195,6 @@ class TestConstructorWiring:
         assert orch._volatility_stop_mode == "off"
         assert orch._atr_stop_period == 14
         assert orch._atr_stop_mult == 1.5
-        assert orch._atr_stop_ratio_min == 0.5
+        assert orch._atr_stop_ratio_min == 1.0
         assert orch._atr_stop_ratio_max == 2.0
         assert orch._atr_stop_max_risk_mult == 4.0

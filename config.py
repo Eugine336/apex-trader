@@ -543,7 +543,9 @@ class RiskConfig:
     volatility_stop_mode: str = "on"
     atr_stop_period: int = 14
     atr_stop_mult: float = 1.5
-    atr_stop_ratio_min: float = 0.5
+    # P0 fix: floor at 1.0 so the ATR stop can never tighten the structural SL
+    # inside the entry zone's noise band (0.5 placed stops mid-zone → premature stop-outs).
+    atr_stop_ratio_min: float = 1.0
     atr_stop_ratio_max: float = 2.0
     atr_stop_max_risk_mult: float = 4.0
 
@@ -584,6 +586,26 @@ class RiskConfig:
     # reduces position size via get_size_multiplier.  Default OFF — enable
     # after observing live execution logs to validate grade thresholds.
     execution_quality_sizing_enabled: bool = False
+
+    # ── P5: per-pair cooldown after a breakeven stop-out (minutes) ────────
+    # Breaks the enter→BE→stopped-at-BE→re-enter chop loop that bleeds spread.
+    # 0 disables the cooldown.
+    be_stop_cooldown_minutes: float = 30.0
+
+    # ── P8: max order slippage / deviation (points) sent to the broker ────
+    # Caps how far the fill price may deviate from the requested price on
+    # market orders, protecting against arbitrarily bad fills in fast markets.
+    max_deviation_points: int = 20
+
+    # ── P12: minimum profit (in R) before breakeven activates ─────────────
+    # Activating BE on the first profitable tick after TP1 kills runners on a
+    # normal retest. Require this much profit first so the trade can breathe.
+    breakeven_min_profit_r: float = 0.5
+
+    # ── P13: trailing-stop swing lookback (M5 bars) ───────────────────────
+    # A 3-bar lookback trails on intracandle noise (15min). 12 bars ≈ 1h of
+    # M5 structure, giving runners room to reach H1 swing targets.
+    trailing_swing_lookback: int = 12
 
     def __post_init__(self) -> None:
         def _check_finite_positive(name: str, val: float) -> None:
