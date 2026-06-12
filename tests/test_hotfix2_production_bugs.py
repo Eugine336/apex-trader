@@ -20,8 +20,12 @@ class TestMultiplierDiscovery:
 
     def _make_connector(self):
         c = DerivConnector.__new__(DerivConnector)
-        c._api_token = "tok"
+        c._client_id = "cid"
+        c._access_token = "tok"
+        c._account_type = "demo"
         c._app_id = "999"
+        c._token_expires_at = 0.0
+        c._token_expiry_warned = False
         c._ws = None
         c._connected = False
         c._reconnecting = False

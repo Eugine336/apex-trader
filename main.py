@@ -182,7 +182,7 @@ def main() -> None:
             trading_loop.running = False
     else:
         if not platform_manager.any_connected:
-            logger.error("No platforms connected — cannot trade. Set DERIV_API_TOKEN and DERIV_APP_ID in .env")
+            logger.error("No platforms connected — cannot trade. Set DERIV_CLIENT_ID and DERIV_ACCESS_TOKEN in .env")
             return
         trading_loop.run()
 

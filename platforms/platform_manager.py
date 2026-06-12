@@ -120,9 +120,12 @@ class PlatformManager:
         # Existing code that does `manager.mt5.something` keeps working.
         self.mt5: MT5Connector = self.mt5_connectors[0]
 
-        # ── Deriv: single WebSocket connection ───────────────────────────
+        # ── Deriv: single WebSocket connection (OAuth2 + OTP auth) ───────
         self.deriv = DerivConnector(
-            api_token=os.getenv("DERIV_API_TOKEN", ""),
+            client_id=os.getenv("DERIV_CLIENT_ID", ""),
+            access_token=os.getenv("DERIV_ACCESS_TOKEN", ""),
+            account_type=os.getenv("DERIV_ACCOUNT_TYPE", "demo"),
+            token_expires_in=float(os.getenv("DERIV_TOKEN_EXPIRES_IN", "3600")),
             app_id=os.getenv("DERIV_APP_ID", ""),
             max_tick_age_seconds=self.config.risk.max_tick_age_seconds,
         )
