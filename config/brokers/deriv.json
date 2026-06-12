@@ -31,15 +31,5 @@
     "XAUUSD": "frxXAUUSD",
     "XAGUSD": "frxXAGUSD"
   },
-  "multipliers": {
-    "1HZ10V":    {"default": 100, "accepted": [10, 25, 50, 100, 200, 300]},
-    "1HZ25V":    {"default": 100, "accepted": [10, 25, 50, 100, 200, 300]},
-    "1HZ50V":    {"default": 100, "accepted": [25, 50, 100, 200, 300, 400]},
-    "1HZ75V":    {"default": 100, "accepted": [40, 100, 200, 300, 400]},
-    "1HZ100V":   {"default": 100, "accepted": [20, 50, 100, 200, 300, 400, 500]},
-    "BOOM500":   {"default": 100, "accepted": [20, 50, 100, 200]},
-    "BOOM1000":  {"default": 100, "accepted": [20, 50, 100, 200]},
-    "CRASH500":  {"default": 100, "accepted": [20, 50, 100, 200]},
-    "CRASH1000": {"default": 100, "accepted": [20, 50, 100, 200]}
-  }
+  "multipliers": {}
 }
