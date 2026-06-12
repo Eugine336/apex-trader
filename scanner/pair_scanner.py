@@ -47,6 +47,7 @@ from brain.setup_quality import (
 from rl.bridge import RLBridge
 from rl.obs_builder import ObservationBuilder
 from rl.multi_tf_obs_builder import MultiTFObservationBuilder
+from rl.contracts import build_symbol_vocab
 
 _MT5_AVAILABLE = False
 try:
@@ -709,6 +710,7 @@ class PairScanner:
             mtf_result = self._mtf_builders[pair].build_from_frames(
                 frames={"M5": m5_df, "M15": m15_df, "H1": h1_df, "H4": h4_df},
                 instrument=pair,
+                universe=self._symbol_universe,
             )
 
             if mtf_result is not None:

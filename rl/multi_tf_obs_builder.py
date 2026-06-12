@@ -149,12 +149,18 @@ def build_context(
 
 
 def symbol_id_for(instrument: str, universe: Optional[list[str]] = None) -> int:
-    """Stable integer id: index in *universe* if given, else deterministic hash."""
+    """Stable integer id: index in *universe* if given, else deterministic hash.
+
+    When a *universe* is supplied but the symbol is not part of it, return -1
+    ("unknown symbol"). The network treats a negative/out-of-range id as a zero
+    symbol embedding rather than crashing on an invalid embedding lookup.
+    """
     sym = instrument.upper()
     if universe is not None:
         normed = [s.upper() for s in universe]
         if sym in normed:
             return normed.index(sym)
+        return -1
     return int(hash(sym) % (2**31))
 
 

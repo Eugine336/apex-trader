@@ -95,6 +95,7 @@ class RiskEngine:
         self.position_sizer = PositionSizer(
             micro_account_threshold_usd=self.risk_cfg.micro_account_threshold_usd,
             deriv_min_stake_usd=self.risk_cfg.deriv_min_stake_usd,
+            max_risk_pct_per_trade=self.risk_cfg.max_risk_pct_per_trade,
         )
         self.pnl_tracker = PnLTracker(starting_balance=self.balance)
         self.spread_monitor = SpreadMonitor(
@@ -289,6 +290,7 @@ class RiskEngine:
                 pip_size=pip_size,
                 pip_value_per_lot=pip_value,
                 context=context,
+                symbol=pair,
             )
             checks.append(
                 f"[{context.platform}/{context.broker}] Position sized: "
@@ -329,6 +331,7 @@ class RiskEngine:
                     pip_size=pip_size,
                     pip_value_per_lot=pip_value,
                     context=context,
+                    symbol=pair,
                 )
             checks.append(f"Size reduced to fit daily limit — {reduced_risk:.3%} risk")
 

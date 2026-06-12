@@ -43,9 +43,11 @@ class PositionSizer:
         self,
         micro_account_threshold_usd: float = 100.0,
         deriv_min_stake_usd: float = 0.35,
+        max_risk_pct_per_trade: float = 5.0,
     ):
         self.micro_account_threshold_usd = micro_account_threshold_usd
         self.deriv_min_stake_usd = deriv_min_stake_usd
+        self.max_risk_pct_per_trade = max_risk_pct_per_trade
 
     # ── MT5 lot-based sizing ─────────────────────────────────────────────
 
@@ -59,6 +61,7 @@ class PositionSizer:
         pip_value_per_lot: float = 10.0,
         leverage: int = 100,
         context: Optional[PlatformContext] = None,
+        symbol: str = "",
     ) -> SizeResult:
         """
         Unified entry point.  Delegates to stake path if context.uses_stake,
@@ -94,7 +97,7 @@ class PositionSizer:
         margin_estimate = self.calculate_margin(lots, entry_price, leverage)
 
         lots, sizing_mode = self._adjust_for_account_size(
-            lots, account_balance, risk_amount, max_loss,
+            lots, account_balance, risk_amount, max_loss, symbol,
         )
 
         return SizeResult(
@@ -162,20 +165,42 @@ class PositionSizer:
         account_balance: float,
         risk_amount: float,
         max_loss: float,
+        symbol: str = "",
     ) -> tuple[float, str]:
-        if max_loss > risk_amount * 1.5 and lots > 0:
-            if account_balance < self.micro_account_threshold_usd:
-                logger.warning(
-                    f"Micro account skip: max_loss ${max_loss:.2f} exceeds "
-                    f"1.5× risk_amount ${risk_amount:.2f} (clamped lot too large)"
-                )
-                return 0.0, "lots_skip_micro"
-            logger.warning(
-                f"Min-lot over-risk skip: max_loss ${max_loss:.2f} exceeds "
-                f"1.5× risk_amount ${risk_amount:.2f} (floored lot too large for account)"
+        if lots <= 0 or account_balance <= 0:
+            return lots, "lots"
+
+        # Within the soft tolerance — the size is essentially on-target.
+        if max_loss <= risk_amount * 1.5:
+            return lots, "lots"
+
+        # The broker minimum lot floored the size upward (unavoidable on
+        # small accounts). Judge by the ACTUAL fraction of the account at
+        # risk rather than a fixed ratio: a micro account may still trade as
+        # long as the real risk stays within the hard per-trade cap.
+        actual_risk_pct = (max_loss / account_balance) * 100.0
+        label = symbol or "trade"
+
+        if actual_risk_pct <= self.max_risk_pct_per_trade:
+            logger.info(
+                f"[PositionSizer] Micro-account mode: {label} using min lot {lots} "
+                f"at {actual_risk_pct:.1f}% risk (target ${risk_amount:.2f}, "
+                f"min-lot max_loss ${max_loss:.2f})"
             )
-            return 0.0, "skip_min_lot_over_risk"
-        return lots, "lots"
+            return lots, "lots"
+
+        skip_mode = (
+            "lots_skip_micro"
+            if account_balance < self.micro_account_threshold_usd
+            else "skip_min_lot_over_risk"
+        )
+        logger.warning(
+            f"[PositionSizer] {label} skip: min lot {lots} risks "
+            f"{actual_risk_pct:.1f}% (${max_loss:.2f}) — exceeds max "
+            f"{self.max_risk_pct_per_trade:.1f}% per-trade cap for "
+            f"${account_balance:.2f} account"
+        )
+        return 0.0, skip_mode
 
     # ── Instrument-aware sizing ─────────────────────────────────────────
 
@@ -203,6 +228,7 @@ class PositionSizer:
             return self.calculate(
                 account_balance, risk_pct, entry_price, stop_loss,
                 pip_size=0.0001, pip_value_per_lot=10.0, leverage=leverage,
+                symbol=symbol,
             )
 
         return self.calculate(
@@ -211,6 +237,7 @@ class PositionSizer:
             pip_value_per_lot=info.pip_value_per_lot,
             leverage=leverage,
             context=context,
+            symbol=symbol,
         )
 
     # ── Volatility adjustment ─────────────────────────────────────────
