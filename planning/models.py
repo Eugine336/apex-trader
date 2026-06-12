@@ -84,6 +84,10 @@ class TradePlanContext:
     correlated_exposure: float = 0.0  # 0–1
     daily_pnl_r: float = 0.0
     max_positions: int = 5
+    # Lightweight book of open positions as (symbol, direction) tuples — used
+    # by the Portfolio Governor for currency/sector/correlation checks. Not
+    # serialised in to_dict (kept out of the journal payload).
+    open_position_book: list = field(default_factory=list)
 
     # ── Timing ───────────────────────────────────────────────────────────
     session: str = "UNKNOWN"
@@ -180,6 +184,7 @@ class TradePlan:
     confidence: float = 0.0          # 0–1
     reasoning: str = ""
     advisor_agreement: float = 0.0   # 0–1
+    governor_blocked_by: Optional[str] = None  # which governor check blocked, if any
     plan_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     timestamp: str = field(default_factory=_now_iso)
 
@@ -218,5 +223,6 @@ class TradePlan:
             "scale_in_allowed": self.scale_in_allowed,
             "confidence": round(self.confidence, 3),
             "advisor_agreement": round(self.advisor_agreement, 3),
+            "governor_blocked_by": self.governor_blocked_by,
             "reasoning": self.reasoning,
         }

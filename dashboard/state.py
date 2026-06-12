@@ -26,6 +26,7 @@ from dashboard.state_events import EventsMixin
 from dashboard.state_shadow import ShadowMixin
 from dashboard.state_decisions import DecisionMixin
 from dashboard.state_planner import PlannerMixin
+from dashboard.state_governor import GovernorMixin
 
 
 class LiveState(
@@ -41,6 +42,7 @@ class LiveState(
     ShadowMixin,
     DecisionMixin,
     PlannerMixin,
+    GovernorMixin,
 ):
     """
     Central state provider for the dashboard.
