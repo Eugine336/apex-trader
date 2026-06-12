@@ -6,10 +6,11 @@ Always watching. Always ready. In and out like a sniper.
 """
 
 import asyncio
+import math
 import signal
 import threading
 import time as _time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Optional, Any
 
@@ -198,6 +199,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             tp3_ladder_enabled=self.config.risk.tp3_ladder_enabled,
             tp3_r_multiple=self.config.risk.tp3_r_multiple,
             tp3_close_ratio=self.config.risk.tp3_close_ratio,
+            breakeven_min_profit_r=self.config.risk.breakeven_min_profit_r,
+            trailing_swing_lookback=self.config.risk.trailing_swing_lookback,
         )
         self._journal_loop = asyncio.new_event_loop()
         self.position_store = PositionStore()
@@ -238,6 +241,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._last_slot_blocked_candidate: dict | None = None    # best foregone candidate when slots full (F4)
         self._last_skipped_state: dict[str, tuple[str, int]] = {}  # symbol → (status, score) for emit-on-change
         self._last_known_balance: float = 0.0
+        # P3: last Decision Engine verdict per oid — lets the tick-level
+        # TradeManager exit defer to a strategic HOLD/SCALE_IN.
+        self._last_decision_action: dict[str, Action] = {}
+        # P5: per-pair cooldown after a breakeven stop-out (symbol → datetime until).
+        self._be_stop_cooldown: dict[str, datetime] = {}
 
         # ── D1 cache — daily candles change once/day, refresh hourly ──
         self._d1_cache: dict[str, "pd.DataFrame"] = {}
@@ -722,6 +730,21 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             if result.pair in open_pairs:
                 continue
 
+            # P5: per-pair cooldown after a breakeven stop-out. In chop a pair
+            # can cycle enter → BE → stopped at BE → re-enter, bleeding spread
+            # each loop. Skip re-entry while the cooldown is active.
+            cd_until = self._be_stop_cooldown.get(result.pair)
+            if cd_until is not None:
+                if now < cd_until:
+                    mins_left = (cd_until - now).total_seconds() / 60.0
+                    self._log_rejection(
+                        result.pair, result.direction, result.score,
+                        f"BE-stop cooldown active ({mins_left:.0f}min left)",
+                    )
+                    continue
+                # cooldown expired — clear it
+                self._be_stop_cooldown.pop(result.pair, None)
+
             _current_risk = self.risk_engine.drawdown_guard.risk_map.get(self.risk_engine.drawdown_guard.mode, 0.005)
             open_trades = [
                 OpenTrade(pair=p.symbol, direction=p.direction, risk_pct=_current_risk)
@@ -973,6 +996,45 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             except Exception as exc:
                 logger.debug("PERSISTENCE_DEGRADED emit failed: {}", exc)
 
+    @staticmethod
+    def _levels_after_fill(
+        direction: str,
+        planned_entry: float,
+        fill_price: float,
+        planned_sl: float,
+        planned_tp1: float,
+        planned_tp2: float,
+        pip_size: float,
+        spread_pips: float,
+    ) -> tuple[float, float, float]:
+        """Re-anchor SL/TP to the actual fill price (P1) and spread-adjust (P2).
+
+        P1: the planned SL/TP were computed off the planned (mid-zone) entry.
+        After an adverse fill the offsets must be preserved relative to the
+        ACTUAL fill, otherwise every slipped fill silently compresses R:R.
+
+        P2: a SHORT's SL triggers on ASK and a LONG's TP fills on BID, so the
+        spread skims every trade. Widen the spread-exposed leg by the spread:
+          • BUY  → push TP further out (fills on BID)
+          • SELL → push SL further out (triggers on ASK)
+        """
+        is_buy = direction.upper() in ("BUY", "LONG")
+        d_sl = planned_sl - planned_entry
+        d_tp1 = planned_tp1 - planned_entry
+        d_tp2 = planned_tp2 - planned_entry
+        sl = fill_price + d_sl
+        tp1 = fill_price + d_tp1
+        tp2 = fill_price + d_tp2
+
+        spread_price = max(0.0, spread_pips) * pip_size
+        if spread_price > 0:
+            if is_buy:
+                tp1 += spread_price
+                tp2 += spread_price
+            else:
+                sl += spread_price
+        return sl, tp1, tp2
+
     def _execute_entry(self, result, session: str, now: datetime) -> bool:
         setup_id = new_setup_id()
         with logger.contextualize(setup_id=setup_id):
@@ -982,6 +1044,18 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._current_setup_id = setup_id
         pair = result.pair
         direction = result.direction
+
+        # P9: refuse to trade instruments missing from INSTRUMENT_REGISTRY.
+        # A silent pip_size/pip_value fallback (0.0001 / 10.0) mis-sizes whole
+        # instrument categories (JPY 100×, Gold 10×). Skip loudly instead.
+        if INSTRUMENT_REGISTRY.get(pair.upper()) is None:
+            logger.critical(
+                "INSTRUMENT NOT FOUND IN REGISTRY: {} — trade SKIPPED. Add this "
+                "symbol to INSTRUMENT_REGISTRY (pip_size/pip_value would be guessed).",
+                pair,
+            )
+            self._log_rejection(pair, direction, result.score, "Instrument not in registry")
+            return False
 
         # Fetch more M1 bars than other timeframes — CHoCH detection needs
         # sufficient swing structure. 200 M1 bars = 3.3hrs, too few for Gold.
@@ -1467,10 +1541,56 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 "WIDE" if stats.spread_is_wide else "OK",
             )
 
+        # ── P1 + P2: re-anchor SL/TP to the actual fill and spread-adjust ──
+        # The order was placed with planned-entry SL/TP1. Now that we know the
+        # real fill, recompute SL/TP1/TP2 off the fill price (P1) and widen the
+        # spread-exposed leg (P2), then push the correction to the broker.
+        pip_sz_live = get_pip_size(pair)
+        eff_sl, eff_tp1, eff_tp2 = self._levels_after_fill(
+            direction=direction,
+            planned_entry=signal.entry_price,
+            fill_price=order.fill_price,
+            planned_sl=signal.stop_loss,
+            planned_tp1=signal.tp1,
+            planned_tp2=signal.tp2,
+            pip_size=pip_sz_live,
+            spread_pips=spread,
+        )
+        levels_changed = (
+            abs(eff_sl - signal.stop_loss) > pip_sz_live * 0.1
+            or abs(eff_tp1 - signal.tp1) > pip_sz_live * 0.1
+        )
+        if levels_changed and all(
+            v is not None and math.isfinite(v) for v in (eff_sl, eff_tp1)
+        ):
+            try:
+                ok = self.platforms.modify_trade(
+                    order.order_id, order.platform, new_sl=eff_sl, new_tp=eff_tp1
+                )
+                if ok:
+                    order.sl = eff_sl
+                    order.tp = eff_tp1
+                    logger.info(
+                        "🔧 LEVELS RE-ANCHORED — {} {} fill {:.5f} | SL {:.5f}→{:.5f} "
+                        "TP1 {:.5f}→{:.5f} (slip {:.1f}pip, spread {:.1f}pip)",
+                        direction, pair, order.fill_price,
+                        signal.stop_loss, eff_sl, signal.tp1, eff_tp1,
+                        order.slippage_pips, spread,
+                    )
+                else:
+                    logger.warning(
+                        "🔧 LEVEL RE-ANCHOR modify rejected — {} {}; keeping broker SL/TP as sent",
+                        direction, pair,
+                    )
+                    eff_sl, eff_tp1, eff_tp2 = signal.stop_loss, signal.tp1, signal.tp2
+            except Exception as exc:
+                logger.warning("🔧 LEVEL RE-ANCHOR modify failed for {}: {}", pair, exc)
+                eff_sl, eff_tp1, eff_tp2 = signal.stop_loss, signal.tp1, signal.tp2
+
         managed = ManagedPosition(
             order=order,
-            tp1=signal.tp1,
-            tp2=signal.tp2,
+            tp1=eff_tp1,
+            tp2=eff_tp2,
             score=signal.score,
             regime=getattr(result, "regime", ""),
             session=session,
@@ -1480,6 +1600,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             idempotency_key=idem_key,
             confluences=list(signal.confluences),
         )
+        # P4: persist the entry execution quality for the close record.
+        managed.entry_spread = float(spread or 0.0)
+        managed.entry_slippage_pips = float(getattr(order, "slippage_pips", 0.0) or 0.0)
 
         info_risk = INSTRUMENT_REGISTRY.get(pair.upper())
         pip_sz = info_risk.pip_size if info_risk else 0.0001
@@ -1487,7 +1610,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         risk_d, is_fb = compute_position_risk_dollars(
             direction=direction,
             entry_price=order.fill_price,
-            sl=signal.stop_loss,
+            sl=eff_sl,
             lots=order.lots,
             pip_size=pip_sz,
             pip_value_per_lot=pip_val,
@@ -1502,12 +1625,14 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             pair=pair,
             direction=direction,
             entry_price=order.fill_price,
-            stop_loss=signal.stop_loss,
-            tp1=signal.tp1,
-            tp2=signal.tp2,
+            stop_loss=eff_sl,
+            tp1=eff_tp1,
+            tp2=eff_tp2,
             risk_reward_1=signal.risk_reward_1,
             risk_reward_2=signal.risk_reward_2,
-            position_size_lots=adjusted_lots,
+            # P7: seed TradeManager with the ACTUAL filled lots, not the
+            # requested amount — partial fills otherwise break TP1/trailing math.
+            position_size_lots=order.lots,
             score=signal.score,
             confluences=list(signal.confluences),
             entry_zone=signal.entry_zone,
@@ -1526,9 +1651,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             pair,
             order.lots,
             order.fill_price,
-            signal.stop_loss,
-            signal.tp1,
-            signal.tp2,
+            eff_sl,
+            eff_tp1,
+            eff_tp2,
             signal.score,
         )
         try:
@@ -1544,9 +1669,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     "direction": direction,
                     "order_id": order.order_id,
                     "fill_price": order.fill_price,
-                    "stop_loss": signal.stop_loss,
-                    "tp1": signal.tp1,
-                    "tp2": signal.tp2,
+                    "stop_loss": eff_sl,
+                    "tp1": eff_tp1,
+                    "tp2": eff_tp2,
                     "lots": order.lots,
                     "score": signal.score,
                     "session": session,
@@ -1853,16 +1978,43 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     or "Stopped at breakeven" in tm_trade.close_reason
                 )
                 if is_stall_or_structure:
-                    result = self.platforms.close_trade(oid, pos.platform)
-                    if result.success:
-                        self._record_closed_trade(
-                            pos, result.close_price, tm_trade.close_reason or "CLOSED", close_result=result
+                    # P3: the tick-level stall/structure exit must stay coherent
+                    # with the strategic Decision Engine. Defer the discretionary
+                    # close when the engine's last verdict was HOLD/SCALE_IN, or
+                    # when the trade is already working (pnl_r > 0.3) — don't kill
+                    # trades that haven't had a chance to play out. Hard SL/TP2
+                    # remain broker-enforced and are unaffected by this guard.
+                    last_act = self._last_decision_action.get(oid)
+                    de_wants_keep = self._decision_enabled and last_act in (
+                        Action.HOLD, Action.SCALE_IN,
+                        Action.MOVE_TO_BREAKEVEN, Action.TIGHTEN_SL,
+                        Action.SET_PROTECTIVE_STOP, Action.OBSERVE,
+                    )
+                    _pip = get_pip_size(pos.symbol)
+                    _risk_pips = abs(pos.entry_price - getattr(pos, "sl_original", pos.sl)) / _pip
+                    pnl_r = (tm_trade.pnl_pips / _risk_pips) if _risk_pips > 1e-8 else 0.0
+                    if de_wants_keep or pnl_r > 0.3:
+                        logger.info(
+                            "🧠 STALL/STRUCTURE EXIT DEFERRED — {} {} | de_verdict={} pnl_r={:.2f}",
+                            pos.direction, pos.symbol,
+                            last_act.value if last_act else "none", pnl_r,
                         )
-                        to_remove.append(oid)
-                        closed_count += 1
-                        if tm_trade.re_entry_eligible:
-                            self._check_re_entry(pos)
-                    continue
+                        tm_trade.status = (
+                            TradeStatus.TRAILING if tm_trade.breakeven_active else TradeStatus.OPEN
+                        )
+                        tm_trade.close_reason = None
+                        tm_trade.close_time = None
+                    else:
+                        result = self.platforms.close_trade(oid, pos.platform)
+                        if result.success:
+                            self._record_closed_trade(
+                                pos, result.close_price, tm_trade.close_reason or "CLOSED", close_result=result
+                            )
+                            to_remove.append(oid)
+                            closed_count += 1
+                            if tm_trade.re_entry_eligible:
+                                self._check_re_entry(pos)
+                        continue
                 elif is_simulated_sl_tp:
                     # The simulation thinks SL/TP2 was hit, but the broker
                     # manages hard SL/TP server-side.  If the broker already
@@ -1922,10 +2074,53 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                                 stake_usd=half_stake if (half_stake is not None and half_stake > 0) else None,
                             )
                             if reopen_order.success:
+                                # P6: register the reopened runner with the
+                                # TradeManager + position store. Without this the
+                                # reopened half ran headless — no BE protection,
+                                # no trailing, no exit management.
+                                runner_sl = tm_trade.stop_loss
+                                runner_tp = tm_trade.tp2
+                                new_managed = ManagedPosition(
+                                    order=reopen_order,
+                                    tp1=runner_tp,
+                                    tp2=runner_tp,
+                                    score=pos.score,
+                                    regime=pos.regime,
+                                    session=pos.session,
+                                    entry_type=pos.entry_type,
+                                    stake_usd=(half_stake or 0.0),
+                                    multiplier=pos.multiplier,
+                                    confluences=list(pos.confluences),
+                                )
+                                # Runner inherits post-TP1 state: SL at BE, TP1 done.
+                                new_managed.sl = runner_sl
+                                new_managed.tp1_hit = True
+                                new_managed.at_breakeven = True
+                                new_managed.entry_spread = getattr(pos, "entry_spread", 0.0)
+                                new_managed.entry_slippage_pips = getattr(pos, "entry_slippage_pips", 0.0)
+                                runner_signal = TMEntrySignal(
+                                    pair=pos.symbol,
+                                    direction=pos.direction,
+                                    entry_price=reopen_order.fill_price,
+                                    stop_loss=runner_sl,
+                                    tp1=runner_tp,
+                                    tp2=runner_tp,
+                                    risk_reward_1=getattr(tm_trade, "risk_reward_1", 0.0),
+                                    risk_reward_2=getattr(tm_trade, "risk_reward_2", 0.0),
+                                    position_size_lots=reopen_order.lots,
+                                    score=pos.score,
+                                    confluences=list(pos.confluences),
+                                )
+                                runner_tm = self.trade_manager.open_trade(runner_signal)
+                                runner_tm.partial_closed = True
+                                runner_tm.breakeven_active = True
+                                new_managed.tm_trade_id = runner_tm.trade_id
+                                self.managed_positions[reopen_order.order_id] = new_managed
+                                self._save_position_checked(new_managed)
                                 logger.info(
-                                    "✅ TP1 HIT (Deriv reopen) — {} {} | full close + reopen at half stake",
-                                    pos.direction,
-                                    pos.symbol,
+                                    "✅ TP1 HIT (Deriv reopen) — {} {} | runner reopened at "
+                                    "half stake, managed (SL@BE {:.5f}, TP {:.5f})",
+                                    pos.direction, pos.symbol, runner_sl, runner_tp,
                                 )
                         except Exception as reopen_err:
                             logger.warning("Deriv TP1 reopen failed: {}", reopen_err)
@@ -2049,7 +2244,36 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         or (not is_buy and pos.sl <= be_price)
                     )
                     if not already_at_be:
-                        self.platforms.modify_trade(oid, pos.platform, new_sl=be_price, new_tp=None)
+                        # P10: don't trust the local state blindly — verify the
+                        # broker accepted the SL→BE modify. A silent failure would
+                        # leave the original wide SL exposed to a Monday gap.
+                        ok = self.platforms.modify_trade(
+                            oid, pos.platform, new_sl=be_price, new_tp=None
+                        )
+                        if not ok:
+                            ok = self.platforms.modify_trade(
+                                oid, pos.platform, new_sl=be_price, new_tp=None
+                            )
+                        if not ok:
+                            logger.critical(
+                                "🌙 WEEKEND DE-RISK FAILED — {} could not move SL→BE; "
+                                "closing position to avoid weekend gap on a wide SL.",
+                                pos.symbol,
+                            )
+                            close_res = self.platforms.close_trade(oid, pos.platform)
+                            if close_res.success:
+                                self._record_closed_trade(
+                                    pos, close_res.close_price,
+                                    "WEEKEND_DERISK_CLOSE_FALLBACK", close_result=close_res,
+                                )
+                                self.managed_positions.pop(oid, None)
+                                self.position_store.remove_position(oid)
+                            else:
+                                logger.critical(
+                                    "🌙 WEEKEND DE-RISK fallback close ALSO failed for {} — "
+                                    "position remains open with original SL.", pos.symbol,
+                                )
+                            continue
                         pos.sl = be_price
                         pos.at_breakeven = True
                         tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
@@ -2207,15 +2431,18 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     if cfg.dynamic_sl_tightening_enabled:
                         self._apply_dynamic_sl_tightening(oid, pos)
 
-                    # ── 5. Opportunity-cost exit detection (F4 shadow) ─────────
-                    if cfg.opportunity_cost_exit_mode != "off":
-                        self._check_opportunity_cost_exit(oid, pos, now)
-                        if oid not in self.managed_positions:
-                            continue
+                # ── Opportunity-cost exit + scale-in (P3) ──────────────────
+                # These run regardless of whether the Decision Engine is
+                # enabled. The engine has no executor for SCALE_IN and never
+                # emits an opportunity-cost verdict, so without this they were
+                # silently dead whenever the engine was on.
+                if cfg.opportunity_cost_exit_mode != "off":
+                    self._check_opportunity_cost_exit(oid, pos, now)
+                    if oid not in self.managed_positions:
+                        continue
 
-                    # ── 6. Scale-in on strength (wired to live scan) ───────────
-                    if cfg.scale_in_enabled:
-                        self._check_scale_in_on_scan(oid, pos, scan_result)
+                if cfg.scale_in_enabled:
+                    self._check_scale_in_on_scan(oid, pos, scan_result)
 
             except Exception as exc:
                 logger.warning(
@@ -2258,6 +2485,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
             if self._decision_journal is not None:
                 self._decision_journal.log(ctx, sa, decision, governor_changed)
+
+            # P3: record the strategic verdict so the tick-level TradeManager
+            # exit can defer to a HOLD/SCALE_IN instead of overriding it.
+            self._last_decision_action[oid] = decision.action
 
             self._execute_management_decision(oid, pos, decision, now)
         except Exception as exc:
@@ -2787,6 +3018,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 pnl_dollars = round(pos.stake_usd * signed_move * pos.multiplier, 2)
             else:
                 info = INSTRUMENT_REGISTRY.get(pos.symbol.upper())
+                if info is None:
+                    # P9: never silently fall back to a guessed pip value — flag it.
+                    logger.critical(
+                        "INSTRUMENT NOT FOUND IN REGISTRY: {} — pnl fallback used "
+                        "default pip_value=10.0, P&L may be WRONG. Add this symbol "
+                        "to INSTRUMENT_REGISTRY.", pos.symbol,
+                    )
                 pip_value = info.pip_value_per_lot if info else 10.0
                 pnl_dollars = round(pnl_pips * pip_value * pos.lots, 2)
             logger.warning(
@@ -2833,6 +3071,25 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             hold_seconds,
         )
 
+        # P5: arm a per-pair cooldown when a trade is stopped out at breakeven
+        # (profit ≈ 0), to break the enter→BE→stopped→re-enter chop loop.
+        try:
+            cd_min = getattr(self.config.risk, "be_stop_cooldown_minutes", 0.0)
+            if cd_min > 0:
+                is_be_stop = ("breakeven" in (outcome or "").lower()) or (
+                    getattr(pos, "at_breakeven", False) and abs(pnl_pips) <= 2.0
+                )
+                if is_be_stop:
+                    self._be_stop_cooldown[pos.symbol] = (
+                        datetime.now(timezone.utc) + timedelta(minutes=cd_min)
+                    )
+                    logger.info(
+                        "[P5] BE-stop cooldown armed for {} — {:.0f}min",
+                        pos.symbol, cd_min,
+                    )
+        except Exception as exc:
+            logger.debug("[P5] BE cooldown record failed: {}", exc)
+
         swap_modeled = None
         swap_status = "unavailable"
         if self.config.risk.model_swap_costs:
@@ -2863,8 +3120,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             confluences=list(pos.confluences),
             regime=pos.regime,
             session=pos.session,
-            spread=0.0,
-            slippage=0.0,
+            # P4: persist the real entry spread (pips) and entry slippage (pips)
+            # captured at fill time instead of the previous hardcoded 0.0,
+            # so ML / analysis can learn their cost impact.
+            spread=float(getattr(pos, "entry_spread", 0.0) or 0.0),
+            slippage=float(getattr(pos, "entry_slippage_pips", 0.0) or 0.0),
             entry_type=pos.entry_type,
             time_to_tp1=None,
             time_to_exit=hold_seconds / 60.0,
