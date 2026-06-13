@@ -35,6 +35,9 @@ from .contracts import (
     ATR_PERIOD,
     OBS_FEATURES,
     OBS_SHAPE,
+    MARKET_FEATURES,
+    N_MARKET_FEATURES,
+    N_TIMEFRAMES,
     N_CONTEXT_FEATURES,
     build_symbol_vocab,
 )
@@ -102,6 +105,8 @@ class ApexMultiTFTradingEnv:
             "typical_spread_pips": self.typical_spread,
             "pip_value": self.pip_value,
         }
+
+        self._precompute_observations()
 
         self.reset()
 
@@ -223,7 +228,81 @@ class ApexMultiTFTradingEnv:
         self._m5_raw = self._dfs["M5"].copy()
         self._m5_feat = self._build_features(self._m5_raw)
 
+    def _precompute_observations(self) -> None:
+        """Build every per-bar observation once, up front.
+
+        The market features in an observation are a pure function of the
+        historical OHLCV frames — they never depend on the agent's actions.
+        Recomputing FVG / order-block / liquidity / MTF features from scratch
+        on every ``step()`` pins the run to the CPU and starves the GPU, so we
+        compute the full ``(T, *OBS_SHAPE)`` tensor and matching context array
+        a single time and index into them at ``_observe()`` time.
+
+        Each cached observation is built with ``in_trade=0``; the live,
+        position-dependent ``in_trade`` value is injected per step in
+        :meth:`_observe` so reward and position logic stay fully dynamic.
+        """
+        n = len(self._m5_feat)
+        self._precomputed_obs = np.zeros((n, *OBS_SHAPE), dtype=np.float32)
+        self._precomputed_ctx = np.zeros((n, N_CONTEXT_FEATURES), dtype=np.float32)
+        self._precomputed_valid = np.zeros(n, dtype=bool)
+
+        built = 0
+        for i in range(n):
+            tf_slices = {"M5": self._m5_raw.iloc[:i + 1]}
+            for tf in TF_ORDER:
+                if tf == "M5":
+                    continue
+                tf_slices[tf] = self._dfs[tf]
+
+            result = self._obs_builder.build_from_frames(
+                tf_slices,
+                self.instrument,
+                in_trade=0.0,
+                profile=self._profile,
+                universe=self._universe,
+            )
+            if result is None:
+                continue
+
+            obs, ctx, _ = result
+            self._precomputed_obs[i] = obs
+            self._precomputed_ctx[i] = ctx
+            self._precomputed_valid[i] = True
+            built += 1
+
+        mb = self._precomputed_obs.nbytes / (1024 * 1024)
+        logger.info(
+            "[{}] Pre-computed {}/{} observations ({:.1f} MiB cached)",
+            self.instrument, built, n, mb,
+        )
+
     def _observe(self) -> tuple[np.ndarray, np.ndarray, int]:
+        if self.idx < 0 or self.idx >= len(self._m5_feat):
+            return np.zeros(OBS_SHAPE, dtype=np.float32), np.zeros(N_CONTEXT_FEATURES, dtype=np.float32), self._symbol_id
+
+        if getattr(self, "_precomputed_obs", None) is None:
+            return self._observe_live()
+
+        if not self._precomputed_valid[self.idx]:
+            return np.zeros(OBS_SHAPE, dtype=np.float32), np.zeros(N_CONTEXT_FEATURES, dtype=np.float32), self._symbol_id
+
+        obs = self._precomputed_obs[self.idx].copy()
+        ctx = self._precomputed_ctx[self.idx]
+
+        in_trade = 0.0
+        if self.trade is not None:
+            close_now = float(self._m5_feat.iloc[self.idx]["close"])
+            in_trade = self._unrealised_r(close_now)
+
+        it_idx = MARKET_FEATURES.index("in_trade")
+        clamped_it = float(np.clip(in_trade, -3, 3))
+        for k in range(N_TIMEFRAMES):
+            obs[:, k * N_MARKET_FEATURES + it_idx] = clamped_it
+
+        return obs, ctx, self._symbol_id
+
+    def _observe_live(self) -> tuple[np.ndarray, np.ndarray, int]:
         if self.idx < 0 or self.idx >= len(self._m5_feat):
             return np.zeros(OBS_SHAPE, dtype=np.float32), np.zeros(N_CONTEXT_FEATURES, dtype=np.float32), self._symbol_id
 

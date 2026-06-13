@@ -47,7 +47,7 @@ class MTFPPOConfig:
 
     rollout_steps: int = 2048
     n_epochs: int = 10
-    batch_size: int = 512
+    batch_size: int = 2048
 
     # Parallel rollout collection. ``n_envs`` copies of the environment are
     # stepped simultaneously (in separate processes when > 1) to keep the GPU
@@ -160,6 +160,10 @@ class MTFVecRolloutBuffer:
         self.steps = steps
         self.n_envs = n_envs
         self.device = device
+        # Pin host buffers so CPU→GPU copies in ``get_batches`` can run
+        # asynchronously (``non_blocking=True``). Pinning requires CUDA; on a
+        # CPU-only device it is a no-op and ``non_blocking`` is simply ignored.
+        self._pin = device.type == "cuda"
         self.obs = torch.zeros(steps, n_envs, *obs_shape)
         self.contexts = torch.zeros(steps, n_envs, context_dim)
         self.symbol_ids = torch.zeros(steps, n_envs, dtype=torch.long)
@@ -168,6 +172,15 @@ class MTFVecRolloutBuffer:
         self.rewards = torch.zeros(steps, n_envs)
         self.values = torch.zeros(steps, n_envs)
         self.dones = torch.zeros(steps, n_envs)
+        if self._pin:
+            self.obs = self.obs.pin_memory()
+            self.contexts = self.contexts.pin_memory()
+            self.symbol_ids = self.symbol_ids.pin_memory()
+            self.actions = self.actions.pin_memory()
+            self.log_probs = self.log_probs.pin_memory()
+            self.rewards = self.rewards.pin_memory()
+            self.values = self.values.pin_memory()
+            self.dones = self.dones.pin_memory()
         self.returns: Optional[torch.Tensor] = None
         self.advantages: Optional[torch.Tensor] = None
         self.ptr = 0
@@ -205,6 +218,9 @@ class MTFVecRolloutBuffer:
             advantages[t] = last_gae
         self.returns = advantages + self.values
         self.advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+        if self._pin:
+            self.returns = self.returns.pin_memory()
+            self.advantages = self.advantages.pin_memory()
 
     def get_batches(self, batch_size: int):
         total = self.steps * self.n_envs
@@ -219,13 +235,13 @@ class MTFVecRolloutBuffer:
         for start in range(0, total, batch_size):
             b = idx[start : start + batch_size]
             yield (
-                obs[b].to(self.device),
-                contexts[b].to(self.device),
-                symbol_ids[b].to(self.device),
-                actions[b].to(self.device),
-                log_probs[b].to(self.device),
-                returns[b].to(self.device),
-                advantages[b].to(self.device),
+                obs[b].to(self.device, non_blocking=True),
+                contexts[b].to(self.device, non_blocking=True),
+                symbol_ids[b].to(self.device, non_blocking=True),
+                actions[b].to(self.device, non_blocking=True),
+                log_probs[b].to(self.device, non_blocking=True),
+                returns[b].to(self.device, non_blocking=True),
+                advantages[b].to(self.device, non_blocking=True),
             )
 
     def reset(self):
