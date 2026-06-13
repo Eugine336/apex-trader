@@ -318,14 +318,15 @@ class ApexRLAgent(nn.Module):
             expected_r : float — estimated R-multiple (the APEX signal)
         """
         self.eval()
-        t = torch.FloatTensor(obs).unsqueeze(0)
+        device = next(self.parameters()).device
+        t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
 
         ctx_t = None
         sym_t = None
         if context_vec is not None:
-            ctx_t = torch.FloatTensor(context_vec).unsqueeze(0)
+            ctx_t = torch.as_tensor(context_vec, dtype=torch.float32, device=device).unsqueeze(0)
         if symbol_id is not None:
-            sym_t = torch.LongTensor([symbol_id])
+            sym_t = torch.as_tensor([symbol_id], dtype=torch.long, device=device)
 
         latent = self._fuse_context(self.encoder(t), ctx_t, sym_t)
         logits = self.policy(latent)
@@ -355,14 +356,15 @@ class ApexRLAgent(nn.Module):
             latent_list: list  — learned market representation
         """
         self.eval()
-        t = torch.FloatTensor(obs).unsqueeze(0)
+        device = next(self.parameters()).device
+        t = torch.as_tensor(obs, dtype=torch.float32, device=device).unsqueeze(0)
 
         ctx_t = None
         sym_t = None
         if context_vec is not None:
-            ctx_t = torch.FloatTensor(context_vec).unsqueeze(0)
+            ctx_t = torch.as_tensor(context_vec, dtype=torch.float32, device=device).unsqueeze(0)
         if symbol_id is not None:
-            sym_t = torch.LongTensor([symbol_id])
+            sym_t = torch.as_tensor([symbol_id], dtype=torch.long, device=device)
 
         enc_out = self.encoder(t)
         latent  = self._fuse_context(enc_out, ctx_t, sym_t)
