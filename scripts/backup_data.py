@@ -87,10 +87,14 @@ def _copy_filtered(
 
 
 def _get_remote_url() -> str | None:
+    # Resolve the remote from the data directory rather than the current
+    # working directory. ``_DATA_DIR`` may be a junction/symlink pointing at a
+    # separate data repository, which owns the correct ``origin`` remote.
+    data_dir = str(_DATA_DIR.resolve())
     try:
         return (
             subprocess.check_output(
-                ["git", "remote", "get-url", "origin"],
+                ["git", "-C", data_dir, "remote", "get-url", "origin"],
                 stderr=subprocess.DEVNULL,
             )
             .decode()
