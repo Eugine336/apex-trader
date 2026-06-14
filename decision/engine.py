@@ -82,8 +82,14 @@ class DecisionEngine:
         close_score = 0.0
         close_reason_parts = []
 
+        # Independent trade manager (roadmap F): HTF informs exits but must not
+        # DOMINATE them. Its CLOSE weight is demoted below the trade's OWN
+        # signals (structure ×1.0, momentum, loss-R) so a lagging HTF flip
+        # cannot force a close on its own — the trade's structure / R / momentum
+        # govern the exit. (HOLD-side HTF support is benign and left unchanged.)
+        mgmt_close_htf_coeff = 0.15  # was 0.35
         if sa.tf_alignment < -0.3:
-            penalty = abs(sa.tf_alignment) * 0.35
+            penalty = abs(sa.tf_alignment) * mgmt_close_htf_coeff
             close_score += penalty
             close_reason_parts.append(f"HTF opposing ({sa.tf_alignment:+.2f})")
         if sa.structure_integrity < 0.25:
