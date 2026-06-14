@@ -68,6 +68,15 @@ class TradePlanContext:
     pair_win_rate: float = 0.5
     session_win_rate: float = 0.5
 
+    # ── Regime-adaptive trade shaping (RegimeLearner; neutral until confident) ──
+    # Applied inside the planner: regime_tp_mult scales the TP R-multiples,
+    # regime_sl_buffer_pips is an additive pip delta on the ATR stop ONLY
+    # (applied pre-sizing so risk stays correct), and regime_runner_pct
+    # (None = use planner default) sets how much of the position runs past TP1.
+    regime_tp_mult: float = 1.0
+    regime_sl_buffer_pips: float = 0.0
+    regime_runner_pct: Optional[float] = None
+
     # ── Proposed levels (from entry engine) ──────────────────────────────
     proposed_sl_price: float = 0.0
     proposed_sl_pips: float = 0.0

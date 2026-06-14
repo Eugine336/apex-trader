@@ -3126,6 +3126,27 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         zone_quality = max(0.0, min(1.0, sa.structure_integrity))
 
+        # ── Regime-adaptive trade shaping (Tier 2 #14) ───────────────────
+        # Feed the RegimeLearner's learned TP stretch, SL buffer and partial
+        # ratio into the planner — but only once the learner is CONFIDENT for
+        # this regime (≥ MIN_SAMPLE trades). Until then these stay neutral
+        # (mult 1.0 / buffer 0 / runner = planner default), so trade shaping is
+        # unchanged. Buffers are expressed as deltas off the learner's baseline
+        # and re-clamped inside the planner.
+        regime_tp_mult = 1.0
+        regime_sl_buffer_pips = 0.0
+        regime_runner_pct = None
+        try:
+            _regime = getattr(result, "regime", "") or ""
+            _rl = self.ml.regime_learner
+            _strat = _rl.get_strategy(_regime)
+            if getattr(_strat, "sample_size", 0) >= _rl.MIN_SAMPLE:
+                regime_tp_mult = float(_strat.optimal_tp_multiplier)
+                regime_sl_buffer_pips = float(_strat.optimal_sl_buffer_pips) - 2.0
+                regime_runner_pct = 1.0 - float(_strat.optimal_partial_close_ratio)
+        except Exception as exc:
+            logger.debug("[planner] regime shaping unavailable, using neutral: {}", exc)
+
         return TradePlanContext(
             symbol=result.pair,
             pip_size=pip_size,
@@ -3149,6 +3170,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             ev_estimate=entry_ctx.ev_estimate,
             pair_win_rate=pair_wr,
             session_win_rate=session_wr,
+            regime_tp_mult=regime_tp_mult,
+            regime_sl_buffer_pips=regime_sl_buffer_pips,
+            regime_runner_pct=regime_runner_pct,
             proposed_sl_price=signal.stop_loss,
             proposed_sl_pips=float(getattr(signal, "risk_pips", 0.0) or 0.0),
             proposed_tp1_price=signal.tp1,
