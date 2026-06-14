@@ -497,6 +497,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         self._install_signal_handlers()
         self._perform_startup_recovery()
+        self._import_broker_history_once()
 
         self.running = True
 
@@ -509,6 +510,27 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             logger.info("Shutdown signal received")
         finally:
             self.stop()
+
+    def _import_broker_history_once(self) -> None:
+        """Backfill the account's broker closed-trade history into the event
+        store (reporting / equity reconstruction only — NOT fed to the learners).
+        Idempotent by position_id, never blocks startup, gated by config."""
+        if not getattr(self.config.risk, "broker_history_import_enabled", True):
+            return
+        try:
+            from persistence.broker_history import import_broker_history
+            lookback = int(getattr(self.config.risk, "broker_history_lookback_days", 365))
+            store = get_event_store()
+            for c in getattr(self.platforms, "mt5_connectors", []) or []:
+                try:
+                    if not c.is_connected():
+                        continue
+                except Exception:
+                    continue
+                acct = f"{getattr(c, '_broker_name', 'mt5')}:{getattr(c, '_login', 0)}"
+                import_broker_history(c, store, account_key=acct, lookback_days=lookback)
+        except Exception as exc:
+            logger.warning("[startup] broker-history import skipped: {}", exc)
 
     def _run_supervised_cycle(self) -> None:
         """Run exactly one cycle with per-cycle isolation.

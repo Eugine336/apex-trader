@@ -205,6 +205,78 @@ class MT5Connector(BaseConnector):
             platform="mt5",
         )
 
+    def get_symbol_spec(self, symbol: str) -> dict:
+        """Broker-truth symbol economics from MT5 ``symbol_info``.
+
+        Exposes the exact values the system currently estimates or reads from
+        config: overnight swap (``swap_long``/``swap_short``), tick value/size,
+        contract size, trade mode (full / long-only / short-only / close-only /
+        disabled) and volume constraints. Read-only — provided so callers can
+        use broker truth instead of assumptions; wiring these into position
+        sizing / the swap model is a deliberate, separately-tested change.
+        Returns ``{}`` when unavailable.
+        """
+        self._require_connection()
+        mapped = self.symbol_map(symbol)
+        try:
+            si = mt5.symbol_info(mapped)
+            if si is None:
+                return {}
+            return {
+                "symbol": symbol,
+                "broker_symbol": mapped,
+                "swap_long": getattr(si, "swap_long", None),
+                "swap_short": getattr(si, "swap_short", None),
+                "swap_mode": getattr(si, "swap_mode", None),
+                "trade_tick_value": getattr(si, "trade_tick_value", None),
+                "trade_tick_size": getattr(si, "trade_tick_size", None),
+                "trade_contract_size": getattr(si, "trade_contract_size", None),
+                "trade_mode": getattr(si, "trade_mode", None),
+                "volume_min": getattr(si, "volume_min", None),
+                "volume_max": getattr(si, "volume_max", None),
+                "volume_step": getattr(si, "volume_step", None),
+                "digits": getattr(si, "digits", None),
+                "point": getattr(si, "point", None),
+            }
+        except Exception as exc:
+            logger.warning("[mt5] get_symbol_spec failed for {}: {}", symbol, exc)
+            return {}
+
+    def get_deal_history(self, from_dt, to_dt) -> list[dict]:
+        """Return the account's closed deals in [from_dt, to_dt] as plain dicts.
+
+        Used by the broker-history ingest to reconstruct round-trip trades for
+        reporting / equity reconstruction. Returns [] on any failure.
+        """
+        self._require_connection()
+        try:
+            deals = mt5.history_deals_get(from_dt, to_dt)
+        except Exception as exc:
+            logger.warning("[mt5] history_deals_get(range) failed: {}", exc)
+            return []
+        if not deals:
+            return []
+        out: list[dict] = []
+        for d in deals:
+            out.append({
+                "ticket": getattr(d, "ticket", 0),
+                "order": getattr(d, "order", 0),
+                "position_id": getattr(d, "position_id", 0),
+                "time": getattr(d, "time", 0),
+                "symbol": getattr(d, "symbol", ""),
+                "type": getattr(d, "type", -1),
+                "entry": getattr(d, "entry", -1),
+                "volume": getattr(d, "volume", 0.0),
+                "price": getattr(d, "price", 0.0),
+                "commission": getattr(d, "commission", 0.0),
+                "swap": getattr(d, "swap", 0.0),
+                "fee": getattr(d, "fee", 0.0),
+                "profit": getattr(d, "profit", 0.0),
+                "magic": getattr(d, "magic", 0),
+                "comment": getattr(d, "comment", ""),
+            })
+        return out
+
     # ── Market data ──────────────────────────────────────────────────────
 
     def get_price(self, symbol: str) -> TickData:
@@ -475,6 +547,27 @@ class MT5Connector(BaseConnector):
                 )
                 tp = round(new_tp, digits)
                 request["tp"] = tp
+
+        # ── Exact pre-trade margin check (broker's own math) ───────────────
+        # Ask the broker exactly how much margin this order needs and fail
+        # CLOSED if it exceeds free margin — prevents margin-call entries that a
+        # balance/equity estimate would miss. order_calc_margin returns None if
+        # it cannot compute (e.g. unsupported), in which case we skip the check.
+        try:
+            req_margin = mt5.order_calc_margin(order_type, mapped, float(lots), price)
+            acct = mt5.account_info()
+            free_margin = float(getattr(acct, "margin_free", 0.0) or 0.0) if acct else 0.0
+            if req_margin is not None and req_margin > 0 and free_margin > 0 and req_margin > free_margin:
+                logger.error(
+                    "MT5 INSUFFICIENT MARGIN — {} {} {} lots needs ${:.2f} > free ${:.2f}; refusing",
+                    direction, mapped, lots, req_margin, free_margin,
+                )
+                return self._fail_order(
+                    symbol, direction, lots, sl, tp,
+                    f"INSUFFICIENT_MARGIN: needs ${req_margin:.2f} > free ${free_margin:.2f}",
+                )
+        except Exception as exc:
+            logger.debug("[mt5] order_calc_margin pre-check skipped: {}", exc)
 
         # Retcodes that mean "a position exists". DONE_PARTIAL is a real (smaller)
         # fill, not a failure — we read result.volume below to size accordingly.
