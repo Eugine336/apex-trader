@@ -78,6 +78,14 @@ class MTFPPOConfig:
 
     reward_shaping: Optional[dict] = None
 
+    # Episode shaping. ``max_episode_steps`` ends an episode after that many
+    # bars so episodes actually complete within the step budget (giving the
+    # agent reset diversity and a meaningful episodic reward); None runs to the
+    # end of the data. ``random_start`` samples the episode's starting bar so
+    # training covers the whole history instead of always replaying from bar 0.
+    max_episode_steps: Optional[int] = None
+    random_start: bool = False
+
 
 class MTFRolloutBuffer:
     """Stores experience with context vectors and symbol IDs for MTF training."""
@@ -267,6 +275,8 @@ class MTFPPOTrainer:
             instrument=cfg.instrument,
             commission_per_lot=cfg.commission_per_lot,
             slippage_factor=cfg.slippage_factor,
+            max_episode_steps=cfg.max_episode_steps,
+            random_start=cfg.random_start,
         )
         if cfg.reward_shaping:
             self.env._reward_shaping = cfg.reward_shaping
@@ -295,6 +305,8 @@ class MTFPPOTrainer:
             "commission_per_lot": self.cfg.commission_per_lot,
             "slippage_factor": self.cfg.slippage_factor,
             "reward_shaping": self.cfg.reward_shaping,
+            "max_episode_steps": self.cfg.max_episode_steps,
+            "random_start": self.cfg.random_start,
         }
 
     def train(self):

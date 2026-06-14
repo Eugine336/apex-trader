@@ -88,6 +88,8 @@ class ApexMultiTFTradingEnv:
         slippage_factor: float = 0.3,
         swap_rates: dict | None = None,
         reward_shaping: dict | None = None,
+        max_episode_steps: Optional[int] = None,
+        random_start: bool = False,
     ):
         self.instrument     = instrument.upper()
         self.initial_bal    = initial_balance
@@ -96,6 +98,8 @@ class ApexMultiTFTradingEnv:
         self.slippage_factor = slippage_factor
         self.swap_rates      = swap_rates or {}
         self._reward_shaping = reward_shaping or {}
+        self.max_episode_steps = max_episode_steps
+        self.random_start    = random_start
 
         self._load_instrument_info()
         self._load_data(data_dir)
@@ -117,7 +121,16 @@ class ApexMultiTFTradingEnv:
 
     def reset(self) -> tuple[np.ndarray, np.ndarray, int]:
         min_start = WINDOW + ATR_PERIOD + 20
-        self.idx           = min_start
+        if self.random_start:
+            # Sample a starting bar so episodes cover the whole history rather
+            # than always replaying from the same point; leave room for one full
+            # episode when a length cap is set.
+            top = len(self._m5_feat) - 2 - (self.max_episode_steps or 0)
+            top = max(min_start, top)
+            self.idx = int(np.random.randint(min_start, top + 1)) if top > min_start else min_start
+        else:
+            self.idx = min_start
+        self._episode_start = self.idx
         self.balance       = self.initial_bal
         self.trade: Optional[MTFTrade] = None
         self.equity_curve: list[float] = [self.initial_bal]
@@ -192,6 +205,10 @@ class ApexMultiTFTradingEnv:
 
         self.idx += 1
         done = self.idx >= len(self._m5_feat) - 1
+
+        if (self.max_episode_steps is not None
+                and (self.idx - self._episode_start) >= self.max_episode_steps):
+            done = True
 
         if self.balance <= 0 and not done:
             done = True

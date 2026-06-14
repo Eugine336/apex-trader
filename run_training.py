@@ -220,9 +220,10 @@ def main() -> None:
         print(f"[train] n_envs floored to {n_envs} (must be >= 1)")
 
     reward_shaping = {
-        "hold_penalty": -0.001,
+        "hold_penalty": -0.0001,
         "quick_loss_penalty": -0.5,
         "timeout_penalty": -0.3,
+        "dd_penalty": 1.0,
     }
 
     # ── Resolve the training set ──────────────────────────────────────────
@@ -260,6 +261,8 @@ def main() -> None:
         save_dir="checkpoints",
         log_path="training_log_mtf.json",
         reward_shaping=reward_shaping,
+        max_episode_steps=4096,
+        random_start=True,
     )
     trainer = MTFPPOTrainer(cfg)
 
