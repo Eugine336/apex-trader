@@ -380,6 +380,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             reversal_required_evidence=dcfg.reversal_required_evidence,
             reversal_size_multiplier=dcfg.reversal_size_multiplier,
             reversal_no_evidence_skip_penalty=dcfg.reversal_no_evidence_skip_penalty,
+            htf_aligned_size_bonus=dcfg.htf_aligned_size_bonus,
+            htf_aligned_threshold=dcfg.htf_aligned_threshold,
         )
         self._risk_governor = RiskGovernor() if dcfg.governor_enabled else None
         self._decision_journal = DecisionJournal(dcfg.journal_dir) if dcfg.journal_enabled else None
@@ -1606,10 +1608,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self._persist_shadow_contract(signal, rejecting_gate=f"spread:{spread:.1f}")
             return False
 
-        # ── Regime score-threshold (defensive-only) ──────────────────────
+        # ── Regime score-threshold (bounded context, not a hard veto) ────
         # When the RegimeLearner is confident this regime needs a higher bar,
-        # raise the entry threshold for THIS instrument — only ever tightens,
-        # neutral when the regime is unknown/neutral so behaviour is unchanged.
+        # a setup below that elevated bar is SIZED DOWN (bounded penalty) rather
+        # than auto-killed — HTF/regime is context with bounded influence, never
+        # a dictator. mode="veto" restores the legacy hard rejection.
         try:
             _regime = getattr(result, "regime", "") or ""
             _rl = self.ml.regime_learner
@@ -1623,15 +1626,25 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 from brain.instrument_profile import get_profile
                 _base_bar = int(get_profile(pair).min_entry_score)
                 if result.score < _base_bar + _bump:
-                    self._log_rejection(
-                        pair, direction, result.score,
-                        f"regime '{_regime}' needs higher conviction "
-                        f"(score {int(result.score)} < {_base_bar}+{_bump})",
+                    _rmode = getattr(self.config.risk, "regime_score_threshold_mode", "penalty")
+                    if _rmode == "veto":
+                        self._log_rejection(
+                            pair, direction, result.score,
+                            f"regime '{_regime}' needs higher conviction "
+                            f"(score {int(result.score)} < {_base_bar}+{_bump})",
+                        )
+                        self._persist_shadow_contract(
+                            signal, rejecting_gate=f"regime_threshold:{_regime}",
+                        )
+                        return False
+                    _rmult = max(0.0, min(1.0, float(getattr(
+                        self.config.risk, "regime_below_threshold_size_mult", 0.7))))
+                    conviction_mult *= _rmult
+                    logger.info(
+                        "[entry] regime '{}' below conviction bar "
+                        "(score {} < {}+{}) — size ×{:.2f} (bounded, not vetoed)",
+                        _regime, int(result.score), _base_bar, _bump, _rmult,
                     )
-                    self._persist_shadow_contract(
-                        signal, rejecting_gate=f"regime_threshold:{_regime}",
-                    )
-                    return False
         except Exception as exc:
             logger.debug("[entry] regime threshold gate skipped: {}", exc)
         # Don't open fresh FX/metals risk right before the weekend close.

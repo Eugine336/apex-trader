@@ -55,6 +55,8 @@ class DecisionEngine:
         reversal_required_evidence: int = 3,
         reversal_size_multiplier: float = 0.5,
         reversal_no_evidence_skip_penalty: float = 0.30,
+        htf_aligned_size_bonus: float = 0.15,
+        htf_aligned_threshold: float = 0.5,
     ) -> None:
         self.weights = weights or DecisionWeights()
         # Roadmap D — regime-dependent weighting.
@@ -66,6 +68,9 @@ class DecisionEngine:
         self.reversal_required_evidence = int(reversal_required_evidence)
         self.reversal_size_multiplier = max(0.0, min(1.0, reversal_size_multiplier))
         self.reversal_no_evidence_skip_penalty = max(0.0, reversal_no_evidence_skip_penalty)
+        # HTF = bounded context — size bonus when the full stack agrees.
+        self.htf_aligned_size_bonus = max(0.0, htf_aligned_size_bonus)
+        self.htf_aligned_threshold = htf_aligned_threshold
 
     # ── Roadmap D/E helpers ───────────────────────────────────────────────
 
@@ -477,6 +482,18 @@ class DecisionEngine:
         if is_reversal:
             # Reversals run smaller until they prove themselves (roadmap E).
             size_mult = round(size_mult * self.reversal_size_multiplier, 2)
+        elif (
+            self.htf_aligned_size_bonus > 0.0
+            and not self._is_counter_htf(ctx)
+            and sa.tf_alignment >= self.htf_aligned_threshold
+        ):
+            # HTF = bounded context: when the full stack agrees, size up a
+            # bounded amount (capped). Mutually exclusive with the reversal
+            # haircut — a trade is either with-HTF or counter-HTF, never both.
+            size_mult = round(min(size_mult * (1.0 + self.htf_aligned_size_bonus), 2.0), 2)
+            evidence.append(
+                f"HTF stack aligned ({sa.tf_alignment:+.2f}) — size +{self.htf_aligned_size_bonus:.0%}"
+            )
 
         reason = (
             f"[{sa.primary_label}] {entry_action.value}: "

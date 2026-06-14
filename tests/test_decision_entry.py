@@ -362,3 +362,58 @@ class TestReversalType:
         decision = DecisionEngine().decide_entry(ctx, sa)
         assert decision.should_enter
         assert "REVERSAL" not in decision.reason
+
+
+# ── HTF = bounded context: aligned size bonus + tuned magnitudes ───────────
+
+class TestBoundedHtfContext:
+    def _aligned_ctx(self):
+        return _make_ctx(direction="LONG", h4_trend="BULLISH", regime="BULLISH",
+                         entry_type="FVG_MIDPOINT", risk_reward_2=3.0)
+
+    def _aligned_sa(self):
+        return SituationAssessment(
+            tf_alignment=0.7, structure_integrity=0.7,
+            momentum=0.4, read_confidence=0.8, urgency=0.0,
+        )
+
+    def test_full_htf_alignment_sizes_up(self):
+        ctx, sa = self._aligned_ctx(), self._aligned_sa()
+        with_bonus = DecisionEngine().decide_entry(ctx, sa)                 # +15% default
+        no_bonus = DecisionEngine(htf_aligned_size_bonus=0.0).decide_entry(ctx, sa)
+        assert with_bonus.should_enter
+        assert with_bonus.size_multiplier > no_bonus.size_multiplier
+        assert "aligned" in with_bonus.reason
+
+    def test_weak_alignment_gets_no_bonus(self):
+        # tf_alignment below the threshold → no bonus (bounded, not automatic).
+        ctx = self._aligned_ctx()
+        sa = SituationAssessment(
+            tf_alignment=0.3, structure_integrity=0.7,
+            momentum=0.4, read_confidence=0.8,
+        )
+        with_bonus = DecisionEngine().decide_entry(ctx, sa)
+        no_bonus = DecisionEngine(htf_aligned_size_bonus=0.0).decide_entry(ctx, sa)
+        assert with_bonus.size_multiplier == no_bonus.size_multiplier
+
+    def test_counter_htf_gets_haircut_not_bonus(self):
+        # A counter-HTF reversal must take the haircut, never the aligned bonus.
+        ctx = _make_ctx(direction="LONG", h4_trend="BEARISH", regime="BEARISH",
+                        entry_type="SWEEP_REVERSAL", m1_event="BOS_BULLISH",
+                        risk_reward_2=3.0)
+        sa = SituationAssessment(
+            tf_alignment=-0.3, structure_integrity=0.8,
+            momentum=0.5, read_confidence=0.8,
+        )
+        d = DecisionEngine().decide_entry(ctx, sa)
+        assert "aligned" not in d.reason
+        assert "REVERSAL" in d.reason
+
+    def test_config_defaults_match_bounded_model(self):
+        from config import AppConfig
+        cfg = AppConfig()
+        assert cfg.decision.reversal_size_multiplier == 0.7      # −30% on reversals
+        assert cfg.decision.htf_aligned_size_bonus == 0.15       # +15% when aligned
+        # Regime gate is a bounded penalty by default, not a hard veto.
+        assert cfg.risk.regime_score_threshold_mode == "penalty"
+        assert 0.0 < cfg.risk.regime_below_threshold_size_mult <= 1.0
