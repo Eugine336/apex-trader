@@ -333,6 +333,11 @@ class TradePlanner:
         # Otherwise an ATR-based stop.
         if ctx.atr_pips > 0:
             sl_pips = cfg.default_sl_atr_multiplier * ctx.atr_pips
+            # Regime-learned additive buffer (bounded), applied to the ATR stop
+            # ONLY — never to a real structure level. Applied here (pre-sizing)
+            # so position size derives from the final stop and risk stays correct.
+            sl_pips += max(-2.0, min(5.0, ctx.regime_sl_buffer_pips))
+            sl_pips = max(1.0, sl_pips)
             offset = sl_pips * ctx.pip_size
             sl_price = (
                 ctx.current_price - offset if ctx.is_long else ctx.current_price + offset
@@ -351,28 +356,41 @@ class TradePlanner:
         pip = ctx.pip_size
         sign = 1.0 if ctx.is_long else -1.0
 
+        # Regime-learned TP stretch + runner fraction (bounded). Both are neutral
+        # (1.0 multiplier / planner default runner) until the RegimeLearner is
+        # confident for this regime, so behaviour is unchanged until evidence
+        # accrues. tp_mult scales the R-multiples only — it never touches the SL.
+        tp_mult = max(0.8, min(1.5, ctx.regime_tp_mult))
+        tp1_rr = cfg.default_tp1_rr * tp_mult
+        tp2_rr = cfg.default_tp2_rr * tp_mult
+        runner = (
+            max(0.1, min(0.7, ctx.regime_runner_pct))
+            if ctx.regime_runner_pct is not None
+            else cfg.default_runner_pct
+        )
+
         def price_at_rr(rr: float) -> float:
             return round(entry + sign * sl_pips * rr * pip, 6)
 
         # Strong trend → let it run with a trailing stop, no fixed TP2.
         if ctx.de_tf_alignment >= cfg.trend_strength_for_trail_only:
-            tp1 = price_at_rr(cfg.default_tp1_rr)
-            return ("trail_only", tp1, cfg.default_tp1_rr, None, None, 1.0 - 0.5)
+            tp1 = price_at_rr(tp1_rr)
+            return ("trail_only", tp1, tp1_rr, None, None, 1.0 - 0.5)
         # Low expected R from RL → bank a fixed target, no runner.
         if 0 < ctx.rl_expected_r < cfg.low_r_threshold_for_fixed_tp:
-            tp1 = price_at_rr(cfg.default_tp1_rr)
-            tp2 = price_at_rr(cfg.default_tp2_rr)
-            return ("fixed_rr", tp1, cfg.default_tp1_rr, tp2, cfg.default_tp2_rr, 0.0)
+            tp1 = price_at_rr(tp1_rr)
+            tp2 = price_at_rr(tp2_rr)
+            return ("fixed_rr", tp1, tp1_rr, tp2, tp2_rr, 0.0)
         # Default: partial at TP1, leave a runner trailing toward TP2.
-        tp1 = price_at_rr(cfg.default_tp1_rr)
-        tp2 = price_at_rr(cfg.default_tp2_rr)
+        tp1 = price_at_rr(tp1_rr)
+        tp2 = price_at_rr(tp2_rr)
         return (
             "partial_trail",
             tp1,
-            cfg.default_tp1_rr,
+            tp1_rr,
             tp2,
-            cfg.default_tp2_rr,
-            cfg.default_runner_pct,
+            tp2_rr,
+            runner,
         )
 
     # ── Sizing ───────────────────────────────────────────────────────────
