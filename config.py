@@ -649,6 +649,20 @@ class RiskConfig:
     # M5 structure, giving runners room to reach H1 swing targets.
     trailing_swing_lookback: int = 12
 
+    # ── Absolute / early profit protection ───────────────────────────────
+    # All R-gated breakeven logic (TP1 partial, breakeven_min_profit_r) needs
+    # a known original risk to compute an R-multiple. Adopted/orphan trades
+    # carry entry_type="ORPHAN_ADOPTED" with no reliable original risk, so the
+    # R-gates NEVER fire — a position can run +$X then round-trip into a loss
+    # with nothing protecting it. This locks SL to (near) breakeven the moment
+    # open profit crosses an *absolute* floor in account currency OR pips,
+    # independent of TP1 / R-multiple. Either floor triggers (whichever first);
+    # set a floor to 0 to disable that leg. Fully reversible via the enable flag.
+    absolute_be_protection_enabled: bool = True
+    absolute_be_floor_usd: float = 15.0    # lock to BE once open profit ≥ this (account ccy)
+    absolute_be_floor_pips: float = 12.0   # ...or once open profit ≥ this many pips
+    absolute_be_buffer_pips: float = 1.0   # park SL this far past entry to cover costs/spread
+
     def __post_init__(self) -> None:
         def _check_finite_positive(name: str, val: float) -> None:
             if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
@@ -677,6 +691,9 @@ class RiskConfig:
         _check_finite_positive("margin_block_entry_pct", self.margin_block_entry_pct)
         _check_finite_positive("margin_flatten_pct", self.margin_flatten_pct)
         _check_finite_non_negative("micro_account_threshold_usd", self.micro_account_threshold_usd)
+        _check_finite_non_negative("absolute_be_floor_usd", self.absolute_be_floor_usd)
+        _check_finite_non_negative("absolute_be_floor_pips", self.absolute_be_floor_pips)
+        _check_finite_non_negative("absolute_be_buffer_pips", self.absolute_be_buffer_pips)
 
         if not isinstance(self.max_open_trades, int) or self.max_open_trades < 1:
             raise ValueError(

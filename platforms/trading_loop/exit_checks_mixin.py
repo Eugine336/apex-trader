@@ -7,6 +7,9 @@ from loguru import logger
 
 from typing import TYPE_CHECKING
 
+from config import INSTRUMENT_REGISTRY, get_pip_size
+from platform_context import build_context_for_symbol
+
 if TYPE_CHECKING:
     from platforms.trading_loop.positions import ManagedPosition
 
@@ -386,6 +389,127 @@ class ExitChecksMixin:
                             event_name, minutes_until,
                             getattr(result, "error", "unknown"),
                         )
+
+    def _apply_absolute_profit_protection(
+        self,
+        oid: str,
+        pos: ManagedPosition,
+        tm_trade,
+        current_price: float,
+        now: datetime,
+    ) -> None:
+        """Lock a modest open profit to breakeven on an absolute $/pip floor.
+
+        Every R-gated protection (TP1 partial, ``breakeven_min_profit_r``)
+        needs a known original risk to compute an R-multiple. Adopted/orphan
+        trades (``entry_type="ORPHAN_ADOPTED"``) have no reliable original
+        risk, so those gates never fire and a position can run +$X then
+        round-trip into a loss with nothing protecting it.
+
+        This runs every tick and, the moment open profit crosses an absolute
+        floor (account currency OR pips, whichever first), moves the broker
+        stop to (near) breakeven so the winner cannot turn red. Idempotent:
+        once a position is at breakeven it is skipped on later ticks.
+        """
+        cfg = self.config.risk
+        if not getattr(cfg, "absolute_be_protection_enabled", False):
+            return
+        # Idempotent — never fight the trailing/BE logic once protected.
+        if oid in self._absolute_be_protected:
+            return
+        if getattr(pos, "at_breakeven", False):
+            return
+        if tm_trade is not None and getattr(tm_trade, "breakeven_active", False):
+            return
+
+        floor_usd = cfg.absolute_be_floor_usd
+        floor_pips = cfg.absolute_be_floor_pips
+        if floor_usd <= 0 and floor_pips <= 0:
+            return
+
+        pip_size = get_pip_size(pos.symbol) or 0.0001
+        is_buy = pos.direction == "BUY"
+
+        # ── Open profit in pips (live price preferred) ───────────────────
+        if current_price and pos.entry_price:
+            profit_pips = (
+                (current_price - pos.entry_price) / pip_size
+                if is_buy
+                else (pos.entry_price - current_price) / pip_size
+            )
+        else:
+            profit_pips = tm_trade.pnl_pips if tm_trade is not None else 0.0
+
+        # ── Open profit in account currency (broker truth preferred) ─────
+        profit_usd = None
+        broker_pnl = getattr(pos, "broker_pnl", None)
+        if broker_pnl:
+            profit_usd = broker_pnl
+        elif tm_trade is not None and getattr(tm_trade, "pnl_dollars", None):
+            profit_usd = tm_trade.pnl_dollars
+        else:
+            info = INSTRUMENT_REGISTRY.get(pos.symbol.upper())
+            if info is not None and pos.lots:
+                profit_usd = profit_pips * info.pip_value_per_lot * pos.lots
+
+        usd_trigger = floor_usd > 0 and profit_usd is not None and profit_usd >= floor_usd
+        pips_trigger = floor_pips > 0 and profit_pips >= floor_pips
+        if not (usd_trigger or pips_trigger):
+            return
+
+        # Park SL just past entry so spread/costs don't make BE a small loss.
+        buffer = cfg.absolute_be_buffer_pips * pip_size
+        be_level = pos.entry_price + buffer if is_buy else pos.entry_price - buffer
+
+        # Never move a stop backwards — only protect if BE is tighter than the
+        # current stop (above entry for a long, below entry for a short).
+        if pos.sl:
+            already_protected = (
+                (is_buy and pos.sl >= be_level)
+                or (not is_buy and pos.sl <= be_level)
+            )
+            if already_protected:
+                self._absolute_be_protected.add(oid)
+                return
+
+        usd_str = f"${profit_usd:.2f}" if profit_usd is not None else "n/a"
+        pos_ctx = build_context_for_symbol(pos.symbol)
+        if not pos_ctx.supports_modify:
+            # Deriv stake contracts cannot modify SL — record intent locally
+            # so the dashboard/state reflect the protection trigger.
+            pos.sl = be_level
+            pos.at_breakeven = True
+            if tm_trade is not None:
+                tm_trade.stop_loss = be_level
+                tm_trade.breakeven_active = True
+            self._absolute_be_protected.add(oid)
+            self.position_store.update_position(oid, sl=be_level, at_breakeven=True)
+            logger.info(
+                "🔒 PROFIT LOCK (local) — {} {} | +{:.1f} pips / {} | SL→BE {:.5f} "
+                "(absolute floor, modify unsupported)",
+                pos.direction, pos.symbol, profit_pips, usd_str, be_level,
+            )
+            return
+
+        success = self.platforms.modify_trade(oid, pos.platform, new_sl=be_level)
+        if success:
+            pos.sl = be_level
+            pos.at_breakeven = True
+            if tm_trade is not None:
+                tm_trade.stop_loss = be_level
+                tm_trade.breakeven_active = True
+            self._absolute_be_protected.add(oid)
+            self.position_store.update_position(oid, sl=be_level, at_breakeven=True)
+            logger.info(
+                "🔒 PROFIT LOCK — {} {} | +{:.1f} pips / {} | SL→BE {:.5f} (absolute floor)",
+                pos.direction, pos.symbol, profit_pips, usd_str, be_level,
+            )
+        else:
+            logger.error(
+                "🔴 PROFIT LOCK modify FAILED — {} {} oid={} | SL→BE {:.5f} rejected, "
+                "retrying next tick (profit {} still unprotected)",
+                pos.direction, pos.symbol, oid, be_level, usd_str,
+            )
 
     def _check_session_close(self, now: datetime) -> None:
         """
