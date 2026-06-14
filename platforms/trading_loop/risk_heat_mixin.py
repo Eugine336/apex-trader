@@ -584,6 +584,12 @@ class RiskHeatMarginMixin:
                         break
                 else:
                     return 0.0
+            # margin_level is an MT5 concept. Deriv synthetic accounts have no
+            # margin level (they report 0.0) — skip the call entirely so we
+            # don't hammer Deriv's rate-limited balance endpoint for a constant.
+            from platforms.mt5.mt5_connector import MT5Connector
+            if not isinstance(connector, MT5Connector):
+                return 0.0
             info = connector.get_account_info()
             return info.margin_level
         except Exception as exc:
