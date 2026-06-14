@@ -410,6 +410,9 @@ class RiskConfig:
     weekend_protection_enabled: bool = True
     weekend_protection_mode: str = "derisk"
     weekend_close_buffer_minutes: int = 15
+    # Hour (UTC) at which the FX week is treated as closing on Friday. New FX
+    # entries are blocked within weekend_close_buffer_minutes of this time.
+    friday_close_hour_utc: int = 21
     micro_account_threshold_usd: float = 100.0
     deriv_min_stake_usd: float = 0.35
     # Hard ceiling on the ACTUAL fraction of the account a single trade may
