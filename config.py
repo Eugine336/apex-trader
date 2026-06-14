@@ -609,6 +609,12 @@ class RiskConfig:
     h4_bias_gate_enabled: bool = True
     h4_bias_gate_mode: str = "penalty"
     h4_counter_trend_penalty: int = 15
+    # Regime score-threshold gate: when the RegimeLearner wants a higher
+    # conviction bar for a regime, a sub-bar setup is SIZED DOWN (bounded
+    # context with influence) rather than vetoed. "veto" restores the legacy
+    # hard rejection. regime_below_threshold_size_mult is the size haircut.
+    regime_score_threshold_mode: str = "penalty"
+    regime_below_threshold_size_mult: float = 0.7
 
     # ── Execution-quality size throttle ────────────────────────────────
     # When enabled, degraded execution quality (high slippage/latency/spread)
@@ -737,8 +743,14 @@ class DecisionConfig:
     reversal_trades_enabled: bool = True
     reversal_min_momentum: float = 0.2
     reversal_required_evidence: int = 3
-    reversal_size_multiplier: float = 0.5
+    reversal_size_multiplier: float = 0.7   # counter-trend reversals run at −30% size
     reversal_no_evidence_skip_penalty: float = 0.30
+    # ── HTF = bounded context (Scenario A) ────────────────────────────────
+    # When the full HTF stack (D1+H4+H1) supports the trade direction, give a
+    # bounded size BONUS on top of the conviction model — HTF helps when it
+    # agrees, hurts (reversal haircut) when it opposes, but never dictates.
+    htf_aligned_size_bonus: float = 0.15     # +15% size on a fully-aligned stack
+    htf_aligned_threshold: float = 0.5       # min tf_alignment to count as "aligned"
 
 
 # ---------------------------------------------------------------------------
