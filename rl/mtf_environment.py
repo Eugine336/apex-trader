@@ -20,6 +20,8 @@ The legacy ``ApexTradingEnv`` is untouched.
 
 from __future__ import annotations
 
+import hashlib
+import os
 import numpy as np
 import pandas as pd
 from dataclasses import dataclass
@@ -211,6 +213,7 @@ class ApexMultiTFTradingEnv:
         self.category       = info.category.value
 
     def _load_data(self, data_dir: str):
+        self._data_dir = str(data_dir)
         d = Path(data_dir)
         self._dfs: dict[str, pd.DataFrame] = {}
         for tf in TF_ORDER:
@@ -242,8 +245,36 @@ class ApexMultiTFTradingEnv:
         Each cached observation is built with ``in_trade=0``; the live,
         position-dependent ``in_trade`` value is injected per step in
         :meth:`_observe` so reward and position logic stay fully dynamic.
+
+        Results are additionally persisted to disk (keyed by a hash of the
+        source OHLCV frames + schema) so the build runs **once per symbol** and
+        is reused across the parallel rollout workers, process restarts and
+        future runs. Set ``APEX_OBS_CACHE=0`` to disable, or
+        ``APEX_OBS_CACHE_DIR`` to relocate the cache.
         """
         n = len(self._m5_feat)
+        files = self._obs_cache_files(n)
+
+        # Fast path: a complete cache already exists -> memory-map it and return.
+        if files is not None and self._load_obs_cache(files, n):
+            return
+
+        # Serialise the build so that, when several workers start at once, only
+        # one process computes a given symbol and the rest load what it writes.
+        lock = self._acquire_cache_lock(files)
+        try:
+            if files is not None and self._load_obs_cache(files, n):
+                return
+
+            self._compute_observations(n)
+
+            if files is not None:
+                self._save_obs_cache(files)
+        finally:
+            self._release_cache_lock(lock)
+
+    def _compute_observations(self, n: int) -> None:
+        """Build the full observation/context tensors from scratch (no cache)."""
         self._precomputed_obs = np.zeros((n, *OBS_SHAPE), dtype=np.float32)
         self._precomputed_ctx = np.zeros((n, N_CONTEXT_FEATURES), dtype=np.float32)
         self._precomputed_valid = np.zeros(n, dtype=bool)
@@ -302,6 +333,125 @@ class ApexMultiTFTradingEnv:
             "[{}] Pre-computed {}/{} observations ({:.1f} MiB cached)",
             self.instrument, built, n, mb,
         )
+
+    # ── Observation disk cache ───────────────────────────────────────────
+    #
+    # The precomputed tensors are a pure function of the source OHLCV frames
+    # and the observation schema, so they are safe to persist and reuse. The
+    # cache key hashes that input; if the data or schema changes the key
+    # changes and any stale cache is ignored rather than silently reused.
+
+    def _obs_cache_files(self, n: int) -> Optional[dict]:
+        if os.environ.get("APEX_OBS_CACHE", "1") == "0":
+            return None
+        base = os.environ.get("APEX_OBS_CACHE_DIR") or str(
+            Path(getattr(self, "_data_dir", "data")) / ".obs_cache"
+        )
+        try:
+            d = Path(base)
+            d.mkdir(parents=True, exist_ok=True)
+            key = self._obs_cache_key(n)
+        except Exception as exc:  # unwritable dir, etc. -> compute without cache
+            logger.warning(
+                "[{}] obs cache unavailable ({}); computing without cache",
+                self.instrument, exc,
+            )
+            return None
+        stem = str(d / f"{self.instrument}_{key}")
+        return {
+            "obs": Path(stem + ".obs.npy"),
+            "ctx": Path(stem + ".ctx.npy"),
+            "valid": Path(stem + ".valid.npy"),
+            "lock": Path(stem + ".lock"),
+        }
+
+    def _obs_cache_key(self, n: int) -> str:
+        h = hashlib.sha1()
+        h.update(b"apex_obs_cache_v1")
+        h.update(repr((tuple(OBS_SHAPE), N_CONTEXT_FEATURES, WINDOW, ATR_PERIOD,
+                       N_TIMEFRAMES, int(n))).encode())
+        h.update(self.instrument.encode())
+        h.update(repr(sorted(self._profile.items())).encode())
+        for tf in TF_ORDER:
+            df = self._dfs[tf]
+            h.update(tf.encode())
+            h.update(str(len(df)).encode())
+            for col in ("open", "high", "low", "close", "volume"):
+                if col in df.columns:
+                    h.update(np.ascontiguousarray(
+                        df[col].to_numpy(dtype=np.float64)).tobytes())
+            t = pd.to_datetime(df["time"], utc=True).astype("int64").to_numpy()
+            h.update(np.ascontiguousarray(t).tobytes())
+        return h.hexdigest()[:16]
+
+    def _load_obs_cache(self, files: dict, n: int) -> bool:
+        try:
+            if not all(files[k].exists() for k in ("obs", "ctx", "valid")):
+                return False
+            obs = np.load(files["obs"], mmap_mode="r")
+            ctx = np.load(files["ctx"])
+            valid = np.load(files["valid"])
+            if (obs.shape != (n, *OBS_SHAPE)
+                    or ctx.shape != (n, N_CONTEXT_FEATURES)
+                    or valid.shape != (n,)):
+                return False
+            self._precomputed_obs = obs
+            self._precomputed_ctx = ctx
+            self._precomputed_valid = valid
+            mb = obs.nbytes / (1024 * 1024)
+            logger.info(
+                "[{}] Loaded {}/{} observations from disk cache ({:.1f} MiB, mmap)",
+                self.instrument, int(valid.sum()), n, mb,
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "[{}] obs cache load failed ({}); recomputing",
+                self.instrument, exc,
+            )
+            return False
+
+    def _save_obs_cache(self, files: dict) -> None:
+        try:
+            for k in ("obs", "ctx", "valid"):
+                arr = np.asarray(getattr(self, f"_precomputed_{k}"))
+                tmp = Path(f"{files[k]}.tmp.{os.getpid()}")
+                with open(tmp, "wb") as f:
+                    np.save(f, arr)
+                os.replace(tmp, files[k])
+            logger.info("[{}] Saved observations to disk cache", self.instrument)
+        except Exception as exc:
+            logger.warning(
+                "[{}] obs cache save failed ({}); continuing",
+                self.instrument, exc,
+            )
+
+    def _acquire_cache_lock(self, files: Optional[dict]):
+        if files is None:
+            return None
+        try:
+            import fcntl
+            fd = open(files["lock"], "w")
+            fcntl.flock(fd.fileno(), fcntl.LOCK_EX)
+            return fd
+        except Exception:
+            # Locking unavailable (e.g. non-POSIX FS). Atomic writes still keep
+            # the cache correct; workers may just each compute once in parallel.
+            return None
+
+    def _release_cache_lock(self, fd) -> None:
+        if fd is None:
+            return
+        try:
+            import fcntl
+            fcntl.flock(fd.fileno(), fcntl.LOCK_UN)
+        except Exception:
+            pass
+        try:
+            fd.close()
+        except Exception:
+            pass
+
 
     def _observe(self) -> tuple[np.ndarray, np.ndarray, int]:
         if self.idx < 0 or self.idx >= len(self._m5_feat):
