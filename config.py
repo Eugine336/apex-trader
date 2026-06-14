@@ -612,6 +612,11 @@ class RiskConfig:
     # Caps how far the fill price may deviate from the requested price on
     # market orders, protecting against arbitrarily bad fills in fast markets.
     max_deviation_points: int = 20
+    # P8b: per-instrument max slippage (in pips) for market entries. Converted
+    # to broker points using each symbol's own point size, so the cap means the
+    # same thing on FX / metals / indices / crypto (a single global point value
+    # does not). 0 disables → falls back to the global max_deviation_points.
+    max_slippage_pips: float = 2.0
 
     # ── P12: minimum profit (in R) before breakeven activates ─────────────
     # Activating BE on the first profitable tick after TP1 kills runners on a
