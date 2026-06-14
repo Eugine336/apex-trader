@@ -45,6 +45,7 @@ from management.trade_manager import (
     EntrySignal as TMEntrySignal,
 )
 from adaptive.optimizer import AdaptiveOptimizer as MLAdapter
+from adaptive.gate_tuner import GateTuner
 from brain.swap_model import load_swap_rates, estimate_swap
 from platforms.base_connector import OrderResult, CloseResult, PositionInfo
 from platforms.deriv.deriv_connector import DerivConnector
@@ -249,6 +250,12 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         )
         self._active_shadows: dict = {}      # contract_id -> paper position namespace
         self._max_active_shadows = 20        # bound live re-scan cost
+        # Shadow-outcome → quality-gate auto-tuner: loosens/tightens tunable
+        # gate thresholds within bounded envelopes based on whether the gate's
+        # rejected setups would have won (learned, not hardcoded).
+        self._gate_tuner = GateTuner()
+        self._last_gate_tune_time = 0.0
+        self._gate_tune_interval_seconds = 6 * 3600
 
         self.watchdog = HealthWatchdog()
         self.maintenance = DailyMaintenance()
@@ -1487,7 +1494,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # ev_estimate=0.0 means insufficient data (new pair) — always allow.
         # Only block when the system has enough history to be confident it's a loser.
         ev_val = getattr(result, "ev_estimate", 0.0)
-        if ev_val < 0.0:
+        # Learned, bounded EV cutoff (base 0.0). The gate auto-tuner lowers it
+        # within an envelope when shadow outcomes show this gate keeps rejecting
+        # winners; it stays at 0.0 by default.
+        ev_cutoff = self._gate_tuner.threshold("ev_gate", 0.0)
+        if ev_val < ev_cutoff:
             # Determine confidence from EVEstimator sample size indirectly via score
             # We gate on negative EV only when pair_mult is also below 1.0 (i.e. learner
             # has marked this pair as REDUCE_SIZE or worse) — belt + braces gate.
@@ -4121,6 +4132,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         self._maybe_calibrate_planner()
 
+        self._maybe_calibrate_gates()
+
         self._maybe_resolve_shadows()
 
         self._maybe_backup_data()
@@ -4147,6 +4160,28 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 )
         except Exception as exc:
             logger.debug("[shadow] discard stale pending failed: {}", exc)
+
+    def _maybe_calibrate_gates(self) -> None:
+        """Tune quality-gate thresholds from shadow outcomes (bounded, logged).
+
+        If a tunable quality gate's rejected setups would have won, loosen it a
+        little within its envelope; if they would have lost, tighten back toward
+        neutral. Safety/physical gates are never touched.
+        """
+        now = _time.time()
+        if now - self._last_gate_tune_time < self._gate_tune_interval_seconds:
+            return
+        self._last_gate_tune_time = now
+        try:
+            outcomes = self._shadow_store.get_outcomes_by_gate()
+            changes = self._gate_tuner.calibrate(outcomes)
+            if changes:
+                logger.info(
+                    "🎛️ Gate auto-tune — {} quality gate(s) adjusted from shadow outcomes",
+                    len(changes),
+                )
+        except Exception as exc:
+            logger.debug("[gate-tuner] calibration failed: {}", exc)
 
     def _maybe_calibrate_planner(self) -> None:
         """Evolve PlannerConfig from realised plan→outcome data."""
