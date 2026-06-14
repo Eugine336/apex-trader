@@ -68,6 +68,7 @@ from platforms.trading_loop.positions import ManagedPosition, _LockedPositions
 from platforms.trading_loop.recovery_mixin import RecoveryReconciliationMixin
 from platforms.trading_loop.risk_heat_mixin import RiskHeatMarginMixin
 from platforms.trading_loop.exit_checks_mixin import ExitChecksMixin
+from platforms.trading_loop.shadow_live_mixin import ShadowLiveMixin
 
 from persistence.event_store import get_event_store, new_cycle_id, new_setup_id
 from persistence.domain_events import (
@@ -147,7 +148,7 @@ def _exit_reasons_conflict(broker_reason: str, manager_reason: str) -> bool:
     return False
 
 
-class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMixin):
+class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMixin, ShadowLiveMixin):
     """
     Master trading loop — orchestrates the full pipeline.
     Scan → Entry → Manage → Risk → Repeat.
@@ -231,6 +232,23 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # Un-executed (PENDING) shadow contracts older than this are discarded
         # rather than replayed forever — keeps the backlog/ DB bounded.
         self._shadow_max_pending_age_seconds = 3 * 86400
+        # ── Full-fidelity live shadow resolution ─────────────────────────
+        # A dedicated *paper* TradeManager (same class/config as the real one)
+        # so rejected-setup contracts are resolved on the LIVE feed using the
+        # same management logic — never historical CSVs. Kept separate from the
+        # real trade_manager so paper trades never touch broker reconciliation.
+        self._shadow_tm = TradeManager(
+            partial_close_ratio=0.5,
+            breakeven_buffer_pips=2.0,
+            tp_adjust_enabled=self.config.risk.tp_adjust_enabled,
+            tp3_ladder_enabled=self.config.risk.tp3_ladder_enabled,
+            tp3_r_multiple=self.config.risk.tp3_r_multiple,
+            tp3_close_ratio=self.config.risk.tp3_close_ratio,
+            breakeven_min_profit_r=self.config.risk.breakeven_min_profit_r,
+            trailing_swing_lookback=self.config.risk.trailing_swing_lookback,
+        )
+        self._active_shadows: dict = {}      # contract_id -> paper position namespace
+        self._max_active_shadows = 20        # bound live re-scan cost
 
         self.watchdog = HealthWatchdog()
         self.maintenance = DailyMaintenance()
@@ -608,6 +626,15 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
             cycle["positions_updated"] = len(self.managed_positions)
             cycle["positions_closed"] = closed_count
+
+            # ── Full-fidelity live shadow resolution ─────────────────────
+            # Advance rejected-setup paper trades one step on the live feed,
+            # managed by the real engines (never historical CSVs). Fully
+            # isolated + fail-safe: cannot affect real trading.
+            try:
+                self._advance_shadows(now)
+            except Exception as exc:
+                logger.debug("[shadow-live] advance cycle failed: {}", exc)
 
         # ── Periodic reconciliation heartbeat (H6) ───────────────────────
         if self._recovery_completed and self._last_reconcile_time is not None:
@@ -3089,9 +3116,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         pressure: int = 0,
         opposing_boost: int = 0,
         pressure_details: list[str] | None = None,
+        trade_manager=None,
     ) -> TradeContext:
         """Assemble the full TradeContext from all available data sources."""
-        tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+        tm = trade_manager or self.trade_manager
+        tm_trade = tm.get_trade(pos.tm_trade_id)
         pnl_pips = tm_trade.pnl_pips if tm_trade else 0.0
         # Prefer the broker's live dollar P&L (synced onto the managed position
         # each cycle) — the real money the broker sees. Fall back to the local
@@ -4071,37 +4100,27 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._maybe_backup_data()
 
     def _maybe_resolve_shadows(self) -> None:
-        """Periodically resolve pending shadow contracts.
+        """Periodically discard stale un-executed shadow contracts.
 
-        The Shadow Resolver replays the real TradeManager over forward price to
-        produce counterfactual outcomes for rejected/skipped setups.  Wired here
-        so the pipeline actually runs in production — without it, contracts pile
-        up PENDING forever (the 'thousands of pending shadows' symptom).
+        Resolution itself now happens LIVE, every cycle, in `_advance_shadows`
+        (full-fidelity: real TradeManager + decision engine + governor on the
+        live feed — no historical CSV replay). This method only ages out old
+        PENDING contracts that were never managed forward, keeping the DB bounded.
         """
         now = _time.time()
         if now - self._last_shadow_resolve_time < self._shadow_resolve_interval_seconds:
             return
         self._last_shadow_resolve_time = now
-        # Discard stale, un-executed (PENDING) contracts first — old rejected
-        # setups aren't worth replaying and would otherwise grow the backlog.
         try:
             cutoff_ms = int((now - self._shadow_max_pending_age_seconds) * 1000)
             discarded = self._shadow_store.discard_stale_pending(cutoff_ms)
             if discarded:
                 logger.info(
-                    "👻 Shadow resolver — discarded {} stale pending contracts (older than {:.0f}d)",
+                    "👻 Shadow — discarded {} stale pending contracts (older than {:.0f}d)",
                     discarded, self._shadow_max_pending_age_seconds / 86400,
                 )
         except Exception as exc:
             logger.debug("[shadow] discard stale pending failed: {}", exc)
-        try:
-            from persistence.shadow_resolver import run_resolver
-
-            counts = run_resolver(self._shadow_store, batch_size=200)
-            if counts:
-                logger.info("👻 Shadow resolver — {}", counts)
-        except Exception as exc:
-            logger.warning("Shadow resolver error: {}", exc)
 
     def _maybe_calibrate_planner(self) -> None:
         """Evolve PlannerConfig from realised plan→outcome data."""
