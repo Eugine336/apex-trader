@@ -1,5 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 
+const API_KEY = import.meta.env.VITE_DASHBOARD_API_KEY || '';
+
 export default function useLiveState() {
   const [state, setState] = useState({});
   const [connected, setConnected] = useState(false);
@@ -8,7 +10,10 @@ export default function useLiveState() {
 
   const connect = useCallback(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws.current = new WebSocket(`${protocol}//${window.location.host}/ws`);
+    const url = `${protocol}//${window.location.host}/ws`;
+    // Browsers can't set custom headers on a WebSocket, so the API key is
+    // offered as a subprotocol — the backend reads it from Sec-WebSocket-Protocol.
+    ws.current = API_KEY ? new WebSocket(url, [API_KEY]) : new WebSocket(url);
 
     ws.current.onopen = () => setConnected(true);
 
