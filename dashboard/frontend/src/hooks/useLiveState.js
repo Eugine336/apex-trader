@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { getApiKey } from './useApi';
 
+const API_KEY = import.meta.env.VITE_DASHBOARD_API_KEY || '';
+
 export default function useLiveState() {
   const [state, setState] = useState({});
   const [connected, setConnected] = useState(false);
