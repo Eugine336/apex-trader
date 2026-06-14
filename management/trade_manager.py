@@ -362,12 +362,15 @@ class TradeManager:
         trade.close_time = bar_time or datetime.now(timezone.utc)
         trade.close_reason = reason
         self._update_pnl(trade)
-        # Shadow-replay closes (trade_id 'shadow_*') run hundreds at a time when
-        # the resolver drains the backlog — keep them at DEBUG so they don't
-        # flood the live log; real trades stay at INFO.
-        _log = logger.debug if str(trade.trade_id).startswith("shadow_") else logger.info
-        _log(
-            f"TRADE CLOSED: {trade.pair} {trade.direction} — {reason} "
+        # This only marks the IN-MEMORY trade closed — it is the manager's exit
+        # DECISION, not a broker confirmation. The trading loop decides whether
+        # to send it to the broker, and may DEFER a discretionary (stall/
+        # structure) exit when the strategic engine says HOLD. The authoritative,
+        # broker-CONFIRMED "TRADE CLOSED" is logged by the loop's
+        # _record_closed_trade. Keep this at DEBUG so an internal or deferred
+        # exit never looks like a real broker close.
+        logger.debug(
+            f"[manager exit decision] {trade.pair} {trade.direction} — {reason} "
             f"— {trade.pnl_pips:+.1f} pips ({trade.pnl_dollars:+.2f}$)"
         )
         return trade

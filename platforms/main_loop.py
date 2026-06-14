@@ -2318,6 +2318,19 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                             closed_count += 1
                             if tm_trade.re_entry_eligible:
                                 self._check_re_entry(pos)
+                        else:
+                            logger.error(
+                                "🔴 BROKER CLOSE FAILED — {} {} oid={} | {} | {} — "
+                                "position STILL OPEN at broker, retrying next cycle",
+                                pos.direction, pos.symbol, oid,
+                                tm_trade.close_reason or "exit",
+                                getattr(result, "error", "unknown"),
+                            )
+                            self._add_warning(
+                                "error",
+                                f"Broker close FAILED for {pos.symbol} — still open, retrying",
+                                pos.symbol,
+                            )
                         continue
                 elif is_simulated_sl_tp:
                     # The simulation thinks SL/TP2 was hit, but the broker
@@ -2338,6 +2351,19 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         closed_count += 1
                         if tm_trade.re_entry_eligible:
                             self._check_re_entry(pos)
+                    else:
+                        logger.error(
+                            "🔴 BROKER CLOSE FAILED — {} {} oid={} | {} | {} — "
+                            "position STILL OPEN at broker, retrying next cycle",
+                            pos.direction, pos.symbol, oid,
+                            tm_trade.close_reason or "exit",
+                            getattr(result, "error", "unknown"),
+                        )
+                        self._add_warning(
+                            "error",
+                            f"Broker close FAILED for {pos.symbol} — still open, retrying",
+                            pos.symbol,
+                        )
                     continue
 
             if tm_trade.partial_closed and not was_partial:
