@@ -722,6 +722,23 @@ class DecisionConfig:
     enter_momentum_coeff: float = 0.30   # M1 (was 0.15)
     skip_htf_coeff: float = 0.20         # counter-HTF no longer dominates SKIP (was 0.35)
     skip_momentum_coeff: float = 0.30    # opposing M1 matters more (was 0.20)
+    # ── Regime-dependent weighting (roadmap D) ────────────────────────────
+    # In ranging/reversal regimes, shift decision influence off the slow HTF
+    # and onto M1 momentum (HTF reacts last). Trending regimes keep the base
+    # M5-primary weights above. regime_ranging_htf_scale=0.5 halves the HTF
+    # weights and reallocates the freed conviction weight to M1 momentum.
+    regime_weighting_enabled: bool = True
+    regime_ranging_htf_scale: float = 0.5
+    # ── Reversal trade type (roadmap E) ───────────────────────────────────
+    # A counter-HTF entry is taken as a REVERSAL only when it carries strong
+    # lower-timeframe evidence — M5 sweep + M1 BOS + momentum (all required by
+    # default) — and such trades are sized down. Counter-trend setups WITHOUT
+    # that evidence are pushed toward SKIP (falling-knife guard).
+    reversal_trades_enabled: bool = True
+    reversal_min_momentum: float = 0.2
+    reversal_required_evidence: int = 3
+    reversal_size_multiplier: float = 0.5
+    reversal_no_evidence_skip_penalty: float = 0.30
 
 
 # ---------------------------------------------------------------------------
