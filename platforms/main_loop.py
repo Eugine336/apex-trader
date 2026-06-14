@@ -126,6 +126,23 @@ def _validate_stop_target_sidedness(
     return True, ""
 
 
+def _regime_score_bump(
+    optimal_score_threshold: int, sample_size: int, min_sample: int,
+) -> int:
+    """Defensive-only entry-bar bump derived from a regime's learned score
+    threshold.
+
+    The learner's threshold (~82–90) is calibrated around a neutral 85, so the
+    meaningful signal is the DELTA above neutral, applied on top of the
+    instrument's own bar. Returns 0 (no change) unless the regime is confident
+    (≥ min_sample trades) AND wants a HIGHER bar — it never loosens, and is
+    clamped to a small ceiling so a noisy regime can't choke off all trading.
+    """
+    if sample_size < min_sample:
+        return 0
+    return max(0, min(8, int(optimal_score_threshold) - 85))
+
+
 _HARD_LEVEL_REASONS = {"SL", "TP", "STOP_OUT"}
 _BENIGN_BROKER_REASONS = {
     "BROKER_CLOSED_UNKNOWN", "ALGO", "MANUAL",
@@ -1474,6 +1491,35 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self._log_rejection(pair, direction, result.score, f"Spread too wide: {spread} (typical={typical})")
             self._persist_shadow_contract(signal, rejecting_gate=f"spread:{spread:.1f}")
             return False
+
+        # ── Regime score-threshold (defensive-only) ──────────────────────
+        # When the RegimeLearner is confident this regime needs a higher bar,
+        # raise the entry threshold for THIS instrument — only ever tightens,
+        # neutral when the regime is unknown/neutral so behaviour is unchanged.
+        try:
+            _regime = getattr(result, "regime", "") or ""
+            _rl = self.ml.regime_learner
+            _strat = _rl.get_strategy(_regime)
+            _bump = _regime_score_bump(
+                getattr(_strat, "optimal_score_threshold", 85),
+                getattr(_strat, "sample_size", 0),
+                _rl.MIN_SAMPLE,
+            )
+            if _bump > 0:
+                from brain.instrument_profile import get_profile
+                _base_bar = int(get_profile(pair).min_entry_score)
+                if result.score < _base_bar + _bump:
+                    self._log_rejection(
+                        pair, direction, result.score,
+                        f"regime '{_regime}' needs higher conviction "
+                        f"(score {int(result.score)} < {_base_bar}+{_bump})",
+                    )
+                    self._persist_shadow_contract(
+                        signal, rejecting_gate=f"regime_threshold:{_regime}",
+                    )
+                    return False
+        except Exception as exc:
+            logger.debug("[entry] regime threshold gate skipped: {}", exc)
 
         assessment = self.risk_engine.assess(
             pair=pair,
