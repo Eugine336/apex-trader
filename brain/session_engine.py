@@ -290,12 +290,24 @@ class NewsGuard:
     def _get_currencies_from_pairs(self, pairs: list[str]) -> list[str]:
         """Extract unique currencies from pair list."""
         from brain.currency_strength import CURRENCY_PAIRS
+        _KNOWN_CCY = {
+            "USD", "EUR", "GBP", "JPY", "CHF", "CAD", "AUD", "NZD",
+            "CNH", "SGD", "HKD", "MXN", "ZAR", "SEK", "NOK", "TRY",
+        }
         currencies = set()
         for pair in pairs:
-            if pair in CURRENCY_PAIRS:
-                base, quote = CURRENCY_PAIRS[pair]
+            p = pair.upper()
+            if p in CURRENCY_PAIRS:
+                base, quote = CURRENCY_PAIRS[p]
                 currencies.add(base)
                 currencies.add(quote)
+            else:
+                # Non-forex (crypto / metals priced in a currency, e.g. BTCUSD,
+                # XAUUSD): use the trailing 3-char currency so USD-driven events
+                # (FOMC/CPI) still freeze them around the release.
+                suffix = p[-3:]
+                if suffix in _KNOWN_CCY:
+                    currencies.add(suffix)
         return list(currencies)
 
     def _fetch_events(self, utc_now: datetime) -> Optional[list[NewsEvent]]:
@@ -321,12 +333,31 @@ class NewsGuard:
                     if event_time.tzinfo is None:
                         event_time = event_time.replace(tzinfo=timezone.utc)
 
-                    impact = "LOW"
+                    # Prefer the feed's OWN impact rating; the keyword list alone
+                    # misses high-impact events not in it (spelled-out "Non-Farm
+                    # Employment Change", PPI, central-bank speeches, etc.) and
+                    # would leave them unblocked.
                     title = entry.get("title", "").lower()
-                    if any(k in title for k in ["nfp", "cpi", "fomc", "gdp", "rate decision", "interest rate"]):
+                    ff_impact = str(entry.get("ff_impact", "")).strip().lower()
+                    if ff_impact == "high":
                         impact = "HIGH"
-                    elif any(k in title for k in ["pmi", "retail", "employment"]):
+                    elif ff_impact == "medium":
                         impact = "MEDIUM"
+                    elif ff_impact in ("low", "holiday"):
+                        impact = "LOW"
+                    else:
+                        # Feed gave no rating — fall back to a broadened keyword heuristic.
+                        impact = "LOW"
+                        if any(k in title for k in [
+                            "nfp", "non-farm", "nonfarm", "cpi", "fomc", "gdp",
+                            "rate decision", "interest rate", "ppi", "unemployment",
+                            "central bank", "press conference", "rate statement",
+                        ]):
+                            impact = "HIGH"
+                        elif any(k in title for k in [
+                            "pmi", "retail", "employment", "sentiment", "confidence",
+                        ]):
+                            impact = "MEDIUM"
 
                     currency = entry.get("ff_currency", "USD").upper()
                     mins_away = (event_time - utc_now).total_seconds() / 60
