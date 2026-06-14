@@ -58,6 +58,7 @@ from risk.portfolio_risk_state import (
 )
 from risk.risk_engine import RiskEngine
 from risk.risk_reporter import RiskReporter
+from risk.account_risk import AccountRiskManager
 from scanner import PairScanner, PairRanker, ScanScheduler
 from trigger.entry_engine import EntryEngine, EntryRejection
 from trigger.entry_validator import EntryValidator
@@ -326,8 +327,45 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         if self._governor is not None:
             self._planner.set_governor(self._governor)
 
+        # ── Per-account risk silos ───────────────────────────────────────
+        # Each broker/account ($5, $10, MT5, Deriv, …) is managed independently:
+        # its own balance, daily-loss cap and heat. A trade is sized/gated only
+        # against its own account so the accounts never contaminate each other.
+        self._account_risk = AccountRiskManager(
+            daily_loss_cap_pct=getattr(gcfg, "daily_loss_cap_pct", 3.0) if gcfg else 3.0,
+            daily_loss_recovery_pct=getattr(gcfg, "daily_loss_recovery_pct", 1.5) if gcfg else 1.5,
+            heat_block_pct=getattr(self.config.risk, "portfolio_heat_block_pct", 2.0),
+        )
+        self._account_key_cache: dict[str, str] = {}
+
         # ── Data backup ──────────────────────────────────────────────────
         self._last_data_backup_ts: float = 0.0
+
+    def _account_key(self, symbol: str) -> str:
+        """Resolve the risk-silo key (broker + account login) for a symbol.
+
+        Keyed by broker name AND account id so multiple MT5 brokers, multiple
+        logins on the same broker, and Deriv are all separate silos. Cached
+        once the account id is known (it is stable per symbol).
+        """
+        key = self._account_key_cache.get(symbol)
+        if key:
+            return key
+        try:
+            broker = self.platforms.get_broker_name(symbol) or "default"
+        except Exception:
+            broker = "default"
+        try:
+            acct_id = self.platforms.get_account_id(symbol) or ""
+        except Exception:
+            acct_id = ""
+        key = f"{broker}:{acct_id}" if acct_id else broker
+        # Only cache once the account id is resolved; otherwise keep retrying
+        # so a not-yet-connected account doesn't get pinned to a broker-only key.
+        if acct_id:
+            self._account_key_cache[symbol] = key
+        return key
+
 
     # ── Thread-safe position accessors ──────────────────────────────────
 
@@ -1164,6 +1202,26 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             return False
         self._last_known_balance = balance
         self.risk_engine.balance = balance
+
+        # ── Per-account risk silo gate ───────────────────────────────────
+        # Size/gate this entry against ITS OWN account only. A daily-loss halt
+        # or hot heat on one account never blocks another.
+        _acct = self._account_key(pair)
+        self._account_risk.update_balance(_acct, balance)
+        if self._account_risk.daily_loss_halted(_acct):
+            self._log_rejection(
+                pair, direction, result.score,
+                f"Account '{_acct}' daily-loss halt "
+                f"({self._account_risk.daily_pnl_pct(_acct):.2f}%)",
+            )
+            return False
+        if getattr(self.config.risk, "portfolio_heat_enabled", False) and self._account_risk.heat_blocked(_acct):
+            self._log_rejection(
+                pair, direction, result.score,
+                f"Account '{_acct}' heat {self._account_risk.heat(_acct):.2f}% "
+                f"≥ block {self._account_risk.heat_block_pct:.1f}%",
+            )
+            return False
 
         # Resolve actual risk % from current drawdown mode — never hardcode 0.02
         _exec_risk = self.risk_engine.drawdown_guard.risk_map.get(self.risk_engine.drawdown_guard.mode, 0.005)
@@ -3504,6 +3562,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     payload["governor"] = self._governor.to_state()
             except Exception as exc:
                 logger.debug("[guard-state] governor state failed: {}", exc)
+            try:
+                if getattr(self, "_account_risk", None) is not None:
+                    payload["account_risk"] = self._account_risk.to_state()
+            except Exception as exc:
+                logger.debug("[guard-state] account_risk state failed: {}", exc)
             self.position_store.save_guard_state(payload)
         except Exception as exc:
             logger.error("Guard state persist failed: {}", exc)
@@ -3545,6 +3608,12 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 if balance:
                     self._governor.set_reference_balance(balance)
                 self._governor.update_daily_pnl(pnl_dollars)
+
+            # Per-account silo — book the partial against its own account too.
+            _acct = self._account_key(pos.symbol)
+            if balance:
+                self._account_risk.update_balance(_acct, balance)
+            self._account_risk.register_realized(_acct, pnl_dollars)
 
             self._persist_guard_state()
 
@@ -3629,6 +3698,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 self._governor.update_daily_pnl(pnl_dollars)
             except Exception as exc:
                 logger.debug("[Governor] daily pnl update failed: {}", exc)
+
+        # Per-account silo — book the realised P&L against this trade's own
+        # account so its daily-loss cap is independent of the other accounts.
+        try:
+            _acct = self._account_key(pos.symbol)
+            if balance:
+                self._account_risk.update_balance(_acct, balance)
+            self._account_risk.register_realized(_acct, pnl_dollars)
+        except Exception as exc:
+            logger.debug("[AccountRisk] realized update failed: {}", exc)
 
         # Persist the full daily risk state AFTER every tally has been updated
         # so a restart restores the post-close picture (not a pre-close one).
@@ -3957,6 +4036,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 self.risk_engine.reset_daily()
             except Exception as exc:
                 logger.debug("[RiskEngine] daily reset failed: {}", exc)
+            # Reset every per-account daily tally / loss-cap halt too.
+            try:
+                self._account_risk.reset_daily()
+            except Exception as exc:
+                logger.debug("[AccountRisk] daily reset failed: {}", exc)
             if self.maintenance.should_run():
                 try:
                     maint_result = self.maintenance.run()

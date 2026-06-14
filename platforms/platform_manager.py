@@ -417,6 +417,24 @@ class PlatformManager:
             return server.split("-")[0].lower() if server else "mt5"
         return "deriv"
 
+    def get_account_id(self, symbol: str) -> str:
+        """Stable per-account identifier (login / loginid) for the connector
+        serving this symbol.
+
+        Used to keep two logins on the SAME broker in separate risk silos.
+        Reads the connector's stored id directly — no broker round-trip.
+        """
+        try:
+            connector = self.get_connector(symbol)
+        except Exception:
+            return ""
+        if isinstance(connector, MT5Connector):
+            login = getattr(connector, "_login", 0)
+            return str(login) if login else ""
+        if isinstance(connector, DerivConnector):
+            return str(getattr(connector, "_account_id", "") or "")
+        return ""
+
     def get_typical_spreads(self, symbol: str) -> dict[str, float]:
         from config import INSTRUMENT_REGISTRY
         result: dict[str, float] = {}
