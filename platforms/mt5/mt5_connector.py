@@ -339,6 +339,24 @@ class MT5Connector(BaseConnector):
         if tick is None:
             return self._fail_order(symbol, direction, lots, sl, tp, "No tick data")
 
+        # Fail-closed on bad/stale ticks — never open a market position on a
+        # non-positive or stale price. The staleness guard previously lived only
+        # in get_price(), so market entries could fire on a frozen feed.
+        if tick.bid <= 0 or tick.ask <= 0 or tick.time <= 0:
+            return self._fail_order(
+                symbol, direction, lots, sl, tp,
+                f"Invalid tick (bid={tick.bid}, ask={tick.ask}, epoch={tick.time})",
+            )
+        tick_age = (
+            datetime.now(timezone.utc)
+            - datetime.fromtimestamp(tick.time, tz=timezone.utc)
+        ).total_seconds()
+        if tick_age > self._max_tick_age_seconds:
+            return self._fail_order(
+                symbol, direction, lots, sl, tp,
+                f"STALE_TICK: {tick_age:.1f}s old (limit {self._max_tick_age_seconds}s)",
+            )
+
         is_buy = direction.upper() in ("BUY", "LONG")
         order_type = mt5.ORDER_TYPE_BUY if is_buy else mt5.ORDER_TYPE_SELL
         price = tick.ask if is_buy else tick.bid
@@ -436,26 +454,81 @@ class MT5Connector(BaseConnector):
                 tp = round(new_tp, digits)
                 request["tp"] = tp
 
-        t0 = _time.monotonic()
-        result = mt5.order_send(request)
-        latency = (_time.monotonic() - t0) * 1000
+        # Retcodes that mean "a position exists". DONE_PARTIAL is a real (smaller)
+        # fill, not a failure — we read result.volume below to size accordingly.
+        done_codes = {
+            mt5.TRADE_RETCODE_DONE,
+            getattr(mt5, "TRADE_RETCODE_DONE_PARTIAL", 10010),
+        }
+        # Transient codes worth re-pricing + retrying. Permanent codes
+        # (INVALID_STOPS, NO_MONEY, market closed) are NOT retried.
+        retryable_codes = {
+            getattr(mt5, "TRADE_RETCODE_REQUOTE", 10004),
+            getattr(mt5, "TRADE_RETCODE_PRICE_CHANGED", 10020),
+            getattr(mt5, "TRADE_RETCODE_PRICE_OFF", 10021),
+            getattr(mt5, "TRADE_RETCODE_TIMEOUT", 10012),
+            getattr(mt5, "TRADE_RETCODE_CONNECTION", 10031),
+        }
 
-        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+        max_attempts = 3
+        result = None
+        latency = 0.0
+        for attempt in range(1, max_attempts + 1):
+            t0 = _time.monotonic()
+            result = mt5.order_send(request)
+            latency = (_time.monotonic() - t0) * 1000
+
+            if result is not None and result.retcode in done_codes:
+                break
+
             err = result.comment if result else str(mt5.last_error())
-            logger.error("MT5 order failed — {} {} {} lots: {}", direction, mapped, lots, err)
+            retcode = result.retcode if result else None
+
             # Tag market-closed errors so the execution circuit breaker upstream
-            # does NOT count them as real failures and open a cooldown window.
-            # A closed market is expected and temporary — not an execution problem.
+            # does NOT count them as real failures — a closed market is expected.
             if "market closed" in err.lower() or "market is closed" in err.lower():
                 return self._fail_order(symbol, direction, lots, sl, tp, f"MARKET_CLOSED: {err}")
+
+            if retcode in retryable_codes and attempt < max_attempts:
+                logger.warning(
+                    "MT5 order transient failure ({}) — {} {}, attempt {}/{}, re-pricing",
+                    err, direction, mapped, attempt, max_attempts,
+                )
+                # Re-price off a fresh tick before retrying (requote/price-off).
+                fresh = mt5.symbol_info_tick(mapped)
+                if fresh is not None and fresh.bid > 0 and fresh.ask > 0:
+                    price = fresh.ask if is_buy else fresh.bid
+                    request["price"] = price
+                continue
+
+            logger.error("MT5 order failed — {} {} {} lots: {}", direction, mapped, lots, err)
             return self._fail_order(symbol, direction, lots, sl, tp, err)
+
+        if result is None or result.retcode not in done_codes:
+            err = result.comment if result else str(mt5.last_error())
+            logger.error(
+                "MT5 order failed after {} attempts — {} {}: {}",
+                max_attempts, direction, mapped, err,
+            )
+            return self._fail_order(symbol, direction, lots, sl, tp, err)
+
+        # Use the broker's actually-filled volume (handles partial fills) so the
+        # managed position is seeded with the real size, not the requested size.
+        filled_lots = float(getattr(result, "volume", 0.0) or 0.0)
+        if filled_lots <= 0:
+            filled_lots = lots
+        if abs(filled_lots - lots) > 1e-9:
+            logger.warning(
+                "MT5 PARTIAL/ADJUSTED FILL — {} {} requested {:.2f} lots, filled {:.2f} lots",
+                direction, mapped, lots, filled_lots,
+            )
 
         pip_size = get_pip_size(symbol)
         slippage = abs(result.price - price) / pip_size
 
         logger.info(
             "MT5 order filled — {} {} {} lots @ {} (slip {:.1f} pip, {:.0f}ms)",
-            direction, mapped, lots, result.price, slippage, latency,
+            direction, mapped, filled_lots, result.price, slippage, latency,
         )
         return OrderResult(
             success=True,
@@ -463,7 +536,7 @@ class MT5Connector(BaseConnector):
             fill_price=result.price,
             requested_price=price,
             slippage_pips=round(slippage, 2),
-            lots=lots,
+            lots=filled_lots,
             symbol=symbol,
             direction=direction.upper(),
             sl=sl,

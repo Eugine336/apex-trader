@@ -212,8 +212,11 @@ class PortfolioGovernor:
             ref = float(state.get("reference_balance", 0.0) or 0.0)
             if ref > 0:
                 self._reference_balance = ref
-        except (TypeError, ValueError):
-            pass
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "[PortfolioGovernor] corrupt persisted state ignored — daily tally/"
+                "halt start fresh this session: {}", exc,
+            )
 
     def set_reference_balance(self, balance: float) -> None:
         if balance and balance > 0:

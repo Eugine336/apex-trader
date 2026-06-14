@@ -544,7 +544,11 @@ class ExitChecksMixin:
                             pos.direction, pos.symbol, oid, be_level, pos.sl, spread_ratio,
                         )
             except Exception as exc:
-                logger.debug("Spread monitor error for {}: {}", pos.symbol, exc)
+                logger.warning(
+                    "Spread-protection check failed for {} — position may be "
+                    "unprotected against spread deterioration this cycle: {}",
+                    pos.symbol, exc,
+                )
 
     def _check_opportunity_cost_exit(
         self, oid: str, pos: ManagedPosition, now: datetime,

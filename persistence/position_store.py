@@ -88,6 +88,9 @@ _MIGRATE_CONFLUENCES = (
 _MIGRATE_INITIAL_RISK = (
     "ALTER TABLE managed_positions ADD COLUMN initial_risk_dollars REAL"
 )
+_MIGRATE_SCALE_IN = (
+    "ALTER TABLE managed_positions ADD COLUMN scale_in_count INTEGER NOT NULL DEFAULT 0"
+)
 
 _CREATE_GUARD_STATE = """
 CREATE TABLE IF NOT EXISTS guard_state (
@@ -146,6 +149,12 @@ class PositionStore:
             except sqlite3.OperationalError as exc:
                 logger.debug("[position_store] initial_risk_dollars migration skipped (likely already exists): {}", exc)
                 pass
+        if "scale_in_count" not in cols:
+            try:
+                self._conn.execute(_MIGRATE_SCALE_IN)
+            except sqlite3.OperationalError as exc:
+                logger.debug("[position_store] scale_in_count migration skipped (likely already exists): {}", exc)
+                pass
 
     # ── Health tracking ─────────────────────────────────────────────────
 
@@ -185,8 +194,8 @@ class PositionStore:
                      sl, tp1, tp2, score, regime, session, entry_type,
                      open_time, tp1_hit, at_breakeven, trailing,
                      tm_trade_id, stake_usd, multiplier, idempotency_key,
-                     confluences_json, initial_risk_dollars, last_update)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     confluences_json, initial_risk_dollars, scale_in_count, last_update)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         str(pos.order_id),
@@ -212,6 +221,7 @@ class PositionStore:
                         getattr(pos, "idempotency_key", ""),
                         json.dumps(getattr(pos, "confluences", [])),
                         getattr(pos, "initial_risk_dollars", None),
+                        int(getattr(pos, "scale_in_count", 0)),
                         datetime.now(timezone.utc).isoformat(),
                     ),
                 )
@@ -228,13 +238,13 @@ class PositionStore:
         allowed = {
             "sl", "tp1", "tp2", "lots", "tp1_hit", "at_breakeven",
             "trailing", "tm_trade_id", "stake_usd", "multiplier",
-            "idempotency_key",
+            "idempotency_key", "scale_in_count",
         }
         updates = {}
         for key, val in fields.items():
             if key not in allowed:
                 continue
-            if key in ("tp1_hit", "at_breakeven", "trailing"):
+            if key in ("tp1_hit", "at_breakeven", "trailing", "scale_in_count"):
                 updates[key] = int(val)
             else:
                 updates[key] = val

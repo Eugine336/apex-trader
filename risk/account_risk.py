@@ -26,12 +26,15 @@ class AccountRiskManager:
         daily_loss_cap_pct: float = 3.0,
         daily_loss_recovery_pct: float = 1.5,
         heat_block_pct: float = 2.0,
+        daily_loss_flatten_pct: float = 5.0,
     ) -> None:
         self.daily_loss_cap_pct = daily_loss_cap_pct
         self.daily_loss_recovery_pct = daily_loss_recovery_pct
         self.heat_block_pct = heat_block_pct
+        self.daily_loss_flatten_pct = daily_loss_flatten_pct
         self._balance: dict[str, float] = {}
         self._daily_pnl: dict[str, float] = {}
+        self._unrealized: dict[str, float] = {}
         self._halted: dict[str, bool] = {}
         self._heat: dict[str, float] = {}
 
@@ -79,22 +82,48 @@ class AccountRiskManager:
             return 0.0
         return self._daily_pnl.get(account, 0.0) / bal * 100.0
 
+    # ── Unrealized (open) P&L — refreshed each cycle from broker truth ───
+
+    def update_unrealized(self, account: str, pnl_dollars: float) -> None:
+        """Set the account's current OPEN (unrealized) P&L, then re-evaluate the
+        loss-cap halt against realized + unrealized combined. This is what lets
+        a deep open loss trip the halt before the trade is ever closed."""
+        if not account:
+            return
+        try:
+            self._unrealized[account] = float(pnl_dollars)
+        except (TypeError, ValueError):
+            return
+        self._evaluate_halt(account)
+
+    def unrealized(self, account: str) -> float:
+        return self._unrealized.get(account, 0.0)
+
+    def combined_pnl(self, account: str) -> float:
+        return self._daily_pnl.get(account, 0.0) + self._unrealized.get(account, 0.0)
+
+    def combined_pnl_pct(self, account: str) -> float:
+        bal = self._balance.get(account, 0.0)
+        if bal <= 0:
+            return 0.0
+        return self.combined_pnl(account) / bal * 100.0
+
     def _evaluate_halt(self, account: str) -> None:
         bal = self._balance.get(account, 0.0)
         if bal <= 0:
             return
-        pct = self.daily_pnl_pct(account)
+        pct = self.combined_pnl_pct(account)
         if self._halted.get(account, False):
             if pct >= -self.daily_loss_recovery_pct:
                 self._halted[account] = False
                 logger.info(
-                    "[AccountRisk] {} daily loss recovered to {:.2f}% — resuming entries",
+                    "[AccountRisk] {} daily loss recovered to {:.2f}% (incl. open) — resuming entries",
                     account, pct,
                 )
         elif pct <= -self.daily_loss_cap_pct:
             self._halted[account] = True
             logger.warning(
-                "[AccountRisk] {} HALTED — daily loss {:.2f}% breached −{:.1f}% cap",
+                "[AccountRisk] {} HALTED — daily loss {:.2f}% (incl. open) breached −{:.1f}% cap",
                 account, pct, self.daily_loss_cap_pct,
             )
 
@@ -103,10 +132,19 @@ class AccountRiskManager:
         self._evaluate_halt(account)
         return self._halted.get(account, False)
 
+    def flatten_breached(self, account: str) -> bool:
+        """True if combined (realized + unrealized) loss has breached the harder
+        flatten cap — the account should be derisked/flattened immediately."""
+        bal = self._balance.get(account, 0.0)
+        if bal <= 0:
+            return False
+        return self.combined_pnl_pct(account) <= -self.daily_loss_flatten_pct
+
     def reset_daily(self) -> None:
         if any(self._halted.values()):
             logger.info("[AccountRisk] daily reset — per-account loss-cap halts lifted")
         self._daily_pnl.clear()
+        self._unrealized.clear()
         self._halted.clear()
 
     # ── Persistence ──────────────────────────────────────────────────────
@@ -125,5 +163,8 @@ class AccountRiskManager:
             self._halted = {
                 str(k): bool(v) for k, v in (state.get("halted") or {}).items()
             }
-        except (TypeError, ValueError):
-            pass
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "[AccountRisk] corrupt persisted state ignored — per-account daily "
+                "loss caps start FRESH this session: {}", exc,
+            )

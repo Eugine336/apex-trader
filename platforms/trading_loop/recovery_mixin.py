@@ -181,6 +181,7 @@ class RecoveryReconciliationMixin:
                 pos.tm_trade_id = row["tm_trade_id"]
                 pos.last_update = datetime.fromisoformat(row["last_update"])
                 pos.initial_risk_dollars = row.get("initial_risk_dollars")
+                pos.scale_in_count = int(row.get("scale_in_count", 0) or 0)
 
                 tm_signal = TMEntrySignal(
                     pair=pos.symbol,

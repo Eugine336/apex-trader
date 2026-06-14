@@ -103,6 +103,11 @@ class EventStore:
         self._queue: queue.Queue = queue.Queue(maxsize=max_queue)
         self._dropped = 0
         self._dropped_lock = threading.Lock()
+        # Serialises every access to the single shared sqlite connection across
+        # the writer thread, the dashboard reader thread, and the main-thread
+        # pruner — without this, concurrent cursors race ("database is locked" /
+        # "recursive use of cursors") and reads silently fail.
+        self._db_lock = threading.Lock()
 
         self._shutdown = threading.Event()
         self._writer = threading.Thread(
@@ -204,9 +209,10 @@ class EventStore:
         params.append(limit)
 
         try:
-            cur = self._conn.execute(sql, params)
-            cols = [d[0] for d in cur.description]
-            return [dict(zip(cols, row)) for row in cur.fetchall()]
+            with self._db_lock:
+                cur = self._conn.execute(sql, params)
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
         except Exception as exc:
             print(f"[event_store] query failed: {exc}", file=sys.stderr)
             return []
@@ -257,9 +263,10 @@ class EventStore:
         params.extend([limit, offset])
 
         try:
-            cur = self._conn.execute(sql, params)
-            cols = [d[0] for d in cur.description]
-            return [dict(zip(cols, row)) for row in cur.fetchall()]
+            with self._db_lock:
+                cur = self._conn.execute(sql, params)
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
         except Exception as exc:
             print(f"[event_store] query_events failed: {exc}", file=sys.stderr)
             return []
@@ -267,11 +274,13 @@ class EventStore:
     def get_trade_close_map(self) -> Dict[str, Dict[str, Any]]:
         """Return {order_id: payload} for all TRADE_CLOSE events (exit attribution)."""
         try:
-            cur = self._conn.execute(
-                "SELECT payload_json FROM events WHERE event_type = 'TRADE_CLOSE'"
-            )
+            with self._db_lock:
+                cur = self._conn.execute(
+                    "SELECT payload_json FROM events WHERE event_type = 'TRADE_CLOSE'"
+                )
+                rows = cur.fetchall()
             result: Dict[str, Dict[str, Any]] = {}
-            for (pj,) in cur.fetchall():
+            for (pj,) in rows:
                 if pj:
                     payload = json.loads(pj)
                     oid = payload.get("order_id")
@@ -311,8 +320,9 @@ class EventStore:
     def count(self) -> int:
         """Total persisted event rows."""
         try:
-            cur = self._conn.execute("SELECT COUNT(*) FROM events")
-            return cur.fetchone()[0]
+            with self._db_lock:
+                cur = self._conn.execute("SELECT COUNT(*) FROM events")
+                return cur.fetchone()[0]
         except Exception as exc:
             print(f"[event_store] count failed: {exc}", file=sys.stderr)
             return 0
@@ -328,21 +338,35 @@ class EventStore:
         deleted = 0
         cutoff_ms = _now_ms() - (max_age_days * 86_400_000)
         try:
-            cur = self._conn.execute("DELETE FROM events WHERE ts_utc_ms < ?", (cutoff_ms,))
-            deleted += cur.rowcount
-            total = self.count()
-            if total > max_rows:
-                excess = total - max_rows
-                cur = self._conn.execute(
-                    "DELETE FROM events WHERE event_id IN (SELECT event_id FROM events ORDER BY ts_utc_ms ASC LIMIT ?)",
-                    (excess,),
-                )
+            with self._db_lock:
+                cur = self._conn.execute("DELETE FROM events WHERE ts_utc_ms < ?", (cutoff_ms,))
                 deleted += cur.rowcount
-            if deleted:
-                self._conn.commit()
+                total = self._conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
+                if total > max_rows:
+                    excess = total - max_rows
+                    cur = self._conn.execute(
+                        "DELETE FROM events WHERE event_id IN (SELECT event_id FROM events ORDER BY ts_utc_ms ASC LIMIT ?)",
+                        (excess,),
+                    )
+                    deleted += cur.rowcount
+                if deleted:
+                    self._conn.commit()
         except Exception as exc:
             print(f"[event_store] prune failed: {exc}", file=sys.stderr)
         return deleted
+
+    def vacuum(self) -> None:
+        """Reclaim disk space freed by pruning. A plain DELETE leaves pages in
+        the file for reuse but does NOT shrink it on disk; VACUUM rebuilds the
+        database to reclaim that space. Heavy — run off the hot path (daily
+        maintenance), never in the trading loop."""
+        try:
+            with self._db_lock:
+                self._conn.commit()
+                self._conn.execute("VACUUM")
+            logger.info("[event_store] VACUUM complete — disk space reclaimed")
+        except Exception as exc:
+            logger.warning("[event_store] VACUUM failed: {}", exc)
 
     # ── Background writer ─────────────────────────────────────────────────
 
@@ -371,8 +395,9 @@ class EventStore:
                     break
 
             try:
-                self._conn.executemany(insert_sql, batch)
-                self._conn.commit()
+                with self._db_lock:
+                    self._conn.executemany(insert_sql, batch)
+                    self._conn.commit()
             except Exception as exc:
                 print(f"[event_store] write failed (batch={len(batch)}): {exc}", file=sys.stderr)
 

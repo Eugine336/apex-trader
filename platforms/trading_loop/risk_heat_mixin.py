@@ -46,6 +46,7 @@ class RiskHeatMarginMixin:
         # denominator. Refresh each distinct account's balance once per cycle.
         acct_balance: dict[str, float] = {}
         acct_risk_sum: dict[str, float] = {}
+        acct_unrealized: dict[str, float] = {}
         position_risks: list[PositionRisk] = []
 
         for oid, pos in list(self.managed_positions.items()):
@@ -88,6 +89,9 @@ class RiskHeatMarginMixin:
                     pos.symbol, risk_dollars,
                 )
             acct_risk_sum[acct] = acct_risk_sum.get(acct, 0.0) + risk_dollars
+            acct_unrealized[acct] = acct_unrealized.get(acct, 0.0) + (
+                getattr(pos, "broker_pnl", 0.0) or 0.0
+            )
             position_risks.append(PositionRisk(
                 order_id=oid,
                 symbol=pos.symbol,
@@ -112,6 +116,24 @@ class RiskHeatMarginMixin:
                     "warning",
                     f"Account '{acct}' heat {acct_heat:.2f}% — approaching limit",
                 )
+
+        # ── Per-account unrealized drawdown halt + flatten (Tier 2 #8/#9) ──
+        # Feed each account's live OPEN P&L into the silo so a deep *unrealized*
+        # loss trips the entry halt (not just realized), and flatten the account
+        # if it breaches the harder flatten cap.
+        for acct in list(acct_balance.keys()):
+            self._account_risk.update_unrealized(acct, acct_unrealized.get(acct, 0.0))
+            if (
+                getattr(cfg, "daily_loss_flatten_enabled", True)
+                and self._account_risk.flatten_breached(acct)
+            ):
+                logger.critical(
+                    "🚨 ACCOUNT FLATTEN — '{}' combined daily loss {:.2f}% breached "
+                    "−{:.1f}% flatten cap — flattening account positions",
+                    acct, self._account_risk.combined_pnl_pct(acct),
+                    self._account_risk.daily_loss_flatten_pct,
+                )
+                self._flatten_account(acct, "DAILY_LOSS_FLATTEN")
 
         # Portfolio-total heat (sum risk / sum balance) drives the global state
         # machine — a legitimate portfolio measure, no longer inflated by one
@@ -632,4 +654,51 @@ class RiskHeatMarginMixin:
             self._persist_guard_state()
         except Exception as exc:
             logger.error("Guard state persist after margin flatten failed: {}", exc)
+
+    def _flatten_account(self, account: str, reason: str) -> None:
+        """Flatten (broker-confirmed close) every open position belonging to a
+        single account silo, used when that account breaches its hard daily-loss
+        flatten cap. Mirrors the margin-flatten safety: a position the broker
+        fails to close is RETAINED (never dropped) and re-tried next cycle."""
+        closed = 0
+        failed_oids: list[str] = []
+        for oid, pos in list(self.managed_positions.items()):
+            try:
+                if self._account_key(pos.symbol) != account:
+                    continue
+            except Exception:
+                continue
+            try:
+                result = self.platforms.close_trade(oid, pos.platform)
+                if result.success:
+                    self._record_closed_trade(
+                        pos, result.close_price, reason, close_result=result,
+                    )
+                    # Only drop a position once the broker confirms it closed.
+                    self.managed_positions.pop(oid, None)
+                    self.position_store.remove_position(oid)
+                    closed += 1
+                else:
+                    failed_oids.append(oid)
+                    logger.error(
+                        "Account-flatten close REJECTED for {} {} — retained for retry "
+                        "(still open at broker)",
+                        pos.direction, pos.symbol,
+                    )
+            except Exception as exc:
+                failed_oids.append(oid)
+                logger.error("Account-flatten failed for {}: {}", oid, exc)
+        if failed_oids:
+            logger.critical(
+                "🚨 ACCOUNT FLATTEN '{}' — {} closed, {} STILL OPEN at broker (retained): {}",
+                account, closed, len(failed_oids), failed_oids,
+            )
+        else:
+            logger.critical(
+                "🚨 ACCOUNT FLATTEN '{}' COMPLETE — {} positions closed", account, closed,
+            )
+        try:
+            self._persist_guard_state()
+        except Exception as exc:
+            logger.error("Guard state persist after account flatten failed: {}", exc)
 

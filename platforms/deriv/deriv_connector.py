@@ -830,27 +830,27 @@ class DerivConnector(BaseConnector):
         sl_pct = abs(price - sl) / price if price > 0 else 0
         tp_pct = abs(tp - price) / price if price > 0 else 0
         err: Optional[str] = resp["error"].get("message", "Unknown error") if resp.get("error") else None
-        tried_open_sl_tp = False
 
         for _attempt in range(MAX_RETRIES):
             if err is None:
                 break
 
             changed = False
+            # SAFETY: never open a Deriv position without its protective stop.
+            # Previously a parameters-validation error stripped the limit_order
+            # (SL+TP) and re-sent the trade NAKED while still recording it as
+            # protected. Fail closed instead — skipping a trade is always safer
+            # than holding an unprotected position.
             if (
-                not tried_open_sl_tp
-                and "Input validation failed: parameters" in err
+                "Input validation failed: parameters" in err
                 and "limit_order" in buy_payload["parameters"]
             ):
-                logger.warning(
-                    "Deriv rejected buy payload parameters for {} — retrying without open-order limit_order.",
+                logger.error(
+                    "Deriv rejected limit_order (SL/TP) params for {} — FAILING CLOSED "
+                    "(refusing to open a naked position). Check SL/TP bounds in config.",
                     mapped,
                 )
-                buy_payload["parameters"].pop("limit_order", None)
-                tried_open_sl_tp = True
-                resp = self._sync_send(buy_payload)
-                err = resp["error"].get("message", "Unknown error") if resp.get("error") else None
-                changed = True
+                break
 
             # ── 1. Multiplier correction (always fix this first) ───────────
             _mult_match = _re.search(
