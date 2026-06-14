@@ -77,6 +77,13 @@ _MAX_RECONNECT_ATTEMPTS = 10
 _PING_INTERVAL = 20       # send keepalive ping every 20 s
 _PING_TIMEOUT  = 10       # fail if pong not received within 10 s
 
+# Deriv's `balance` endpoint is strictly rate-limited. Coalesce bursts of
+# balance/account-info requests within this TTL into a single API call, and on
+# a rate-limit (or other) error serve the last good value up to the max-stale
+# age rather than failing every balance-dependent path (entry sizing, margin).
+_BALANCE_CACHE_TTL = 3.0   # seconds — within this window, serve cache, no API hit
+_BALANCE_MAX_STALE = 90.0  # seconds — serve cached balance through an error storm
+
 
 class DerivConnector(BaseConnector):
     """Deriv WebSocket platform connector."""
@@ -136,6 +143,11 @@ class DerivConnector(BaseConnector):
         ).result(timeout=5)
         self._thread_lock = threading.Lock()
         self._last_history_request: float = 0.0
+        # Balance/account-info cache (see _BALANCE_CACHE_TTL). A dedicated lock
+        # serialises balance fetches so a burst collapses to one API call.
+        self._balance_lock = threading.Lock()
+        self._acct_cache: Optional[AccountInfo] = None
+        self._acct_cache_ts: float = 0.0
 
     # ── Connection ───────────────────────────────────────────────────────
 
@@ -539,27 +551,47 @@ class DerivConnector(BaseConnector):
 
     def get_account_info(self) -> AccountInfo:
         self._require_connection()
-        # Deriv does not support subscribe=0 on the ticks endpoint (see
-        # get_price comment at L282).  The balance endpoint has the same
-        # limitation — omit subscribe to avoid silent rejection.
-        resp = self._sync_send({"balance": 1})
-        if resp.get("error"):
-            err = resp["error"]
-            raise RuntimeError(
-                f"Deriv balance error: code={err.get('code')}, "
-                f"message={err.get('message')}"
+        now = _time.monotonic()
+        # Serialise balance fetches: a burst of callers collapses to one API
+        # hit, the rest get the cached value.
+        with self._balance_lock:
+            cache = self._acct_cache
+            age = now - self._acct_cache_ts
+            if cache is not None and age < _BALANCE_CACHE_TTL:
+                return cache
+            # Deriv does not support subscribe=0 on the ticks endpoint (see
+            # get_price comment at L282).  The balance endpoint has the same
+            # limitation — omit subscribe to avoid silent rejection.
+            resp = self._sync_send({"balance": 1})
+            if resp.get("error"):
+                err = resp["error"]
+                # During a rate-limit storm, serve a recent cached value instead
+                # of failing the whole balance-dependent path.
+                if cache is not None and age < _BALANCE_MAX_STALE:
+                    logger.debug(
+                        "Deriv balance error (code={}) — serving cached balance "
+                        "{:.0f}s old",
+                        err.get("code"), age,
+                    )
+                    return cache
+                raise RuntimeError(
+                    f"Deriv balance error: code={err.get('code')}, "
+                    f"message={err.get('message')}"
+                )
+            bal = resp.get("balance", {})
+            info = AccountInfo(
+                balance=float(bal.get("balance", 0)),
+                equity=float(bal.get("balance", 0)),
+                margin=0.0,
+                free_margin=float(bal.get("balance", 0)),
+                margin_level=0.0,
+                currency=bal.get("currency", "USD"),
+                leverage=1,
+                platform="deriv",
             )
-        bal = resp.get("balance", {})
-        return AccountInfo(
-            balance=float(bal.get("balance", 0)),
-            equity=float(bal.get("balance", 0)),
-            margin=0.0,
-            free_margin=float(bal.get("balance", 0)),
-            margin_level=0.0,
-            currency=bal.get("currency", "USD"),
-            leverage=1,
-            platform="deriv",
-        )
+            self._acct_cache = info
+            self._acct_cache_ts = now
+            return info
 
     # ── Market data ──────────────────────────────────────────────────────
 
