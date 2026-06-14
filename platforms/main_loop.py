@@ -1504,7 +1504,31 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                                     )
                                     return False
                             except Exception as gexc:
-                                logger.debug("[Planner] governor fallback failed: {}", gexc)
+                                # Mirror the governor's fail-closed policy: a
+                                # crashing portfolio veto must not silently let
+                                # the trade through unless explicitly fail-open.
+                                gov_fail_closed = getattr(
+                                    getattr(gov, "config", None), "fail_closed", True
+                                )
+                                if gov_fail_closed:
+                                    logger.error(
+                                        "[Planner] governor fallback error — "
+                                        "skipping entry (fail-closed): {}", gexc,
+                                    )
+                                    self._log_rejection(
+                                        pair, direction, result.score,
+                                        f"Governor (planner-fallback) error "
+                                        f"(fail-closed): {gexc}",
+                                    )
+                                    try:
+                                        self._persist_shadow_contract(
+                                            signal,
+                                            rejecting_gate="governor:error",
+                                        )
+                                    except Exception:
+                                        pass
+                                    return False
+                                logger.debug("[Planner] governor fallback failed (fail-open): {}", gexc)
             except Exception as exc:
                 # Authority hierarchy: if the decision/situation/governor-review
                 # layer crashes, fail CLOSED (skip) rather than continuing to
@@ -1600,6 +1624,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             score=result.score,
             regime=getattr(result, "regime", ""),
             session=session,
+            trade_history=getattr(self.scanner, "_trade_history", None),
         )
         if not assessment.approved:
             reasons = "; ".join(assessment.rejections)
@@ -1631,6 +1656,32 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 )
                 self._persist_shadow_contract(signal, rejecting_gate=f"ev_gate:ev={ev_val:.4f}")
                 return False
+
+        # ── Losing-pattern gate (defensive) ──────────────────────────────
+        # Block setups whose pair/session/regime/entry-type combination is a
+        # statistically-confident loser in our own trade history (TradeAnalyzer
+        # multi-dimensional patterns, refreshed each optimisation pass). Neutral
+        # until enough history accumulates; only ever blocks. Fail-safe: any
+        # error allows the trade.
+        if getattr(self.config.risk, "losing_pattern_block_enabled", True):
+            try:
+                _is_loser, _lp_reason = self.ml.is_losing_pattern(
+                    pair=pair,
+                    regime=getattr(result, "regime", ""),
+                    session=session,
+                    entry_type=getattr(signal, "entry_type", "") or "",
+                )
+                if _is_loser:
+                    self._log_rejection(
+                        pair, direction, result.score,
+                        f"Losing pattern: {_lp_reason}",
+                    )
+                    self._persist_shadow_contract(
+                        signal, rejecting_gate=f"losing_pattern:{_lp_reason}",
+                    )
+                    return False
+            except Exception as exc:
+                logger.debug("[entry] losing-pattern gate skipped: {}", exc)
 
         try:
             adjustments = self.ml.get_trade_adjustments(

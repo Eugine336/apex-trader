@@ -392,6 +392,11 @@ class RiskConfig:
     # The validator uses: max_allowed = typical_spread * max_spread_multiplier
     max_spread_multiplier: float = 3.0
     ev_threshold: float = -0.1
+    # Defensive losing-pattern gate: block entries whose pair/session/regime/
+    # entry-type combination is a statistically-confident loser in our own
+    # history (see AdaptiveOptimizer.is_losing_pattern). Only ever blocks; the
+    # gate is neutral until enough trades accumulate.
+    losing_pattern_block_enabled: bool = True
     tp_adjust_enabled: bool = True
     pending_orders_enabled: bool = True
     pending_max_wait_minutes: int = 30

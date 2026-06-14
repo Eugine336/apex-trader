@@ -443,3 +443,73 @@ class TestAdaptiveOptimizer:
             pl_mod.PairLearner.SAVE_PATH = old_pl
             rl_mod.RegimeLearner.SAVE_PATH = old_rl
             sl_mod.SessionLearner.SAVE_PATH = old_sl
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Losing-pattern hard-block gate (is_losing_pattern)
+# ──────────────────────────────────────────────────────────────────────────
+
+class TestLosingPatternGate:
+    def test_fresh_optimizer_is_neutral(self):
+        # No optimisation pass yet → no cached patterns → never blocks.
+        opt = AdaptiveOptimizer()
+        blocked, reason = opt.is_losing_pattern("NZDJPY", "RANGING", "TOKYO", "SWEEP")
+        assert blocked is False
+        assert reason == ""
+
+    def test_run_optimization_blocks_confident_loser(self):
+        losers = (
+            [_make_trade(pair="NZDJPY", session="TOKYO", regime="RANGING",
+                         entry_type="SWEEP", pnl=-9)] * 20
+            + [_make_trade(pair="NZDJPY", session="TOKYO", regime="RANGING",
+                           entry_type="SWEEP", pnl=7)] * 5
+        )  # n=25, win_rate=0.20
+        winners = [
+            _make_trade(pair="EURUSD", session="LONDON", regime="TRENDING_STRONG",
+                        entry_type="FVG", pnl=12)
+        ] * 25
+        opt = AdaptiveOptimizer()
+        opt.recency_window_days = 0  # use full history in the test
+        opt.run_optimization(losers + winners)
+
+        blocked, reason = opt.is_losing_pattern("NZDJPY", "RANGING", "TOKYO", "SWEEP")
+        assert blocked is True
+        assert "win rate" in reason.lower()
+
+        # The winning combination must remain allowed.
+        ok, _ = opt.is_losing_pattern("EURUSD", "TRENDING_STRONG", "LONDON", "FVG")
+        assert ok is False
+
+    def test_min_samples_threshold_respected(self):
+        opt = AdaptiveOptimizer()
+        opt._losing_patterns = [
+            {"dimensions": {"pair": "AUDNZD", "session": "SYDNEY"},
+             "win_rate": 0.20, "sample_size": 15}
+        ]
+        # 15 < default min_samples (20) → not blocked despite low win rate.
+        blocked, _ = opt.is_losing_pattern("AUDNZD", "RANGING", "SYDNEY", "OB")
+        assert blocked is False
+        # Bump the sample size above the floor → now it blocks.
+        opt._losing_patterns[0]["sample_size"] = 25
+        blocked, _ = opt.is_losing_pattern("AUDNZD", "RANGING", "SYDNEY", "OB")
+        assert blocked is True
+
+    def test_win_rate_ceiling_respected(self):
+        opt = AdaptiveOptimizer()
+        opt._losing_patterns = [
+            {"dimensions": {"pair": "AUDNZD", "session": "SYDNEY"},
+             "win_rate": 0.42, "sample_size": 30}
+        ]
+        # 0.42 > default max_win_rate (0.35) → marginal pattern is not blocked.
+        blocked, _ = opt.is_losing_pattern("AUDNZD", "RANGING", "SYDNEY", "OB")
+        assert blocked is False
+
+    def test_partial_dimension_mismatch_allows(self):
+        opt = AdaptiveOptimizer()
+        opt._losing_patterns = [
+            {"dimensions": {"pair": "NZDJPY", "session": "TOKYO"},
+             "win_rate": 0.20, "sample_size": 30}
+        ]
+        # Same pair but a different session → the 2-dim pattern does not match.
+        blocked, _ = opt.is_losing_pattern("NZDJPY", "RANGING", "LONDON", "SWEEP")
+        assert blocked is False

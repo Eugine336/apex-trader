@@ -63,6 +63,15 @@ class AdaptiveOptimizer:
     RECENCY_WINDOW_DAYS = 90
     RECENCY_MIN_TRADES = 50
 
+    # Losing-pattern hard-block thresholds. A cached multi-dimensional
+    # combination (pair×session, pair×regime, …) only becomes a live entry
+    # block when it has at least this many samples AND a win rate at or below
+    # the ceiling — deliberately stricter than the analyzer's display threshold
+    # (win_rate < 0.45, n ≥ 10) so we never block on a marginal/under-sampled
+    # pattern.
+    LOSING_PATTERN_MIN_SAMPLES = 20
+    LOSING_PATTERN_MAX_WIN_RATE = 0.35
+
     def __init__(self) -> None:
         self.analyzer = TradeAnalyzer()
         self.optimizer = ScoreOptimizer()
@@ -73,6 +82,12 @@ class AdaptiveOptimizer:
         # Tunable per instance (kept as attributes so ops can adjust/disable).
         self.recency_window_days = self.RECENCY_WINDOW_DAYS
         self.recency_min_trades = self.RECENCY_MIN_TRADES
+
+        # Losing-pattern gate: tunable per instance; the cached patterns are
+        # refreshed on every optimisation pass.
+        self.losing_pattern_min_samples = self.LOSING_PATTERN_MIN_SAMPLES
+        self.losing_pattern_max_win_rate = self.LOSING_PATTERN_MAX_WIN_RATE
+        self._losing_patterns: list[dict] = []
 
         self._last_train_time: Optional[datetime] = None
         self._trades_since_train: int = 0
@@ -98,6 +113,11 @@ class AdaptiveOptimizer:
         regimes = self.regime_learner.learn(learner_trades)
         pairs = self.pair_learner.learn(learner_trades)
         sessions = self.session_learner.learn(learner_trades)
+
+        # Cache statistically-confident losing combinations for the live
+        # defensive entry gate (is_losing_pattern). Built from the recency
+        # window so the block reflects the CURRENT regime, like the learners.
+        self._losing_patterns = self.analyzer.get_losing_patterns(learner_trades)
 
         recommendations = self._generate_recommendations(
             trades, overall, regimes, pairs, sessions
@@ -203,6 +223,39 @@ class AdaptiveOptimizer:
 
     def get_recommendations(self) -> list[str]:
         return self._last_recommendations[:]
+
+    def is_losing_pattern(
+        self, pair: str, regime: str, session: str, entry_type: str = ""
+    ) -> tuple[bool, str]:
+        """Defensive entry check: does this setup match a statistically-confident
+        losing multi-dimensional pattern from our own trade history?
+
+        Only blocks when a cached pattern (refreshed each optimisation pass via
+        ``get_losing_patterns``) has at least ``losing_pattern_min_samples`` trades
+        AND a win rate at or below ``losing_pattern_max_win_rate``. Neutral (never
+        blocks) until enough history accumulates. Returns ``(is_loser, reason)``.
+        """
+        setup = {
+            "pair": str(pair),
+            "regime": str(regime),
+            "session": str(session),
+            "entry_type": str(entry_type),
+        }
+        for pat in self._losing_patterns:
+            if pat.get("sample_size", 0) < self.losing_pattern_min_samples:
+                continue
+            if pat.get("win_rate", 1.0) > self.losing_pattern_max_win_rate:
+                continue
+            dims = pat.get("dimensions", {})
+            if not dims:
+                continue
+            if all(setup.get(k, "") == str(v) for k, v in dims.items()):
+                label = ", ".join(f"{k}={v}" for k, v in dims.items())
+                return True, (
+                    f"{label} — {pat['win_rate']:.0%} win rate over "
+                    f"{pat['sample_size']} trades"
+                )
+        return False, ""
 
     def should_retrain(
         self, last_train_time: Optional[datetime] = None, new_trades_since: int = 0

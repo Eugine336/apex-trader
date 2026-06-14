@@ -9,8 +9,9 @@ position cap, or trading on after a bad day.
 Design rules:
   * Advisory to the planner — it returns a verdict, it is NOT a hard gate in
     the execution layer.  Defence in depth, not a single point of failure.
-  * Fail-open — if the governor code raises, the trade is ALLOWED.  We never
-    halt a live trading system because the safety advisor crashed.
+  * Fail-closed by default — if the governor code raises, the trade is BLOCKED
+    (a portfolio-risk veto that silently no-ops on a bug can't be trusted). Set
+    ``GovernorConfig.fail_closed=False`` to restore legacy fail-open behaviour.
   * Every block is logged at INFO (these are important safety events) and
     retained in a short ring buffer for the dashboard.
   * All thresholds come from `GovernorConfig` — no magic numbers.
@@ -77,19 +78,33 @@ class PortfolioGovernor:
     ) -> GovernorVerdict:
         """Decide whether the portfolio can take ``symbol`` in ``direction``.
 
-        Fail-open: any internal error returns an *allowed* verdict so the
-        governor can never halt a live system by crashing.
+        Fail-closed by default: any internal error returns a *blocked* verdict so
+        a crashing safety advisor cannot silently let risk through. Set
+        ``GovernorConfig.fail_closed=False`` to restore legacy fail-open.
         """
         try:
             return self._check_inner(symbol, direction, open_positions or [], account_balance)
-        except Exception as exc:  # noqa: BLE001 — fail-open is intentional
-            logger.warning(
-                "[Governor] check error for {} {} — failing OPEN (allowing): {}",
+        except Exception as exc:  # noqa: BLE001
+            if not getattr(self.config, "fail_closed", True):
+                logger.warning(
+                    "[Governor] check error for {} {} — failing OPEN (allowing): {}",
+                    direction,
+                    symbol,
+                    exc,
+                )
+                return GovernorVerdict(allowed=True, reason=f"governor error (fail-open): {exc}")
+            logger.error(
+                "[Governor] check error for {} {} — failing CLOSED (blocking): {}",
                 direction,
                 symbol,
                 exc,
             )
-            return GovernorVerdict(allowed=True, reason=f"governor error (fail-open): {exc}")
+            return self._block(
+                symbol,
+                direction,
+                "governor_error",
+                f"governor error (fail-closed): {exc}",
+            )
 
     def _check_inner(
         self,
