@@ -119,6 +119,14 @@ class RecoveryReconciliationMixin:
                             )
                         except Exception as exc:
                             logger.debug("Governor state restore failed: {}", exc)
+                    ar_state = state.get("account_risk")
+                    ar = getattr(self, "_account_risk", None)
+                    if ar_state and ar is not None and hasattr(ar, "restore_state"):
+                        try:
+                            ar.restore_state(ar_state)
+                            logger.info("Per-account risk state restored")
+                        except Exception as exc:
+                            logger.debug("Account risk state restore failed: {}", exc)
                     logger.info(
                         "Drawdown guard restored — mode={}, daily_pnl={}",
                         self.drawdown.mode.value,

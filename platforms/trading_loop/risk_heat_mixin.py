@@ -38,12 +38,27 @@ class RiskHeatMarginMixin:
             return
         if not self.managed_positions:
             self._current_portfolio_heat = 0.0
+            self._account_risk.clear_heat()
             return
 
-        equity = getattr(self.risk_engine, 'balance', 0.0) or 0.0
+        # Per-account heat: group positions by their account silo and divide
+        # each account's open risk by THAT account's balance — never a mixed
+        # denominator. Refresh each distinct account's balance once per cycle.
+        acct_balance: dict[str, float] = {}
+        acct_risk_sum: dict[str, float] = {}
         position_risks: list[PositionRisk] = []
 
         for oid, pos in list(self.managed_positions.items()):
+            acct = self._account_key(pos.symbol)
+            if acct not in acct_balance:
+                try:
+                    bal = self.platforms.get_platform_balance(pos.symbol)
+                except Exception:
+                    bal = 0.0
+                if bal and bal > 0:
+                    self._account_risk.update_balance(acct, bal)
+                acct_balance[acct] = self._account_risk.balance(acct)
+
             tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
             at_be = bool(tm_trade and tm_trade.breakeven_active)
 
@@ -67,11 +82,12 @@ class RiskHeatMarginMixin:
                 is_deriv_stake=is_deriv,
             )
             if is_fallback:
-                risk_dollars = equity * cfg.risk_per_trade_pct / 100.0
+                risk_dollars = (acct_balance.get(acct, 0.0) or 0.0) * cfg.risk_per_trade_pct / 100.0
                 logger.debug(
                     "[PortfolioRisk] {} fallback to static proxy ${:.2f}",
                     pos.symbol, risk_dollars,
                 )
+            acct_risk_sum[acct] = acct_risk_sum.get(acct, 0.0) + risk_dollars
             position_risks.append(PositionRisk(
                 order_id=oid,
                 symbol=pos.symbol,
@@ -81,19 +97,28 @@ class RiskHeatMarginMixin:
                 is_fallback=is_fallback,
             ))
 
+        # Store each account's heat for the per-account entry gate.
+        self._account_risk.clear_heat()
+        for acct, rsum in acct_risk_sum.items():
+            bal = acct_balance.get(acct, 0.0)
+            acct_heat = (rsum / bal * 100.0) if bal > 0 else 0.0
+            self._account_risk.set_heat(acct, acct_heat)
+            if acct_heat >= cfg.max_portfolio_heat_pct:
+                logger.warning(
+                    "🌡️ ACCOUNT HEAT {:.2f}% — '{}' | max {:.1f}% | equity ${:.2f}",
+                    acct_heat, acct, cfg.max_portfolio_heat_pct, bal,
+                )
+                self._add_warning(
+                    "warning",
+                    f"Account '{acct}' heat {acct_heat:.2f}% — approaching limit",
+                )
+
+        # Portfolio-total heat (sum risk / sum balance) drives the global state
+        # machine — a legitimate portfolio measure, no longer inflated by one
+        # small account's denominator.
+        equity = sum(acct_balance.values())
         live_heat = compute_live_heat_pct(position_risks, equity)
         self._current_portfolio_heat = live_heat
-
-        if live_heat >= cfg.max_portfolio_heat_pct:
-            logger.warning(
-                "🌡️ PORTFOLIO HEAT {:.2f}% — max {:.1f}% | {} positions | equity ${:.2f}",
-                live_heat, cfg.max_portfolio_heat_pct,
-                len(self.managed_positions), equity,
-            )
-            self._add_warning(
-                "warning",
-                f"Portfolio heat {live_heat:.2f}% — approaching limit",
-            )
 
         if self._portfolio_risk_sm is None:
             return

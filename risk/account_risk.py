@@ -1,0 +1,129 @@
+"""
+APEX TRADER — Per-account risk silos.
+
+Each broker/account (e.g. a $5 Deriv account and a $10 MT5 account) is tracked
+**independently**: its own balance, its own daily realised P&L (with a
+loss-cap halt), and its own live heat.  A trade on one account is sized and
+gated only against THAT account, so a position on the $10 account never
+inflates the $5 account's risk picture (and vice-versa).
+
+This sits alongside the portfolio-wide guards (drawdown guard, governor) which
+remain as a global backstop — the per-account layer is the primary silo.
+
+Leaf module — standard library + loguru only.
+"""
+
+from __future__ import annotations
+
+from loguru import logger
+
+
+class AccountRiskManager:
+    """Tracks balance, daily P&L (loss-cap halt) and heat per account key."""
+
+    def __init__(
+        self,
+        daily_loss_cap_pct: float = 3.0,
+        daily_loss_recovery_pct: float = 1.5,
+        heat_block_pct: float = 2.0,
+    ) -> None:
+        self.daily_loss_cap_pct = daily_loss_cap_pct
+        self.daily_loss_recovery_pct = daily_loss_recovery_pct
+        self.heat_block_pct = heat_block_pct
+        self._balance: dict[str, float] = {}
+        self._daily_pnl: dict[str, float] = {}
+        self._halted: dict[str, bool] = {}
+        self._heat: dict[str, float] = {}
+
+    # ── Balance ──────────────────────────────────────────────────────────
+
+    def update_balance(self, account: str, balance: float) -> None:
+        if account and balance and balance > 0:
+            self._balance[account] = float(balance)
+
+    def balance(self, account: str) -> float:
+        return self._balance.get(account, 0.0)
+
+    # ── Heat (live capital-at-risk %, computed per account each cycle) ────
+
+    def set_heat(self, account: str, heat_pct: float) -> None:
+        if account:
+            self._heat[account] = float(heat_pct)
+
+    def heat(self, account: str) -> float:
+        return self._heat.get(account, 0.0)
+
+    def heat_blocked(self, account: str) -> bool:
+        return self._heat.get(account, 0.0) >= self.heat_block_pct
+
+    def clear_heat(self) -> None:
+        self._heat.clear()
+
+    # ── Daily P&L / loss-cap halt (per account, with hysteresis) ─────────
+
+    def register_realized(self, account: str, pnl_dollars: float) -> None:
+        if not account:
+            return
+        try:
+            self._daily_pnl[account] = self._daily_pnl.get(account, 0.0) + float(pnl_dollars)
+        except (TypeError, ValueError):
+            return
+        self._evaluate_halt(account)
+
+    def daily_pnl(self, account: str) -> float:
+        return self._daily_pnl.get(account, 0.0)
+
+    def daily_pnl_pct(self, account: str) -> float:
+        bal = self._balance.get(account, 0.0)
+        if bal <= 0:
+            return 0.0
+        return self._daily_pnl.get(account, 0.0) / bal * 100.0
+
+    def _evaluate_halt(self, account: str) -> None:
+        bal = self._balance.get(account, 0.0)
+        if bal <= 0:
+            return
+        pct = self.daily_pnl_pct(account)
+        if self._halted.get(account, False):
+            if pct >= -self.daily_loss_recovery_pct:
+                self._halted[account] = False
+                logger.info(
+                    "[AccountRisk] {} daily loss recovered to {:.2f}% — resuming entries",
+                    account, pct,
+                )
+        elif pct <= -self.daily_loss_cap_pct:
+            self._halted[account] = True
+            logger.warning(
+                "[AccountRisk] {} HALTED — daily loss {:.2f}% breached −{:.1f}% cap",
+                account, pct, self.daily_loss_cap_pct,
+            )
+
+    def daily_loss_halted(self, account: str) -> bool:
+        # Re-evaluate against the latest balance before answering.
+        self._evaluate_halt(account)
+        return self._halted.get(account, False)
+
+    def reset_daily(self) -> None:
+        if any(self._halted.values()):
+            logger.info("[AccountRisk] daily reset — per-account loss-cap halts lifted")
+        self._daily_pnl.clear()
+        self._halted.clear()
+
+    # ── Persistence ──────────────────────────────────────────────────────
+
+    def to_state(self) -> dict:
+        return {
+            "daily_pnl": dict(self._daily_pnl),
+            "halted": dict(self._halted),
+        }
+
+    def restore_state(self, state: dict) -> None:
+        try:
+            self._daily_pnl = {
+                str(k): float(v) for k, v in (state.get("daily_pnl") or {}).items()
+            }
+            self._halted = {
+                str(k): bool(v) for k, v in (state.get("halted") or {}).items()
+            }
+        except (TypeError, ValueError):
+            pass
