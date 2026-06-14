@@ -30,6 +30,12 @@ class GovernorConfig:
     daily_loss_cap_pct: float = 3.0  # halt new entries after −this% daily drawdown
     daily_loss_recovery_pct: float = 1.5  # resume only once DD recovers above −this%
     max_sector_exposure: int = 4  # max positions in one category (forex/index/commodity/crypto)
+    # When the governor's own code raises, fail CLOSED (block the trade) instead
+    # of allowing it. A portfolio-risk veto that silently no-ops on a bug is a
+    # safety gate you can't trust, so the default is fail-closed — consistent
+    # with the decision pipeline. Set False to restore legacy fail-open (allow
+    # on error) if a governor bug ever halts trading.
+    fail_closed: bool = True
 
     def to_dict(self) -> dict:
         return asdict(self)

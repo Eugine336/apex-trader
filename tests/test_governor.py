@@ -148,9 +148,18 @@ def test_disabled_governor_always_allows():
     assert v.allowed
 
 
-def test_fail_open_on_bad_input():
+def test_fail_closed_on_bad_input_by_default():
     gov = PortfolioGovernor(GovernorConfig())
-    # Passing a non-iterable book triggers the internal guard → fail-open.
+    # Passing a non-iterable book triggers the internal guard → fail-closed
+    # (the new default): a crashing safety advisor must not let risk through.
+    v = gov.check("EURUSD", "BUY", 12345, account_balance=1000.0)  # type: ignore[arg-type]
+    assert not v.allowed
+    assert v.blocked_by == "governor_error"
+
+
+def test_fail_open_when_configured():
+    gov = PortfolioGovernor(GovernorConfig(fail_closed=False))
+    # Legacy behaviour: explicitly fail-open allows on internal error.
     v = gov.check("EURUSD", "BUY", 12345, account_balance=1000.0)  # type: ignore[arg-type]
     assert v.allowed
 

@@ -179,8 +179,22 @@ class TradePlanner:
                     ctx.open_position_book,
                     ctx.account_balance,
                 )
-            except Exception as exc:  # fail-open — governor must never block on error
-                logger.warning("[Planner] governor check error — allowing: {}", exc)
+            except Exception as exc:  # governor.check is normally self-guarding
+                # Mirror the governor's own policy: fail-closed (SKIP) unless it
+                # is explicitly configured fail-open.
+                gov_fail_closed = getattr(
+                    getattr(self._governor, "config", None), "fail_closed", True
+                )
+                if gov_fail_closed:
+                    logger.error("[Planner] governor check error — SKIP (fail-closed): {}", exc)
+                    plan.action = "SKIP"
+                    plan.governor_blocked_by = "governor_error"
+                    plan.reasoning = (
+                        f"[{ctx.situation_label}] SKIP — governor error "
+                        f"(fail-closed): {exc}"
+                    )
+                    return plan
+                logger.warning("[Planner] governor check error — allowing (fail-open): {}", exc)
                 verdict = None
             if verdict is not None and not getattr(verdict, "allowed", True):
                 plan.action = "SKIP"
