@@ -1460,6 +1460,20 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 if entry_decision.is_market:
                     signal.entry_mode = "MARKET"
 
+                # Tag reversal trades (roadmap E) so their realized EV can be
+                # tracked separately on the dashboard. The decision engine flags
+                # a qualified counter-HTF reversal with "[REVERSAL]" in its
+                # reason; persist it as a confluence marker, which flows into the
+                # position and the trade journal via signal.confluences.
+                try:
+                    if (
+                        "[REVERSAL]" in getattr(entry_decision, "reason", "")
+                        and "REVERSAL_TRADE" not in signal.confluences
+                    ):
+                        signal.confluences.append("REVERSAL_TRADE")
+                except Exception as exc:
+                    logger.debug("[entry] reversal tag skipped: {}", exc)
+
                 # ── Trade Planner coordinator ────────────────────────────
                 # The planner reads every advisor (scanner, DE, RL, adaptive,
                 # portfolio, timing) and produces a complete plan. It refines
