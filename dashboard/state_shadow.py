@@ -29,7 +29,7 @@ class ShadowMixin:
         """Rejected/skipped setup outcomes grouped by rejecting gate."""
         store = self._get_shadow_store()
         if store is None:
-            return {"gates": [], "summary": {}, "contracts": []}
+            return {"gates": [], "summary": {}, "contracts": [], "by_symbol": []}
 
         try:
             raw = store.get_outcomes_by_gate()
@@ -62,6 +62,27 @@ class ShadowMixin:
                 else:
                     g["win_rate"] = 0.0
 
+            # Rejected-setup edge grouped by symbol (operator visibility — NOT
+            # auto-fed to the learners; see ShadowStore.get_outcomes_by_symbol).
+            symbols: Dict[str, Dict[str, Any]] = {}
+            for row in store.get_outcomes_by_symbol():
+                sym = row["symbol"]
+                outcome = row["outcome"]
+                cnt = row["cnt"]
+                avg_r = row.get("avg_r")
+                s = symbols.setdefault(sym, {
+                    "symbol": sym, "total": 0,
+                    "WIN": 0, "LOSS": 0, "EXPIRED": 0, "BE": 0, "PARTIAL": 0,
+                    "avg_r": 0.0,
+                })
+                s[outcome] = cnt
+                s["total"] += cnt
+                if avg_r is not None and outcome in ("WIN", "LOSS"):
+                    s["avg_r"] = round(avg_r, 2)
+            by_symbol = sorted(symbols.values(), key=lambda x: x["total"], reverse=True)
+            for s in by_symbol:
+                s["win_rate"] = round(s["WIN"] / s["total"] * 100, 1) if s["total"] else 0.0
+
             recent = store.get_all_contracts(limit=50)
             contracts = []
             for c in recent:
@@ -90,7 +111,8 @@ class ShadowMixin:
                 "gates": gate_list,
                 "summary": status_counts,
                 "contracts": contracts,
+                "by_symbol": by_symbol,
             }
         except Exception as exc:
             logger.debug("[state_shadow] get_shadow_outcomes failed: {}", exc)
-            return {"gates": [], "summary": {}, "contracts": []}
+            return {"gates": [], "summary": {}, "contracts": [], "by_symbol": []}
