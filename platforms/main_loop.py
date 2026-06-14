@@ -2870,7 +2870,14 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         """Assemble the full TradeContext from all available data sources."""
         tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
         pnl_pips = tm_trade.pnl_pips if tm_trade else 0.0
-        pnl_dollars = tm_trade.pnl_dollars if tm_trade and hasattr(tm_trade, 'pnl_dollars') else 0.0
+        # Prefer the broker's live dollar P&L (synced onto the managed position
+        # each cycle) — the real money the broker sees. Fall back to the local
+        # pip-formula reconstruction only when broker truth is unavailable.
+        broker_pnl = getattr(pos, "broker_pnl", 0.0) or 0.0
+        if broker_pnl != 0.0:
+            pnl_dollars = broker_pnl
+        else:
+            pnl_dollars = tm_trade.pnl_dollars if tm_trade and hasattr(tm_trade, 'pnl_dollars') else 0.0
         partial_closed = tm_trade.partial_closed if tm_trade else False
 
         try:

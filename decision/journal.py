@@ -43,6 +43,7 @@ class DecisionJournal:
             "entry_type": ctx.entry_type,
             "hold_minutes": round(ctx.hold_minutes, 1),
             "pnl_pips": round(ctx.pnl_pips, 2),
+            "pnl_dollars": round(ctx.pnl_dollars, 2),
             "profit_r": round(ctx.profit_r, 2),
             "scan_score": ctx.scan_score,
             "scan_direction": ctx.scan_direction,
@@ -95,11 +96,11 @@ class DecisionJournal:
             logger.warning("[DecisionJournal] write failed: {}", exc)
 
         logger.info(
-            "[DECISION] {} {} | {} → {} | {} | pnl={:.1f}pip align={:+.2f} struct={:.2f} | {}",
+            "[DECISION] {} {} | {} → {} | {} | pnl=${:+.2f} ({:+.1f}pip) align={:+.2f} struct={:.2f} | {}",
             ctx.direction, ctx.symbol,
             sa.primary_label, decision.action.value,
             "GOVERNOR" if governor_changed else "ENGINE",
-            ctx.pnl_pips, sa.tf_alignment, sa.structure_integrity,
+            ctx.pnl_dollars, ctx.pnl_pips, sa.tf_alignment, sa.structure_integrity,
             decision.reason[:120],
         )
 
