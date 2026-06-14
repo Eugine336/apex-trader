@@ -88,6 +88,8 @@ class ApexMultiTFTradingEnv:
         slippage_factor: float = 0.3,
         swap_rates: dict | None = None,
         reward_shaping: dict | None = None,
+        max_episode_steps: Optional[int] = None,
+        random_start: bool = False,
     ):
         self.instrument     = instrument.upper()
         self.initial_bal    = initial_balance
@@ -96,6 +98,8 @@ class ApexMultiTFTradingEnv:
         self.slippage_factor = slippage_factor
         self.swap_rates      = swap_rates or {}
         self._reward_shaping = reward_shaping or {}
+        self.max_episode_steps = max_episode_steps
+        self.random_start    = random_start
 
         self._load_instrument_info()
         self._load_data(data_dir)
@@ -117,12 +121,22 @@ class ApexMultiTFTradingEnv:
 
     def reset(self) -> tuple[np.ndarray, np.ndarray, int]:
         min_start = WINDOW + ATR_PERIOD + 20
-        self.idx           = min_start
+        if self.random_start:
+            # Sample a starting bar so episodes cover the whole history rather
+            # than always replaying from the same point; leave room for one full
+            # episode when a length cap is set.
+            top = len(self._m5_feat) - 2 - (self.max_episode_steps or 0)
+            top = max(min_start, top)
+            self.idx = int(np.random.randint(min_start, top + 1)) if top > min_start else min_start
+        else:
+            self.idx = min_start
+        self._episode_start = self.idx
         self.balance       = self.initial_bal
         self.trade: Optional[MTFTrade] = None
         self.equity_curve: list[float] = [self.initial_bal]
         self.trades_log:   list[dict]  = []
         self.peak_equity   = self.initial_bal
+        self._prev_dd      = 0.0
         return self._observe()
 
     def step(self, action: int) -> tuple[tuple[np.ndarray, np.ndarray, int], float, bool, dict]:
@@ -176,11 +190,25 @@ class ApexMultiTFTradingEnv:
         self.equity_curve.append(equity)
         self.peak_equity = max(self.peak_equity, equity)
         dd = (self.peak_equity - equity) / self.peak_equity if self.peak_equity > 0 else 0.0
-        if dd > 0.10:
-            reward -= dd * 2.0
+        # Penalise only *newly* realised drawdown beyond a 10% threshold, not the
+        # full drawdown on every step. The old per-step ``-dd * 2`` compounded
+        # under gamma=0.99 into value targets of order ~100, which exploded the
+        # value loss and starved the policy gradient (no learning). The
+        # incremental form sums to ``(max_dd - 0.10) * dd_penalty`` across an
+        # episode, keeping returns O(1) so PPO can actually learn.
+        dd_penalty = self._reward_shaping.get("dd_penalty", 1.0) if self._reward_shaping else 1.0
+        excess = max(0.0, dd - 0.10)
+        prev_excess = max(0.0, self._prev_dd - 0.10)
+        if excess > prev_excess:
+            reward -= (excess - prev_excess) * dd_penalty
+        self._prev_dd = dd
 
         self.idx += 1
         done = self.idx >= len(self._m5_feat) - 1
+
+        if (self.max_episode_steps is not None
+                and (self.idx - self._episode_start) >= self.max_episode_steps):
+            done = True
 
         if self.balance <= 0 and not done:
             done = True
