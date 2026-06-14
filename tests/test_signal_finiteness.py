@@ -277,6 +277,8 @@ class TestH4BiasGate:
     def test_h4_gate_enabled_by_default(self):
         engine = EntryEngine()
         assert engine.config.risk.h4_bias_gate_enabled
+        # Default behaviour is now CONTEXT (penalty), not a hard veto.
+        assert engine.config.risk.h4_bias_gate_mode == "penalty"
 
     def test_h4_gate_off_allows_contradicting_trend(self):
         cfg = AppConfig()
@@ -294,8 +296,10 @@ class TestH4BiasGate:
         assert not (isinstance(result, EntryRejection) and "H4 bias gate" in result.reason), \
             "H4 bias gate should NOT fire when disabled"
 
-    def test_h4_gate_on_rejects_long_against_bearish_h4(self):
-        engine = EntryEngine()
+    def test_h4_gate_veto_mode_rejects_long_against_bearish_h4(self):
+        cfg = AppConfig()
+        cfg.risk.h4_bias_gate_mode = "veto"
+        engine = EntryEngine(config=cfg)
         m5 = _make_fvg_candles("LONG")
         m1 = _make_candles(base_price=1.27300, n=100, trend="up")
         h1 = _make_candles(base_price=1.27000, n=200, trend="up")
@@ -311,8 +315,10 @@ class TestH4BiasGate:
         assert "H4 bias gate" in result.reason
         assert "BEARISH" in result.reason
 
-    def test_h4_gate_on_rejects_short_against_bullish_h4(self):
-        engine = EntryEngine()
+    def test_h4_gate_veto_mode_rejects_short_against_bullish_h4(self):
+        cfg = AppConfig()
+        cfg.risk.h4_bias_gate_mode = "veto"
+        engine = EntryEngine(config=cfg)
         m5 = _make_fvg_candles("SHORT")
         m1 = _make_candles(base_price=1.26700, n=100, trend="down")
         h1 = _make_candles(base_price=1.27000, n=200, trend="down")
@@ -327,6 +333,25 @@ class TestH4BiasGate:
         assert isinstance(result, EntryRejection)
         assert "H4 bias gate" in result.reason
         assert "BULLISH" in result.reason
+
+    def test_h4_penalty_mode_does_not_veto_counter_trend(self):
+        # Default (penalty) mode must NOT hard-reject a counter-H4 setup —
+        # H4 is context, so a strong-enough score still passes the bar.
+        engine = EntryEngine()  # default mode == "penalty"
+        m5 = _make_fvg_candles("LONG")
+        m1 = _make_candles(base_price=1.27300, n=100, trend="up")
+        h1 = _make_candles(base_price=1.27000, n=200, trend="up")
+        h4_bearish = self._make_trending_df("BEARISH", n=50)
+        scan = _make_scan_result(direction="LONG", score=95)  # high score survives the penalty
+        mock_analysis = self._mock_h4_analysis("BEARISH")
+        with patch("brain.structure_engine.StructureEngine.analyze", return_value=mock_analysis):
+            result = engine.calculate_entry(
+                "EURUSD", "LONG", m5, m1, h1, scan, 10000.0,
+                h4_df=h4_bearish,
+            )
+        # It may still be rejected for unrelated reasons (zone/momentum), but
+        # NEVER for the H4 bias gate in penalty mode.
+        assert not (isinstance(result, EntryRejection) and "H4 bias gate" in result.reason)
 
     def test_h4_gate_on_allows_aligned_trend(self):
         engine = EntryEngine()

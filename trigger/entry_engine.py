@@ -188,6 +188,43 @@ class EntryEngine:
         status = self.drawdown.get_status(now)
         risk_pct = status.current_risk_pct
 
+        # ── H4 bias as CONTEXT, not dictator ─────────────────────────────
+        # H4 is the slowest timeframe and reacts to reversals LAST, so a
+        # counter-H4 setup pays a score penalty (default) rather than being
+        # vetoed — a strong M5/M1 setup can still clear the entry bar, and the
+        # decision engine then sizes it DOWN via conviction (HTF alignment is
+        # 40% of conviction). Applied BEFORE the entry bar so the penalty
+        # actually filters weak counter-trend trades. mode="veto" restores the
+        # legacy hard rejection; mode="off" ignores H4 entirely.
+        h4_gate_mode = getattr(self.config.risk, "h4_bias_gate_mode", "penalty")
+        if (
+            self.config.risk.h4_bias_gate_enabled
+            and h4_gate_mode != "off"
+            and h4_df is not None
+            and len(h4_df) >= 20
+        ):
+            from brain.structure_engine import StructureEngine as _SE
+
+            h4_trend = _SE(pip_size=pip_size).analyze(h4_df).trend.value
+            counter_h4 = (
+                (direction == "LONG" and h4_trend == "BEARISH")
+                or (direction == "SHORT" and h4_trend == "BULLISH")
+            )
+            if counter_h4:
+                if h4_gate_mode == "veto":
+                    return EntryRejection(
+                        pair=pair,
+                        reason=f"H4 bias gate (veto) — {direction} against H4 {h4_trend}",
+                        score=score,
+                        timestamp=now,
+                        direction=direction,
+                    )
+                penalty = max(0, int(getattr(self.config.risk, "h4_counter_trend_penalty", 15)))
+                score = max(0, score - penalty)
+                confluences.append(
+                    f"H4 counter-trend ({h4_trend}) — context penalty −{penalty}"
+                )
+
         # Base entry bar = configured min score, optionally LOOSENED by the
         # shadow-fed gate tuner (bounded). It can never drop below the watchlist
         # score, and the outer max() keeps it at/above the drawdown-mode floor —
@@ -213,30 +250,10 @@ class EntryEngine:
                 timestamp=now,
             )
 
-        # ── H4 bias gate (default OFF) ───────────────────────────────────
-        # When enabled, rejects entries where H4 trend directly contradicts
-        # the trade direction. Can only reject, never widen risk.
-        if self.config.risk.h4_bias_gate_enabled and h4_df is not None and len(h4_df) >= 20:
-            from brain.structure_engine import StructureEngine as _SE
-
-            h4_structure = _SE(pip_size=pip_size).analyze(h4_df)
-            h4_trend = h4_structure.trend.value
-            if direction == "LONG" and h4_trend == "BEARISH":
-                return EntryRejection(
-                    pair=pair,
-                    reason="H4 bias gate — LONG entry rejected, H4 trend is BEARISH",
-                    score=score,
-                    timestamp=now,
-                    direction=direction,
-                )
-            if direction == "SHORT" and h4_trend == "BULLISH":
-                return EntryRejection(
-                    pair=pair,
-                    reason="H4 bias gate — SHORT entry rejected, H4 trend is BULLISH",
-                    score=score,
-                    timestamp=now,
-                    direction=direction,
-                )
+        # ── H4 bias gate ─────────────────────────────────────────────────
+        # Handled above as a CONTEXT penalty (before the entry bar) so a
+        # counter-H4 setup is graded, not auto-vetoed. See the h4_bias_gate
+        # block earlier in this method.
 
         zone = self.find_entry_zone(pair, direction, m5_df, pip_size, profile)
         if zone["type"] == "NONE":

@@ -596,11 +596,19 @@ class RiskConfig:
     # Check H1 candle close direction — if against trade, exit
     htf_reassess_on_h1_close: bool = True
 
-    # ── H4 bias gate at entry ─────────────────────────────────────────────
-    # When enabled, rejects entries where H4 trend directly contradicts the
-    # trade direction (e.g. LONG when H4 is BEARISH). Can only reject, never
-    # widen risk. Default OFF — enable after strategy validation.
+    # ── H4 bias handling at entry ─────────────────────────────────────────
+    # H4 is the slowest timeframe and reacts to reversals LAST, so by default
+    # it acts as CONTEXT, not a dictator: a counter-H4 trade pays a score
+    # penalty rather than being vetoed, letting strong M5/M1 setups through
+    # (they then size DOWN via the decision engine's conviction model, which
+    # already weights HTF alignment). Modes:
+    #   "penalty" (default) — subtract h4_counter_trend_penalty from the score
+    #   "veto"              — hard-reject counter-H4 entries (legacy behaviour)
+    #   "off"               — ignore H4 entirely
+    # h4_bias_gate_enabled is the master switch (False disables the gate).
     h4_bias_gate_enabled: bool = True
+    h4_bias_gate_mode: str = "penalty"
+    h4_counter_trend_penalty: int = 15
 
     # ── Execution-quality size throttle ────────────────────────────────
     # When enabled, degraded execution quality (high slippage/latency/spread)
