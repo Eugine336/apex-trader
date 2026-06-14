@@ -768,6 +768,28 @@ class DecisionConfig:
     # agrees, hurts (reversal haircut) when it opposes, but never dictates.
     htf_aligned_size_bonus: float = 0.15     # +15% size on a fully-aligned stack
     htf_aligned_threshold: float = 0.5       # min tf_alignment to count as "aligned"
+    # ── Thesis-deterioration secure (roadmap G) ───────────────────────────
+    # The exit brain's profit-securing actions (MOVE_TO_BREAKEVEN, TIGHTEN_SL)
+    # are all gated on profit_state (an R-multiple). Adopted/orphan trades carry
+    # a *reconstructed* risk, so their R is detached from real economic profit —
+    # a winner can run +$X (meaningful cash) while profit_state ≈ 0.2R, below
+    # every R-gate, and HOLD wins by default because nothing else can score.
+    # This layer asks the trader's question instead — "is the reason I'm holding
+    # still valid?" — and secures profit when MEANINGFUL ECONOMIC PROFIT exists
+    # AND the thesis is deteriorating, UNLESS it's a healthy pullback in an
+    # intact trend. It overrides only a would-be default HOLD; a stronger CLOSE/
+    # TIGHTEN/BE verdict from the normal scoring still takes precedence.
+    thesis_secure_enabled: bool = True
+    thesis_secure_min_profit_usd: float = 15.0   # economic-profit trigger (account ccy)
+    thesis_secure_min_profit_pips: float = 12.0  # ...or this many pips (whichever first)
+    thesis_deterioration_threshold: float = 0.35  # 0..1 decay score needed to act
+    thesis_healthy_structure: float = 0.5    # structure ≥ this AND momentum ≥ healthy → hold (pullback)
+    thesis_healthy_momentum: float = 0.0
+    thesis_lock_fraction: float = 0.5        # lock this fraction of open profit into the stop
+    thesis_struct_ref: float = 0.6           # structure below this starts contributing to decay
+    thesis_conviction_cycles: int = 3        # re-score window for conviction-collapse detection
+    thesis_conviction_drop: float = 10.0     # min scan-score drop over window to count as collapse
+    thesis_conviction_full_drop: float = 30.0  # drop giving the conviction leg full weight
 
 
 # ---------------------------------------------------------------------------

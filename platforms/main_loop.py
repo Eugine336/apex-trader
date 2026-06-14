@@ -383,6 +383,17 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             reversal_no_evidence_skip_penalty=dcfg.reversal_no_evidence_skip_penalty,
             htf_aligned_size_bonus=dcfg.htf_aligned_size_bonus,
             htf_aligned_threshold=dcfg.htf_aligned_threshold,
+            thesis_secure_enabled=dcfg.thesis_secure_enabled,
+            thesis_secure_min_profit_usd=dcfg.thesis_secure_min_profit_usd,
+            thesis_secure_min_profit_pips=dcfg.thesis_secure_min_profit_pips,
+            thesis_deterioration_threshold=dcfg.thesis_deterioration_threshold,
+            thesis_healthy_structure=dcfg.thesis_healthy_structure,
+            thesis_healthy_momentum=dcfg.thesis_healthy_momentum,
+            thesis_lock_fraction=dcfg.thesis_lock_fraction,
+            thesis_struct_ref=dcfg.thesis_struct_ref,
+            thesis_conviction_cycles=dcfg.thesis_conviction_cycles,
+            thesis_conviction_drop=dcfg.thesis_conviction_drop,
+            thesis_conviction_full_drop=dcfg.thesis_conviction_full_drop,
         )
         self._risk_governor = RiskGovernor() if dcfg.governor_enabled else None
         self._decision_journal = DecisionJournal(dcfg.journal_dir) if dcfg.journal_enabled else None
