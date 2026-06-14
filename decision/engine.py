@@ -9,6 +9,8 @@ situation dimensions, not from lookup tables.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from loguru import logger
 
 from decision.actions import Action, EntryAction, EntryDecision, ManagementDecision
@@ -16,8 +18,34 @@ from decision.context import EntryContext, TradeContext
 from decision.situation import SituationAssessment
 
 
+@dataclass(frozen=True)
+class DecisionWeights:
+    """Weights for the entry decision/conviction model (roadmap C).
+
+    Defaults make M5 the primary decision engine: M5 structure quality and M1
+    momentum carry the ENTER/SKIP decision and trade SIZE, while HTF (D1/H4/H1)
+    alignment is context. Override from DecisionConfig to retune without code
+    changes.
+    """
+
+    # Conviction (≈ sum 1.0) → size multiplier.
+    conviction_htf: float = 0.20
+    conviction_structure: float = 0.40
+    conviction_momentum: float = 0.30
+    conviction_confidence: float = 0.10
+    # ENTER/SKIP scoring coefficients.
+    enter_htf: float = 0.20
+    enter_structure: float = 0.45
+    enter_momentum: float = 0.30
+    skip_htf: float = 0.20
+    skip_momentum: float = 0.30
+
+
 class DecisionEngine:
     """Scores every possible action and picks the best one."""
+
+    def __init__(self, weights: DecisionWeights | None = None) -> None:
+        self.weights = weights or DecisionWeights()
 
     def decide_management(
         self,
@@ -267,17 +295,17 @@ class DecisionEngine:
         enter_score = 0.20  # baseline: slight inclination to trade
 
         if sa.tf_alignment > 0.2:
-            contrib = sa.tf_alignment * 0.35
+            contrib = sa.tf_alignment * self.weights.enter_htf
             enter_score += contrib
             evidence.append(f"HTF aligned ({sa.tf_alignment:+.2f}) +{contrib:.2f}")
 
         if sa.structure_integrity > 0.5:
-            contrib = (sa.structure_integrity - 0.5) * 0.40
+            contrib = (sa.structure_integrity - 0.5) * self.weights.enter_structure
             enter_score += contrib
             evidence.append(f"structure quality ({sa.structure_integrity:.2f}) +{contrib:.2f}")
 
         if sa.momentum > 0.1:
-            contrib = sa.momentum * 0.15
+            contrib = sa.momentum * self.weights.enter_momentum
             enter_score += contrib
             evidence.append(f"supportive momentum ({sa.momentum:+.2f}) +{contrib:.2f}")
 
@@ -295,7 +323,7 @@ class DecisionEngine:
         skip_parts: list[str] = []
 
         if sa.tf_alignment < -0.1:
-            penalty = abs(sa.tf_alignment) * 0.35
+            penalty = abs(sa.tf_alignment) * self.weights.skip_htf
             skip_score += penalty
             skip_parts.append(f"HTF opposing ({sa.tf_alignment:+.2f}) +{penalty:.2f}")
 
@@ -305,7 +333,7 @@ class DecisionEngine:
             skip_parts.append(f"weak structure ({sa.structure_integrity:.2f}) +{penalty:.2f}")
 
         if sa.momentum < -0.2:
-            penalty = abs(sa.momentum) * 0.20
+            penalty = abs(sa.momentum) * self.weights.skip_momentum
             skip_score += penalty
             skip_parts.append(f"opposing momentum ({sa.momentum:+.2f}) +{penalty:.2f}")
 
@@ -384,11 +412,12 @@ class DecisionEngine:
 
     def compute_conviction(self, sa: SituationAssessment) -> float:
         """Continuous conviction score from situation dimensions."""
+        w = self.weights
         c = (
-            (sa.tf_alignment + 1.0) / 2.0 * 0.40
-            + sa.structure_integrity * 0.30
-            + (sa.momentum + 1.0) / 2.0 * 0.20
-            + sa.read_confidence * 0.10
+            (sa.tf_alignment + 1.0) / 2.0 * w.conviction_htf
+            + sa.structure_integrity * w.conviction_structure
+            + (sa.momentum + 1.0) / 2.0 * w.conviction_momentum
+            + sa.read_confidence * w.conviction_confidence
         )
         return max(0.0, min(1.0, c))
 
