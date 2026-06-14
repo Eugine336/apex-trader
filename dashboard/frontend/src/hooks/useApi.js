@@ -1,6 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 
 const BASE = import.meta.env.VITE_API_URL || '';
+const API_KEY = import.meta.env.VITE_DASHBOARD_API_KEY || '';
+
+// When the backend has DD_DASHBOARD_API_KEY set, every /api/* request (not just
+// mutating ones) must carry the matching X-API-Key header or it is rejected 401.
+function authHeaders(extra = {}) {
+  return API_KEY ? { 'X-API-Key': API_KEY, ...extra } : { ...extra };
+}
 
 export function useApi(endpoint, interval = 5000) {
   const [data, setData] = useState(null);
@@ -10,7 +17,7 @@ export function useApi(endpoint, interval = 5000) {
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await fetch(`${BASE}${endpoint}`);
+      const res = await fetch(`${BASE}${endpoint}`, { headers: authHeaders() });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       setData(await res.json());
       setError(null);
@@ -36,7 +43,7 @@ export function useApi(endpoint, interval = 5000) {
 export async function postControl(action, value = null) {
   const res = await fetch(`${BASE}/api/control`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify({ action, value }),
   });
   return res.json();
