@@ -93,11 +93,13 @@ class MT5Connector(BaseConnector):
         broker_name: str = "auto",  # "auto" = detect from terminal info on connect
         reject_on_minlot_inflation: bool = False,
         max_tick_age_seconds: float = 120.0,
+        max_slippage_pips: float = 0.0,
     ):
         self._login = login
         self._password = password
         self._server = server
         self._deviation = deviation
+        self._max_slippage_pips = float(max_slippage_pips)
         self._magic = magic
         self._connected = False
         self._symbol_cache: dict[str, Optional[str]] = {}  # None = confirmed not on broker
@@ -301,6 +303,20 @@ class MT5Connector(BaseConnector):
 
     # ── Order execution ──────────────────────────────────────────────────
 
+    def _deviation_points(self, symbol: str, point: float) -> int:
+        """Per-instrument max-slippage cap in broker points.
+
+        Converts the configured max-slippage (pips) into this symbol's point
+        units so the cap is consistent across FX / metals / indices / crypto.
+        Falls back to the legacy global deviation when max_slippage_pips is not
+        configured (0) or the point size is unknown.
+        """
+        if self._max_slippage_pips > 0 and point and point > 0:
+            pip_size = get_pip_size(symbol)
+            pts = int(round(self._max_slippage_pips * pip_size / point))
+            return max(1, pts)
+        return self._deviation
+
     def place_order(
         self,
         symbol: str,
@@ -432,6 +448,12 @@ class MT5Connector(BaseConnector):
 
         request["volume"] = float(lots)
 
+        # Per-instrument slippage cap: the configured max-slippage (pips) →
+        # broker points using THIS symbol's point size, so 20 points doesn't
+        # mean 2 pips on FX and something else on indices/gold. The broker
+        # rejects/requotes fills beyond this; the retry loop re-prices.
+        request["deviation"] = self._deviation_points(symbol, point)
+
         # Stops: enforce minimum SL/TP distance from entry price
         if stops_level > 0:
             min_distance = stops_level * point
@@ -525,6 +547,15 @@ class MT5Connector(BaseConnector):
 
         pip_size = get_pip_size(symbol)
         slippage = abs(result.price - price) / pip_size
+
+        # Loud backstop: the deviation cap should have rejected/requoted a fill
+        # beyond tolerance, but market-execution accounts may ignore deviation.
+        if self._max_slippage_pips > 0 and slippage > self._max_slippage_pips + 1e-9:
+            logger.warning(
+                "⚠️ SLIPPAGE EXCEEDED — {} {} filled {:.1f}pip beyond plan "
+                "(cap {:.1f}pip); broker may not honour deviation on this account",
+                direction, mapped, slippage, self._max_slippage_pips,
+            )
 
         logger.info(
             "MT5 order filled — {} {} {} lots @ {} (slip {:.1f} pip, {:.0f}ms)",
