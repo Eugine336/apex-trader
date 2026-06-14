@@ -123,6 +123,7 @@ class ApexMultiTFTradingEnv:
         self.equity_curve: list[float] = [self.initial_bal]
         self.trades_log:   list[dict]  = []
         self.peak_equity   = self.initial_bal
+        self._prev_dd      = 0.0
         return self._observe()
 
     def step(self, action: int) -> tuple[tuple[np.ndarray, np.ndarray, int], float, bool, dict]:
@@ -176,8 +177,18 @@ class ApexMultiTFTradingEnv:
         self.equity_curve.append(equity)
         self.peak_equity = max(self.peak_equity, equity)
         dd = (self.peak_equity - equity) / self.peak_equity if self.peak_equity > 0 else 0.0
-        if dd > 0.10:
-            reward -= dd * 2.0
+        # Penalise only *newly* realised drawdown beyond a 10% threshold, not the
+        # full drawdown on every step. The old per-step ``-dd * 2`` compounded
+        # under gamma=0.99 into value targets of order ~100, which exploded the
+        # value loss and starved the policy gradient (no learning). The
+        # incremental form sums to ``(max_dd - 0.10) * dd_penalty`` across an
+        # episode, keeping returns O(1) so PPO can actually learn.
+        dd_penalty = self._reward_shaping.get("dd_penalty", 1.0) if self._reward_shaping else 1.0
+        excess = max(0.0, dd - 0.10)
+        prev_excess = max(0.0, self._prev_dd - 0.10)
+        if excess > prev_excess:
+            reward -= (excess - prev_excess) * dd_penalty
+        self._prev_dd = dd
 
         self.idx += 1
         done = self.idx >= len(self._m5_feat) - 1
