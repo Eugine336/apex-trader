@@ -324,7 +324,13 @@ class ScoreOptimizer:
         weights = weights or self.current_weights
         p = Path(filepath)
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(json.dumps(asdict(weights), indent=2))
+        try:
+            from persistence.atomic_write import atomic_write_text
+
+            atomic_write_text(p, json.dumps(asdict(weights), indent=2))
+        except Exception:
+            # Defensive fallback only if the atomic helper is unavailable.
+            p.write_text(json.dumps(asdict(weights), indent=2))
         logger.info(f"Weights saved to {filepath}")
 
     def load_weights(self, filepath: Optional[str] = None) -> ScoringWeights:

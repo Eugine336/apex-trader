@@ -571,6 +571,7 @@ class RiskHeatMarginMixin:
 
     def _emergency_flatten_all(self) -> None:
         closed = 0
+        failed_oids: list[str] = []
         for oid, pos in list(self.managed_positions.items()):
             try:
                 result = self.platforms.close_trade(oid, pos.platform)
@@ -578,16 +579,32 @@ class RiskHeatMarginMixin:
                     self._record_closed_trade(
                         pos, result.close_price, "MARGIN_FLATTEN", close_result=result
                     )
+                    # Only drop a position once the broker confirms it closed.
+                    self.managed_positions.pop(oid, None)
+                    self.position_store.remove_position(oid)
                     closed += 1
+                else:
+                    failed_oids.append(oid)
+                    logger.error(
+                        "Margin flatten close REJECTED for {} {} — retaining under "
+                        "management for retry (still open at broker)",
+                        pos.direction, pos.symbol,
+                    )
             except Exception as exc:
+                failed_oids.append(oid)
                 logger.error("Margin flatten failed for {}: {}", oid, exc)
-        self.managed_positions.clear()
-        self.position_store.clear_all()
         from brain.drawdown_guard import DrawdownMode
         self.drawdown.mode = DrawdownMode.FROZEN
-        logger.critical("🚨 MARGIN FLATTEN COMPLETE — {} positions closed, risk FROZEN", closed)
+        if failed_oids:
+            logger.critical(
+                "🚨 MARGIN FLATTEN — {} closed, {} STILL OPEN at broker (retained, "
+                "not dropped): {} — risk FROZEN",
+                closed, len(failed_oids), failed_oids,
+            )
+        else:
+            logger.critical("🚨 MARGIN FLATTEN COMPLETE — {} positions closed, risk FROZEN", closed)
         try:
-            self.position_store.save_guard_state(self.drawdown.to_state())
+            self._persist_guard_state()
         except Exception as exc:
             logger.error("Guard state persist after margin flatten failed: {}", exc)
 

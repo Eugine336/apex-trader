@@ -456,6 +456,29 @@ class RiskEngine:
         self.pnl_tracker.reset_weekly(now)
         logger.info("[RiskEngine] NEW WEEK: Weekly P&L reset")
 
+    def to_state(self) -> dict:
+        """Serialise daily risk state (balance + drawdown guard) so a mid-day
+        restart doesn't reset the loss budget / FROZEN mode to fresh."""
+        return {
+            "balance": self.balance,
+            "drawdown_guard": self.drawdown_guard.to_state(),
+        }
+
+    def restore_state(self, state: dict) -> None:
+        """Restore balance + drawdown guard from a persisted payload."""
+        try:
+            bal = float(state.get("balance", 0.0) or 0.0)
+            if bal > 0:
+                self.balance = bal
+        except (TypeError, ValueError):
+            pass
+        dg = state.get("drawdown_guard")
+        if dg:
+            try:
+                self.drawdown_guard.restore_state(dg)
+            except Exception as exc:
+                logger.debug("[RiskEngine] drawdown guard restore failed: {}", exc)
+
     def _scale_risk_by_score(
         self, base_risk_pct: float, score: int, hwm_state: dict,
     ) -> float:
