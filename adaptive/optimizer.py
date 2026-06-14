@@ -11,7 +11,7 @@ the difference.
 """
 
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from loguru import logger
@@ -56,12 +56,23 @@ class AdaptiveOptimizer:
     RETRAIN_TRADE_INTERVAL = 50
     RETRAIN_DAY_INTERVAL = 7
 
+    # Recency: the learners adapt to the CURRENT regime by training on trades
+    # within this rolling window — but only if enough remain (≥ min trades),
+    # otherwise the full history is used so a young account never starves the
+    # learners. 0 days disables windowing (full history, legacy behaviour).
+    RECENCY_WINDOW_DAYS = 90
+    RECENCY_MIN_TRADES = 50
+
     def __init__(self) -> None:
         self.analyzer = TradeAnalyzer()
         self.optimizer = ScoreOptimizer()
         self.regime_learner = RegimeLearner()
         self.pair_learner = PairLearner()
         self.session_learner = SessionLearner()
+
+        # Tunable per instance (kept as attributes so ops can adjust/disable).
+        self.recency_window_days = self.RECENCY_WINDOW_DAYS
+        self.recency_min_trades = self.RECENCY_MIN_TRADES
 
         self._last_train_time: Optional[datetime] = None
         self._trades_since_train: int = 0
@@ -71,11 +82,22 @@ class AdaptiveOptimizer:
         n = len(trades)
         logger.info(f"Adaptive optimisation cycle — {n} trades")
 
+        # Train the learners on RECENT trades so they reflect the current regime
+        # (the full history still drives the all-time performance report below).
+        learner_trades = self._recent_trades(
+            trades, self.recency_window_days, self.recency_min_trades,
+        )
+        if len(learner_trades) < n:
+            logger.info(
+                "Recency window — learners train on last {}d: {}/{} trades",
+                self.recency_window_days, len(learner_trades), n,
+            )
+
         overall = self.analyzer.analyze_all(trades)
-        weights = self.optimizer.optimize(trades)
-        regimes = self.regime_learner.learn(trades)
-        pairs = self.pair_learner.learn(trades)
-        sessions = self.session_learner.learn(trades)
+        weights = self.optimizer.optimize(learner_trades)
+        regimes = self.regime_learner.learn(learner_trades)
+        pairs = self.pair_learner.learn(learner_trades)
+        sessions = self.session_learner.learn(learner_trades)
 
         recommendations = self._generate_recommendations(
             trades, overall, regimes, pairs, sessions
@@ -95,6 +117,42 @@ class AdaptiveOptimizer:
         )
         logger.info(f"Optimisation complete — {len(recommendations)} recommendations")
         return report
+
+    @staticmethod
+    def _parse_trade_ts(t: dict) -> Optional[datetime]:
+        """Best-effort UTC timestamp for a trade dict (timestamp/entry/close)."""
+        raw = t.get("timestamp") or t.get("entry_time") or t.get("close_time")
+        if not raw:
+            return None
+        if isinstance(raw, datetime):
+            return raw if raw.tzinfo else raw.replace(tzinfo=timezone.utc)
+        try:
+            dt = datetime.fromisoformat(str(raw).replace("Z", "+00:00"))
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except (TypeError, ValueError):
+            return None
+
+    @classmethod
+    def _recent_trades(
+        cls,
+        trades: list[dict],
+        window_days: int,
+        min_trades: int,
+        now: Optional[datetime] = None,
+    ) -> list[dict]:
+        """Return trades within `window_days` — but only if at least `min_trades`
+        remain; otherwise return the full set so the learners never starve. This
+        is what lets the learners adapt to the current regime instead of being
+        anchored by stale, months-old trades. Disabled when window_days <= 0."""
+        if window_days <= 0 or len(trades) <= min_trades:
+            return trades
+        now = now or datetime.now(timezone.utc)
+        cutoff = now - timedelta(days=window_days)
+        recent = [
+            t for t in trades
+            if (ts := cls._parse_trade_ts(t)) is not None and ts >= cutoff
+        ]
+        return recent if len(recent) >= min_trades else trades
 
     def get_trade_adjustments(
         self, pair: str, regime: str, session: str
