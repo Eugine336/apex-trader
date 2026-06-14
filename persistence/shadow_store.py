@@ -237,6 +237,28 @@ class ShadowStore:
             logger.debug("[ShadowStore] mark_expired failed: {}", exc)
             return False
 
+    def discard_stale_pending(self, older_than_ms: int) -> int:
+        """Discard PENDING contracts older than the cutoff.
+
+        Un-executed hypothetical setups that are too old to be worth resolving
+        are marked DISCARDED so the backlog doesn't replay forever or grow
+        unbounded. Returns the number discarded.
+        """
+        if self._conn is None:
+            return 0
+        try:
+            cur = self._conn.execute(
+                """UPDATE shadow_contracts
+                   SET status='DISCARDED', outcome='DISCARDED', resolution_ts=?
+                   WHERE status='PENDING' AND ts_utc_ms < ?""",
+                (_now_ms(), older_than_ms),
+            )
+            self._conn.commit()
+            return cur.rowcount or 0
+        except Exception as exc:
+            logger.debug("[ShadowStore] discard_stale_pending failed: {}", exc)
+            return 0
+
     def get_pending(self, limit: int = 100) -> List[ShadowContract]:
         if self._conn is None:
             return []

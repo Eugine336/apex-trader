@@ -228,6 +228,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # production instead of leaving contracts PENDING forever.
         self._shadow_resolve_interval_seconds = 900
         self._last_shadow_resolve_time = 0.0
+        # Un-executed (PENDING) shadow contracts older than this are discarded
+        # rather than replayed forever — keeps the backlog/ DB bounded.
+        self._shadow_max_pending_age_seconds = 3 * 86400
 
         self.watchdog = HealthWatchdog()
         self.maintenance = DailyMaintenance()
@@ -4047,6 +4050,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     logger.info("🧹 Daily maintenance — {}", maint_result)
                 except Exception as exc:
                     logger.warning("Maintenance error: {}", exc)
+                # Bound the audit/event DB — retention was never wired in, so
+                # apex_events.db had grown into the hundreds of MB. Prune daily.
+                try:
+                    from persistence.event_store import get_event_store
+
+                    pruned = get_event_store().prune()
+                    if pruned:
+                        logger.info("🧹 Event store pruned — {} old events removed", pruned)
+                except Exception as exc:
+                    logger.debug("[maintenance] event-store prune failed: {}", exc)
 
         if self.ml.should_retrain():
             self._run_ml_optimization()
@@ -4069,6 +4082,18 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         if now - self._last_shadow_resolve_time < self._shadow_resolve_interval_seconds:
             return
         self._last_shadow_resolve_time = now
+        # Discard stale, un-executed (PENDING) contracts first — old rejected
+        # setups aren't worth replaying and would otherwise grow the backlog.
+        try:
+            cutoff_ms = int((now - self._shadow_max_pending_age_seconds) * 1000)
+            discarded = self._shadow_store.discard_stale_pending(cutoff_ms)
+            if discarded:
+                logger.info(
+                    "👻 Shadow resolver — discarded {} stale pending contracts (older than {:.0f}d)",
+                    discarded, self._shadow_max_pending_age_seconds / 86400,
+                )
+        except Exception as exc:
+            logger.debug("[shadow] discard stale pending failed: {}", exc)
         try:
             from persistence.shadow_resolver import run_resolver
 
