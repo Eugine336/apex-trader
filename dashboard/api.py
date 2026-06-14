@@ -5,6 +5,7 @@ REST endpoints + WebSocket serving live trading data to the frontend.
 
 import asyncio
 import hmac
+import ipaddress
 import os
 from typing import Optional
 
@@ -44,6 +45,38 @@ def _is_mutating_request(path: str) -> bool:
 
 def _key_matches(provided: str) -> bool:
     return hmac.compare_digest(provided.encode(), _API_KEY.encode())
+
+
+# Trust loopback (localhost) connections without an API key. The dashboard is
+# typically bound to 0.0.0.0 but driven from the same machine (127.0.0.1 / ::1),
+# where the operator already has host access. This lets the local browser work
+# WITHOUT baking the key into the frontend bundle, while remote (non-loopback)
+# clients still require the key. Disable with DD_DASHBOARD_TRUST_LOOPBACK=0.
+# Caveat: behind a reverse proxy every request appears to originate from the
+# proxy's (often loopback) address — turn this off if you front the dashboard
+# with a proxy, and authenticate at the proxy instead.
+_TRUST_LOOPBACK = os.getenv("DD_DASHBOARD_TRUST_LOOPBACK", "1").strip().lower() not in (
+    "0", "false", "no", "off", "",
+)
+
+
+def _is_loopback(host: str) -> bool:
+    if not host:
+        return False
+    if host == "localhost":
+        return True
+    try:
+        ip = ipaddress.ip_address(host)
+    except ValueError:
+        return False
+    # Unwrap IPv4-mapped IPv6 (e.g. ::ffff:127.0.0.1) before the loopback check.
+    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
+        ip = ip.ipv4_mapped
+    return ip.is_loopback
+
+
+def _request_is_trusted_local(client) -> bool:
+    return bool(_TRUST_LOOPBACK and client and _is_loopback(client.host))
 
 
 class ConnectionManager:
@@ -87,7 +120,11 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
     )
 
     if _API_KEY:
-        logger.info("Dashboard API key authentication ENABLED")
+        logger.info(
+            "Dashboard API key authentication ENABLED (loopback trust: {})",
+            "ON — local browser needs no key" if _TRUST_LOOPBACK
+            else "OFF — all clients need the key",
+        )
     else:
         logger.warning(
             "No DD_DASHBOARD_API_KEY set — mutating endpoints DISABLED (read-only mode)"
@@ -110,6 +147,8 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
 
         provided = request.headers.get("X-API-Key", "")
         if not _key_matches(provided):
+            if _request_is_trusted_local(request.client):
+                return await call_next(request)
             return JSONResponse(
                 {"error": "Invalid or missing API key"},
                 status_code=401,
@@ -255,9 +294,12 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
                 or websocket.headers.get("sec-websocket-protocol", "")
             )
             if not _key_matches(key):
-                await websocket.close(code=1008, reason="Invalid API key")
-                return
-            if websocket.headers.get("sec-websocket-protocol"):
+                if _request_is_trusted_local(websocket.client):
+                    await websocket.accept()
+                else:
+                    await websocket.close(code=1008, reason="Invalid API key")
+                    return
+            elif websocket.headers.get("sec-websocket-protocol"):
                 await websocket.accept(subprotocol=websocket.headers["sec-websocket-protocol"])
             else:
                 await websocket.accept()

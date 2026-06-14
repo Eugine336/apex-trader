@@ -184,3 +184,63 @@ class TestH4BindHostConfig:
             api_key = os.getenv("DD_DASHBOARD_API_KEY")
             assert bind_host != "127.0.0.1"
             assert not api_key
+
+
+# ── Loopback trust — local browser works without baking a key into the UI ─
+
+def _reload_api(env):
+    import importlib
+    with patch.dict(os.environ, env, clear=False):
+        import dashboard.api as api_module
+        importlib.reload(api_module)
+        return api_module
+
+
+class TestLoopbackHelpers:
+    def test_is_loopback_variants(self):
+        api = _reload_api({"DD_DASHBOARD_API_KEY": "secret"})
+        for host in ("127.0.0.1", "::1", "::ffff:127.0.0.1", "localhost"):
+            assert api._is_loopback(host), host
+        for host in ("192.168.1.10", "10.0.0.3", "8.8.8.8", "", "testclient"):
+            assert not api._is_loopback(host), host
+        assert not api._is_loopback(None)
+
+    def test_trusted_local_requires_loopback_and_flag(self):
+        from types import SimpleNamespace
+        api = _reload_api({"DD_DASHBOARD_API_KEY": "secret", "DD_DASHBOARD_TRUST_LOOPBACK": "1"})
+        assert api._request_is_trusted_local(SimpleNamespace(host="127.0.0.1"))
+        assert not api._request_is_trusted_local(SimpleNamespace(host="10.0.0.2"))
+        assert not api._request_is_trusted_local(None)
+
+    def test_trust_loopback_can_be_disabled(self):
+        from types import SimpleNamespace
+        api = _reload_api({"DD_DASHBOARD_API_KEY": "secret", "DD_DASHBOARD_TRUST_LOOPBACK": "0"})
+        assert not api._request_is_trusted_local(SimpleNamespace(host="127.0.0.1"))
+
+
+class TestLoopbackBypassEndToEnd:
+    def test_loopback_reads_without_key(self):
+        api = _reload_api({"DD_DASHBOARD_API_KEY": "secret", "DD_DASHBOARD_TRUST_LOOPBACK": "1"})
+        client = TestClient(api.create_app(), client=("127.0.0.1", 5))
+        assert client.get("/api/status").status_code == 200
+
+    def test_loopback_mutating_without_key(self):
+        api = _reload_api({"DD_DASHBOARD_API_KEY": "secret", "DD_DASHBOARD_TRUST_LOOPBACK": "1"})
+        client = TestClient(api.create_app(), client=("127.0.0.1", 5))
+        assert client.post("/api/control", json={"action": "pause"}).status_code == 200
+
+    def test_remote_still_requires_key(self):
+        api = _reload_api({"DD_DASHBOARD_API_KEY": "secret", "DD_DASHBOARD_TRUST_LOOPBACK": "1"})
+        client = TestClient(api.create_app(), client=("203.0.113.7", 5))
+        assert client.get("/api/status").status_code == 401
+
+    def test_loopback_trust_off_requires_key_even_local(self):
+        api = _reload_api({"DD_DASHBOARD_API_KEY": "secret", "DD_DASHBOARD_TRUST_LOOPBACK": "0"})
+        client = TestClient(api.create_app(), client=("127.0.0.1", 5))
+        assert client.get("/api/status").status_code == 401
+
+    def test_loopback_ws_connects_without_key(self):
+        api = _reload_api({"DD_DASHBOARD_API_KEY": "secret", "DD_DASHBOARD_TRUST_LOOPBACK": "1"})
+        client = TestClient(api.create_app(), client=("127.0.0.1", 5))
+        with client.websocket_connect("/ws") as ws:
+            ws.close()
