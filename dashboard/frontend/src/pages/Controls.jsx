@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { useOutletContext } from 'react-router-dom';
-import { useApi, postControl } from '../hooks/useApi';
+import { useApi, postControl, getApiKey, setApiKey } from '../hooks/useApi';
 
 const MODES = ['NORMAL', 'CAUTION', 'RECOVERY', 'FROZEN'];
 const MODE_CLS = { NORMAL: 'btn-accent', CAUTION: 'btn-yellow', RECOVERY: 'btn-orange', FROZEN: 'btn-red' };
@@ -23,6 +23,13 @@ export default function Controls() {
 
   const [feedback, setFeedback] = useState(null);
   const [confirmAction, setConfirmAction] = useState(null);
+  const [keyInput, setKeyInput] = useState(getApiKey());
+
+  const saveApiKey = () => {
+    setApiKey(keyInput.trim());
+    setFeedback({ type: 'success', msg: 'API key saved — reloading to reconnect…' });
+    setTimeout(() => window.location.reload(), 600);
+  };
 
   const act = async (action, value = null) => {
     try {
@@ -52,6 +59,36 @@ export default function Controls() {
       {feedback && (
         <div className={`toast toast-${feedback.type}`}>{feedback.msg}</div>
       )}
+
+      <div className="card mb-20">
+        <div className="card-header"><span className="card-title">Dashboard API Key</span></div>
+        <div style={{ fontSize: 12, color: 'var(--text-muted)', marginBottom: 10 }}>
+          Required when the backend has <span className="mono">DD_DASHBOARD_API_KEY</span> set
+          (otherwise the API returns 401 and the live feed 403). Stored in this browser only —
+          no rebuild needed.
+        </div>
+        <div className="btn-group" style={{ alignItems: 'center', flexWrap: 'wrap' }}>
+          <input
+            type="password"
+            value={keyInput}
+            onChange={(e) => setKeyInput(e.target.value)}
+            placeholder="paste DD_DASHBOARD_API_KEY"
+            className="mono"
+            style={{
+              flex: '1 1 280px', padding: '8px 10px', fontSize: 13,
+              background: 'var(--bg-elevated, #1a1a1a)', color: 'var(--text)',
+              border: '1px solid var(--border, #333)', borderRadius: 6,
+            }}
+          />
+          <button className="btn btn-accent" onClick={saveApiKey}>SAVE &amp; RECONNECT</button>
+          <button
+            className="btn"
+            onClick={() => { setApiKey(''); setKeyInput(''); window.location.reload(); }}
+          >
+            CLEAR
+          </button>
+        </div>
+      </div>
 
       <div className="grid-2 mb-20">
         <div className="card">

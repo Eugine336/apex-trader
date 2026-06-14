@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { getApiKey } from './useApi';
 
 export default function useLiveState() {
   const [state, setState] = useState({});
@@ -8,7 +9,11 @@ export default function useLiveState() {
 
   const connect = useCallback(() => {
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws.current = new WebSocket(`${protocol}//${window.location.host}/ws`);
+    const url = `${protocol}//${window.location.host}/ws`;
+    // Browsers can't set custom headers on a WebSocket, so the API key is
+    // offered as a subprotocol — the backend reads it from Sec-WebSocket-Protocol.
+    const key = getApiKey();
+    ws.current = key ? new WebSocket(url, [key]) : new WebSocket(url);
 
     ws.current.onopen = () => setConnected(true);
 
