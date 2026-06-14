@@ -8,8 +8,74 @@ from dashboard.state_helpers import HelpersMixin, pct_to_fraction, safe_float
 from loguru import logger
 
 
+_REVERSAL_TAG = "REVERSAL_TRADE"
+
+
+def _summarize_reversal_split(trades: list[dict]) -> dict:
+    """Split realized journal trades into REVERSAL vs CONTINUATION and report
+    count / win-rate / EV for each. Reversal trades are tagged at entry time
+    with the ``REVERSAL_TRADE`` confluence (roadmap E). EV is the count-weighted
+    mean R (pnl_dollars / risk_dollars) when risk is known, else the average
+    dollar P&L is reported via avg_pnl. Lets an operator see whether the
+    counter-trend reversal book is actually paying for itself."""
+    def _blank() -> dict:
+        return {
+            "count": 0, "wins": 0, "losses": 0, "win_rate": 0.0,
+            "ev_r": 0.0, "ev_samples": 0, "avg_pnl": 0.0, "total_pnl": 0.0,
+        }
+
+    out = {"reversal": _blank(), "continuation": _blank()}
+    acc = {
+        "reversal": {"pnl": 0.0, "r_sum": 0.0, "r_n": 0},
+        "continuation": {"pnl": 0.0, "r_sum": 0.0, "r_n": 0},
+    }
+    for t in trades or []:
+        conf = t.get("confluences_raw") or t.get("confluences") or []
+        is_rev = any(_REVERSAL_TAG in str(c).upper() for c in conf)
+        key = "reversal" if is_rev else "continuation"
+        g, s = out[key], acc[key]
+        pnl_d = t.get("pnl_dollars")
+        pnl_pips = t.get("pnl")
+        if isinstance(pnl_d, (int, float)):
+            won, lost = pnl_d > 0, pnl_d < 0
+            s["pnl"] += float(pnl_d)
+        elif isinstance(pnl_pips, (int, float)):
+            won, lost = pnl_pips > 0, pnl_pips < 0
+        else:
+            won = lost = False
+        g["count"] += 1
+        if won:
+            g["wins"] += 1
+        elif lost:
+            g["losses"] += 1
+        risk_d = t.get("risk_dollars")
+        if isinstance(risk_d, (int, float)) and risk_d > 0 and isinstance(pnl_d, (int, float)):
+            s["r_sum"] += pnl_d / risk_d
+            s["r_n"] += 1
+
+    for key in out:
+        g, s = out[key], acc[key]
+        decisive = g["wins"] + g["losses"]
+        g["win_rate"] = round(g["wins"] / decisive * 100, 1) if decisive else 0.0
+        g["avg_pnl"] = round(s["pnl"] / g["count"], 2) if g["count"] else 0.0
+        g["total_pnl"] = round(s["pnl"], 2)
+        g["ev_samples"] = s["r_n"]
+        g["ev_r"] = round(s["r_sum"] / s["r_n"], 3) if s["r_n"] else 0.0
+    return out
+
+
 class PerformanceMixin(HelpersMixin):
     """get_performance()."""
+
+    def get_reversal_breakdown(self) -> dict:
+        """Realized EV/win-rate of counter-trend REVERSAL trades vs everything
+        else (roadmap E tracking). Reads the journal cache; empty when offline."""
+        try:
+            trades = self._refresh_journal_cache() if self.is_live else []
+        except Exception as exc:
+            logger.debug("[dashboard] reversal breakdown read failed: {}", exc)
+            trades = []
+        return _summarize_reversal_split(trades)
 
     def get_performance(self) -> dict:
         today = datetime.now(timezone.utc).date()

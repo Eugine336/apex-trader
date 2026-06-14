@@ -178,6 +178,11 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
         """Rejected/skipped setup outcomes grouped by rejecting gate."""
         return _state.get_shadow_outcomes()
 
+    @app.get("/api/reversal-breakdown")
+    def reversal_breakdown():
+        """Realized EV/win-rate of counter-trend REVERSAL trades vs continuation."""
+        return _state.get_reversal_breakdown()
+
     @app.get("/api/reconciliation")
     def reconciliation():
         """Broker-vs-derived exit reason discrepancies."""
@@ -295,6 +300,7 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
                             "scanner": _state.get_scanner_results(),
                             "performance": _state.get_performance(),
                             "shadow": _state.get_shadow_outcomes(),
+                            "reversal": _state.get_reversal_breakdown(),
                             "decisions": _state.get_decisions(limit=20),
                         }
                         await manager.broadcast(payload)
