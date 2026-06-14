@@ -103,6 +103,12 @@ def _validate_stop_target_sidedness(
     tp2: float | None = None,
 ) -> tuple[bool, str]:
     is_long = direction.upper() in ("LONG", "BUY")
+    # Reject non-positive levels outright — a 0/negative SL would otherwise pass
+    # the LONG check (0 < entry) and be sent to the broker as a NAKED order.
+    if stop_loss <= 0:
+        return False, f"invalid SL ({stop_loss}) — non-positive (would be naked)"
+    if tp1 <= 0:
+        return False, f"invalid TP1 ({tp1}) — non-positive"
     if is_long:
         if not (stop_loss < entry_price):
             return False, f"LONG but SL({stop_loss}) >= entry({entry_price})"
@@ -363,6 +369,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             daily_loss_cap_pct=getattr(gcfg, "daily_loss_cap_pct", 3.0) if gcfg else 3.0,
             daily_loss_recovery_pct=getattr(gcfg, "daily_loss_recovery_pct", 1.5) if gcfg else 1.5,
             heat_block_pct=getattr(self.config.risk, "portfolio_heat_block_pct", 2.0),
+            daily_loss_flatten_pct=getattr(self.config.risk, "daily_loss_flatten_pct", 5.0),
         )
         self._account_key_cache: dict[str, str] = {}
 
@@ -2229,8 +2236,34 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             if bp is not None:
                 pos.broker_pnl = bp.pnl
                 pos.broker_lots = bp.lots
-                if abs(bp.sl - pos.sl) > 1e-8:
+                # Sync broker SL onto the managed position — but NEVER let a
+                # broker-reported 0/absent SL silently erase a real protective
+                # stop. If the broker shows no stop while we expect one, the
+                # position is NAKED: alarm loudly and re-assert our SL.
+                if bp.sl > 0 and abs(bp.sl - pos.sl) > 1e-8:
                     pos.sl = bp.sl
+                elif bp.sl <= 0 and pos.sl > 0:
+                    logger.critical(
+                        "🚨 NAKED POSITION — {} {} has NO broker stop-loss; "
+                        "re-asserting SL {:.5f}",
+                        pos.direction, pos.symbol, pos.sl,
+                    )
+                    try:
+                        if self.platforms.modify_trade(oid, pos.platform, new_sl=pos.sl):
+                            logger.info(
+                                "✅ SL re-asserted at broker — {} {} SL {:.5f}",
+                                pos.direction, pos.symbol, pos.sl,
+                            )
+                        else:
+                            logger.critical(
+                                "🚨 SL RE-ASSERT FAILED — {} {} REMAINS NAKED at broker",
+                                pos.direction, pos.symbol,
+                            )
+                    except Exception as exc:
+                        logger.critical(
+                            "🚨 SL re-assert error for {} {}: {}",
+                            pos.direction, pos.symbol, exc,
+                        )
 
             try:
                 tick = self.platforms.get_price(pos.symbol)
@@ -3378,6 +3411,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             except Exception as exc:
                 logger.warning("[scale-in] resolve_in_flight failed: {}", exc)
             pos.scale_in_count += 1
+            try:
+                if self.position_store:
+                    self.position_store.update_position(
+                        pos.order_id, scale_in_count=pos.scale_in_count,
+                    )
+            except Exception as exc:
+                logger.warning("[scale-in] scale_in_count persist failed: {}", exc)
             # Reflect the added broker volume on the managed position + the
             # TradeManager trade and persist it, so partial-close math and P&L
             # use the true size instead of waiting for reconcile to adopt the
@@ -4124,6 +4164,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     pruned = get_event_store().prune()
                     if pruned:
                         logger.info("🧹 Event store pruned — {} old events removed", pruned)
+                        # Reclaim the freed disk space (DELETE alone does not
+                        # shrink the file). Runs in daily maintenance only.
+                        get_event_store().vacuum()
                 except Exception as exc:
                     logger.debug("[maintenance] event-store prune failed: {}", exc)
 

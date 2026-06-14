@@ -180,7 +180,13 @@ class CorrelationEngine:
                 1 for t in open_trades
                 if ASSET_CLUSTER.get(t.pair) == cluster
             )
-        return 0
+
+        # Fallback for symbols in NEITHER the forex nor cluster maps (e.g. a
+        # newly-listed crypto / index / synthetic). Never fail open: at minimum
+        # cap stacking into the SAME exact instrument so concentration on an
+        # unmapped symbol is still bounded by max_correlated_trades.
+        pu = pair.upper()
+        return sum(1 for t in open_trades if t.pair.upper() == pu)
 
     def _count_cluster_directions(
         self, trades: list[OpenTrade]

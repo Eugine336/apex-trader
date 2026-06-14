@@ -76,6 +76,22 @@ class PositionSizer:
             )
 
         risk_amount = account_balance * risk_pct
+        if pip_size <= 0 or pip_value_per_lot <= 0:
+            logger.warning(
+                "Invalid instrument params (pip_size={}, pip_value_per_lot={}) — "
+                "skipping trade (cannot size safely)",
+                pip_size, pip_value_per_lot,
+            )
+            return SizeResult(
+                lots=0.0,
+                stake_usd=0.0,
+                risk_amount=round(risk_amount, 2),
+                risk_pips=0.0,
+                pip_value=pip_value_per_lot,
+                max_loss=0.0,
+                margin_estimate=0.0,
+                sizing_mode="skip_invalid_params",
+            )
         risk_pips = abs(entry_price - stop_loss) / pip_size
 
         if risk_pips <= 0:
@@ -273,4 +289,6 @@ class PositionSizer:
         leverage: int = 100,
         contract_size: int = 100_000,
     ) -> float:
+        if leverage <= 0:
+            return 0.0
         return (lots * contract_size * price) / leverage

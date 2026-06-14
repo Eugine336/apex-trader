@@ -67,6 +67,18 @@ class DecisionEngine:
         if sa.momentum < -0.3 and sa.profit_state < 0:
             close_score += abs(sa.momentum) * 0.15
             close_reason_parts.append(f"adverse momentum ({sa.momentum:+.2f})")
+        # Active loss-response: a losing trade whose read is no longer clearly
+        # supportive should be acted on EARLY rather than ridden passively to the
+        # broker stop. Engages only once structure/momentum stops supporting the
+        # trade, and scales with how deep the loss is — so a healthy pullback in
+        # an intact trend (structure ≥ 0.5 and momentum ≥ 0) is still held.
+        if sa.profit_state < -0.6 and (sa.structure_integrity < 0.5 or sa.momentum < 0.0):
+            depth = min(abs(sa.profit_state), 2.0)
+            close_score += min(0.10 + (depth - 0.6) * 0.25, 0.45)
+            close_reason_parts.append(
+                f"active loss-response ({sa.profit_state:.1f}R, "
+                f"structure={sa.structure_integrity:.2f}, momentum={sa.momentum:+.2f})"
+            )
         if sa.urgency > 0.8:
             close_score += sa.urgency * 0.20
             close_reason_parts.append(f"high urgency ({sa.urgency:.2f})")

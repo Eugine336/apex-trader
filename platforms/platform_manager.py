@@ -245,16 +245,13 @@ class PlatformManager:
                 if self._mt5_connected_flags[i]:
                     continue  # already up
                 attempt = self._mt5_reconnect_attempts[i]
-                if attempt >= max_attempts:
-                    logger.error(
-                        "MT5[{}] reconnect exhausted after {} attempts", i, max_attempts
-                    )
-                    continue
-                delay = delays[attempt]
+                # Never permanently give up — clamp to the longest backoff and
+                # keep retrying so a long outage self-heals without a restart.
+                delay = delays[min(attempt, max_attempts - 1)]
                 label = f"MT5[{i}]" if len(self.mt5_connectors) > 1 else "MT5"
                 logger.warning(
-                    "{} reconnect attempt {}/{} (backoff {}s)",
-                    label, attempt + 1, max_attempts, delay,
+                    "{} reconnect attempt {} (backoff {}s)",
+                    label, attempt + 1, delay,
                 )
                 try:
                     success = self.mt5_connectors[i].connect()
@@ -275,13 +272,12 @@ class PlatformManager:
 
         else:  # deriv
             attempt = self._deriv_reconnect_attempt
-            if attempt >= max_attempts:
-                logger.error("DERIV reconnect exhausted after {} attempts", max_attempts)
-                return False
-            delay = delays[attempt]
+            # Never permanently give up — clamp to the longest backoff and keep
+            # retrying so a long outage self-heals without a restart.
+            delay = delays[min(attempt, max_attempts - 1)]
             logger.warning(
-                "DERIV reconnect attempt {}/{} (backoff {}s)",
-                attempt + 1, max_attempts, delay,
+                "DERIV reconnect attempt {} (backoff {}s)",
+                attempt + 1, delay,
             )
             try:
                 success = self.deriv.connect()

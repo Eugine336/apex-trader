@@ -470,8 +470,11 @@ class RiskEngine:
             bal = float(state.get("balance", 0.0) or 0.0)
             if bal > 0:
                 self.balance = bal
-        except (TypeError, ValueError):
-            pass
+        except (TypeError, ValueError) as exc:
+            logger.warning(
+                "[RiskEngine] corrupt persisted balance ignored — balance starts "
+                "fresh this session: {}", exc,
+            )
         dg = state.get("drawdown_guard")
         if dg:
             try:

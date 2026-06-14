@@ -397,10 +397,16 @@ class RiskConfig:
     pending_max_wait_minutes: int = 30
     max_cluster_same_direction: int = 2
     allow_intentional_hedge: bool = False
-    margin_guardian_enabled: bool = False
+    margin_guardian_enabled: bool = True
     margin_warn_pct: float = 200.0
     margin_block_entry_pct: float = 150.0
     margin_flatten_pct: float = 100.0
+    # Per-account daily-loss FLATTEN cap (Tier 2 #9). When an account's combined
+    # realized + unrealized daily loss breaches this %, that account's open
+    # positions are flattened and the account is halted for the day. This is the
+    # harder backstop above the (entry-blocking) daily_loss_cap_pct.
+    daily_loss_flatten_enabled: bool = True
+    daily_loss_flatten_pct: float = 5.0
     weekend_protection_enabled: bool = True
     weekend_protection_mode: str = "derisk"
     weekend_close_buffer_minutes: int = 15
