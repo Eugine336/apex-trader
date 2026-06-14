@@ -91,6 +91,18 @@ _MIGRATE_INITIAL_RISK = (
 _MIGRATE_SCALE_IN = (
     "ALTER TABLE managed_positions ADD COLUMN scale_in_count INTEGER NOT NULL DEFAULT 0"
 )
+_MIGRATE_PLAN_ID = (
+    "ALTER TABLE managed_positions ADD COLUMN plan_id TEXT NOT NULL DEFAULT ''"
+)
+_MIGRATE_PLAN_SL = (
+    "ALTER TABLE managed_positions ADD COLUMN plan_sl_pips REAL NOT NULL DEFAULT 0.0"
+)
+_MIGRATE_PLAN_SCALE = (
+    "ALTER TABLE managed_positions ADD COLUMN plan_scale_in_allowed INTEGER"
+)
+_MIGRATE_TP3_HIT = (
+    "ALTER TABLE managed_positions ADD COLUMN tp3_hit INTEGER NOT NULL DEFAULT 0"
+)
 
 _CREATE_GUARD_STATE = """
 CREATE TABLE IF NOT EXISTS guard_state (
@@ -155,6 +167,18 @@ class PositionStore:
             except sqlite3.OperationalError as exc:
                 logger.debug("[position_store] scale_in_count migration skipped (likely already exists): {}", exc)
                 pass
+        for _col, _stmt in (
+            ("plan_id", _MIGRATE_PLAN_ID),
+            ("plan_sl_pips", _MIGRATE_PLAN_SL),
+            ("plan_scale_in_allowed", _MIGRATE_PLAN_SCALE),
+            ("tp3_hit", _MIGRATE_TP3_HIT),
+        ):
+            if _col not in cols:
+                try:
+                    self._conn.execute(_stmt)
+                except sqlite3.OperationalError as exc:
+                    logger.debug("[position_store] {} migration skipped (likely already exists): {}", _col, exc)
+                    pass
 
     # ── Health tracking ─────────────────────────────────────────────────
 
@@ -194,8 +218,9 @@ class PositionStore:
                      sl, tp1, tp2, score, regime, session, entry_type,
                      open_time, tp1_hit, at_breakeven, trailing,
                      tm_trade_id, stake_usd, multiplier, idempotency_key,
-                     confluences_json, initial_risk_dollars, scale_in_count, last_update)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                     confluences_json, initial_risk_dollars, scale_in_count,
+                     plan_id, plan_sl_pips, plan_scale_in_allowed, tp3_hit, last_update)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         str(pos.order_id),
@@ -222,6 +247,14 @@ class PositionStore:
                         json.dumps(getattr(pos, "confluences", [])),
                         getattr(pos, "initial_risk_dollars", None),
                         int(getattr(pos, "scale_in_count", 0)),
+                        str(getattr(pos, "plan_id", "") or ""),
+                        float(getattr(pos, "plan_sl_pips", 0.0) or 0.0),
+                        (
+                            None
+                            if getattr(pos, "plan_scale_in_allowed", None) is None
+                            else int(bool(getattr(pos, "plan_scale_in_allowed")))
+                        ),
+                        int(getattr(pos, "tp3_hit", 0) or 0),
                         datetime.now(timezone.utc).isoformat(),
                     ),
                 )
@@ -238,13 +271,13 @@ class PositionStore:
         allowed = {
             "sl", "tp1", "tp2", "lots", "tp1_hit", "at_breakeven",
             "trailing", "tm_trade_id", "stake_usd", "multiplier",
-            "idempotency_key", "scale_in_count",
+            "idempotency_key", "scale_in_count", "tp3_hit",
         }
         updates = {}
         for key, val in fields.items():
             if key not in allowed:
                 continue
-            if key in ("tp1_hit", "at_breakeven", "trailing", "scale_in_count"):
+            if key in ("tp1_hit", "at_breakeven", "trailing", "scale_in_count", "tp3_hit"):
                 updates[key] = int(val)
             else:
                 updates[key] = val
