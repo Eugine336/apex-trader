@@ -203,6 +203,44 @@ class TestDecisionEngine:
         assert decision.action == Action.CLOSE
 
 
+# ── Independent trade manager (roadmap F) ──────────────────────────────────
+
+class TestIndependentManager:
+    """Exits are governed by the trade's OWN signals (structure / R / momentum),
+    not by a lagging HTF flip mid-trade."""
+
+    def setup_method(self):
+        self.de = DecisionEngine()
+
+    def test_htf_flip_alone_does_not_force_close(self):
+        # HTF flipped hard against the trade, but the trade's own structure is
+        # intact and it is NOT in loss → manager must HOLD, not CLOSE.
+        ctx = _make_ctx()
+        sa = SituationAssessment(
+            tf_alignment=-0.95,        # HTF strongly opposing
+            structure_integrity=0.45,  # intact (above the close threshold)
+            momentum=0.0,
+            profit_state=0.0,          # not in loss
+            urgency=0.0,
+        )
+        decision = self.de.decide_management(ctx, sa)
+        assert decision.action != Action.CLOSE
+
+    def test_trade_own_signals_still_close(self):
+        # No HTF opposition at all, but the trade's OWN structure is broken and
+        # it is losing with adverse momentum → manager still CLOSEs.
+        ctx = _make_ctx()
+        sa = SituationAssessment(
+            tf_alignment=0.0,          # HTF neutral — not driving the exit
+            structure_integrity=0.0,   # structure broken
+            momentum=-0.5,             # momentum against
+            profit_state=-1.0,         # in loss
+            urgency=0.0,
+        )
+        decision = self.de.decide_management(ctx, sa)
+        assert decision.action == Action.CLOSE
+
+
 # ── RiskGovernor tests ───────────────────────────────────────────────────
 
 class TestRiskGovernor:
