@@ -704,6 +704,22 @@ class DecisionConfig:
     journal_dir: str = "data/decision_journal"
     governor_enabled: bool = True
     adopted_observation_minutes: float = 10.0
+    # ── M5-primary decision weights (roadmap C) ───────────────────────────
+    # APEX is an M5/M1 opportunity-capture system, so M5 structure quality and
+    # M1 momentum CARRY the entry decision and trade SIZE; HTF (D1/H4/H1)
+    # alignment is context, not the dictator. Conviction weights (≈ sum 1.0)
+    # map conviction → size multiplier (0.5–1.5×). Previously HTF dominated at
+    # 0.40; it is now demoted to 0.20 with M5/M1 taking the lead.
+    conviction_htf_weight: float = 0.20        # was 0.40
+    conviction_structure_weight: float = 0.40  # M5 zone quality (was 0.30)
+    conviction_momentum_weight: float = 0.30   # M1 momentum (was 0.20)
+    conviction_confidence_weight: float = 0.10
+    # ENTER/SKIP scoring coefficients — HTF demoted, M5/M1 promoted.
+    enter_htf_coeff: float = 0.20        # was 0.35
+    enter_structure_coeff: float = 0.45  # M5 (was 0.40)
+    enter_momentum_coeff: float = 0.30   # M1 (was 0.15)
+    skip_htf_coeff: float = 0.20         # counter-HTF no longer dominates SKIP (was 0.35)
+    skip_momentum_coeff: float = 0.30    # opposing M1 matters more (was 0.20)
 
 
 # ---------------------------------------------------------------------------

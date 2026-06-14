@@ -82,7 +82,7 @@ from persistence.shadow_store import ShadowStore, ShadowContract, new_contract_i
 from decision.context import EntryContext, TradeContext
 from decision.situation import SituationEngine, SituationAssessment
 from decision.actions import Action, EntryAction, ManagementDecision
-from decision.engine import DecisionEngine
+from decision.engine import DecisionEngine, DecisionWeights
 from decision.governor import RiskGovernor
 from decision.journal import DecisionJournal
 from planning import (
@@ -361,7 +361,19 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         dcfg = self.config.decision
         self._decision_enabled = dcfg.enabled
         self._situation_engine = SituationEngine()
-        self._decision_engine = DecisionEngine()
+        self._decision_engine = DecisionEngine(
+            DecisionWeights(
+                conviction_htf=dcfg.conviction_htf_weight,
+                conviction_structure=dcfg.conviction_structure_weight,
+                conviction_momentum=dcfg.conviction_momentum_weight,
+                conviction_confidence=dcfg.conviction_confidence_weight,
+                enter_htf=dcfg.enter_htf_coeff,
+                enter_structure=dcfg.enter_structure_coeff,
+                enter_momentum=dcfg.enter_momentum_coeff,
+                skip_htf=dcfg.skip_htf_coeff,
+                skip_momentum=dcfg.skip_momentum_coeff,
+            )
+        )
         self._risk_governor = RiskGovernor() if dcfg.governor_enabled else None
         self._decision_journal = DecisionJournal(dcfg.journal_dir) if dcfg.journal_enabled else None
 

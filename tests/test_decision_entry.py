@@ -223,3 +223,57 @@ class TestEntryDecisionProperties:
         d = EntryDecision(action=EntryAction.SKIP, reason="test")
         assert not d.should_enter
         assert not d.is_market
+
+
+# ── Roadmap C: M5 as the primary decision engine ───────────────────────────
+
+class TestM5PrimaryWeighting:
+    def test_conviction_favors_m5_over_htf(self, engine):
+        """Under the M5-primary defaults, a strong-M5 / weak-HTF setup must out-
+        convict a strong-HTF / weak-M5 one. (Under the old HTF-40% weights the
+        HTF setup won — this is the behavioural flip C delivers.)"""
+        great_m5 = SituationAssessment(
+            tf_alignment=-0.5, structure_integrity=1.0,
+            momentum=0.5, read_confidence=0.6,
+        )
+        great_htf = SituationAssessment(
+            tf_alignment=1.0, structure_integrity=0.2,
+            momentum=0.0, read_confidence=0.6,
+        )
+        assert engine.compute_conviction(great_m5) > engine.compute_conviction(great_htf)
+
+    def test_strong_ltf_overcomes_opposing_htf(self, engine):
+        """HTF opposing, but strong M5 structure + M1 momentum → ENTER."""
+        sa = SituationAssessment(
+            tf_alignment=-0.4, structure_integrity=0.9,
+            momentum=0.8, read_confidence=0.8, urgency=0.0,
+        )
+        ctx = _make_ctx(risk_reward_2=3.0)
+        decision = engine.decide_entry(ctx, sa)
+        assert decision.should_enter
+
+    def test_custom_weights_are_respected(self):
+        """An HTF-heavy weight set flips the conviction ranking back — proving
+        the weights are config-driven, not hardcoded."""
+        from decision.engine import DecisionWeights
+
+        htf_heavy = DecisionEngine(DecisionWeights(
+            conviction_htf=0.70, conviction_structure=0.10,
+            conviction_momentum=0.10, conviction_confidence=0.10,
+        ))
+        great_m5 = SituationAssessment(
+            tf_alignment=-0.5, structure_integrity=1.0,
+            momentum=0.5, read_confidence=0.6,
+        )
+        great_htf = SituationAssessment(
+            tf_alignment=1.0, structure_integrity=0.2,
+            momentum=0.0, read_confidence=0.6,
+        )
+        assert htf_heavy.compute_conviction(great_htf) > htf_heavy.compute_conviction(great_m5)
+
+    def test_config_defaults_are_m5_primary(self):
+        from config import AppConfig
+        d = AppConfig().decision
+        assert d.conviction_structure_weight > d.conviction_htf_weight
+        assert d.conviction_momentum_weight > d.conviction_htf_weight
+        assert d.enter_structure_coeff > d.enter_htf_coeff
