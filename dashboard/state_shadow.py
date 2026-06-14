@@ -32,35 +32,27 @@ class ShadowMixin:
             return {"gates": [], "summary": {}, "contracts": [], "by_symbol": []}
 
         try:
-            raw = store.get_outcomes_by_gate()
             status_counts = store.count_by_status()
 
-            gates: Dict[str, Dict[str, Any]] = {}
-            for row in raw:
-                gate = row["rejecting_gate"]
-                outcome = row["outcome"]
-                cnt = row["cnt"]
-                avg_r = row.get("avg_r")
-                if gate not in gates:
-                    gates[gate] = {
-                        "gate": gate,
-                        "total": 0,
-                        "WIN": 0, "LOSS": 0, "EXPIRED": 0,
-                        "BE": 0, "PARTIAL": 0,
-                        "avg_r": 0.0,
-                    }
-                gates[gate][outcome] = cnt
-                gates[gate]["total"] += cnt
-                if avg_r is not None and outcome in ("WIN", "LOSS"):
-                    gates[gate]["avg_r"] = round(avg_r, 2)
-
-            gate_list = sorted(gates.values(), key=lambda g: g["total"], reverse=True)
-            for g in gate_list:
-                total = g["total"]
-                if total > 0:
-                    g["win_rate"] = round(g["WIN"] / total * 100, 1)
-                else:
-                    g["win_rate"] = 0.0
+            # Per-gate counterfactual edge of REJECTED setups — counts PLUS the
+            # EV (count-weighted mean R) of having taken them. EV is the signal
+            # that matters: a gate rejecting net-profitable setups (ev_r > 0) is
+            # suspect (too strict); one filtering losers (ev_r < 0) is earning
+            # its keep. Rejection counts alone are misleading.
+            gate_list: List[Dict[str, Any]] = []
+            for g in store.get_gate_edge():
+                gate_list.append({
+                    "gate": g["gate"],
+                    "total": g["total"],
+                    "WIN": g["wins"],
+                    "LOSS": g["losses"],
+                    "BE": g["be"],
+                    "PARTIAL": g["partial"],
+                    "EXPIRED": g["expired"],
+                    "ev_r": g["ev_r"],
+                    "avg_r": g["ev_r"],  # corrected blended EV (was last-outcome avg)
+                    "win_rate": g["win_rate"],
+                })
 
             # Rejected-setup edge grouped by symbol (operator visibility — NOT
             # auto-fed to the learners; see ShadowStore.get_outcomes_by_symbol).

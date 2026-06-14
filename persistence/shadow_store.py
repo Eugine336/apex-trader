@@ -331,6 +331,67 @@ class ShadowStore:
             logger.debug("[ShadowStore] get_outcomes_by_gate failed: {}", exc)
             return []
 
+    def get_gate_edge(self) -> List[Dict[str, Any]]:
+        """Per-gate counterfactual edge of the setups each gate REJECTED.
+
+        For every rejecting gate, reports how many rejected setups resolved,
+        how many WOULD have won vs lost, and the EV (count-weighted mean R) of
+        having taken them. Positive ``ev_r`` ⇒ the gate is rejecting net-
+        profitable setups (suspect — it may be too strict); negative ``ev_r`` ⇒
+        it is correctly filtering losers (earning its keep). EXPIRED setups are
+        counted in ``total`` but excluded from ``ev_r``/``win_rate`` (they never
+        resolved to a realized R). This is the decision-relevant view for tuning
+        gates — rejection counts alone are misleading.
+        """
+        if self._conn is None:
+            return []
+        try:
+            cur = self._conn.execute(
+                """SELECT rejecting_gate, outcome,
+                          COUNT(*) AS cnt,
+                          SUM(r_multiple) AS sum_r,
+                          SUM(CASE WHEN r_multiple IS NOT NULL THEN 1 ELSE 0 END) AS n_r
+                   FROM shadow_contracts
+                   WHERE status IN ('RESOLVED', 'EXPIRED')
+                   GROUP BY rejecting_gate, outcome"""
+            )
+            rows = cur.fetchall()
+        except Exception as exc:
+            logger.debug("[ShadowStore] get_gate_edge failed: {}", exc)
+            return []
+
+        _key = {
+            "WIN": "wins", "LOSS": "losses", "BE": "be",
+            "PARTIAL": "partial", "EXPIRED": "expired",
+        }
+        agg: Dict[str, Dict[str, Any]] = {}
+        for gate, outcome, cnt, sum_r, n_r in rows:
+            g = agg.setdefault(gate, {
+                "gate": gate, "total": 0,
+                "wins": 0, "losses": 0, "be": 0, "partial": 0, "expired": 0,
+                "_sum_r": 0.0, "_n_r": 0,
+            })
+            cnt = int(cnt or 0)
+            g["total"] += cnt
+            field_name = _key.get(outcome)
+            if field_name:
+                g[field_name] += cnt
+            if sum_r is not None:
+                g["_sum_r"] += float(sum_r)
+                g["_n_r"] += int(n_r or 0)
+
+        out: List[Dict[str, Any]] = []
+        for g in agg.values():
+            n_r = g.pop("_n_r")
+            sum_r = g.pop("_sum_r")
+            decisive = g["wins"] + g["losses"]
+            g["decisive"] = decisive
+            g["ev_r"] = round(sum_r / n_r, 3) if n_r else 0.0
+            g["win_rate"] = round(g["wins"] / decisive * 100, 1) if decisive else 0.0
+            out.append(g)
+        out.sort(key=lambda x: x["total"], reverse=True)
+        return out
+
     def get_outcomes_by_symbol(self) -> List[Dict[str, Any]]:
         """Aggregate resolved+expired contracts grouped by symbol.
 
