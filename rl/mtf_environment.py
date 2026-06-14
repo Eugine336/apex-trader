@@ -31,6 +31,7 @@ from loguru import logger
 
 from .contracts import (
     TF_ORDER,
+    TF_SECONDS,
     WINDOW,
     ATR_PERIOD,
     OBS_FEATURES,
@@ -247,13 +248,38 @@ class ApexMultiTFTradingEnv:
         self._precomputed_ctx = np.zeros((n, N_CONTEXT_FEATURES), dtype=np.float32)
         self._precomputed_valid = np.zeros(n, dtype=bool)
 
+        # Only the last ``WINDOW + ATR_PERIOD`` bars of any timeframe affect an
+        # observation: ``ObservationBuilder.from_dataframe`` keeps just its tail
+        # and the z-norm is per-window. Passing the full growing history instead
+        # made this loop O(n^2) (a fresh copy + datetime parse of every bar seen
+        # so far, on every step), which on a slow CPU costs hours. Passing a
+        # bounded tail makes it O(n) while producing byte-identical observations.
+        buf = WINDOW + ATR_PERIOD + 30
+
+        # Parse each timeframe's bar times once, not per bar. A higher-TF bar is
+        # usable at an M5 anchor only once fully closed (open + period <= anchor),
+        # exactly as ``_select_closed`` decides, so the count of closed bars at
+        # each anchor reduces to a single vectorised sorted-search.
+        m5_times = pd.to_datetime(self._m5_raw["time"], utc=True).values
+        htf_closed_counts: dict[str, np.ndarray] = {}
+        for tf in TF_ORDER:
+            if tf == "M5":
+                continue
+            end_times = (
+                pd.to_datetime(self._dfs[tf]["time"], utc=True)
+                + pd.Timedelta(seconds=TF_SECONDS[tf])
+            ).values
+            htf_closed_counts[tf] = np.searchsorted(end_times, m5_times, side="right")
+
         built = 0
         for i in range(n):
-            tf_slices = {"M5": self._m5_raw.iloc[:i + 1]}
+            lo = max(0, i + 1 - buf)
+            tf_slices = {"M5": self._m5_raw.iloc[lo : i + 1]}
             for tf in TF_ORDER:
                 if tf == "M5":
                     continue
-                tf_slices[tf] = self._dfs[tf]
+                c = int(htf_closed_counts[tf][i])
+                tf_slices[tf] = self._dfs[tf].iloc[max(0, c - buf) : c]
 
             result = self._obs_builder.build_from_frames(
                 tf_slices,
