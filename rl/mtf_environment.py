@@ -283,8 +283,8 @@ class ApexMultiTFTradingEnv:
         # observation: ``ObservationBuilder.from_dataframe`` keeps just its tail
         # and the z-norm is per-window. Passing the full growing history instead
         # made this loop O(n^2) (a fresh copy + datetime parse of every bar seen
-        # so far, on every step), which on a slow CPU costs hours. Passing a
-        # bounded tail makes it O(n) while producing byte-identical observations.
+        # so far, on every step). Passing a bounded tail makes it O(n) while
+        # producing byte-identical observations.
         buf = WINDOW + ATR_PERIOD + 30
 
         # Parse each timeframe's bar times once, not per bar. A higher-TF bar is
