@@ -612,9 +612,11 @@ class RiskConfig:
 
     # ── Execution-quality size throttle ────────────────────────────────
     # When enabled, degraded execution quality (high slippage/latency/spread)
-    # reduces position size via get_size_multiplier.  Default OFF — enable
-    # after observing live execution logs to validate grade thresholds.
-    execution_quality_sizing_enabled: bool = False
+    # reduces position size via get_size_multiplier. Live on demo so the grade
+    # thresholds get validated/tuned against real fills; it only ever REDUCES
+    # size (never increases), so it's safe to run while tuning. Set False to
+    # disable.
+    execution_quality_sizing_enabled: bool = True
 
     # ── P5: per-pair cooldown after a breakeven stop-out (minutes) ────────
     # Breaks the enter→BE→stopped-at-BE→re-enter chop loop that bleeds spread.
