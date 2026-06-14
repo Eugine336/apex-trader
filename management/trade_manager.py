@@ -362,7 +362,11 @@ class TradeManager:
         trade.close_time = bar_time or datetime.now(timezone.utc)
         trade.close_reason = reason
         self._update_pnl(trade)
-        logger.info(
+        # Shadow-replay closes (trade_id 'shadow_*') run hundreds at a time when
+        # the resolver drains the backlog — keep them at DEBUG so they don't
+        # flood the live log; real trades stay at INFO.
+        _log = logger.debug if str(trade.trade_id).startswith("shadow_") else logger.info
+        _log(
             f"TRADE CLOSED: {trade.pair} {trade.direction} — {reason} "
             f"— {trade.pnl_pips:+.1f} pips ({trade.pnl_dollars:+.2f}$)"
         )
@@ -455,7 +459,8 @@ class TradeManager:
                 trade.partial_closed = True
                 trade.tp1_hit_time = bar_time or datetime.now(timezone.utc)
                 trade.status = TradeStatus.TP1_HIT
-                logger.info(
+                _log = logger.debug if str(trade.trade_id).startswith("shadow_") else logger.info
+                _log(
                     f"TP1 HIT: {trade.pair} (deriv stake) — flagged for "
                     f"close+reopen, +{trade.pnl_pips:.1f} pips"
                 )
@@ -468,7 +473,8 @@ class TradeManager:
             trade.partial_closed = True
             trade.tp1_hit_time = bar_time or datetime.now(timezone.utc)
             trade.status = TradeStatus.TP1_HIT
-            logger.info(
+            _log = logger.debug if str(trade.trade_id).startswith("shadow_") else logger.info
+            _log(
                 f"TP1 HIT: {trade.pair} — closed {partial_ratio:.0%} "
                 f"({lots_close} lots) at {trade.tp1}, +{trade.pnl_pips:.1f} pips"
             )
@@ -487,7 +493,8 @@ class TradeManager:
         trade.stop_loss = be_level
         trade.breakeven_active = True
         trade.status = TradeStatus.BREAKEVEN
-        logger.info(f"BREAKEVEN SET: {trade.pair} — SL moved to {be_level}")
+        _log = logger.debug if str(trade.trade_id).startswith("shadow_") else logger.info
+        _log(f"BREAKEVEN SET: {trade.pair} — SL moved to {be_level}")
 
     def _update_trailing(
         self, trade: ManagedTrade, df_m5: pd.DataFrame,
