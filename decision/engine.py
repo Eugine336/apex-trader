@@ -57,6 +57,17 @@ class DecisionEngine:
         reversal_no_evidence_skip_penalty: float = 0.30,
         htf_aligned_size_bonus: float = 0.15,
         htf_aligned_threshold: float = 0.5,
+        thesis_secure_enabled: bool = True,
+        thesis_secure_min_profit_usd: float = 15.0,
+        thesis_secure_min_profit_pips: float = 12.0,
+        thesis_deterioration_threshold: float = 0.35,
+        thesis_healthy_structure: float = 0.5,
+        thesis_healthy_momentum: float = 0.0,
+        thesis_lock_fraction: float = 0.5,
+        thesis_struct_ref: float = 0.6,
+        thesis_conviction_cycles: int = 3,
+        thesis_conviction_drop: float = 10.0,
+        thesis_conviction_full_drop: float = 30.0,
     ) -> None:
         self.weights = weights or DecisionWeights()
         # Roadmap D — regime-dependent weighting.
@@ -71,6 +82,18 @@ class DecisionEngine:
         # HTF = bounded context — size bonus when the full stack agrees.
         self.htf_aligned_size_bonus = max(0.0, htf_aligned_size_bonus)
         self.htf_aligned_threshold = htf_aligned_threshold
+        # Roadmap G — thesis-deterioration secure (R-independent profit protection).
+        self.thesis_secure_enabled = thesis_secure_enabled
+        self.thesis_secure_min_profit_usd = max(0.0, thesis_secure_min_profit_usd)
+        self.thesis_secure_min_profit_pips = max(0.0, thesis_secure_min_profit_pips)
+        self.thesis_deterioration_threshold = thesis_deterioration_threshold
+        self.thesis_healthy_structure = thesis_healthy_structure
+        self.thesis_healthy_momentum = thesis_healthy_momentum
+        self.thesis_lock_fraction = max(0.0, min(1.0, thesis_lock_fraction))
+        self.thesis_struct_ref = thesis_struct_ref
+        self.thesis_conviction_cycles = int(thesis_conviction_cycles)
+        self.thesis_conviction_drop = max(0.0, thesis_conviction_drop)
+        self.thesis_conviction_full_drop = max(1e-6, thesis_conviction_full_drop)
 
     # ── Roadmap D/E helpers ───────────────────────────────────────────────
 
@@ -253,6 +276,16 @@ class DecisionEngine:
             best_action = Action.HOLD
             best_score = scores[Action.HOLD]
 
+        # ── Thesis-deterioration secure (roadmap G) ──────────────────────
+        # If the normal scoring would default to HOLD, ask the trader's
+        # question — "is the reason I'm holding still valid?" — instead of
+        # riding a decaying winner because no R-gate could score. Overrides
+        # ONLY a would-be HOLD; a real CLOSE/TIGHTEN/BE verdict is respected.
+        if best_action == Action.HOLD and self.thesis_secure_enabled:
+            secure = self._maybe_thesis_secure(ctx, sa)
+            if secure is not None:
+                return secure
+
         confidence = min(1.0, best_score)
         margin = best_score - sorted(scores.values(), reverse=True)[1] if len(scores) > 1 else best_score
 
@@ -271,6 +304,131 @@ class DecisionEngine:
             decision.new_sl = self._compute_tightened_sl(ctx)
 
         return decision
+
+    # ── Thesis-deterioration secure (roadmap G) ──────────────────────────
+    def _thesis_deterioration_score(
+        self, ctx: TradeContext, sa: SituationAssessment,
+    ) -> tuple[float, list[str]]:
+        """Score how far the *reason for holding* has decayed (0..1).
+
+        Combines the trade's own live signals — structure weakening, momentum
+        turning against it, declining re-score conviction (the conviction-
+        collapse signal that otherwise only runs in the dormant legacy path),
+        and a bounded HTF-flip term — into a single deterioration score.
+        """
+        evidence: list[str] = []
+        score = 0.0
+
+        # Structure weakening (primary thesis component).
+        if sa.structure_integrity < self.thesis_struct_ref:
+            comp = (self.thesis_struct_ref - sa.structure_integrity) / max(self.thesis_struct_ref, 1e-6)
+            score += min(comp, 1.0) * 0.35
+            evidence.append(f"structure {sa.structure_integrity:.2f}")
+
+        # Momentum turned against the position — the clearest intraday "thesis
+        # dying" signal.
+        if sa.momentum < 0:
+            score += min(abs(sa.momentum), 1.0) * 0.40
+            evidence.append(f"momentum {sa.momentum:+.2f}")
+
+        # Conviction collapse — declining re-score over the recent window.
+        hist = ctx.score_history or []
+        if len(hist) >= self.thesis_conviction_cycles:
+            window = hist[-self.thesis_conviction_cycles:]
+            drop = window[0] - window[-1]
+            if drop >= self.thesis_conviction_drop:
+                score += 0.20 * min(drop / self.thesis_conviction_full_drop, 1.0)
+                evidence.append(f"conviction {window[0]}->{window[-1]}")
+
+        # HTF flipped against (bounded — HTF is demoted context).
+        if sa.tf_alignment < 0:
+            score += min(abs(sa.tf_alignment), 1.0) * 0.10
+            evidence.append(f"HTF {sa.tf_alignment:+.2f}")
+
+        return min(score, 1.0), evidence
+
+    def _compute_profit_lock_sl(self, ctx: TradeContext) -> float | None:
+        """Stop that banks a fraction of the OPEN profit (R-independent).
+
+        Unlike ``_compute_tightened_sl`` (which keys off the reconstructed
+        original risk and is therefore meaningless for adopted trades), this
+        locks ``thesis_lock_fraction`` of the *current economic profit* into
+        the stop. Returns None if it would not improve on the current stop.
+        """
+        from config import get_pip_size
+
+        if ctx.pnl_pips <= 0:
+            return None
+        pip = get_pip_size(ctx.symbol)
+        lock_pips = ctx.pnl_pips * self.thesis_lock_fraction
+        if ctx.is_long:
+            new_sl = ctx.entry_price + lock_pips * pip
+            if new_sl <= ctx.current_sl:
+                return None
+        else:
+            new_sl = ctx.entry_price - lock_pips * pip
+            if new_sl >= ctx.current_sl:
+                return None
+        return round(new_sl, 5)
+
+    def _maybe_thesis_secure(
+        self, ctx: TradeContext, sa: SituationAssessment,
+    ) -> ManagementDecision | None:
+        """Secure profit when economic profit exists AND the thesis is decaying.
+
+        Returns a ManagementDecision (SET_PROTECTIVE_STOP locking part of the
+        profit, or MOVE_TO_BREAKEVEN if a profit-lock stop is not yet an
+        improvement) when the trader's "is the reason still valid?" test fails
+        while in real profit — otherwise None (let HOLD stand).
+        """
+        econ_profit = (
+            (self.thesis_secure_min_profit_usd > 0 and ctx.pnl_dollars >= self.thesis_secure_min_profit_usd)
+            or (self.thesis_secure_min_profit_pips > 0 and ctx.pnl_pips >= self.thesis_secure_min_profit_pips)
+        )
+        if not econ_profit:
+            return None
+
+        # Healthy pullback in an intact trend — keep holding, don't exit noise.
+        if (
+            sa.structure_integrity >= self.thesis_healthy_structure
+            and sa.momentum >= self.thesis_healthy_momentum
+        ):
+            return None
+
+        deterioration, det_evidence = self._thesis_deterioration_score(ctx, sa)
+        if deterioration < self.thesis_deterioration_threshold:
+            return None
+
+        reason = (
+            f"thesis decay while in profit "
+            f"(+{ctx.pnl_pips:.1f}p/${ctx.pnl_dollars:.2f}, "
+            f"deterioration {deterioration:.2f}: {', '.join(det_evidence)})"
+        )
+        confidence = min(1.0, deterioration)
+        new_sl = self._compute_profit_lock_sl(ctx)
+        if new_sl is not None:
+            return ManagementDecision(
+                action=Action.SET_PROTECTIVE_STOP,
+                reason=reason,
+                confidence=confidence,
+                new_sl=new_sl,
+                evidence=det_evidence,
+            )
+        # Cannot lock past the current stop yet (e.g. dollar profit from swap
+        # but ~0 pips) — secure breakeven, but only if that improves the stop.
+        if not ctx.at_breakeven:
+            be_improves = (
+                (ctx.is_long and ctx.current_sl < ctx.entry_price)
+                or (not ctx.is_long and ctx.current_sl > ctx.entry_price)
+            )
+            if be_improves:
+                return ManagementDecision(
+                    action=Action.MOVE_TO_BREAKEVEN,
+                    reason=reason,
+                    confidence=confidence,
+                    evidence=det_evidence,
+                )
+        return None
 
     def _decide_adopted_observation(
         self, ctx: TradeContext, sa: SituationAssessment,
