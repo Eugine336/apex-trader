@@ -331,6 +331,34 @@ class ShadowStore:
             logger.debug("[ShadowStore] get_outcomes_by_gate failed: {}", exc)
             return []
 
+    def get_outcomes_by_symbol(self) -> List[Dict[str, Any]]:
+        """Aggregate resolved+expired contracts grouped by symbol.
+
+        Lets an operator see which pairs' REJECTED setups systematically win or
+        lose — a gate/threshold signal. NOTE: this is deliberately NOT fed into
+        the pair/regime/session learners: rejected-setup outcomes measure the
+        quality of setups the bot DECLINED, not the pairs it trades, so mixing
+        them into those learners would wrongly penalise good pairs. The sound
+        automated consumer of rejected-setup outcomes is the gate auto-tuner.
+        """
+        if self._conn is None:
+            return []
+        try:
+            cur = self._conn.execute(
+                """SELECT symbol, outcome,
+                          COUNT(*) as cnt,
+                          AVG(r_multiple) as avg_r
+                   FROM shadow_contracts
+                   WHERE status IN ('RESOLVED', 'EXPIRED')
+                   GROUP BY symbol, outcome
+                   ORDER BY symbol, outcome"""
+            )
+            cols = [d[0] for d in cur.description]
+            return [dict(zip(cols, row)) for row in cur.fetchall()]
+        except Exception as exc:
+            logger.debug("[ShadowStore] get_outcomes_by_symbol failed: {}", exc)
+            return []
+
     def get_all_contracts(
         self,
         status: Optional[str] = None,
