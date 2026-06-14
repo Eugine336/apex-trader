@@ -136,6 +136,10 @@ class RiskEngine:
                 [], ["Account balance unavailable or non-positive — refusing to size"],
                 "NORMAL", self.drawdown_guard.get_status(now), 0, now,
             )
+        # Per-account balance drives SIZING; total portfolio equity drives the
+        # GLOBAL daily/weekly drawdown backstop (pooled P&L ÷ total equity), so
+        # the backstop is no longer denominated by whichever account traded last.
+        total_equity = self.balance if (self.balance and self.balance > 0) else balance
         trades = open_trades or []
         checks: list[str] = []
         rejections: list[str] = []
@@ -153,9 +157,9 @@ class RiskEngine:
             )
         checks.append(f"Drawdown mode: {mode} (risk={risk_pct_decimal:.2%})")
 
-        pnl_snap = self.pnl_tracker.get_snapshot(account_balance=balance, timestamp=now)
+        pnl_snap = self.pnl_tracker.get_snapshot(account_balance=total_equity, timestamp=now)
         daily_loss_limit = self.risk_cfg.max_daily_drawdown_pct
-        if self.pnl_tracker.is_daily_limit_hit(daily_loss_limit, balance, timestamp=now):
+        if self.pnl_tracker.is_daily_limit_hit(daily_loss_limit, total_equity, timestamp=now):
             self.drawdown_guard.mode = DrawdownMode.FROZEN
             rejections.append(
                 f"Daily P&L {pnl_snap.daily_total_pct:.2f}% breached "
@@ -168,7 +172,7 @@ class RiskEngine:
             )
         checks.append(f"Daily P&L: {pnl_snap.daily_total_pct:.2f}% (limit: -{daily_loss_limit}%)")
 
-        if self.pnl_tracker.is_weekly_limit_hit(self.risk_cfg.max_weekly_drawdown_pct, balance, timestamp=now):
+        if self.pnl_tracker.is_weekly_limit_hit(self.risk_cfg.max_weekly_drawdown_pct, total_equity, timestamp=now):
             if self.drawdown_guard.mode not in {DrawdownMode.RECOVERY, DrawdownMode.FROZEN}:
                 self.drawdown_guard.mode = DrawdownMode.RECOVERY
                 risk_pct_decimal = self.drawdown_guard.risk_map[DrawdownMode.RECOVERY]
@@ -305,8 +309,10 @@ class RiskEngine:
                 dd_status, len(trades), now,
             )
 
-        # Daily budget enforcement — reduce size if approaching daily limit
-        remaining_daily = (daily_loss_limit / 100.0 * balance) + pnl_snap.daily_total
+        # Daily budget enforcement — reduce size if approaching daily limit.
+        # Budget is the GLOBAL remaining loss room (total equity); the resulting
+        # reduced risk is then applied to THIS account's sizing balance.
+        remaining_daily = (daily_loss_limit / 100.0 * total_equity) + pnl_snap.daily_total
         if remaining_daily <= 0:
             rejections.append("No daily loss budget remaining")
             return self._build_assessment(

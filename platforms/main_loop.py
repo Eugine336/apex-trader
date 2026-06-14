@@ -1292,13 +1292,18 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self._log_rejection(pair, direction, result.score, "Balance unavailable — fail-closed")
             return False
         self._last_known_balance = balance
-        self.risk_engine.balance = balance
 
         # ── Per-account risk silo gate ───────────────────────────────────
         # Size/gate this entry against ITS OWN account only. A daily-loss halt
         # or hot heat on one account never blocks another.
         _acct = self._account_key(pair)
         self._account_risk.update_balance(_acct, balance)
+        # Global drawdown backstop measures TOTAL portfolio equity (sum across
+        # all account silos), not just the account that happens to be entering —
+        # so the pooled daily/weekly P&L % is a real portfolio figure. Per-account
+        # caps are enforced by the silos here; SIZING still uses this account's
+        # own balance (passed as account_balance to risk_engine.assess below).
+        self.risk_engine.balance = self._account_risk.total_balance() or balance
         if self._account_risk.daily_loss_halted(_acct):
             self._log_rejection(
                 pair, direction, result.score,

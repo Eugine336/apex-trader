@@ -47,6 +47,15 @@ class AccountRiskManager:
     def balance(self, account: str) -> float:
         return self._balance.get(account, 0.0)
 
+    def total_balance(self) -> float:
+        """Sum of all known per-account balances = total portfolio equity.
+
+        Used as the denominator for the GLOBAL drawdown backstop so the pooled
+        daily/weekly P&L percentage reflects the whole portfolio, not whichever
+        single account happened to trade last.
+        """
+        return float(sum(self._balance.values()))
+
     # ── Heat (live capital-at-risk %, computed per account each cycle) ────
 
     def set_heat(self, account: str, heat_pct: float) -> None:
