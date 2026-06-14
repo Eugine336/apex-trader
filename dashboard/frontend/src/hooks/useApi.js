@@ -1,12 +1,34 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 
 const BASE = import.meta.env.VITE_API_URL || '';
-const API_KEY = import.meta.env.VITE_DASHBOARD_API_KEY || '';
+const ENV_API_KEY = import.meta.env.VITE_DASHBOARD_API_KEY || '';
+const LS_API_KEY = 'dd_dashboard_api_key';
+
+// The dashboard API key. Prefer a runtime value saved in localStorage (set via
+// the Controls page) so the key can be changed WITHOUT rebuilding the bundle;
+// fall back to the build-time VITE_DASHBOARD_API_KEY if present.
+export function getApiKey() {
+  try {
+    return localStorage.getItem(LS_API_KEY) || ENV_API_KEY;
+  } catch {
+    return ENV_API_KEY;
+  }
+}
+
+export function setApiKey(key) {
+  try {
+    if (key) localStorage.setItem(LS_API_KEY, key);
+    else localStorage.removeItem(LS_API_KEY);
+  } catch {
+    /* localStorage unavailable (private mode) — ignore */
+  }
+}
 
 // When the backend has DD_DASHBOARD_API_KEY set, every /api/* request (not just
 // mutating ones) must carry the matching X-API-Key header or it is rejected 401.
 function authHeaders(extra = {}) {
-  return API_KEY ? { 'X-API-Key': API_KEY, ...extra } : { ...extra };
+  const key = getApiKey();
+  return key ? { 'X-API-Key': key, ...extra } : { ...extra };
 }
 
 export function useApi(endpoint, interval = 5000) {
