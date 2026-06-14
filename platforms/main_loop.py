@@ -342,19 +342,28 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._last_data_backup_ts: float = 0.0
 
     def _account_key(self, symbol: str) -> str:
-        """Resolve the risk-silo key (broker/account) for a symbol.
+        """Resolve the risk-silo key (broker + account login) for a symbol.
 
-        Keyed by broker name so multiple MT5 brokers + Deriv are separate
-        silos. Cached because the broker mapping is static per symbol.
+        Keyed by broker name AND account id so multiple MT5 brokers, multiple
+        logins on the same broker, and Deriv are all separate silos. Cached
+        once the account id is known (it is stable per symbol).
         """
         key = self._account_key_cache.get(symbol)
         if key:
             return key
         try:
-            key = self.platforms.get_broker_name(symbol) or "default"
+            broker = self.platforms.get_broker_name(symbol) or "default"
         except Exception:
-            key = "default"
-        self._account_key_cache[symbol] = key
+            broker = "default"
+        try:
+            acct_id = self.platforms.get_account_id(symbol) or ""
+        except Exception:
+            acct_id = ""
+        key = f"{broker}:{acct_id}" if acct_id else broker
+        # Only cache once the account id is resolved; otherwise keep retrying
+        # so a not-yet-connected account doesn't get pinned to a broker-only key.
+        if acct_id:
+            self._account_key_cache[symbol] = key
         return key
 
 
