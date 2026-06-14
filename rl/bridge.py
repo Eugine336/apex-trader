@@ -96,6 +96,13 @@ class RLBridge:
             try:
                 self.shadow = ShadowEngine(checkpoint, shadow_db)
                 logger.info(f"[RLBridge] Loaded. Stage: {self.authority.stage_label}")
+                if getattr(self.shadow, "_meta", {}).get("initialized_only"):
+                    logger.warning(
+                        "[RLBridge] RL checkpoint is UNTRAINED (placeholder, step=0) — "
+                        "shadow signals are effectively random and RL cannot progress "
+                        "past stage 2 until a model is trained on historical data "
+                        "(populate data/ CSVs, then run run_training.py)."
+                    )
                 try:
                     from persistence.shadow_store import ShadowStore
                     self._shadow_store = ShadowStore()
@@ -247,6 +254,7 @@ class RLBridge:
             "has_trade_auth": perms.has_trade_auth,
             "max_pos_pct":    perms.max_position_pct,
             "shadow_score":   score,
+            "untrained":      bool(getattr(self.shadow, "_meta", {}).get("initialized_only")) if self.shadow else True,
         }
 
     def record_live_trade(self):
