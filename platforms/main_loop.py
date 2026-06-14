@@ -180,6 +180,15 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             atr_stop_max_risk_mult=risk_cfg.atr_stop_max_risk_mult,
         )
         self.drawdown = DrawdownGuard()
+        # The EntryEngine has its own DrawdownGuard that is never fed trade
+        # results, so its risk_pct / score-floor gate would stay permanently at
+        # NORMAL. Share the loop's guard (EntryEngine only READS it — it never
+        # registers results — so there is no double-counting) so its sizing /
+        # gating reflects the real drawdown mode.
+        try:
+            self.entry_engine.drawdown = self.drawdown
+        except Exception as exc:
+            logger.debug("[init] entry_engine drawdown share failed: {}", exc)
         self.correlation = CorrelationEngine(
             max_correlated_trades=risk_cfg.max_correlated_trades,
             max_cluster_same_direction=risk_cfg.max_cluster_same_direction,
@@ -213,12 +222,20 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._journal_loop = asyncio.new_event_loop()
         self.position_store = PositionStore()
         self._shadow_store = ShadowStore()
+        # Shadow contracts (counterfactual outcomes for rejected setups) are
+        # resolved on a periodic cadence so the pipeline actually runs in
+        # production instead of leaving contracts PENDING forever.
+        self._shadow_resolve_interval_seconds = 900
+        self._last_shadow_resolve_time = 0.0
 
         self.watchdog = HealthWatchdog()
         self.maintenance = DailyMaintenance()
         self._scan_breaker = CircuitBreaker("scan", failure_threshold=5, cooldown_seconds=300)
         self._execution_breaker = CircuitBreaker("execution", failure_threshold=3, cooldown_seconds=600)
         self._health_check_interval = 10
+        # Track event-pipeline loss so silent audit-log drops become visible.
+        self._last_event_drop_count = 0
+        self._last_sink_error_count = 0
 
         # In-memory activity feed — surfaced in dashboard /api/activity
         # Capped at 200 entries; newest first.
@@ -252,6 +269,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # P3: last Decision Engine verdict per oid — lets the tick-level
         # TradeManager exit defer to a strategic HOLD/SCALE_IN.
         self._last_decision_action: dict[str, Action] = {}
+        # Timestamp of each verdict so the tick-level exit ignores stale ones.
+        self._last_decision_action_time: dict[str, datetime] = {}
+        # A verdict older than this many seconds no longer defers exits.
+        self._decision_verdict_max_age_seconds: float = 600.0
         # P5: per-pair cooldown after a breakeven stop-out (symbol → datetime until).
         self._be_stop_cooldown: dict[str, datetime] = {}
 
@@ -454,6 +475,26 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             if not report.is_healthy:
                 for w in report.warnings:
                     logger.warning("⚠️ HEALTH: {}", w)
+            # Surface event-pipeline loss (dropped events / sink errors) so the
+            # audit/analytics log silently losing data becomes visible.
+            try:
+                from persistence.event_sink import get_sink_error_count
+
+                dropped = get_event_store().dropped_count
+                sink_errs = get_sink_error_count()
+                if dropped > self._last_event_drop_count or sink_errs > self._last_sink_error_count:
+                    logger.warning(
+                        "⚠️ EVENT PIPELINE — {} events dropped, {} sink errors (audit log loss)",
+                        dropped, sink_errs,
+                    )
+                    self._add_warning(
+                        "warning",
+                        f"Event pipeline degraded: {dropped} dropped, {sink_errs} sink errors",
+                    )
+                    self._last_event_drop_count = dropped
+                    self._last_sink_error_count = sink_errs
+            except Exception as exc:
+                logger.debug("[health] event-pipeline drop check failed: {}", exc)
 
         blind, blind_reason = self.watchdog.is_scanner_blind()
         if blind:
@@ -1178,6 +1219,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             logger.warning("[entry] spread fetch failed, proceeding with zero spread: {}", exc)
             pass
 
+        # Feed the live spread into the RiskEngine's spread monitor so it builds
+        # a real rolling baseline (its history was previously always empty,
+        # leaving the assess()-time spread gate to fall back to the global
+        # registry value).
+        if spread > 0:
+            try:
+                self.risk_engine.spread_monitor.record_spread(pair, spread)
+            except Exception as exc:
+                logger.debug("[spread] record_spread failed: {}", exc)
+
         # ── Decision Engine entry path ────────────────────────────────────
         plan_to_store: tuple | None = None
         if self._decision_enabled:
@@ -1248,9 +1299,52 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         plan_to_store = (plan, plan_ctx)
                     except Exception as exc:
                         logger.warning("[Planner] error — keeping decision-engine sizing: {}", exc)
+                        # Surface so the 'trades open but no plan logged' symptom
+                        # is diagnosable on the Activity panel instead of silent.
+                        try:
+                            self._add_warning("warning", f"Planner error for {pair}: {exc}")
+                        except Exception:
+                            pass
+                        # A planner crash must not bypass the Portfolio Governor
+                        # (its veto lives inside the planner). Run it directly.
+                        gov = getattr(self, "_governor", None)
+                        if gov is not None:
+                            try:
+                                book = [
+                                    (p.symbol, p.direction)
+                                    for p in self.managed_positions.values()
+                                ]
+                                gdir = "BUY" if direction in ("LONG", "BUY") else "SELL"
+                                verdict = gov.check(result.pair, gdir, book, balance)
+                                if verdict is not None and not getattr(verdict, "allowed", True):
+                                    self._log_rejection(
+                                        pair, direction, result.score,
+                                        f"Governor (planner-fallback): "
+                                        f"{getattr(verdict, 'reason', 'portfolio limit')}",
+                                    )
+                                    self._persist_shadow_contract(
+                                        signal,
+                                        rejecting_gate=f"governor:{getattr(verdict, 'blocked_by', 'portfolio')}",
+                                    )
+                                    return False
+                            except Exception as gexc:
+                                logger.debug("[Planner] governor fallback failed: {}", gexc)
             except Exception as exc:
-                logger.warning("[DecisionEngine] entry error — falling back to legacy gates: {}", exc)
-                conviction_mult = 1.0
+                # Authority hierarchy: if the decision/situation/governor-review
+                # layer crashes, fail CLOSED (skip) rather than continuing to
+                # execution and bypassing those gates entirely.
+                logger.warning(
+                    "[DecisionEngine] entry error — failing CLOSED (skipping entry): {}", exc,
+                )
+                self._log_rejection(
+                    pair, direction, result.score,
+                    f"Decision pipeline error (fail-closed): {exc}",
+                )
+                try:
+                    self._persist_shadow_contract(signal, rejecting_gate="decision_engine:error")
+                except Exception as shadow_exc:
+                    logger.debug("[ShadowContract] persist on DE error failed: {}", shadow_exc)
+                return False
         else:
             conviction_mult = 1.0
 
@@ -1747,6 +1841,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._save_position_checked(managed)
         self._daily_trades += 1
 
+        # Advance the RL live-trade counter so its authority-progression gate
+        # (stages 6/7 require min_live_trades) reflects reality instead of
+        # resetting to zero and never qualifying.
+        try:
+            rl_bridge = getattr(self.scanner, "_rl", None)
+            if rl_bridge is not None:
+                rl_bridge.record_live_trade()
+        except Exception as exc:
+            logger.debug("[RL] record_live_trade failed: {}", exc)
+
         logger.info(
             "🎯 TRADE OPENED — {} {} {:.2f}lots @ {:.5f} | SL {:.5f} | TP1 {:.5f} | TP2 {:.5f} | Score {}",
             direction,
@@ -2088,7 +2192,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     # trades that haven't had a chance to play out. Hard SL/TP2
                     # remain broker-enforced and are unaffected by this guard.
                     last_act = self._last_decision_action.get(oid)
-                    de_wants_keep = self._decision_enabled and last_act in (
+                    # Ignore a verdict that has gone stale (e.g. strategic
+                    # analysis was skipped for several cycles on missing data) —
+                    # otherwise an old HOLD keeps deferring legitimate exits.
+                    _verdict_ts = self._last_decision_action_time.get(oid)
+                    _verdict_fresh = (
+                        _verdict_ts is not None
+                        and (datetime.now(timezone.utc) - _verdict_ts).total_seconds()
+                        <= self._decision_verdict_max_age_seconds
+                    )
+                    de_wants_keep = self._decision_enabled and _verdict_fresh and last_act in (
                         Action.HOLD, Action.SCALE_IN,
                         Action.MOVE_TO_BREAKEVEN, Action.TIGHTEN_SL,
                         Action.SET_PROTECTIVE_STOP, Action.OBSERVE,
@@ -2149,6 +2262,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         pos.tp1_hit = True
                         pos.lots = round(pos.lots - partial_lots, 2)
                         self.position_store.update_position(oid, tp1_hit=True, lots=pos.lots)
+                        _pip = get_pip_size(pos.symbol)
+                        _pips = (
+                            (result.close_price - pos.entry_price) / _pip
+                            if pos.direction == "BUY"
+                            else (pos.entry_price - result.close_price) / _pip
+                        )
+                        self._account_realized_pnl(pos, getattr(result, "pnl", 0.0), _pips, "TP1 partial")
                         logger.info("✅ TP1 HIT (MT5 partial) — {} {} | 50% closed", pos.direction, pos.symbol)
                     else:
                         logger.error(
@@ -2167,16 +2287,36 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         closed_count += 1
                         try:
                             half_stake = round(pos.stake_usd * 0.5, 2) if pos.stake_usd > 0 else None
+                            # Guard the runner reopen with an idempotency key +
+                            # in-flight intent so a reconnect/retry cannot place
+                            # a duplicate runner (this was the only entry path
+                            # without idempotency protection).
+                            reopen_idem = generate_idempotency_key(
+                                pos.symbol, pos.direction, half_stake or 0.0,
+                            )
+                            try:
+                                if self.position_store:
+                                    self.position_store.record_in_flight(
+                                        reopen_idem, pos.symbol, pos.direction, half_stake or 0.0,
+                                    )
+                            except Exception as _ife:
+                                logger.debug("[TP1-reopen] in-flight record failed (proceeding): {}", _ife)
                             reopen_order = self.platforms.execute_entry(
                                 pos.symbol,
                                 pos.direction,
                                 0.0,
                                 tm_trade.stop_loss,
                                 tm_trade.tp2,
-                                comment=f"APEX|TP1_REOPEN|{pos.score}",
+                                comment=build_order_comment("APEX", reopen_idem, pos.score, "TP1_REOPEN"),
                                 stake_usd=half_stake if (half_stake is not None and half_stake > 0) else None,
+                                idempotency_key=reopen_idem,
                             )
                             if reopen_order.success:
+                                try:
+                                    if self.position_store:
+                                        self.position_store.resolve_in_flight(reopen_idem, reopen_order.order_id)
+                                except Exception as _rfe:
+                                    logger.debug("[TP1-reopen] resolve_in_flight failed: {}", _rfe)
                                 # P6: register the reopened runner with the
                                 # TradeManager + position store. Without this the
                                 # reopened half ran headless — no BE protection,
@@ -2226,6 +2366,12 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                                     "half stake, managed (SL@BE {:.5f}, TP {:.5f})",
                                     pos.direction, pos.symbol, runner_sl, runner_tp,
                                 )
+                            else:
+                                try:
+                                    if self.position_store:
+                                        self.position_store.cancel_in_flight(reopen_idem)
+                                except Exception as _cfe:
+                                    logger.debug("[TP1-reopen] cancel_in_flight failed: {}", _cfe)
                         except Exception as reopen_err:
                             logger.warning("Deriv TP1 reopen failed: {}", reopen_err)
                     continue
@@ -2239,6 +2385,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     if result.success:
                         pos.lots = round(pos.lots - tp3_lots, 2)
                         self.position_store.update_position(oid, lots=pos.lots)
+                        _pip = get_pip_size(pos.symbol)
+                        _pips = (
+                            (result.close_price - pos.entry_price) / _pip
+                            if pos.direction == "BUY"
+                            else (pos.entry_price - result.close_price) / _pip
+                        )
+                        self._account_realized_pnl(pos, getattr(result, "pnl", 0.0), _pips, "TP3 partial")
                         logger.info(
                             "✅ TP3 HIT (partial) — {} {} | {:.0%} of runner closed",
                             pos.direction, pos.symbol, self.config.risk.tp3_close_ratio,
@@ -2297,6 +2450,14 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                             "🔴 SL/TP MODIFY FAILED — {} {} oid={} | attempted SL={} TP={} — broker rejected, keeping current SL={:.5f}",
                             pos.direction, pos.symbol, oid, new_sl, new_tp, pos.sl,
                         )
+                        # Roll the manager's intent back to the broker-confirmed
+                        # values so it doesn't believe a tighter SL/TP than the
+                        # broker holds, and so the modify is retried next cycle
+                        # (sl_changed/tp_changed will fire again).
+                        if sl_changed:
+                            tm_trade.stop_loss = prev_sl
+                        if tp_changed:
+                            tm_trade.tp2 = prev_tp2
                 else:
                     if sl_changed:
                         pos.sl = tm_trade.stop_loss
@@ -2603,6 +2764,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             # P3: record the strategic verdict so the tick-level TradeManager
             # exit can defer to a HOLD/SCALE_IN instead of overriding it.
             self._last_decision_action[oid] = decision.action
+            self._last_decision_action_time[oid] = datetime.now(timezone.utc)
 
             self._execute_management_decision(oid, pos, decision, now)
         except Exception as exc:
@@ -3089,6 +3251,24 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             except Exception as exc:
                 logger.warning("[scale-in] resolve_in_flight failed: {}", exc)
             pos.scale_in_count += 1
+            # Reflect the added broker volume on the managed position + the
+            # TradeManager trade and persist it, so partial-close math and P&L
+            # use the true size instead of waiting for reconcile to adopt the
+            # add as a headless orphan.
+            try:
+                added = float(getattr(order, "lots", 0.0) or 0.0)
+                if added > 0:
+                    pos.lots = round(pos.lots + added, 2)
+                    if self.position_store:
+                        self.position_store.update_position(pos.order_id, lots=pos.lots)
+                    tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+                    if tm_trade is not None:
+                        tm_trade.remaining_size_lots = round(tm_trade.remaining_size_lots + added, 2)
+                        tm_trade.position_size_lots = round(
+                            getattr(tm_trade, "position_size_lots", 0.0) + added, 2
+                        )
+            except Exception as exc:
+                logger.warning("[scale-in] local lots/persist update failed: {}", exc)
             return True
 
         try:
@@ -3307,6 +3487,74 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
     # ── Logging & journal ────────────────────────────────────────────────
 
+    def _persist_guard_state(self) -> None:
+        """Persist all daily risk state as one payload so a mid-day restart
+        keeps the day's loss budget / halt: the loop drawdown guard, the
+        RiskEngine's own guard + balance, and the governor's daily tally/halt.
+        """
+        try:
+            payload: dict = {"_v": 2, "drawdown": self.drawdown.to_state()}
+            try:
+                if getattr(self, "risk_engine", None) is not None and hasattr(self.risk_engine, "to_state"):
+                    payload["risk_engine"] = self.risk_engine.to_state()
+            except Exception as exc:
+                logger.debug("[guard-state] risk_engine state failed: {}", exc)
+            try:
+                if getattr(self, "_governor", None) is not None and hasattr(self._governor, "to_state"):
+                    payload["governor"] = self._governor.to_state()
+            except Exception as exc:
+                logger.debug("[guard-state] governor state failed: {}", exc)
+            self.position_store.save_guard_state(payload)
+        except Exception as exc:
+            logger.error("Guard state persist failed: {}", exc)
+
+    def _account_realized_pnl(
+        self,
+        pos: ManagedPosition,
+        pnl_dollars: float,
+        pnl_pips: float,
+        label: str,
+    ) -> None:
+        """Fold a *partial* realised P&L into every risk tally.
+
+        Full closes go through ``_record_closed_trade``; partials (TP1/TP3
+        banks) previously only shrank ``pos.lots`` and were invisible to the
+        daily-loss cap, drawdown guard and governor.  This books them once,
+        mirroring the close-record accounting, without removing the position.
+        """
+        try:
+            balance = self.platforms.get_platform_balance(pos.symbol)
+            if balance:
+                self._last_known_balance = balance
+                pnl_pct = pnl_dollars / balance
+            elif self._last_known_balance > 0:
+                pnl_pct = pnl_dollars / self._last_known_balance
+            else:
+                pnl_pct = 0.0
+
+            self.drawdown.register_trade_result(pnl_pct)
+
+            self.risk_engine.record_trade_result(
+                pnl_dollars=pnl_dollars,
+                pnl_pips=pnl_pips,
+                pair=pos.symbol,
+                direction=pos.direction,
+            )
+
+            if getattr(self, "_governor", None) is not None:
+                if balance:
+                    self._governor.set_reference_balance(balance)
+                self._governor.update_daily_pnl(pnl_dollars)
+
+            self._persist_guard_state()
+
+            logger.info(
+                "💰 PARTIAL REALISED — {} {} | {} | ${:+.2f} folded into daily tally",
+                pos.direction, pos.symbol, label, pnl_dollars,
+            )
+        except Exception as exc:
+            logger.warning("[partial-pnl] accounting failed for {}: {}", pos.symbol, exc)
+
     def _record_closed_trade(
         self,
         pos: ManagedPosition,
@@ -3365,10 +3613,6 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             pnl_pct = 0.0
 
         self.drawdown.register_trade_result(pnl_pct)
-        try:
-            self.position_store.save_guard_state(self.drawdown.to_state())
-        except Exception as exc:
-            logger.error("Guard state persist after trade close failed: {}", exc)
         self.risk_engine.record_trade_result(
             pnl_dollars=pnl_dollars,
             pnl_pips=pnl_pips,
@@ -3385,6 +3629,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 self._governor.update_daily_pnl(pnl_dollars)
             except Exception as exc:
                 logger.debug("[Governor] daily pnl update failed: {}", exc)
+
+        # Persist the full daily risk state AFTER every tally has been updated
+        # so a restart restores the post-close picture (not a pre-close one).
+        self._persist_guard_state()
 
         hold_seconds = (datetime.now(timezone.utc) - pos.open_time).total_seconds()
         logger.info(
@@ -3702,6 +3950,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     self._governor.reset_daily()
                 except Exception as exc:
                     logger.debug("[Governor] daily reset failed: {}", exc)
+            # Keep the RiskEngine's own daily tally / drawdown mode in lock-step
+            # with the governor — otherwise a FROZEN mode never lifts at the
+            # day boundary and blocks all entries indefinitely.
+            try:
+                self.risk_engine.reset_daily()
+            except Exception as exc:
+                logger.debug("[RiskEngine] daily reset failed: {}", exc)
             if self.maintenance.should_run():
                 try:
                     maint_result = self.maintenance.run()
@@ -3714,7 +3969,30 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         self._maybe_calibrate_planner()
 
+        self._maybe_resolve_shadows()
+
         self._maybe_backup_data()
+
+    def _maybe_resolve_shadows(self) -> None:
+        """Periodically resolve pending shadow contracts.
+
+        The Shadow Resolver replays the real TradeManager over forward price to
+        produce counterfactual outcomes for rejected/skipped setups.  Wired here
+        so the pipeline actually runs in production — without it, contracts pile
+        up PENDING forever (the 'thousands of pending shadows' symptom).
+        """
+        now = _time.time()
+        if now - self._last_shadow_resolve_time < self._shadow_resolve_interval_seconds:
+            return
+        self._last_shadow_resolve_time = now
+        try:
+            from persistence.shadow_resolver import run_resolver
+
+            counts = run_resolver(self._shadow_store, batch_size=200)
+            if counts:
+                logger.info("👻 Shadow resolver — {}", counts)
+        except Exception as exc:
+            logger.warning("Shadow resolver error: {}", exc)
 
     def _maybe_calibrate_planner(self) -> None:
         """Evolve PlannerConfig from realised plan→outcome data."""
@@ -3801,6 +4079,22 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             except Exception as exc:
                 logger.debug("[retrain] trade history assignment to scanner failed: {}", exc)
                 pass
+
+            # Re-inject freshly optimized scoring weights into the live scanner
+            # so the new weights take effect this run instead of only after a
+            # restart (otherwise re-optimized weights sit stale on disk).
+            try:
+                if self.config.scoring.use_adaptive_scoring_weights:
+                    from adaptive.score_optimizer import (
+                        load_saved_weights as _load_weights,
+                        ScoringWeights as _SW,
+                        ADAPTIVE_WEIGHT_ENVELOPE_PCT as _ENV_PCT,
+                    )
+                    _fresh = _load_weights().clamped_to_envelope(_SW(), _ENV_PCT)
+                    self.scanner._adaptive_weights = _fresh.as_dict()
+                    logger.info("[retrain] live scanner scoring weights reloaded")
+            except Exception as exc:
+                logger.debug("[retrain] scanner weight reload failed: {}", exc)
         except Exception:
             logger.exception("ML retraining error")
 

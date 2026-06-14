@@ -237,6 +237,7 @@ class ShadowEngine:
                 "qualified": False,
                 "reason": f"Need {self.MIN_SHADOW_TRADES} trades, have {len(trades)}",
                 "n_trades": len(trades),
+                "n_shadow_trades": len(trades),
             }
 
         r_values  = [t["actual_r"] for t in trades]
@@ -262,6 +263,7 @@ class ShadowEngine:
         return {
             "qualified":   qualified,
             "n_trades":    len(trades),
+            "n_shadow_trades": len(trades),
             "win_rate":    round(win_rate, 4),
             "expectancy":  round(float(expectancy), 4),
             "avg_win":     round(float(avg_win), 4),

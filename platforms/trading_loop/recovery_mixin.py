@@ -98,7 +98,27 @@ class RecoveryReconciliationMixin:
             try:
                 state = self.position_store.load_guard_state()
                 if state is not None:
-                    self.drawdown.restore_state(state)
+                    # v2 payload is composite ({"drawdown":…, "risk_engine":…,
+                    # "governor":…}); legacy payload is the flat drawdown dict.
+                    dd_state = state.get("drawdown", state)
+                    self.drawdown.restore_state(dd_state)
+                    re_state = state.get("risk_engine")
+                    if re_state and hasattr(self, "risk_engine") and hasattr(self.risk_engine, "restore_state"):
+                        try:
+                            self.risk_engine.restore_state(re_state)
+                        except Exception as exc:
+                            logger.debug("RiskEngine state restore failed: {}", exc)
+                    gov_state = state.get("governor")
+                    gov = getattr(self, "_governor", None)
+                    if gov_state and gov is not None and hasattr(gov, "restore_state"):
+                        try:
+                            gov.restore_state(gov_state)
+                            logger.info(
+                                "Governor state restored — daily_pnl={:.2f}, halted={}",
+                                gov.daily_pnl, gov.daily_trading_halted,
+                            )
+                        except Exception as exc:
+                            logger.debug("Governor state restore failed: {}", exc)
                     logger.info(
                         "Drawdown guard restored — mode={}, daily_pnl={}",
                         self.drawdown.mode.value,

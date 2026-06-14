@@ -195,6 +195,26 @@ class PortfolioGovernor:
             logger.info("[Governor] daily reset — loss-cap halt lifted")
         self.daily_trading_halted = False
 
+    def to_state(self) -> dict:
+        """Serialise the daily tally + halt so a restart doesn't lose the day's
+        loss budget."""
+        return {
+            "daily_pnl": self.daily_pnl,
+            "daily_trading_halted": self.daily_trading_halted,
+            "reference_balance": self._reference_balance,
+        }
+
+    def restore_state(self, state: dict) -> None:
+        """Restore the daily tally + halt from a persisted payload."""
+        try:
+            self.daily_pnl = float(state.get("daily_pnl", 0.0) or 0.0)
+            self.daily_trading_halted = bool(state.get("daily_trading_halted", False))
+            ref = float(state.get("reference_balance", 0.0) or 0.0)
+            if ref > 0:
+                self._reference_balance = ref
+        except (TypeError, ValueError):
+            pass
+
     def set_reference_balance(self, balance: float) -> None:
         if balance and balance > 0:
             self._reference_balance = balance
