@@ -105,6 +105,10 @@ class EntryEngine:
         self._atr_stop_max_risk_mult = float(
             atr_stop_max_risk_mult if atr_stop_max_risk_mult is not None else risk_cfg.atr_stop_max_risk_mult
         )
+        # Optional shadow-fed gate tuner (set by the trading loop). When present,
+        # it can LOWER the entry score bar within a bounded envelope if the
+        # engine's rejected setups keep winning. Neutral (None) by default.
+        self.gate_tuner = None
 
     # ------------------------------------------------------------------
     # Main entry calculation
@@ -184,8 +188,21 @@ class EntryEngine:
         status = self.drawdown.get_status(now)
         risk_pct = status.current_risk_pct
 
+        # Base entry bar = configured min score, optionally LOOSENED by the
+        # shadow-fed gate tuner (bounded). It can never drop below the watchlist
+        # score, and the outer max() keeps it at/above the drawdown-mode floor —
+        # so a noisy tuner can never open the door to genuinely weak setups.
+        base_min = self.config.scoring.min_entry_score
+        if self.gate_tuner is not None:
+            try:
+                base_min = max(
+                    self.config.scoring.watchlist_score,
+                    base_min + self.gate_tuner.offset("entry_engine"),
+                )
+            except Exception as exc:
+                logger.debug("[entry_engine] gate-tuner offset unavailable: {}", exc)
         effective_min_score = max(
-            self.config.scoring.min_entry_score,
+            base_min,
             status.current_score_threshold,
         )
         if score < effective_min_score:

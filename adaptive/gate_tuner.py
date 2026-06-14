@@ -34,6 +34,11 @@ class GateTuner:
         # EV gate rejects when ev_estimate < cutoff (base 0.0). Loosening lowers
         # the cutoff (allow slightly-negative EV) within [-0.10, 0.0].
         "ev_gate": (-0.10, 0.0, 0.01, -1),
+        # Entry-engine score bar rejects setups scoring below the configured
+        # min_entry_score. Loosening lowers that bar by up to 3 points within
+        # [-3.0, 0.0] when its rejected setups keep winning. NEVER drops below
+        # the watchlist score or the drawdown-mode floor (enforced at the gate).
+        "entry_engine": (-3.0, 0.0, 1.0, -1),
     }
 
     MIN_SAMPLES = 30        # resolved shadows for a gate before tuning it

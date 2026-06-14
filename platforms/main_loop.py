@@ -279,6 +279,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._gate_tuner = GateTuner()
         self._last_gate_tune_time = 0.0
         self._gate_tune_interval_seconds = 6 * 3600
+        # Let the entry engine read the tuner's learned entry-score offset.
+        try:
+            self.entry_engine.gate_tuner = self._gate_tuner
+        except Exception as exc:
+            logger.debug("[init] entry_engine gate-tuner share failed: {}", exc)
 
         self.watchdog = HealthWatchdog()
         self.maintenance = DailyMaintenance()
