@@ -44,8 +44,81 @@ class DecisionWeights:
 class DecisionEngine:
     """Scores every possible action and picks the best one."""
 
-    def __init__(self, weights: DecisionWeights | None = None) -> None:
+    def __init__(
+        self,
+        weights: DecisionWeights | None = None,
+        *,
+        regime_weighting_enabled: bool = True,
+        regime_ranging_htf_scale: float = 0.5,
+        reversal_enabled: bool = True,
+        reversal_min_momentum: float = 0.2,
+        reversal_required_evidence: int = 3,
+        reversal_size_multiplier: float = 0.5,
+        reversal_no_evidence_skip_penalty: float = 0.30,
+    ) -> None:
         self.weights = weights or DecisionWeights()
+        # Roadmap D — regime-dependent weighting.
+        self.regime_weighting_enabled = regime_weighting_enabled
+        self.regime_ranging_htf_scale = max(0.0, min(1.0, regime_ranging_htf_scale))
+        # Roadmap E — reversal trade type.
+        self.reversal_enabled = reversal_enabled
+        self.reversal_min_momentum = reversal_min_momentum
+        self.reversal_required_evidence = int(reversal_required_evidence)
+        self.reversal_size_multiplier = max(0.0, min(1.0, reversal_size_multiplier))
+        self.reversal_no_evidence_skip_penalty = max(0.0, reversal_no_evidence_skip_penalty)
+
+    # ── Roadmap D/E helpers ───────────────────────────────────────────────
+
+    def _weights_for_regime(self, regime: str) -> DecisionWeights:
+        """D: in ranging/reversal regimes, shift influence off the (slow) HTF
+        and onto M1 momentum — HTF reacts last, so it matters less when price is
+        ranging or reversing. Trending regimes keep the base M5-primary weights.
+        Neutral when regime weighting is disabled."""
+        if not self.regime_weighting_enabled:
+            return self.weights
+        r = str(regime).upper()
+        is_ranging = ("RANG" in r) or ("REVERS" in r) or ("CHOP" in r)
+        if not is_ranging:
+            return self.weights
+        w = self.weights
+        s = self.regime_ranging_htf_scale
+        htf_conv_freed = w.conviction_htf * (1.0 - s)  # keep conviction sum stable
+        return DecisionWeights(
+            conviction_htf=w.conviction_htf * s,
+            conviction_structure=w.conviction_structure,
+            conviction_momentum=w.conviction_momentum + htf_conv_freed,
+            conviction_confidence=w.conviction_confidence,
+            enter_htf=w.enter_htf * s,
+            enter_structure=w.enter_structure,
+            enter_momentum=w.enter_momentum,
+            skip_htf=w.skip_htf * s,
+            skip_momentum=w.skip_momentum,
+        )
+
+    @staticmethod
+    def _is_counter_htf(ctx: EntryContext) -> bool:
+        """True when the trade direction opposes the H4 trend (continuation vs
+        reversal). Uses the H4 trend string, tolerating enum/`Trend.X` forms."""
+        h4 = str(ctx.h4_trend).upper()
+        return ("BEARISH" in h4) if ctx.is_long else ("BULLISH" in h4)
+
+    def _reversal_evidence(
+        self, ctx: EntryContext, sa: SituationAssessment
+    ) -> tuple[int, list[str]]:
+        """Count the independent reversal signals for a counter-HTF setup:
+        an M5 liquidity sweep, an aligned M1 BOS/CHoCH, and strong momentum."""
+        labels: list[str] = []
+        et = str(ctx.entry_type).upper()
+        mc = str(ctx.micro_confirmation).lower()
+        if "SWEEP" in et or "sweep" in mc:
+            labels.append("M5 sweep")
+        m1ev = str(ctx.m1_event).upper()
+        aligned_dir = ("BULLISH" in m1ev) if ctx.is_long else ("BEARISH" in m1ev)
+        if ("BOS" in m1ev or "CHOCH" in m1ev) and aligned_dir:
+            labels.append("M1 BOS")
+        if sa.momentum >= self.reversal_min_momentum:
+            labels.append(f"momentum {sa.momentum:+.2f}")
+        return len(labels), labels
 
     def decide_management(
         self,
@@ -296,22 +369,25 @@ class DecisionEngine:
     ) -> EntryDecision:
         """Score ENTER vs SKIP using situation dimensions — no hard thresholds."""
         evidence: list[str] = []
+        # Roadmap D — pick regime-appropriate weights (ranging/reversal shifts
+        # influence off HTF onto M1 momentum; trending keeps the base weights).
+        w = self._weights_for_regime(ctx.regime)
 
         # ── ENTER score ──────────────────────────────────────────────────
         enter_score = 0.20  # baseline: slight inclination to trade
 
         if sa.tf_alignment > 0.2:
-            contrib = sa.tf_alignment * self.weights.enter_htf
+            contrib = sa.tf_alignment * w.enter_htf
             enter_score += contrib
             evidence.append(f"HTF aligned ({sa.tf_alignment:+.2f}) +{contrib:.2f}")
 
         if sa.structure_integrity > 0.5:
-            contrib = (sa.structure_integrity - 0.5) * self.weights.enter_structure
+            contrib = (sa.structure_integrity - 0.5) * w.enter_structure
             enter_score += contrib
             evidence.append(f"structure quality ({sa.structure_integrity:.2f}) +{contrib:.2f}")
 
         if sa.momentum > 0.1:
-            contrib = sa.momentum * self.weights.enter_momentum
+            contrib = sa.momentum * w.enter_momentum
             enter_score += contrib
             evidence.append(f"supportive momentum ({sa.momentum:+.2f}) +{contrib:.2f}")
 
@@ -329,7 +405,7 @@ class DecisionEngine:
         skip_parts: list[str] = []
 
         if sa.tf_alignment < -0.1:
-            penalty = abs(sa.tf_alignment) * self.weights.skip_htf
+            penalty = abs(sa.tf_alignment) * w.skip_htf
             skip_score += penalty
             skip_parts.append(f"HTF opposing ({sa.tf_alignment:+.2f}) +{penalty:.2f}")
 
@@ -339,7 +415,7 @@ class DecisionEngine:
             skip_parts.append(f"weak structure ({sa.structure_integrity:.2f}) +{penalty:.2f}")
 
         if sa.momentum < -0.2:
-            penalty = abs(sa.momentum) * self.weights.skip_momentum
+            penalty = abs(sa.momentum) * w.skip_momentum
             skip_score += penalty
             skip_parts.append(f"opposing momentum ({sa.momentum:+.2f}) +{penalty:.2f}")
 
@@ -357,6 +433,25 @@ class DecisionEngine:
             penalty = (1.5 - ctx.risk_reward_2) * 0.20
             skip_score += penalty
             skip_parts.append(f"weak R:R ({ctx.risk_reward_2:.1f}) +{penalty:.2f}")
+
+        # ── Reversal trade type (roadmap E) ──────────────────────────────
+        # A counter-HTF setup is only taken as a REVERSAL when it carries strong
+        # lower-timeframe evidence (M5 sweep + M1 BOS + momentum). Without enough
+        # evidence it's a falling-knife counter-trend → push to SKIP. Qualified
+        # reversals are allowed but sized DOWN (haircut applied below).
+        is_reversal = False
+        if self.reversal_enabled and self._is_counter_htf(ctx):
+            ev_count, ev_labels = self._reversal_evidence(ctx, sa)
+            if ev_count >= self.reversal_required_evidence:
+                is_reversal = True
+                evidence.append(f"counter-HTF reversal [{', '.join(ev_labels)}]")
+            else:
+                skip_score += self.reversal_no_evidence_skip_penalty
+                skip_parts.append(
+                    f"counter-trend without reversal evidence "
+                    f"({ev_count}/{self.reversal_required_evidence}) "
+                    f"+{self.reversal_no_evidence_skip_penalty:.2f}"
+                )
 
         # ── Pick winner ──────────────────────────────────────────────────
         margin = enter_score - skip_score
@@ -377,14 +472,18 @@ class DecisionEngine:
         # ── Decide MARKET vs PENDING ─────────────────────────────────────
         entry_action = self._decide_entry_action(ctx, sa)
 
-        conviction = self.compute_conviction(sa)
+        conviction = self.compute_conviction(sa, weights=w)
         size_mult = self._conviction_to_size_multiplier(conviction)
+        if is_reversal:
+            # Reversals run smaller until they prove themselves (roadmap E).
+            size_mult = round(size_mult * self.reversal_size_multiplier, 2)
 
         reason = (
             f"[{sa.primary_label}] {entry_action.value}: "
             f"{'; '.join(evidence[:4])} | "
             f"enter={enter_score:.2f} skip={skip_score:.2f} margin={margin:.2f} "
             f"conviction={conviction:.2f} size×{size_mult:.2f}"
+            f"{' [REVERSAL]' if is_reversal else ''}"
         )
         return EntryDecision(
             action=entry_action,
@@ -416,9 +515,11 @@ class DecisionEngine:
             return EntryAction.ENTER_MARKET
         return EntryAction.ENTER_PENDING
 
-    def compute_conviction(self, sa: SituationAssessment) -> float:
+    def compute_conviction(
+        self, sa: SituationAssessment, weights: DecisionWeights | None = None
+    ) -> float:
         """Continuous conviction score from situation dimensions."""
-        w = self.weights
+        w = weights or self.weights
         c = (
             (sa.tf_alignment + 1.0) / 2.0 * w.conviction_htf
             + sa.structure_integrity * w.conviction_structure

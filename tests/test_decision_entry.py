@@ -277,3 +277,88 @@ class TestM5PrimaryWeighting:
         assert d.conviction_structure_weight > d.conviction_htf_weight
         assert d.conviction_momentum_weight > d.conviction_htf_weight
         assert d.enter_structure_coeff > d.enter_htf_coeff
+
+
+# ── Roadmap D: regime-dependent weighting ──────────────────────────────────
+
+class TestRegimeWeighting:
+    def test_ranging_regime_demotes_htf(self):
+        eng = DecisionEngine()
+        trending = eng._weights_for_regime("BULLISH")
+        ranging = eng._weights_for_regime("RANGING")
+        # In a ranging regime HTF influence shrinks and the freed conviction
+        # weight moves to M1 momentum.
+        assert ranging.conviction_htf < trending.conviction_htf
+        assert ranging.enter_htf < trending.enter_htf
+        assert ranging.skip_htf < trending.skip_htf
+        assert ranging.conviction_momentum > trending.conviction_momentum
+
+    def test_trending_regime_uses_base_weights(self):
+        eng = DecisionEngine()
+        assert eng._weights_for_regime("BULLISH") is eng.weights
+        assert eng._weights_for_regime("BEARISH") is eng.weights
+
+    def test_disabled_is_neutral(self):
+        eng = DecisionEngine(regime_weighting_enabled=False)
+        assert eng._weights_for_regime("RANGING") is eng.weights
+
+    def test_conviction_sum_preserved_in_ranging(self):
+        eng = DecisionEngine()
+        w = eng._weights_for_regime("RANGING")
+        total = (w.conviction_htf + w.conviction_structure
+                 + w.conviction_momentum + w.conviction_confidence)
+        assert total == pytest.approx(1.0, abs=1e-9)
+
+
+# ── Roadmap E: reversal trade type ─────────────────────────────────────────
+
+class TestReversalType:
+    def _counter_htf_reversal_ctx(self):
+        # LONG against a BEARISH H4, with full reversal evidence.
+        return _make_ctx(
+            direction="LONG", h4_trend="BEARISH", regime="BEARISH",
+            entry_type="SWEEP_REVERSAL", m1_event="BOS_BULLISH",
+            risk_reward_2=3.0,
+        )
+
+    def _strong_ltf_sa(self):
+        return SituationAssessment(
+            tf_alignment=-0.3, structure_integrity=0.8,
+            momentum=0.5, read_confidence=0.8, urgency=0.0,
+        )
+
+    def test_qualified_reversal_enters_and_is_haircut(self):
+        ctx = self._counter_htf_reversal_ctx()
+        sa = self._strong_ltf_sa()
+        with_rev = DecisionEngine().decide_entry(ctx, sa)
+        no_rev = DecisionEngine(reversal_enabled=False).decide_entry(ctx, sa)
+        assert with_rev.should_enter
+        assert "REVERSAL" in with_rev.reason
+        # Same setup is sized DOWN when treated as a reversal.
+        assert with_rev.size_multiplier < no_rev.size_multiplier
+
+    def test_counter_trend_without_evidence_skips(self):
+        # Counter-HTF but NO sweep / NO M1 BOS / weak momentum.
+        ctx = _make_ctx(
+            direction="LONG", h4_trend="BEARISH", regime="BEARISH",
+            entry_type="FVG_MIDPOINT", m1_event="NONE", risk_reward_2=3.0,
+        )
+        sa = SituationAssessment(
+            tf_alignment=-0.2, structure_integrity=0.55,
+            momentum=0.0, read_confidence=0.6, urgency=0.0,
+        )
+        blocked = DecisionEngine().decide_entry(ctx, sa)
+        allowed = DecisionEngine(reversal_enabled=False).decide_entry(ctx, sa)
+        assert not blocked.should_enter          # falling-knife guard fires
+        assert allowed.should_enter              # without E it would have entered
+
+    def test_continuation_unaffected_by_reversal_logic(self):
+        # LONG with a BULLISH H4 is a continuation — reversal logic must not fire.
+        ctx = _make_ctx(direction="LONG", h4_trend="BULLISH", regime="BULLISH")
+        sa = SituationAssessment(
+            tf_alignment=0.6, structure_integrity=0.8,
+            momentum=0.4, read_confidence=0.8,
+        )
+        decision = DecisionEngine().decide_entry(ctx, sa)
+        assert decision.should_enter
+        assert "REVERSAL" not in decision.reason

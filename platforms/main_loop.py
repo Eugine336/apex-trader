@@ -372,7 +372,14 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 enter_momentum=dcfg.enter_momentum_coeff,
                 skip_htf=dcfg.skip_htf_coeff,
                 skip_momentum=dcfg.skip_momentum_coeff,
-            )
+            ),
+            regime_weighting_enabled=dcfg.regime_weighting_enabled,
+            regime_ranging_htf_scale=dcfg.regime_ranging_htf_scale,
+            reversal_enabled=dcfg.reversal_trades_enabled,
+            reversal_min_momentum=dcfg.reversal_min_momentum,
+            reversal_required_evidence=dcfg.reversal_required_evidence,
+            reversal_size_multiplier=dcfg.reversal_size_multiplier,
+            reversal_no_evidence_skip_penalty=dcfg.reversal_no_evidence_skip_penalty,
         )
         self._risk_governor = RiskGovernor() if dcfg.governor_enabled else None
         self._decision_journal = DecisionJournal(dcfg.journal_dir) if dcfg.journal_enabled else None
