@@ -106,6 +106,32 @@ class RiskMixin(HelpersMixin):
                     result["system_vol_mult"] = vs.size_multiplier
                     result["system_vol_note"] = vs.note
 
+            # Per-account risk silos (per-broker/login balance, daily+open P&L,
+            # halt) — previously computed but invisible on the dashboard.
+            acct_risk = getattr(loop, "_account_risk", None)
+            if acct_risk is not None and hasattr(acct_risk, "snapshot"):
+                try:
+                    result["account_silos"] = acct_risk.snapshot()
+                except Exception as exc:
+                    logger.debug("[dashboard] account silos read failed: {}", exc)
+
+            # RL authority/status incl. the untrained-placeholder flag, so an
+            # untrained checkpoint (random shadow signals) is visible.
+            try:
+                rl_bridge = getattr(getattr(loop, "scanner", None), "_rl", None)
+                if rl_bridge is not None and hasattr(rl_bridge, "status"):
+                    result["rl"] = rl_bridge.status()
+            except Exception as exc:
+                logger.debug("[dashboard] RL status read failed: {}", exc)
+
+            # Shadow-fed gate-tuner offsets (learned threshold nudges).
+            gate_tuner = getattr(loop, "_gate_tuner", None)
+            if gate_tuner is not None and hasattr(gate_tuner, "all_offsets"):
+                try:
+                    result["gate_offsets"] = gate_tuner.all_offsets()
+                except Exception as exc:
+                    logger.debug("[dashboard] gate offsets read failed: {}", exc)
+
             return result
 
         return {

@@ -418,6 +418,31 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self._account_key_cache[symbol] = key
         return key
 
+    def _blocks_new_entry_near_weekend(self, symbol: str, now: datetime) -> bool:
+        """True if opening a NEW position should be blocked because a
+        weekend-closing instrument (FX/metals) is within the close buffer on
+        Friday. 24/7 instruments (crypto, synthetics) are never blocked —
+        holding fresh risk across the weekend gap is the thing we avoid."""
+        if not getattr(self.config.risk, "weekend_protection_enabled", True):
+            return False
+        if now.weekday() != 4:  # Friday only
+            return False
+        sym = symbol.upper()
+        try:
+            from brain.currency_strength import CURRENCY_PAIRS
+            weekend_closing = (
+                sym in CURRENCY_PAIRS
+                or sym in ("XAUUSD", "XAGUSD", "XBRUSD", "XTIUSD")
+            )
+        except Exception:
+            weekend_closing = False
+        if not weekend_closing:
+            return False
+        buf = int(getattr(self.config.risk, "weekend_close_buffer_minutes", 15))
+        close_hour = int(getattr(self.config.risk, "friday_close_hour_utc", 21))
+        close_dt = now.replace(hour=close_hour, minute=0, second=0, microsecond=0)
+        return (close_dt - now).total_seconds() <= buf * 60
+
 
     # ── Thread-safe position accessors ──────────────────────────────────
 
@@ -1520,6 +1545,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     return False
         except Exception as exc:
             logger.debug("[entry] regime threshold gate skipped: {}", exc)
+        # Don't open fresh FX/metals risk right before the weekend close.
+        if self._blocks_new_entry_near_weekend(pair, datetime.now(timezone.utc)):
+            self._log_rejection(
+                pair, direction, result.score,
+                "weekend close buffer — no new FX/metals entries",
+            )
+            return False
 
         assessment = self.risk_engine.assess(
             pair=pair,
@@ -2588,7 +2620,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     result = self.platforms.close_trade(oid, pos.platform, tp3_lots)
                     if result.success:
                         pos.lots = round(pos.lots - tp3_lots, 2)
-                        self.position_store.update_position(oid, lots=pos.lots)
+                        self.position_store.update_position(oid, lots=pos.lots, tp3_hit=True)
                         _pip = get_pip_size(pos.symbol)
                         _pips = (
                             (result.close_price - pos.entry_price) / _pip
@@ -3328,8 +3360,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     setattr(ctx, f"{tf_name}_swing_high", analysis.swing_high)
                 if hasattr(analysis, "swing_low") and analysis.swing_low is not None:
                     setattr(ctx, f"{tf_name}_swing_low", analysis.swing_low)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[ctx] {} structure extraction failed for {}: {}", tf_name, pos.symbol, exc)
 
         # H1 last candle direction
         h1_df = sa_data.get("h1")
@@ -3343,8 +3375,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     rng = float(last_closed.get("high", c_close)) - float(last_closed.get("low", c_open))
                     ctx.h1_last_candle_doji = rng > 0 and (body / rng) < 0.3
                     ctx.h1_last_candle_bearish = c_close < c_open
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[ctx] H1 last-candle read failed for {}: {}", pos.symbol, exc)
 
         # M1 aligned candle count
         m1_df = sa_data.get("m1")
@@ -3358,23 +3390,23 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     or (not is_long and float(row.get("close", 0)) < float(row.get("open", 0)))
                 )
                 ctx.m1_aligned_count = aligned
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[ctx] M1 alignment count failed for {}: {}", pos.symbol, exc)
 
         # ── Session / News ───────────────────────────────────────────────
         try:
             sess = self.session_engine.get_status(datetime.now(timezone.utc))
             ctx.session_name = getattr(sess, 'name', 'UNKNOWN')
             ctx.session_tradeable = getattr(sess, 'is_tradeable', True)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("[ctx] session status read failed for {}: {}", pos.symbol, exc)
 
         # ── Portfolio heat ───────────────────────────────────────────────
         if self._portfolio_risk_sm is not None:
             try:
                 ctx.portfolio_heat_pct = getattr(self._portfolio_risk_sm, '_last_heat_pct', 0.0) or 0.0
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[ctx] portfolio heat read failed for {}: {}", pos.symbol, exc)
 
         return ctx
 

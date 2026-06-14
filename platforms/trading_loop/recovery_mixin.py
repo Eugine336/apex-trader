@@ -182,6 +182,12 @@ class RecoveryReconciliationMixin:
                 pos.last_update = datetime.fromisoformat(row["last_update"])
                 pos.initial_risk_dollars = row.get("initial_risk_dollars")
                 pos.scale_in_count = int(row.get("scale_in_count", 0) or 0)
+                # Restore plan linkage so the close path still logs the plan→
+                # outcome pair and scale-in honours the per-trade directive.
+                pos.plan_id = row.get("plan_id", "") or ""
+                pos.plan_sl_pips = float(row.get("plan_sl_pips", 0.0) or 0.0)
+                _psa = row.get("plan_scale_in_allowed")
+                pos.plan_scale_in_allowed = None if _psa is None else bool(_psa)
 
                 tm_signal = TMEntrySignal(
                     pair=pos.symbol,
@@ -199,6 +205,10 @@ class RecoveryReconciliationMixin:
                 if pos.tp1_hit:
                     tm_trade.partial_closed = True
                     tm_trade.breakeven_active = True
+                # Restore the TP3 ladder flag so an already-banked TP3 is not
+                # re-banked after a restart.
+                if row.get("tp3_hit"):
+                    tm_trade.tp3_hit = True
                 pos.tm_trade_id = tm_trade.trade_id
                 self.managed_positions[pos.order_id] = pos
                 self._position_scores[pos.order_id] = [pos.score]

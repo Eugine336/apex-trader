@@ -50,6 +50,10 @@ class GateTuner:
     def offset(self, family: str) -> float:
         return self._offsets.get(family, 0.0)
 
+    def all_offsets(self) -> dict[str, float]:
+        """All tunable-gate offsets (for dashboard/observability)."""
+        return {f: self._offsets.get(f, 0.0) for f in self.TUNABLE}
+
     def threshold(self, family: str, base: float) -> float:
         """Return the learned, bounded threshold for a gate (base + offset)."""
         return base + self._offsets.get(family, 0.0)

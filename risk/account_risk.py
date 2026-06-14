@@ -147,6 +147,25 @@ class AccountRiskManager:
         self._unrealized.clear()
         self._halted.clear()
 
+    def snapshot(self) -> dict:
+        """Per-account view for the dashboard (balance, daily/open P&L, halt)."""
+        accounts = (
+            set(self._balance) | set(self._daily_pnl) | set(self._unrealized)
+            | set(self._heat) | set(self._halted)
+        )
+        out: dict[str, dict] = {}
+        for a in accounts:
+            out[a] = {
+                "balance": round(self._balance.get(a, 0.0), 2),
+                "daily_pnl": round(self._daily_pnl.get(a, 0.0), 2),
+                "unrealized": round(self._unrealized.get(a, 0.0), 2),
+                "combined_pnl_pct": round(self.combined_pnl_pct(a), 2),
+                "heat_pct": round(self._heat.get(a, 0.0), 2),
+                "halted": bool(self._halted.get(a, False)),
+                "flatten_breached": self.flatten_breached(a),
+            }
+        return out
+
     # ── Persistence ──────────────────────────────────────────────────────
 
     def to_state(self) -> dict:
