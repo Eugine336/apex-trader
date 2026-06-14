@@ -317,6 +317,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._position_scores: dict[str, list[int]] = {}       # recent N scores per position
         self._position_last_h1_close: dict[str, datetime] = {} # last H1 candle time seen
         self._news_exit_protected: set[str] = set()            # oids already tightened for news
+        self._absolute_be_protected: set[str] = set()          # oids profit-locked to BE on absolute floor
         self._last_market_data: dict = {}                       # most recent scan market data cache
         self._d1_cache: dict[str, pd.DataFrame] = {}             # D1 data cache (changes once/day)
         self._d1_cache_time: datetime | None = None              # when D1 cache was last refreshed
@@ -2429,6 +2430,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         for oid in to_remove:
             self.managed_positions.pop(oid, None)
             self.position_store.remove_position(oid)
+            self._absolute_be_protected.discard(oid)
         to_remove = []
 
         # ── STEP 3: Manage still-open positions ─────────────────────────
@@ -2843,9 +2845,24 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             pos.re_entry_eligible = tm_trade.re_entry_eligible
             pos.last_update = datetime.now(timezone.utc)
 
+            # ── Absolute / early profit protection ──────────────────────
+            # Independent of TP1 / R-multiple so adopted/orphan trades (which
+            # have no reliable original risk) still get a modest open profit
+            # locked to breakeven before it can round-trip into a loss.
+            try:
+                self._apply_absolute_profit_protection(
+                    oid, pos, tm_trade, current, datetime.now(timezone.utc)
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[management] absolute profit protection failed for {} ({}): {}",
+                    pos.symbol, oid, exc,
+                )
+
         for oid in to_remove:
             self.managed_positions.pop(oid, None)
             self.position_store.remove_position(oid)
+            self._absolute_be_protected.discard(oid)
 
         return closed_count
 
