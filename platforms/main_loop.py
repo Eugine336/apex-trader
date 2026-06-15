@@ -4465,6 +4465,26 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 self._account_risk.reset_daily()
             except Exception as exc:
                 logger.debug("[AccountRisk] daily reset failed: {}", exc)
+            # The loop's primary DrawdownGuard only un-freezes inside
+            # register_trade_result → _roll_day_if_needed, i.e. when a trade
+            # closes. A freeze with no open positions left to close (margin /
+            # daily-loss flatten, or a -5% day that flattened the book) would
+            # otherwise persist across days and block EVERY new entry forever.
+            # Roll its day here so a stale FROZEN lifts to RECOVERY at the
+            # boundary, then persist so a later restart doesn't reload the
+            # stale freeze.
+            try:
+                from brain.drawdown_guard import DrawdownMode
+                _dd_was_frozen = self.drawdown.mode == DrawdownMode.FROZEN
+                self.drawdown.reset_daily(datetime.now(timezone.utc))
+                if _dd_was_frozen and self.drawdown.mode != DrawdownMode.FROZEN:
+                    logger.info(
+                        "[DrawdownGuard] NEW DAY: stale FROZEN lifted → {}",
+                        self.drawdown.mode.value,
+                    )
+                    self._persist_guard_state()
+            except Exception as exc:
+                logger.debug("[DrawdownGuard] daily reset failed: {}", exc)
             if self.maintenance.should_run():
                 try:
                     maint_result = self.maintenance.run()

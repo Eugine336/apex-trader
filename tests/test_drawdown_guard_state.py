@@ -197,6 +197,50 @@ class TestPositionStoreGuardState:
         store.close()
 
 
+# ── Day-boundary unfreeze independent of trade closes ─────────────────
+
+class TestResetDailyUnfreeze:
+    """reset_daily() lifts a stale FROZEN at the day boundary even when no
+    trade ever closes — the real-world "froze and flattened the book, then
+    nothing left to close" case that left the guard FROZEN forever."""
+
+    def test_frozen_with_no_trades_unfreezes_next_day(self):
+        guard = DrawdownGuard()
+        guard.mode = DrawdownMode.FROZEN
+        guard.last_trade_day = "2025-06-01"
+
+        # Before the boundary roll, the loop's primary gate is shut.
+        can_before, _ = guard.can_trade(
+            datetime(2025, 6, 2, 8, 0, 0, tzinfo=timezone.utc)
+        )
+        assert not can_before
+
+        # No register_trade_result() — purely the day boundary.
+        guard.reset_daily(datetime(2025, 6, 2, 8, 0, 0, tzinfo=timezone.utc))
+
+        assert guard.mode == DrawdownMode.RECOVERY
+        can_after, _ = guard.can_trade(
+            datetime(2025, 6, 2, 8, 0, 0, tzinfo=timezone.utc)
+        )
+        assert can_after
+
+    def test_same_day_reset_keeps_frozen(self):
+        guard = DrawdownGuard()
+        guard.mode = DrawdownMode.FROZEN
+        guard.last_trade_day = "2025-06-01"
+
+        guard.reset_daily(datetime(2025, 6, 1, 23, 0, 0, tzinfo=timezone.utc))
+        assert guard.mode == DrawdownMode.FROZEN
+
+    def test_normal_mode_unaffected_by_reset(self):
+        guard = DrawdownGuard()
+        guard.last_trade_day = "2025-06-01"
+        guard.reset_daily(datetime(2025, 6, 2, 8, 0, 0, tzinfo=timezone.utc))
+        assert guard.mode == DrawdownMode.NORMAL
+        can, _ = guard.can_trade(datetime(2025, 6, 2, 8, 0, 0, tzinfo=timezone.utc))
+        assert can
+
+
 # ── Defect 4: effective score threshold per drawdown mode ─────────────
 
 class TestEffectiveScoreThreshold:
