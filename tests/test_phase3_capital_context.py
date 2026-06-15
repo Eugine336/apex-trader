@@ -77,8 +77,26 @@ class TestHighWaterMark:
         g.register_trade_result(0.10, _ts(10))
         g.register_trade_result(-0.02, _ts(11))
         status = g.get_status(_ts(11))
-        expected_dd = 0.02 / 0.10
+        # Equity curve is anchored at a 1.0 principal: peak factor 1.10, current
+        # factor 1.08 → drawdown = 0.02 / 1.10 (a true peak-to-trough fraction,
+        # not the give-back-of-profit ratio the old formula returned).
+        expected_dd = 0.02 / 1.10
         assert status.drawdown_from_peak_pct == pytest.approx(expected_dd, abs=1e-4)
+
+    def test_drawdown_from_peak_bounded_when_net_negative(self):
+        """Regression: a net-losing account with a tiny early peak must report a
+        bounded drawdown. The old (hwm - equity)/hwm divided by a near-zero
+        cumulative-return peak and produced ~20,000%, which tripped the planner's
+        size-reduction gate and showed absurd figures on the dashboard."""
+        g = DrawdownGuard()
+        g.register_trade_result(0.002, _ts(10))          # tiny +0.2% early peak
+        for i in range(1, 6):
+            g.register_trade_result(-0.08, _ts(10 + i))  # bleed down to net -39.8%
+        status = g.get_status(_ts(16))
+        # peak factor 1.002, current factor 1 + (0.002 - 0.40) = 0.602.
+        expected_dd = (1.002 - 0.602) / 1.002
+        assert 0.0 <= status.drawdown_from_peak_pct <= 1.0
+        assert status.drawdown_from_peak_pct == pytest.approx(expected_dd, abs=1e-3)
 
     def test_hwm_in_drawdown_status(self):
         g = DrawdownGuard()

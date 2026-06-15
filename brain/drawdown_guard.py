@@ -110,10 +110,7 @@ class DrawdownGuard:
             self.high_water_mark = equity
             self.hwm_timestamp = ts_str
 
-        if self.high_water_mark > 0:
-            drawdown_from_peak = (self.high_water_mark - equity) / self.high_water_mark
-        else:
-            drawdown_from_peak = 0.0
+        drawdown_from_peak = self._drawdown_fraction(equity)
 
         is_at_peak = equity >= self.high_water_mark and self.high_water_mark > 0
         prev_equity = self.equity_points[-2][1] if len(self.equity_points) >= 2 else 0.0
@@ -126,6 +123,25 @@ class DrawdownGuard:
             "is_at_peak": is_at_peak,
             "is_recovering": is_recovering,
         }
+
+    def _drawdown_fraction(self, equity: float) -> float:
+        """Peak-to-trough drawdown as a 0–1 fraction of peak equity.
+
+        ``equity_points`` / ``high_water_mark`` track *cumulative return* off a
+        zero base, so the running peak can sit at (or near) zero. The old
+        ``(high_water_mark - equity) / high_water_mark`` divided the give-back by
+        that near-zero peak and blew up — a net -40% account whose only peak was
+        a tiny early +0.2% reported a ~20,000% "drawdown", which then tripped the
+        planner's size-reduction gate (and the RiskEngine's). Anchor the curve at
+        a 1.0 principal (equity factor = 1 + cumulative return) and measure the
+        standard peak-to-trough decline, clamped to [0, 1]."""
+        peak_factor = 1.0 + self.high_water_mark
+        if peak_factor <= 0.0:
+            # Peak itself was at/below a total wipe-out (≤ -100% cumulative) —
+            # treat as fully drawn down rather than dividing by ≤ 0.
+            return 1.0
+        cur_factor = 1.0 + equity
+        return max(0.0, min(1.0, (peak_factor - cur_factor) / peak_factor))
 
     def can_trade(self, timestamp: datetime | None = None) -> tuple[bool, str]:
         status = self.get_status(timestamp)
@@ -145,10 +161,7 @@ class DrawdownGuard:
         slope = self._equity_slope()
 
         current_equity = self.equity_points[-1][1] if self.equity_points else 0.0
-        if self.high_water_mark > 0:
-            dd_from_peak = (self.high_water_mark - current_equity) / self.high_water_mark
-        else:
-            dd_from_peak = 0.0
+        dd_from_peak = self._drawdown_fraction(current_equity)
 
         return DrawdownStatus(
             mode=self.mode.value,
