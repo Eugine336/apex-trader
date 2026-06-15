@@ -53,9 +53,16 @@ CREATE TABLE IF NOT EXISTS shadow_contracts (
     resolution_ts   INTEGER,
     resolution_granularity TEXT,
     bars_replayed   INTEGER,
-    resolver_meta   TEXT
+    resolver_meta   TEXT,
+    source          TEXT NOT NULL DEFAULT 'planner'
 )
 """
+
+# Migration for DBs created before the `source` column existed. SQLite raises
+# if the column is already present, so it is run best-effort.
+_MIGRATE_SOURCE = (
+    "ALTER TABLE shadow_contracts ADD COLUMN source TEXT NOT NULL DEFAULT 'planner'"
+)
 
 _CREATE_IDX_STATUS = (
     "CREATE INDEX IF NOT EXISTS idx_shadow_status ON shadow_contracts (status)"
@@ -98,6 +105,7 @@ class ShadowContract:
     resolution_granularity: Optional[str] = None
     bars_replayed: Optional[int] = None
     resolver_meta: Optional[str] = None
+    source: str = "planner"
 
 
 @dataclass
@@ -135,6 +143,7 @@ class ShadowStore:
             self._conn.execute("PRAGMA journal_mode=WAL")
             self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.execute(_CREATE_CONTRACTS)
+            self._migrate_source_column()
             self._conn.execute(_CREATE_IDX_STATUS)
             self._conn.execute(_CREATE_IDX_SYMBOL)
             self._conn.execute(_CREATE_IDX_TS)
@@ -146,6 +155,16 @@ class ShadowStore:
                 file=sys.stderr,
             )
 
+    def _migrate_source_column(self) -> None:
+        """Add the `source` column to pre-existing databases (best-effort)."""
+        if self._conn is None:
+            return
+        try:
+            self._conn.execute(_MIGRATE_SOURCE)
+        except Exception:
+            # Column already exists — nothing to do.
+            pass
+
     def insert_contract(self, contract: ShadowContract) -> Optional[str]:
         if self._conn is None:
             return None
@@ -155,8 +174,8 @@ class ShadowStore:
                    (contract_id, correlation_id, setup_id, symbol, direction,
                     entry_price, stop_loss, tp1, tp2, tp3, pip_size,
                     position_size, entry_timeframe, rejecting_gate, score,
-                    ts_utc_ms, status)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    ts_utc_ms, status, source)
+                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     contract.contract_id,
                     contract.correlation_id,
@@ -175,6 +194,7 @@ class ShadowStore:
                     contract.score,
                     contract.ts_utc_ms,
                     contract.status,
+                    contract.source,
                 ),
             )
             self._conn.commit()
