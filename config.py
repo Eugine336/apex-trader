@@ -279,6 +279,11 @@ class ConsensusConfig:
     )
     high_authority_oppose_confidence: float = 0.6
     min_contributors: int = 2
+    # PR10 Phase 0: when the panel collapses to NEUTRAL on the agreement gate,
+    # log the suppressed minority cluster and emit a counterfactual shadow so
+    # the opportunity cost of the collapse can be measured. Logging/shadow only
+    # — it never changes the consensus verdict.
+    log_suppressed_minorities: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.min_contributors, int) or self.min_contributors < 1:
@@ -312,6 +317,57 @@ class ConsensusConfig:
                     f"ConsensusConfig.high_authority_modules entry '{mod}' "
                     f"not present in weights: {list(self.weights.keys())}"
                 )
+
+
+@dataclass
+class OpportunityRankerConfig:
+    """Settings for the opportunity ranker/executor.
+
+    The ranker lets coherent module clusters form independent trade ideas
+    instead of collapsing every vote into one net direction.  ``execute`` gates
+    *live multi-candidate dispatch*; with it off the ranker still produces and
+    logs candidates (shadow mode) without changing the live scalar path.
+    """
+
+    enabled: bool = True            # compute + rank opportunities (shadow-safe)
+    execute: bool = False           # allow the executor to dispatch ranked ideas
+    min_cluster_net: float = 0.5
+    min_cluster_confidence: float = 0.3
+    require_positive_ev: bool = True
+    scalp_target_rr: float = 2.0
+    swing_target_rr: float = 3.0
+    mixed_target_rr: float = 2.5
+    win_prob_floor: float = 0.30
+    win_prob_scale: float = 0.40
+    ev_weight: float = 1.0
+    net_weight: float = 0.25
+    max_concurrent_opportunities: int = 1
+
+    def __post_init__(self) -> None:
+        if self.max_concurrent_opportunities < 1:
+            raise ValueError(
+                f"OpportunityRankerConfig.max_concurrent_opportunities must be "
+                f">= 1, got {self.max_concurrent_opportunities!r}"
+            )
+        for name in ("min_cluster_net", "min_cluster_confidence",
+                     "win_prob_floor", "win_prob_scale", "ev_weight",
+                     "net_weight"):
+            val = getattr(self, name)
+            if not isinstance(val, (int, float)) or not math.isfinite(val) or val < 0:
+                raise ValueError(
+                    f"OpportunityRankerConfig.{name} must be finite >= 0, got {val!r}"
+                )
+        for name in ("scalp_target_rr", "swing_target_rr", "mixed_target_rr"):
+            val = getattr(self, name)
+            if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
+                raise ValueError(
+                    f"OpportunityRankerConfig.{name} must be finite > 0, got {val!r}"
+                )
+        if not (0 <= self.min_cluster_confidence <= 1.0):
+            raise ValueError(
+                f"OpportunityRankerConfig.min_cluster_confidence must be in "
+                f"[0, 1], got {self.min_cluster_confidence!r}"
+            )
 
 
 # ---------------------------------------------------------------------------
@@ -939,6 +995,21 @@ class DecisionConfig:
     oq_floor: float = 5.0                    # live OQ below this → CLOSE/TIGHTEN pressure
     eq_floor: float = 5.0                    # live EQ below this → TIGHTEN pressure
     oq_decay_significant: float = 2.0        # OQ drop (even above floor) → TIGHTEN pressure
+    # ── Fast-cluster opposition decay (PR10) ──────────────────────────────
+    # Data showed the management engine holds losing trades while the fast-
+    # evidence cluster (momentum + M1 alignment) has flipped against the
+    # position, anchored by "HTF aligned" as the hold reason. When the fast
+    # cluster has opposed for ``fast_opposition_min_streak`` consecutive
+    # management cycles AND the trade is NOT meaningfully in profit (profit_r <
+    # fast_opposition_profit_threshold), add bounded, progressively-ramping
+    # CLOSE pressure (weight × min(streak/max_streak, 1)). Additive only — it
+    # never overrides a stronger verdict and never touches the stop. Winners are
+    # unaffected. Set enabled=False to disable.
+    fast_opposition_decay_enabled: bool = True
+    fast_opposition_min_streak: int = 3      # cycles of opposition before pressure starts
+    fast_opposition_max_streak: int = 8      # streak at which the pressure ramp caps
+    fast_opposition_decay_weight: float = 0.15  # max CLOSE pressure at full ramp
+    fast_opposition_profit_threshold: float = 0.3  # only applies below this R
 
 
 # ---------------------------------------------------------------------------

@@ -40,6 +40,16 @@ class DirectionDecision:
     contributors: list[str]     # modules voting WITH the net direction
     opposed_by: list[str]       # modules that triggered a high-authority veto
     votes: list[Vote] = field(default_factory=list)
+    # ── Suppressed minority cluster (PR10 Phase 0) ───────────────────────
+    # When the panel collapses to NEUTRAL because agreement fell below the
+    # threshold, the coherent minority cluster that opposed the net direction is
+    # captured here (direction, the modules voting it, and the fraction of the
+    # weighted vote magnitude it carried). Lets the scanner emit a counterfactual
+    # shadow so "how many suppressed counter-trend setups would have won?" can be
+    # measured. ``suppressed_direction`` stays NEUTRAL when nothing was suppressed.
+    suppressed_direction: str = "NEUTRAL"
+    suppressed_modules: list[str] = field(default_factory=list)
+    suppressed_strength: float = 0.0
 
     @property
     def summary(self) -> str:
@@ -59,6 +69,7 @@ def decide(
     high_authority_modules: list[str],
     high_authority_oppose_confidence: float,
     min_contributors: int = 1,
+    log_suppressed_minorities: bool = True,
 ) -> DirectionDecision:
     """
     Compute consensus direction from a list of weighted signed votes.
@@ -68,6 +79,11 @@ def decide(
     - agreement < min_agreement
     - a high-authority module opposes the net direction with high confidence
     - fewer than min_contributors modules cast a non-NEUTRAL vote
+
+    When agreement is what dissolves an otherwise-directional panel, the
+    suppressed minority cluster is captured on the returned decision (and logged
+    under ``CONSENSUS_MINORITY_SUPPRESSED`` when ``log_suppressed_minorities``)
+    so the scanner can shadow it for counterfactual measurement (PR10 Phase 0).
     """
     non_neutral = [v for v in votes if v.direction != "NEUTRAL"]
     neutral_modules = [v.module for v in votes if v.direction == "NEUTRAL"]
@@ -116,6 +132,9 @@ def decide(
                 opposed_by.append(v.module)
 
     direction = raw_dir
+    suppressed_direction = "NEUTRAL"
+    suppressed_modules: list[str] = []
+    suppressed_strength = 0.0
 
     if direction == "NEUTRAL":
         pass
@@ -131,6 +150,28 @@ def decide(
             agreement, min_agreement,
         )
         direction = "NEUTRAL"
+        # Capture the coherent minority cluster that opposed the net direction
+        # (the suppressed counter-trend opportunity) for counterfactual shadows.
+        minority_dir = "SHORT" if raw_dir == "LONG" else "LONG"
+        minority_votes = [
+            v for v in non_neutral if v.direction == minority_dir
+        ]
+        if minority_votes and total_abs > 0:
+            suppressed_direction = minority_dir
+            suppressed_modules = [v.module for v in minority_votes]
+            suppressed_strength = (
+                sum(abs(v.signed) for v in minority_votes) / total_abs
+            )
+            if log_suppressed_minorities:
+                cluster_desc = ", ".join(
+                    f"{v.module}({v.confidence:.2f})" for v in minority_votes
+                )
+                logger.info(
+                    "CONSENSUS_MINORITY_SUPPRESSED: dir={} cluster=[{}] "
+                    "strength={:.2f} majority_dir={} agreement={:.2f}",
+                    minority_dir, cluster_desc, suppressed_strength,
+                    raw_dir, agreement,
+                )
     elif opposed_by:
         logger.info(
             "[consensus] NEUTRAL — high-authority opposition from: {}",
@@ -161,6 +202,41 @@ def decide(
         contributors=contributors,
         opposed_by=opposed_by,
         votes=list(votes),
+        suppressed_direction=suppressed_direction,
+        suppressed_modules=suppressed_modules,
+        suppressed_strength=suppressed_strength,
+    )
+
+
+def decide_opportunities(votes, ranker_cfg):
+    """Cluster the same module votes into a ranked list of opportunities.
+
+    Additive companion to :func:`decide`.  Where ``decide`` collapses the panel
+    to one net direction, this preserves coherent minority clusters as
+    independent, EV-scored trade ideas.  Pure delegation to
+    :func:`brain.opportunity_ranker.rank_opportunities` — kept here so callers
+    have a single consensus entry point.
+
+    Returns an empty list when the ranker is disabled or no cluster clears the
+    configured floors.
+    """
+    from brain.opportunity_ranker import rank_opportunities
+
+    if ranker_cfg is None or not getattr(ranker_cfg, "enabled", False):
+        return []
+
+    return rank_opportunities(
+        list(votes),
+        min_cluster_net=ranker_cfg.min_cluster_net,
+        min_cluster_confidence=ranker_cfg.min_cluster_confidence,
+        require_positive_ev=ranker_cfg.require_positive_ev,
+        scalp_target_rr=ranker_cfg.scalp_target_rr,
+        swing_target_rr=ranker_cfg.swing_target_rr,
+        mixed_target_rr=ranker_cfg.mixed_target_rr,
+        win_prob_floor=ranker_cfg.win_prob_floor,
+        win_prob_scale=ranker_cfg.win_prob_scale,
+        ev_weight=ranker_cfg.ev_weight,
+        net_weight=ranker_cfg.net_weight,
     )
 
 
