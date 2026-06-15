@@ -75,6 +75,10 @@ class DecisionEngine:
         thesis_conviction_cycles: int = 3,
         thesis_conviction_drop: float = 10.0,
         thesis_conviction_full_drop: float = 30.0,
+        oq_eq_decay_enabled: bool = True,
+        oq_floor: float = 5.0,
+        eq_floor: float = 5.0,
+        oq_decay_significant: float = 2.0,
     ) -> None:
         self.weights = weights or DecisionWeights()
         # Roadmap D — regime-dependent weighting.
@@ -102,6 +106,11 @@ class DecisionEngine:
         self.thesis_conviction_cycles = int(thesis_conviction_cycles)
         self.thesis_conviction_drop = max(0.0, thesis_conviction_drop)
         self.thesis_conviction_full_drop = max(1e-6, thesis_conviction_full_drop)
+        # P3 — live OQ/EQ decay management.
+        self.oq_eq_decay_enabled = oq_eq_decay_enabled
+        self.oq_floor = oq_floor
+        self.eq_floor = eq_floor
+        self.oq_decay_significant = max(0.0, oq_decay_significant)
 
     # ── Roadmap D/E helpers ───────────────────────────────────────────────
 
@@ -156,6 +165,49 @@ class DecisionEngine:
             labels.append(f"momentum {sa.momentum:+.2f}")
         return len(labels), labels
 
+    def _oq_eq_decay_pressure(
+        self, ctx: TradeContext,
+    ) -> tuple[float, float, list[str]]:
+        """Bounded CLOSE/TIGHTEN pressure from live OQ/EQ decay (P3).
+
+        Returns ``(close_pressure, tighten_pressure, reasons)``. Inert (all
+        zero) when the decay feature is off or the live scores were not
+        recomputed this cycle (``live_oq``/``live_eq`` is None) — so the entry
+        path and any context without fresh quality scores are unaffected.
+        """
+        if not self.oq_eq_decay_enabled:
+            return 0.0, 0.0, []
+
+        close_pressure = 0.0
+        tighten_pressure = 0.0
+        reasons: list[str] = []
+
+        live_oq = ctx.live_oq
+        if live_oq is not None:
+            if live_oq < self.oq_floor:
+                # The market conditions that justified entry are gone.
+                severity = min((self.oq_floor - live_oq) / max(self.oq_floor, 1e-6), 1.0)
+                close_pressure += severity * 0.30
+                tighten_pressure += severity * 0.25
+                reasons.append(f"OQ collapsed ({live_oq:.1f} < {self.oq_floor:.1f})")
+            elif (
+                ctx.oq_decay is not None
+                and ctx.oq_decay > self.oq_decay_significant
+            ):
+                # Still above the floor but deteriorating fast — protect profit.
+                extra = ctx.oq_decay - self.oq_decay_significant
+                tighten_pressure += min(extra * 0.08, 0.20)
+                reasons.append(f"OQ decayed {ctx.oq_decay:.1f} since entry")
+
+        live_eq = ctx.live_eq
+        if live_eq is not None and live_eq < self.eq_floor:
+            # Entry geometry degraded — tighten rather than ride a poor location.
+            severity = min((self.eq_floor - live_eq) / max(self.eq_floor, 1e-6), 1.0)
+            tighten_pressure += severity * 0.25
+            reasons.append(f"EQ degraded ({live_eq:.1f} < {self.eq_floor:.1f})")
+
+        return close_pressure, tighten_pressure, reasons
+
     def decide_management(
         self,
         ctx: TradeContext,
@@ -167,6 +219,12 @@ class DecisionEngine:
         scores: dict[Action, float] = {}
         reasons: dict[Action, str] = {}
         evidence_map: dict[Action, list[str]] = {}
+
+        # Live OQ/EQ decay pressure (P3) — folded into the CLOSE/TIGHTEN scores
+        # below. Computed once; inert when the live scores are unavailable.
+        oq_close_pressure, oq_tighten_pressure, oq_eq_reasons = (
+            self._oq_eq_decay_pressure(ctx)
+        )
 
         # ── HOLD ─────────────────────────────────────────────────────────
         hold_score = 0.30  # moderate base — default action
@@ -239,6 +297,12 @@ class DecisionEngine:
                     f"opposing scan signal ({ctx.scan_direction} score={ctx.scan_score})"
                 )
 
+        # Live OQ/EQ decay — the conditions/geometry that justified this trade
+        # have deteriorated since entry (P3). Bounded additive pressure.
+        if oq_close_pressure > 0.0:
+            close_score += oq_close_pressure
+            close_reason_parts.extend(oq_eq_reasons)
+
         scores[Action.CLOSE] = close_score
         reasons[Action.CLOSE] = "; ".join(close_reason_parts) if close_reason_parts else "no close pressure"
         evidence_map[Action.CLOSE] = list(close_reason_parts)
@@ -256,6 +320,10 @@ class DecisionEngine:
         if sa.urgency > 0.5 and sa.profit_state > 0.5:
             tighten_score += 0.15
             tighten_reason.append("urgency with profit to protect")
+
+        if oq_tighten_pressure > 0.0:
+            tighten_score += oq_tighten_pressure
+            tighten_reason.extend(oq_eq_reasons)
 
         scores[Action.TIGHTEN_SL] = tighten_score
         reasons[Action.TIGHTEN_SL] = "; ".join(tighten_reason) if tighten_reason else "no tighten signal"
@@ -296,6 +364,21 @@ class DecisionEngine:
 
         confidence = min(1.0, best_score)
         margin = best_score - sorted(scores.values(), reverse=True)[1] if len(scores) > 1 else best_score
+
+        # P3: surface when live OQ/EQ decay drove a protective verdict.
+        if (
+            oq_eq_reasons
+            and best_action in (Action.CLOSE, Action.TIGHTEN_SL)
+            and ctx.live_oq is not None
+        ):
+            logger.info(
+                "OQ_DECAY: {} entry_oq={} live_oq={:.1f} decay={} → {}",
+                ctx.symbol,
+                f"{ctx.entry_oq:.1f}" if ctx.entry_oq is not None else "n/a",
+                ctx.live_oq,
+                f"{ctx.oq_decay:.1f}" if ctx.oq_decay is not None else "n/a",
+                best_action.value,
+            )
 
         reason_str = self._build_reason(
             best_action, reasons[best_action], sa, ctx, margin,
