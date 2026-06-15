@@ -342,6 +342,19 @@ class LayeredDecisionConfig:
     enabled: bool = True
     opportunity_quality_min: float = 5.0
     entry_quality_min: float = 5.0
+    # Confluence-score co-gate for READY (P5). The 0-123 confluence score must
+    # clear this floor *in addition to* OQ/EQ before a setup qualifies as READY.
+    # 85 matches the lowest sizing tier in RiskEngine._scale_risk_by_score
+    # (below 85 the system already halves size — too weak to trade at all).
+    # Set <= 0 to disable the score co-gate (OQ/EQ alone gate READY, legacy).
+    ready_min_score: int = 85
+    # Entry-time re-validation floors (P1). When a READY setup is actually
+    # executed (seconds-to-minutes after the scan), OQ/EQ are recomputed from
+    # fresh candles; the entry is rejected if either has decayed below these
+    # floors. Kept slightly below the READY thresholds to avoid flickering
+    # rejections on borderline setups.
+    revalidate_opportunity_quality_min: float = 5.0
+    revalidate_entry_quality_min: float = 4.0
     oq_weights: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_OQ_WEIGHTS))
     eq_weights: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_EQ_WEIGHTS))
 
@@ -349,6 +362,8 @@ class LayeredDecisionConfig:
         for name, val in [
             ("opportunity_quality_min", self.opportunity_quality_min),
             ("entry_quality_min", self.entry_quality_min),
+            ("revalidate_opportunity_quality_min", self.revalidate_opportunity_quality_min),
+            ("revalidate_entry_quality_min", self.revalidate_entry_quality_min),
         ]:
             if not isinstance(val, (int, float)) or not math.isfinite(val):
                 raise ValueError(
@@ -358,6 +373,11 @@ class LayeredDecisionConfig:
                 raise ValueError(
                     f"LayeredDecisionConfig.{name} must be in [0, 10], got {val!r}"
                 )
+
+        if not isinstance(self.ready_min_score, (int, float)) or not math.isfinite(self.ready_min_score):
+            raise ValueError(
+                f"LayeredDecisionConfig.ready_min_score must be finite, got {self.ready_min_score!r}"
+            )
 
         for label, wdict in [("oq_weights", self.oq_weights), ("eq_weights", self.eq_weights)]:
             for k, w in wdict.items():
