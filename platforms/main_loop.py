@@ -3266,6 +3266,21 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 pos.symbol, oid, exc,
             )
 
+    @staticmethod
+    def _scan_result_epoch(result) -> float:
+        """Best-effort epoch seconds for a scan result's timestamp.
+
+        Lets downstream layers measure how stale the scanner_score is. Falls
+        back to the current time if the timestamp is missing/unparseable.
+        """
+        ts = getattr(result, "timestamp", None)
+        try:
+            if ts is not None:
+                return float(ts.timestamp())
+        except (AttributeError, TypeError, ValueError, OSError):
+            pass
+        return _time.time()
+
     def _build_entry_context(
         self,
         result,
@@ -3284,6 +3299,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             direction=result.direction,
             scan_score=result.score,
             scan_direction=result.direction,
+            oq=float(getattr(result, "opportunity_quality", 0.0) or 0.0),
+            eq=float(getattr(result, "entry_quality", 0.0) or 0.0),
+            scan_timestamp=self._scan_result_epoch(result),
             entry_type=getattr(signal, "entry_type", ""),
             entry_price=signal.entry_price,
             stop_loss=signal.stop_loss,
@@ -3461,6 +3479,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         zone_quality = max(0.0, min(1.0, sa.structure_integrity))
 
+        # Portfolio heat carried from the EntryContext (already read from the
+        # portfolio risk state machine) so the planner can size against live
+        # book exposure rather than in isolation.
+        portfolio_heat_pct = float(getattr(entry_ctx, "portfolio_heat_pct", 0.0) or 0.0)
+
         # ── Regime-adaptive trade shaping (Tier 2 #14) ───────────────────
         # Feed the RegimeLearner's learned TP stretch, SL buffer and partial
         # ratio into the planner — but only once the learner is CONFIDENT for
@@ -3482,7 +3505,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         except Exception as exc:
             logger.debug("[planner] regime shaping unavailable, using neutral: {}", exc)
 
-        return TradePlanContext(
+        plan_ctx = TradePlanContext(
             symbol=result.pair,
             pip_size=pip_size,
             spread_pips=spread,
@@ -3490,6 +3513,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             current_price=current_price,
             direction=result.direction,
             scanner_score=float(result.score),
+            oq=float(getattr(entry_ctx, "oq", 0.0) or 0.0),
+            eq=float(getattr(entry_ctx, "eq", 0.0) or 0.0),
+            scan_timestamp=float(getattr(entry_ctx, "scan_timestamp", 0.0) or 0.0),
             zone_type=getattr(signal, "entry_type", ""),
             zone_quality=zone_quality,
             zone_entry_price=signal.entry_price,
@@ -3497,6 +3523,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             de_tf_alignment=sa.tf_alignment,
             de_structure_score=sa.structure_integrity,
             de_momentum_score=sa.momentum,
+            sa_tf_alignment=sa.tf_alignment,
+            sa_momentum=sa.momentum,
+            sa_structure_integrity=sa.structure_integrity,
+            sa_read_confidence=sa.read_confidence,
             rl_action=int(getattr(result, "rl_action", 0) or 0),
             rl_confidence=float(getattr(result, "rl_confidence", 0.0) or 0.0),
             rl_expected_r=float(getattr(result, "rl_expected_r", 0.0) or 0.0),
@@ -3519,6 +3549,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             brain_entry_mode=getattr(signal, "entry_mode", "PENDING"),
             open_positions=len(self.managed_positions),
             correlated_exposure=correlated,
+            portfolio_heat_pct=portfolio_heat_pct,
             daily_pnl_r=daily_pnl_r,
             max_positions=self.config.risk.max_open_trades,
             open_position_book=[
@@ -3534,6 +3565,27 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             current_drawdown_pct=dd_pct,
             situation_label=sa.primary_label,
         )
+
+        # Full advisor context now reaches the planner — log it so every trade
+        # decision records the complete picture (scanner score + OQ/EQ, the raw
+        # situation dimensions behind conviction, and live portfolio state).
+        try:
+            scan_age = _time.time() - plan_ctx.scan_timestamp if plan_ctx.scan_timestamp else 0.0
+            logger.info(
+                "[Planner] context {} {}: score={:.0f} OQ={:.1f} EQ={:.1f} "
+                "conviction={:.2f} SA[tf={:+.2f} mom={:+.2f} str={:.2f} conf={:.2f}] "
+                "heat={:.2f}% corr={:.2f} dd={:.2f}% scan_age={:.1f}s",
+                plan_ctx.direction, plan_ctx.symbol, plan_ctx.scanner_score,
+                plan_ctx.oq, plan_ctx.eq, plan_ctx.de_confidence,
+                plan_ctx.sa_tf_alignment, plan_ctx.sa_momentum,
+                plan_ctx.sa_structure_integrity, plan_ctx.sa_read_confidence,
+                plan_ctx.portfolio_heat_pct, plan_ctx.correlated_exposure,
+                plan_ctx.current_drawdown_pct, scan_age,
+            )
+        except Exception as exc:
+            logger.debug("[planner] context logging skipped: {}", exc)
+
+        return plan_ctx
 
     def _build_trade_context(
         self,
