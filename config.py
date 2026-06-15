@@ -315,9 +315,70 @@ class ConsensusConfig:
 
 
 # ---------------------------------------------------------------------------
-# Layered decision — Opportunity Quality + Entry Quality gates
+# Opportunity ranker — open-ended trade ideas from the same module votes.
+# Instead of collapsing votes to one scalar (LONG/SHORT/NEUTRAL), coherent vote
+# clusters (direction × timeframe) are scored as independent opportunities with
+# their own expected value.  Additive: ``enabled`` controls computing candidates
+# (shadow), ``execute`` controls whether the executor selects the live direction.
 # ---------------------------------------------------------------------------
 
+_DEFAULT_SCALP_MODULES: list[str] = ["momentum", "volume", "vwap", "liquidity"]
+_DEFAULT_SWING_MODULES: list[str] = [
+    "structure",
+    "currency_strength",
+    "wyckoff",
+    "order_block",
+    "fvg",
+]
+
+
+@dataclass
+class OpportunityRankerConfig:
+    enabled: bool = True            # compute + attach ranked candidates (shadow)
+    execute: bool = False           # let the executor pick the live direction
+    scalp_modules: list[str] = field(default_factory=lambda: list(_DEFAULT_SCALP_MODULES))
+    swing_modules: list[str] = field(default_factory=lambda: list(_DEFAULT_SWING_MODULES))
+    scalp_reward_risk: float = 1.5
+    swing_reward_risk: float = 2.5
+    base_win_rate: float = 0.40
+    confidence_win_rate_gain: float = 0.40
+    min_expected_value: float = 0.0       # R — drop opportunities below this EV
+    min_cluster_confidence: float = 0.0
+    min_cluster_contributors: int = 1
+    max_concurrent: int = 1               # executor: max opportunities per result
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.min_cluster_contributors, int) or self.min_cluster_contributors < 1:
+            raise ValueError(
+                "OpportunityRankerConfig.min_cluster_contributors must be an int >= 1, "
+                f"got {self.min_cluster_contributors!r}"
+            )
+        if not isinstance(self.max_concurrent, int) or self.max_concurrent < 1:
+            raise ValueError(
+                "OpportunityRankerConfig.max_concurrent must be an int >= 1, "
+                f"got {self.max_concurrent!r}"
+            )
+        for label, val in [
+            ("scalp_reward_risk", self.scalp_reward_risk),
+            ("swing_reward_risk", self.swing_reward_risk),
+        ]:
+            if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
+                raise ValueError(
+                    f"OpportunityRankerConfig.{label} must be finite > 0, got {val!r}"
+                )
+        for label, val in [
+            ("base_win_rate", self.base_win_rate),
+            ("confidence_win_rate_gain", self.confidence_win_rate_gain),
+        ]:
+            if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
+                raise ValueError(
+                    f"OpportunityRankerConfig.{label} must be in [0, 1], got {val!r}"
+                )
+
+
+# ---------------------------------------------------------------------------
+# Layered decision — Opportunity Quality + Entry Quality gates
+# ---------------------------------------------------------------------------
 _DEFAULT_OQ_WEIGHTS: dict[str, float] = {
     "volatility": 1.5,
     "spread": 1.5,
@@ -930,6 +991,7 @@ class AppConfig:
     risk: RiskConfig = field(default_factory=RiskConfig)
     confirmation_penalties: ConfirmationPenaltyConfig = field(default_factory=ConfirmationPenaltyConfig)
     consensus: ConsensusConfig = field(default_factory=ConsensusConfig)
+    opportunity_ranker: OpportunityRankerConfig = field(default_factory=OpportunityRankerConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)

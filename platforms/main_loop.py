@@ -39,6 +39,7 @@ from brain.regime_detector import SystemVolatilityMonitor
 from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open
 from management.re_entry import ReEntryManager
 from management.exit_cause import ExitCause
+from management.opportunity_executor import OpportunityExecutor
 from management.trade_manager import (
     TradeManager,
     TradeStatus,
@@ -195,6 +196,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             _scanner_weights_dict = _clamped.as_dict()
         self.scanner = PairScanner(self.config, scoring_weights=_scanner_weights_dict)
         self.ranker = PairRanker()
+        # Opportunity executor — selects the live direction from the ranked
+        # candidates when OpportunityRankerConfig.execute is on. Shadow no-op
+        # otherwise (the scalar consensus direction is used unchanged).
+        self._opportunity_executor = OpportunityExecutor(self.config.opportunity_ranker)
         self.scheduler = ScanScheduler()
         risk_cfg = self.config.risk
         self.entry_engine = EntryEngine(
@@ -1022,6 +1027,28 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             result = setup.result
             if result.pair in open_pairs:
                 continue
+
+            # ── Opportunity executor — graded direction selection ─────────
+            # When execute is on, the ranked candidates (coherent vote clusters
+            # scored by EV) choose the live direction instead of the scalar
+            # consensus sum. The chosen direction then flows through EVERY gate
+            # below (correlation/CP4, margin, max-trades, planner, governor)
+            # unchanged. When execute is off this is a no-op: the scalar
+            # direction stands and behaviour is identical to before.
+            if self.config.opportunity_ranker.execute:
+                try:
+                    opp = self._opportunity_executor.select(getattr(result, "candidates", None))
+                except Exception as exc:
+                    logger.error("[executor] {} selection failed — keeping scalar direction: {}", result.pair, exc)
+                    opp = None
+                if opp is not None and opp.direction in ("LONG", "SHORT"):
+                    if opp.direction != result.direction:
+                        logger.info(
+                            "[executor] {} direction {} → {} | {}",
+                            result.pair, result.direction or "NEUTRAL", opp.direction, opp.summary,
+                        )
+                    result.direction = opp.direction
+                # No qualifying candidate → fall back to the scalar direction.
 
             # P5: per-pair cooldown after a breakeven stop-out. In chop a pair
             # can cycle enter → BE → stopped at BE → re-enter, bleeding spread
