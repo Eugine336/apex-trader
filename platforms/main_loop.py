@@ -1504,6 +1504,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         # ── Decision Engine entry path ────────────────────────────────────
         plan_to_store: tuple | None = None
+        # Fresh DecisionEngine conviction (0–1) — drives RiskEngine sizing (P3).
+        # Stays None when the Decision Engine is disabled, in which case the
+        # engine falls back to the legacy stale-score scaler.
+        entry_conviction: float | None = None
         if self._decision_enabled:
             try:
                 entry_ctx = self._build_entry_context(
@@ -1535,6 +1539,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
                 # Apply conviction-based sizing
                 conviction_mult = entry_decision.size_multiplier
+                entry_conviction = entry_decision.conviction
                 if entry_decision.is_market:
                     signal.entry_mode = "MARKET"
 
@@ -1767,6 +1772,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             regime=getattr(result, "regime", ""),
             session=session,
             trade_history=getattr(self.scanner, "_trade_history", None),
+            conviction=entry_conviction,
+            portfolio_heat_pct=getattr(self, "_current_portfolio_heat", 0.0),
         )
         if not assessment.approved:
             reasons = "; ".join(assessment.rejections)

@@ -308,37 +308,37 @@ class TestDynamicRiskScaling:
     def test_high_conviction_full_risk(self):
         engine = RiskEngine(starting_balance=10_000.0)
         hwm = {"is_at_peak": False, "drawdown_from_peak_pct": 0.0}
-        scaled = engine._scale_risk_by_score(0.02, 95, hwm)
+        scaled = engine._scale_risk_by_score_DEPRECATED(0.02, 95, hwm)
         assert scaled == pytest.approx(0.02, abs=1e-4)
 
     def test_medium_conviction_reduced_risk(self):
         engine = RiskEngine(starting_balance=10_000.0)
         hwm = {"is_at_peak": False, "drawdown_from_peak_pct": 0.0}
-        scaled = engine._scale_risk_by_score(0.02, 89, hwm)
+        scaled = engine._scale_risk_by_score_DEPRECATED(0.02, 89, hwm)
         assert scaled == pytest.approx(0.02 * 0.85, abs=1e-4)
 
     def test_standard_conviction_further_reduced(self):
         engine = RiskEngine(starting_balance=10_000.0)
         hwm = {"is_at_peak": False, "drawdown_from_peak_pct": 0.0}
-        scaled = engine._scale_risk_by_score(0.02, 86, hwm)
+        scaled = engine._scale_risk_by_score_DEPRECATED(0.02, 86, hwm)
         assert scaled == pytest.approx(0.02 * 0.7, abs=1e-4)
 
     def test_equity_peak_bonus(self):
         engine = RiskEngine(starting_balance=10_000.0)
         hwm = {"is_at_peak": True, "drawdown_from_peak_pct": 0.0}
-        scaled = engine._scale_risk_by_score(0.02, 92, hwm)
+        scaled = engine._scale_risk_by_score_DEPRECATED(0.02, 92, hwm)
         assert scaled == pytest.approx(0.02 * 1.0 * 1.1, abs=1e-4)
 
     def test_drawdown_penalty(self):
         engine = RiskEngine(starting_balance=10_000.0)
         hwm = {"is_at_peak": False, "drawdown_from_peak_pct": 0.15}
-        scaled = engine._scale_risk_by_score(0.02, 95, hwm)
+        scaled = engine._scale_risk_by_score_DEPRECATED(0.02, 95, hwm)
         assert scaled == pytest.approx(0.02 * 0.85, abs=1e-4)
 
     def test_absolute_cap_respected(self):
         engine = RiskEngine(starting_balance=10_000.0)
         hwm = {"is_at_peak": True, "drawdown_from_peak_pct": 0.0}
-        scaled = engine._scale_risk_by_score(0.05, 95, hwm)
+        scaled = engine._scale_risk_by_score_DEPRECATED(0.05, 95, hwm)
         assert scaled <= 0.025
 
 

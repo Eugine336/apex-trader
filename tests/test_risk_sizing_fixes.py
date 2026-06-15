@@ -135,6 +135,90 @@ class TestScoreScaling:
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# P3 + P7 — Conviction-based sizing replaces stale score; single auditable chain
+# ═══════════════════════════════════════════════════════════════════════════
+
+class TestConvictionScaling:
+    """Fresh conviction (when supplied) drives sizing instead of stale score."""
+
+    def _make_engine(self, balance=10_000.0):
+        return RiskEngine(starting_balance=balance)
+
+    def _base_assess_kwargs(self, balance=10_000.0):
+        return dict(
+            pair="EURUSD",
+            direction="BUY",
+            entry_price=1.10000,
+            stop_loss=1.09500,
+            open_trades=[],
+            account_balance=balance,
+        )
+
+    def test_conviction_overrides_score_for_sizing(self):
+        """When conviction is provided, the stale score must not drive sizing.
+
+        Low conviction (0.50 → factor 0.5) on a high score (95) should size
+        DOWN, proving the score is no longer the sizing input.
+        """
+        engine = self._make_engine()
+        base = engine.assess(**self._base_assess_kwargs(), score=0)
+        low_conv = engine.assess(
+            **self._base_assess_kwargs(), score=95, conviction=0.50,
+        )
+        assert low_conv.approved
+        assert abs(low_conv.risk_pct - base.risk_pct * 0.5) < 1e-6
+
+    def test_high_conviction_full_risk(self):
+        engine = self._make_engine()
+        base = engine.assess(**self._base_assess_kwargs(), score=0)
+        high = engine.assess(
+            **self._base_assess_kwargs(), score=0, conviction=0.95,
+        )
+        assert high.approved
+        assert abs(high.risk_pct - base.risk_pct) < 1e-6
+
+    def test_conviction_chain_is_derisking_only(self):
+        """No factor may inflate risk above base (no peak amplifier)."""
+        engine = self._make_engine()
+        base = engine.assess(**self._base_assess_kwargs(), score=0)
+        high = engine.assess(
+            **self._base_assess_kwargs(), score=0, conviction=0.99,
+        )
+        assert high.risk_pct <= base.risk_pct + 1e-9
+
+    def test_portfolio_heat_reduces_size(self):
+        engine = self._make_engine()
+        calm = engine.assess(
+            **self._base_assess_kwargs(), conviction=0.95, portfolio_heat_pct=0.0,
+        )
+        hot = engine.assess(
+            **self._base_assess_kwargs(), conviction=0.95, portfolio_heat_pct=2.5,
+        )
+        assert calm.approved and hot.approved
+        assert hot.risk_pct < calm.risk_pct
+
+    def test_factor_helpers_clamp_to_unit_interval(self):
+        engine = self._make_engine()
+        for c in (-1.0, 0.0, 0.5, 0.86, 0.9, 1.0, 2.0):
+            assert 0.0 <= engine._scale_by_conviction(c) <= 1.0
+        for h in (0.0, 1.2, 1.9, 5.0):
+            assert 0.0 <= engine._scale_by_portfolio_heat(h) <= 1.0
+        for d in (0.0, 0.07, 0.12, 0.5):
+            assert 0.0 <= engine._scale_by_drawdown(d) <= 1.0
+
+    def test_no_conviction_falls_back_to_legacy_score(self):
+        """conviction=None must preserve legacy stale-score behaviour."""
+        engine = self._make_engine()
+        legacy = engine.assess(**self._base_assess_kwargs(), score=85)
+        chain = engine.compute_position_size_risk(
+            base_risk_pct=0.02, conviction=None, score=85,
+            hwm_state={"is_at_peak": False, "drawdown_from_peak_pct": 0.0},
+        )
+        assert chain == 0.014
+        assert legacy.approved
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # FIX 2 — MIN_LOT floor over-risk guard (all accounts, not just micro)
 # ═══════════════════════════════════════════════════════════════════════════
 
