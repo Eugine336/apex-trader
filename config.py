@@ -783,6 +783,12 @@ class DecisionConfig:
     thesis_secure_min_profit_usd: float = 15.0   # economic-profit trigger (account ccy)
     thesis_secure_min_profit_pips: float = 12.0  # ...or this many pips (whichever first)
     thesis_deterioration_threshold: float = 0.35  # 0..1 decay score needed to act
+    # When decay is SEVERE (most dimensions collapsing at once), securing the
+    # stop and waiting to be stopped just gives the move back — bank the profit
+    # at market instead. Hard-close once deterioration ≥ this (and profit
+    # exists). Must be > thesis_deterioration_threshold; set ≥ 1.01 to disable
+    # the hard-close tier and keep only stop-securing.
+    thesis_close_threshold: float = 0.80
     thesis_healthy_structure: float = 0.5    # structure ≥ this AND momentum ≥ healthy → hold (pullback)
     thesis_healthy_momentum: float = 0.0
     thesis_lock_fraction: float = 0.5        # lock this fraction of open profit into the stop

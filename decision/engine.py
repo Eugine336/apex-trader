@@ -61,6 +61,7 @@ class DecisionEngine:
         thesis_secure_min_profit_usd: float = 15.0,
         thesis_secure_min_profit_pips: float = 12.0,
         thesis_deterioration_threshold: float = 0.35,
+        thesis_close_threshold: float = 0.80,
         thesis_healthy_structure: float = 0.5,
         thesis_healthy_momentum: float = 0.0,
         thesis_lock_fraction: float = 0.5,
@@ -87,6 +88,7 @@ class DecisionEngine:
         self.thesis_secure_min_profit_usd = max(0.0, thesis_secure_min_profit_usd)
         self.thesis_secure_min_profit_pips = max(0.0, thesis_secure_min_profit_pips)
         self.thesis_deterioration_threshold = thesis_deterioration_threshold
+        self.thesis_close_threshold = thesis_close_threshold
         self.thesis_healthy_structure = thesis_healthy_structure
         self.thesis_healthy_momentum = thesis_healthy_momentum
         self.thesis_lock_fraction = max(0.0, min(1.0, thesis_lock_fraction))
@@ -399,12 +401,29 @@ class DecisionEngine:
         if deterioration < self.thesis_deterioration_threshold:
             return None
 
+        confidence = min(1.0, deterioration)
+
+        # ── Severe decay → bank profit at market ─────────────────────────
+        # When most dimensions are collapsing at once, securing the stop just
+        # gives the move back as price runs to it. Above the close threshold,
+        # close the (profitable) trade instead of trailing a doomed runner.
+        if deterioration >= self.thesis_close_threshold:
+            return ManagementDecision(
+                action=Action.CLOSE,
+                reason=(
+                    f"SEVERE thesis collapse while in profit "
+                    f"(+{ctx.pnl_pips:.1f}p/${ctx.pnl_dollars:.2f}, "
+                    f"deterioration {deterioration:.2f}: {', '.join(det_evidence)})"
+                ),
+                confidence=confidence,
+                evidence=det_evidence,
+            )
+
         reason = (
             f"thesis decay while in profit "
             f"(+{ctx.pnl_pips:.1f}p/${ctx.pnl_dollars:.2f}, "
             f"deterioration {deterioration:.2f}: {', '.join(det_evidence)})"
         )
-        confidence = min(1.0, deterioration)
         new_sl = self._compute_profit_lock_sl(ctx)
         if new_sl is not None:
             return ManagementDecision(
