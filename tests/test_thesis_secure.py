@@ -128,6 +128,40 @@ class TestThesisSecureDoesNotOverrideStrongerVerdict:
         assert d.action == Action.CLOSE
 
 
+class TestSevereDecayHardClose:
+    # Severe decay while in profit, but normal scoring would still HOLD
+    # (structure ≥ 0.25 so no normal CLOSE, no opposing scan, in profit so
+    # loss-gated branches don't fire). The thesis layer should hard-CLOSE.
+    def _severe_sa(self):
+        return _sa(structure_integrity=0.26, momentum=-1.0, tf_alignment=-0.29)
+
+    def _severe_ctx(self):
+        return _ctx(score_history=[95, 40, 5])  # full conviction collapse
+
+    def test_severe_decay_closes(self):
+        eng = _engine()
+        d = eng.decide_management(self._severe_ctx(), self._severe_sa())
+        assert d.action == Action.CLOSE
+
+    def test_severe_decay_respects_disable(self):
+        # close threshold above 1.0 disables the hard-close tier → secures instead
+        eng = _engine(thesis_close_threshold=1.5)
+        d = eng.decide_management(self._severe_ctx(), self._severe_sa())
+        assert d.action == Action.SET_PROTECTIVE_STOP
+
+    def test_severe_decay_without_profit_does_not_close_here(self):
+        # No economic profit → thesis layer bows out (normal scoring handles it)
+        eng = _engine()
+        ctx = _ctx(pnl_pips=1.0, pnl_dollars=2.0, score_history=[95, 40, 5])
+        d = eng.decide_management(ctx, self._severe_sa())
+        assert d.action != Action.CLOSE
+
+    def test_moderate_decay_still_secures_not_closes(self):
+        eng = _engine()
+        d = eng.decide_management(_ctx(), _sa())  # deterioration ≈ 0.55
+        assert d.action == Action.SET_PROTECTIVE_STOP
+
+
 class TestDeteriorationScore:
     def test_conviction_collapse_contributes(self):
         eng = _engine()

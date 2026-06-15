@@ -387,6 +387,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             thesis_secure_min_profit_usd=dcfg.thesis_secure_min_profit_usd,
             thesis_secure_min_profit_pips=dcfg.thesis_secure_min_profit_pips,
             thesis_deterioration_threshold=dcfg.thesis_deterioration_threshold,
+            thesis_close_threshold=dcfg.thesis_close_threshold,
             thesis_healthy_structure=dcfg.thesis_healthy_structure,
             thesis_healthy_momentum=dcfg.thesis_healthy_momentum,
             thesis_lock_fraction=dcfg.thesis_lock_fraction,
