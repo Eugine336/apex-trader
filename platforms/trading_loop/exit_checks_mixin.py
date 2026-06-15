@@ -17,6 +17,53 @@ if TYPE_CHECKING:
 class ExitChecksMixin:
     """Mixin providing in-trade exit checks and active management."""
 
+    def _failsafe_move_to_breakeven(
+        self, oid: str, pos: "ManagedPosition", reason: str,
+    ) -> bool:
+        """Conservatively move a position's stop to breakeven if it is in profit.
+
+        Used by management fail-safe paths: when a protective check errors out
+        we would rather lock a winner to breakeven than risk holding it
+        unprotected. Only ever tightens (never widens) the stop, and only when
+        the trade is in profit — a losing trade has no safe breakeven to move
+        to. Returns True only if the stop was actually moved.
+        """
+        tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+        if tm_trade is None or getattr(tm_trade, "breakeven_active", False):
+            return False
+
+        tick = self.platforms.get_price(pos.symbol)
+        is_long = pos.direction.upper() in ("BUY", "LONG")
+        current = tick.bid if is_long else tick.ask
+
+        in_profit = (current > pos.entry_price) if is_long else (current < pos.entry_price)
+        if not in_profit:
+            return False
+
+        be_level = pos.entry_price
+        is_improvement = (be_level > pos.sl) if is_long else (be_level < pos.sl)
+        if not is_improvement:
+            return False
+
+        if not self.platforms.modify_trade(oid, pos.platform, new_sl=be_level):
+            logger.error(
+                "🛡️ FAIL-SAFE SL→BE FAILED — {} {} oid={} | SL move to {:.5f} did "
+                "NOT land | reason={}",
+                pos.direction, pos.symbol, oid, be_level, reason,
+            )
+            return False
+
+        pos.sl = be_level
+        tm_trade.stop_loss = be_level
+        tm_trade.breakeven_active = True
+        pos.at_breakeven = True
+        self.position_store.update_position(oid, sl=be_level, at_breakeven=True)
+        logger.warning(
+            "🛡️ FAIL-SAFE SL→BE — {} {} | SL→{:.5f} | reason={}",
+            pos.direction, pos.symbol, be_level, reason,
+        )
+        return True
+
     def _check_invalidation(
         self,
         oid: str,
@@ -305,7 +352,22 @@ class ExitChecksMixin:
             open_pairs = [pos.symbol for pos in self.managed_positions.values()]
             news_status = self.news_guard.check(open_pairs, now)
         except Exception as exc:
-            logger.warning("[management] news guard check failed, skipping news exit: {}", exc)
+            logger.warning(
+                "[management] news guard check failed — locking in-profit "
+                "positions to breakeven as fail-safe (cannot confirm the news "
+                "window is clear): {}",
+                exc,
+            )
+            for oid, pos in list(self.managed_positions.items()):
+                try:
+                    self._failsafe_move_to_breakeven(
+                        oid, pos, reason="news-check-error",
+                    )
+                except Exception as protect_exc:
+                    logger.warning(
+                        "[management] news fail-safe BE move failed for {}: {}",
+                        pos.symbol, protect_exc,
+                    )
             return
 
         if not hasattr(news_status, 'upcoming_events'):
@@ -669,10 +731,19 @@ class ExitChecksMixin:
                         )
             except Exception as exc:
                 logger.warning(
-                    "Spread-protection check failed for {} — position may be "
-                    "unprotected against spread deterioration this cycle: {}",
+                    "Spread-protection check failed for {} — moving SL to "
+                    "breakeven as fail-safe: {}",
                     pos.symbol, exc,
                 )
+                try:
+                    self._failsafe_move_to_breakeven(
+                        oid, pos, reason="spread-check-error",
+                    )
+                except Exception as protect_exc:
+                    logger.warning(
+                        "[management] spread fail-safe BE move failed for {}: {}",
+                        pos.symbol, protect_exc,
+                    )
 
     def _check_opportunity_cost_exit(
         self, oid: str, pos: ManagedPosition, now: datetime,
