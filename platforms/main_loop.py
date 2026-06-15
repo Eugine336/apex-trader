@@ -1335,6 +1335,62 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self._log_rejection(pair, direction, result.score, "Missing M5/M1/H1 data")
             return False
 
+        # ── P1: Re-validate OQ/EQ on fresh candles ───────────────────────
+        # The scan-time OQ/EQ that gated this setup READY can be stale by the
+        # time we actually enter (seconds-to-minutes later). Recompute both
+        # from the fresh entry-time data and reject if either has decayed
+        # below the re-validation floor — the market shifted since the scan.
+        _ld_cfg = self.config.layered_decision
+        if _ld_cfg.enabled and direction in ("LONG", "SHORT"):
+            try:
+                fresh_oq, fresh_eq = self.scanner.recompute_quality_for_entry(
+                    pair=pair,
+                    trade_dir=direction,
+                    h1_df=h1_df,
+                    m15_df=data.get("M15"),
+                    m5_df=m5_df,
+                    h4_df=data.get("H4"),
+                    d1_df=data.get("D1"),
+                    utc_now=now,
+                )
+            except Exception as exc:
+                # Fail-safe: if re-validation itself errors we cannot confirm
+                # the setup still holds, so skip the entry rather than trade blind.
+                logger.error(
+                    "[entry] OQ/EQ re-validation failed for {} — skipping entry "
+                    "(fail-safe): {}", pair, exc,
+                )
+                self._log_rejection(
+                    pair, direction, result.score,
+                    "OQ/EQ re-validation error — fail-safe skip",
+                )
+                return False
+
+            if fresh_oq < _ld_cfg.revalidate_opportunity_quality_min:
+                logger.info(
+                    "[entry] {} market conditions shifted since scan: "
+                    "OQ {:.2f} < {:.2f} — rejecting entry",
+                    pair, fresh_oq, _ld_cfg.revalidate_opportunity_quality_min,
+                )
+                self._log_rejection(
+                    pair, direction, result.score,
+                    f"OQ decayed since scan ({fresh_oq:.2f} < "
+                    f"{_ld_cfg.revalidate_opportunity_quality_min:.2f})",
+                )
+                return False
+            if fresh_eq < _ld_cfg.revalidate_entry_quality_min:
+                logger.info(
+                    "[entry] {} entry geometry degraded since scan: "
+                    "EQ {:.2f} < {:.2f} — rejecting entry",
+                    pair, fresh_eq, _ld_cfg.revalidate_entry_quality_min,
+                )
+                self._log_rejection(
+                    pair, direction, result.score,
+                    f"EQ decayed since scan ({fresh_eq:.2f} < "
+                    f"{_ld_cfg.revalidate_entry_quality_min:.2f})",
+                )
+                return False
+
         balance = self.platforms.get_platform_balance(pair)
         if not balance:
             logger.warning("⚠ Balance unavailable for {} — skipping entry (fail-closed)", pair)
@@ -1677,7 +1733,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         symbol=pair,
                     )
         except Exception as exc:
-            logger.debug("[entry] regime threshold gate skipped: {}", exc)
+            # Fail-safe: this gate normally sizes DOWN setups that fall short of
+            # an elevated regime conviction bar. If it errors, apply the bounded
+            # conservative size penalty rather than silently allowing full size.
+            _rmult = max(0.0, min(1.0, float(getattr(
+                self.config.risk, "regime_below_threshold_size_mult", 0.7))))
+            conviction_mult *= _rmult
+            logger.error(
+                "[entry] regime threshold gate failed for {} — applying "
+                "conservative size ×{:.2f} (fail-safe): {}", pair, _rmult, exc,
+            )
         # Don't open fresh FX/metals risk right before the weekend close.
         if self._blocks_new_entry_near_weekend(pair, datetime.now(timezone.utc)):
             self._log_rejection(
@@ -1721,12 +1786,19 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             # Determine confidence from EVEstimator sample size indirectly via score
             # We gate on negative EV only when pair_mult is also below 1.0 (i.e. learner
             # has marked this pair as REDUCE_SIZE or worse) — belt + braces gate.
+            # Belt + braces: we are already inside the negative-EV branch.
+            # If the pair multiplier cannot be fetched we cannot confirm the
+            # pair is healthy, so fail SAFE — treat it as a reducing learner
+            # (pair_mult < 1.0) and let the gate block the negative-EV setup.
             pair_mult = 1.0
             try:
                 pair_mult = self.ml.pair_learner.get_pair_multiplier(pair)
             except Exception as exc:
-                logger.warning("[entry] pair multiplier fetch for EV gate failed, defaulting to 1.0: {}", exc)
-                pass
+                logger.error(
+                    "[entry] pair multiplier fetch for EV gate failed — "
+                    "treating as reducing (fail-safe block): {}", exc,
+                )
+                pair_mult = 0.0
             if pair_mult < 1.0:
                 self._log_rejection(
                     pair, direction, result.score, f"EV gate: negative EV ({ev_val:.4f}) + pair_mult={pair_mult:.2f}"
@@ -1739,7 +1811,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # statistically-confident loser in our own trade history (TradeAnalyzer
         # multi-dimensional patterns, refreshed each optimisation pass). Neutral
         # until enough history accumulates; only ever blocks. Fail-safe: any
-        # error allows the trade.
+        # error skips the entry rather than trading blind.
         if getattr(self.config.risk, "losing_pattern_block_enabled", True):
             try:
                 _is_loser, _lp_reason = self.ml.is_losing_pattern(
@@ -1758,7 +1830,15 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     )
                     return False
             except Exception as exc:
-                logger.debug("[entry] losing-pattern gate skipped: {}", exc)
+                logger.error(
+                    "[entry] losing-pattern gate failed for {} — skipping entry "
+                    "(fail-safe): {}", pair, exc,
+                )
+                self._log_rejection(
+                    pair, direction, result.score,
+                    "Losing-pattern gate error — fail-safe skip",
+                )
+                return False
 
         try:
             adjustments = self.ml.get_trade_adjustments(
@@ -1799,18 +1879,19 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 return False
             adjusted_lots = max(0.01, adjusted_lots)
         except Exception as exc:
-            logger.debug("ML adjustments error: {}", exc)
-            adjusted_lots = signal.position_size_lots
-            if assessment.position_size_lots > 0:
-                adjusted_lots = min(adjusted_lots, assessment.position_size_lots)
-                if adjusted_lots < 0.01:
-                    logger.warning(
-                        "[RiskAuthority] {} — daily-budget ceiling {:.4f} lots rounds below broker min 0.01 — REJECTING",
-                        pair, assessment.position_size_lots,
-                    )
-                    self._persist_shadow_contract(signal, rejecting_gate="daily_budget_below_min_lot")
-                    return False
-            adjusted_lots = max(0.01, adjusted_lots)
+            # Fail-safe: the ML adjustments include the should_trade veto and
+            # the adaptive size multiplier. If this block errors we can neither
+            # honour a potential veto nor size correctly, so skip the entry
+            # rather than trade at full base size.
+            logger.error(
+                "[entry] ML adjustments/sizing failed for {} — skipping entry "
+                "(fail-safe): {}", pair, exc,
+            )
+            self._log_rejection(
+                pair, direction, result.score,
+                "ML adjustments/sizing error — fail-safe skip",
+            )
+            return False
 
         # Use the context to decide sizing path — no more string comparison
         stake_usd: float | None = None
@@ -3755,7 +3836,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         Excludes the position itself from the book so a same-symbol add is not
         blocked by its own currency/sector footprint — the governor mainly
-        enforces the daily-loss-cap halt here.  Fail-open on any error.
+        enforces the daily-loss-cap halt here.  Fail-safe: any error blocks the
+        add (scale-in opens fresh risk, so never add on an unverified book).
         """
         gov = getattr(self, "_governor", None)
         if gov is None:
@@ -3775,8 +3857,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 return False
             return True
         except Exception as exc:
-            logger.debug("[Governor] add-check failed (allowing): {}", exc)
-            return True
+            logger.error(
+                "[Governor] add-check failed for {} — blocking scale-in "
+                "(fail-safe): {}", pos.symbol, exc,
+            )
+            return False
 
     def _check_scale_in_on_scan(self, oid: str, pos: ManagedPosition, scan_result) -> None:
         """

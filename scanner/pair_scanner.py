@@ -784,90 +784,25 @@ class PairScanner:
         if ld_cfg.enabled and trade_dir in ("LONG", "SHORT"):
             self._quality_scans += 1
             try:
-                tr_series = (m5_df["high"] - m5_df["low"]).abs().tail(14)
-                _atr_pips = float(tr_series.mean()) / pip_size if len(tr_series) > 0 and pip_size > 0 else None
-
-                _atr_pct = None
-                if _atr_pips is not None:
-                    try:
-                        from brain.atr_percentile import compute_atr_percentile
-                        _atr_pct = compute_atr_percentile(m5_df, window=100)
-                    except Exception:
-                        pass
-
-                try:
-                    _inst = get_instrument(pair)
-                    _spread_typical = _inst.typical_spread_pips
-                except KeyError:
-                    _spread_typical = None
-
-                _spread_current = None
-                try:
-                    _ask = float(m5_df["high"].iloc[-1])
-                    _bid = float(m5_df["low"].iloc[-1])
-                    if pip_size > 0:
-                        _spread_current = (_ask - _bid) / pip_size
-                except Exception:
-                    pass
-
-                _news_mins = None
-                if hasattr(news_status, "next_high_impact") and news_status.next_high_impact:
-                    _news_mins = news_status.next_high_impact.minutes_away
-
-                _rr_magnitude = _side_agnostic_rr(liq_map, _atr_pips, pip_size)
-
-                oq = compute_opportunity_quality(
-                    atr_value=_atr_pips,
-                    atr_percentile=_atr_pct,
-                    spread_current=_spread_current,
-                    spread_typical=_spread_typical,
-                    news_is_clear=news_status.is_clear if news_status else None,
-                    news_minutes_to_next_high=_news_mins,
-                    session_liquidity=session_status.liquidity if session_status else None,
-                    session_is_tradeable=session_active,
-                    reward_risk_magnitude=_rr_magnitude,
-                    ev_estimate=ev_estimate,
-                    volume_ratio=vol_analysis.volume_ratio if vol_analysis else None,
-                    volume_climax=vol_analysis.climax_detected if vol_analysis else None,
-                    oq_weights=ld_cfg.oq_weights,
-                )
-                oq_score = oq.score
-
-                _ob_dist = None
-                entry_ob_ref = None
-                if trade_dir != "NEUTRAL":
-                    entry_ob_ref = ob_det.get_entry_ob(m5_obs + h1_obs, trade_dir, current_price)
-                    if entry_ob_ref and pip_size > 0:
-                        _ob_dist = abs(current_price - entry_ob_ref.midpoint) / pip_size
-
-                _fvg_dist = None
-                if trade_dir != "NEUTRAL":
-                    _entry_fvg_ref = fvg_det.get_entry_fvg(m5_fvgs + m15_fvgs, trade_dir, current_price)
-                    if _entry_fvg_ref and pip_size > 0:
-                        fvg_mid = (_entry_fvg_ref.top + _entry_fvg_ref.bottom) / 2
-                        _fvg_dist = abs(current_price - fvg_mid) / pip_size
-
-                _liq_dist = None
-                if trade_dir == "LONG" and liq_map.nearest_sell_liq and pip_size > 0:
-                    _liq_dist = abs(current_price - liq_map.nearest_sell_liq.price) / pip_size
-                elif trade_dir == "SHORT" and liq_map.nearest_buy_liq and pip_size > 0:
-                    _liq_dist = abs(current_price - liq_map.nearest_buy_liq.price) / pip_size
-
-                _stop_dist = _atr_pips * 1.5 if _atr_pips else None
-
-                eq = compute_entry_quality(
+                oq_score, eq_score = self._compute_quality_scores(
+                    pair=pair,
                     trade_dir=trade_dir,
                     current_price=current_price,
-                    entry_price=entry_ob_ref.midpoint if entry_ob_ref else current_price,
-                    nearest_ob_distance_pips=_ob_dist,
-                    nearest_fvg_distance_pips=_fvg_dist,
-                    nearest_liq_distance_pips=_liq_dist,
-                    atr_pips=_atr_pips,
-                    stop_distance_pips=_stop_dist,
-                    eq_weights=ld_cfg.eq_weights,
+                    pip_size=pip_size,
+                    m5_df=m5_df,
+                    liq_map=liq_map,
+                    news_status=news_status,
+                    session_status=session_status,
+                    session_active=session_active,
+                    vol_analysis=vol_analysis,
+                    ob_det=ob_det,
+                    m5_obs=m5_obs,
+                    h1_obs=h1_obs,
+                    fvg_det=fvg_det,
+                    m5_fvgs=m5_fvgs,
+                    m15_fvgs=m15_fvgs,
+                    ev_estimate=ev_estimate,
                 )
-                eq_score = eq.score
-
             except Exception as exc:
                 logger.error("[quality] OQ/EQ computation failed for {}: {}", pair, exc)
                 self._quality_failures += 1
@@ -876,19 +811,28 @@ class PairScanner:
 
         # ── Status ────────────────────────────────────────────────────
         if ld_cfg.enabled:
+            # P5: the confluence score co-gates READY alongside OQ/EQ. The
+            # 123-point SMC analysis (structure/OB/FVG/liquidity/MTF) must clear
+            # ready_min_score in addition to the quality gates — a strong
+            # environment (OQ/EQ) with weak confluence is WATCHLIST, not READY.
+            score_ok = ld_cfg.ready_min_score <= 0 or score >= ld_cfg.ready_min_score
             if trade_dir not in ("LONG", "SHORT"):
                 status = "WAITING"
-            elif oq_score >= ld_cfg.opportunity_quality_min and eq_score >= ld_cfg.entry_quality_min:
+            elif (
+                oq_score >= ld_cfg.opportunity_quality_min
+                and eq_score >= ld_cfg.entry_quality_min
+                and score_ok
+            ):
                 status = "READY"
             elif oq_score >= ld_cfg.opportunity_quality_min or eq_score >= ld_cfg.entry_quality_min:
                 status = "WATCHLIST"
             else:
                 status = "WAITING"
             logger.info(
-                "[layered] {} — dir={} agree={:.2f} OQ={:.2f} EQ={:.2f} -> {}",
+                "[layered] {} — dir={} agree={:.2f} OQ={:.2f} EQ={:.2f} score={} -> {}",
                 pair, trade_dir,
                 decision.agreement if decision else 0.0,
-                oq_score, eq_score, status,
+                oq_score, eq_score, score, status,
             )
         else:
             effective_min_score = profile.min_entry_score
@@ -933,6 +877,218 @@ class PairScanner:
             trend_d1=bias.get("d1_trend", "UNKNOWN"),
             d1_aligned=bias.get("d1_aligned", False),
             d1_confidence=bias.get("d1_confidence", 0.0),
+        )
+
+    # ------------------------------------------------------------------
+    # Quality scoring (OQ/EQ) — single source of truth
+    # ------------------------------------------------------------------
+
+    def _compute_quality_scores(
+        self,
+        *,
+        pair: str,
+        trade_dir: str,
+        current_price: float,
+        pip_size: float,
+        m5_df: pd.DataFrame,
+        liq_map,
+        news_status,
+        session_status,
+        session_active: bool,
+        vol_analysis,
+        ob_det,
+        m5_obs,
+        h1_obs,
+        fvg_det,
+        m5_fvgs,
+        m15_fvgs,
+        ev_estimate: float,
+    ) -> tuple[float, float]:
+        """Compute Opportunity Quality (OQ) and Entry Quality (EQ).
+
+        Shared by the scan-time gate and the entry-time re-validation (P1) so
+        both paths score identically. Returns ``(oq_score, eq_score)``.
+        """
+        ld_cfg = self.config.layered_decision
+
+        tr_series = (m5_df["high"] - m5_df["low"]).abs().tail(14)
+        _atr_pips = float(tr_series.mean()) / pip_size if len(tr_series) > 0 and pip_size > 0 else None
+
+        _atr_pct = None
+        if _atr_pips is not None:
+            try:
+                from brain.atr_percentile import compute_atr_percentile
+                _atr_pct = compute_atr_percentile(m5_df, window=100)
+            except Exception:
+                pass
+
+        try:
+            _inst = get_instrument(pair)
+            _spread_typical = _inst.typical_spread_pips
+        except KeyError:
+            _spread_typical = None
+
+        _spread_current = None
+        try:
+            _ask = float(m5_df["high"].iloc[-1])
+            _bid = float(m5_df["low"].iloc[-1])
+            if pip_size > 0:
+                _spread_current = (_ask - _bid) / pip_size
+        except Exception:
+            pass
+
+        _news_mins = None
+        if hasattr(news_status, "next_high_impact") and news_status.next_high_impact:
+            _news_mins = news_status.next_high_impact.minutes_away
+
+        _rr_magnitude = _side_agnostic_rr(liq_map, _atr_pips, pip_size)
+
+        oq = compute_opportunity_quality(
+            atr_value=_atr_pips,
+            atr_percentile=_atr_pct,
+            spread_current=_spread_current,
+            spread_typical=_spread_typical,
+            news_is_clear=news_status.is_clear if news_status else None,
+            news_minutes_to_next_high=_news_mins,
+            session_liquidity=session_status.liquidity if session_status else None,
+            session_is_tradeable=session_active,
+            reward_risk_magnitude=_rr_magnitude,
+            ev_estimate=ev_estimate,
+            volume_ratio=vol_analysis.volume_ratio if vol_analysis else None,
+            volume_climax=vol_analysis.climax_detected if vol_analysis else None,
+            oq_weights=ld_cfg.oq_weights,
+        )
+        oq_score = oq.score
+
+        _ob_dist = None
+        entry_ob_ref = None
+        if trade_dir != "NEUTRAL":
+            entry_ob_ref = ob_det.get_entry_ob(m5_obs + h1_obs, trade_dir, current_price)
+            if entry_ob_ref and pip_size > 0:
+                _ob_dist = abs(current_price - entry_ob_ref.midpoint) / pip_size
+
+        _fvg_dist = None
+        if trade_dir != "NEUTRAL":
+            _entry_fvg_ref = fvg_det.get_entry_fvg(m5_fvgs + m15_fvgs, trade_dir, current_price)
+            if _entry_fvg_ref and pip_size > 0:
+                fvg_mid = (_entry_fvg_ref.top + _entry_fvg_ref.bottom) / 2
+                _fvg_dist = abs(current_price - fvg_mid) / pip_size
+
+        _liq_dist = None
+        if trade_dir == "LONG" and liq_map.nearest_sell_liq and pip_size > 0:
+            _liq_dist = abs(current_price - liq_map.nearest_sell_liq.price) / pip_size
+        elif trade_dir == "SHORT" and liq_map.nearest_buy_liq and pip_size > 0:
+            _liq_dist = abs(current_price - liq_map.nearest_buy_liq.price) / pip_size
+
+        _stop_dist = _atr_pips * 1.5 if _atr_pips else None
+
+        eq = compute_entry_quality(
+            trade_dir=trade_dir,
+            current_price=current_price,
+            entry_price=entry_ob_ref.midpoint if entry_ob_ref else current_price,
+            nearest_ob_distance_pips=_ob_dist,
+            nearest_fvg_distance_pips=_fvg_dist,
+            nearest_liq_distance_pips=_liq_dist,
+            atr_pips=_atr_pips,
+            stop_distance_pips=_stop_dist,
+            eq_weights=ld_cfg.eq_weights,
+        )
+        eq_score = eq.score
+
+        return oq_score, eq_score
+
+    def recompute_quality_for_entry(
+        self,
+        pair: str,
+        trade_dir: str,
+        h1_df: pd.DataFrame,
+        m15_df: pd.DataFrame,
+        m5_df: pd.DataFrame,
+        h4_df: Optional[pd.DataFrame] = None,
+        d1_df: Optional[pd.DataFrame] = None,
+        utc_now: Optional[datetime] = None,
+    ) -> tuple[float, float]:
+        """Recompute OQ/EQ from fresh candles at entry time (P1).
+
+        The scan-time OQ/EQ that gated READY can be stale by the time a trade
+        actually executes (seconds-to-minutes later). This recomputes the same
+        two scores from the fresh entry-time dataframes — re-running only the
+        brain analyses OQ/EQ depend on, independent of consensus/currency data
+        which is not available on the per-candidate entry path.
+
+        Returns ``(oq_score, eq_score)``.
+        """
+        utc_now = utc_now or datetime.now(timezone.utc)
+        pip_size = self._pip_size(pair)
+        profile = get_profile(pair)
+        current_price = float(m5_df["close"].iloc[-1])
+
+        ob_det = OrderBlockDetector(
+            pip_size=pip_size,
+            min_impulse_pips=profile.ob_min_impulse_pips,
+            buffer_pips=profile.ob_buffer_pips,
+        )
+        h1_obs = ob_det.detect(h1_df, timeframe="H1")
+        m5_obs = ob_det.detect(m5_df, timeframe="M5")
+
+        fvg_det = FVGDetector(
+            pip_size=pip_size,
+            proximity_pips=profile.fvg_proximity_pips,
+            min_size_pips=profile.fvg_min_size_pips,
+        )
+        m5_fvgs = fvg_det.detect(m5_df, timeframe="M5")
+        m15_fvgs = fvg_det.detect(m15_df, timeframe="M15")
+
+        liq_map = self.liquidity.map(h1_df, pip_size)
+
+        try:
+            vol_analysis = self.volume.analyze(m5_df)
+        except Exception:
+            vol_analysis = None
+
+        session_status = self.session.get_status(utc_now)
+        if is_always_open(pair):
+            session_active = session_status.current_session not in ("DEAD", "WEEKEND")
+        else:
+            session_active = session_status.is_tradeable
+
+        news_status = self.news.check([pair], utc_now)
+
+        # Regime + EV mirror the scan-time computation so OQ's EV component
+        # matches; degrade gracefully to neutral on any failure.
+        ev_estimate = 0.0
+        try:
+            regime = "UNKNOWN"
+            if h4_df is not None:
+                regime = self.structure.get_bias(h4_df, h1_df, d1_df=d1_df)["h4_trend"]
+            ev_est = self._ev_estimator.estimate(
+                pair=pair,
+                regime=regime,
+                session=getattr(session_status, "current_session", "UNKNOWN"),
+                trade_history=self._trade_history,
+            )
+            ev_estimate = ev_est.expected_value
+        except Exception:
+            ev_estimate = 0.0
+
+        return self._compute_quality_scores(
+            pair=pair,
+            trade_dir=trade_dir,
+            current_price=current_price,
+            pip_size=pip_size,
+            m5_df=m5_df,
+            liq_map=liq_map,
+            news_status=news_status,
+            session_status=session_status,
+            session_active=session_active,
+            vol_analysis=vol_analysis,
+            ob_det=ob_det,
+            m5_obs=m5_obs,
+            h1_obs=h1_obs,
+            fvg_det=fvg_det,
+            m5_fvgs=m5_fvgs,
+            m15_fvgs=m15_fvgs,
+            ev_estimate=ev_estimate,
         )
 
     # ------------------------------------------------------------------

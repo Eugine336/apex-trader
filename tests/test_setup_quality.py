@@ -224,6 +224,46 @@ class TestConjunctionGate:
         assert status != "READY"
 
 
+def _layered_status(oq_score: float, eq_score: float, score: int,
+                    cfg: LayeredDecisionConfig, trade_dir: str = "LONG") -> str:
+    """Mirror of the READY gate in PairScanner.scan_pair (incl. P5 co-gate)."""
+    score_ok = cfg.ready_min_score <= 0 or score >= cfg.ready_min_score
+    if trade_dir not in ("LONG", "SHORT"):
+        return "WAITING"
+    if (oq_score >= cfg.opportunity_quality_min
+            and eq_score >= cfg.entry_quality_min
+            and score_ok):
+        return "READY"
+    if oq_score >= cfg.opportunity_quality_min or eq_score >= cfg.entry_quality_min:
+        return "WATCHLIST"
+    return "WAITING"
+
+
+class TestScoreCoGate:
+    """P5: the confluence score co-gates READY alongside OQ/EQ."""
+
+    def test_weak_score_blocks_ready_despite_quality(self):
+        """Strong OQ/EQ but score below ready_min_score → WATCHLIST, not READY."""
+        cfg = LayeredDecisionConfig()  # ready_min_score == 85
+        assert _layered_status(7.0, 6.0, score=84, cfg=cfg) == "WATCHLIST"
+
+    def test_score_at_threshold_allows_ready(self):
+        """Strong OQ/EQ with score at the threshold → READY."""
+        cfg = LayeredDecisionConfig()
+        assert _layered_status(7.0, 6.0, score=85, cfg=cfg) == "READY"
+
+    def test_strong_score_weak_quality_still_blocked(self):
+        """Near-perfect score but OQ/EQ below min → not READY (quality still gates)."""
+        cfg = LayeredDecisionConfig()
+        assert _layered_status(4.0, 4.0, score=120, cfg=cfg) == "WAITING"
+
+    def test_zero_threshold_disables_co_gate(self):
+        """ready_min_score <= 0 restores OQ/EQ-only gating (legacy)."""
+        cfg = LayeredDecisionConfig(ready_min_score=0)
+        assert _layered_status(7.0, 6.0, score=10, cfg=cfg) == "READY"
+
+
+
 # ── Config validation ──────────────────────────────────────────────────
 
 class TestLayeredDecisionConfig:
@@ -262,6 +302,23 @@ class TestLayeredDecisionConfig:
         assert hasattr(app, "layered_decision")
         assert isinstance(app.layered_decision, LayeredDecisionConfig)
         assert app.layered_decision.enabled is True
+
+    def test_ready_min_score_default(self):
+        cfg = LayeredDecisionConfig()
+        assert cfg.ready_min_score == 85
+
+    def test_ready_min_score_non_finite_rejected(self):
+        with pytest.raises(ValueError, match="ready_min_score"):
+            LayeredDecisionConfig(ready_min_score=float("nan"))
+
+    def test_revalidate_floors_defaults(self):
+        cfg = LayeredDecisionConfig()
+        assert cfg.revalidate_opportunity_quality_min == 5.0
+        assert cfg.revalidate_entry_quality_min == 4.0
+
+    def test_revalidate_floor_out_of_range(self):
+        with pytest.raises(ValueError, match="revalidate_entry_quality_min"):
+            LayeredDecisionConfig(revalidate_entry_quality_min=11.0)
 
 
 # ── Fail-closed ────────────────────────────────────────────────────────
