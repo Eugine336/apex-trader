@@ -45,6 +45,15 @@ class TradePlanContext:
     zone_quality: float = 0.0        # 0–1
     zone_entry_price: float = 0.0    # planned entry (zone midpoint)
 
+    # ── Layered-decision quality (carried from the scanner) ──────────────
+    # OQ/EQ gate READY in the scanner; carrying them through lets the planner
+    # reason over market-condition quality (OQ) and entry geometry (EQ)
+    # instead of being blind to the signals that qualified the trade.
+    # scan_timestamp lets the planner judge how stale the scanner_score is.
+    oq: float = 0.0                  # Opportunity Quality (0–10)
+    eq: float = 0.0                  # Entry Quality (0–10)
+    scan_timestamp: float = 0.0      # epoch seconds when the scan was performed
+
     # ── Decision Engine (sub-scores, not a verdict) ──────────────────────
     de_htf_score: float = 0.0
     de_structure_score: float = 0.0
@@ -54,6 +63,15 @@ class TradePlanContext:
     de_spread_score: float = 0.0
     de_confidence: float = 0.0       # overall 0–1
     de_tf_alignment: float = 0.0     # signed −1..+1 directional read
+
+    # ── Situation Engine raw dimensions (not collapsed to conviction) ────
+    # The decision engine compresses these into a single conviction float;
+    # carrying the raw dimensions lets the planner reason about *why*
+    # conviction is high or low (e.g. strong structure but weak momentum).
+    sa_tf_alignment: float = 0.0         # signed −1..+1
+    sa_momentum: float = 0.0             # signed −1..+1
+    sa_structure_integrity: float = 0.0  # 0..1
+    sa_read_confidence: float = 0.0      # 0..1
 
     # ── RL Model ─────────────────────────────────────────────────────────
     rl_action: int = 0               # 0=HOLD, 1=BUY, 2=SELL, 3=CLOSE
@@ -91,6 +109,7 @@ class TradePlanContext:
     # ── Portfolio state ──────────────────────────────────────────────────
     open_positions: int = 0
     correlated_exposure: float = 0.0  # 0–1
+    portfolio_heat_pct: float = 0.0   # current total open risk as % of equity
     daily_pnl_r: float = 0.0
     max_positions: int = 5
     # Lightweight book of open positions as (symbol, direction) tuples — used
@@ -122,12 +141,18 @@ class TradePlanContext:
             "symbol": self.symbol,
             "direction": self.direction,
             "scanner_score": round(self.scanner_score, 2),
+            "oq": round(self.oq, 2),
+            "eq": round(self.eq, 2),
             "zone_type": self.zone_type,
             "zone_quality": round(self.zone_quality, 3),
             "atr_pips": round(self.atr_pips, 2),
             "spread_pips": round(self.spread_pips, 2),
             "de_confidence": round(self.de_confidence, 3),
             "de_tf_alignment": round(self.de_tf_alignment, 3),
+            "sa_tf_alignment": round(self.sa_tf_alignment, 3),
+            "sa_momentum": round(self.sa_momentum, 3),
+            "sa_structure_integrity": round(self.sa_structure_integrity, 3),
+            "sa_read_confidence": round(self.sa_read_confidence, 3),
             "rl_action": self.rl_action,
             "rl_confidence": round(self.rl_confidence, 3),
             "rl_expected_r": round(self.rl_expected_r, 3),
@@ -141,6 +166,7 @@ class TradePlanContext:
             "structure_sl_available": self.structure_sl_available,
             "open_positions": self.open_positions,
             "correlated_exposure": round(self.correlated_exposure, 3),
+            "portfolio_heat_pct": round(self.portfolio_heat_pct, 3),
             "daily_pnl_r": round(self.daily_pnl_r, 3),
             "session": self.session,
             "day_of_week": self.day_of_week,

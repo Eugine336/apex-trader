@@ -112,6 +112,14 @@ class EntryContext:
     scan_score: int = 0
     scan_direction: str = ""
 
+    # ── Layered-decision quality (carried from the scanner) ──────────────
+    # OQ/EQ gate READY in the scanner; carrying them forward lets the
+    # decision/planner layers reason over the same quality read instead of
+    # discarding it after the gate.
+    oq: float = 0.0               # Opportunity Quality (0–10)
+    eq: float = 0.0               # Entry Quality (0–10)
+    scan_timestamp: float = 0.0   # epoch seconds when the scan was performed
+
     # ── Entry zone quality ───────────────────────────────────────────────
     entry_type: str = ""          # "FVG_MIDPOINT", "OB_MIDPOINT", etc.
     entry_price: float = 0.0
