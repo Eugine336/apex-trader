@@ -208,6 +208,38 @@ def decide(
     )
 
 
+def decide_opportunities(votes, ranker_cfg):
+    """Cluster the same module votes into a ranked list of opportunities.
+
+    Additive companion to :func:`decide`.  Where ``decide`` collapses the panel
+    to one net direction, this preserves coherent minority clusters as
+    independent, EV-scored trade ideas.  Pure delegation to
+    :func:`brain.opportunity_ranker.rank_opportunities` — kept here so callers
+    have a single consensus entry point.
+
+    Returns an empty list when the ranker is disabled or no cluster clears the
+    configured floors.
+    """
+    from brain.opportunity_ranker import rank_opportunities
+
+    if ranker_cfg is None or not getattr(ranker_cfg, "enabled", False):
+        return []
+
+    return rank_opportunities(
+        list(votes),
+        min_cluster_net=ranker_cfg.min_cluster_net,
+        min_cluster_confidence=ranker_cfg.min_cluster_confidence,
+        require_positive_ev=ranker_cfg.require_positive_ev,
+        scalp_target_rr=ranker_cfg.scalp_target_rr,
+        swing_target_rr=ranker_cfg.swing_target_rr,
+        mixed_target_rr=ranker_cfg.mixed_target_rr,
+        win_prob_floor=ranker_cfg.win_prob_floor,
+        win_prob_scale=ranker_cfg.win_prob_scale,
+        ev_weight=ranker_cfg.ev_weight,
+        net_weight=ranker_cfg.net_weight,
+    )
+
+
 # ── Per-module vote extractors ───────────────────────────────────────────
 # Each returns (direction, confidence) or ("NEUTRAL", 0.0) on failure.
 # They are pure — they read the analysis objects already computed upstream.
