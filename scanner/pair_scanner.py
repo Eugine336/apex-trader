@@ -25,7 +25,7 @@ from brain.order_block import OrderBlockDetector, OBStatus
 from brain.liquidity_mapper import LiquidityMapper
 from brain.currency_strength import CurrencyStrengthMeter, CURRENCY_PAIRS
 from brain.directional_consensus import (
-    Vote, decide,
+    Vote, decide, decide_opportunities,
     vote_from_structure, vote_from_currency_strength,
     vote_from_volume, vote_from_wyckoff,
     vote_from_order_blocks, vote_from_fvg,
@@ -130,6 +130,7 @@ class PairScanResult:
     trend_d1: str = "UNKNOWN"
     d1_aligned: bool = False
     d1_confidence: float = 0.0
+    candidates: list = field(default_factory=list)
     rejection: Optional["RejectedSetup"] = None
 
 
@@ -487,11 +488,24 @@ class PairScanner:
             )
             trade_dir = decision.direction
             logger.info("[consensus] {} — {}", pair, decision.summary)
+
+            # ── Opportunity ranker (additive / shadow-safe) ───────────
+            # Reuse the SAME votes to let coherent clusters form independent
+            # EV-scored ideas.  This never alters trade_dir or the live scalar
+            # path; it only enriches the result with ranked candidates.
+            try:
+                dir_opportunities = decide_opportunities(
+                    dir_votes, self.config.opportunity_ranker
+                )
+            except Exception as exc:
+                logger.warning("[ranker] opportunity ranking failed: {}", exc)
+                dir_opportunities = []
         else:
             # Fallback: legacy single-module direction
             direction = bias["direction"]
             trade_dir = {"BULLISH": "LONG", "BEARISH": "SHORT"}.get(direction, "NEUTRAL")
             decision = None
+            dir_opportunities = []
             # Lazy-init analysis objects for the scoring section below
             strength = None
             vol_analysis = None
@@ -845,6 +859,7 @@ class PairScanner:
                         consensus_agreement=decision.agreement if decision else 0.0,
                         opportunity_quality=0.0,
                         entry_quality=0.0,
+                        candidates=dir_opportunities,
                     )
 
                 score        = int(rl_result.final_score)
@@ -1055,6 +1070,7 @@ class PairScanner:
             trend_d1=bias.get("d1_trend", "UNKNOWN"),
             d1_aligned=bias.get("d1_aligned", False),
             d1_confidence=bias.get("d1_confidence", 0.0),
+            candidates=dir_opportunities,
             rejection=rejection,
         )
 
