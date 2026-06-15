@@ -38,6 +38,7 @@ from brain.opportunity_density import OpportunityDensityTracker
 from brain.regime_detector import SystemVolatilityMonitor
 from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open
 from management.re_entry import ReEntryManager
+from management.exit_cause import ExitCause
 from management.trade_manager import (
     TradeManager,
     TradeStatus,
@@ -246,6 +247,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             tp3_close_ratio=self.config.risk.tp3_close_ratio,
             breakeven_min_profit_r=self.config.risk.breakeven_min_profit_r,
             trailing_swing_lookback=self.config.risk.trailing_swing_lookback,
+            heat_trail_tighten_enabled=self.config.risk.heat_trail_tighten_enabled,
+            heat_trail_factor_defensive=self.config.risk.heat_trail_factor_defensive,
+            heat_trail_factor_reducing=self.config.risk.heat_trail_factor_reducing,
+            heat_trail_factor_emergency=self.config.risk.heat_trail_factor_emergency,
         )
         self._journal_loop = asyncio.new_event_loop()
         self.position_store = PositionStore()
@@ -543,6 +548,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         logger.info("Platforms: MT5={} | Deriv={}", connection_status["mt5"], connection_status["deriv"])
 
+        self._log_management_configuration()
+
         self._install_signal_handlers()
         self._perform_startup_recovery()
         self._import_broker_history_once()
@@ -659,6 +666,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         self.watchdog.record_cycle()
         self._check_and_reconnect()
+
+        self._log_periodic_management_status()
 
         if self.watchdog._cycles % self._health_check_interval == 0:
             report = self.watchdog.check_health()
@@ -2667,7 +2676,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             # (TP1 detection, breakeven, trailing, stall/structure exit).
             # The manager may set TERMINAL status for stall/structure exits
             # that the broker cannot enforce — those we still close ourselves.
-            tm_trade = self.trade_manager.update(tm_trade, current, m5_df)
+            tm_trade = self.trade_manager.update(
+                tm_trade, current, m5_df,
+                portfolio_heat_state=self._current_heat_state_name(),
+            )
 
             # Only act on TERMINAL status from stall or structure exit —
             # NOT from simulated SL/TP2, which the broker handles.
@@ -2807,7 +2819,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     result = self.platforms.close_trade(oid, pos.platform)
                     if result.success:
                         pos.tp1_hit = True
-                        self._record_closed_trade(pos, result.close_price, "TP1_FULL_CLOSE_REOPEN", close_result=result)
+                        self._record_closed_trade(pos, result.close_price, "TP1_FULL_CLOSE_REOPEN", close_result=result, exit_cause=ExitCause.TP1_PARTIAL)
                         to_remove.append(oid)
                         closed_count += 1
                         try:
@@ -3047,6 +3059,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     if result.success:
                         self._record_closed_trade(
                             pos, result.close_price, "WEEKEND_FLATTEN", close_result=result,
+                            exit_cause=ExitCause.WEEKEND_PROTECTION,
                         )
                         self.managed_positions.pop(oid, None)
                         self.position_store.remove_position(oid)
@@ -3080,6 +3093,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                                 self._record_closed_trade(
                                     pos, close_res.close_price,
                                     "WEEKEND_DERISK_CLOSE_FALLBACK", close_result=close_res,
+                                    exit_cause=ExitCause.WEEKEND_PROTECTION,
                                 )
                                 self.managed_positions.pop(oid, None)
                                 self.position_store.remove_position(oid)
@@ -4036,11 +4050,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             result = self.platforms.close_trade(oid, pos.platform)
             if result.success:
                 reason = f"DECISION_ENGINE({decision.reason[:100]})"
+                de_cause = (
+                    ExitCause.THESIS_DECAY
+                    if decision.reason.startswith(SEVERE_THESIS_CLOSE_PREFIX)
+                    else ExitCause.STRATEGIC_CLOSE
+                )
                 logger.info(
                     "🧠 DECISION CLOSE — {} {} | {}",
                     pos.direction, pos.symbol, reason,
                 )
-                self._record_closed_trade(pos, result.close_price, reason, close_result=result)
+                self._record_closed_trade(pos, result.close_price, reason, close_result=result, exit_cause=de_cause)
                 # Counterfactual audit of the severe-decay hard-close: persist a
                 # shadow from the EXIT price using the protection that was in
                 # force. The resolver then tells us whether price ran back to
@@ -4461,6 +4480,117 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         except Exception as exc:
             logger.warning("[partial-pnl] accounting failed for {}: {}", pos.symbol, exc)
 
+    def _current_heat_state_name(self) -> str:
+        """Current portfolio-heat state name for the mechanical manager.
+
+        Returns one of NORMAL/DEFENSIVE/REDUCING/EMERGENCY. Fail-safe: any error
+        or a disabled heat machine reports NORMAL so the trail uses normal width
+        rather than tightening on a stale/unknown state (P8).
+        """
+        try:
+            sm = getattr(self, "_portfolio_risk_sm", None)
+            if sm is not None and getattr(sm, "state", None) is not None:
+                return sm.state.name
+        except Exception as exc:
+            logger.debug("[P8] heat-state read failed, defaulting NORMAL: {}", exc)
+        return "NORMAL"
+
+    def _log_management_configuration(self) -> None:
+        """One-time INFO summary of the post-entry management configuration.
+
+        Operators otherwise have no visibility into which management brains and
+        protective layers are live versus dead/degraded. Logged once at startup
+        as grep-friendly key=value lines under a MANAGEMENT_CONFIG marker (P9).
+        """
+        try:
+            rcfg = self.config.risk
+            dcfg = self.config.decision
+            strategic = "ENABLED" if self._decision_enabled else "DISABLED"
+            governor = "ENABLED" if self._risk_governor is not None else "DISABLED"
+            # Legacy active-management checks (C19–C22). These run as the
+            # DE-disabled path and as the degraded-mode fallback; surface their
+            # per-feature config state so operators know what can fire.
+            legacy = (
+                f"invalidation={rcfg.continuous_analysis_enabled} "
+                f"conviction_collapse={rcfg.conviction_monitoring_enabled} "
+                f"htf_candle_close={rcfg.htf_reassessment_enabled} "
+                f"dynamic_sl_tighten={rcfg.dynamic_sl_tightening_enabled}"
+            )
+            logger.info("=" * 60)
+            logger.info("MANAGEMENT_CONFIG — post-entry management layer status")
+            logger.info(
+                "MANAGEMENT_CONFIG strategic_engine={} governor={}",
+                strategic, governor,
+            )
+            logger.info("MANAGEMENT_CONFIG legacy_checks: {}", legacy)
+            # Re-entry exists but the executor is not wired — it only LOGS
+            # eligible re-entries today (no order is placed).
+            logger.info(
+                "MANAGEMENT_CONFIG re_entry=LOGGING_ONLY (detector active, no executor)",
+            )
+            logger.info(
+                "MANAGEMENT_CONFIG oq_eq_revalidation={} two_brain_sync=ENABLED "
+                "(structure_intact_threshold={} max_age_s={})",
+                "ENABLED" if getattr(dcfg, "oq_eq_decay_enabled", False) else "DISABLED",
+                self.trade_manager.strategic_structure_intact_threshold,
+                self.trade_manager.strategic_structure_max_age_seconds,
+            )
+            logger.info(
+                "MANAGEMENT_CONFIG heat_trail_tighten={} (defensive={} reducing={} emergency={}) "
+                "portfolio_heat={}",
+                "ENABLED" if rcfg.heat_trail_tighten_enabled else "DISABLED",
+                rcfg.heat_trail_factor_defensive,
+                rcfg.heat_trail_factor_reducing,
+                rcfg.heat_trail_factor_emergency,
+                "ENABLED" if rcfg.portfolio_heat_enabled else "DISABLED",
+            )
+            logger.info("=" * 60)
+        except Exception as exc:
+            logger.warning("[P9] management-config summary failed: {}", exc)
+
+    def _log_periodic_management_status(self) -> None:
+        """Periodic INFO snapshot of live management mode (P9).
+
+        Emitted every ``management_status_log_interval_cycles`` cycles so
+        operators (and alerting) can see the current heat state, position count,
+        whether the strategic engine is active/degraded, and the distribution of
+        the last decision verdicts. Logging only — no behaviour change.
+        """
+        try:
+            interval = int(getattr(self.config.risk, "management_status_log_interval_cycles", 0))
+            if interval <= 0:
+                return
+            cycles = getattr(self.watchdog, "_cycles", 0)
+            if cycles <= 0 or cycles % interval != 0:
+                return
+
+            positions = len(self.managed_positions)
+            heat_state = self._current_heat_state_name()
+            heat_pct = getattr(self, "_current_portfolio_heat", 0.0)
+
+            if not self._decision_enabled:
+                strategic_status = "disabled"
+            elif self._degraded_management:
+                strategic_status = f"degraded({len(self._degraded_management)})"
+            else:
+                strategic_status = "active"
+
+            verdicts: dict[str, int] = {}
+            for action in self._last_decision_action.values():
+                key = getattr(action, "name", str(action))
+                verdicts[key] = verdicts.get(key, 0) + 1
+            verdict_str = (
+                " ".join(f"{k}={v}" for k, v in sorted(verdicts.items())) or "none"
+            )
+
+            logger.info(
+                "MANAGEMENT_STATUS cycle={} positions={} heat_state={} heat_pct={:.1f} "
+                "strategic={} last_verdicts: {}",
+                cycles, positions, heat_state, heat_pct, strategic_status, verdict_str,
+            )
+        except Exception as exc:
+            logger.debug("[P9] periodic management-status log failed: {}", exc)
+
     def _record_closed_trade(
         self,
         pos: ManagedPosition,
@@ -4472,9 +4602,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         raw_broker_comment: Optional[str] = None,
         manager_intent: Optional[str] = None,
         exit_reason_discrepancy: bool = False,
+        exit_cause: Optional[ExitCause] = None,
     ) -> None:
         pip_size = get_pip_size(pos.symbol)
         is_buy = pos.direction == "BUY"
+        # P7: normalise the exit cause for the learners. Explicit sites pass an
+        # ExitCause directly (tagged at the decision source); broker-side /
+        # mechanical reasons that arrive only as strings fall back to a
+        # best-effort classification of the free-text outcome.
+        cause = exit_cause if isinstance(exit_cause, ExitCause) else ExitCause.from_reason(outcome)
+        cause_value = cause.value
         pnl_pips = (close_price - pos.entry_price) / pip_size if is_buy else (pos.entry_price - close_price) / pip_size
 
         if close_result is not None:
@@ -4552,11 +4689,12 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         hold_seconds = (datetime.now(timezone.utc) - pos.open_time).total_seconds()
         logger.info(
-            "📊 TRADE CLOSED — {} {} | {:.1f}pip | {} | {:.0f}s",
+            "📊 TRADE CLOSED — {} {} | {:.1f}pip | {} | cause={} | {:.0f}s",
             pos.direction,
             pos.symbol,
             pnl_pips,
             outcome,
+            cause_value,
             hold_seconds,
         )
 
@@ -4622,9 +4760,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             swap_modeled=swap_modeled,
             swap_status=swap_status,
             risk_dollars=getattr(pos, "initial_risk_dollars", None),
+            exit_cause=cause_value,
         )
         self._run_journal_async(self.journal.log_trade(trade_record))
-        self.ml.register_new_trade()
+        self.ml.register_new_trade(exit_cause=cause_value)
         try:
             trade_summary = {
                 "pair": pos.symbol,
@@ -4635,6 +4774,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 "risk_dollars": getattr(pos, "initial_risk_dollars", None),
                 "pnl": round(pnl_pips, 2),
                 "outcome": outcome,
+                "exit_cause": cause_value,
             }
             self.scanner._trade_history.append(trade_summary)
             if len(self.scanner._trade_history) > 500:
@@ -4683,6 +4823,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     "close_price": close_price,
                     "exit_reason": outcome,
                     "exit_reason_source": exit_reason_source,
+                    "exit_cause": cause_value,
                     "raw_broker_reason": raw_broker_reason,
                     "raw_broker_comment": raw_broker_comment,
                     "manager_intent": manager_intent,

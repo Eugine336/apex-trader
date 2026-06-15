@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from loguru import logger
 
 from brain.symbol_mapper import resolve_to_internal
+from management.exit_cause import ExitCause
 from management.trade_manager import EntrySignal as TMEntrySignal
 from persistence.position_store import STORE_UNAVAILABLE
 from platforms.base_connector import OrderResult, CloseResult, PositionInfo
@@ -324,6 +325,7 @@ class RecoveryReconciliationMixin:
                             exit_reason_source="broker_history",
                             raw_broker_reason=raw_reason_code,
                             raw_broker_comment=raw_comment,
+                            exit_cause=ExitCause.BROKER_SIDE,
                         )
                     except Exception as exc:
                         logger.error(
@@ -585,6 +587,7 @@ class RecoveryReconciliationMixin:
                 fake_close.close_price,
                 "CLOSED_EXTERNALLY",
                 close_result=fake_close if real_pnl != 0.0 else None,
+                exit_cause=ExitCause.BROKER_SIDE,
             )
             to_remove.append(oid)
             self._add_warning(

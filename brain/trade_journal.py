@@ -37,6 +37,7 @@ class TradeRecord:
     swap_modeled: Optional[float] = None
     swap_status: str = "unavailable"
     risk_dollars: Optional[float] = None
+    exit_cause: Optional[str] = None
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -128,6 +129,12 @@ class TradeJournal:
                 except Exception as exc:
                     logger.debug("[trade_journal] risk_dollars column migration skipped (likely already exists): {}", exc)
                     pass
+                try:
+                    await db.execute("ALTER TABLE trades ADD COLUMN exit_cause TEXT")
+                    await db.commit()
+                except Exception as exc:
+                    logger.debug("[trade_journal] exit_cause column migration skipped (likely already exists): {}", exc)
+                    pass
             self._initialized = True
 
     async def log_trade(self, trade: TradeRecord) -> None:
@@ -139,8 +146,8 @@ class TradeJournal:
                     pair, direction, entry, exit, pnl, score, confluences, regime,
                     session, spread, slippage, entry_type, time_to_tp1, time_to_exit,
                     outcome, pnl_dollars, swap_modeled, swap_status, risk_dollars,
-                    timestamp
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    exit_cause, timestamp
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     trade.pair,
@@ -162,6 +169,7 @@ class TradeJournal:
                     trade.swap_modeled,
                     trade.swap_status,
                     trade.risk_dollars,
+                    trade.exit_cause,
                     trade.timestamp.isoformat(),
                 ),
             )
