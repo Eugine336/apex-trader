@@ -130,6 +130,90 @@ class PairScanResult:
     trend_d1: str = "UNKNOWN"
     d1_aligned: bool = False
     d1_confidence: float = 0.0
+    rejection: Optional["RejectedSetup"] = None
+
+
+@dataclass
+class RejectedSetup:
+    """A setup rejected at the scanner stage (before the planner runs).
+
+    Carries an *approximate* trade (entry/SL/TP) synthesised from data already
+    available at rejection time so the counterfactual shadow engine can resolve
+    it and the gate auto-tuner can learn whether the scanner-stage quality
+    thresholds are calibrated. Precision is intentionally coarse — the aim is a
+    directionally-correct "would this have won?" signal, not an exact plan.
+    """
+
+    symbol: str
+    direction: str                  # "LONG" or "SHORT"
+    rejecting_gate: str             # e.g. "oq_threshold:5.8<6.0"
+    approximate_entry: float        # nearest OB midpoint or current price
+    approximate_sl: float           # entry ± 1.5×ATR
+    approximate_tp: float           # entry ± 2.0×ATR
+    atr: float                      # ATR (pips) used for the approximation
+    scan_timestamp: float           # epoch seconds at rejection
+    oq: Optional[float] = None
+    eq: Optional[float] = None
+    score: Optional[float] = None
+    metadata: dict = field(default_factory=dict)
+
+
+# SL/TP approximation multiples (in ATR units) for scanner-stage rejections.
+_REJECT_SL_ATR_MULT = 1.5
+_REJECT_TP_ATR_MULT = 2.0
+
+
+def build_rejected_setup(
+    *,
+    symbol: str,
+    direction: str,
+    rejecting_gate: str,
+    current_price: float,
+    atr_pips: Optional[float],
+    pip_size: float,
+    scan_timestamp: float,
+    ob_midpoint: Optional[float] = None,
+    oq: Optional[float] = None,
+    eq: Optional[float] = None,
+    score: Optional[float] = None,
+    metadata: Optional[dict] = None,
+) -> Optional[RejectedSetup]:
+    """Synthesise a RejectedSetup with approximate entry/SL/TP.
+
+    Returns ``None`` (gracefully skips) when ATR/price data is unavailable or
+    the direction is not directional — no shadow contract without SL/TP levels.
+    """
+    if direction not in ("LONG", "SHORT"):
+        return None
+    if atr_pips is None or atr_pips <= 0 or pip_size <= 0:
+        return None
+
+    entry = ob_midpoint if ob_midpoint else current_price
+    if entry is None or entry <= 0:
+        return None
+
+    atr_price = atr_pips * pip_size
+    if direction == "LONG":
+        sl = entry - _REJECT_SL_ATR_MULT * atr_price
+        tp = entry + _REJECT_TP_ATR_MULT * atr_price
+    else:
+        sl = entry + _REJECT_SL_ATR_MULT * atr_price
+        tp = entry - _REJECT_TP_ATR_MULT * atr_price
+
+    return RejectedSetup(
+        symbol=symbol,
+        direction=direction,
+        rejecting_gate=rejecting_gate,
+        approximate_entry=entry,
+        approximate_sl=sl,
+        approximate_tp=tp,
+        atr=atr_pips,
+        scan_timestamp=scan_timestamp,
+        oq=oq,
+        eq=eq,
+        score=score,
+        metadata=metadata or {},
+    )
 
 
 @dataclass
@@ -142,6 +226,7 @@ class ScanReport:
     results: list[PairScanResult]
     best_setup: Optional[PairScanResult]
     regime_distribution: dict[str, int] = field(default_factory=dict)
+    rejected_setups: list[RejectedSetup] = field(default_factory=list)
 
 
 def _side_agnostic_rr(liq_map, atr_pips, pip_size: float) -> float | None:
@@ -780,6 +865,8 @@ class PairScanner:
         ld_cfg = self.config.layered_decision
         oq_score = 0.0
         eq_score = 0.0
+        _atr_pips: Optional[float] = None
+        entry_ob_ref = None
 
         if ld_cfg.enabled and trade_dir in ("LONG", "SHORT"):
             self._quality_scans += 1
@@ -843,6 +930,52 @@ class PairScanner:
             else:
                 status = "WAITING"
 
+        # ── Scanner-stage rejection capture (counterfactual shadow) ────
+        # When a directional setup fails the scanner-stage quality/score gates
+        # it never reaches the planner, so it would otherwise be invisible to
+        # the shadow engine and gate auto-tuner. Synthesise an approximate
+        # trade so the rejection can be resolved counterfactually.
+        rejection: Optional[RejectedSetup] = None
+        if status not in ("READY", "MARKET_CLOSED") and trade_dir in ("LONG", "SHORT"):
+            rejecting_gate = None
+            if ld_cfg.enabled:
+                if oq_score < ld_cfg.opportunity_quality_min:
+                    rejecting_gate = (
+                        f"oq_threshold:{oq_score:.1f}<{ld_cfg.opportunity_quality_min:.1f}"
+                    )
+                elif eq_score < ld_cfg.entry_quality_min:
+                    rejecting_gate = (
+                        f"eq_threshold:{eq_score:.1f}<{ld_cfg.entry_quality_min:.1f}"
+                    )
+            elif score < profile.min_entry_score:
+                rejecting_gate = f"score_threshold:{score}<{profile.min_entry_score}"
+
+            if rejecting_gate is not None:
+                # ATR is computed during the layered quality gates; recompute it
+                # for the legacy path (no new market-data calls).
+                atr_pips = _atr_pips
+                if atr_pips is None:
+                    try:
+                        tr_series = (m5_df["high"] - m5_df["low"]).abs().tail(14)
+                        if len(tr_series) > 0 and pip_size > 0:
+                            atr_pips = float(tr_series.mean()) / pip_size
+                    except Exception:
+                        atr_pips = None
+                rejection = build_rejected_setup(
+                    symbol=pair,
+                    direction=trade_dir,
+                    rejecting_gate=rejecting_gate,
+                    current_price=current_price,
+                    atr_pips=atr_pips,
+                    pip_size=pip_size,
+                    scan_timestamp=utc_now.timestamp(),
+                    ob_midpoint=entry_ob_ref.midpoint if entry_ob_ref else None,
+                    oq=oq_score,
+                    eq=eq_score,
+                    score=score,
+                    metadata={"status": status},
+                )
+
         return PairScanResult(
             pair=pair,
             direction=trade_dir,
@@ -877,6 +1010,7 @@ class PairScanner:
             trend_d1=bias.get("d1_trend", "UNKNOWN"),
             d1_aligned=bias.get("d1_aligned", False),
             d1_confidence=bias.get("d1_confidence", 0.0),
+            rejection=rejection,
         )
 
     # ------------------------------------------------------------------
@@ -1169,6 +1303,7 @@ class PairScanner:
             results=results,
             best_setup=ready[0] if ready else None,
             regime_distribution=regimes,
+            rejected_setups=[r.rejection for r in results if r.rejection is not None],
         )
         self.last_report = report
         return report

@@ -903,6 +903,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         report = self.scanner.scan_all(market_data, currency_data=currency_data, utc_now=now)
         ready = self.scanner.get_ready_setups(report)
         self._emit_setup_skipped(report)
+        self._persist_scanner_rejections(report)
 
         qf, qt = self.scanner.get_quality_failure_stats()
         if qf > 0:
@@ -4458,6 +4459,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         stop_loss: Optional[float] = None,
         tp1: Optional[float] = None,
         tp2: Optional[float] = None,
+        source: str = "planner",
     ) -> None:
         """Persist a shadow contract for a rejected setup (best-effort)."""
         try:
@@ -4505,6 +4507,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 ts_utc_ms=int(datetime.now(timezone.utc).timestamp() * 1000),
                 correlation_id=getattr(self, "_current_cycle_id", None),
                 setup_id=getattr(self, "_current_setup_id", None),
+                source=source,
             )
 
             cid = self._shadow_store.insert_contract(contract)
@@ -4530,6 +4533,62 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     )
         except Exception:
             logger.debug("[ShadowContract] persist failed for {}", getattr(signal, "pair", "?"))
+
+    def _persist_scanner_rejections(self, report) -> None:
+        """Persist shadow contracts for setups rejected at the scanner stage.
+
+        Scanner-stage rejections (OQ/EQ/score thresholds) never reach the
+        planner, so they would be invisible to the shadow engine and gate
+        auto-tuner. Each carries an approximate trade (synthetic, coarse) so its
+        counterfactual outcome can be resolved. Marked ``source=
+        'scanner_approximation'`` to distinguish from planner-derived contracts.
+        """
+        rejected = getattr(report, "rejected_setups", None)
+        if not rejected:
+            return
+        for rs in rejected:
+            try:
+                pip_size = get_pip_size(rs.symbol)
+                contract = ShadowContract(
+                    contract_id=new_contract_id(),
+                    symbol=rs.symbol,
+                    direction=rs.direction,
+                    entry_price=rs.approximate_entry,
+                    stop_loss=rs.approximate_sl,
+                    tp1=rs.approximate_tp,
+                    tp2=rs.approximate_tp,
+                    tp3=None,
+                    pip_size=pip_size,
+                    entry_timeframe="M5",
+                    rejecting_gate=rs.rejecting_gate,
+                    score=int(rs.score) if rs.score is not None else 0,
+                    ts_utc_ms=int(datetime.now(timezone.utc).timestamp() * 1000),
+                    correlation_id=getattr(self, "_current_cycle_id", None),
+                    source="scanner_approximation",
+                )
+                cid = self._shadow_store.insert_contract(contract)
+                if cid:
+                    store = get_event_store()
+                    if store:
+                        store.emit(
+                            event_type=SHADOW_CONTRACT_CREATED,
+                            severity="INFO",
+                            symbol=rs.symbol,
+                            correlation_id=getattr(self, "_current_cycle_id", None),
+                            source_module="platforms.main_loop",
+                            payload={
+                                "contract_id": cid,
+                                "rejecting_gate": rs.rejecting_gate,
+                                "entry_price": rs.approximate_entry,
+                                "stop_loss": rs.approximate_sl,
+                                "tp1": rs.approximate_tp,
+                                "tp2": rs.approximate_tp,
+                                "direction": rs.direction,
+                                "source": "scanner_approximation",
+                            },
+                        )
+            except Exception as exc:
+                logger.debug("[ShadowContract] scanner rejection persist failed for {}: {}", rs.symbol, exc)
 
     def _log_rejection(self, pair: str, direction: str, score: int, reason: str,
                        entry_context: dict | None = None) -> None:
