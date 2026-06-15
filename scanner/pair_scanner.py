@@ -208,7 +208,7 @@ class PairScanner:
         checkpoint = _resolve_rl_checkpoint(rl_checkpoint)
         try:
             self._rl = RLBridge(checkpoint=checkpoint)
-            logger.info(f"[scanner] RL subsystem loaded — stage {self._rl.authority.stage_label}")
+            logger.info(f"[scanner] RL subsystem: {self._rl.status_label} (stage {self._rl.authority.stage_label})")
         except Exception as exc:
             logger.warning(f"[scanner] RL subsystem unavailable: {exc}")
             self._rl = RLBridge(checkpoint=checkpoint, enabled=False)
