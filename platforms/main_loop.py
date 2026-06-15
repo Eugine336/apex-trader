@@ -336,6 +336,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._last_decision_action_time: dict[str, datetime] = {}
         # A verdict older than this many seconds no longer defers exits.
         self._decision_verdict_max_age_seconds: float = 600.0
+        # PR6/P0: positions running on legacy fallback because the strategic
+        # engine raised — oid → consecutive degraded cycles. Escalates to a
+        # forced SL→BE / CRITICAL alarm after _degraded_management_escalate_cycles.
+        self._degraded_management: dict[str, int] = {}
+        self._degraded_management_escalate_cycles: int = 3
         # P5: per-pair cooldown after a breakeven stop-out (symbol → datetime until).
         self._be_stop_cooldown: dict[str, datetime] = {}
 
@@ -745,6 +750,18 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 logger.error("Position update error: {}", exc)
                 closed_count = 0
                 self.watchdog.record_trade_check_failure()
+                # Fail-safe: a thrown management pass must not silently skip a
+                # whole cycle. Verify broker↔managed state is still sane; if
+                # reconciliation also fails, make noise rather than continue
+                # blind.
+                try:
+                    self._reconcile_positions()
+                except Exception as recon_exc:
+                    logger.critical(
+                        "CRITICAL: management pass AND reconciliation both "
+                        "failed — broker/position state may be unverified: {}",
+                        recon_exc,
+                    )
 
             cycle["positions_updated"] = len(self.managed_positions)
             cycle["positions_closed"] = closed_count
@@ -3228,6 +3245,22 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     "In-trade analysis error for {} (oid={}): {}",
                     pair, oid, exc,
                 )
+                # Fail-safe: an analysis error must not leave the position
+                # without at least its open-profit floor honoured this cycle.
+                try:
+                    tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+                    if tm_trade is not None:
+                        tick = self.platforms.get_price(pos.symbol)
+                        is_long = pos.direction.upper() in ("BUY", "LONG")
+                        current = tick.bid if is_long else tick.ask
+                        self._apply_absolute_profit_protection(
+                            oid, pos, tm_trade, current, now,
+                        )
+                except Exception as protect_exc:
+                    logger.warning(
+                        "[management] profit-protection fallback failed for {} ({}): {}",
+                        pair, oid, protect_exc,
+                    )
 
     # ── Decision Intelligence System helpers ─────────────────────────────
 
@@ -3271,10 +3304,95 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self._last_decision_action_time[oid] = datetime.now(timezone.utc)
 
             self._execute_management_decision(oid, pos, decision, now)
+            # Strategic engine completed — clear any degraded-mode tracking.
+            self._degraded_management.pop(oid, None)
+        except Exception as exc:
+            count = self._degraded_management.get(oid, 0) + 1
+            self._degraded_management[oid] = count
+            logger.warning(
+                "DEGRADED_MANAGEMENT: strategic engine failed, running legacy "
+                "fallback for {} ({}) — degraded cycle {}: {}",
+                pos.symbol, oid, count, exc,
+            )
+            self._run_legacy_management_fallback(oid, pos, now)
+            if count >= self._degraded_management_escalate_cycles:
+                self._escalate_degraded_management(oid, pos, now)
+            # Drop tracking for positions that are no longer open so the dict
+            # cannot grow without bound across closed trades.
+            for stale in [
+                k for k in self._degraded_management if k not in self.managed_positions
+            ]:
+                self._degraded_management.pop(stale, None)
+
+    def _run_legacy_management_fallback(
+        self, oid: str, pos: ManagedPosition, now: datetime,
+    ) -> None:
+        """Run the legacy protective checks when the strategic engine fails.
+
+        Mirrors the protective subset of the legacy (DecisionEngine-disabled)
+        path so a strategic-engine exception does not leave a position governed
+        by the mechanical TradeManager alone. Each check is independently
+        guarded so one failure does not suppress the others.
+        """
+        # Lock open profit — covers adopted/orphan trades whose R-gates never
+        # fire because their original risk is unknown.
+        try:
+            tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+            if tm_trade is not None:
+                tick = self.platforms.get_price(pos.symbol)
+                is_long = pos.direction.upper() in ("BUY", "LONG")
+                current = tick.bid if is_long else tick.ask
+                self._apply_absolute_profit_protection(oid, pos, tm_trade, current, now)
         except Exception as exc:
             logger.warning(
-                "[DecisionEngine] error for {} ({}) — falling back to legacy: {}",
+                "[degraded-mgmt] profit-protection fallback failed for {} ({}): {}",
                 pos.symbol, oid, exc,
+            )
+
+        # Beyond-breakeven profit laddering — the one legacy check with no
+        # DecisionEngine equivalent.
+        try:
+            self._apply_dynamic_sl_tightening(oid, pos)
+        except Exception as exc:
+            logger.warning(
+                "[degraded-mgmt] dynamic SL tighten fallback failed for {} ({}): {}",
+                pos.symbol, oid, exc,
+            )
+
+        # Spread-spike protection across the book.
+        try:
+            self._check_spread_deterioration()
+        except Exception as exc:
+            logger.warning(
+                "[degraded-mgmt] spread deterioration fallback failed: {}", exc,
+            )
+
+    def _escalate_degraded_management(
+        self, oid: str, pos: ManagedPosition, now: datetime,
+    ) -> None:
+        """Force-protect a position the strategic engine keeps failing on.
+
+        After repeated degraded cycles, move the stop to breakeven if the trade
+        is in profit; if it is in a loss there is nothing safe to tighten to, so
+        raise a CRITICAL alarm for human attention.
+        """
+        cycles = self._degraded_management.get(oid, 0)
+        try:
+            moved = self._failsafe_move_to_breakeven(
+                oid, pos, reason=f"degraded-mgmt-{cycles}-cycles",
+            )
+        except Exception as exc:
+            logger.critical(
+                "DEGRADED_MANAGEMENT: {} ({}) failing for {} cycles and broker "
+                "state unreadable — manual review required: {}",
+                pos.symbol, oid, cycles, exc,
+            )
+            return
+        if not moved:
+            logger.critical(
+                "DEGRADED_MANAGEMENT: {} ({}) strategic engine failing for {} "
+                "cycles while in a loss / unprotectable — manual review required",
+                pos.symbol, oid, cycles,
             )
 
     @staticmethod
@@ -3757,6 +3875,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 self.managed_positions.pop(oid, None)
                 self.position_store.remove_position(oid)
                 self._position_scores.pop(oid, None)
+                self._degraded_management.pop(oid, None)
             else:
                 logger.warning(
                     "🧠 DECISION CLOSE FAILED — {} {} oid={} | {}",
