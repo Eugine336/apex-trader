@@ -224,12 +224,17 @@ class RecoveryReconciliationMixin:
                 logger.error("Failed to restore position {}: {}", row.get("order_id"), exc)
         logger.info("Position store — {} positions restored from disk", len(self.managed_positions))
 
-    def _reconcile_positions(self) -> None:
+    def _reconcile_positions(self) -> bool:
         """Compare persisted positions with broker's live positions on startup.
 
         Requires positive confirmation from each position's own platform.
         Positions whose platform did not respond are retained and marked
         for revalidation — never removed on absence of data.
+
+        Returns ``True`` only when at least one platform was confirmed (a
+        genuine reconcile). Returns ``False`` when no platform responded, so
+        callers can keep "last *successful* reconcile" accurate instead of
+        treating an unreachable-broker skip as a success.
         """
         snap = self.platforms.get_open_positions_snapshot()
 
@@ -239,7 +244,7 @@ class RecoveryReconciliationMixin:
                 "(failed: {})",
                 snap.failed_platforms or "none connected",
             )
-            return
+            return False
 
         broker_by_id: dict[str, PositionInfo] = {
             p.order_id: p for p in snap.positions
@@ -451,6 +456,7 @@ class RecoveryReconciliationMixin:
             snap.confirmed_platforms or "none",
             snap.failed_platforms or "none",
         )
+        return True
 
     def _reconcile_in_flight_intents(self) -> None:
         """Resolve or cancel unresolved in-flight intents from a previous crash."""

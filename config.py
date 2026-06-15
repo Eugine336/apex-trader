@@ -546,6 +546,15 @@ class RiskConfig:
     # The position is NEVER auto-closed — only flagged for human review.
     reconcile_max_unconfirmed_cycles: int = 20
 
+    # ── Drawdown guard ──────────────────────────────────────────────────
+    # Trailing window (calendar days) over which drawdown-from-peak is
+    # measured for the consumers that gate sizing (planner size-reduction
+    # and RiskEngine haircut). A lifetime measure never resets, so an
+    # account that bled deeply once stays shrunk indefinitely; the rolling
+    # window lets sizing recover as recent equity does. <= 0 disables the
+    # window (falls back to the lifetime high-water mark).
+    drawdown_rolling_window_days: int = 30
+
     # ── Swap / rollover financing model (F2 Phase 1: observability) ─────
     # When enabled, estimates overnight financing from a user-supplied
     # rate table and journals the result alongside each closed trade.

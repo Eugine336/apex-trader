@@ -205,7 +205,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             atr_stop_ratio_max=risk_cfg.atr_stop_ratio_max,
             atr_stop_max_risk_mult=risk_cfg.atr_stop_max_risk_mult,
         )
-        self.drawdown = DrawdownGuard()
+        self.drawdown = DrawdownGuard(
+            rolling_window_days=risk_cfg.drawdown_rolling_window_days,
+        )
         # The EntryEngine has its own DrawdownGuard that is never fed trade
         # results, so its risk_pct / score-floor gate would stay permanently at
         # NORMAL. Share the loop's guard (EntryEngine only READS it — it never
@@ -758,8 +760,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             elapsed = (now - self._last_reconcile_time).total_seconds()
             if elapsed >= self._reconcile_interval_seconds:
                 try:
-                    self._reconcile_positions()
-                    self._last_reconcile_time = datetime.now(timezone.utc)
+                    # Only advance the "last successful reconcile" clock when a
+                    # platform was actually confirmed. Treating an unreachable-
+                    # broker skip as success would mask a genuine reconcile
+                    # outage from the emergency trigger (reconcile_age would
+                    # never grow), defeating the safety net.
+                    if self._reconcile_positions():
+                        self._last_reconcile_time = datetime.now(timezone.utc)
                 except Exception as exc:
                     logger.warning("Periodic reconciliation error: {}", exc)
 

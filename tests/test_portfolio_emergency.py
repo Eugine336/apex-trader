@@ -248,6 +248,48 @@ class TestEmergencyTriggers:
         )
         assert result.broker_exposure_mismatch is True
 
+    def test_stale_reconcile_broker_unreachable_does_not_fire(self):
+        """Stale reconcile + unreachable broker must NOT force-close.
+
+        With no trustworthy broker state, liquidating blind would dump good
+        positions on a transient outage. Flag for human review instead."""
+        snap = EmergencyTriggerSnapshot(
+            live_heat_pct=1.0,
+            drawdown_mode="NORMAL",
+            reconcile_age_seconds=600.0,
+            managed_count=3,
+            broker_count=None,
+        )
+        result = evaluate_emergency_triggers(
+            snap,
+            heat_emergency_pct=4.0,
+            emergency_reconcile_failure_seconds=300.0,
+            emergency_broker_exposure_tolerance=2,
+        )
+        assert result.reconcile_failure is False
+        assert result.reconcile_unreachable is True
+        assert result.any_fired is False
+        assert "reconcile_unreachable" in result.description
+
+    def test_stale_reconcile_broker_reachable_fires(self):
+        """Stale reconcile WITH a confirmed broker snapshot is actionable."""
+        snap = EmergencyTriggerSnapshot(
+            live_heat_pct=1.0,
+            drawdown_mode="NORMAL",
+            reconcile_age_seconds=600.0,
+            managed_count=3,
+            broker_count=3,
+        )
+        result = evaluate_emergency_triggers(
+            snap,
+            heat_emergency_pct=4.0,
+            emergency_reconcile_failure_seconds=300.0,
+            emergency_broker_exposure_tolerance=2,
+        )
+        assert result.reconcile_failure is True
+        assert result.reconcile_unreachable is False
+        assert result.any_fired is True
+
 
 # ── State machine escalation to EMERGENCY ────────────────────────────────
 
