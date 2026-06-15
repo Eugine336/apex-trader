@@ -199,11 +199,12 @@ class TestModifyOrderClamp:
             result = c.modify_order("99", new_sl=1.09)
         assert result is False
 
-    def test_zero_stops_level_no_clamp(self):
-        """stops_level=0 means no broker constraint → pass-through."""
+    def test_zero_stops_level_spread_floor_clamps(self):
+        """stops_level=0 (e.g. BTCUSD) still clamps via the spread floor — this is
+        the INVALID_STOPS fix: a too-tight SL is widened instead of rejected."""
         c = _make_connector()
-        pos = _position_ns(type_=0, sl=1.09)
-        tick = SimpleNamespace(bid=1.10500, ask=1.10520)
+        pos = _position_ns(type_=0, sl=1.09)  # BUY, wide existing stop
+        tick = SimpleNamespace(bid=1.10500, ask=1.10520)  # spread 0.00020 → floor 0.00030
         constraints = {"stops_level": 0, "point": 0.00001, "digits": 5}
         send_result = SimpleNamespace(retcode=10009, comment="ok")
 
@@ -211,11 +212,32 @@ class TestModifyOrderClamp:
              patch.object(_mt5, "positions_get", return_value=[pos]), \
              patch.object(_mt5, "symbol_info_tick", return_value=tick), \
              patch.object(_mt5, "order_send", return_value=send_result) as mock_send:
-            result = c.modify_order("99", new_sl=1.10499)
+            result = c.modify_order("99", new_sl=1.10499)  # 0.00001 from bid → too close
 
         assert result is True
         sent = mock_send.call_args[0][0]
-        assert abs(sent["sl"] - 1.10499) < 1e-5
+        # clamped to bid - 1.5*spread = 1.10500 - 0.00030 = 1.10470
+        assert abs(sent["sl"] - 1.10470) < 1e-5
+
+    def test_clamp_never_loosens_existing_sl(self):
+        """If the spread-floor clamp would push SL looser than the current stop,
+        keep the existing stop — the min-distance clamp must never raise risk."""
+        c = _make_connector()
+        pos = _position_ns(type_=0, sl=1.10495)  # BUY, tight existing stop near price
+        tick = SimpleNamespace(bid=1.10500, ask=1.10560)  # spread 0.00060 → floor 0.00090
+        constraints = {"stops_level": 0, "point": 0.00001, "digits": 5}
+        send_result = SimpleNamespace(retcode=10009, comment="ok")
+
+        with patch.object(c, "_get_symbol_constraints", return_value=constraints), \
+             patch.object(_mt5, "positions_get", return_value=[pos]), \
+             patch.object(_mt5, "symbol_info_tick", return_value=tick), \
+             patch.object(_mt5, "order_send", return_value=send_result) as mock_send:
+            # request a tighter SL; floor would clamp to 1.10410 (looser than 1.10495)
+            result = c.modify_order("99", new_sl=1.10498)
+
+        assert result is True
+        sent = mock_send.call_args[0][0]
+        assert abs(sent["sl"] - 1.10495) < 1e-5  # existing stop kept, not loosened
 
 
 # ═══════════════════════════════════════════════════════════════════════════

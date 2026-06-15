@@ -35,6 +35,14 @@ except ImportError:
     mt5 = None  # type: ignore[assignment]
 
 
+# Some symbols (commonly crypto / indices, e.g. BTCUSD) report
+# trade_stops_level == 0 yet the broker still rejects stops placed inside the
+# live spread/freeze zone with INVALID_STOPS. Floor the minimum stop distance
+# at this multiple of the current spread so breakeven/profit-lock/trailing
+# modifies are accepted instead of leaving the position unprotected.
+_STOP_SPREAD_FLOOR_MULT = 1.5
+
+
 _MT5_DEAL_REASON_MAP: dict[int, str] = {
     0: "MANUAL",           # DEAL_REASON_CLIENT
     1: "MANUAL",           # DEAL_REASON_MOBILE
@@ -527,8 +535,8 @@ class MT5Connector(BaseConnector):
         request["deviation"] = self._deviation_points(symbol, point)
 
         # Stops: enforce minimum SL/TP distance from entry price
-        if stops_level > 0:
-            min_distance = stops_level * point
+        min_distance = self._effective_min_stop_distance(mapped, point, stops_level)
+        if min_distance > 0:
             sl_distance = abs(price - sl)
             tp_distance = abs(tp - price)
             if sl_distance < min_distance:
@@ -792,6 +800,30 @@ class MT5Connector(BaseConnector):
             platform="mt5",
         )
 
+    def _effective_min_stop_distance(
+        self,
+        broker_symbol: str,
+        point: float,
+        stops_level: int,
+        freeze_level: int = 0,
+    ) -> float:
+        """Minimum allowed stop distance from price, in price units.
+
+        Combines the broker-declared stops/freeze levels with a spread-based
+        floor. The spread floor is the key fix for symbols that report
+        stops_level == 0 (e.g. BTCUSD) but still reject tight stops.
+        """
+        min_distance = max(int(stops_level or 0), int(freeze_level or 0)) * point
+        try:
+            tick = mt5.symbol_info_tick(broker_symbol)
+            if tick is not None and tick.ask > 0 and tick.bid > 0:
+                spread = tick.ask - tick.bid
+                if spread > 0:
+                    min_distance = max(min_distance, spread * _STOP_SPREAD_FLOOR_MULT)
+        except Exception as exc:
+            logger.debug("[mt5] spread-floor lookup failed for {}: {}", broker_symbol, exc)
+        return min_distance
+
     def _clamp_stop_distance(
         self,
         broker_symbol: str,
@@ -809,6 +841,7 @@ class MT5Connector(BaseConnector):
             stops_level = cached.get("stops_level", 0)
             digits = cached.get("digits", 5)
             point = cached.get("point", 0.00001)
+            freeze_level = cached.get("freeze_level", 0)
         else:
             mt5.symbol_select(broker_symbol, True)
             sym_info = mt5.symbol_info(broker_symbol)
@@ -816,10 +849,13 @@ class MT5Connector(BaseConnector):
                 stops_level = sym_info.trade_stops_level
                 digits = sym_info.digits
                 point = sym_info.point
+                freeze_level = getattr(sym_info, "trade_freeze_level", 0)
             else:
-                stops_level, digits, point = 0, 5, 0.00001
+                stops_level, digits, point, freeze_level = 0, 5, 0.00001, 0
 
-        min_distance = stops_level * point if stops_level > 0 else 0.0
+        min_distance = self._effective_min_stop_distance(
+            broker_symbol, point, stops_level, freeze_level,
+        )
 
         clamped_sl = sl
         clamped_tp = tp
@@ -874,6 +910,22 @@ class MT5Connector(BaseConnector):
         )
         final_sl = clamped_sl if new_sl is not None else raw_sl
         final_tp = clamped_tp if new_tp is not None else raw_tp
+
+        # Safety: the broker min-distance clamp must never LOOSEN an existing
+        # protective stop (that would increase risk). If clamping pushed the new
+        # SL to the wrong side of the current stop, keep the current stop.
+        if new_sl is not None and position.sl and position.sl > 0:
+            loosened = (
+                (is_buy and final_sl < position.sl)
+                or (not is_buy and final_sl > position.sl)
+            )
+            if loosened:
+                logger.warning(
+                    "MT5 modify — clamped SL {:.5f} would loosen existing {:.5f} for {} "
+                    "(broker min-distance); keeping current SL",
+                    final_sl, position.sl, position.symbol,
+                )
+                final_sl = position.sl
 
         request = {
             "action": mt5.TRADE_ACTION_SLTP,
