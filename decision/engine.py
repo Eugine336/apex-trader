@@ -23,6 +23,11 @@ from decision.situation import SituationAssessment
 # sell a future winner?") so the hard-close can be validated, not just trusted.
 SEVERE_THESIS_CLOSE_PREFIX = "SEVERE thesis collapse while in profit"
 
+# Exit-cause tag (an ExitCause value string) stamped on a CLOSE that the
+# fast-cluster opposition decay contributed to, so the executor can attribute
+# the exit to that management behaviour for the learners (PR10).
+FAST_OPPOSITION_EXIT_CAUSE = "fast_opposition_decay"
+
 
 @dataclass(frozen=True)
 class DecisionWeights:
@@ -79,6 +84,11 @@ class DecisionEngine:
         oq_floor: float = 5.0,
         eq_floor: float = 5.0,
         oq_decay_significant: float = 2.0,
+        fast_opposition_decay_enabled: bool = True,
+        fast_opposition_min_streak: int = 3,
+        fast_opposition_max_streak: int = 8,
+        fast_opposition_decay_weight: float = 0.15,
+        fast_opposition_profit_threshold: float = 0.3,
     ) -> None:
         self.weights = weights or DecisionWeights()
         # Roadmap D — regime-dependent weighting.
@@ -111,6 +121,14 @@ class DecisionEngine:
         self.oq_floor = oq_floor
         self.eq_floor = eq_floor
         self.oq_decay_significant = max(0.0, oq_decay_significant)
+        # PR10 — fast-cluster opposition decay (loser stuck against the current).
+        self.fast_opposition_decay_enabled = fast_opposition_decay_enabled
+        self.fast_opposition_min_streak = max(1, int(fast_opposition_min_streak))
+        self.fast_opposition_max_streak = max(
+            self.fast_opposition_min_streak, int(fast_opposition_max_streak)
+        )
+        self.fast_opposition_decay_weight = max(0.0, fast_opposition_decay_weight)
+        self.fast_opposition_profit_threshold = fast_opposition_profit_threshold
 
     # ── Roadmap D/E helpers ───────────────────────────────────────────────
 
@@ -208,6 +226,39 @@ class DecisionEngine:
 
         return close_pressure, tighten_pressure, reasons
 
+    def _fast_opposition_pressure(
+        self, ctx: TradeContext,
+    ) -> tuple[float, list[str]]:
+        """Bounded CLOSE pressure from a sustained fast-cluster opposition (PR10).
+
+        Returns ``(close_pressure, reasons)``. Inert (0.0, []) unless the
+        feature is on, the fast-evidence cluster has opposed the position for at
+        least ``fast_opposition_min_streak`` consecutive cycles, AND the trade is
+        NOT meaningfully in profit (``profit_r`` below the threshold). The
+        pressure ramps linearly with the streak up to ``fast_opposition_max_streak``
+        and is capped by ``fast_opposition_decay_weight`` — additive only, never
+        a hard override, and never applied to a winner.
+        """
+        if not self.fast_opposition_decay_enabled:
+            return 0.0, []
+        streak = int(getattr(ctx, "fast_opposition_streak", 0) or 0)
+        if streak < self.fast_opposition_min_streak:
+            return 0.0, []
+        if ctx.profit_r >= self.fast_opposition_profit_threshold:
+            return 0.0, []
+
+        ramp = min(streak / max(self.fast_opposition_max_streak, 1), 1.0)
+        pressure = self.fast_opposition_decay_weight * ramp
+        reason = (
+            f"fast cluster opposing {streak} cycles "
+            f"(profit {ctx.profit_r:+.1f}R)"
+        )
+        logger.info(
+            "FAST_OPP_DECAY: {} streak={} pressure={:.2f} profit_r={:.2f}",
+            ctx.symbol, streak, pressure, ctx.profit_r,
+        )
+        return pressure, [reason]
+
     def decide_management(
         self,
         ctx: TradeContext,
@@ -225,6 +276,12 @@ class DecisionEngine:
         oq_close_pressure, oq_tighten_pressure, oq_eq_reasons = (
             self._oq_eq_decay_pressure(ctx)
         )
+
+        # Fast-cluster opposition decay (PR10) — bounded CLOSE pressure when the
+        # fast-evidence cluster has opposed a non-winning position for several
+        # consecutive cycles. Computed once; inert when off / streak too short /
+        # in profit.
+        fast_opp_pressure, fast_opp_reasons = self._fast_opposition_pressure(ctx)
 
         # ── HOLD ─────────────────────────────────────────────────────────
         hold_score = 0.30  # moderate base — default action
@@ -302,6 +359,12 @@ class DecisionEngine:
         if oq_close_pressure > 0.0:
             close_score += oq_close_pressure
             close_reason_parts.extend(oq_eq_reasons)
+
+        # Fast-cluster opposition decay (PR10) — bounded additive CLOSE pressure
+        # for a non-winning trade the fast cluster has opposed for N cycles.
+        if fast_opp_pressure > 0.0:
+            close_score += fast_opp_pressure
+            close_reason_parts.extend(fast_opp_reasons)
 
         scores[Action.CLOSE] = close_score
         reasons[Action.CLOSE] = "; ".join(close_reason_parts) if close_reason_parts else "no close pressure"
@@ -390,6 +453,12 @@ class DecisionEngine:
             confidence=confidence,
             evidence=evidence_map.get(best_action, []),
         )
+
+        # PR10: attribute the close to fast-cluster opposition decay when that
+        # pressure contributed to a CLOSE verdict, so the executor tags the
+        # learners' exit_cause feature accordingly.
+        if best_action == Action.CLOSE and fast_opp_pressure > 0.0:
+            decision.exit_cause = FAST_OPPOSITION_EXIT_CAUSE
 
         if best_action == Action.TIGHTEN_SL:
             decision.new_sl = self._compute_tightened_sl(ctx)

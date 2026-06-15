@@ -348,6 +348,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._degraded_management_escalate_cycles: int = 3
         # P5: per-pair cooldown after a breakeven stop-out (symbol → datetime until).
         self._be_stop_cooldown: dict[str, datetime] = {}
+        # PR10: consecutive management cycles the fast-evidence cluster (momentum
+        # + M1 alignment) has opposed each open position — oid → streak. Feeds
+        # the DecisionEngine's fast-opposition decay and the status snapshot.
+        self._fast_opposition_streak: dict[str, int] = {}
 
         # ── D1 cache — daily candles change once/day, refresh hourly ──
         self._d1_cache: dict[str, "pd.DataFrame"] = {}
@@ -414,6 +418,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             oq_floor=dcfg.oq_floor,
             eq_floor=dcfg.eq_floor,
             oq_decay_significant=dcfg.oq_decay_significant,
+            fast_opposition_decay_enabled=dcfg.fast_opposition_decay_enabled,
+            fast_opposition_min_streak=dcfg.fast_opposition_min_streak,
+            fast_opposition_max_streak=dcfg.fast_opposition_max_streak,
+            fast_opposition_decay_weight=dcfg.fast_opposition_decay_weight,
+            fast_opposition_profit_threshold=dcfg.fast_opposition_profit_threshold,
         )
         self._risk_governor = RiskGovernor() if dcfg.governor_enabled else None
         self._decision_journal = DecisionJournal(dcfg.journal_dir) if dcfg.journal_enabled else None
@@ -3344,6 +3353,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 pressure_details=pressure_details,
             )
             sa = self._situation_engine.assess_open_trade(ctx)
+            # PR10: maintain the fast-cluster opposition streak for this position
+            # and stamp it onto the context so decide_management can apply the
+            # bounded close pressure when a non-winning trade is stuck against
+            # the current.
+            self._update_fast_opposition_streak(oid, ctx, sa)
             decision = self._decision_engine.decide_management(ctx, sa)
 
             governor_changed = False
@@ -3400,6 +3414,39 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 k for k in self._degraded_management if k not in self.managed_positions
             ]:
                 self._degraded_management.pop(stale, None)
+
+    def _update_fast_opposition_streak(
+        self, oid: str, ctx: "TradeContext", sa: "SituationAssessment",
+    ) -> None:
+        """Maintain the fast-cluster opposition streak for one position (PR10).
+
+        The fast-evidence cluster is considered opposing when the (direction-
+        relative) momentum read is negative AND at most one of the last five M1
+        candles is aligned with the trade. The streak increments on consecutive
+        opposing cycles and resets to 0 the moment the fast cluster re-aligns.
+        The result is stamped onto ``ctx`` so ``decide_management`` can apply the
+        bounded close pressure. Fail-safe: any error resets to no pressure.
+        """
+        try:
+            fast_opposing = sa.momentum < 0 and ctx.m1_aligned_count <= 1
+            if fast_opposing:
+                streak = self._fast_opposition_streak.get(oid, 0) + 1
+            else:
+                streak = 0
+            self._fast_opposition_streak[oid] = streak
+            ctx.fast_opposition_streak = streak
+            # Prune streaks for positions that are no longer open.
+            for stale in [
+                k for k in self._fast_opposition_streak
+                if k not in self.managed_positions
+            ]:
+                self._fast_opposition_streak.pop(stale, None)
+        except Exception as exc:
+            logger.debug(
+                "[PR10] fast-opposition streak update failed for {}: {}",
+                oid, exc,
+            )
+            ctx.fast_opposition_streak = 0
 
     def _run_active_legacy_checks(
         self,
@@ -4055,6 +4102,15 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     if decision.reason.startswith(SEVERE_THESIS_CLOSE_PREFIX)
                     else ExitCause.STRATEGIC_CLOSE
                 )
+                # PR10: a CLOSE the engine attributed to a specific management
+                # behaviour (e.g. fast-cluster opposition decay) carries an
+                # explicit exit_cause tag — honour it over the generic default.
+                explicit_cause = getattr(decision, "exit_cause", None)
+                if explicit_cause:
+                    try:
+                        de_cause = ExitCause(explicit_cause)
+                    except ValueError:
+                        pass
                 logger.info(
                     "🧠 DECISION CLOSE — {} {} | {}",
                     pos.direction, pos.symbol, reason,
@@ -4071,6 +4127,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 self.position_store.remove_position(oid)
                 self._position_scores.pop(oid, None)
                 self._degraded_management.pop(oid, None)
+                self._fast_opposition_streak.pop(oid, None)
             else:
                 logger.warning(
                     "🧠 DECISION CLOSE FAILED — {} {} oid={} | {}",
@@ -4544,6 +4601,15 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 rcfg.heat_trail_factor_emergency,
                 "ENABLED" if rcfg.portfolio_heat_enabled else "DISABLED",
             )
+            logger.info(
+                "MANAGEMENT_CONFIG fast_opposition_decay={} (min_streak={} max_streak={} "
+                "weight={} profit_threshold={}R)",
+                "ENABLED" if getattr(dcfg, "fast_opposition_decay_enabled", False) else "DISABLED",
+                getattr(dcfg, "fast_opposition_min_streak", 0),
+                getattr(dcfg, "fast_opposition_max_streak", 0),
+                getattr(dcfg, "fast_opposition_decay_weight", 0.0),
+                getattr(dcfg, "fast_opposition_profit_threshold", 0.0),
+            )
             logger.info("=" * 60)
         except Exception as exc:
             logger.warning("[P9] management-config summary failed: {}", exc)
@@ -4583,10 +4649,19 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 " ".join(f"{k}={v}" for k, v in sorted(verdicts.items())) or "none"
             )
 
+            # PR10: visibility into positions stuck against the fast cluster.
+            opp_streaks = [
+                v for k, v in self._fast_opposition_streak.items()
+                if k in self.managed_positions and v > 0
+            ]
+            fast_opp_count = len(opp_streaks)
+            fast_opp_max = max(opp_streaks) if opp_streaks else 0
+
             logger.info(
                 "MANAGEMENT_STATUS cycle={} positions={} heat_state={} heat_pct={:.1f} "
-                "strategic={} last_verdicts: {}",
-                cycles, positions, heat_state, heat_pct, strategic_status, verdict_str,
+                "strategic={} fast_opp_positions={} fast_opp_max_streak={} last_verdicts: {}",
+                cycles, positions, heat_state, heat_pct, strategic_status,
+                fast_opp_count, fast_opp_max, verdict_str,
             )
         except Exception as exc:
             logger.debug("[P9] periodic management-status log failed: {}", exc)
