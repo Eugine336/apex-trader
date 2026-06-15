@@ -132,6 +132,9 @@ class PairScanResult:
     d1_confidence: float = 0.0
     candidates: list = field(default_factory=list)
     rejection: Optional["RejectedSetup"] = None
+    # Open-ended ranked trade ideas from the same module votes (shadow unless
+    # OpportunityRankerConfig.execute is on). Best-first list of Opportunity.
+    candidates: list = field(default_factory=list)
 
 
 @dataclass
@@ -368,6 +371,7 @@ class PairScanner:
         # Each brain module casts a direction-independent signed vote.
         # Direction is the weighted net; disagreement kills the trade.
         cc = self.config.consensus
+        candidates: list = []
         if cc.enabled:
             dir_votes: list[Vote] = []
 
@@ -489,17 +493,28 @@ class PairScanner:
             trade_dir = decision.direction
             logger.info("[consensus] {} — {}", pair, decision.summary)
 
-            # ── Opportunity ranker (additive / shadow-safe) ───────────
-            # Reuse the SAME votes to let coherent clusters form independent
-            # EV-scored ideas.  This never alters trade_dir or the live scalar
-            # path; it only enriches the result with ranked candidates.
-            try:
-                dir_opportunities = decide_opportunities(
-                    dir_votes, self.config.opportunity_ranker
-                )
-            except Exception as exc:
-                logger.warning("[ranker] opportunity ranking failed: {}", exc)
-                dir_opportunities = []
+            # ── Open-ended opportunity ranking (additive) ───────────────
+            # Reuse the SAME votes to build a ranked list of independent trade
+            # ideas. Shadow-only unless OpportunityRankerConfig.execute is on;
+            # the scalar trade_dir above is unchanged either way.
+            rc = getattr(self.config, "opportunity_ranker", None)
+            if rc is not None and getattr(rc, "enabled", False):
+                try:
+                    candidates = decide_opportunities(
+                        dir_votes,
+                        scalp_modules=rc.scalp_modules,
+                        swing_modules=rc.swing_modules,
+                        scalp_reward_risk=rc.scalp_reward_risk,
+                        swing_reward_risk=rc.swing_reward_risk,
+                        base_win_rate=rc.base_win_rate,
+                        confidence_win_rate_gain=rc.confidence_win_rate_gain,
+                        min_expected_value=rc.min_expected_value,
+                        min_cluster_confidence=rc.min_cluster_confidence,
+                        min_cluster_contributors=rc.min_cluster_contributors,
+                    )
+                except Exception as exc:
+                    logger.warning("[ranker] {} candidate build failed: {}", pair, exc)
+                    candidates = []
         else:
             # Fallback: legacy single-module direction
             direction = bias["direction"]
@@ -1072,6 +1087,7 @@ class PairScanner:
             d1_confidence=bias.get("d1_confidence", 0.0),
             candidates=dir_opportunities,
             rejection=rejection,
+            candidates=candidates,
         )
 
     # ------------------------------------------------------------------

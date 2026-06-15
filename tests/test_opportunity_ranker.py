@@ -1,152 +1,142 @@
 """
-Tests for the opportunity ranker — dependency-light (no torch, no pandas).
+Tests for the opportunity ranker.
+
+Dependency-light — pure vote math, no torch/pandas required.
+Verifies clustering by direction × timeframe, EV scoring, ranking order, and
+the edge cases that distinguish "graded open-ended answer" from the old scalar
+hand-raising collapse.
 """
 
-from __future__ import annotations
+import pytest
 
-from brain.directional_consensus import Vote
+from brain.directional_consensus import Vote, decide_opportunities
 from brain.opportunity_ranker import (
-    Opportunity,
     SCALP,
     SWING,
-    MIXED,
+    Opportunity,
+    classify_timeframe,
     cluster_votes,
     rank_opportunities,
-    score_opportunity,
-    timeframe_class,
 )
 
 
-def _v(module, direction, conf, weight=1.0):
-    return Vote(module, direction, conf, weight)
+# ── classification & clustering ───────────────────────────────────────────
 
+class TestClassifyAndCluster:
+    def test_classify_defaults(self):
+        assert classify_timeframe("momentum", ["momentum"], ["structure"]) == SCALP
+        assert classify_timeframe("structure", ["momentum"], ["structure"]) == SWING
+        # Unknown modules default to the conservative SWING horizon.
+        assert classify_timeframe("mystery", ["momentum"], ["structure"]) == SWING
 
-# ── timeframe classification ───────────────────────────────────────────────
-
-class TestTimeframeClass:
-    def test_only_fast_is_scalp(self):
-        assert timeframe_class(["momentum", "vwap", "fvg"]) == SCALP
-
-    def test_only_slow_is_swing(self):
-        assert timeframe_class(["structure", "currency_strength"]) == SWING
-
-    def test_mixed(self):
-        assert timeframe_class(["structure", "momentum"]) == MIXED
-
-
-# ── clustering ───────────────────────────────────────────────────────────
-
-class TestClusterVotes:
-    def test_neutral_and_zero_votes_excluded(self):
+    def test_neutral_and_zero_votes_dropped(self):
         votes = [
-            _v("momentum", "NEUTRAL", 0.0),
-            _v("vwap", "LONG", 0.0),       # zero confidence dropped
-            _v("fvg", "LONG", 0.5, 0.0),   # zero weight dropped
-        ]
-        assert cluster_votes(votes) == []
-
-    def test_opposing_horizons_form_separate_clusters(self):
-        # Slow modules LONG (swing), fast modules SHORT (scalp) — must NOT merge.
-        votes = [
-            _v("structure", "LONG", 0.8),
-            _v("currency_strength", "LONG", 0.7),
-            _v("momentum", "SHORT", 0.8),
-            _v("vwap", "SHORT", 0.7),
+            Vote("structure", "NEUTRAL", 0.0, 1.0),
+            Vote("momentum", "LONG", 0.0, 1.0),   # zero confidence
+            Vote("vwap", "SHORT", 0.5, 0.0),       # zero weight
+            Vote("volume", "LONG", 0.7, 1.0),      # kept
         ]
         clusters = cluster_votes(votes)
+        assert list(clusters.keys()) == [("LONG", SCALP)]
+
+    def test_two_independent_clusters_form(self):
+        # Fast modules agree SHORT (scalp); slow modules agree LONG (swing).
+        votes = [
+            Vote("momentum", "SHORT", 0.8, 1.0),
+            Vote("volume", "SHORT", 0.7, 1.0),
+            Vote("structure", "LONG", 0.9, 1.0),
+            Vote("currency_strength", "LONG", 0.6, 1.0),
+        ]
+        clusters = cluster_votes(votes)
+        assert ("SHORT", SCALP) in clusters
+        assert ("LONG", SWING) in clusters
         assert len(clusters) == 2
-        dirs = {(c[0].direction, timeframe_class([v.module for v in c])) for c in clusters}
-        assert ("LONG", SWING) in dirs
-        assert ("SHORT", SCALP) in dirs
 
 
-# ── scoring ────────────────────────────────────────────────────────────────
+# ── EV scoring & ranking ──────────────────────────────────────────────────
 
-class TestScoreOpportunity:
-    def _score(self, cluster):
-        return score_opportunity(
-            cluster,
-            scalp_target_rr=2.0, swing_target_rr=3.0, mixed_target_rr=2.5,
-            win_prob_floor=0.30, win_prob_scale=0.40,
-            ev_weight=1.0, net_weight=0.25,
-        )
-
-    def test_higher_confidence_higher_ev(self):
-        low = self._score([_v("momentum", "LONG", 0.2)])
-        high = self._score([_v("momentum", "LONG", 0.95)])
-        assert high.expected_value > low.expected_value
-        assert high.score > low.score
-
-    def test_direction_preserved(self):
-        opp = self._score([_v("vwap", "SHORT", 0.8)])
-        assert opp.direction == "SHORT"
-        assert opp.horizon == SCALP
-
-    def test_mixed_direction_cluster_raises(self):
-        import pytest
-        with pytest.raises(ValueError):
-            self._score([_v("momentum", "LONG", 0.5), _v("vwap", "SHORT", 0.5)])
-
-    def test_empty_cluster_raises(self):
-        import pytest
-        with pytest.raises(ValueError):
-            self._score([])
-
-
-# ── ranking + edge cases ────────────────────────────────────────────────────
-
-class TestRankOpportunities:
-    def test_empty_votes(self):
+class TestRanking:
+    def test_empty_votes_yields_no_opportunity(self):
         assert rank_opportunities([]) == []
 
-    def test_all_neutral(self):
-        assert rank_opportunities([_v("momentum", "NEUTRAL", 0.0)]) == []
+    def test_all_neutral_yields_nothing(self):
+        votes = [Vote("structure", "NEUTRAL", 0.0, 1.0), Vote("vwap", "NEUTRAL", 0.0, 1.0)]
+        assert rank_opportunities(votes) == []
 
-    def test_ranked_by_score_desc(self):
+    def test_conflicting_timeframes_both_survive(self):
+        # The old scalar would cancel these to ~NEUTRAL. Here both are kept.
         votes = [
-            _v("structure", "LONG", 0.9),
-            _v("currency_strength", "LONG", 0.9),
-            _v("momentum", "SHORT", 0.5),
+            Vote("momentum", "SHORT", 0.9, 1.0),
+            Vote("volume", "SHORT", 0.8, 1.0),
+            Vote("structure", "LONG", 0.9, 1.0),
+            Vote("currency_strength", "LONG", 0.8, 1.0),
         ]
-        ranked = rank_opportunities(votes, min_cluster_confidence=0.0, min_cluster_net=0.0)
-        assert len(ranked) == 2
-        assert ranked[0].score >= ranked[1].score
+        opps = rank_opportunities(votes)
+        dirs = {(o.direction, o.timeframe_class) for o in opps}
+        assert ("SHORT", SCALP) in dirs
+        assert ("LONG", SWING) in dirs
 
-    def test_opposing_valid_clusters_both_returned(self):
+    def test_sorted_by_expected_value_desc(self):
+        # Same timeframe class (scalp) so reward:risk is equal and the EV
+        # ordering is driven by confidence/coherence. A strong, multi-module
+        # SHORT scalp should out-EV a weak lone LONG scalp.
         votes = [
-            _v("structure", "LONG", 0.9),
-            _v("currency_strength", "LONG", 0.85),
-            _v("momentum", "SHORT", 0.9),
-            _v("vwap", "SHORT", 0.85),
-            _v("fvg", "SHORT", 0.8),
+            Vote("momentum", "SHORT", 0.95, 1.0),
+            Vote("volume", "SHORT", 0.9, 1.0),
+            Vote("vwap", "SHORT", 0.85, 1.0),
+            Vote("liquidity", "LONG", 0.2, 1.0),
         ]
-        ranked = rank_opportunities(votes)
-        dirs = {o.direction for o in ranked}
-        assert dirs == {"LONG", "SHORT"}
+        opps = rank_opportunities(votes)
+        assert len(opps) >= 2
+        evs = [o.expected_value for o in opps]
+        assert evs == sorted(evs, reverse=True)
+        assert opps[0].direction == "SHORT"
 
-    def test_all_negative_ev_dropped(self):
-        # Weak lone vote → low win_prob → negative EV → dropped when required.
-        ranked = rank_opportunities(
-            [_v("momentum", "LONG", 0.05)],
-            min_cluster_net=0.0,
-            min_cluster_confidence=0.0,
-            require_positive_ev=True,
-        )
-        assert ranked == []
+    def test_swing_has_higher_rr_than_scalp(self):
+        long_swing = [Vote("structure", "LONG", 0.8, 1.0)]
+        long_scalp = [Vote("momentum", "LONG", 0.8, 1.0)]
+        swing = rank_opportunities(long_swing)[0]
+        scalp = rank_opportunities(long_scalp)[0]
+        assert swing.reward_risk > scalp.reward_risk
 
-    def test_negative_ev_kept_when_not_required(self):
-        ranked = rank_opportunities(
-            [_v("momentum", "LONG", 0.05)],
-            min_cluster_net=0.0,
-            min_cluster_confidence=0.0,
-            require_positive_ev=False,
-        )
-        assert len(ranked) == 1
+    def test_min_ev_filters_weak_ideas(self):
+        votes = [Vote("momentum", "LONG", 0.05, 1.0)]
+        # With a high EV floor nothing should clear it.
+        assert rank_opportunities(votes, min_expected_value=5.0) == []
 
-    def test_below_net_floor_dropped(self):
-        ranked = rank_opportunities(
-            [_v("momentum", "LONG", 0.5, weight=0.1)],  # net = 0.05
-            min_cluster_net=0.5,
-            min_cluster_confidence=0.0,
-        )
-        assert ranked == []
+    def test_min_contributors_filters(self):
+        votes = [Vote("momentum", "LONG", 0.8, 1.0)]
+        assert rank_opportunities(votes, min_cluster_contributors=2) == []
+
+    def test_coherence_penalises_same_tf_opposition(self):
+        # Two SHORT scalps with an opposing LONG scalp → lower coherence than
+        # the same SHORT scalp uncontested on its horizon.
+        contested = [
+            Vote("momentum", "SHORT", 0.8, 1.0),
+            Vote("volume", "SHORT", 0.8, 1.0),
+            Vote("vwap", "LONG", 0.8, 1.0),
+        ]
+        clean = [
+            Vote("momentum", "SHORT", 0.8, 1.0),
+            Vote("volume", "SHORT", 0.8, 1.0),
+        ]
+        c_short = next(o for o in rank_opportunities(contested) if o.direction == "SHORT")
+        clean_short = next(o for o in rank_opportunities(clean) if o.direction == "SHORT")
+        assert c_short.coherence < clean_short.coherence
+        assert c_short.expected_value < clean_short.expected_value
+
+    def test_decide_opportunities_bridge_matches(self):
+        votes = [
+            Vote("momentum", "LONG", 0.8, 1.0),
+            Vote("volume", "LONG", 0.7, 1.0),
+        ]
+        bridged = decide_opportunities(votes)
+        direct = rank_opportunities(votes)
+        assert len(bridged) == len(direct) == 1
+        assert bridged[0].direction == direct[0].direction
+        assert bridged[0].expected_value == pytest.approx(direct[0].expected_value)
+
+    def test_opportunity_summary_renders(self):
+        opp = rank_opportunities([Vote("momentum", "LONG", 0.8, 1.0)])[0]
+        assert isinstance(opp, Opportunity)
+        assert "LONG" in opp.summary and "EV=" in opp.summary

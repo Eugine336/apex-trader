@@ -240,6 +240,50 @@ def decide_opportunities(votes, ranker_cfg):
     )
 
 
+def decide_opportunities(
+    votes: list[Vote],
+    *,
+    scalp_modules: tuple[str, ...] | list[str] | None = None,
+    swing_modules: tuple[str, ...] | list[str] | None = None,
+    scalp_reward_risk: float = 1.5,
+    swing_reward_risk: float = 2.5,
+    base_win_rate: float = 0.40,
+    confidence_win_rate_gain: float = 0.40,
+    min_expected_value: float = 0.0,
+    min_cluster_confidence: float = 0.0,
+    min_cluster_contributors: int = 1,
+):
+    """Open-ended counterpart to ``decide``.
+
+    Where ``decide`` sums every vote into one scalar direction, this returns a
+    ranked list of independent opportunities (coherent vote clusters), each with
+    its own expected value.  It reuses the SAME votes and never mutates them, so
+    it can run alongside ``decide`` for shadow measurement before it drives any
+    live trade.
+
+    Imported lazily to avoid a circular import (opportunity_ranker imports
+    ``Vote`` from this module).
+    """
+    from brain.opportunity_ranker import (
+        DEFAULT_SCALP_MODULES,
+        DEFAULT_SWING_MODULES,
+        rank_opportunities,
+    )
+
+    return rank_opportunities(
+        votes,
+        scalp_modules=scalp_modules if scalp_modules is not None else DEFAULT_SCALP_MODULES,
+        swing_modules=swing_modules if swing_modules is not None else DEFAULT_SWING_MODULES,
+        scalp_reward_risk=scalp_reward_risk,
+        swing_reward_risk=swing_reward_risk,
+        base_win_rate=base_win_rate,
+        confidence_win_rate_gain=confidence_win_rate_gain,
+        min_expected_value=min_expected_value,
+        min_cluster_confidence=min_cluster_confidence,
+        min_cluster_contributors=min_cluster_contributors,
+    )
+
+
 # ── Per-module vote extractors ───────────────────────────────────────────
 # Each returns (direction, confidence) or ("NEUTRAL", 0.0) on failure.
 # They are pure — they read the analysis objects already computed upstream.

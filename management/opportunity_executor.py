@@ -1,18 +1,24 @@
 """
-APEX TRADER — Opportunity Executor (management layer)
+APEX TRADER — Opportunity Executor
 
-Consumes the ranked opportunities produced by the intelligence layer
-(:func:`brain.opportunity_ranker.rank_opportunities`) and decides which one(s)
-deserve capital, then drives each selected idea through the *existing* entry
-pipeline (OQ → EQ → EntryEngine → DecisionEngine → risk stack).
+The ranker (`brain.opportunity_ranker`) turns the brain's module votes into a
+ranked list of independent trade opportunities, each with its own expected
+value.  The executor decides *which* of those opportunities deserves capital and
+hands the chosen direction to the existing entry pipeline.
 
-The pipeline is injected as a callable so this module stays decoupled from the
-heavy decision/broker machinery and is unit-testable without torch/pandas.  The
-live ``main_loop`` supplies the real pipeline; tests supply a stub.
+It deliberately does NOT replace the planner, the correlation engine, the
+governor, or the risk stack.  It only answers the one question the scalar
+``decide`` used to answer — "which direction?" — but now from a graded, ranked
+view instead of a hand-raising sum.  Everything downstream (timing, sizing,
+SKIP/WAIT, portfolio vetoes) still runs exactly as before on the selected
+direction.
 
-Failures are never swallowed: a pipeline raising is logged at ERROR and recorded
-on the outcome, and execution continues with the next ranked idea so one bad
-candidate cannot silently abort the rest.
+Two modes, controlled by ``OpportunityRankerConfig.execute``:
+  * shadow  (execute=False) — select + log only; never drives a trade.
+  * execute (execute=True)  — select the best opportunity and dispatch it.
+
+Errors from the injected pipeline are logged loudly and surfaced — never
+silently swallowed.
 """
 
 from __future__ import annotations
@@ -24,136 +30,112 @@ from loguru import logger
 
 from brain.opportunity_ranker import Opportunity
 
-# A pipeline takes a selected Opportunity and attempts to act on it, returning a
-# truthy domain object on success (e.g. an EntryDecision) or None on a clean
-# skip.  Raising is allowed — the executor catches, logs loudly, and records it.
-Pipeline = Callable[[Opportunity], object]
-
 
 @dataclass
 class ExecutionOutcome:
-    """The result of attempting (or shadowing) one ranked opportunity."""
+    """Result of an executor pass over one instrument's candidates."""
 
-    opportunity: Opportunity
-    allocated: bool                 # did this idea receive capital intent?
-    dispatched: bool                # did the pipeline actually run (execute on)?
-    result: object = None           # pipeline return value, if any
-    skipped_reason: str = ""        # why it was not allocated/dispatched
-    error: Optional[BaseException] = None
+    selected: list[Opportunity] = field(default_factory=list)
+    executed: int = 0
+    shadow: bool = False
+    reason: str = ""
 
     @property
-    def summary(self) -> str:
-        if self.error is not None:
-            tail = f"ERROR {type(self.error).__name__}: {self.error}"
-        elif not self.allocated:
-            tail = f"skipped ({self.skipped_reason})"
-        elif not self.dispatched:
-            tail = "shadow (execute disabled)"
-        else:
-            tail = "dispatched"
-        return f"{self.opportunity.summary} → {tail}"
+    def any_executed(self) -> bool:
+        return self.executed > 0
 
 
 class OpportunityExecutor:
-    """Allocates capital across ranked opportunities and drives the pipeline.
+    """Selects ranked opportunities and (optionally) drives the entry pipeline.
 
-    Parameters
-    ----------
-    max_concurrent:
-        Maximum number of top-ranked opportunities to act on per call.
-    execute:
-        When False (default for safety), the executor produces shadow outcomes
-        — it ranks and selects but never dispatches, so the live path is
-        unaffected while data is gathered.
+    The pipeline is injected as a callable so the executor stays decoupled from
+    the main loop and is trivially testable.  The callable receives a single
+    ``Opportunity`` and returns ``True`` when a trade was actually placed.
     """
 
-    def __init__(self, max_concurrent: int = 1, execute: bool = False) -> None:
-        if max_concurrent < 1:
-            raise ValueError(
-                f"max_concurrent must be >= 1, got {max_concurrent!r}"
-            )
-        self.max_concurrent = max_concurrent
-        self.execute = execute
+    def __init__(self, config) -> None:
+        # Duck-typed OpportunityRankerConfig — read defensively so a missing
+        # field never crashes the live loop.
+        self.config = config
 
-    @classmethod
-    def from_config(cls, ranker_cfg) -> "OpportunityExecutor":
-        """Build from an ``OpportunityRankerConfig``."""
-        return cls(
-            max_concurrent=ranker_cfg.max_concurrent_opportunities,
-            execute=ranker_cfg.execute,
-        )
+    # ── Selection ─────────────────────────────────────────────────────────
 
-    def execute_opportunities(
-        self,
-        opportunities: list[Opportunity],
-        pipeline: Pipeline,
-    ) -> list[ExecutionOutcome]:
-        """Select the best ranked ideas and run each through ``pipeline``.
+    def select(self, candidates: Optional[list[Opportunity]]) -> Optional[Opportunity]:
+        """Return the single best opportunity, or ``None`` when there is none.
 
-        ``opportunities`` is expected pre-ranked (best first) but is defensively
-        re-sorted by composite score.  Returns one outcome per opportunity
-        considered, in the order considered.
+        Candidates are assumed pre-ranked (best-first) by the ranker; this just
+        guards the empty / missing cases so callers can fall back to the scalar
+        direction.
         """
-        if not opportunities:
-            logger.info("[executor] no opportunities to execute")
+        if not candidates:
+            return None
+        return candidates[0]
+
+    def select_top(self, candidates: Optional[list[Opportunity]]) -> list[Opportunity]:
+        """Return up to ``max_concurrent`` best opportunities."""
+        if not candidates:
             return []
+        max_concurrent = int(getattr(self.config, "max_concurrent", 1) or 1)
+        return list(candidates[:max_concurrent])
 
-        ordered = sorted(opportunities, key=lambda o: o.score, reverse=True)
-        outcomes: list[ExecutionOutcome] = []
-        allocated = 0
+    # ── Execution ─────────────────────────────────────────────────────────
 
-        for opp in ordered:
-            if allocated >= self.max_concurrent:
-                outcomes.append(
-                    ExecutionOutcome(
-                        opportunity=opp,
-                        allocated=False,
-                        dispatched=False,
-                        skipped_reason=(
-                            f"capacity reached ({self.max_concurrent})"
-                        ),
-                    )
-                )
-                continue
+    def execute(
+        self,
+        candidates: Optional[list[Opportunity]],
+        dispatch: Callable[[Opportunity], bool],
+        *,
+        label: str = "",
+    ) -> ExecutionOutcome:
+        """Drive the injected pipeline for the selected opportunities.
 
-            allocated += 1
+        In shadow mode the candidates are logged and returned without ever
+        calling ``dispatch``.  In execute mode each selected opportunity is
+        dispatched in rank order until one is placed or capacity is exhausted.
+        """
+        execute_live = bool(getattr(self.config, "execute", False))
+        chosen = self.select_top(candidates)
 
-            if not self.execute:
-                logger.info("[executor] shadow — would dispatch {}", opp.summary)
-                outcomes.append(
-                    ExecutionOutcome(
-                        opportunity=opp,
-                        allocated=True,
-                        dispatched=False,
-                        skipped_reason="execute disabled",
-                    )
-                )
-                continue
+        if not chosen:
+            return ExecutionOutcome(selected=[], executed=0, shadow=not execute_live,
+                                    reason="no candidates")
 
-            try:
-                result = pipeline(opp)
-            except Exception as exc:  # surface loudly, never swallow
-                logger.error(
-                    "[executor] pipeline raised for {}: {}", opp.summary, exc
-                )
-                outcomes.append(
-                    ExecutionOutcome(
-                        opportunity=opp,
-                        allocated=True,
-                        dispatched=True,
-                        error=exc,
-                    )
-                )
-                continue
-
-            logger.info("[executor] dispatched {} → {!r}", opp.summary, result)
-            outcomes.append(
-                ExecutionOutcome(
-                    opportunity=opp,
-                    allocated=True,
-                    dispatched=True,
-                    result=result,
-                )
+        if not execute_live:
+            logger.info(
+                "[executor] {} SHADOW — {} candidate(s), best: {}",
+                label or "pair",
+                len(chosen),
+                chosen[0].summary,
+            )
+            return ExecutionOutcome(
+                selected=chosen, executed=0, shadow=True,
+                reason="shadow mode (execute disabled)",
             )
 
-        return outcomes
+        executed = 0
+        for opp in chosen:
+            try:
+                placed = dispatch(opp)
+            except Exception as exc:
+                # Loud, surfaced — a pipeline failure must never be silent.
+                logger.error(
+                    "[executor] {} dispatch FAILED for {}: {}",
+                    label or "pair", opp.summary, exc,
+                )
+                raise
+            if placed:
+                executed += 1
+                logger.info(
+                    "[executor] {} EXECUTED {} ({}/{})",
+                    label or "pair", opp.summary, executed, len(chosen),
+                )
+            else:
+                logger.info(
+                    "[executor] {} declined downstream — {}",
+                    label or "pair", opp.summary,
+                )
+
+        return ExecutionOutcome(
+            selected=chosen, executed=executed, shadow=False,
+            reason=f"executed {executed}/{len(chosen)}",
+        )

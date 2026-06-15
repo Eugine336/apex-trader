@@ -1,191 +1,180 @@
 """
 APEX TRADER — Opportunity Ranker
 
-The intelligence layer that stops collapsing rich, multi-module evidence into a
-single net direction.  Instead of summing every vote into one ``LONG``/``SHORT``
-/``NEUTRAL`` answer (see :func:`brain.directional_consensus.decide`), this module
-lets *coherent clusters* of module votes form naturally, scores each cluster as
-an independent trade opportunity with its own expected value (EV), and ranks
-them so the executor can ask "which one deserves capital?".
+The directional consensus (`decide`) collapses every module's evidence into a
+single scalar: LONG, SHORT, or NEUTRAL.  That throws away real information — the
+fast modules might see a high-confidence SHORT scalp while the slow modules see
+a moderate LONG swing.  Summing those to ``net`` destroys both ideas.
 
-Two opportunities can legitimately coexist on the same instrument at the same
-time — e.g. a fast SHORT scalp off an M5 liquidity sweep and a slow LONG swing
-aligned with H4 structure.  The old summation destroyed exactly this
-information; the ranker preserves it.
+This module keeps the evidence intact.  It groups the same votes ``decide`` uses
+into *coherent clusters* (by direction × timeframe class), scores each cluster as
+an independent opportunity with its own expected value (EV) expressed in R units,
+and returns a ranked list — best idea first.
 
-Pure functions — no side effects, no broker/network access, no torch/pandas
-dependency in the math itself.  Mirrors the style of
-``brain/directional_consensus.py``.
+It is purely additive: it reuses the exact ``Vote`` objects the scanner already
+builds and never mutates them.  ``decide`` is untouched.
+
+Pure functions — no side effects, no broker/network access, no pandas/torch
+dependency in the math itself.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional
 
 from loguru import logger
 
 from brain.directional_consensus import Vote
 
-# Module → timeframe class.  Fast modules read the lower timeframes (M1/M5) and
-# express scalp-style opportunities; slow modules read the higher timeframes
-# (H1/H4/D1) and express swing-style opportunities.  A cluster built only from
-# fast modules is a SCALP; only from slow modules a SWING; a blend is MIXED.
-FAST_MODULES: frozenset[str] = frozenset(
-    {"momentum", "vwap", "order_block", "fvg", "liquidity", "volume"}
-)
-SLOW_MODULES: frozenset[str] = frozenset(
-    {"structure", "currency_strength", "wyckoff"}
-)
-
+# ── Timeframe classification ──────────────────────────────────────────────
+# Fast modules read micro/intrasession structure (scalp horizon); slow modules
+# read higher-timeframe / positional structure (swing horizon).  These are the
+# defaults — callers (via OpportunityRankerConfig) can override them.
 SCALP = "SCALP"
 SWING = "SWING"
-MIXED = "MIXED"
 
-
-def timeframe_class(modules: list[str]) -> str:
-    """Classify a cluster's horizon from the modules that formed it."""
-    has_fast = any(m in FAST_MODULES for m in modules)
-    has_slow = any(m in SLOW_MODULES for m in modules)
-    if has_fast and has_slow:
-        return MIXED
-    if has_slow:
-        return SWING
-    return SCALP
+DEFAULT_SCALP_MODULES: tuple[str, ...] = ("momentum", "volume", "vwap", "liquidity")
+DEFAULT_SWING_MODULES: tuple[str, ...] = (
+    "structure",
+    "currency_strength",
+    "wyckoff",
+    "order_block",
+    "fvg",
+)
 
 
 @dataclass(frozen=True)
 class Opportunity:
-    """A single, coherent trade idea distilled from a cluster of agreeing votes.
+    """A single, self-scored trade idea distilled from a coherent vote cluster.
 
-    Unlike ``DirectionDecision`` (one answer per instrument), many of these can
-    be produced per scan — one per coherent (direction, timeframe) cluster.
+    Unlike a scalar consensus direction, several Opportunities can coexist for
+    the same instrument (e.g. a SHORT scalp and a LONG swing) — each carries its
+    own expected value so the executor can pick which one deserves capital.
     """
 
-    direction: str                 # "LONG" or "SHORT" (never "NEUTRAL")
-    horizon: str                   # SCALP | SWING | MIXED
-    modules: list[str]             # contributing module names
-    net_score: float               # Σ |signed| over the cluster (raw conviction)
-    confidence: float              # 0..1 — weighted mean module confidence
-    coherence: float               # 0..1 — how concentrated the conviction is
-    risk_reward: float             # assumed R:R target for this horizon
-    win_prob: float                # 0..1 — calibrated from confidence
-    expected_value: float          # EV in R units (can be negative)
-    score: float                   # composite ranking score
+    direction: str               # "LONG" or "SHORT"
+    timeframe_class: str         # "SCALP" or "SWING"
+    expected_value: float        # EV in R units (reward/risk-adjusted)
+    confidence: float            # 0.0 .. 1.0 — weighted-mean cluster confidence
+    coherence: float             # 0.0 .. 1.0 — cluster mass / (cluster + opposing same-tf mass)
+    net_score: float             # signed weighted mass of the cluster (LONG +, SHORT −)
+    reward_risk: float           # reward:risk proxy used to derive EV
+    win_prob: float              # 0.0 .. 1.0 — modelled win probability
+    contributors: list[str] = field(default_factory=list)
     votes: list[Vote] = field(default_factory=list)
 
     @property
     def summary(self) -> str:
-        mods = ", ".join(self.modules) if self.modules else "none"
+        mods = ", ".join(self.contributors) if self.contributors else "none"
         return (
-            f"{self.horizon} {self.direction} "
-            f"(EV={self.expected_value:+.2f}R score={self.score:.2f} "
-            f"net={self.net_score:.2f} conf={self.confidence:.0%} "
-            f"rr={self.risk_reward:.1f}; modules: {mods})"
+            f"{self.direction} {self.timeframe_class} "
+            f"EV={self.expected_value:+.2f}R "
+            f"(p_win={self.win_prob:.0%} rr={self.reward_risk:.1f} "
+            f"conf={self.confidence:.2f} coherence={self.coherence:.0%}; "
+            f"from: {mods})"
         )
 
 
-def cluster_votes(votes: list[Vote]) -> list[list[Vote]]:
-    """Group non-neutral votes into coherent clusters.
+def classify_timeframe(
+    module: str,
+    scalp_modules: tuple[str, ...] | list[str],
+    swing_modules: tuple[str, ...] | list[str],
+) -> str:
+    """Map a module name to its timeframe class.
 
-    A cluster = votes that share both a *direction* and a *timeframe class*.
-    Fast modules cluster with fast modules, slow with slow — so an M5 short and
-    an H4 long never contaminate one another.  Returns one list of votes per
-    non-empty cluster.
+    Anything not explicitly listed as scalp defaults to SWING (the more
+    conservative, slower horizon) so an unknown module never silently inflates
+    a fast-scalp opportunity.
     """
-    buckets: dict[tuple[str, str], list[Vote]] = {}
+    if module in scalp_modules:
+        return SCALP
+    if module in swing_modules:
+        return SWING
+    return SWING
+
+
+def cluster_votes(
+    votes: list[Vote],
+    scalp_modules: tuple[str, ...] | list[str] = DEFAULT_SCALP_MODULES,
+    swing_modules: tuple[str, ...] | list[str] = DEFAULT_SWING_MODULES,
+) -> dict[tuple[str, str], list[Vote]]:
+    """Group non-neutral votes into clusters keyed by (direction, timeframe_class).
+
+    Coherent clusters form naturally: the fast modules agreeing on a direction
+    become one cluster, the slow modules agreeing on a (possibly different)
+    direction become another.  NEUTRAL/abstaining votes are dropped.
+    """
+    clusters: dict[tuple[str, str], list[Vote]] = {}
     for v in votes:
         if v.direction not in ("LONG", "SHORT"):
             continue
         if v.confidence <= 0.0 or v.weight <= 0.0:
             continue
-        horizon = SCALP if v.module in FAST_MODULES else SWING
-        buckets.setdefault((v.direction, horizon), []).append(v)
-    return [members for members in buckets.values() if members]
-
-
-def _win_prob_from_confidence(
-    confidence: float,
-    floor: float,
-    scale: float,
-) -> float:
-    """Map a 0..1 cluster confidence to a calibrated win probability.
-
-    Deliberately conservative: a zero-confidence cluster sits at ``floor`` and
-    confidence lifts it by ``scale``.  Clamped to (0, 1).
-    """
-    p = floor + max(0.0, min(1.0, confidence)) * scale
-    return max(1e-6, min(1.0 - 1e-6, p))
+        tf = classify_timeframe(v.module, scalp_modules, swing_modules)
+        clusters.setdefault((v.direction, tf), []).append(v)
+    return clusters
 
 
 def score_opportunity(
+    direction: str,
+    timeframe_class: str,
     cluster: list[Vote],
+    all_votes: list[Vote],
     *,
-    scalp_target_rr: float,
-    swing_target_rr: float,
-    mixed_target_rr: float,
-    win_prob_floor: float,
-    win_prob_scale: float,
-    ev_weight: float,
-    net_weight: float,
+    reward_risk: float,
+    base_win_rate: float,
+    confidence_win_rate_gain: float,
+    scalp_modules: tuple[str, ...] | list[str] = DEFAULT_SCALP_MODULES,
+    swing_modules: tuple[str, ...] | list[str] = DEFAULT_SWING_MODULES,
 ) -> Opportunity:
-    """Score one coherent cluster as an independent opportunity.
+    """Score one cluster as an independent opportunity with EV in R units.
 
-    Composite score blends expected value (quality of the edge) with net score
-    (how much conviction backs it).  EV is in R units:
-    ``EV = win_prob * rr - (1 - win_prob)``.
+    EV = p_win × reward_risk − (1 − p_win) × 1.0
+
+    ``p_win`` is derived from the cluster's weighted-mean confidence scaled by
+    its *coherence* — how dominant the cluster is versus opposing votes on the
+    SAME timeframe horizon.  A fast SHORT scalp is judged against opposing fast
+    votes, not against slow swing votes that simply see a different trade.
     """
-    if not cluster:
-        raise ValueError("score_opportunity requires a non-empty cluster")
+    cluster_mass = sum(abs(v.signed) for v in cluster)
+    weight_sum = sum(v.weight for v in cluster)
+    confidence = (
+        sum(v.weight * v.confidence for v in cluster) / weight_sum
+        if weight_sum > 0
+        else 0.0
+    )
 
-    direction = cluster[0].direction
-    if any(v.direction != direction for v in cluster):
-        raise ValueError(
-            "score_opportunity received a mixed-direction cluster: "
-            f"{[ (v.module, v.direction) for v in cluster ]}"
-        )
+    # Opposing mass on the SAME timeframe horizon (a real disagreement about
+    # this idea), not cross-horizon votes that describe a different trade.
+    opposing_mass = 0.0
+    for v in all_votes:
+        if v.direction not in ("LONG", "SHORT") or v.direction == direction:
+            continue
+        if classify_timeframe(v.module, scalp_modules, swing_modules) != timeframe_class:
+            continue
+        opposing_mass += abs(v.signed)
 
-    modules = [v.module for v in cluster]
-    horizon = timeframe_class(modules)
+    denom = cluster_mass + opposing_mass
+    coherence = cluster_mass / denom if denom > 0 else 1.0
 
-    net_score = sum(abs(v.signed) for v in cluster)
-    total_weight = sum(v.weight for v in cluster)
-    if total_weight <= 0.0:
-        raise ValueError(
-            f"score_opportunity cluster has non-positive total weight: {modules}"
-        )
+    win_prob = base_win_rate + confidence_win_rate_gain * confidence * coherence
+    win_prob = max(0.0, min(1.0, win_prob))
 
-    # Weighted-mean confidence — heavier modules pull the cluster confidence.
-    confidence = sum(v.confidence * v.weight for v in cluster) / total_weight
-    confidence = max(0.0, min(1.0, confidence))
+    expected_value = win_prob * reward_risk - (1.0 - win_prob) * 1.0
 
-    # Coherence: conviction concentration.  A few strong agreeing modules is
-    # more coherent than many lukewarm ones.  Max signed contribution over the
-    # cluster's total signed conviction, lifted by member count.
-    max_signed = max(abs(v.signed) for v in cluster)
-    coherence = (max_signed / net_score) if net_score > 0 else 0.0
-    coherence = max(0.0, min(1.0, coherence))
-
-    rr = {SCALP: scalp_target_rr, SWING: swing_target_rr, MIXED: mixed_target_rr}[
-        horizon
-    ]
-
-    win_prob = _win_prob_from_confidence(confidence, win_prob_floor, win_prob_scale)
-    expected_value = win_prob * rr - (1.0 - win_prob)
-
-    score = ev_weight * expected_value + net_weight * net_score
+    net_score = sum(v.signed for v in cluster)
+    contributors = [v.module for v in cluster]
 
     return Opportunity(
         direction=direction,
-        horizon=horizon,
-        modules=modules,
-        net_score=net_score,
+        timeframe_class=timeframe_class,
+        expected_value=expected_value,
         confidence=confidence,
         coherence=coherence,
-        risk_reward=rr,
+        net_score=net_score,
+        reward_risk=reward_risk,
         win_prob=win_prob,
-        expected_value=expected_value,
-        score=score,
+        contributors=contributors,
         votes=list(cluster),
     )
 
@@ -193,89 +182,54 @@ def score_opportunity(
 def rank_opportunities(
     votes: list[Vote],
     *,
-    min_cluster_net: float = 0.5,
-    min_cluster_confidence: float = 0.3,
-    require_positive_ev: bool = True,
-    scalp_target_rr: float = 2.0,
-    swing_target_rr: float = 3.0,
-    mixed_target_rr: float = 2.5,
-    win_prob_floor: float = 0.30,
-    win_prob_scale: float = 0.40,
-    ev_weight: float = 1.0,
-    net_weight: float = 0.25,
+    scalp_modules: tuple[str, ...] | list[str] = DEFAULT_SCALP_MODULES,
+    swing_modules: tuple[str, ...] | list[str] = DEFAULT_SWING_MODULES,
+    scalp_reward_risk: float = 1.5,
+    swing_reward_risk: float = 2.5,
+    base_win_rate: float = 0.40,
+    confidence_win_rate_gain: float = 0.40,
+    min_expected_value: float = 0.0,
+    min_cluster_confidence: float = 0.0,
+    min_cluster_contributors: int = 1,
 ) -> list[Opportunity]:
-    """Turn raw module votes into a ranked list of independent opportunities.
+    """Cluster, score, filter and rank every coherent opportunity in the panel.
 
-    1. Cluster votes by (direction, timeframe class).
-    2. Score each cluster (EV, confidence, coherence, R:R, composite).
-    3. Drop clusters below the conviction/confidence floors (and, when
-       ``require_positive_ev``, below EV>0) — but *never silently*: every drop
-       is logged.
-    4. Return survivors sorted by composite score, highest first.
-
-    Edge cases handled explicitly:
-    - empty / all-neutral votes → ``[]``
-    - all clusters below floors → ``[]`` (the executor treats this as "no trade")
-    - opposing clusters valid at different horizons (SHORT scalp + LONG swing)
-      → both returned and ranked independently; nothing is collapsed.
+    Returns a list ordered best-first by expected value.  Opportunities below
+    the EV / confidence / contributor floors are dropped — when nothing clears
+    the floors the list is empty (the "no trade" answer, but graded on quality
+    rather than forced by a summation to NEUTRAL).
     """
-    if not votes:
-        logger.info("[ranker] no votes supplied → no opportunities")
-        return []
+    clusters = cluster_votes(votes, scalp_modules, swing_modules)
+    opportunities: list[Opportunity] = []
 
-    clusters = cluster_votes(votes)
-    if not clusters:
-        logger.info(
-            "[ranker] {} vote(s) but no LONG/SHORT cluster formed → no opportunities",
-            len(votes),
-        )
-        return []
-
-    ranked: list[Opportunity] = []
-    for cluster in clusters:
+    for (direction, tf), cluster in clusters.items():
+        if len(cluster) < min_cluster_contributors:
+            continue
+        reward_risk = scalp_reward_risk if tf == SCALP else swing_reward_risk
         opp = score_opportunity(
+            direction,
+            tf,
             cluster,
-            scalp_target_rr=scalp_target_rr,
-            swing_target_rr=swing_target_rr,
-            mixed_target_rr=mixed_target_rr,
-            win_prob_floor=win_prob_floor,
-            win_prob_scale=win_prob_scale,
-            ev_weight=ev_weight,
-            net_weight=net_weight,
+            votes,
+            reward_risk=reward_risk,
+            base_win_rate=base_win_rate,
+            confidence_win_rate_gain=confidence_win_rate_gain,
+            scalp_modules=scalp_modules,
+            swing_modules=swing_modules,
         )
-
-        if opp.net_score < min_cluster_net:
-            logger.info(
-                "[ranker] dropped {} {} — net {:.2f} < min_cluster_net {:.2f}",
-                opp.horizon, opp.direction, opp.net_score, min_cluster_net,
-            )
-            continue
         if opp.confidence < min_cluster_confidence:
-            logger.info(
-                "[ranker] dropped {} {} — conf {:.0%} < min {:.0%}",
-                opp.horizon, opp.direction, opp.confidence, min_cluster_confidence,
-            )
             continue
-        if require_positive_ev and opp.expected_value <= 0.0:
-            logger.info(
-                "[ranker] dropped {} {} — EV {:+.2f}R not positive",
-                opp.horizon, opp.direction, opp.expected_value,
-            )
+        if opp.expected_value < min_expected_value:
             continue
+        opportunities.append(opp)
 
-        ranked.append(opp)
+    # Best first: highest EV, then highest confidence as a stable tie-break.
+    opportunities.sort(key=lambda o: (o.expected_value, o.confidence), reverse=True)
 
-    ranked.sort(key=lambda o: o.score, reverse=True)
-
-    if ranked:
-        logger.info(
-            "[ranker] {} opportunity(ies) ranked: {}",
-            len(ranked),
-            " | ".join(o.summary for o in ranked),
+    if opportunities:
+        logger.debug(
+            "[ranker] {} opportunity(ies): {}",
+            len(opportunities),
+            " | ".join(o.summary for o in opportunities),
         )
-    else:
-        logger.info(
-            "[ranker] {} cluster(s) formed but none cleared the floors → no trade",
-            len(clusters),
-        )
-    return ranked
+    return opportunities

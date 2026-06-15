@@ -1,70 +1,108 @@
 """
-Tests for the management-layer opportunity executor — no torch/pandas needed.
+Tests for the opportunity executor.
+
+Verifies selection, shadow vs execute modes, capacity (max_concurrent), the
+empty-candidates fallback, and that pipeline errors are surfaced (never
+silently swallowed).
 """
 
-from __future__ import annotations
+import pytest
 
-from brain.directional_consensus import Vote
-from brain.opportunity_ranker import rank_opportunities
+from config import OpportunityRankerConfig
+from brain.opportunity_ranker import Opportunity
 from management.opportunity_executor import OpportunityExecutor
 
 
-def _opps():
-    votes = [
-        Vote("structure", "LONG", 0.9, 1.0),
-        Vote("currency_strength", "LONG", 0.85, 1.0),
-        Vote("momentum", "SHORT", 0.9, 1.0),
-        Vote("vwap", "SHORT", 0.85, 1.0),
-        Vote("fvg", "SHORT", 0.8, 1.0),
-    ]
-    return rank_opportunities(votes)
+def _opp(direction="LONG", ev=1.0, tf="SCALP") -> Opportunity:
+    return Opportunity(
+        direction=direction,
+        timeframe_class=tf,
+        expected_value=ev,
+        confidence=0.7,
+        coherence=0.9,
+        net_score=1.0 if direction == "LONG" else -1.0,
+        reward_risk=1.5,
+        win_prob=0.6,
+        contributors=["momentum"],
+        votes=[],
+    )
 
 
-class TestExecutor:
-    def test_empty_returns_no_outcomes(self):
-        ex = OpportunityExecutor(execute=True)
-        assert ex.execute_opportunities([], lambda o: "x") == []
+class TestSelection:
+    def test_select_empty_returns_none(self):
+        ex = OpportunityExecutor(OpportunityRankerConfig())
+        assert ex.select(None) is None
+        assert ex.select([]) is None
 
-    def test_shadow_mode_does_not_dispatch(self):
-        ex = OpportunityExecutor(max_concurrent=5, execute=False)
+    def test_select_best_is_first(self):
+        ex = OpportunityExecutor(OpportunityRankerConfig())
+        best = _opp(ev=2.0)
+        assert ex.select([best, _opp(ev=1.0)]) is best
+
+    def test_select_top_respects_max_concurrent(self):
+        ex = OpportunityExecutor(OpportunityRankerConfig(max_concurrent=2))
+        cands = [_opp(ev=3.0), _opp(ev=2.0), _opp(ev=1.0)]
+        assert len(ex.select_top(cands)) == 2
+
+
+class TestExecution:
+    def test_shadow_mode_never_dispatches(self):
+        ex = OpportunityExecutor(OpportunityRankerConfig(execute=False))
         calls = []
-        outcomes = ex.execute_opportunities(_opps(), lambda o: calls.append(o))
-        assert calls == []  # pipeline never invoked
-        assert all(o.allocated and not o.dispatched for o in outcomes)
+        outcome = ex.execute([_opp()], lambda o: calls.append(o) or True, label="EURUSD")
+        assert outcome.shadow is True
+        assert outcome.executed == 0
+        assert calls == []
 
-    def test_execute_dispatches_up_to_capacity(self):
-        ex = OpportunityExecutor(max_concurrent=1, execute=True)
-        calls = []
-        outcomes = ex.execute_opportunities(
-            _opps(), lambda o: calls.append(o.direction) or "ok"
+    def test_execute_mode_dispatches_best(self):
+        ex = OpportunityExecutor(OpportunityRankerConfig(execute=True))
+        dispatched = []
+        outcome = ex.execute([_opp(ev=2.0), _opp(ev=1.0)], lambda o: dispatched.append(o) or True)
+        assert outcome.executed == 1
+        assert dispatched[0].expected_value == 2.0
+
+    def test_execute_capacity_two(self):
+        ex = OpportunityExecutor(OpportunityRankerConfig(execute=True, max_concurrent=2))
+        dispatched = []
+        outcome = ex.execute(
+            [_opp(ev=3.0), _opp(ev=2.0, direction="SHORT"), _opp(ev=1.0)],
+            lambda o: dispatched.append(o) or True,
         )
-        dispatched = [o for o in outcomes if o.dispatched]
-        assert len(dispatched) == 1
-        assert len(calls) == 1
-        # the rest are skipped for capacity
-        assert any("capacity" in o.skipped_reason for o in outcomes)
+        assert outcome.executed == 2
+        assert len(dispatched) == 2
 
-    def test_dispatches_best_first(self):
-        ex = OpportunityExecutor(max_concurrent=1, execute=True)
-        opps = _opps()
-        seen = []
-        ex.execute_opportunities(opps, lambda o: seen.append(o))
-        assert seen[0] is opps[0]  # highest-ranked dispatched first
+    def test_declined_downstream_not_counted(self):
+        ex = OpportunityExecutor(OpportunityRankerConfig(execute=True))
+        outcome = ex.execute([_opp()], lambda o: False)
+        assert outcome.executed == 0
+        assert outcome.shadow is False
 
-    def test_pipeline_error_surfaced_not_swallowed(self):
-        ex = OpportunityExecutor(max_concurrent=2, execute=True)
+    def test_empty_candidates_no_dispatch(self):
+        ex = OpportunityExecutor(OpportunityRankerConfig(execute=True))
+        called = []
+        outcome = ex.execute([], lambda o: called.append(o) or True)
+        assert outcome.executed == 0
+        assert called == []
+
+    def test_pipeline_error_surfaced(self):
+        ex = OpportunityExecutor(OpportunityRankerConfig(execute=True))
 
         def boom(_o):
-            raise RuntimeError("broker down")
+            raise RuntimeError("pipeline blew up")
 
-        outcomes = ex.execute_opportunities(_opps(), boom)
-        errored = [o for o in outcomes if o.error is not None]
-        assert errored
-        assert isinstance(errored[0].error, RuntimeError)
+        with pytest.raises(RuntimeError, match="pipeline blew up"):
+            ex.execute([_opp()], boom)
 
-    def test_from_config(self):
-        from config import OpportunityRankerConfig
-        cfg = OpportunityRankerConfig(execute=True, max_concurrent_opportunities=3)
-        ex = OpportunityExecutor.from_config(cfg)
-        assert ex.execute is True
-        assert ex.max_concurrent == 3
+
+class TestConfigValidation:
+    def test_bad_max_concurrent_rejected(self):
+        with pytest.raises(ValueError):
+            OpportunityRankerConfig(max_concurrent=0)
+
+    def test_bad_win_rate_rejected(self):
+        with pytest.raises(ValueError):
+            OpportunityRankerConfig(base_win_rate=1.5)
+
+    def test_bad_reward_risk_rejected(self):
+        with pytest.raises(ValueError):
+            OpportunityRankerConfig(scalp_reward_risk=0.0)
