@@ -1657,6 +1657,17 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         "(score {} < {}+{}) — size ×{:.2f} (bounded, not vetoed)",
                         _regime, int(result.score), _base_bar, _bump, _rmult,
                     )
+                    # Surface the bounded HTF/regime penalty on the dashboard.
+                    # When this gate was a hard veto it appeared in the activity
+                    # feed via _log_rejection; as a size penalty it would
+                    # otherwise go dark — keep HTF context visible to the desk.
+                    self._add_warning(
+                        "info",
+                        f"HTF/regime '{_regime}' below conviction bar "
+                        f"(score {int(result.score)} < {_base_bar}+{_bump}) — "
+                        f"size ×{_rmult:.2f} (bounded, not vetoed)",
+                        symbol=pair,
+                    )
         except Exception as exc:
             logger.debug("[entry] regime threshold gate skipped: {}", exc)
         # Don't open fresh FX/metals risk right before the weekend close.
