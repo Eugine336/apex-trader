@@ -126,6 +126,8 @@ class RiskEngine:
         trade_history: list[dict] | None = None,
         regime: str = "",
         session: str = "",
+        conviction: float | None = None,
+        portfolio_heat_pct: float = 0.0,
     ) -> RiskAssessment:
         now = datetime.now(timezone.utc)
         balance = account_balance or self.balance
@@ -248,15 +250,26 @@ class RiskEngine:
                     ev_confidence=ev_est.confidence,
                 )
 
-        if score > 0:
+        # ── Position sizing chain (single auditable path) ────────────────
+        # P3+P7 (PIPELINE_INTEGRATION_MAP §7.4/§7.7): fresh DecisionEngine
+        # conviction — when supplied — replaces the stale scanner score as the
+        # primary sizing input. All sizing factors are consolidated into one
+        # auditable, purely de-risking chain (each factor clamped to [0,1]) and
+        # logged so any trade's risk % can be fully reconstructed from the log.
+        if conviction is not None or score > 0:
             hwm_state = {
                 "is_at_peak": dd_status.drawdown_from_peak_pct <= 0,
                 "drawdown_from_peak_pct": dd_status.drawdown_from_peak_pct,
             }
-            risk_pct_decimal = self._scale_risk_by_score(
-                risk_pct_decimal, score, hwm_state,
+            risk_pct_decimal = self.compute_position_size_risk(
+                base_risk_pct=risk_pct_decimal,
+                conviction=conviction,
+                score=score,
+                hwm_state=hwm_state,
+                portfolio_heat_pct=portfolio_heat_pct,
             )
-            checks.append(f"Risk scaled by score {score}: {risk_pct_decimal:.3%}")
+            _src = f"conviction {conviction:.2f}" if conviction is not None else f"score {score}"
+            checks.append(f"Risk scaled by {_src}: {risk_pct_decimal:.3%}")
 
         # Build context if not supplied — auto-detect from instrument registry
         if context is None:
@@ -491,9 +504,122 @@ class RiskEngine:
             except Exception as exc:
                 logger.debug("[RiskEngine] drawdown guard restore failed: {}", exc)
 
-    def _scale_risk_by_score(
+    # Hard ceiling on per-trade risk regardless of any scaling factor.
+    _RISK_PCT_CAP = 0.025
+
+    def compute_position_size_risk(
+        self,
+        base_risk_pct: float,
+        conviction: float | None,
+        score: int,
+        hwm_state: dict,
+        portfolio_heat_pct: float = 0.0,
+    ) -> float:
+        """Single auditable sizing chain (P7).
+
+        Returns the per-trade risk % after applying every sizing factor. The
+        chain is purely multiplicative and de-risking only — each factor is
+        clamped to [0,1] so no factor can ever inflate risk above ``base``.
+        Every factor is logged with its input and the running total so a
+        trade's sizing can be fully reconstructed from the logs.
+
+        When ``conviction`` is supplied (Decision Engine active, the default
+        live path) it drives sizing via fresh data. When it is ``None`` the
+        engine falls back to the legacy stale-score scaler for backward
+        compatibility (e.g. Decision Engine disabled).
+        """
+        if conviction is None:
+            # Legacy path — preserve exact historical behaviour.
+            return self._scale_risk_by_score_DEPRECATED(base_risk_pct, score, hwm_state)
+
+        dd_pct = hwm_state.get("drawdown_from_peak_pct", 0.0) or 0.0
+
+        conviction_scale = self._scale_by_conviction(conviction)
+        heat_scale = self._scale_by_portfolio_heat(portfolio_heat_pct)
+        drawdown_scale = self._scale_by_drawdown(dd_pct)
+
+        size = base_risk_pct
+        size *= conviction_scale
+        size *= heat_scale
+        size *= drawdown_scale
+
+        capped = min(size, self._RISK_PCT_CAP)
+        final = round(capped, 6)
+
+        logger.info(
+            "[RiskEngine] Sizing chain: base={:.4%} "
+            "× conviction({:.2f})={:.2f} "
+            "× heat({:.2f}%)={:.2f} "
+            "× drawdown({:.2%})={:.2f} "
+            "= {:.4%}{}",
+            base_risk_pct, conviction, conviction_scale,
+            portfolio_heat_pct, heat_scale,
+            dd_pct, drawdown_scale,
+            final, " (capped)" if capped < size else "",
+        )
+        return final
+
+    @staticmethod
+    def _scale_by_conviction(conviction: float) -> float:
+        """Fresh-conviction sizing factor (P3) — 0–1 conviction → [0,1] factor.
+
+        Mirrors the legacy score tiers (92/88/85) mapped onto the 0–1
+        conviction range, replacing the stale scanner score as the sizing
+        input. De-risking only — never amplifies.
+        """
+        c = max(0.0, min(1.0, conviction))
+        if c >= 0.92:
+            return 1.0
+        if c >= 0.88:
+            return 0.85
+        if c >= 0.85:
+            return 0.7
+        return 0.5
+
+    @staticmethod
+    def _scale_by_portfolio_heat(heat_pct: float) -> float:
+        """Portfolio-heat sizing factor — de-risk as live heat climbs toward
+        the block threshold. Heat is expressed in percent of equity.
+
+        TODO: thresholds are sensible defaults — tune against realised heat
+        distributions / ``portfolio_heat_block_pct``.
+        """
+        h = max(0.0, heat_pct)
+        if h < 1.0:
+            return 1.0
+        if h < 1.5:
+            return 0.85
+        if h < 2.0:
+            return 0.7
+        return 0.5
+
+    @staticmethod
+    def _scale_by_drawdown(dd_pct: float) -> float:
+        """Drawdown-from-peak sizing factor — de-risk deeper into drawdown.
+        ``dd_pct`` is a fraction (0.10 == 10% below the high-water mark).
+
+        TODO: thresholds are sensible defaults — tune against equity-curve
+        recovery behaviour.
+        """
+        d = max(0.0, dd_pct)
+        if d < 0.05:
+            return 1.0
+        if d < 0.10:
+            return 0.85
+        if d < 0.15:
+            return 0.7
+        return 0.5
+
+    def _scale_risk_by_score_DEPRECATED(
         self, base_risk_pct: float, score: int, hwm_state: dict,
     ) -> float:
+        """DEPRECATED — replaced by conviction-based sizing via
+        ``compute_position_size_risk`` / ``_scale_by_conviction`` (P3).
+
+        Retained for the legacy path (Decision Engine disabled) where no fresh
+        conviction is available, and so the change is traceable. Uses the stale
+        scanner ``score`` computed at scan time T, not entry time T+N.
+        """
         if score >= 92:
             factor = 1.0
         elif score >= 88:
@@ -511,7 +637,7 @@ class RiskEngine:
         if dd_pct > 0.10:
             scaled *= 0.85
 
-        scaled = min(scaled, 0.025)
+        scaled = min(scaled, self._RISK_PCT_CAP)
         return round(scaled, 6)
 
     def _build_assessment(
