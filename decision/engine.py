@@ -18,6 +18,12 @@ from decision.context import EntryContext, TradeContext
 from decision.situation import SituationAssessment
 
 
+# Reason prefix stamped on a severe-decay hard-close. main_loop matches this to
+# persist a counterfactual shadow ("would it have hit its stop anyway, or did we
+# sell a future winner?") so the hard-close can be validated, not just trusted.
+SEVERE_THESIS_CLOSE_PREFIX = "SEVERE thesis collapse while in profit"
+
+
 @dataclass(frozen=True)
 class DecisionWeights:
     """Weights for the entry decision/conviction model (roadmap C).
