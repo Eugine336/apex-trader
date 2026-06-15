@@ -410,6 +410,24 @@ class TestTradingLoop:
         loop._check_daily_reset()
         assert loop._daily_trades == 0
 
+    def test_daily_reset_unfreezes_stale_drawdown_guard(self):
+        """A guard frozen on a prior day (no open positions left to close, so
+        register_trade_result never runs) must un-freeze at the day boundary —
+        otherwise can_trade() blocks every entry forever."""
+        from brain.drawdown_guard import DrawdownMode
+
+        loop = TradingLoop()
+        loop.drawdown.mode = DrawdownMode.FROZEN
+        loop.drawdown.last_trade_day = "2020-01-01"
+        loop._last_reset_day = "2020-01-01"
+
+        assert loop.drawdown.can_trade()[0] is False
+
+        loop._check_daily_reset()
+
+        assert loop.drawdown.mode != DrawdownMode.FROZEN
+        assert loop.drawdown.can_trade()[0] is True
+
     def test_trade_manager_sl_buy(self):
         loop = TradingLoop()
         tm = loop.trade_manager

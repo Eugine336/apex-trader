@@ -163,6 +163,22 @@ class DrawdownGuard:
             drawdown_from_peak_pct=round(dd_from_peak, 6),
         )
 
+    def reset_daily(self, timestamp: datetime | None = None) -> None:
+        """Observe the trading-day boundary independently of trade results.
+
+        A FROZEN guard is only ever lifted inside ``_roll_day_if_needed``,
+        which runs solely when a trade closes (``register_trade_result``). If
+        the guard freezes (a -5% day, or a margin / daily-loss flatten) and is
+        then left with no open positions to close, the day boundary is never
+        observed and FROZEN persists across days — blocking every new entry
+        indefinitely. The trading loop calls this once per UTC day so a stale
+        freeze lifts to RECOVERY on the next trading day, honouring the
+        documented "no trading until next day" contract. Same-day calls are a
+        no-op (the freeze must outlast the day it was triggered on).
+        """
+        timestamp = timestamp or datetime.now(timezone.utc)
+        self._roll_day_if_needed(timestamp.strftime("%Y-%m-%d"))
+
     def _roll_day_if_needed(self, day_key: str) -> None:
         if self.last_trade_day is None:
             self.last_trade_day = day_key
