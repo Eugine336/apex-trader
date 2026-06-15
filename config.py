@@ -825,6 +825,17 @@ class DecisionConfig:
     thesis_conviction_cycles: int = 3        # re-score window for conviction-collapse detection
     thesis_conviction_drop: float = 10.0     # min scan-score drop over window to count as collapse
     thesis_conviction_full_drop: float = 30.0  # drop giving the conviction leg full weight
+    # ── Live OQ/EQ decay management (P3) ──────────────────────────────────
+    # OQ/EQ gated the trade READY at entry; they are recomputed on fresh
+    # candles during management (decision.context.live_oq/live_eq). When the
+    # market conditions (OQ) or entry geometry (EQ) that justified the trade
+    # decay, add bounded CLOSE/TIGHTEN pressure — "the reason this was tradeable
+    # is gone". Additive weighted terms, never a hard override; inert when the
+    # live scores are unavailable (None).
+    oq_eq_decay_enabled: bool = True
+    oq_floor: float = 5.0                    # live OQ below this → CLOSE/TIGHTEN pressure
+    eq_floor: float = 5.0                    # live EQ below this → TIGHTEN pressure
+    oq_decay_significant: float = 2.0        # OQ drop (even above floor) → TIGHTEN pressure
 
 
 # ---------------------------------------------------------------------------

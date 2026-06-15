@@ -39,6 +39,19 @@ class TradeContext:
     scan_score: int = 0
     scan_direction: str = ""      # "LONG", "SHORT", "NEUTRAL"
 
+    # ── Layered-decision quality, re-validated mid-trade (P3) ────────────
+    # OQ/EQ gated the trade READY at entry. They are recomputed on fresh
+    # candles during management so the decision engine can react when the
+    # conditions that justified the trade decay. ``None`` = not recomputed
+    # this cycle (no quality pressure is applied). ``*_decay`` is
+    # ``entry_* - live_*`` (positive = deterioration since entry).
+    live_oq: Optional[float] = None
+    live_eq: Optional[float] = None
+    entry_oq: Optional[float] = None
+    entry_eq: Optional[float] = None
+    oq_decay: Optional[float] = None
+    eq_decay: Optional[float] = None
+
     # ── Multi-timeframe structure ────────────────────────────────────────
     d1_trend: str = "UNKNOWN"
     d1_confidence: float = 0.0

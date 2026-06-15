@@ -405,6 +405,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             thesis_conviction_cycles=dcfg.thesis_conviction_cycles,
             thesis_conviction_drop=dcfg.thesis_conviction_drop,
             thesis_conviction_full_drop=dcfg.thesis_conviction_full_drop,
+            oq_eq_decay_enabled=dcfg.oq_eq_decay_enabled,
+            oq_floor=dcfg.oq_floor,
+            eq_floor=dcfg.eq_floor,
+            oq_decay_significant=dcfg.oq_decay_significant,
         )
         self._risk_governor = RiskGovernor() if dcfg.governor_enabled else None
         self._decision_journal = DecisionJournal(dcfg.journal_dir) if dcfg.journal_enabled else None
@@ -1362,6 +1366,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # from the fresh entry-time data and reject if either has decayed
         # below the re-validation floor — the market shifted since the scan.
         _ld_cfg = self.config.layered_decision
+        # Entry-time OQ/EQ to stamp onto the trade for mid-trade decay tracking
+        # (P3). Seeded from the scan result and upgraded to the fresh
+        # re-validated values below when they are computed.
+        entry_oq = float(getattr(result, "opportunity_quality", 0.0) or 0.0)
+        entry_eq = float(getattr(result, "entry_quality", 0.0) or 0.0)
         if _ld_cfg.enabled and direction in ("LONG", "SHORT"):
             try:
                 fresh_oq, fresh_eq = self.scanner.recompute_quality_for_entry(
@@ -1411,6 +1420,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     f"{_ld_cfg.revalidate_entry_quality_min:.2f})",
                 )
                 return False
+
+            # Both floors cleared — these fresh, entry-time scores are the
+            # baseline management measures decay against (P3).
+            entry_oq, entry_eq = fresh_oq, fresh_eq
 
         balance = self.platforms.get_platform_balance(pair)
         if not balance:
@@ -2274,6 +2287,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             plan_trail_activation_r=plan_trail_activation_r,
             plan_trail_strategy=plan_trail_strategy,
             plan_partial_ratio=plan_partial_ratio,
+            entry_oq=entry_oq,
+            entry_eq=entry_eq,
         )
         tm_trade = self.trade_manager.open_trade(tm_signal)
         managed.tm_trade_id = tm_trade.trade_id
@@ -3189,6 +3204,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     self._run_decision_engine(
                         oid, pos, scan_result, sa_data={
                             "d1": d1, "h4": h4, "h1": h1, "m1": m1,
+                            "m5": m5, "m15": m15,
                         },
                         hold_minutes=hold_minutes,
                         pressure=pressure,
@@ -3302,6 +3318,24 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             # exit can defer to a HOLD/SCALE_IN instead of overriding it.
             self._last_decision_action[oid] = decision.action
             self._last_decision_action_time[oid] = datetime.now(timezone.utc)
+
+            # P4: hand the strategic (multi-timeframe) structure read to the
+            # mechanical manager so its M5-only structure-exit stays coherent
+            # with the richer brain instead of re-deriving in isolation.
+            try:
+                tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+                if tm_trade is not None:
+                    self.trade_manager.record_strategic_assessment(
+                        tm_trade,
+                        structure_integrity=sa.structure_integrity,
+                        tf_alignment=sa.tf_alignment,
+                        assessed_at=datetime.now(timezone.utc),
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "[DecisionEngine] strategic-structure record failed for {}: {}",
+                    pos.symbol, exc,
+                )
 
             self._execute_management_decision(oid, pos, decision, now)
             # Strategic engine completed — clear any degraded-mode tracking.
@@ -3845,6 +3879,47 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 ctx.portfolio_heat_pct = getattr(self._portfolio_risk_sm, '_last_heat_pct', 0.0) or 0.0
             except Exception as exc:
                 logger.debug("[ctx] portfolio heat read failed for {}: {}", pos.symbol, exc)
+
+        # ── P3: re-validate OQ/EQ on fresh candles ───────────────────────
+        # OQ/EQ gated this trade READY at entry. Recompute them now (same two
+        # scores, direction-correct for THIS trade) so the decision engine can
+        # react when the conditions that justified the trade decay. Additive
+        # context only — on failure we simply leave them None (no extra exit
+        # pressure), so a recompute error never forces or suppresses an exit.
+        _ld_cfg = self.config.layered_decision
+        m5_live = sa_data.get("m5")
+        m15_live = sa_data.get("m15")
+        h1_live = sa_data.get("h1")
+        if (
+            _ld_cfg.enabled
+            and m5_live is not None
+            and m15_live is not None
+            and h1_live is not None
+        ):
+            try:
+                _dir = "LONG" if ctx.is_long else "SHORT"
+                live_oq, live_eq = self.scanner.recompute_quality_for_entry(
+                    pair=pos.symbol,
+                    trade_dir=_dir,
+                    h1_df=h1_live,
+                    m15_df=m15_live,
+                    m5_df=m5_live,
+                    h4_df=sa_data.get("h4"),
+                    d1_df=sa_data.get("d1"),
+                    utc_now=datetime.now(timezone.utc),
+                )
+                ctx.live_oq = live_oq
+                ctx.live_eq = live_eq
+                e_oq = getattr(tm_trade, "entry_oq", None) if tm_trade else None
+                e_eq = getattr(tm_trade, "entry_eq", None) if tm_trade else None
+                ctx.entry_oq = e_oq
+                ctx.entry_eq = e_eq
+                if e_oq is not None:
+                    ctx.oq_decay = round(e_oq - live_oq, 2)
+                if e_eq is not None:
+                    ctx.eq_decay = round(e_eq - live_eq, 2)
+            except Exception as exc:
+                logger.debug("[ctx] live OQ/EQ recompute failed for {}: {}", pos.symbol, exc)
 
         return ctx
 

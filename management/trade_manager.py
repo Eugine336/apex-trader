@@ -65,6 +65,11 @@ class EntrySignal:
     plan_trail_activation_r: Optional[float] = None
     plan_trail_strategy: Optional[str] = None
     plan_partial_ratio: Optional[float] = None
+    # Layered-decision quality at entry (OQ/EQ). Carried so management can
+    # measure how far conditions have decayed since entry (P3). ``None`` when
+    # the trade was not opened through the layered-decision path.
+    entry_oq: Optional[float] = None
+    entry_eq: Optional[float] = None
 
 
 @dataclass
@@ -114,6 +119,17 @@ class ManagedTrade:
     plan_trail_activation_r: Optional[float] = None
     plan_trail_strategy: Optional[str] = None
     plan_partial_ratio: Optional[float] = None
+    # Layered-decision quality at entry (OQ/EQ) — carried so management can
+    # measure decay since entry (P3). ``None`` = not opened via layered path.
+    entry_oq: Optional[float] = None
+    entry_eq: Optional[float] = None
+    # Latest strategic (D1/H4/H1/M1) structure read recorded by the decision
+    # engine (P4). The mechanical M5 structure-exit consults these so the two
+    # management brains stay coherent. ``None`` = the strategic brain has not
+    # spoken for this trade yet.
+    strategic_structure_integrity: Optional[float] = None
+    strategic_tf_alignment: Optional[float] = None
+    strategic_assessment_time: Optional[datetime] = None
 
 
 class TradeManager:
@@ -140,6 +156,8 @@ class TradeManager:
         tp3_close_ratio: float = 0.5,
         breakeven_min_profit_r: float = 0.5,
         trailing_swing_lookback: int = 12,
+        strategic_structure_intact_threshold: float = 0.6,
+        strategic_structure_max_age_seconds: float = 600.0,
     ):
         self.max_stall_candles = max_stall_candles
         self.partial_close_ratio = partial_close_ratio
@@ -152,6 +170,11 @@ class TradeManager:
         # P12: require this much profit (in R) before BE activates, so a normal
         # post-TP1 retest doesn't immediately stop the runner at breakeven.
         self.breakeven_min_profit_r = breakeven_min_profit_r
+        # P4: the M5 structure-exit defers to the strategic brain when its
+        # (richer, multi-timeframe) structure read is fresh and intact, and
+        # fires with higher confidence when the strategic read says broken.
+        self.strategic_structure_intact_threshold = strategic_structure_intact_threshold
+        self.strategic_structure_max_age_seconds = max(0.0, strategic_structure_max_age_seconds)
         self.trailing = StructureTrailingStop(swing_lookback=trailing_swing_lookback)
         self.partial_calc = PartialCloseCalculator()
         self._trades: dict[str, ManagedTrade] = {}
@@ -267,6 +290,10 @@ class TradeManager:
         trade.plan_trail_activation_r = getattr(signal, "plan_trail_activation_r", None)
         trade.plan_trail_strategy = getattr(signal, "plan_trail_strategy", None)
         trade.plan_partial_ratio = getattr(signal, "plan_partial_ratio", None)
+        # Carry the entry-time layered-decision quality (OQ/EQ) so management
+        # can measure decay since entry (P3).
+        trade.entry_oq = getattr(signal, "entry_oq", None)
+        trade.entry_eq = getattr(signal, "entry_eq", None)
         if any(
             v is not None
             for v in (
@@ -553,10 +580,26 @@ class TradeManager:
         self, trade: ManagedTrade, df_m5: pd.DataFrame,
         bar_time: Optional[datetime] = None,
     ) -> bool:
-        """Exit if M5 structure shifts against the trade direction."""
+        """Exit if M5 structure shifts against the trade direction.
+
+        P4: this M5-only read is reconciled with the strategic brain. When the
+        strategic (D1/H4/H1/M1) structure read is fresh and intact, defer this
+        independent exit — the richer brain says the structure still holds. When
+        the strategic read is fresh and says structure is broken, the exit fires
+        with higher confidence. A stale/absent strategic read falls back to the
+        M5 analysis below (unchanged behaviour).
+        """
         if trade.partial_closed:
             return False
         now = bar_time or datetime.now(timezone.utc)
+        strat = self._fresh_strategic_assessment(trade, now)
+        if strat is not None and strat[0] >= self.strategic_structure_intact_threshold:
+            logger.debug(
+                "[structure-exit] {} deferred — strategic structure intact "
+                "({:.2f} ≥ {:.2f})",
+                trade.pair, strat[0], self.strategic_structure_intact_threshold,
+            )
+            return False
         stall_minutes = (now - trade.entry_time).total_seconds() / 60
         if stall_minutes < 30:
             return False
@@ -565,10 +608,15 @@ class TradeManager:
         struct = StructureEngine(swing_lookback=3)
         analysis = struct.analyze(df_m5)
         is_long = self._is_long(trade.direction)
+        strat_confirms_break = (
+            strat is not None
+            and strat[0] < self.strategic_structure_intact_threshold
+        )
+        confirm = " (strategic structure confirms break)" if strat_confirms_break else ""
         if is_long and analysis.last_event in (StructureEvent.CHOCH_BEARISH, StructureEvent.BOS_BEARISH):
             self.close_trade(
                 trade,
-                f"Structure exit — bearish shift after {stall_minutes:.0f}min",
+                f"Structure exit — bearish shift after {stall_minutes:.0f}min{confirm}",
                 trade.current_price,
                 TradeStatus.TIME_EXIT,
                 bar_time=bar_time,
@@ -577,13 +625,53 @@ class TradeManager:
         if not is_long and analysis.last_event in (StructureEvent.CHOCH_BULLISH, StructureEvent.BOS_BULLISH):
             self.close_trade(
                 trade,
-                f"Structure exit — bullish shift after {stall_minutes:.0f}min",
+                f"Structure exit — bullish shift after {stall_minutes:.0f}min{confirm}",
                 trade.current_price,
                 TradeStatus.TIME_EXIT,
                 bar_time=bar_time,
             )
             return True
         return False
+
+    # ------------------------------------------------------------------
+    # Strategic-structure sync (P4)
+    # ------------------------------------------------------------------
+
+    def record_strategic_assessment(
+        self,
+        trade: ManagedTrade,
+        structure_integrity: float,
+        tf_alignment: float,
+        assessed_at: Optional[datetime] = None,
+    ) -> None:
+        """Store the strategic engine's latest structure read on the trade.
+
+        Called by the trading loop after the (slower, multi-timeframe) decision
+        engine runs, so the (faster, M5-only) mechanical structure-exit can
+        defer to it while it is fresh.
+        """
+        trade.strategic_structure_integrity = structure_integrity
+        trade.strategic_tf_alignment = tf_alignment
+        trade.strategic_assessment_time = assessed_at or datetime.now(timezone.utc)
+
+    def _fresh_strategic_assessment(
+        self, trade: ManagedTrade, now: datetime,
+    ) -> Optional[tuple[float, float]]:
+        """Return ``(structure_integrity, tf_alignment)`` when the strategic
+        read is present and not older than ``strategic_structure_max_age_seconds``;
+        otherwise ``None`` (the mechanical M5 read then governs the exit)."""
+        integrity = trade.strategic_structure_integrity
+        ts = trade.strategic_assessment_time
+        if integrity is None or ts is None:
+            return None
+        try:
+            age = (now - ts).total_seconds()
+        except (TypeError, ValueError):
+            return None
+        if age < 0 or age > self.strategic_structure_max_age_seconds:
+            return None
+        return (integrity, trade.strategic_tf_alignment or 0.0)
+
 
     def _adjust_tp2(
         self, trade: ManagedTrade, df_m5: pd.DataFrame,
