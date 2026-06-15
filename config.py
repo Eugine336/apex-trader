@@ -692,6 +692,27 @@ class RiskConfig:
     absolute_be_floor_pips: float = 12.0   # ...or once open profit ≥ this many pips
     absolute_be_buffer_pips: float = 1.0   # park SL this far past entry to cover costs/spread
 
+    # ── P8: portfolio-heat-aware trailing (mechanical manager) ────────────
+    # The portfolio-heat state machine reacts to heat at the BOOK level
+    # (DEFENSIVE/REDUCING/EMERGENCY trims/closes). The mechanical TradeManager,
+    # however, trails every runner at the same width regardless of how stressed
+    # the book is. When the book is hot, a runner in profit should lock gains
+    # faster: multiply the structure-trail buffer by a heat-dependent factor so
+    # the stop sits CLOSER to structure (tighter). A smaller factor → tighter
+    # trail. This only ever moves SL in the profit direction (the trail itself
+    # enforces never-worsen-SL), only applies post-breakeven, and falls back to
+    # the normal width (factor 1.0) on any error. Set enabled=False to disable.
+    heat_trail_tighten_enabled: bool = True
+    heat_trail_factor_defensive: float = 0.7   # DEFENSIVE → 0.7× trail buffer
+    heat_trail_factor_reducing: float = 0.5    # REDUCING  → 0.5× trail buffer
+    heat_trail_factor_emergency: float = 0.5   # EMERGENCY → 0.5× trail buffer
+
+    # ── P9: periodic management-status log cadence (cycles) ───────────────
+    # Every N supervised cycles, emit a structured INFO summary of management
+    # mode (positions, heat state, strategic status, verdict distribution) for
+    # operational visibility. Set to 0 to disable the periodic summary.
+    management_status_log_interval_cycles: int = 100
+
     def __post_init__(self) -> None:
         def _check_finite_positive(name: str, val: float) -> None:
             if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
@@ -723,6 +744,27 @@ class RiskConfig:
         _check_finite_non_negative("absolute_be_floor_usd", self.absolute_be_floor_usd)
         _check_finite_non_negative("absolute_be_floor_pips", self.absolute_be_floor_pips)
         _check_finite_non_negative("absolute_be_buffer_pips", self.absolute_be_buffer_pips)
+
+        # P8: heat-trail factors must be in (0, 1] — a factor > 1 would WIDEN the
+        # trail when the book is stressed (the opposite of the intent) and a
+        # factor <= 0 would collapse the buffer onto structure.
+        def _check_trail_factor(name: str, val: float) -> None:
+            if not isinstance(val, (int, float)) or not math.isfinite(val) or not (0.0 < val <= 1.0):
+                raise ValueError(
+                    f"RiskConfig.{name} must be a finite number in (0, 1], got {val!r}"
+                )
+
+        _check_trail_factor("heat_trail_factor_defensive", self.heat_trail_factor_defensive)
+        _check_trail_factor("heat_trail_factor_reducing", self.heat_trail_factor_reducing)
+        _check_trail_factor("heat_trail_factor_emergency", self.heat_trail_factor_emergency)
+        if (
+            not isinstance(self.management_status_log_interval_cycles, int)
+            or self.management_status_log_interval_cycles < 0
+        ):
+            raise ValueError(
+                "RiskConfig.management_status_log_interval_cycles must be an int >= 0, "
+                f"got {self.management_status_log_interval_cycles!r}"
+            )
 
         if not isinstance(self.max_open_trades, int) or self.max_open_trades < 1:
             raise ValueError(

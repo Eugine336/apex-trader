@@ -270,8 +270,13 @@ class AdaptiveOptimizer:
         elapsed = (datetime.now(timezone.utc) - ltt).days
         return elapsed >= self.RETRAIN_DAY_INTERVAL
 
-    def register_new_trade(self) -> None:
+    def register_new_trade(self, exit_cause: Optional[str] = None) -> None:
         self._trades_since_train += 1
+        # P7: the normalised exit cause is an additive learning signal. The
+        # retrain trigger itself is count-based, so we only surface the cause
+        # here (kwarg is optional — existing callers are unaffected).
+        if exit_cause:
+            logger.debug("[ml] trade registered — exit_cause={}", exit_cause)
 
     # ------------------------------------------------------------------
     # Internal

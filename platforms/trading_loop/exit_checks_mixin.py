@@ -8,6 +8,7 @@ from loguru import logger
 from typing import TYPE_CHECKING
 
 from config import INSTRUMENT_REGISTRY, get_pip_size
+from management.exit_cause import ExitCause
 from platform_context import build_context_for_symbol
 
 if TYPE_CHECKING:
@@ -97,6 +98,7 @@ class ExitChecksMixin:
                         pos, result.close_price,
                         f"INVALIDATION_LOW_SCORE({scan_result.score})",
                         close_result=result,
+                        exit_cause=ExitCause.INVALIDATION,
                     )
                     self.managed_positions.pop(oid, None)
                     self.position_store.remove_position(oid)
@@ -127,6 +129,7 @@ class ExitChecksMixin:
                     pos, result.close_price,
                     f"INVALIDATION_OPPOSING({result_direction}@{effective_opposing_score})",
                     close_result=result,
+                    exit_cause=ExitCause.INVALIDATION,
                 )
                 self.managed_positions.pop(oid, None)
                 self.position_store.remove_position(oid)
@@ -178,6 +181,7 @@ class ExitChecksMixin:
                 pos, result.close_price,
                 f"CONVICTION_COLLAPSE(scores:{recent[0]}→{recent[-1]})",
                 close_result=result,
+                exit_cause=ExitCause.CONVICTION_COLLAPSE,
             )
             self.managed_positions.pop(oid, None)
             self.position_store.remove_position(oid)
@@ -257,6 +261,7 @@ class ExitChecksMixin:
                 pos, result.close_price,
                 f"HTF_H1_{direction_str}_CLOSE",
                 close_result=result,
+                exit_cause=ExitCause.HTF_CANDLE_CLOSE,
             )
             self.managed_positions.pop(oid, None)
             self.position_store.remove_position(oid)
@@ -439,6 +444,7 @@ class ExitChecksMixin:
                             pos, result.close_price,
                             f"NEWS_EXIT({event_name},pnl={profit_r:.1f}R)",
                             close_result=result,
+                            exit_cause=ExitCause.NEWS_EXIT,
                         )
                         self.managed_positions.pop(oid, None)
                         self.position_store.remove_position(oid)
@@ -627,6 +633,7 @@ class ExitChecksMixin:
                             pos, result.close_price,
                             f"SESSION_CLOSE({symbol})",
                             close_result=result,
+                            exit_cause=ExitCause.SESSION_CLOSE,
                         )
                         self.managed_positions.pop(oid, None)
                         self.position_store.remove_position(oid)
@@ -815,6 +822,7 @@ class ExitChecksMixin:
                     pos, result.close_price,
                     f"OPPORTUNITY_COST(blocked={blocked['pair']})",
                     close_result=result,
+                    exit_cause=ExitCause.OPPORTUNITY_COST,
                 )
                 self.managed_positions.pop(oid, None)
                 self.position_store.remove_position(oid)

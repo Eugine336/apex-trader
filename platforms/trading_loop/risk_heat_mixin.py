@@ -7,6 +7,8 @@ from typing import Optional
 
 from loguru import logger
 
+from management.exit_cause import ExitCause
+
 from brain import OpenTrade
 from config import INSTRUMENT_REGISTRY
 from platform_context import build_context_for_symbol
@@ -592,6 +594,7 @@ class RiskHeatMarginMixin:
                     pos, result.close_price,
                     f"EMERGENCY_CLOSE({transition.emergency_trigger or 'sustained'})",
                     close_result=result,
+                    exit_cause=ExitCause.HEAT_EMERGENCY,
                 )
                 self.managed_positions.pop(oid, None)
                 self.position_store.remove_position(oid)
@@ -678,7 +681,8 @@ class RiskHeatMarginMixin:
                 result = self.platforms.close_trade(oid, pos.platform)
                 if result.success:
                     self._record_closed_trade(
-                        pos, result.close_price, "MARGIN_FLATTEN", close_result=result
+                        pos, result.close_price, "MARGIN_FLATTEN", close_result=result,
+                        exit_cause=ExitCause.MARGIN_FLATTEN,
                     )
                     # Only drop a position once the broker confirms it closed.
                     self.managed_positions.pop(oid, None)
@@ -727,6 +731,7 @@ class RiskHeatMarginMixin:
                 if result.success:
                     self._record_closed_trade(
                         pos, result.close_price, reason, close_result=result,
+                        exit_cause=ExitCause.ACCOUNT_FLATTEN,
                     )
                     # Only drop a position once the broker confirms it closed.
                     self.managed_positions.pop(oid, None)

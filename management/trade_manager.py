@@ -158,6 +158,10 @@ class TradeManager:
         trailing_swing_lookback: int = 12,
         strategic_structure_intact_threshold: float = 0.6,
         strategic_structure_max_age_seconds: float = 600.0,
+        heat_trail_tighten_enabled: bool = False,
+        heat_trail_factor_defensive: float = 0.7,
+        heat_trail_factor_reducing: float = 0.5,
+        heat_trail_factor_emergency: float = 0.5,
     ):
         self.max_stall_candles = max_stall_candles
         self.partial_close_ratio = partial_close_ratio
@@ -175,6 +179,15 @@ class TradeManager:
         # fires with higher confidence when the strategic read says broken.
         self.strategic_structure_intact_threshold = strategic_structure_intact_threshold
         self.strategic_structure_max_age_seconds = max(0.0, strategic_structure_max_age_seconds)
+        # P8: heat-aware trail tightening. When the portfolio-heat state machine
+        # is in DEFENSIVE/REDUCING/EMERGENCY, multiply the structure-trail buffer
+        # by the matching factor so a post-BE runner locks gains faster in a
+        # stressed book. Never widens (factors are clamped to (0, 1]) and only
+        # tightens in the profit direction (calculate_trail enforces this).
+        self.heat_trail_tighten_enabled = heat_trail_tighten_enabled
+        self.heat_trail_factor_defensive = heat_trail_factor_defensive
+        self.heat_trail_factor_reducing = heat_trail_factor_reducing
+        self.heat_trail_factor_emergency = heat_trail_factor_emergency
         self.trailing = StructureTrailingStop(swing_lookback=trailing_swing_lookback)
         self.partial_calc = PartialCloseCalculator()
         self._trades: dict[str, ManagedTrade] = {}
@@ -219,6 +232,27 @@ class TradeManager:
         if activation is not None and pnl_r < activation:
             return False
         return True
+
+    def _heat_trail_factor(self, portfolio_heat_state: Optional[str]) -> float:
+        """Trail-buffer multiplier for the current portfolio-heat state.
+
+        Returns 1.0 (normal width) when tightening is disabled, no state is
+        supplied, or the state is NORMAL/unknown. Fail-safe: any unexpected
+        value falls back to the normal width rather than a tighter/looser stop.
+        """
+        if not self.heat_trail_tighten_enabled or not portfolio_heat_state:
+            return 1.0
+        try:
+            state = str(portfolio_heat_state).strip().upper()
+            if state == "DEFENSIVE":
+                return self.heat_trail_factor_defensive
+            if state == "REDUCING":
+                return self.heat_trail_factor_reducing
+            if state == "EMERGENCY":
+                return self.heat_trail_factor_emergency
+        except Exception:
+            return 1.0
+        return 1.0
 
     # ------------------------------------------------------------------
     # Open
@@ -331,6 +365,7 @@ class TradeManager:
         current_price: float,
         current_df_m5: Optional[pd.DataFrame] = None,
         bar_time: Optional[datetime] = None,
+        portfolio_heat_state: Optional[str] = None,
     ) -> ManagedTrade:
         if trade.status in TERMINAL_STATUSES:
             return trade
@@ -358,7 +393,10 @@ class TradeManager:
             and current_df_m5 is not None
             and self._should_trail(trade, pnl_r)
         ):
-            self._update_trailing(trade, current_df_m5)
+            self._update_trailing(
+                trade, current_df_m5,
+                trail_factor=self._heat_trail_factor(portfolio_heat_state),
+            )
         if self.tp_adjust_enabled and trade.partial_closed and current_df_m5 is not None:
             self._adjust_tp2(trade, current_df_m5)
         if self._check_tp3(trade):
@@ -527,18 +565,30 @@ class TradeManager:
         _log(f"BREAKEVEN SET: {trade.pair} — SL moved to {be_level}")
 
     def _update_trailing(
-        self, trade: ManagedTrade, df_m5: pd.DataFrame,
+        self, trade: ManagedTrade, df_m5: pd.DataFrame, trail_factor: float = 1.0,
     ) -> None:
         direction = "LONG" if self._is_long(trade.direction) else "SHORT"
+        # P8: shrink the structure buffer when the book is hot so the runner's
+        # stop sits closer to structure (tighter). Fail-safe: a bad/zero factor
+        # reverts to the normal buffer. calculate_trail still only returns an
+        # improving stop, so the never-worsen-SL invariant always holds.
+        buffer_pips = None
+        try:
+            if trail_factor and 0.0 < trail_factor < 1.0:
+                buffer_pips = self.trailing.buffer_pips * trail_factor
+        except Exception:
+            buffer_pips = None
         new_sl = self.trailing.calculate_trail(
             direction, trade.stop_loss, df_m5, trade.pip_size,
+            buffer_pips=buffer_pips,
         )
         if new_sl is not None:
             trade.stop_loss = new_sl
             trade.trailing_stop = new_sl
             trade.status = TradeStatus.TRAILING
+            tightened = " (heat-tightened)" if buffer_pips is not None else ""
             logger.info(
-                f"TRAILING: {trade.pair} — SL moved to {new_sl} (structure-based)"
+                f"TRAILING: {trade.pair} — SL moved to {new_sl} (structure-based){tightened}"
             )
 
     def _check_tp3(self, trade: ManagedTrade) -> bool:
