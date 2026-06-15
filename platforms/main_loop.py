@@ -82,7 +82,7 @@ from persistence.shadow_store import ShadowStore, ShadowContract, new_contract_i
 from decision.context import EntryContext, TradeContext
 from decision.situation import SituationEngine, SituationAssessment
 from decision.actions import Action, EntryAction, ManagementDecision
-from decision.engine import DecisionEngine, DecisionWeights
+from decision.engine import DecisionEngine, DecisionWeights, SEVERE_THESIS_CLOSE_PREFIX
 from decision.governor import RiskGovernor
 from decision.journal import DecisionJournal
 from planning import (
@@ -3596,6 +3596,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     pos.direction, pos.symbol, reason,
                 )
                 self._record_closed_trade(pos, result.close_price, reason, close_result=result)
+                # Counterfactual audit of the severe-decay hard-close: persist a
+                # shadow from the EXIT price using the protection that was in
+                # force. The resolver then tells us whether price ran back to
+                # that stop ("close was right") or continued ("sold a future
+                # winner") — surfaced per-gate on the dashboard for validation.
+                if decision.reason.startswith(SEVERE_THESIS_CLOSE_PREFIX):
+                    self._audit_severe_thesis_close(pos, result.close_price)
                 self.managed_positions.pop(oid, None)
                 self.position_store.remove_position(oid)
                 self._position_scores.pop(oid, None)
@@ -4253,6 +4260,43 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self.system_warnings.insert(0, entry)
         if len(self.system_warnings) > self._MAX_WARNINGS:
             self.system_warnings = self.system_warnings[: self._MAX_WARNINGS]
+
+    def _audit_severe_thesis_close(self, pos, close_price: float) -> None:
+        """Persist a counterfactual shadow after a severe-decay hard-close.
+
+        Uses the EXIT price as the reference and the protective stop that was in
+        force, with TP targets at 1.5R/2.5R of the exit-to-stop distance. The
+        existing shadow resolver classifies the forward outcome:
+          • LOSS / BREAKEVEN  → price returned to the stop ("close was correct")
+          • WIN / PARTIAL     → price continued ("sold a future winner")
+        Grouped under the 'severe_thesis_close' gate, this surfaces the
+        false-positive rate and the R left on the table on the shadow dashboard.
+        """
+        try:
+            if not pos.sl or not close_price:
+                return
+            risk = abs(close_price - pos.sl)
+            if risk <= 0:
+                return
+            is_long = pos.direction.upper() in ("BUY", "LONG")
+            tp1 = close_price + 1.5 * risk if is_long else close_price - 1.5 * risk
+            tp2 = close_price + 2.5 * risk if is_long else close_price - 2.5 * risk
+            self._persist_shadow_contract(
+                SimpleNamespace(
+                    pair=pos.symbol,
+                    direction=pos.direction,
+                    score=getattr(pos, "score", 0),
+                    position_size_lots=getattr(pos, "lots", 0.01),
+                    entry_timeframe="M5",
+                ),
+                rejecting_gate="severe_thesis_close",
+                entry_price=close_price,
+                stop_loss=pos.sl,
+                tp1=tp1,
+                tp2=tp2,
+            )
+        except Exception as exc:
+            logger.debug("[thesis-audit] counterfactual persist failed: {}", exc)
 
     def _persist_shadow_contract(
         self, signal, rejecting_gate: str,
