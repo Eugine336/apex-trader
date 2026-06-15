@@ -1617,6 +1617,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                                 pair, direction, result.score,
                                 f"Planner WAIT: {plan.reasoning}",
                             )
+                            # A perpetually WAIT-ed setup is effectively rejected,
+                            # so persist a shadow contract (mirroring planner:SKIP)
+                            # to keep it in the counterfactual / gate-tuner learning.
+                            self._persist_shadow_contract(signal, rejecting_gate="planner:WAIT")
                             return False
                         # ENTER — adopt the plan's sizing and entry mode.
                         base_pct = max(_exec_risk * 100.0, 1e-6)
@@ -3201,7 +3205,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
                 # ── Decision Intelligence System ───────────────────────
                 if self._decision_enabled:
-                    self._run_decision_engine(
+                    de_action = self._run_decision_engine(
                         oid, pos, scan_result, sa_data={
                             "d1": d1, "h4": h4, "h1": h1, "m1": m1,
                             "m5": m5, "m15": m15,
@@ -3214,6 +3218,24 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     )
                     if oid not in self.managed_positions:
                         continue
+
+                    # P1 (PR8): the legacy protective checks (C19–C22) used to
+                    # run ONLY when the Decision Engine was disabled. Activate
+                    # them as additive safety nets when the engine merely HELD
+                    # (or observed) this cycle — they can only CLOSE a weak /
+                    # opposed trade or TIGHTEN the stop in profit, never relax a
+                    # stop or override a stronger verdict. When the engine
+                    # actively closed/tightened/scaled, it already acted; and a
+                    # degraded cycle (de_action is None) already ran the legacy
+                    # fallback, so both are skipped to avoid double-managing.
+                    if de_action in (Action.HOLD, Action.OBSERVE):
+                        self._run_active_legacy_checks(
+                            oid, pos, scan_result, h1, now,
+                            hold_minutes=hold_minutes,
+                            opposing_boost=opposing_boost,
+                        )
+                        if oid not in self.managed_positions:
+                            continue
                 else:
                     # ── Legacy rule-based checks (fallback) ────────────
                     if cfg.continuous_analysis_enabled and hold_minutes >= cfg.invalidation_min_hold_minutes:
@@ -3291,8 +3313,14 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         opposing_boost: int,
         pressure_details: list[str],
         now: datetime,
-    ) -> None:
-        """Build context → assess situation → decide → governor review → execute."""
+    ) -> Action | None:
+        """Build context → assess situation → decide → governor review → execute.
+
+        Returns the strategic verdict's :class:`Action` so the caller can layer
+        the legacy protective checks as additive safety nets when the engine
+        only HELD. Returns ``None`` when the engine degraded (its exception
+        handler already ran the legacy fallback this cycle).
+        """
         try:
             ctx = self._build_trade_context(
                 oid, pos, scan_result, sa_data,
@@ -3340,6 +3368,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self._execute_management_decision(oid, pos, decision, now)
             # Strategic engine completed — clear any degraded-mode tracking.
             self._degraded_management.pop(oid, None)
+            return decision.action
         except Exception as exc:
             count = self._degraded_management.get(oid, 0) + 1
             self._degraded_management[oid] = count
@@ -3357,6 +3386,78 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 k for k in self._degraded_management if k not in self.managed_positions
             ]:
                 self._degraded_management.pop(stale, None)
+
+    def _run_active_legacy_checks(
+        self,
+        oid: str,
+        pos: ManagedPosition,
+        scan_result,
+        h1,
+        now: datetime,
+        *,
+        hold_minutes: float,
+        opposing_boost: int,
+    ) -> None:
+        """Run the legacy protective checks (C19–C22) alongside the engine.
+
+        These run only when the Decision Engine HELD this cycle, as additive
+        safety nets. They mirror the gating of the DecisionEngine-disabled path
+        and respect the same config flags, but each check is independently
+        guarded so one failure does not suppress the rest. None of them can
+        relax a stop or re-open a closed trade — they only CLOSE a weak/opposed
+        trade or TIGHTEN the stop in profit, so they can never override a
+        stronger strategic verdict.
+        """
+        cfg = self.config.risk
+
+        # ── C19: opposing-setup / low-score invalidation ──────────────────
+        if cfg.continuous_analysis_enabled and hold_minutes >= cfg.invalidation_min_hold_minutes:
+            try:
+                self._check_invalidation(
+                    oid, pos, scan_result, now,
+                    opposing_score_boost=opposing_boost,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[legacy-active] invalidation check failed for {} ({}): {}",
+                    pos.symbol, oid, exc,
+                )
+            if oid not in self.managed_positions:
+                return  # was closed
+
+        # ── C20: conviction collapse ───────────────────────────────────────
+        if cfg.conviction_monitoring_enabled and hold_minutes >= cfg.invalidation_min_hold_minutes:
+            try:
+                self._check_conviction_collapse(oid, pos, now)
+            except Exception as exc:
+                logger.warning(
+                    "[legacy-active] conviction-collapse check failed for {} ({}): {}",
+                    pos.symbol, oid, exc,
+                )
+            if oid not in self.managed_positions:
+                return
+
+        # ── C21: HTF candle-close reassessment ─────────────────────────────
+        if cfg.htf_reassessment_enabled and cfg.htf_reassess_on_h1_close:
+            try:
+                self._check_htf_candle_close(oid, pos, h1, now)
+            except Exception as exc:
+                logger.warning(
+                    "[legacy-active] HTF candle-close check failed for {} ({}): {}",
+                    pos.symbol, oid, exc,
+                )
+            if oid not in self.managed_positions:
+                return
+
+        # ── C22: beyond-breakeven dynamic SL tightening (no DE equivalent) ─
+        if cfg.dynamic_sl_tightening_enabled:
+            try:
+                self._apply_dynamic_sl_tightening(oid, pos)
+            except Exception as exc:
+                logger.warning(
+                    "[legacy-active] dynamic SL tighten failed for {} ({}): {}",
+                    pos.symbol, oid, exc,
+                )
 
     def _run_legacy_management_fallback(
         self, oid: str, pos: ManagedPosition, now: datetime,
