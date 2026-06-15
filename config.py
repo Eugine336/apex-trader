@@ -279,6 +279,11 @@ class ConsensusConfig:
     )
     high_authority_oppose_confidence: float = 0.6
     min_contributors: int = 2
+    # PR10 Phase 0: when the panel collapses to NEUTRAL on the agreement gate,
+    # log the suppressed minority cluster and emit a counterfactual shadow so
+    # the opportunity cost of the collapse can be measured. Logging/shadow only
+    # — it never changes the consensus verdict.
+    log_suppressed_minorities: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.min_contributors, int) or self.min_contributors < 1:
@@ -878,6 +883,21 @@ class DecisionConfig:
     oq_floor: float = 5.0                    # live OQ below this → CLOSE/TIGHTEN pressure
     eq_floor: float = 5.0                    # live EQ below this → TIGHTEN pressure
     oq_decay_significant: float = 2.0        # OQ drop (even above floor) → TIGHTEN pressure
+    # ── Fast-cluster opposition decay (PR10) ──────────────────────────────
+    # Data showed the management engine holds losing trades while the fast-
+    # evidence cluster (momentum + M1 alignment) has flipped against the
+    # position, anchored by "HTF aligned" as the hold reason. When the fast
+    # cluster has opposed for ``fast_opposition_min_streak`` consecutive
+    # management cycles AND the trade is NOT meaningfully in profit (profit_r <
+    # fast_opposition_profit_threshold), add bounded, progressively-ramping
+    # CLOSE pressure (weight × min(streak/max_streak, 1)). Additive only — it
+    # never overrides a stronger verdict and never touches the stop. Winners are
+    # unaffected. Set enabled=False to disable.
+    fast_opposition_decay_enabled: bool = True
+    fast_opposition_min_streak: int = 3      # cycles of opposition before pressure starts
+    fast_opposition_max_streak: int = 8      # streak at which the pressure ramp caps
+    fast_opposition_decay_weight: float = 0.15  # max CLOSE pressure at full ramp
+    fast_opposition_profit_threshold: float = 0.3  # only applies below this R
 
 
 # ---------------------------------------------------------------------------

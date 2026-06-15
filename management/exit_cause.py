@@ -37,6 +37,7 @@ class ExitCause(Enum):
     THESIS_SECURE = "thesis_secure"
     THESIS_DECAY = "thesis_decay"
     STRATEGIC_CLOSE = "strategic_close"
+    FAST_OPPOSITION_DECAY = "fast_opposition_decay"
 
     # ── Protective / guard exits ──────────────────────────────────────────
     NEWS_EXIT = "news_exit"
@@ -102,6 +103,8 @@ class ExitCause(Enum):
             return cls.THESIS_SECURE
         if "secure" in r:
             return cls.THESIS_SECURE
+        if "fast cluster" in r or "fast-opposition" in r or "fast opposition" in r:
+            return cls.FAST_OPPOSITION_DECAY
         if "opposing" in r or "invalidation" in r:
             return cls.INVALIDATION
         if "conviction" in r:

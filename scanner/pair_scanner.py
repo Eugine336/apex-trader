@@ -483,6 +483,7 @@ class PairScanner:
                 high_authority_modules=cc.high_authority_modules,
                 high_authority_oppose_confidence=cc.high_authority_oppose_confidence,
                 min_contributors=cc.min_contributors,
+                log_suppressed_minorities=cc.log_suppressed_minorities,
             )
             trade_dir = decision.direction
             logger.info("[consensus] {} — {}", pair, decision.summary)
@@ -975,6 +976,50 @@ class PairScanner:
                     score=score,
                     metadata={"status": status},
                 )
+
+        # ── PR10 Phase 0: suppressed-minority counterfactual shadow ────
+        # When the consensus collapsed to NEUTRAL on the agreement gate, the
+        # coherent minority cluster (the suppressed counter-trend opportunity)
+        # never becomes a tradeable direction and would be invisible to the
+        # shadow engine. Synthesise an approximate trade for that minority side
+        # so the gate tuner can measure how often these would have won. Logging/
+        # measurement only — the live verdict stays NEUTRAL.
+        if (
+            rejection is None
+            and trade_dir == "NEUTRAL"
+            and cc.enabled
+            and cc.log_suppressed_minorities
+            and decision is not None
+            and getattr(decision, "suppressed_direction", "NEUTRAL") in ("LONG", "SHORT")
+        ):
+            atr_pips = _atr_pips
+            if atr_pips is None:
+                try:
+                    tr_series = (m5_df["high"] - m5_df["low"]).abs().tail(14)
+                    if len(tr_series) > 0 and pip_size > 0:
+                        atr_pips = float(tr_series.mean()) / pip_size
+                except Exception:
+                    atr_pips = None
+            minority_dir = decision.suppressed_direction
+            rejection = build_rejected_setup(
+                symbol=pair,
+                direction=minority_dir,
+                rejecting_gate="consensus_agreement",
+                current_price=current_price,
+                atr_pips=atr_pips,
+                pip_size=pip_size,
+                scan_timestamp=utc_now.timestamp(),
+                oq=None,
+                eq=None,
+                score=score,
+                metadata={
+                    "status": status,
+                    "majority_direction": "LONG" if minority_dir == "SHORT" else "SHORT",
+                    "suppressed_modules": list(decision.suppressed_modules),
+                    "suppressed_strength": round(decision.suppressed_strength, 3),
+                    "agreement": round(decision.agreement, 3),
+                },
+            )
 
         return PairScanResult(
             pair=pair,
