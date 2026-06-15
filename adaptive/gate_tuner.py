@@ -63,6 +63,48 @@ class GateTuner:
         """Return the learned, bounded threshold for a gate (base + offset)."""
         return base + self._offsets.get(family, 0.0)
 
+    # ── Counterfactual observability (read-only, all gates) ──────────────
+
+    def summarize(self, outcomes_by_gate: list[dict]) -> dict[str, dict]:
+        """Per-gate counterfactual stats from shadow outcomes — observability only.
+
+        Unlike `calibrate` (which only touches the whitelisted TUNABLE quality
+        gates), this summarises EVERY rejecting-gate family present in the shadow
+        outcomes — including the high-authority gates that are never auto-tuned
+        (e.g. ``decision_engine``, ``planner``, ``regime_threshold``,
+        ``risk_engine``, ``governor``). For each family it reports how often the
+        setups it rejected would have won vs lost, so operators can see whether
+        the system's real bottlenecks are preserving or suppressing edge. It
+        changes no thresholds.
+
+        `outcomes_by_gate` is ShadowStore.get_outcomes_by_gate() — rows of
+        {rejecting_gate, outcome, cnt, avg_r}.
+        """
+        agg: dict[str, dict[str, int]] = {}
+        for row in outcomes_by_gate or []:
+            family = str(row.get("rejecting_gate", "")).split(":", 1)[0]
+            if not family:
+                continue
+            outcome = row.get("outcome")
+            cnt = int(row.get("cnt", 0) or 0)
+            d = agg.setdefault(family, {})
+            d[outcome] = d.get(outcome, 0) + cnt
+
+        summary: dict[str, dict] = {}
+        for family, counts in agg.items():
+            wins = counts.get("WIN", 0) + counts.get("PARTIAL", 0)
+            losses = counts.get("LOSS", 0)
+            total = wins + losses
+            summary[family] = {
+                "rejected_resolved": total,
+                "would_have_won": wins,
+                "would_have_lost": losses,
+                "would_have_won_rate": round(wins / total, 3) if total else 0.0,
+                "auto_tuned": family in self.TUNABLE,
+                "offset": round(self._offsets.get(family, 0.0), 4),
+            }
+        return summary
+
     # ── Calibration (run periodically from shadow outcomes) ──────────────
 
     def calibrate(self, outcomes_by_gate: list[dict]) -> list[tuple]:

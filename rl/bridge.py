@@ -20,6 +20,7 @@ import numpy as np
 import logging
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from .shadow import ShadowEngine, RLSignal
@@ -87,33 +88,81 @@ class RLBridge:
         authority_db: str = "authority.db",
         enabled:      bool = True,
     ):
+        self.checkpoint_path   = checkpoint
+        self.checkpoint_exists = bool(checkpoint) and Path(checkpoint).exists()
+        self._config_enabled   = enabled
         self.enabled   = enabled
         self.authority = AuthorityManager(authority_db)
         self._shadow_store = None
         self._live_trade_count = 0
+        self.shadow = None
 
-        if enabled:
+        # ── INACTIVE_DISABLED: turned off in config ───────────────────────
+        if not enabled:
+            self.enabled = False
+            logger.info(
+                "[RLBridge] INACTIVE_DISABLED — disabled in config. "
+                "rl_delta will be 0 for all decisions."
+            )
+            return
+
+        # ── INACTIVE_NO_CHECKPOINT: enabled but nothing trained to load ───
+        if not self.checkpoint_exists:
+            self.enabled = False
+            logger.warning(
+                f"[RLBridge] INACTIVE_NO_CHECKPOINT — config enabled but no checkpoint "
+                f"at {checkpoint}. rl_delta will be 0 for all decisions. Train and save "
+                f"a checkpoint (populate data/ CSVs, then run run_training.py) to activate."
+            )
+            return
+
+        try:
+            self.shadow = ShadowEngine(checkpoint, shadow_db)
+            if getattr(self.shadow, "_meta", {}).get("initialized_only"):
+                # Loaded, but it is an untrained placeholder (step=0): shadow
+                # signals are effectively random and authority cannot progress,
+                # so rl_delta stays 0. Report this as INACTIVE, not ACTIVE.
+                logger.warning(
+                    f"[RLBridge] INACTIVE_UNTRAINED — checkpoint {checkpoint} is a "
+                    f"placeholder (step=0); shadow signals are random and rl_delta "
+                    f"stays 0 until a model is trained on historical data "
+                    f"(populate data/ CSVs, then run run_training.py)."
+                )
+            else:
+                logger.info(
+                    f"[RLBridge] ACTIVE — loaded checkpoint from {checkpoint}. "
+                    f"Stage: {self.authority.stage_label}"
+                )
             try:
-                self.shadow = ShadowEngine(checkpoint, shadow_db)
-                logger.info(f"[RLBridge] Loaded. Stage: {self.authority.stage_label}")
-                if getattr(self.shadow, "_meta", {}).get("initialized_only"):
-                    logger.warning(
-                        "[RLBridge] RL checkpoint is UNTRAINED (placeholder, step=0) — "
-                        "shadow signals are effectively random and RL cannot progress "
-                        "past stage 2 until a model is trained on historical data "
-                        "(populate data/ CSVs, then run run_training.py)."
-                    )
-                try:
-                    from persistence.shadow_store import ShadowStore
-                    self._shadow_store = ShadowStore()
-                except Exception:
-                    logger.debug("[RLBridge] ShadowStore unavailable; RL shadow contracts will not be persisted to Phase 4 store")
-            except Exception as e:
-                logger.warning(f"[RLBridge] Failed to load checkpoint: {e}. Disabling.")
-                self.enabled = False
-                self.shadow  = None
-        else:
-            self.shadow = None
+                from persistence.shadow_store import ShadowStore
+                self._shadow_store = ShadowStore()
+            except Exception:
+                logger.debug("[RLBridge] ShadowStore unavailable; RL shadow contracts will not be persisted to Phase 4 store")
+        except Exception as e:
+            logger.warning(f"[RLBridge] INACTIVE_NO_CHECKPOINT — failed to load checkpoint {checkpoint}: {e}. Disabling.")
+            self.enabled = False
+            self.shadow  = None
+
+    # ── Unambiguous status ────────────────────────────────────────────────
+
+    @property
+    def status_label(self) -> str:
+        """
+        Unambiguous RL status for dashboard/logging. One of:
+          ACTIVE                — trained checkpoint loaded; rl_delta can be non-zero
+          INACTIVE_UNTRAINED    — checkpoint is a placeholder; rl_delta is always 0
+          INACTIVE_NO_CHECKPOINT— enabled but no checkpoint found/loadable
+          INACTIVE_DISABLED     — turned off in config
+        """
+        if self.enabled and self.shadow is not None:
+            if getattr(self.shadow, "_meta", {}).get("initialized_only"):
+                return "INACTIVE_UNTRAINED"
+            return "ACTIVE"
+        if not self._config_enabled:
+            return "INACTIVE_DISABLED"
+        if not self.checkpoint_exists:
+            return "INACTIVE_NO_CHECKPOINT"
+        return "INACTIVE_DISABLED"
 
     # ── Main integration point ────────────────────────────────────────────
 
@@ -247,6 +296,9 @@ class RLBridge:
         score = self.shadow.shadow_score() if self.shadow else {}
         return {
             "enabled":        self.enabled,
+            "status_label":   self.status_label,
+            "checkpoint":     self.checkpoint_path,
+            "checkpoint_exists": self.checkpoint_exists,
             "stage":          perms.stage,
             "label":          perms.label,
             "can_veto":       perms.can_veto,

@@ -281,6 +281,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._gate_tuner = GateTuner()
         self._last_gate_tune_time = 0.0
         self._gate_tune_interval_seconds = 6 * 3600
+        # Latest per-gate counterfactual summary (observability; populated from
+        # shadow outcomes during gate calibration, surfaced on the dashboard).
+        self._last_gate_counterfactuals: dict = {}
         # Let the entry engine read the tuner's learned entry-score offset.
         try:
             self.entry_engine.gate_tuner = self._gate_tuner
@@ -4708,6 +4711,21 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 logger.info(
                     "🎛️ Gate auto-tune — {} quality gate(s) adjusted from shadow outcomes",
                     len(changes),
+                )
+            # Observability: surface counterfactual stats for the high-authority
+            # gates too (decision_engine, planner, regime_threshold, risk_engine,
+            # governor, ...). These are never auto-tuned, but knowing whether
+            # their rejected setups would have won is the key to spotting an
+            # alpha-suppressing bottleneck.
+            self._last_gate_counterfactuals = self._gate_tuner.summarize(outcomes)
+            high_auth = {
+                f: s for f, s in self._last_gate_counterfactuals.items()
+                if not s["auto_tuned"] and s["rejected_resolved"] >= GateTuner.MIN_SAMPLES
+            }
+            if high_auth:
+                logger.info(
+                    "📊 Gate counterfactual review (observability-only) — {}",
+                    high_auth,
                 )
         except Exception as exc:
             logger.debug("[gate-tuner] calibration failed: {}", exc)

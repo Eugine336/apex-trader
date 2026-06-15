@@ -132,6 +132,15 @@ class RiskMixin(HelpersMixin):
                 except Exception as exc:
                     logger.debug("[dashboard] gate offsets read failed: {}", exc)
 
+            # Per-gate counterfactual review (observability for the
+            # high-authority gates that are tracked but never auto-tuned).
+            try:
+                cf = getattr(loop, "_last_gate_counterfactuals", None)
+                if cf:
+                    result["gate_counterfactuals"] = cf
+            except Exception as exc:
+                logger.debug("[dashboard] gate counterfactuals read failed: {}", exc)
+
             return result
 
         return {
