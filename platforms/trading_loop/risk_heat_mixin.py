@@ -171,6 +171,26 @@ class RiskHeatMarginMixin:
                 if self._last_reconcile_time is not None
                 else 999999.0
             )
+            # Tolerance/retry before force-closing on stale reconciliation: a
+            # single missed cycle (a brief broker hiccup) must not trip the
+            # emergency. When the age has crossed the threshold, attempt one
+            # immediate reconcile and re-measure — a transient gap heals here
+            # and never reaches the liquidation path.
+            if reconcile_age >= cfg_e.emergency_reconcile_failure_seconds:
+                stale_gap = reconcile_age
+                try:
+                    if self._reconcile_positions():
+                        self._last_reconcile_time = datetime.now(timezone.utc)
+                        reconcile_age = 0.0
+                        logger.info(
+                            "[PortfolioRisk] reconcile retry succeeded after "
+                            "{:.0f}s gap — emergency reconcile trigger cleared",
+                            stale_gap,
+                        )
+                except Exception as exc:
+                    logger.warning(
+                        "[PortfolioRisk] reconcile retry failed — {}", exc,
+                    )
             broker_count: Optional[int] = None
             emergency_snap_fetch = self.platforms.get_open_positions_snapshot()
             if emergency_snap_fetch.confirmed_platforms:
@@ -181,11 +201,12 @@ class RiskHeatMarginMixin:
                     "no platform confirmed (failed: {})",
                     emergency_snap_fetch.failed_platforms or "none connected",
                 )
+            managed_count = len(self.managed_positions)
             emergency_snap = EmergencyTriggerSnapshot(
                 live_heat_pct=live_heat,
                 drawdown_mode=self.drawdown.mode.value,
                 reconcile_age_seconds=reconcile_age,
-                managed_count=len(self.managed_positions),
+                managed_count=managed_count,
                 broker_count=broker_count,
             )
             trigger_result = evaluate_emergency_triggers(
@@ -194,6 +215,33 @@ class RiskHeatMarginMixin:
                 emergency_reconcile_failure_seconds=cfg_e.emergency_reconcile_failure_seconds,
                 emergency_broker_exposure_tolerance=cfg_e.emergency_broker_exposure_tolerance,
             )
+            # Stale reconcile while the broker is unreachable: never force-close
+            # on absent truth. Log both sides and retain for human review.
+            if trigger_result.reconcile_unreachable:
+                logger.critical(
+                    "[PortfolioRisk] RECONCILE STALE but broker UNREACHABLE — "
+                    "NOT force-closing. age={:.0f}s (threshold {:.0f}s), "
+                    "managed={}, broker=unknown, last_success={}, failed={}",
+                    reconcile_age, cfg_e.emergency_reconcile_failure_seconds,
+                    managed_count,
+                    self._last_reconcile_time.isoformat() if self._last_reconcile_time else "never",
+                    emergency_snap_fetch.failed_platforms or "none connected",
+                )
+                self._add_warning(
+                    "critical",
+                    "[PortfolioRisk] Reconciliation stale and broker unreachable — "
+                    f"{managed_count} positions retained for human review "
+                    f"(age={reconcile_age:.0f}s)",
+                )
+            if trigger_result.reconcile_failure:
+                logger.critical(
+                    "[PortfolioRisk] RECONCILE FAILURE — broker reachable but "
+                    "reconcile stale {:.0f}s (threshold {:.0f}s). "
+                    "managed={}, broker={}, last_success={}",
+                    reconcile_age, cfg_e.emergency_reconcile_failure_seconds,
+                    managed_count, broker_count,
+                    self._last_reconcile_time.isoformat() if self._last_reconcile_time else "never",
+                )
             if trigger_result.any_fired:
                 transition = self._portfolio_risk_sm.escalate_to_emergency(
                     trigger_result, live_heat, exposure.is_safe,

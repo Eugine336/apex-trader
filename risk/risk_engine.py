@@ -86,7 +86,10 @@ class RiskEngine:
             else self.risk_cfg.backtest_starting_balance_usd
         )
 
-        self.drawdown_guard = DrawdownGuard(base_risk_pct=self.risk_cfg.risk_per_trade_pct / 100.0)
+        self.drawdown_guard = DrawdownGuard(
+            base_risk_pct=self.risk_cfg.risk_per_trade_pct / 100.0,
+            rolling_window_days=self.risk_cfg.drawdown_rolling_window_days,
+        )
         self.correlation_engine = CorrelationEngine(
             max_single_currency_exposure=self.risk_cfg.max_correlated_trades * 0.02,
             max_correlated_trades=self.risk_cfg.max_correlated_trades,

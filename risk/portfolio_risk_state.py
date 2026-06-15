@@ -110,6 +110,12 @@ class EmergencyTriggerResult:
     drawdown_frozen: bool = False
     reconcile_failure: bool = False
     broker_exposure_mismatch: bool = False
+    # Reconciliation is stale AND the broker is unreachable. This is NOT an
+    # actionable emergency: with no trustworthy broker state, force-closing
+    # would liquidate good positions on a transient outage ("couldn't reach
+    # broker for a moment" must never kill a position). Surfaced for human
+    # review only — deliberately excluded from ``any_fired``.
+    reconcile_unreachable: bool = False
 
     @property
     def any_fired(self) -> bool:
@@ -131,6 +137,8 @@ class EmergencyTriggerResult:
             parts.append("reconcile_failure")
         if self.broker_exposure_mismatch:
             parts.append("broker_exposure_mismatch")
+        if self.reconcile_unreachable:
+            parts.append("reconcile_unreachable")
         return ", ".join(parts) if parts else "none"
 
 
@@ -154,7 +162,16 @@ def evaluate_emergency_triggers(
         result.drawdown_frozen = True
 
     if snap.reconcile_age_seconds >= emergency_reconcile_failure_seconds:
-        result.reconcile_failure = True
+        # Stale reconciliation only escalates to a force-close when the broker
+        # is actually reachable (broker_count is not None). A confirmed broker
+        # snapshot means the staleness reflects a genuine tracking problem we
+        # can act on safely. When the broker is unreachable we have no truth to
+        # act on — closing blind would dump good positions on a transient
+        # connectivity blip — so flag it for human review instead.
+        if snap.broker_count is not None:
+            result.reconcile_failure = True
+        else:
+            result.reconcile_unreachable = True
 
     if snap.broker_count is not None:
         count_diff = abs(snap.managed_count - snap.broker_count)

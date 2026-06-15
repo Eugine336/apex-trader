@@ -5,10 +5,17 @@ This guard enforces caution, recovery, and hard freeze states.
 """
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from enum import Enum
 
 import numpy as np
+
+# Trailing window (in calendar days) over which drawdown-from-peak is measured
+# for the consumers that gate sizing (planner size-reduction, RiskEngine
+# haircut). A lifetime measure never resets: an account that bled deeply once
+# stays shrunk forever even after recent performance recovers. A rolling window
+# lets the running peak age out so sizing recovers as recent equity does.
+DEFAULT_DRAWDOWN_ROLLING_WINDOW_DAYS = 30
 
 
 class DrawdownMode(Enum):
@@ -30,6 +37,7 @@ class DrawdownStatus:
     equity_slope: float
     high_water_mark: float = 0.0
     drawdown_from_peak_pct: float = 0.0
+    lifetime_drawdown_from_peak_pct: float = 0.0
 
 
 class DrawdownGuard:
@@ -41,7 +49,11 @@ class DrawdownGuard:
     - FROZEN: no trading until next day
     """
 
-    def __init__(self, base_risk_pct: float = 0.005):
+    def __init__(
+        self,
+        base_risk_pct: float = 0.005,
+        rolling_window_days: int = DEFAULT_DRAWDOWN_ROLLING_WINDOW_DAYS,
+    ):
         """
         base_risk_pct: matches config.risk_per_trade_pct (default 0.5%)
         Risk map scales DOWN from base in adverse conditions — never up.
@@ -49,6 +61,11 @@ class DrawdownGuard:
         CAUTION  = base_risk_pct * 0.75   (e.g. 0.375%)
         RECOVERY = base_risk_pct * 0.5    (e.g. 0.25%)
         FROZEN   = 0
+
+        rolling_window_days: trailing window (calendar days) used by the
+        consumer-facing drawdown-from-peak. Lifetime drawdown stays available
+        via ``lifetime_drawdown_from_peak_pct`` for logging/display. A value
+        <= 0 disables the rolling window and falls back to the lifetime peak.
         """
         self.mode = DrawdownMode.NORMAL
         self.consecutive_losses = 0
@@ -59,6 +76,7 @@ class DrawdownGuard:
         self.last_trade_day: str | None = None
         self.high_water_mark: float = 0.0
         self.hwm_timestamp: str | None = None
+        self.rolling_window_days: int = int(rolling_window_days)
 
         self.risk_map = {
             DrawdownMode.NORMAL:   round(base_risk_pct, 4),
@@ -110,7 +128,8 @@ class DrawdownGuard:
             self.high_water_mark = equity
             self.hwm_timestamp = ts_str
 
-        drawdown_from_peak = self._drawdown_fraction(equity)
+        day_key = timestamp.strftime("%Y-%m-%d")
+        drawdown_from_peak = self._rolling_drawdown_fraction(equity, day_key)
 
         is_at_peak = equity >= self.high_water_mark and self.high_water_mark > 0
         prev_equity = self.equity_points[-2][1] if len(self.equity_points) >= 2 else 0.0
@@ -120,12 +139,57 @@ class DrawdownGuard:
             "hwm": self.high_water_mark,
             "current_equity": equity,
             "drawdown_from_peak_pct": round(drawdown_from_peak, 6),
+            "lifetime_drawdown_from_peak_pct": round(self._drawdown_fraction(equity), 6),
             "is_at_peak": is_at_peak,
             "is_recovering": is_recovering,
         }
 
+    def _parse_day(self, day_key: str | None) -> date | None:
+        try:
+            return datetime.strptime(str(day_key), "%Y-%m-%d").date()
+        except (ValueError, TypeError):
+            return None
+
+    def _rolling_drawdown_fraction(
+        self, equity: float, reference_day_key: str | None = None
+    ) -> float:
+        """Peak-to-trough drawdown measured over a trailing window of the most
+        recent ``rolling_window_days`` calendar days.
+
+        Same 1.0-anchored principal curve and ``[0, 1]`` clamp as the lifetime
+        measure (see ``_drawdown_fraction``) — only the running peak differs:
+        here it is the highest equity *within the window* instead of the
+        all-time high-water mark. An old trough the account has since climbed
+        out of (or simply aged past the window) therefore stops suppressing
+        size, so sizing recovers as recent performance does. A non-positive
+        ``rolling_window_days`` disables the window and defers to the lifetime
+        measure."""
+        if self.rolling_window_days <= 0 or not self.equity_points:
+            return self._drawdown_fraction(equity)
+
+        ref = self._parse_day(reference_day_key)
+        if ref is None:
+            ref = self._parse_day(self.equity_points[-1][0])
+        if ref is None:
+            return self._drawdown_fraction(equity)
+
+        peak_equity = equity
+        for day_key, eq in self.equity_points:
+            d = self._parse_day(day_key)
+            if d is None:
+                continue
+            age = (ref - d).days
+            if 0 <= age <= self.rolling_window_days and eq > peak_equity:
+                peak_equity = eq
+
+        peak_factor = 1.0 + peak_equity
+        if peak_factor <= 0.0:
+            return 1.0
+        cur_factor = 1.0 + equity
+        return max(0.0, min(1.0, (peak_factor - cur_factor) / peak_factor))
+
     def _drawdown_fraction(self, equity: float) -> float:
-        """Peak-to-trough drawdown as a 0–1 fraction of peak equity.
+        """Lifetime peak-to-trough drawdown as a 0–1 fraction of peak equity.
 
         ``equity_points`` / ``high_water_mark`` track *cumulative return* off a
         zero base, so the running peak can sit at (or near) zero. The old
@@ -161,7 +225,8 @@ class DrawdownGuard:
         slope = self._equity_slope()
 
         current_equity = self.equity_points[-1][1] if self.equity_points else 0.0
-        dd_from_peak = self._drawdown_fraction(current_equity)
+        dd_from_peak = self._rolling_drawdown_fraction(current_equity, day_key)
+        lifetime_dd = self._drawdown_fraction(current_equity)
 
         return DrawdownStatus(
             mode=self.mode.value,
@@ -174,6 +239,7 @@ class DrawdownGuard:
             equity_slope=round(slope, 6),
             high_water_mark=round(self.high_water_mark, 6),
             drawdown_from_peak_pct=round(dd_from_peak, 6),
+            lifetime_drawdown_from_peak_pct=round(lifetime_dd, 6),
         )
 
     def reset_daily(self, timestamp: datetime | None = None) -> None:

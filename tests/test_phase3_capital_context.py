@@ -115,6 +115,86 @@ class TestHighWaterMark:
 
 
 # ════════════════════════════════════════════════════════════════════
+# 3.1b — Rolling-window drawdown
+# ════════════════════════════════════════════════════════════════════
+
+def _day(d: int, hour: int = 12) -> datetime:
+    """A timestamp on 2025-06-<d> for multi-day rolling-window tests."""
+    return datetime(2025, 6, d, hour, 0, 0, tzinfo=timezone.utc)
+
+
+class TestRollingDrawdown:
+
+    def test_old_trough_ages_out_of_window(self):
+        """A deep loss that has aged past the rolling window must stop
+        suppressing sizing, while the lifetime measure still reflects it."""
+        g = DrawdownGuard(rolling_window_days=5)
+        g.register_trade_result(0.50, _day(1))     # +50% peak (lifetime HWM)
+        g.register_trade_result(-0.40, _day(2))     # bleed to +10%
+        g.register_trade_result(0.01, _day(20))     # weeks later, +11%
+        status = g.get_status(_day(20))
+        # Rolling window (5d ending 06-20) only sees the +11% point → no peak
+        # above current → rolling drawdown collapses to ~0.
+        assert status.drawdown_from_peak_pct == pytest.approx(0.0, abs=1e-6)
+        # Lifetime peak 1.50 vs current 1.11 → still a real ~26% drawdown.
+        assert status.lifetime_drawdown_from_peak_pct == pytest.approx(
+            (1.50 - 1.11) / 1.50, abs=1e-4
+        )
+
+    def test_drawdown_detected_within_window(self):
+        g = DrawdownGuard(rolling_window_days=5)
+        g.register_trade_result(0.20, _day(10))     # +20% (equity 0.20)
+        g.register_trade_result(-0.10, _day(12))     # equity 0.10
+        status = g.get_status(_day(12))
+        expected = (1.20 - 1.10) / 1.20
+        assert status.drawdown_from_peak_pct == pytest.approx(expected, abs=1e-4)
+
+    def test_window_boundary_inclusive(self):
+        """A peak exactly ``window`` days old is included; one day older is not."""
+        g5 = DrawdownGuard(rolling_window_days=5)
+        g5.register_trade_result(0.30, _day(4))      # equity 0.30 (age 6 from 06-10)
+        g5.register_trade_result(-0.05, _day(5))      # equity 0.25 (age 5 — edge)
+        g5.register_trade_result(-0.05, _day(10))     # equity 0.20 (age 0)
+        status5 = g5.get_status(_day(10))
+        # 06-04 peak (age 6) excluded → window peak is 0.25.
+        assert status5.drawdown_from_peak_pct == pytest.approx(
+            (1.25 - 1.20) / 1.25, abs=1e-4
+        )
+
+        g6 = DrawdownGuard(rolling_window_days=6)
+        g6.register_trade_result(0.30, _day(4))      # age 6 — now inside window
+        g6.register_trade_result(-0.05, _day(5))
+        g6.register_trade_result(-0.05, _day(10))
+        status6 = g6.get_status(_day(10))
+        assert status6.drawdown_from_peak_pct == pytest.approx(
+            (1.30 - 1.20) / 1.30, abs=1e-4
+        )
+
+    def test_window_disabled_matches_lifetime(self):
+        g = DrawdownGuard(rolling_window_days=0)
+        g.register_trade_result(0.50, _day(1))
+        g.register_trade_result(-0.40, _day(20))
+        status = g.get_status(_day(20))
+        assert status.drawdown_from_peak_pct == pytest.approx(
+            status.lifetime_drawdown_from_peak_pct, abs=1e-9
+        )
+        assert status.drawdown_from_peak_pct == pytest.approx(
+            (1.50 - 1.10) / 1.50, abs=1e-4
+        )
+
+    def test_recovery_within_window_reduces_drawdown(self):
+        """Climbing back toward the in-window peak shrinks rolling drawdown."""
+        g = DrawdownGuard(rolling_window_days=30)
+        g.register_trade_result(0.20, _day(1))       # peak +20%
+        g.register_trade_result(-0.15, _day(2))       # trough +5%
+        deep = g.get_status(_day(2)).drawdown_from_peak_pct
+        g.register_trade_result(0.10, _day(3))        # recover to +15%
+        recovered = g.get_status(_day(3)).drawdown_from_peak_pct
+        assert recovered < deep
+        assert recovered == pytest.approx((1.20 - 1.15) / 1.20, abs=1e-4)
+
+
+# ════════════════════════════════════════════════════════════════════
 # 3.2 — Account-Size-Aware Sizing
 # ════════════════════════════════════════════════════════════════════
 

@@ -393,3 +393,39 @@ class TestOrphanAdoptionPreserved:
         assert "999" in loop.managed_positions
         assert loop.managed_positions["999"].entry_type == "ORPHAN_ADOPTED"
         loop.position_store.save_position.assert_called_once()
+
+
+# ── _reconcile_positions reports genuine confirmation ───────────────
+
+
+class TestReconcileReportsConfirmation:
+    """``_reconcile_positions`` returns True only on a confirmed reconcile.
+
+    The periodic heartbeat keys "last *successful* reconcile" off this return:
+    an unreachable-broker skip must report False so reconcile_age keeps growing
+    and the emergency safety net is not masked.
+    """
+
+    def test_returns_false_when_no_platform_confirmed(self):
+        loop = _build_loop(
+            ("1", "EURUSD", "BUY", 1.1, 0.1, 1.09, 1.12, 1.13, "mt5"),
+        )
+        loop.platforms.get_open_positions_snapshot.return_value = BrokerPositionsSnapshot(
+            positions=[], confirmed_platforms=set(), failed_platforms={"mt5"},
+        )
+
+        assert loop._reconcile_positions() is False
+        assert "1" in loop.managed_positions
+
+    def test_returns_true_when_platform_confirmed(self):
+        loop = _build_loop(
+            ("1", "EURUSD", "BUY", 1.1, 0.1, 1.09, 1.12, 1.13, "mt5"),
+        )
+        loop.platforms.get_open_positions_snapshot.return_value = BrokerPositionsSnapshot(
+            positions=[_make_position_info("1", "EURUSD", platform="mt5")],
+            confirmed_platforms={"mt5"}, failed_platforms=set(),
+        )
+        loop.platforms.get_price.return_value = _make_tick()
+
+        assert loop._reconcile_positions() is True
+        assert "1" in loop.managed_positions
