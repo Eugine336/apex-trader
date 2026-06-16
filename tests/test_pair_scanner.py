@@ -213,7 +213,7 @@ class TestScanScheduler:
             is_clear=True, events_nearby=[], next_high_impact=None,
             affected_currencies=[], warning_message="",
         )
-        assert scheduler.get_scan_interval(session, news) == 10
+        assert scheduler.get_scan_interval(session, news) == 5
 
     def test_news_block_overrides(self):
         scheduler = ScanScheduler()

@@ -369,7 +369,7 @@ class TestAdaptiveScanFrequency:
             _make_news_status(True),
             has_active_positions=True,
         )
-        assert interval == 15
+        assert interval == 5
 
     def test_active_session_no_change_with_positions(self):
         interval = self.scheduler.get_scan_interval(
@@ -377,7 +377,7 @@ class TestAdaptiveScanFrequency:
             _make_news_status(True),
             has_active_positions=True,
         )
-        assert interval == 10  # already below 15
+        assert interval == 5  # active cadence already at the with-positions cap
 
     def test_quiet_session_capped_with_positions(self):
         interval = self.scheduler.get_scan_interval(
@@ -385,7 +385,7 @@ class TestAdaptiveScanFrequency:
             _make_news_status(True),
             has_active_positions=True,
         )
-        assert interval <= 15
+        assert interval <= 5
 
     def test_should_scan_respects_positions(self):
         now = datetime.now(timezone.utc)
@@ -396,7 +396,7 @@ class TestAdaptiveScanFrequency:
             _make_news_status(True),
             has_active_positions=True,
         )
-        assert result is True  # 16s > 15s cap
+        assert result is True  # 16s > 5s cap
 
     def test_should_scan_without_positions_respects_dead(self):
         now = datetime.now(timezone.utc)
