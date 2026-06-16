@@ -352,6 +352,16 @@ class OpportunityRankerConfig:
     min_cluster_contributors: int = 1
     max_concurrent: int = 1               # executor: max opportunities per result
 
+    # When the scalar ``decide`` consensus collapses a mixed panel (fast vs slow
+    # modules disagreeing on horizon) to NEUTRAL, the scanner marks the setup
+    # WAITING (non-tradeable) BEFORE the main-loop executor ever runs — so the
+    # ranker can never act on the coherent opportunities it already scored. With
+    # this on (and ``execute`` on), the scanner promotes such a NEUTRAL setup to
+    # the ranker's best-EV direction at the scan stage so it can reach READY and
+    # flow through the unchanged entry pipeline. False = legacy behaviour (the
+    # ranker only confirms/overrides setups that were already directional).
+    rescue_neutral_consensus: bool = True
+
     # ── HTF demotion to pure context (per selected-opportunity horizon) ──
     # When the ranker selects the live direction, the higher-timeframe (H4/D1)
     # bias downstream is scaled by the opportunity's horizon instead of holding
