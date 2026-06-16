@@ -21,6 +21,7 @@ dependency in the math itself.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Callable, Optional
 
 from loguru import logger
 
@@ -42,6 +43,20 @@ DEFAULT_SWING_MODULES: tuple[str, ...] = (
     "fvg",
 )
 
+# When a vote records the *actual* timeframe it was computed on, the horizon is
+# read from that real signal rather than inferred from the module name (collapse
+# #12 — "H1 momentum forced to SCALP by module name").  Module-name mapping
+# stays the fallback for producers that do not yet record a timeframe.
+SCALP_TIMEFRAMES: frozenset[str] = frozenset({"M1", "M5", "M15"})
+SWING_TIMEFRAMES: frozenset[str] = frozenset({"M30", "H1", "H4", "D1", "W1", "MN", "MN1"})
+
+# Optional callable: given (direction, timeframe_class) return a calibrated win
+# probability in [0, 1], or None to fall back to the modelled formula.  Lets a
+# downstream feedback loop replace the constant ``base_win_rate`` heuristic with
+# observed per-horizon win rates (collapse #27) without touching this module.
+WinRateProvider = Callable[[str, str], Optional[float]]
+
+
 
 @dataclass(frozen=True)
 class Opportunity:
@@ -62,6 +77,16 @@ class Opportunity:
     win_prob: float              # 0.0 .. 1.0 — modelled win probability
     contributors: list[str] = field(default_factory=list)
     votes: list[Vote] = field(default_factory=list)
+    # ── Richer provenance (collapse #12 / #27) ───────────────────────────
+    # Distinct real timeframes of the contributing votes (e.g. ["M5", "M15"]).
+    # Empty when no vote recorded a timeframe — the horizon then came from the
+    # module-name fallback.  Lets the orchestrator see WHICH timeframes formed
+    # the idea instead of only the coarse SCALP/SWING bucket.
+    timeframes: list[str] = field(default_factory=list)
+    # How ``win_prob`` was derived, so a consumer can audit it rather than
+    # trusting an opaque scalar: base, the confidence×coherence gain term, and
+    # whether a calibrated provider overrode the modelled formula.
+    win_prob_components: dict = field(default_factory=dict)
 
     @property
     def summary(self) -> str:
@@ -79,13 +104,25 @@ def classify_timeframe(
     module: str,
     scalp_modules: tuple[str, ...] | list[str],
     swing_modules: tuple[str, ...] | list[str],
+    timeframe: str = "",
 ) -> str:
-    """Map a module name to its timeframe class.
+    """Map a vote to its timeframe class (SCALP / SWING).
 
-    Anything not explicitly listed as scalp defaults to SWING (the more
-    conservative, slower horizon) so an unknown module never silently inflates
-    a fast-scalp opportunity.
+    When the vote records the real ``timeframe`` it was computed on, the horizon
+    is read from that signal first (M1/M5/M15 → SCALP; M30/H1/H4/D1/… → SWING),
+    so an H1 momentum read is a SWING idea rather than being forced to SCALP by
+    its module name (collapse #12).  Falls back to the module-name lists when no
+    timeframe is recorded.
+
+    Anything not explicitly classified defaults to SWING (the more conservative,
+    slower horizon) so an unknown module never silently inflates a fast-scalp
+    opportunity.
     """
+    tf = (timeframe or "").strip().upper()
+    if tf in SCALP_TIMEFRAMES:
+        return SCALP
+    if tf in SWING_TIMEFRAMES:
+        return SWING
     if module in scalp_modules:
         return SCALP
     if module in swing_modules:
@@ -110,7 +147,9 @@ def cluster_votes(
             continue
         if v.confidence <= 0.0 or v.weight <= 0.0:
             continue
-        tf = classify_timeframe(v.module, scalp_modules, swing_modules)
+        tf = classify_timeframe(
+            v.module, scalp_modules, swing_modules, getattr(v, "timeframe", ""),
+        )
         clusters.setdefault((v.direction, tf), []).append(v)
     return clusters
 
@@ -126,6 +165,7 @@ def score_opportunity(
     confidence_win_rate_gain: float,
     scalp_modules: tuple[str, ...] | list[str] = DEFAULT_SCALP_MODULES,
     swing_modules: tuple[str, ...] | list[str] = DEFAULT_SWING_MODULES,
+    win_rate_provider: Optional[WinRateProvider] = None,
 ) -> Opportunity:
     """Score one cluster as an independent opportunity with EV in R units.
 
@@ -135,6 +175,10 @@ def score_opportunity(
     its *coherence* — how dominant the cluster is versus opposing votes on the
     SAME timeframe horizon.  A fast SHORT scalp is judged against opposing fast
     votes, not against slow swing votes that simply see a different trade.
+
+    When a ``win_rate_provider`` returns a calibrated probability for
+    (direction, timeframe_class) it overrides the modelled formula — the
+    provenance is recorded on ``win_prob_components`` either way (collapse #27).
     """
     cluster_mass = sum(abs(v.signed) for v in cluster)
     weight_sum = sum(v.weight for v in cluster)
@@ -150,20 +194,48 @@ def score_opportunity(
     for v in all_votes:
         if v.direction not in ("LONG", "SHORT") or v.direction == direction:
             continue
-        if classify_timeframe(v.module, scalp_modules, swing_modules) != timeframe_class:
+        if classify_timeframe(
+            v.module, scalp_modules, swing_modules, getattr(v, "timeframe", ""),
+        ) != timeframe_class:
             continue
         opposing_mass += abs(v.signed)
 
     denom = cluster_mass + opposing_mass
     coherence = cluster_mass / denom if denom > 0 else 1.0
 
-    win_prob = base_win_rate + confidence_win_rate_gain * confidence * coherence
-    win_prob = max(0.0, min(1.0, win_prob))
+    gain_term = confidence_win_rate_gain * confidence * coherence
+    modelled_win_prob = max(0.0, min(1.0, base_win_rate + gain_term))
+
+    calibrated_win_prob: Optional[float] = None
+    if win_rate_provider is not None:
+        try:
+            provided = win_rate_provider(direction, timeframe_class)
+            if provided is not None:
+                calibrated_win_prob = max(0.0, min(1.0, float(provided)))
+        except Exception as exc:  # never let a bad hook break ranking
+            logger.debug("[ranker] win_rate_provider failed: {}", exc)
+
+    win_prob = calibrated_win_prob if calibrated_win_prob is not None else modelled_win_prob
 
     expected_value = win_prob * reward_risk - (1.0 - win_prob) * 1.0
 
     net_score = sum(v.signed for v in cluster)
     contributors = [v.module for v in cluster]
+    # Distinct real timeframes of the cluster (order-preserving).
+    timeframes: list[str] = []
+    for v in cluster:
+        tfl = (getattr(v, "timeframe", "") or "").strip().upper()
+        if tfl and tfl not in timeframes:
+            timeframes.append(tfl)
+
+    win_prob_components = {
+        "base_win_rate": round(base_win_rate, 4),
+        "gain_term": round(gain_term, 4),
+        "confidence": round(confidence, 4),
+        "coherence": round(coherence, 4),
+        "modelled_win_prob": round(modelled_win_prob, 4),
+        "calibrated": calibrated_win_prob is not None,
+    }
 
     return Opportunity(
         direction=direction,
@@ -176,7 +248,10 @@ def score_opportunity(
         win_prob=win_prob,
         contributors=contributors,
         votes=list(cluster),
+        timeframes=timeframes,
+        win_prob_components=win_prob_components,
     )
+
 
 
 def rank_opportunities(
@@ -191,13 +266,16 @@ def rank_opportunities(
     min_expected_value: float = 0.0,
     min_cluster_confidence: float = 0.0,
     min_cluster_contributors: int = 1,
+    win_rate_provider: Optional[WinRateProvider] = None,
 ) -> list[Opportunity]:
     """Cluster, score, filter and rank every coherent opportunity in the panel.
 
-    Returns a list ordered best-first by expected value.  Opportunities below
-    the EV / confidence / contributor floors are dropped — when nothing clears
-    the floors the list is empty (the "no trade" answer, but graded on quality
-    rather than forced by a summation to NEUTRAL).
+    Returns the FULL list ordered best-first by expected value — the ranked
+    tail is never truncated here (collapse #13): every coherent idea that
+    clears the EV / confidence / contributor floors survives so the executor /
+    orchestrator can choose among ALL of them by capacity, not a hardcoded
+    top-N.  When nothing clears the floors the list is empty (the "no trade"
+    answer, graded on quality rather than forced by a summation to NEUTRAL).
     """
     clusters = cluster_votes(votes, scalp_modules, swing_modules)
     opportunities: list[Opportunity] = []
@@ -216,6 +294,7 @@ def rank_opportunities(
             confidence_win_rate_gain=confidence_win_rate_gain,
             scalp_modules=scalp_modules,
             swing_modules=swing_modules,
+            win_rate_provider=win_rate_provider,
         )
         if opp.confidence < min_cluster_confidence:
             continue
