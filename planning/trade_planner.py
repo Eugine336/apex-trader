@@ -25,6 +25,32 @@ from loguru import logger
 from planning.models import TradePlan, TradePlanContext
 
 
+def _gate_quality_multiplier(
+    measures: list[tuple[float, float]], floor: float = 0.15
+) -> float:
+    """Bounded quality multiplier for the softened conviction gate.
+
+    Mirrors ``brain.orchestrator.gate_quality_multiplier`` but kept inline so the
+    planner stays a leaf module (stdlib + loguru + planning.models). For each
+    ``(value, threshold)`` a shortfall contributes ``value / threshold`` (<1.0);
+    the product is bounded to ``[floor, 1.0]`` so a near-miss flows through small
+    and is never zero (a graded "barely" is still a tiny trade) nor above 1.0.
+    """
+    mult = 1.0
+    for value, threshold in measures:
+        try:
+            threshold = float(threshold)
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if threshold <= 0:
+            continue
+        ratio = value / threshold
+        if ratio < 1.0:
+            mult *= max(0.0, ratio)
+    return max(floor, min(1.0, mult))
+
+
 @dataclass
 class PlannerConfig:
     """All tunable parameters for the planner.
@@ -46,6 +72,16 @@ class PlannerConfig:
     # ── Minimum agreement / confidence to enter ──────────────────────────
     min_confidence_to_enter: float = 0.40
     min_advisor_agreement: float = 0.50
+
+    # ── Gate softening (Phase 9: kill-switch → bounded dimmer) ────────────
+    # When the orchestrator is the live sizer the conviction floor no longer
+    # needs to *kill* a low-conviction setup — it can hand it through as ENTER
+    # carrying a bounded quality multiplier the orchestrator folds into size, so
+    # a near-miss trades SMALL instead of being dropped. The governor veto below
+    # stays hard regardless. main_loop sets ``soften_gates`` from the
+    # orchestrator config; default False keeps the legacy hard SKIP.
+    soften_gates: bool = False
+    gate_quality_floor: float = 0.15
 
     # ── Entry mode rules ─────────────────────────────────────────────────
     limit_order_zone_distance_atr: float = 0.5   # LIMIT if price > this×ATR from zone
@@ -151,13 +187,35 @@ class TradePlanner:
 
         # ── 1. ENTER / WAIT / SKIP ───────────────────────────────────────
         if confidence < cfg.min_confidence_to_enter and agreement < cfg.min_advisor_agreement:
-            plan.action = "SKIP"
-            plan.reasoning = (
-                f"[{ctx.situation_label}] SKIP — low conviction "
-                f"(confidence {confidence:.2f} < {cfg.min_confidence_to_enter:.2f}, "
-                f"agreement {agreement:.2f} < {cfg.min_advisor_agreement:.2f})"
-            )
-            return plan
+            if cfg.soften_gates:
+                # Phase 9: soften the conviction floor into a bounded dimmer.
+                # Instead of killing the setup, flow it through as ENTER carrying
+                # a quality multiplier (how far below the floors it was) that the
+                # orchestrator folds into graded size. The governor veto below
+                # still applies — only this QUALITY gate is softened.
+                plan.gate_quality_multiplier = _gate_quality_multiplier(
+                    [
+                        (confidence, cfg.min_confidence_to_enter),
+                        (agreement, cfg.min_advisor_agreement),
+                    ],
+                    cfg.gate_quality_floor,
+                )
+                logger.info(
+                    "[gate-soften] planner {} low conviction "
+                    "(confidence {:.2f}<{:.2f}, agreement {:.2f}<{:.2f}) — "
+                    "flowing as ENTER ×{:.2f}",
+                    ctx.symbol, confidence, cfg.min_confidence_to_enter,
+                    agreement, cfg.min_advisor_agreement,
+                    plan.gate_quality_multiplier,
+                )
+            else:
+                plan.action = "SKIP"
+                plan.reasoning = (
+                    f"[{ctx.situation_label}] SKIP — low conviction "
+                    f"(confidence {confidence:.2f} < {cfg.min_confidence_to_enter:.2f}, "
+                    f"agreement {agreement:.2f} < {cfg.min_advisor_agreement:.2f})"
+                )
+                return plan
 
         wait_reason, wait_minutes = self._wait_decision(ctx)
         if wait_reason is not None:

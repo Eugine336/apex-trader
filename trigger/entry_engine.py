@@ -24,6 +24,7 @@ from brain.order_block import OrderBlockDetector, OrderBlock, OBStatus
 from brain.liquidity_mapper import LiquidityMapper
 from brain.drawdown_guard import DrawdownGuard
 from brain.session_engine import NewsGuard, SessionEngine
+from brain.orchestrator import gate_quality_multiplier as _gate_quality_multiplier
 from trigger.entry_patterns import EntryPatternDetector
 
 
@@ -54,6 +55,11 @@ class EntrySignal:
     # "MARKET"  — price is inside or right at the zone; enter now
     # "PENDING" — price has not yet reached the zone; wait for retrace
     entry_mode: str = "PENDING"  # default conservative; engine overrides this
+    # Phase 9 gate softening: bounded [gate_floor, 1.0] quality multiplier set
+    # when the entry-score floor was softened (orchestrator live) — the signal
+    # is emitted carrying this factor instead of an EntryRejection, and the
+    # orchestrator folds it into graded size. 1.0 = score floor passed cleanly.
+    entry_quality_multiplier: float = 1.0
 
 
 @dataclass
@@ -138,6 +144,25 @@ class EntryEngine:
         except (TypeError, ValueError):
             return 1.0
 
+    def _entry_gate_softening(self):
+        """Return the orchestrator config when the entry-score floor should be
+        softened into a dimmer, else ``None`` (legacy hard rejection).
+
+        Active only when the orchestrator is enabled AND ``soften_entry_gates``
+        is on — so when the orchestrator is the live sizer the score floor hands
+        a near-miss through (carrying a quality multiplier) instead of killing
+        it. Structural rejections (no zone, stale feed, news, …) are NOT
+        softened — only the QUALITY score floor.
+        """
+        orch = getattr(self.config, "orchestrator", None)
+        if (
+            orch is not None
+            and getattr(orch, "enabled", False)
+            and getattr(orch, "soften_entry_gates", False)
+        ):
+            return orch
+        return None
+
     def calculate_entry(
         self,
         pair: str,
@@ -156,6 +181,10 @@ class EntryEngine:
         now = datetime.now(timezone.utc)
         score = scan_result.score
         confluences = list(scan_result.confluences)
+        # Phase 9: bounded quality multiplier when the entry-score floor is
+        # softened into a dimmer (orchestrator live). Stays 1.0 unless the final
+        # score lands below the floor but above the hard safety floor.
+        entry_quality_multiplier = 1.0
         try:
             get_instrument(pair)
         except KeyError:
@@ -288,12 +317,22 @@ class EntryEngine:
             status.current_score_threshold,
         )
         if score < effective_min_score:
-            return EntryRejection(
-                pair=pair,
-                reason=f"score {score} < drawdown floor {effective_min_score} (mode={status.mode})",
-                score=score,
-                timestamp=now,
-            )
+            _orch = self._entry_gate_softening()
+            if _orch is not None and score >= float(getattr(_orch, "entry_safety_score", 40.0)):
+                # Softened: proceed; the final (post-M1) score sets the quality
+                # multiplier below. Only the hard safety floor still kills here.
+                logger.info(
+                    "[gate-soften] entry {} pre-M1 score {} < floor {} but >= "
+                    "safety — proceeding (orchestrator sizes)",
+                    pair, score, effective_min_score,
+                )
+            else:
+                return EntryRejection(
+                    pair=pair,
+                    reason=f"score {score} < drawdown floor {effective_min_score} (mode={status.mode})",
+                    score=score,
+                    timestamp=now,
+                )
 
         # ── H4 bias gate ─────────────────────────────────────────────────
         # Handled above as a CONTEXT penalty (before the entry bar) so a
@@ -391,14 +430,30 @@ class EntryEngine:
         confluences.append(f"M1 net adjustment: {m1_adjustment:+d}")
 
         if score < effective_min_score:
-            return EntryRejection(
-                pair=pair,
-                reason=(f"Score {score} dropped below {effective_min_score} after M1 adjustment ({m1_adjustment:+d})"),
-                score=score,
-                timestamp=now,
-                entry_price=zone.get("midpoint"),
-                direction=direction,
-            )
+            _orch = self._entry_gate_softening()
+            if _orch is not None and score >= float(getattr(_orch, "entry_safety_score", 40.0)):
+                # Softened into a dimmer: emit the signal carrying a bounded
+                # quality multiplier (how far below the floor) the orchestrator
+                # folds into graded size, instead of killing the setup.
+                entry_quality_multiplier = _gate_quality_multiplier(
+                    [(score, effective_min_score)],
+                    float(getattr(_orch, "gate_quality_floor", 0.15)),
+                )
+                logger.info(
+                    "[gate-soften] entry {} score {} < floor {} after M1 "
+                    "({:+d}) — flowing ×{:.2f}",
+                    pair, score, effective_min_score, m1_adjustment,
+                    entry_quality_multiplier,
+                )
+            else:
+                return EntryRejection(
+                    pair=pair,
+                    reason=(f"Score {score} dropped below {effective_min_score} after M1 adjustment ({m1_adjustment:+d})"),
+                    score=score,
+                    timestamp=now,
+                    entry_price=zone.get("midpoint"),
+                    direction=direction,
+                )
 
         if pattern_label != "none":
             micro_confirmation = pattern_label
@@ -621,6 +676,7 @@ class EntryEngine:
             instrument_category=category,
             entry_timeframe=entry_timeframe,
             entry_mode=entry_mode,
+            entry_quality_multiplier=entry_quality_multiplier,
         )
 
         logger.info(

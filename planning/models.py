@@ -220,6 +220,11 @@ class TradePlan:
     reasoning: str = ""
     advisor_agreement: float = 0.0   # 0–1
     governor_blocked_by: Optional[str] = None  # which governor check blocked, if any
+    # Phase 9 gate softening: bounded [gate_floor, 1.0] quality multiplier set
+    # when the planner's conviction floor was softened (orchestrator live) — the
+    # setup flows as ENTER carrying this factor instead of SKIP, and the
+    # orchestrator folds it into graded size. 1.0 = conviction gate passed clean.
+    gate_quality_multiplier: float = 1.0
     plan_id: str = field(default_factory=lambda: uuid.uuid4().hex)
     timestamp: str = field(default_factory=_now_iso)
 
@@ -259,5 +264,6 @@ class TradePlan:
             "confidence": round(self.confidence, 3),
             "advisor_agreement": round(self.advisor_agreement, 3),
             "governor_blocked_by": self.governor_blocked_by,
+            "gate_quality_multiplier": round(self.gate_quality_multiplier, 4),
             "reasoning": self.reasoning,
         }

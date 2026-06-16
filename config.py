@@ -1138,6 +1138,28 @@ class OrchestratorConfig:
     # Max concurrent trades the orchestrator may dispatch per scan cycle.
     max_concurrent_trades: int = 1
 
+    # ── Upstream gate softening (Phase 9: kill-switch → bounded dimmer) ────
+    # When the orchestrator is the live sizer it grades every surviving setup
+    # into a bounded size. The upstream QUALITY gates (scanner READY floors,
+    # the entry-time OQ/EQ re-validation, the planner conviction floor, the
+    # entry-score floor) therefore no longer need to *kill* a marginal setup —
+    # they hand it through carrying a quality multiplier the orchestrator folds
+    # into size, so a near-miss trades SMALL instead of dying. Each gate is
+    # independently switchable; all default ON when the orchestrator runs.
+    # Hard SAFETY floors below remain absolute — a truly hopeless setup still
+    # dies, and the broker/governor/correlation PHYSICS gates are untouched.
+    soften_scanner_gates: bool = True
+    soften_planner_gates: bool = True
+    soften_entry_gates: bool = True
+    # Lower bound on any single softened gate's quality multiplier — a graded
+    # "barely passed" is still a tiny trade, never zero.
+    gate_quality_floor: float = 0.15
+    # Hard safety floors: a setup BELOW these is still killed (never softened).
+    scanner_safety_oq: float = 2.0
+    scanner_safety_eq: float = 2.0
+    scanner_safety_score: float = 50.0
+    entry_safety_score: float = 40.0
+
     # ── Live position management (round table for OPEN trades) ────────────
     # Every cycle the orchestrator re-evaluates each open position into a
     # continuous health score (product of dimension healths) and maps it to a
@@ -1186,6 +1208,7 @@ class OrchestratorConfig:
             ("scale_up_min_delta", self.scale_up_min_delta),
             ("scale_down_close_pct", self.scale_down_close_pct),
             ("exit_partial_close_pct", self.exit_partial_close_pct),
+            ("gate_quality_floor", self.gate_quality_floor),
         ]:
             if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
                 raise ValueError(
@@ -1222,6 +1245,16 @@ class OrchestratorConfig:
                 )
         if not isinstance(self.health_thresholds, dict):
             raise ValueError("OrchestratorConfig.health_thresholds must be a dict")
+        for label, val in [
+            ("scanner_safety_oq", self.scanner_safety_oq),
+            ("scanner_safety_eq", self.scanner_safety_eq),
+            ("scanner_safety_score", self.scanner_safety_score),
+            ("entry_safety_score", self.entry_safety_score),
+        ]:
+            if not isinstance(val, (int, float)) or not math.isfinite(val) or val < 0:
+                raise ValueError(
+                    f"OrchestratorConfig.{label} must be finite >= 0, got {val!r}"
+                )
 
 
 @dataclass
