@@ -499,10 +499,16 @@ class PairScanner:
         dir_votes: list[Vote] = []
         if cc.enabled:
 
+            def _ev(result) -> dict:
+                """Pull the VoteResult's richer read (#26) when carrying is on."""
+                if not getattr(cc, "carry_vote_evidence", True):
+                    return {}
+                return getattr(result, "evidence", {}) or {}
+
             # Structure vote
             try:
-                s_dir, s_conf = vote_from_structure(bias)
-                dir_votes.append(Vote("structure", s_dir, s_conf, cc.weights.get("structure", 3.0)))
+                s_res = vote_from_structure(bias)
+                dir_votes.append(Vote("structure", s_res[0], s_res[1], cc.weights.get("structure", 3.0), evidence=_ev(s_res)))
             except Exception as exc:
                 logger.warning("[consensus] structure vote failed, abstaining: {}", exc)
                 dir_votes.append(Vote("structure", "NEUTRAL", 0.0, 0.0))
@@ -511,8 +517,8 @@ class PairScanner:
             try:
                 if currency_data and pair in CURRENCY_PAIRS:
                     strength = self.strength_meter.calculate(currency_data)
-                    cs_dir, cs_conf = vote_from_currency_strength(pair, strength, CURRENCY_PAIRS)
-                    dir_votes.append(Vote("currency_strength", cs_dir, cs_conf, cc.weights.get("currency_strength", 2.0)))
+                    cs_res = vote_from_currency_strength(pair, strength, CURRENCY_PAIRS)
+                    dir_votes.append(Vote("currency_strength", cs_res[0], cs_res[1], cc.weights.get("currency_strength", 2.0), evidence=_ev(cs_res)))
                 else:
                     strength = None
             except Exception as exc:
@@ -523,8 +529,8 @@ class PairScanner:
             vol_analysis = None
             try:
                 vol_analysis = self.volume.analyze(m5_df)
-                v_dir, v_conf = vote_from_volume(vol_analysis)
-                dir_votes.append(Vote("volume", v_dir, v_conf, cc.weights.get("volume", 1.0)))
+                v_res = vote_from_volume(vol_analysis)
+                dir_votes.append(Vote("volume", v_res[0], v_res[1], cc.weights.get("volume", 1.0), evidence=_ev(v_res)))
             except Exception as exc:
                 logger.warning("[consensus] volume vote failed, abstaining: {}", exc)
 
@@ -534,8 +540,8 @@ class PairScanner:
                 if profile.wyckoff_enabled:
                     wyck = WyckoffEngine(pip_size=pip_size)
                     wyckoff_analysis = wyck.analyze(h1_df)
-                    w_dir, w_conf = vote_from_wyckoff(wyckoff_analysis)
-                    dir_votes.append(Vote("wyckoff", w_dir, w_conf, cc.weights.get("wyckoff", 1.5)))
+                    w_res = vote_from_wyckoff(wyckoff_analysis)
+                    dir_votes.append(Vote("wyckoff", w_res[0], w_res[1], cc.weights.get("wyckoff", 1.5), evidence=_ev(w_res)))
             except Exception as exc:
                 logger.warning("[consensus] wyckoff vote failed, abstaining: {}", exc)
 
@@ -550,8 +556,12 @@ class PairScanner:
             try:
                 current_price = float(m5_df["close"].iloc[-1])
                 all_obs = h1_obs + m5_obs
-                ob_dir, ob_conf = vote_from_order_blocks(all_obs, current_price)
-                dir_votes.append(Vote("order_block", ob_dir, ob_conf, cc.weights.get("order_block", 1.0)))
+                ob_res = vote_from_order_blocks(
+                    all_obs, current_price,
+                    confluence_bonus=cc.zone_confluence_bonus,
+                    confluence_step=cc.zone_confluence_step,
+                )
+                dir_votes.append(Vote("order_block", ob_res[0], ob_res[1], cc.weights.get("order_block", 1.0), evidence=_ev(ob_res)))
             except Exception as exc:
                 logger.warning("[consensus] order_block vote failed, abstaining: {}", exc)
                 current_price = float(m5_df["close"].iloc[-1])
@@ -565,43 +575,48 @@ class PairScanner:
             m5_fvgs = fvg_det.detect(m5_df, timeframe="M5")
             m15_fvgs = fvg_det.detect(m15_df, timeframe="M15")
             try:
-                f_dir, f_conf = vote_from_fvg(m5_fvgs + m15_fvgs, current_price, fvg_det.proximity)
-                dir_votes.append(Vote("fvg", f_dir, f_conf, cc.weights.get("fvg", 1.0)))
+                f_res = vote_from_fvg(
+                    m5_fvgs + m15_fvgs, current_price, fvg_det.proximity,
+                    confluence_bonus=cc.zone_confluence_bonus,
+                    confluence_step=cc.zone_confluence_step,
+                )
+                dir_votes.append(Vote("fvg", f_res[0], f_res[1], cc.weights.get("fvg", 1.0), evidence=_ev(f_res)))
             except Exception as exc:
                 logger.warning("[consensus] fvg vote failed, abstaining: {}", exc)
 
             # Liquidity vote
             liq_map = self.liquidity.map(h1_df, pip_size)
             try:
-                l_dir, l_conf = vote_from_liquidity(self.liquidity, m5_df, pip_size)
-                dir_votes.append(Vote("liquidity", l_dir, l_conf, cc.weights.get("liquidity", 1.0)))
+                l_res = vote_from_liquidity(self.liquidity, m5_df, pip_size)
+                dir_votes.append(Vote("liquidity", l_res[0], l_res[1], cc.weights.get("liquidity", 1.0), evidence=_ev(l_res)))
             except Exception as exc:
                 logger.warning("[consensus] liquidity vote failed, abstaining: {}", exc)
 
             # Momentum vote
             try:
                 cp_cfg = self.config.confirmation_penalties
-                mom_dir, mom_conf = vote_from_momentum(
+                mom_res = vote_from_momentum(
                     m5_df, h1_df,
                     rsi_period=cp_cfg.rsi_period,
                     macd_fast=cp_cfg.macd_fast,
                     macd_slow=cp_cfg.macd_slow,
                     macd_signal=cp_cfg.macd_signal,
+                    continuous_confidence=cc.momentum_continuous_confidence,
                 )
-                dir_votes.append(Vote("momentum", mom_dir, mom_conf, cc.weights.get("momentum", 1.0)))
+                dir_votes.append(Vote("momentum", mom_res[0], mom_res[1], cc.weights.get("momentum", 1.0), evidence=_ev(mom_res)))
             except Exception as exc:
                 logger.warning("[consensus] momentum vote failed, abstaining: {}", exc)
 
             # VWAP vote
             try:
                 session_status = self.session.get_status(utc_now)
-                vwap_dir, vwap_conf = vote_from_vwap(
+                vwap_res = vote_from_vwap(
                     m5_df,
                     session_status.session_open_minutes,
                     current_price,
                     min_session_minutes=cp_cfg.vwap_min_session_minutes,
                 )
-                dir_votes.append(Vote("vwap", vwap_dir, vwap_conf, cc.weights.get("vwap", 1.0)))
+                dir_votes.append(Vote("vwap", vwap_res[0], vwap_res[1], cc.weights.get("vwap", 1.0), evidence=_ev(vwap_res)))
             except Exception as exc:
                 logger.warning("[consensus] vwap vote failed, abstaining: {}", exc)
 

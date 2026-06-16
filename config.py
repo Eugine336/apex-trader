@@ -284,6 +284,24 @@ class ConsensusConfig:
     # the opportunity cost of the collapse can be measured. Logging/shadow only
     # — it never changes the consensus verdict.
     log_suppressed_minorities: bool = True
+    # ── Signal-fidelity flags (Session 4) ─────────────────────────────────
+    # #11 — derive the momentum vote's confidence continuously from how far RSI
+    # is past the 70/30 extreme and the MACD histogram magnitude, instead of the
+    # legacy hardcoded 0.8 (both agree) / 0.4 (one source). Set False to restore
+    # the constant confidences.
+    momentum_continuous_confidence: bool = True
+    # #25 — let stacked same-side order-block / FVG zones reinforce each other
+    # (three bullish OBs read stronger than one) instead of only the single best
+    # zone counting. ``zone_confluence_step`` is the diminishing weight each extra
+    # stacked zone adds on top of the best. Set ``zone_confluence_bonus=False`` to
+    # restore the legacy best-per-side ``max()``.
+    zone_confluence_bonus: bool = True
+    zone_confluence_step: float = 0.15
+    # #26 — carry each module's richer secondary read (RSI level, MACD histogram,
+    # zone stacking, sweep type, …) onto the Vote.evidence map instead of
+    # discarding it at the (direction, confidence) collapse. Additive context for
+    # the ranker / orchestrator / dashboard — never changes the consensus verdict.
+    carry_vote_evidence: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.min_contributors, int) or self.min_contributors < 1:

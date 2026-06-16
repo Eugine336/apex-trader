@@ -74,6 +74,30 @@ class SituationAssessment:
         """Return the per-timeframe signed alignment map ({"D1": float, ...})."""
         return dict(self.tf_components)
 
+    # ── Component breakdowns (#16, #28) ───────────────────────────────────
+    # The scalar dimensions above each fold several distinct sources into one
+    # number. These maps keep the contributing parts alongside the scalar so a
+    # consumer (orchestrator / dashboard) can tell *what* drove the read — e.g.
+    # candle-momentum vs event-momentum, or which timeframe's structure broke —
+    # instead of only seeing the collapsed value. Purely additive; the scalars
+    # above are unchanged.
+    momentum_components: dict = field(default_factory=dict)
+    structure_components: dict = field(default_factory=dict)
+    urgency_components: dict = field(default_factory=dict)
+    confidence_components: dict = field(default_factory=dict)
+
+    def momentum_vector(self) -> dict:
+        """Return the momentum component breakdown ({"candle": float, ...})."""
+        return dict(self.momentum_components)
+
+    def structure_vector(self) -> dict:
+        """Return the structure-integrity component breakdown ({"H4": float, ...})."""
+        return dict(self.structure_components)
+
+    def urgency_vector(self) -> dict:
+        """Return the urgency component breakdown ({"news": float, ...})."""
+        return dict(self.urgency_components)
+
 
 class SituationEngine:
     """Reads analysis outputs → computes continuous situation dimensions."""
@@ -96,10 +120,12 @@ class SituationEngine:
         }
 
         # ── 2. Momentum ─────────────────────────────────────────────────
-        sa.momentum = self._compute_momentum(ctx, evidence)
+        sa.momentum = self._compute_momentum(ctx, evidence, sa.momentum_components)
 
         # ── 3. Structure integrity ───────────────────────────────────────
-        sa.structure_integrity = self._compute_structure_integrity(ctx, evidence)
+        sa.structure_integrity = self._compute_structure_integrity(
+            ctx, evidence, sa.structure_components,
+        )
 
         # ── 4. Profit state ──────────────────────────────────────────────
         sa.profit_state = ctx.profit_r
@@ -109,13 +135,13 @@ class SituationEngine:
             evidence.append(f"loss {sa.profit_state:.1f}R")
 
         # ── 5. Urgency ──────────────────────────────────────────────────
-        sa.urgency = self._compute_urgency(ctx, evidence)
+        sa.urgency = self._compute_urgency(ctx, evidence, sa.urgency_components)
 
         # ── 6. Maturity ──────────────────────────────────────────────────
         sa.maturity = min(1.0, ctx.hold_minutes / 240.0)
 
         # ── 7. Read confidence ───────────────────────────────────────────
-        sa.read_confidence = self._compute_confidence(ctx)
+        sa.read_confidence = self._compute_confidence(ctx, sa.confidence_components)
 
         # ── 8. Derive label ──────────────────────────────────────────────
         sa.primary_label = self._derive_label(sa, ctx)
@@ -150,63 +176,93 @@ class SituationEngine:
         # ── 2. Momentum (M1 candles + structural events) ────────────────
         m = 0.0
         candle_m = (ctx.m1_aligned_count - 2.5) / 2.5
-        m += candle_m * 0.50
+        candle_contrib = candle_m * 0.50
+        m += candle_contrib
         m1_event = ctx.m1_event
         opposing_events = {"BOS_BEARISH", "CHOCH_BEARISH"} if is_long else {"BOS_BULLISH", "CHOCH_BULLISH"}
         supporting_events = {"BOS_BULLISH", "CHOCH_BULLISH"} if is_long else {"BOS_BEARISH", "CHOCH_BEARISH"}
+        event_contrib = 0.0
         if m1_event in opposing_events:
-            m -= 0.30
+            event_contrib = -0.30
         elif m1_event in supporting_events:
-            m += 0.25
+            event_contrib = 0.25
+        m += event_contrib
         sa.momentum = max(-1.0, min(1.0, m))
+        sa.momentum_components = {
+            "candle": round(candle_contrib, 4),
+            "event": round(event_contrib, 4),
+            "trajectory": 0.0,
+            "m1_aligned_count": ctx.m1_aligned_count,
+            "m1_event": m1_event,
+        }
         if abs(sa.momentum) > 0.1:
             evidence.append(f"momentum={sa.momentum:+.2f} [M1 {ctx.m1_aligned_count}/5, event={m1_event}]")
 
         # ── 3. Structure integrity (zone quality + HTF events) ──────────
         integrity = 0.5
         zone_type = ctx.entry_type
+        zone_contrib = 0.0
         if zone_type == "FVG_OB_OVERLAP":
-            integrity += 0.30
+            zone_contrib = 0.30
             evidence.append("FVG+OB overlap zone (highest quality)")
         elif zone_type == "OB_MIDPOINT":
-            integrity += 0.20
+            zone_contrib = 0.20
             evidence.append("Order Block zone")
         elif zone_type == "FVG_MIDPOINT":
-            integrity += 0.15
+            zone_contrib = 0.15
             evidence.append("FVG zone")
         elif zone_type == "SWEEP_REVERSAL":
-            integrity += 0.25
+            zone_contrib = 0.25
             evidence.append("Sweep reversal zone")
+        integrity += zone_contrib
 
         h4_opposing = (
             (is_long and ctx.h4_event in ("BOS_BEARISH", "CHOCH_BEARISH"))
             or (not is_long and ctx.h4_event in ("BOS_BULLISH", "CHOCH_BULLISH"))
         )
+        h4_contrib = 0.0
         if h4_opposing:
-            integrity -= 0.30
+            h4_contrib = -0.30
+            integrity += h4_contrib
             evidence.append(f"H4 opposing event: {ctx.h4_event}")
 
         d1_opposing = (
             (is_long and ctx.d1_event in ("BOS_BEARISH", "CHOCH_BEARISH"))
             or (not is_long and ctx.d1_event in ("BOS_BULLISH", "CHOCH_BULLISH"))
         )
+        d1_contrib = 0.0
         if d1_opposing:
-            integrity -= 0.25
+            d1_contrib = -0.25
+            integrity += d1_contrib
             evidence.append(f"D1 opposing event: {ctx.d1_event}")
         sa.structure_integrity = max(0.0, min(1.0, integrity))
+        sa.structure_components = {
+            "zone": round(zone_contrib, 4),
+            "H4": round(h4_contrib, 4),
+            "D1": round(d1_contrib, 4),
+            "zone_type": zone_type or "",
+        }
 
         # ── 4. No profit state for entries ───────────────────────────────
         sa.profit_state = 0.0
 
         # ── 5. Urgency ──────────────────────────────────────────────────
         u = 0.0
+        news_u = 0.0
+        session_u = 0.0
         if ctx.minutes_to_high_impact_news < 15:
-            u = max(u, 1.0 - ctx.minutes_to_high_impact_news / 15.0)
+            news_u = 1.0 - ctx.minutes_to_high_impact_news / 15.0
+            u = max(u, news_u)
             evidence.append(f"news in {ctx.minutes_to_high_impact_news:.0f}min ({ctx.news_impact})")
         if not ctx.session_tradeable:
-            u = max(u, 0.6)
+            session_u = 0.6
+            u = max(u, session_u)
             evidence.append("session not tradeable")
         sa.urgency = min(1.0, u)
+        sa.urgency_components = {
+            "news": round(news_u, 4),
+            "session": round(session_u, 4),
+        }
 
         # ── 6. No maturity for entries ───────────────────────────────────
         sa.maturity = 0.0
@@ -222,6 +278,16 @@ class SituationEngine:
         if ctx.entry_type:
             c += 0.10
         sa.read_confidence = min(1.0, c)
+        _quality_vals = [
+            v for v in (ctx.d1_confidence, ctx.h4_confidence, ctx.h1_confidence)
+            if isinstance(v, (int, float))
+        ]
+        sa.confidence_components = {
+            "presence": round(sa.read_confidence, 4),
+            "data_quality": (
+                round(sum(_quality_vals) / len(_quality_vals), 4) if _quality_vals else 0.0
+            ),
+        }
 
         # ── 8. Label ────────────────────────────────────────────────────
         sa.primary_label = self._derive_entry_label(sa, ctx)
@@ -288,6 +354,7 @@ class SituationEngine:
 
     def _compute_momentum(
         self, ctx: TradeContext, evidence: list[str],
+        components: dict | None = None,
     ) -> float:
         """Momentum from M1 candle alignment + structural events + score trajectory."""
         m = 0.0
@@ -295,7 +362,8 @@ class SituationEngine:
         # M1 candle alignment: 0..5 → -1..+1
         aligned = ctx.m1_aligned_count
         candle_m = (aligned - 2.5) / 2.5   # 0→-1, 2.5→0, 5→+1
-        m += candle_m * 0.50
+        candle_contrib = candle_m * 0.50
+        m += candle_contrib
 
         # M1 structural event
         event = ctx.m1_event
@@ -308,17 +376,32 @@ class SituationEngine:
             {"BOS_BULLISH", "CHOCH_BULLISH"} if is_long
             else {"BOS_BEARISH", "CHOCH_BEARISH"}
         )
+        event_contrib = 0.0
         if event in opposing_events:
-            m -= 0.30
+            event_contrib = -0.30
         elif event in supporting_events:
-            m += 0.25
+            event_contrib = 0.25
+        m += event_contrib
 
         # Score trajectory: last 3 scores
+        trajectory_contrib = 0.0
         if len(ctx.score_history) >= 3:
             recent = ctx.score_history[-3:]
             delta = recent[-1] - recent[0]
             trajectory = max(-1.0, min(1.0, delta / 30.0))
-            m += trajectory * 0.20
+            trajectory_contrib = trajectory * 0.20
+            m += trajectory_contrib
+
+        if components is not None:
+            # Keep the distinct drivers so a consumer can tell candle-driven
+            # momentum apart from event-driven momentum (#16).
+            components.update({
+                "candle": round(candle_contrib, 4),
+                "event": round(event_contrib, 4),
+                "trajectory": round(trajectory_contrib, 4),
+                "m1_aligned_count": aligned,
+                "m1_event": event,
+            })
 
         if abs(m) > 0.1:
             evidence.append(
@@ -328,11 +411,16 @@ class SituationEngine:
 
     def _compute_structure_integrity(
         self, ctx: TradeContext, evidence: list[str],
+        components: dict | None = None,
     ) -> float:
         """How intact is the structural basis for this trade?"""
         integrity = 0.5  # neutral start
 
         is_long = ctx.is_long
+        h4_contrib = 0.0
+        h1_contrib = 0.0
+        h1_candle_contrib = 0.0
+        d1_contrib = 0.0
 
         # H4 structure events
         h4_opposing = (
@@ -344,10 +432,11 @@ class SituationEngine:
             or (not is_long and ctx.h4_event in ("BOS_BEARISH", "CHOCH_BEARISH"))
         )
         if h4_opposing:
-            integrity -= 0.35
+            h4_contrib = -0.35
             evidence.append(f"H4 structure broken ({ctx.h4_event})")
         elif h4_supporting:
-            integrity += 0.20
+            h4_contrib = 0.20
+        integrity += h4_contrib
 
         # H1 structure events
         h1_opposing = (
@@ -359,10 +448,11 @@ class SituationEngine:
             or (not is_long and ctx.h1_event in ("BOS_BEARISH", "CHOCH_BEARISH"))
         )
         if h1_opposing:
-            integrity -= 0.25
+            h1_contrib = -0.25
             evidence.append(f"H1 structure broken ({ctx.h1_event})")
         elif h1_supporting:
-            integrity += 0.15
+            h1_contrib = 0.15
+        integrity += h1_contrib
 
         # H1 candle close against trade
         if ctx.h1_last_candle_bearish is not None and not ctx.h1_last_candle_doji:
@@ -371,7 +461,8 @@ class SituationEngine:
                 or (not is_long and not ctx.h1_last_candle_bearish)
             )
             if candle_against:
-                integrity -= 0.10
+                h1_candle_contrib = -0.10
+                integrity += h1_candle_contrib
                 evidence.append("H1 last candle opposing")
 
         # D1 structure events
@@ -380,26 +471,51 @@ class SituationEngine:
             or (not is_long and ctx.d1_event in ("BOS_BULLISH", "CHOCH_BULLISH"))
         )
         if d1_opposing:
-            integrity -= 0.30
+            d1_contrib = -0.30
+            integrity += d1_contrib
             evidence.append(f"D1 structure broken ({ctx.d1_event})")
+
+        if components is not None:
+            # Keep per-timeframe structure contributions so a consumer can tell
+            # *which* timeframe's structure broke (#16), not just the net read.
+            components.update({
+                "H4": round(h4_contrib, 4),
+                "H1": round(h1_contrib, 4),
+                "H1_candle": round(h1_candle_contrib, 4),
+                "D1": round(d1_contrib, 4),
+            })
 
         return max(0.0, min(1.0, integrity))
 
     def _compute_urgency(
         self, ctx: TradeContext, evidence: list[str],
+        components: dict | None = None,
     ) -> float:
         u = 0.0
+        news_u = 0.0
+        session_u = 0.0
         if ctx.minutes_to_high_impact_news < 15:
-            u = max(u, 1.0 - ctx.minutes_to_high_impact_news / 15.0)
+            news_u = 1.0 - ctx.minutes_to_high_impact_news / 15.0
+            u = max(u, news_u)
             evidence.append(
                 f"news in {ctx.minutes_to_high_impact_news:.0f}min ({ctx.news_impact})"
             )
         if not ctx.session_tradeable:
-            u = max(u, 0.6)
+            session_u = 0.6
+            u = max(u, session_u)
             evidence.append("session not tradeable")
+        if components is not None:
+            # Keep both urgency sources, not just the winning max() (#28) — a
+            # consumer can see news vs session pressure independently.
+            components.update({
+                "news": round(news_u, 4),
+                "session": round(session_u, 4),
+            })
         return min(1.0, u)
 
-    def _compute_confidence(self, ctx: TradeContext) -> float:
+    def _compute_confidence(
+        self, ctx: TradeContext, components: dict | None = None,
+    ) -> float:
         """How much data do we have to make a good read?"""
         c = 0.3
         if ctx.d1_trend != "UNKNOWN":
@@ -410,7 +526,22 @@ class SituationEngine:
             c += 0.15
         if len(ctx.score_history) >= 3:
             c += 0.10
-        return min(1.0, c)
+        presence = min(1.0, c)
+        if components is not None:
+            # Distinguish data *presence* (the scalar above) from data *quality*
+            # (the actual HTF read confidences) — presence ≠ quality (#28).
+            quality_vals = [
+                v for v in (ctx.d1_confidence, ctx.h4_confidence, ctx.h1_confidence)
+                if isinstance(v, (int, float))
+            ]
+            data_quality = (
+                round(sum(quality_vals) / len(quality_vals), 4) if quality_vals else 0.0
+            )
+            components.update({
+                "presence": round(presence, 4),
+                "data_quality": data_quality,
+            })
+        return presence
 
     def _derive_label(
         self, sa: SituationAssessment, ctx: TradeContext,
