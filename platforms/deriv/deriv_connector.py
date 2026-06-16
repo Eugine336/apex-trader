@@ -84,6 +84,13 @@ _PING_TIMEOUT  = 10       # fail if pong not received within 10 s
 _BALANCE_CACHE_TTL = 3.0   # seconds — within this window, serve cache, no API hit
 _BALANCE_MAX_STALE = 90.0  # seconds — serve cached balance through an error storm
 
+# Deriv multiplier contracts auto-liquidate at a loss equal to the stake, so the
+# limit_order.stop_loss (in account currency) can never exceed the stake. Keep
+# stake × multiplier × sl_pct strictly below the stake by this safety fraction
+# (leaving headroom for the broker's deal commission) or Deriv rejects the order
+# with 'Input validation failed: parameters'.
+_SL_STAKE_SAFETY = 0.90
+
 
 class DerivConnector(BaseConnector):
     """Deriv WebSocket platform connector."""
@@ -709,16 +716,16 @@ class DerivConnector(BaseConnector):
 
     # ── Order execution ──────────────────────────────────────────────────
 
-    def _get_multiplier(self, mapped_symbol: str) -> int:
-        """Look up the correct multiplier for a Deriv symbol.
-        Prefers runtime-discovered values over static JSON config.
-        Snaps the default value to the nearest accepted multiplier so Deriv
-        never rejects the order with 'Multiplier is not in acceptable range'.
+    def _accepted_multipliers(self, mapped_symbol: str) -> tuple[list[int], int]:
+        """Return (sorted accepted multipliers, desired default) for a symbol.
+
+        Prefers runtime-discovered values over the static JSON config, falling
+        back to a conservative built-in list when neither is available.
         """
         _FALLBACK_ACCEPTED = [80, 200, 400, 600, 800, 1000, 2000, 4000]
 
         if mapped_symbol in self._discovered_multipliers:
-            accepted = self._discovered_multipliers[mapped_symbol]
+            accepted = list(self._discovered_multipliers[mapped_symbol])
         else:
             accepted = None
 
@@ -737,9 +744,72 @@ class DerivConnector(BaseConnector):
                 accepted = _FALLBACK_ACCEPTED
 
         if not accepted:
-            accepted = _FALLBACK_ACCEPTED
+            accepted = list(_FALLBACK_ACCEPTED)
+        return sorted(set(int(x) for x in accepted)), desired
+
+    def _get_multiplier(self, mapped_symbol: str) -> int:
+        """Look up the correct multiplier for a Deriv symbol.
+        Prefers runtime-discovered values over static JSON config.
+        Snaps the default value to the nearest accepted multiplier so Deriv
+        never rejects the order with 'Multiplier is not in acceptable range'.
+        """
+        accepted, desired = self._accepted_multipliers(mapped_symbol)
         nearest = min(accepted, key=lambda x: abs(x - desired))
         return nearest
+
+    @staticmethod
+    def _fit_multiplier_for_sl(
+        multiplier: int,
+        sl_pct: float,
+        accepted: list[int],
+        safety: float = _SL_STAKE_SAFETY,
+    ) -> int:
+        """Snap the multiplier DOWN so the SL is reachable before liquidation.
+
+        With Deriv multipliers the maximum possible loss equals the stake, so the
+        ``limit_order.stop_loss`` (in account currency) is
+        ``stake × multiplier × sl_pct``. If that exceeds the stake the contract
+        would liquidate before the technical SL and Deriv rejects the order with
+        'Input validation failed: parameters'. Keeping ``multiplier × sl_pct``
+        below ``safety`` (a small commission buffer under 1.0) guarantees the
+        stop-loss dollar value stays within the stake.
+
+        Returns the largest accepted multiplier that satisfies the bound, or the
+        smallest accepted multiplier when even that is too high (the caller then
+        clamps the stop-loss dollar value as a last resort).
+        """
+        if sl_pct <= 0 or not accepted:
+            return multiplier
+        max_mult = safety / sl_pct
+        fitting = [m for m in accepted if m <= max_mult and m <= multiplier]
+        if fitting:
+            return max(fitting)
+        # Nothing within the original multiplier fits — fall back to the
+        # smallest accepted multiplier to minimise the overshoot.
+        return min(accepted)
+
+    @staticmethod
+    def _limit_order_dollars(
+        sl_pct: float,
+        tp_pct: float,
+        amount: float,
+        multiplier: int,
+        safety: float = _SL_STAKE_SAFETY,
+    ) -> tuple[float, float]:
+        """Compute Deriv ``limit_order`` stop_loss / take_profit dollar values.
+
+        The stop-loss is clamped to ``amount × safety`` so it can never exceed
+        the stake (the broker's hard cap), which is the validation Deriv enforces
+        on multiplier contracts. Both values are rounded to cents and floored at
+        a small positive minimum so the payload is always accepted.
+        """
+        _MIN_LIMIT = 0.01
+        stop_loss = sl_pct * amount * multiplier
+        take_profit = tp_pct * amount * multiplier
+        max_stop = max(_MIN_LIMIT, round(amount * safety, 2))
+        stop_loss = min(round(max(_MIN_LIMIT, stop_loss), 2), max_stop)
+        take_profit = round(max(_MIN_LIMIT, take_profit), 2)
+        return stop_loss, take_profit
 
     def place_order(
         self,
@@ -769,6 +839,26 @@ class DerivConnector(BaseConnector):
         price = _tick.ask if is_buy else _tick.bid
 
         contract_type = "MULTUP" if is_buy else "MULTDOWN"
+
+        # ── Fit the multiplier to the SL distance ───────────────────────────
+        # A Deriv multiplier contract liquidates at a loss equal to the stake,
+        # so the protective stop can only be honoured when
+        # multiplier × (sl_distance / price) stays below 1.0. A too-high
+        # multiplier (e.g. the 1000× default against a wide SL) makes the
+        # stop_loss dollar value exceed the stake and Deriv rejects the order.
+        # Snap the multiplier DOWN to the largest accepted value that keeps the
+        # SL reachable before liquidation.
+        sl_pct_initial = abs(price - sl) / price if price > 0 else 0.0
+        if sl_pct_initial > 0:
+            accepted_mults, _ = self._accepted_multipliers(mapped)
+            fitted = self._fit_multiplier_for_sl(multiplier, sl_pct_initial, accepted_mults)
+            if fitted != multiplier:
+                logger.warning(
+                    "Deriv multiplier {}× too high for {} SL ({:.3f}% away) — "
+                    "fitting down to {}× so the stop stays within the stake.",
+                    multiplier, mapped, sl_pct_initial * 100, fitted,
+                )
+                multiplier = fitted
 
         # ── Stake calculation ──────────────────────────────────────────────
         # Deriv Multipliers work on a USD stake, NOT on lots.
@@ -828,6 +918,26 @@ class DerivConnector(BaseConnector):
         if idempotency_key:
             passthrough["idem_key"] = idempotency_key
 
+        t0 = _time.monotonic()
+        sl_pct = abs(price - sl) / price if price > 0 else 0
+        tp_pct = abs(tp - price) / price if price > 0 else 0
+        _sl_dollar, _tp_dollar = self._limit_order_dollars(
+            sl_pct, tp_pct, amount, multiplier,
+        )
+        buy_payload: dict = {
+            "buy": 1,
+            "subscribe": 1,
+            "price": amount,
+            "parameters": {
+                "contract_type": contract_type,
+                "symbol": mapped,
+                "currency": "USD",
+                "amount": amount,
+                "basis": "stake",
+                "multiplier": multiplier,
+                "limit_order": {
+                    "stop_loss": _sl_dollar,
+                    "take_profit": _tp_dollar,
         send_limit_order = True
         initial_sl_dollar = round(abs(price - sl) / price * amount * multiplier, 2)
         initial_tp_dollar = round(abs(tp - price) / price * amount * multiplier, 2)
@@ -869,8 +979,6 @@ class DerivConnector(BaseConnector):
 
         MAX_RETRIES = 5
         _MIN_STAKE = 1.0
-        sl_pct = abs(price - sl) / price if price > 0 else 0
-        tp_pct = abs(tp - price) / price if price > 0 else 0
         err: Optional[str] = resp["error"].get("message", "Unknown error") if resp.get("error") else None
 
         for _attempt in range(MAX_RETRIES):
@@ -934,9 +1042,11 @@ class DerivConnector(BaseConnector):
                 break
 
             # Recompute SL/TP dollar values from current amount so the cap
-            # does not slide due to a stale, oversized stop_loss value.
-            sl_dollar = round(sl_pct * amount * multiplier, 2)
-            tp_dollar = round(tp_pct * amount * multiplier, 2)
+            # does not slide due to a stale, oversized stop_loss value. The
+            # stop_loss is clamped to stay within the (possibly reduced) stake.
+            sl_dollar, tp_dollar = self._limit_order_dollars(
+                sl_pct, tp_pct, amount, multiplier,
+            )
 
             retry_payload = build_order_payload(amount, multiplier, send_limit_order)
             if send_limit_order:

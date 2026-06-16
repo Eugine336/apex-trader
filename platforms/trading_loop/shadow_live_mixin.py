@@ -123,7 +123,7 @@ class ShadowLiveMixin:
 
         try:
             tick = self.platforms.get_price(pos.symbol)
-            current_price = tick.bid if pos.direction == "BUY" else tick.ask
+            current_price = tick.bid if pos.direction.upper() in ("BUY", "LONG") else tick.ask
         except Exception:
             try:
                 current_price = float(m5["close"].iloc[-1])

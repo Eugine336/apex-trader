@@ -83,6 +83,17 @@ class PlannerConfig:
     soften_gates: bool = False
     gate_quality_floor: float = 0.15
 
+    # ── Dispersion-aware advisor agreement (#8) ───────────────────────────
+    # The conviction gate historically read only the advisor MEAN. A mean of
+    # 0.50 is ambiguous: it can be four advisors genuinely at 0.50 (consensus)
+    # or two at 1.0 and two at 0.0 (violent disagreement). When enabled, the
+    # gate metric is pulled toward the WEAKEST advisor by the dispersion between
+    # the mean and the minimum — so a split panel reads lower (and, with
+    # soften_gates, sizes down) instead of the mean hiding the disagreement.
+    # main_loop sets this from the orchestrator config; default False is legacy.
+    dispersion_aware_agreement: bool = False
+    advisor_dispersion_penalty: float = 0.5
+
     # ── Entry mode rules ─────────────────────────────────────────────────
     limit_order_zone_distance_atr: float = 0.5   # LIMIT if price > this×ATR from zone
     wait_for_session_if_wr_below: float = 0.40   # WAIT if session WR below this …
@@ -179,6 +190,10 @@ class TradePlanner:
         is_long = ctx.is_long
 
         agreement = self._advisor_agreement(ctx)
+        # #8: dispersion-aware gate metric — a split advisor panel reads below a
+        # united-but-mediocre one (the mean hides that). Equals the mean when the
+        # feature is off. The reported `advisor_agreement` stays the mean.
+        gate_agreement, advisor_dispersion = self._gate_agreement(ctx, agreement)
         confidence = self._confidence(ctx, agreement)
 
         plan = TradePlan(direction="BUY" if is_long else "SELL")
@@ -186,7 +201,7 @@ class TradePlanner:
         plan.confidence = confidence
 
         # ── 1. ENTER / WAIT / SKIP ───────────────────────────────────────
-        if confidence < cfg.min_confidence_to_enter and agreement < cfg.min_advisor_agreement:
+        if confidence < cfg.min_confidence_to_enter and gate_agreement < cfg.min_advisor_agreement:
             if cfg.soften_gates:
                 # Phase 9: soften the conviction floor into a bounded dimmer.
                 # Instead of killing the setup, flow it through as ENTER carrying
@@ -196,16 +211,17 @@ class TradePlanner:
                 plan.gate_quality_multiplier = _gate_quality_multiplier(
                     [
                         (confidence, cfg.min_confidence_to_enter),
-                        (agreement, cfg.min_advisor_agreement),
+                        (gate_agreement, cfg.min_advisor_agreement),
                     ],
                     cfg.gate_quality_floor,
                 )
                 logger.info(
                     "[gate-soften] planner {} low conviction "
-                    "(confidence {:.2f}<{:.2f}, agreement {:.2f}<{:.2f}) — "
-                    "flowing as ENTER ×{:.2f}",
+                    "(confidence {:.2f}<{:.2f}, agreement {:.2f}<{:.2f}"
+                    "{}) — flowing as ENTER ×{:.2f}",
                     ctx.symbol, confidence, cfg.min_confidence_to_enter,
-                    agreement, cfg.min_advisor_agreement,
+                    gate_agreement, cfg.min_advisor_agreement,
+                    (f", dispersion {advisor_dispersion:.2f}" if advisor_dispersion > 0 else ""),
                     plan.gate_quality_multiplier,
                 )
             else:
@@ -213,7 +229,7 @@ class TradePlanner:
                 plan.reasoning = (
                     f"[{ctx.situation_label}] SKIP — low conviction "
                     f"(confidence {confidence:.2f} < {cfg.min_confidence_to_enter:.2f}, "
-                    f"agreement {agreement:.2f} < {cfg.min_advisor_agreement:.2f})"
+                    f"agreement {gate_agreement:.2f} < {cfg.min_advisor_agreement:.2f})"
                 )
                 return plan
 
@@ -369,6 +385,47 @@ class TradePlanner:
         if ctx.pair_win_rate > 0:
             vec["pair_win_rate"] = round(max(-1.0, min(1.0, (ctx.pair_win_rate - 0.5) * 2.0)), 4)
         return {"advisors": vec, "agreement": round(self._advisor_agreement(ctx), 4)}
+
+    def _advisor_supports(self, ctx: TradePlanContext) -> list[float]:
+        """Per-present-advisor support normalised to [0, 1] (1 = fully backs the
+        trade, 0 = fully opposes). Mirrors the advisors :meth:`_advisor_agreement`
+        sums, used only to measure *dispersion* across them."""
+        supports: list[float] = []
+        supports.append(max(0.0, min(1.0, ctx.scanner_score / 100.0)))
+        if abs(ctx.de_tf_alignment) > 1e-6 or ctx.de_confidence > 0:
+            s = max(-1.0, min(1.0, ctx.de_tf_alignment))
+            supports.append((s + 1.0) / 2.0)
+        if ctx.rl_action in (1, 2):
+            rl_supports = (
+                (ctx.is_long and ctx.rl_action == 1)
+                or (not ctx.is_long and ctx.rl_action == 2)
+            )
+            rl_align = ctx.rl_confidence if rl_supports else -ctx.rl_confidence
+            supports.append((max(-1.0, min(1.0, rl_align)) + 1.0) / 2.0)
+        if ctx.pair_win_rate > 0:
+            a = max(-1.0, min(1.0, (ctx.pair_win_rate - 0.5) * 2.0))
+            supports.append((a + 1.0) / 2.0)
+        return supports
+
+    def _gate_agreement(self, ctx: TradePlanContext, agreement: float) -> tuple[float, float]:
+        """Dispersion-aware agreement used by the conviction gate.
+
+        Returns ``(effective_agreement, dispersion)``. When
+        ``dispersion_aware_agreement`` is off (legacy) the mean is returned
+        unchanged with zero dispersion. Otherwise the mean is reduced by
+        ``advisor_dispersion_penalty × (mean_support − min_support)`` so a split
+        panel (one advisor strongly opposing) reads lower than a genuinely
+        mediocre-but-united one — the very distinction the mean erases.
+        """
+        if not self.config.dispersion_aware_agreement:
+            return agreement, 0.0
+        supports = self._advisor_supports(ctx)
+        if len(supports) < 2:
+            return agreement, 0.0
+        mean_support = sum(supports) / len(supports)
+        dispersion = max(0.0, mean_support - min(supports))
+        eff = agreement - self.config.advisor_dispersion_penalty * dispersion
+        return max(0.0, min(1.0, eff)), dispersion
 
     def _confidence(self, ctx: TradePlanContext, agreement: float) -> float:
         """Blend DE confidence, advisor agreement and structure quality."""

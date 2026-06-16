@@ -297,7 +297,7 @@ class RiskHeatMarginMixin:
 
             try:
                 tick = self.platforms.get_price(pos.symbol)
-                current_price = tick.bid if pos.direction == "BUY" else tick.ask
+                current_price = tick.bid if pos.direction.upper() in ("BUY", "LONG") else tick.ask
             except Exception as exc:
                 logger.debug("[defensive] tick fetch for breakeven check failed, skipping position: {}", exc)
                 continue
@@ -322,8 +322,8 @@ class RiskHeatMarginMixin:
                 pos.entry_price, direction_norm, 2.0, pip_size,
             )
             is_improvement = (
-                (pos.direction == "BUY" and be_level > pos.sl)
-                or (pos.direction == "SELL" and be_level < pos.sl)
+                (direction_norm == "LONG" and be_level > pos.sl)
+                or (direction_norm == "SHORT" and be_level < pos.sl)
             )
             if not is_improvement:
                 continue
@@ -382,7 +382,7 @@ class RiskHeatMarginMixin:
         for oid, pos in list(self.managed_positions.items()):
             try:
                 tick = self.platforms.get_price(pos.symbol)
-                current_price = tick.bid if pos.direction == "BUY" else tick.ask
+                current_price = tick.bid if pos.direction.upper() in ("BUY", "LONG") else tick.ask
             except Exception as exc:
                 logger.debug("[heat] tick fetch for portfolio heat failed, skipping position: {}", exc)
                 continue
@@ -529,7 +529,7 @@ class RiskHeatMarginMixin:
         for oid, pos in list(self.managed_positions.items()):
             try:
                 tick = self.platforms.get_price(pos.symbol)
-                current_price = tick.bid if pos.direction == "BUY" else tick.ask
+                current_price = tick.bid if pos.direction.upper() in ("BUY", "LONG") else tick.ask
             except Exception as exc:
                 logger.debug("[correlation] tick fetch for correlated risk failed, skipping position: {}", exc)
                 continue

@@ -474,6 +474,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             fast_opposition_max_streak=dcfg.fast_opposition_max_streak,
             fast_opposition_decay_weight=dcfg.fast_opposition_decay_weight,
             fast_opposition_profit_threshold=dcfg.fast_opposition_profit_threshold,
+            # #5: read the per-timeframe alignment vector (not just the collapsed
+            # scalar) in enter/skip scoring when the orchestrator is the live
+            # sizer, so a split HTF stack is no longer hidden by averaging.
+            tf_conflict_aware=bool(getattr(self.config.orchestrator, "enabled", False)),
             # #6 — soften the enter/skip binary into a dimmer, but ONLY when the
             # orchestrator round table is enabled to make the final sizing call.
             # A mildly-negative margin then flows through (carrying a bounded
@@ -511,6 +515,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             planner_cfg.gate_quality_floor = float(
                 getattr(_orch_cfg_init, "gate_quality_floor", 0.15)
             )
+            # #8: make the conviction gate dispersion-aware so a split advisor
+            # panel reads below a united-but-mediocre one (the mean hides that).
+            planner_cfg.dispersion_aware_agreement = True
         self._planner = TradePlanner(planner_cfg)
         self._outcome_logger = OutcomeLogger(planner_cfg.journal_path) if planner_cfg.enabled else None
         self._calibrator = Calibrator(planner_cfg) if planner_cfg.enabled else None
@@ -1149,8 +1156,36 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             ranker_override = False
             selected_opp = None
             if self.config.opportunity_ranker.execute:
+                # When the orchestrator is enabled, let the round table grade
+                # every candidate and choose the most defensible one — instead of
+                # blindly dispatching the ranker's top-EV candidate[0] (which
+                # re-collapses the candidate set the ranker preserved). Legacy
+                # top-1 selection stands when the orchestrator is off.
+                _cand_scorer = None
+                if getattr(self.config.orchestrator, "enabled", False):
+                    def _cand_scorer(c):  # noqa: E306 — local, orchestrator-gated
+                        return self._orchestrator.grade_candidate(
+                            direction=getattr(c, "direction", ""),
+                            horizon=getattr(c, "timeframe_class", ""),
+                            ranker_ev=getattr(c, "expected_value", None),
+                            ranker_coherence=getattr(c, "coherence", None),
+                            ranker_confidence=getattr(c, "confidence", None),
+                        )
                 try:
-                    opp = self._opportunity_executor.select(getattr(result, "candidates", None))
+                    _cands = getattr(result, "candidates", None)
+                    opp = self._opportunity_executor.select(_cands, scorer=_cand_scorer)
+                    if (
+                        opp is not None
+                        and _cands
+                        and _cand_scorer is not None
+                        and opp is not _cands[0]
+                    ):
+                        logger.info(
+                            "[executor] {} ORCHESTRATOR PICK — chose {} {} over "
+                            "top-EV {} {} (graded over {} candidate(s))",
+                            result.pair, opp.direction, opp.timeframe_class,
+                            _cands[0].direction, _cands[0].timeframe_class, len(_cands),
+                        )
                 except Exception as exc:
                     logger.error("[executor] {} selection failed — keeping scalar direction: {}", result.pair, exc)
                     opp = None
