@@ -77,6 +77,70 @@ class PerformanceMixin(HelpersMixin):
             trades = []
         return _summarize_reversal_split(trades)
 
+    def get_system_performance(self) -> dict:
+        """System (not trading) performance for the dashboard Performance panel:
+        candle-cache hit rate, recent scan-cycle durations, and configured
+        parallelism. All reads are defensive — returns zeros when offline."""
+        empty = {
+            "candle_cache": {
+                "hits": 0, "misses": 0, "expired": 0, "stores": 0,
+                "total": 0, "hit_rate": 0.0, "entries": 0,
+                "per_tf_hits": {}, "per_tf_misses": {},
+            },
+            "cycle": {
+                "samples": 0, "last_ms": 0.0, "avg_ms": 0.0,
+                "p50_ms": 0.0, "p95_ms": 0.0, "max_ms": 0.0,
+            },
+            "parallel_scan": {"enabled": False, "max_workers": 0},
+            "account_info_cache_enabled": False,
+        }
+        if not self.is_live:
+            return empty
+
+        loop = self._trading_loop
+        out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in empty.items()}
+
+        # ── Candle cache stats ──
+        try:
+            cache = getattr(loop.platforms, "candle_cache", None)
+            if cache is not None:
+                out["candle_cache"] = cache.cache_stats()
+        except Exception as exc:
+            logger.debug("[dashboard] candle cache stats read failed: {}", exc)
+
+        # ── Recent scan-cycle durations ──
+        try:
+            durations = list(getattr(loop, "_cycle_durations_ms", []) or [])
+            if durations:
+                ordered = sorted(durations)
+                n = len(ordered)
+                out["cycle"] = {
+                    "samples": n,
+                    "last_ms": round(durations[-1], 1),
+                    "avg_ms": round(sum(ordered) / n, 1),
+                    "p50_ms": round(ordered[int(n * 0.50)] if n else 0.0, 1),
+                    "p95_ms": round(ordered[min(n - 1, int(n * 0.95))] if n else 0.0, 1),
+                    "max_ms": round(ordered[-1], 1),
+                }
+        except Exception as exc:
+            logger.debug("[dashboard] cycle timing read failed: {}", exc)
+
+        # ── Configured parallelism / caching ──
+        try:
+            perf = getattr(loop.config, "performance", None)
+            if perf is not None:
+                out["parallel_scan"] = {
+                    "enabled": bool(getattr(perf, "parallel_scan_enabled", False)),
+                    "max_workers": int(getattr(perf, "parallel_scan_max_workers", 0)),
+                }
+                out["account_info_cache_enabled"] = bool(
+                    getattr(perf, "account_info_cache_enabled", False)
+                )
+        except Exception as exc:
+            logger.debug("[dashboard] perf config read failed: {}", exc)
+
+        return out
+
     def get_performance(self) -> dict:
         today = datetime.now(timezone.utc).date()
         if not self.is_live:

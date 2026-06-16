@@ -997,6 +997,66 @@ class DataBackupConfig:
 
 
 # ---------------------------------------------------------------------------
+# Performance — hot-path latency controls (Phase 5).
+# Caches and parallelism that cut the scan-cycle floor (dominated by throttled
+# broker candle fetches) without changing any decision logic. TTLs are kept
+# under each timeframe's bar period so a fresh bar is always available at close;
+# better to re-fetch than to ever trade on stale intrabar data.
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class PerformanceConfig:
+    # ── Intraday candle cache (Fix #1) ──
+    # Transparent TTL cache around per-symbol/timeframe broker fetches. Kills
+    # repeated full re-fetches of M5/M15/H1/H4 every cycle. Keyed by
+    # (symbol, timeframe, count); a hit returns the cached DataFrame and skips
+    # the broker entirely. TTLs sit just under the bar period.
+    candle_cache_enabled: bool = True
+    candle_cache_ttl: dict[str, float] = field(
+        default_factory=lambda: {
+            "M1": 3.0,
+            "M5": 5.0,
+            "M15": 15.0,
+            "M30": 25.0,
+            "H1": 55.0,
+            "H4": 240.0,
+            "D1": 3600.0,
+        }
+    )
+    candle_cache_default_ttl: float = 5.0  # unknown timeframes — conservative
+
+    # ── Parallel pair scan (Fix #3) ──
+    # The 9 analysis modules are pure pandas/numpy (no broker I/O), so pairs are
+    # scanned concurrently. 0 = auto = min(parallel_scan_max_workers, n_pairs).
+    parallel_scan_enabled: bool = True
+    parallel_scan_max_workers: int = 10
+
+    # ── Account info cache (Fix #4) ──
+    # Margin level doesn't change between candidates in one cycle — cache it
+    # for the duration of a scan cycle (keyed by cycle id).
+    account_info_cache_enabled: bool = True
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.parallel_scan_max_workers, int) or self.parallel_scan_max_workers < 1:
+            raise ValueError(
+                "PerformanceConfig.parallel_scan_max_workers must be an int >= 1, "
+                f"got {self.parallel_scan_max_workers!r}"
+            )
+        if not isinstance(self.candle_cache_default_ttl, (int, float)) or \
+                not math.isfinite(self.candle_cache_default_ttl) or self.candle_cache_default_ttl <= 0:
+            raise ValueError(
+                "PerformanceConfig.candle_cache_default_ttl must be finite > 0, "
+                f"got {self.candle_cache_default_ttl!r}"
+            )
+        for tf, ttl in self.candle_cache_ttl.items():
+            if not isinstance(ttl, (int, float)) or not math.isfinite(ttl) or ttl <= 0:
+                raise ValueError(
+                    f"PerformanceConfig.candle_cache_ttl[{tf!r}] must be finite > 0, got {ttl!r}"
+                )
+
+
+# ---------------------------------------------------------------------------
 # Application config
 # ---------------------------------------------------------------------------
 
@@ -1055,6 +1115,7 @@ class AppConfig:
     data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)
     planner: PlannerConfig = field(default_factory=PlannerConfig)
     governor: GovernorConfig = field(default_factory=GovernorConfig)
+    performance: PerformanceConfig = field(default_factory=PerformanceConfig)
     scan_interval_seconds: int = 10
     max_consecutive_cycle_failures: int = 5
     log_level: str = "INFO"

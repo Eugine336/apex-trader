@@ -647,8 +647,38 @@ class RiskHeatMarginMixin:
             logger.warning("[margin] margin level fetch failed, returning 0.0: {}", exc)
             return 0.0
 
-    def _check_margin_for_entry(self, symbol: str) -> tuple[bool, str]:
+    def _get_margin_level_cached(self, symbol: str) -> float:
+        """Per-cycle cached margin level for the *entry gate*.
+
+        Margin level is account-wide and does not change between candidates
+        within one scan cycle, so cache it keyed by account silo + cycle id.
+        The margin GUARDIAN path (``_get_margin_level`` directly) stays
+        uncached so safety checks always see fresh data.
+        """
+        perf = getattr(self.config, "performance", None)
+        if not getattr(perf, "account_info_cache_enabled", True):
+            return self._get_margin_level(symbol)
+
+        cycle = getattr(self, "_current_cycle_id", None)
+        cache = getattr(self, "_margin_level_cache", None)
+        if cache is None or getattr(self, "_margin_level_cache_cycle", None) != cycle:
+            # New cycle (or first use) — invalidate.
+            self._margin_level_cache = {}
+            self._margin_level_cache_cycle = cycle
+            cache = self._margin_level_cache
+
+        try:
+            key = self._account_key(symbol)
+        except Exception:
+            key = symbol
+        if key in cache:
+            return cache[key]
         ml = self._get_margin_level(symbol)
+        cache[key] = ml
+        return ml
+
+    def _check_margin_for_entry(self, symbol: str) -> tuple[bool, str]:
+        ml = self._get_margin_level_cached(symbol)
         if ml <= 0.0:
             return True, "margin_level unknown — skipping check"
         threshold = self.config.risk.margin_block_entry_pct

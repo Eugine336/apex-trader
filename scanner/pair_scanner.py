@@ -7,6 +7,7 @@ Pip sizes come from the instrument registry — NEVER hardcoded.
 """
 
 import pandas as pd
+import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -59,7 +60,29 @@ except ImportError:
     mt5 = None
 
 
-def _mt5_market_open(symbol: str, connector=None) -> bool:
+def _batch_mt5_symbol_info() -> dict:
+    """Prefetch every MT5 symbol's ``symbol_info`` in ONE IPC call.
+
+    ``mt5.symbols_get()`` returns all broker symbols at once; building a dict
+    keyed by broker symbol name lets ``_mt5_market_open`` do an in-memory lookup
+    instead of 42 serial ``mt5.symbol_info()`` round-trips per scan cycle.
+
+    Returns ``{}`` on any failure — callers then fall back to the per-symbol
+    path, so this is a pure speed-up with no behaviour change on the fallback.
+    """
+    if not _MT5_AVAILABLE or mt5 is None:
+        return {}
+    try:
+        all_syms = mt5.symbols_get()
+        if not all_syms:
+            return {}
+        return {s.name: s for s in all_syms}
+    except Exception as exc:
+        logger.warning("[scanner] batch symbols_get() failed, using per-symbol lookups: {}", exc)
+        return {}
+
+
+def _mt5_market_open(symbol: str, connector=None, info_cache: Optional[dict] = None) -> bool:
     """
     Returns True if MT5 reports this symbol as currently tradeable.
     Checks symbol_info().trade_mode — no hardcoded hours, works for any
@@ -69,6 +92,9 @@ def _mt5_market_open(symbol: str, connector=None) -> bool:
     Trade modes: 0=disabled, 1=long-only, 2=short-only, 3=close-only, 4=full
     Modes 1/2/3 are treated as open enough to scan (signal may still be
     useful by the time the market fully opens).
+
+    ``info_cache`` (built once per cycle via ``_batch_mt5_symbol_info``) is a
+    {broker_symbol: info} dict; on a hit we skip the per-symbol IPC entirely.
     """
     if not _MT5_AVAILABLE or mt5 is None:
         return True  # can't check — don't block
@@ -80,6 +106,12 @@ def _mt5_market_open(symbol: str, connector=None) -> bool:
         except Exception as exc:
             logger.warning("[scanner] symbol_map lookup failed: {}", exc)
             pass
+
+    # Fast path: served from the per-cycle batch snapshot.
+    if info_cache:
+        info = info_cache.get(mapped)
+        if info is not None:
+            return info.trade_mode not in (0,)
 
     try:
         mt5.symbol_select(mapped, True)
@@ -297,6 +329,14 @@ class PairScanner:
         # ── RL subsystem ──────────────────────────────────────────────
         self._obs_builders: dict[str, ObservationBuilder] = {}
         self._mtf_builders: dict[str, MultiTFObservationBuilder] = {}
+        # Serialises RL augmentation (neural-net inference + shadow-store writes)
+        # when pairs are scanned concurrently — that path holds shared mutable
+        # state and is NOT thread-safe; the 9 analysis modules run in parallel.
+        self._rl_lock = threading.Lock()
+        # Per-cycle MT5 symbol_info snapshot ({broker_symbol: info}); rebuilt at
+        # the start of each scan_all so the per-pair tradability check is an
+        # in-memory lookup instead of an IPC round-trip per pair.
+        self._symbol_info_cache: dict = {}
         checkpoint = _resolve_rl_checkpoint(rl_checkpoint)
         try:
             self._rl = RLBridge(checkpoint=checkpoint)
@@ -340,7 +380,7 @@ class PairScanner:
 
         # ── Market hours gate ─────────────────────────────────────────
         if not is_always_open(pair):
-            if not _mt5_market_open(pair, self._mt5_connector):
+            if not _mt5_market_open(pair, self._mt5_connector, getattr(self, "_symbol_info_cache", None)):
                 logger.debug(f"{pair} — market closed (MT5 trade_mode=0), skipping scan")
                 return PairScanResult(
                     pair=pair,
@@ -835,17 +875,18 @@ class PairScanner:
 
             if mtf_result is not None:
                 obs, ctx, sym_id = mtf_result
-                rl_result = self._rl.augment_score(
-                    pair=pair,
-                    base_score=float(score),
-                    obs=obs,
-                    close=close_now,
-                    atr=atr_now,
-                    pip_size=pip_size,
-                    context_vec=ctx,
-                    symbol_id=sym_id,
-                    base_direction=1 if trade_dir == "LONG" else (-1 if trade_dir == "SHORT" else 0),
-                )
+                with self._rl_lock:
+                    rl_result = self._rl.augment_score(
+                        pair=pair,
+                        base_score=float(score),
+                        obs=obs,
+                        close=close_now,
+                        atr=atr_now,
+                        pip_size=pip_size,
+                        context_vec=ctx,
+                        symbol_id=sym_id,
+                        base_direction=1 if trade_dir == "LONG" else (-1 if trade_dir == "SHORT" else 0),
+                    )
 
                 if rl_result.vetoed:
                     logger.info(f"[RL] VETO {pair} — stage {rl_stage} "
@@ -1320,32 +1361,71 @@ class PairScanner:
         results: list[PairScanResult] = []
         regimes: dict[str, int] = {}
 
-        for pair, frames in market_data.items():
-            try:
-                h4 = frames.get("H4")
-                h1 = frames.get("H1")
-                m15 = frames.get("M15")
-                m5 = frames.get("M5")
-                d1 = frames.get("D1")
-                if h4 is None or h1 is None or m15 is None or m5 is None:
-                    logger.warning(f"Skipping {pair} — missing timeframe data")
-                    continue
+        # One IPC call for all MT5 symbol_info instead of one per pair.
+        self._symbol_info_cache = _batch_mt5_symbol_info()
 
-                result = self.scan_pair(pair, h4, h1, m15, m5, currency_data, utc_now, d1_df=d1)
-                results.append(result)
-                regimes[result.regime] = regimes.get(result.regime, 0) + 1
+        perf = getattr(self.config, "performance", None)
+        parallel = bool(getattr(perf, "parallel_scan_enabled", True))
 
+        def _scan_one(pair: str, frames: dict) -> Optional[PairScanResult]:
+            h4 = frames.get("H4")
+            h1 = frames.get("H1")
+            m15 = frames.get("M15")
+            m5 = frames.get("M5")
+            d1 = frames.get("D1")
+            if h4 is None or h1 is None or m15 is None or m5 is None:
+                logger.warning(f"Skipping {pair} — missing timeframe data")
+                return None
+            return self.scan_pair(pair, h4, h1, m15, m5, currency_data, utc_now, d1_df=d1)
+
+        # ── Scan pairs (parallel — the 9 modules are CPU-bound numpy work) ──
+        # Each pair is independent; per-pair failures are isolated so one bad
+        # pair never kills the batch. RL augmentation inside scan_pair is
+        # serialised via self._rl_lock.
+        scan_results: dict[str, PairScanResult] = {}
+        if parallel and len(market_data) > 1:
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            max_workers = getattr(perf, "parallel_scan_max_workers", 10) or 10
+            workers = max(1, min(int(max_workers), len(market_data)))
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="scan") as pool:
+                futures = {pool.submit(_scan_one, p, f): p for p, f in market_data.items()}
+                for future in as_completed(futures):
+                    p = futures[future]
+                    try:
+                        res = future.result()
+                        if res is not None:
+                            scan_results[p] = res
+                    except Exception as exc:
+                        logger.error(f"Error scanning {p}: {exc}")
+        else:
+            for p, f in market_data.items():
                 try:
-                    close_val = float(m5["close"].iloc[-1])
-                    high_val = float(m5["high"].iloc[-1])
-                    low_val = float(m5["low"].iloc[-1])
-                    tr_vals = (m5["high"] - m5["low"]).abs().tail(14)
-                    atr_val = float(tr_vals.mean()) if len(tr_vals) > 0 else 0.0
-                    self._rl.update_price(pair, high_val, low_val, close_val, atr_val, None)
+                    res = _scan_one(p, f)
+                    if res is not None:
+                        scan_results[p] = res
                 except Exception as exc:
-                    logger.debug("[RL] update_price failed for {}: {}", pair, exc)
+                    logger.error(f"Error scanning {p}: {exc}")
+
+        # ── Sequential post-processing ──────────────────────────────────
+        # Preserve original iteration order for deterministic output, and keep
+        # RL price updates (shared, non-thread-safe state) on the main thread.
+        for pair, frames in market_data.items():
+            result = scan_results.get(pair)
+            if result is None:
+                continue
+            results.append(result)
+            regimes[result.regime] = regimes.get(result.regime, 0) + 1
+
+            try:
+                m5 = frames.get("M5")
+                close_val = float(m5["close"].iloc[-1])
+                high_val = float(m5["high"].iloc[-1])
+                low_val = float(m5["low"].iloc[-1])
+                tr_vals = (m5["high"] - m5["low"]).abs().tail(14)
+                atr_val = float(tr_vals.mean()) if len(tr_vals) > 0 else 0.0
+                self._rl.update_price(pair, high_val, low_val, close_val, atr_val, None)
             except Exception as exc:
-                logger.error(f"Error scanning {pair}: {exc}")
+                logger.debug("[RL] update_price failed for {}: {}", pair, exc)
 
         if self.config.layered_decision.enabled:
             results.sort(

@@ -183,6 +183,10 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
     def performance():
         return _state.get_performance()
 
+    @app.get("/api/system-performance")
+    def system_performance():
+        return _state.get_system_performance()
+
     @app.get("/api/ml")
     def ml_insights():
         return _state.get_ml_insights()
