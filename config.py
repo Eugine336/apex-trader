@@ -225,6 +225,14 @@ class ScoringConfig:
     ranging_score_cap: int = 85  # Must exceed DrawdownGuard score floors (65/70/75) to allow ranging trades
     volatile_score_cap: int = 100  # FIX: was 0 — killed all volatile-regime trades
     use_adaptive_scoring_weights: bool = True
+    # ── M1 pattern confluence (collapse #21) ─────────────────────────────
+    # ``get_best_pattern`` keeps only the single strongest M1 confirmation;
+    # co-occurring confirmations (e.g. engulfing + pin bar + volume spike) are
+    # discarded. When this is on, the entry engine adds a small bounded bonus
+    # for EXTRA simultaneous confirmations beyond the strongest one, capped at
+    # ``pattern_confluence_max_bonus``. Default OFF — behaviour unchanged.
+    pattern_confluence_bonus: bool = False
+    pattern_confluence_max_bonus: int = 2
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +378,20 @@ class OpportunityRankerConfig:
     min_cluster_contributors: int = 1
     max_concurrent: int = 1               # executor: max opportunities per result
 
+    # ── Capacity-aware dispatch (collapse #13 / #15) ─────────────────────
+    # The main loop historically dispatched a hardcoded ``reranked[:3]`` READY
+    # setups per cycle — the 4th+ best opportunity was dropped regardless of its
+    # quality or whether trade slots were free. ``dispatch_top_n`` makes that cut
+    # configurable (default 3 = legacy behaviour). With ``slot_aware_dispatch``
+    # on, the cut instead tracks the real free trade slots (max_open_trades minus
+    # open positions), bounded by ``dispatch_max_n`` — so the ranked tail is only
+    # cut by available capacity, never a magic number. Downstream gates
+    # (correlation/CP4, margin, max-trades, planner, governor) are unchanged and
+    # still independently approve or reject each dispatched setup.
+    dispatch_top_n: int = 3
+    slot_aware_dispatch: bool = False
+    dispatch_max_n: int = 10
+
     # When the scalar ``decide`` consensus collapses a mixed panel (fast vs slow
     # modules disagreeing on horizon) to NEUTRAL, the scanner marks the setup
     # WAITING (non-tradeable) BEFORE the main-loop executor ever runs — so the
@@ -405,6 +427,14 @@ class OpportunityRankerConfig:
                 "OpportunityRankerConfig.max_concurrent must be an int >= 1, "
                 f"got {self.max_concurrent!r}"
             )
+        for label, val in [
+            ("dispatch_top_n", self.dispatch_top_n),
+            ("dispatch_max_n", self.dispatch_max_n),
+        ]:
+            if not isinstance(val, int) or val < 1:
+                raise ValueError(
+                    f"OpportunityRankerConfig.{label} must be an int >= 1, got {val!r}"
+                )
         for label, val in [
             ("scalp_reward_risk", self.scalp_reward_risk),
             ("swing_reward_risk", self.swing_reward_risk),

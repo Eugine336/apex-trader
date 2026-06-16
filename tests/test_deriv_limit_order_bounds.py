@@ -10,6 +10,7 @@ limit_order dollar values as a last-resort safety net.
 """
 
 from platforms.deriv.deriv_connector import DerivConnector, _SL_STAKE_SAFETY
+from platforms.base_connector import TickData
 
 
 _ACCEPTED = [80, 200, 400, 600, 800, 1000, 2000, 4000]
@@ -66,3 +67,70 @@ class TestLimitOrderDollars:
         sl, tp = DerivConnector._limit_order_dollars(0.0012345, 0.0098765, 13.37, 200)
         assert sl == round(sl, 2)
         assert tp == round(tp, 2)
+
+
+def _make_connector():
+    """Build a DerivConnector without running __init__ (no event-loop thread)."""
+    conn = object.__new__(DerivConnector)
+    conn._discovered_multipliers = {}
+    conn._positions = {}
+    conn._require_connection = lambda: None
+    conn.symbol_map = lambda s: s
+    conn.get_price = lambda s: TickData(bid=7956.9, ask=7956.9, spread=0.0, time=0.0)
+    conn._accepted_multipliers = lambda m: (_ACCEPTED, 1000)
+    return conn
+
+
+class TestPlaceOrderRetryPath:
+    """Regression for the live ``name 'sl_pct' is not defined`` crash.
+
+    When Deriv rejects the first attempt with 'Input validation failed:
+    parameters', place_order retries and recomputes the limit_order dollar
+    values via _limit_order_dollars(sl_pct, tp_pct, ...). Those fraction-of-price
+    variables must be in scope on the retry path — previously only
+    sl_pct_initial existed and the retry raised NameError before the order
+    could be re-sent."""
+
+    def test_retry_after_validation_error_does_not_raise(self):
+        conn = _make_connector()
+        calls = {"n": 0}
+
+        def fake_send(payload):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                return {"error": {"message": "Input validation failed: parameters"}}
+            return {"buy": {"contract_id": "12345"}}
+
+        conn._sync_send = fake_send
+
+        result = conn.place_order(
+            symbol="STPIDX", direction="SHORT", lots=0.01,
+            sl=7980.67, tp=7920.99, stake_usd=27.99, multiplier=200,
+        )
+
+        assert calls["n"] == 2  # first failed → retried
+        assert result.success is True
+        assert result.order_id == "12345"
+
+    def test_retry_recomputes_limit_order_within_stake(self):
+        conn = _make_connector()
+        seen_payloads = []
+
+        def fake_send(payload):
+            seen_payloads.append(payload)
+            if len(seen_payloads) == 1:
+                return {"error": {"message": "Input validation failed: parameters"}}
+            return {"buy": {"contract_id": "999"}}
+
+        conn._sync_send = fake_send
+
+        result = conn.place_order(
+            symbol="STPIDX", direction="SHORT", lots=0.01,
+            sl=7980.67, tp=7920.99, stake_usd=27.99, multiplier=200,
+        )
+
+        assert result.success is True
+        # The retry drops limit_order (the validation error path disables it),
+        # so the second payload must not carry SL/TP bounds.
+        assert "limit_order" not in seen_payloads[1]["parameters"]
+

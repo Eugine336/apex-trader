@@ -195,7 +195,8 @@ class TradeProposal:
             "ranker_confidence": self.ranker_confidence,
             "candidate_count": self.candidate_count,
             "tf_alignment": self.tf_alignment,
-            "tf_vector": {k: list(v) for k, v in self.tf_vector.items()},
+            "tf_vector": {k: list(v) if isinstance(v, (list, tuple)) else v
+                          for k, v in self.tf_vector.items()},
             "de_margin": self.de_margin,
             "de_conviction": self.de_conviction,
             "de_quality_multiplier": self.de_quality_multiplier,

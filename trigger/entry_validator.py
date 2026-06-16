@@ -32,6 +32,21 @@ class ValidationResult:
     checks_passed: list[str] = field(default_factory=list)
     checks_failed: list[str] = field(default_factory=list)
     adjusted_signal: Optional[EntrySignal] = None
+    # ── Per-check provenance (collapse #21) ──────────────────────────────
+    # ``valid`` still collapses to a single bool (any failure blocks), but the
+    # failure detail is preserved so a consumer can tell WHICH gate failed and
+    # whether it was a hard physics veto (market closed, expired, corrupted
+    # prices) or a softer analytical one (spread / R:R / session). Purely
+    # additive — does not change the block decision.
+    hard_failures: list[str] = field(default_factory=list)
+    soft_failures: list[str] = field(default_factory=list)
+
+
+# Checks that are genuine physics/safety vetoes (a soft path makes no sense):
+# the market is closed, the signal expired, or its prices are corrupt.
+_HARD_CHECKS: frozenset[str] = frozenset(
+    {"market_open", "expiry", "price_finiteness"}
+)
 
 
 class EntryValidator:
@@ -69,28 +84,37 @@ class EntryValidator:
         open_trades = open_trades or []
         passed: list[str] = []
         failed: list[str] = []
+        hard_failures: list[str] = []
+        soft_failures: list[str] = []
+
+        def _record(name: str, ok: bool, msg: str) -> None:
+            if ok:
+                passed.append(msg)
+            else:
+                failed.append(msg)
+                (hard_failures if name in _HARD_CHECKS else soft_failures).append(msg)
 
         # ── Check 1: Market open (exchange hours) ─────────────────────
         # Must be first — no point running any other check if the market
         # is physically closed. Uses MT5 trade_mode for MT5 instruments;
         # Deriv synthetics are always open so they skip this gate.
         ok, msg = self.check_market_open(signal.pair, platform)
-        (passed if ok else failed).append(msg)
+        _record("market_open", ok, msg)
 
         ok, msg = self.check_spread(signal.pair, current_spread_pips)
-        (passed if ok else failed).append(msg)
+        _record("spread", ok, msg)
 
         ok, msg = self.check_risk_reward(signal)
-        (passed if ok else failed).append(msg)
+        _record("risk_reward", ok, msg)
 
         ok, msg = self.check_expiry(signal, utc_now)
-        (passed if ok else failed).append(msg)
+        _record("expiry", ok, msg)
 
         ok, msg = self.check_session(signal.pair, utc_now)
-        (passed if ok else failed).append(msg)
+        _record("session", ok, msg)
 
         ok, msg = self.check_price_finiteness(signal)
-        (passed if ok else failed).append(msg)
+        _record("price_finiteness", ok, msg)
 
         is_valid = len(failed) == 0
 
@@ -104,6 +128,8 @@ class EntryValidator:
             signal=signal,
             checks_passed=passed,
             checks_failed=failed,
+            hard_failures=hard_failures,
+            soft_failures=soft_failures,
         )
 
     # ------------------------------------------------------------------

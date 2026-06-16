@@ -257,6 +257,7 @@ def decide_opportunities(
     min_expected_value: float = 0.0,
     min_cluster_confidence: float = 0.0,
     min_cluster_contributors: int = 1,
+    win_rate_provider=None,
 ):
     """Open-ended counterpart to ``decide``.
 
@@ -286,6 +287,7 @@ def decide_opportunities(
         min_expected_value=min_expected_value,
         min_cluster_confidence=min_cluster_confidence,
         min_cluster_contributors=min_cluster_contributors,
+        win_rate_provider=win_rate_provider,
     )
 
 
