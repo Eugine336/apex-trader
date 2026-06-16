@@ -319,57 +319,6 @@ class ConsensusConfig:
                 )
 
 
-@dataclass
-class OpportunityRankerConfig:
-    """Settings for the opportunity ranker/executor.
-
-    The ranker lets coherent module clusters form independent trade ideas
-    instead of collapsing every vote into one net direction.  ``execute`` gates
-    *live multi-candidate dispatch*; with it off the ranker still produces and
-    logs candidates (shadow mode) without changing the live scalar path.
-    """
-
-    enabled: bool = True            # compute + rank opportunities (shadow-safe)
-    execute: bool = False           # allow the executor to dispatch ranked ideas
-    min_cluster_net: float = 0.5
-    min_cluster_confidence: float = 0.3
-    require_positive_ev: bool = True
-    scalp_target_rr: float = 2.0
-    swing_target_rr: float = 3.0
-    mixed_target_rr: float = 2.5
-    win_prob_floor: float = 0.30
-    win_prob_scale: float = 0.40
-    ev_weight: float = 1.0
-    net_weight: float = 0.25
-    max_concurrent_opportunities: int = 1
-
-    def __post_init__(self) -> None:
-        if self.max_concurrent_opportunities < 1:
-            raise ValueError(
-                f"OpportunityRankerConfig.max_concurrent_opportunities must be "
-                f">= 1, got {self.max_concurrent_opportunities!r}"
-            )
-        for name in ("min_cluster_net", "min_cluster_confidence",
-                     "win_prob_floor", "win_prob_scale", "ev_weight",
-                     "net_weight"):
-            val = getattr(self, name)
-            if not isinstance(val, (int, float)) or not math.isfinite(val) or val < 0:
-                raise ValueError(
-                    f"OpportunityRankerConfig.{name} must be finite >= 0, got {val!r}"
-                )
-        for name in ("scalp_target_rr", "swing_target_rr", "mixed_target_rr"):
-            val = getattr(self, name)
-            if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
-                raise ValueError(
-                    f"OpportunityRankerConfig.{name} must be finite > 0, got {val!r}"
-                )
-        if not (0 <= self.min_cluster_confidence <= 1.0):
-            raise ValueError(
-                f"OpportunityRankerConfig.min_cluster_confidence must be in "
-                f"[0, 1], got {self.min_cluster_confidence!r}"
-            )
-
-
 # ---------------------------------------------------------------------------
 # Opportunity ranker — open-ended trade ideas from the same module votes.
 # Instead of collapsing votes to one scalar (LONG/SHORT/NEUTRAL), coherent vote
@@ -1070,6 +1019,20 @@ from governor.models import GovernorConfig  # noqa: E402  (leaf import, no cycle
 
 
 @dataclass
+class DecisionTraceConfig:
+    """Settings for the pipeline Decision Trace (component awareness layer).
+
+    When ``enabled`` the trading loop threads a DecisionTrace through every
+    entry-pipeline stage; each stage stamps a justified verdict and downstream
+    stages may challenge upstream ones.  Completed traces are emitted as
+    DECISION_TRACE events for the dashboard's pipeline panels.  Purely additive —
+    it records decisions, it never changes them.
+    """
+
+    enabled: bool = True
+
+
+@dataclass
 class AppConfig:
     # All 4 categories enabled — forex, commodity, index, synthetic
     enabled_categories: list[str] = field(
@@ -1086,6 +1049,7 @@ class AppConfig:
     confirmation_penalties: ConfirmationPenaltyConfig = field(default_factory=ConfirmationPenaltyConfig)
     consensus: ConsensusConfig = field(default_factory=ConsensusConfig)
     opportunity_ranker: OpportunityRankerConfig = field(default_factory=OpportunityRankerConfig)
+    decision_trace: DecisionTraceConfig = field(default_factory=DecisionTraceConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)

@@ -256,6 +256,16 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
         """Portfolio Governor state — daily loss cap, exposure breakdowns, recent blocks."""
         return _state.get_governor()
 
+    @app.get("/api/decision-trace")
+    def decision_trace(limit: int = 100, symbol: str = ""):
+        """Pipeline awareness traces — full stage chains, justifications, and challenges."""
+        return _state.get_decision_traces(limit=min(limit, 500), symbol=symbol)
+
+    @app.get("/api/decision-trace/stats")
+    def decision_trace_stats():
+        """Aggregated pipeline stats — funnel, rejection breakdown, challenges, confidence."""
+        return _state.get_decision_trace_stats()
+
     @app.post("/api/control")
     async def control(body: dict):
         action = body.get("action", "")
