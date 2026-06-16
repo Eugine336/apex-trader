@@ -162,6 +162,13 @@ class PlannerConfig:
     calibration_interval_trades: int = 25
     calibration_lookback_trades: int = 200
     calibration_max_adjustment_pct: float = 0.20  # clamp ±20% per cycle
+    # #34 — expectancy-aware calibration. The SL-strategy and min-confidence
+    # analyses compare groups by WIN-RATE only, so a 3R win and a 0.1R win count
+    # the same and a lower-win-rate / higher-payoff group is wrongly demoted.
+    # When enabled, those analyses compare by EXPECTANCY (mean R, magnitude-
+    # aware) instead. Off by default → legacy win-rate behaviour.
+    calibration_expectancy_aware: bool = False
+    calibration_expectancy_margin: float = 0.10  # min R gap between groups to act
 
     # ── Serialisation ────────────────────────────────────────────────────
 

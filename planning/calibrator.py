@@ -111,22 +111,36 @@ class Calibrator:
         atr = self._by_plan_field(trades, "sl_strategy", "atr")
         if len(structure) < self._MIN_GROUP or len(atr) < self._MIN_GROUP:
             return
-        wr_struct = _win_rate(structure)
-        wr_atr = _win_rate(atr)
         cur = self.config.prefer_structure_sl_within_atr
-        # Structure stops winning more → widen the band that selects them.
-        if wr_struct - wr_atr > 0.05:
-            target = cur * 1.10
-        elif wr_atr - wr_struct > 0.05:
-            target = cur * 0.90
+        if getattr(self.config, "calibration_expectancy_aware", False):
+            # #34: compare by expectancy (R-magnitude aware) — a structure group
+            # that wins less often but pays far more should still be preferred.
+            margin = self.config.calibration_expectancy_margin
+            exp_struct = _expectancy(structure)
+            exp_atr = _expectancy(atr)
+            if exp_struct - exp_atr > margin:
+                target = cur * 1.10
+            elif exp_atr - exp_struct > margin:
+                target = cur * 0.90
+            else:
+                return
+            metric = f"struct exp {exp_struct:+.2f}R vs atr {exp_atr:+.2f}R"
         else:
-            return
+            wr_struct = _win_rate(structure)
+            wr_atr = _win_rate(atr)
+            # Structure stops winning more → widen the band that selects them.
+            if wr_struct - wr_atr > 0.05:
+                target = cur * 1.10
+            elif wr_atr - wr_struct > 0.05:
+                target = cur * 0.90
+            else:
+                return
+            metric = f"struct WR {wr_struct:.0%} vs atr {wr_atr:.0%}"
         new = round(self._clamp(cur, target), 3)
         if abs(new - cur) > 1e-6:
             updates["prefer_structure_sl_within_atr"] = new
             changes.append(
-                f"prefer_structure_sl_within_atr {cur:.2f}→{new:.2f} "
-                f"(struct WR {wr_struct:.0%} vs atr {wr_atr:.0%})"
+                f"prefer_structure_sl_within_atr {cur:.2f}→{new:.2f} ({metric})"
             )
 
     def _calibrate_entry_mode(self, trades, updates, changes) -> None:
@@ -189,22 +203,37 @@ class Calibrator:
         ]
         if len(above) < self._MIN_GROUP or len(below) < self._MIN_GROUP:
             return
-        wr_above = _win_rate(above)
-        wr_below = _win_rate(below)
-        # Low-confidence trades doing nearly as well → relax the gate; if they
-        # do much worse, tighten it.
-        if wr_above - wr_below > 0.15:
-            target = cur * 1.10
-        elif wr_below - wr_above > 0.05:
-            target = cur * 0.90
+        if getattr(self.config, "calibration_expectancy_aware", False):
+            # #34: low-confidence trades earning nearly as much R → relax the
+            # gate; earning much less → tighten it. Magnitude-aware, so a few
+            # big winners below the gate are not masked by a lower win count.
+            margin = self.config.calibration_expectancy_margin
+            exp_above = _expectancy(above)
+            exp_below = _expectancy(below)
+            if exp_above - exp_below > margin:
+                target = cur * 1.10
+            elif exp_below - exp_above > margin * 0.5:
+                target = cur * 0.90
+            else:
+                return
+            metric = f"exp above {exp_above:+.2f}R vs below {exp_below:+.2f}R"
         else:
-            return
+            wr_above = _win_rate(above)
+            wr_below = _win_rate(below)
+            # Low-confidence trades doing nearly as well → relax the gate; if they
+            # do much worse, tighten it.
+            if wr_above - wr_below > 0.15:
+                target = cur * 1.10
+            elif wr_below - wr_above > 0.05:
+                target = cur * 0.90
+            else:
+                return
+            metric = f"WR above {wr_above:.0%} vs below {wr_below:.0%}"
         new = round(self._clamp(cur, target), 4)
         if abs(new - cur) > 1e-6:
             updates["min_confidence_to_enter"] = new
             changes.append(
-                f"min_confidence_to_enter {cur:.2f}→{new:.2f} "
-                f"(WR above {wr_above:.0%} vs below {wr_below:.0%})"
+                f"min_confidence_to_enter {cur:.2f}→{new:.2f} ({metric})"
             )
 
     @staticmethod

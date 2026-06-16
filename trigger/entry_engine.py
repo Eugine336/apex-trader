@@ -60,6 +60,11 @@ class EntrySignal:
     # is emitted carrying this factor instead of an EntryRejection, and the
     # orchestrator folds it into graded size. 1.0 = score floor passed cleanly.
     entry_quality_multiplier: float = 1.0
+    # #20 — continuous market-readiness [0,1] behind the MARKET/PENDING choice.
+    # The legacy decision is a hard threshold cascade (one of two modes); when
+    # graded entry-mode is enabled this carries the smooth score so a 3.0-vs-3.1
+    # pip near-miss is visible instead of a silent mode flip. Default 1.0.
+    entry_mode_confidence: float = 1.0
 
 
 @dataclass
@@ -624,6 +629,20 @@ class EntryEngine:
             risk_reward=rr1,
             momentum_score=momentum_score,
         )
+        # #20: record the continuous readiness behind the mode choice (always
+        # computed — cheap, observability-only when graded mode is disabled).
+        entry_mode_confidence = self._market_readiness(
+            direction=direction,
+            current_price=float(current_tick),
+            entry_price=zone_midpoint,
+            zone=zone,
+            micro_confirmation=micro_confirmation,
+            has_sweep=bool(zone.get("has_sweep")),
+            pip_size=pip_size,
+            score=score,
+            risk_reward=rr1,
+            momentum_score=momentum_score,
+        )
 
         if entry_mode == "MARKET":
             market_entry = float(current_tick)
@@ -693,6 +712,7 @@ class EntryEngine:
             entry_timeframe=entry_timeframe,
             entry_mode=entry_mode,
             entry_quality_multiplier=entry_quality_multiplier,
+            entry_mode_confidence=round(entry_mode_confidence, 3),
         )
 
         logger.info(
@@ -707,6 +727,68 @@ class EntryEngine:
     # ------------------------------------------------------------------
     # Intelligent entry mode decision
     # ------------------------------------------------------------------
+
+    def _market_readiness(
+        self,
+        direction: str,
+        current_price: float,
+        entry_price: float,
+        zone: dict,
+        micro_confirmation: str,
+        has_sweep: bool,
+        pip_size: float,
+        *,
+        score: int = 0,
+        risk_reward: float = 0.0,
+        momentum_score: int = 0,
+    ) -> float:
+        """#20: continuous [0,1] readiness for at-market execution.
+
+        The legacy :meth:`_decide_entry_mode` collapses distance, confirmation,
+        sweep, R:R, score and momentum into one of two modes via a hard
+        threshold cascade — a 3.0-pip setup is MARKET, a 3.1-pip one is PENDING.
+        This blends the same inputs into a smooth score so the choice degrades
+        gracefully across the boundary instead of flipping at a cliff.
+
+        Deterministic facts still saturate to 1.0: price inside the zone, or
+        already past it in the trade direction (a pending order would never
+        fill).
+        """
+        zone_top = zone.get("top", entry_price)
+        zone_bottom = zone.get("bottom", entry_price)
+        if zone_bottom <= current_price <= zone_top:
+            return 1.0
+        if (direction == "SHORT" and current_price < zone_bottom) or (
+            direction == "LONG" and current_price > zone_top
+        ):
+            return 1.0
+
+        distance_pips = abs(current_price - entry_price) / pip_size if pip_size else 0.0
+        # Proximity: full at the zone, fading to 0 by ~8 pips away.
+        proximity = max(0.0, min(1.0, 1.0 - distance_pips / 8.0))
+
+        if micro_confirmation in ("choch_bos", "engulfing", "pin_bar", "rejection_wick"):
+            confirmation = 1.0
+        elif micro_confirmation == "momentum_only":
+            confirmation = 0.5
+        else:
+            confirmation = 0.0
+
+        sweep = 1.0 if has_sweep else 0.0
+        rr = risk_reward if math.isfinite(risk_reward) else 0.0
+        rr_factor = max(0.0, min(1.0, (rr - 2.0) / 1.0))      # ramps 2.0R→3.0R
+        score_factor = max(0.0, min(1.0, (score - 70) / 15.0))
+        momentum_factor = max(0.0, min(1.0, momentum_score / 3.0))
+
+        readiness = (
+            0.50 * proximity
+            + 0.22 * confirmation
+            + 0.12 * sweep
+            + 0.08 * rr_factor
+            + 0.04 * score_factor
+            + 0.04 * momentum_factor
+        )
+        return max(0.0, min(1.0, readiness))
 
     def _decide_entry_mode(
         self,
@@ -743,6 +825,32 @@ class EntryEngine:
         zone_top = zone.get("top", entry_price)
         zone_bottom = zone.get("bottom", entry_price)
         distance_pips = abs(current_price - entry_price) / pip_size
+
+        # #20: graded mode — replace the hard cascade with the smooth readiness
+        # score + a single threshold. Opt-in; legacy cascade runs when disabled.
+        scfg = getattr(self.config, "scoring", None)
+        if scfg is not None and getattr(scfg, "entry_mode_graded_enabled", False):
+            readiness = self._market_readiness(
+                direction=direction,
+                current_price=current_price,
+                entry_price=entry_price,
+                zone=zone,
+                micro_confirmation=micro_confirmation,
+                has_sweep=has_sweep,
+                pip_size=pip_size,
+                score=score,
+                risk_reward=risk_reward,
+                momentum_score=momentum_score,
+            )
+            threshold = float(getattr(scfg, "entry_mode_market_threshold", 0.50))
+            mode = "MARKET" if readiness >= threshold else "PENDING"
+            logger.debug(
+                "[entry_mode] {} (graded) — readiness {:.2f} vs threshold {:.2f} "
+                "({:.1f} pips, confirmation={}, sweep={}, score={}, rr={:.2f})",
+                mode, readiness, threshold, distance_pips, micro_confirmation,
+                has_sweep, score, risk_reward if math.isfinite(risk_reward) else 0.0,
+            )
+            return mode
 
         # Rule 1: price already inside zone
         if zone_bottom <= current_price <= zone_top:
