@@ -31,5 +31,6 @@
     "XAUUSD": "frxXAUUSD",
     "XAGUSD": "frxXAGUSD"
   },
+  "_multipliers_note": "Accepted multiplier sets are auto-discovered at startup via the contracts_for API and cached at runtime. Exact per-symbol values are intentionally left empty here rather than hardcoded with guessed numbers. If discovery fails, the connector uses a conservative fallback ([100,200,300,400,500]) and self-corrects from Deriv's error.details on the first rejection. To pin values statically, add entries like {\"1HZ50V\": {\"default\": 400, \"accepted\": [100,200,300,400,500]}}.",
   "multipliers": {}
 }

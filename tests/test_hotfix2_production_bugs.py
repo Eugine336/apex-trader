@@ -68,7 +68,11 @@ class TestMultiplierDiscovery:
         c = self._make_connector()
         with patch("builtins.open", side_effect=FileNotFoundError):
             result = c._get_multiplier("UNKNOWN_SYMBOL")
-        assert result == 1000
+        # No discovery + unreadable config → conservative fallback
+        # [100,200,300,400,500]. The desired 1000 default snaps DOWN to the
+        # nearest valid value (500); the old fallback only returned 1000 because
+        # it contained an invalid 80/1000 set. 500 is the real max for 1s indices.
+        assert result == 500
 
     @pytest.mark.asyncio
     async def test_discover_multipliers_parses_response(self):

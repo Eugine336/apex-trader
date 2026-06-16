@@ -79,7 +79,10 @@ class TestGetMultiplier:
     def test_returns_from_default_entry_for_unknown_symbol(self):
         conn = self._make_connector()
         mult = conn._get_multiplier("UNKNOWN_SYMBOL_XYZ")
-        assert mult == 1000
+        # With no config entry the desired 1000 default snaps DOWN to the nearest
+        # value in the conservative fallback [100,200,300,400,500] → 500. (The
+        # old fallback returned 1000 only because it contained invalid values.)
+        assert mult == 500
 
     def test_snaps_to_nearest_accepted(self):
         conn = self._make_connector()

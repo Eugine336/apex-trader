@@ -91,6 +91,14 @@ _BALANCE_MAX_STALE = 90.0  # seconds — serve cached balance through an error s
 # with 'Input validation failed: parameters'.
 _SL_STAKE_SAFETY = 0.90
 
+# Conservative multiplier set used only when neither runtime discovery nor the
+# static config supplies an accepted list for a symbol. These values are
+# commonly valid across Deriv synthetic indices; the previous list contained
+# 80, which Deriv rejects for the 1s volatility indices (1HZ..V). A wrong guess
+# here self-corrects on the first order: Deriv returns the real accepted list in
+# error.details, which place_order parses and snaps to (see _error_text).
+_FALLBACK_ACCEPTED_MULTIPLIERS = [100, 200, 300, 400, 500]
+
 
 class DerivConnector(BaseConnector):
     """Deriv WebSocket platform connector."""
@@ -720,15 +728,19 @@ class DerivConnector(BaseConnector):
         """Return (sorted accepted multipliers, desired default) for a symbol.
 
         Prefers runtime-discovered values over the static JSON config, falling
-        back to a conservative built-in list when neither is available.
+        back to a conservative built-in list when neither is available. The
+        fallback is logged loudly (once per symbol) because trading on a guessed
+        multiplier set is a degraded mode — discovery or config should supply the
+        real values.
         """
-        _FALLBACK_ACCEPTED = [80, 200, 400, 600, 800, 1000, 2000, 4000]
+        accepted: Optional[list[int]] = None
+        source = "fallback"
 
-        if mapped_symbol in self._discovered_multipliers:
+        if self._discovered_multipliers.get(mapped_symbol):
             accepted = list(self._discovered_multipliers[mapped_symbol])
-        else:
-            accepted = None
+            source = "discovered"
 
+        desired = 1000
         try:
             cfg_path = Path(__file__).resolve().parent.parent.parent / "config" / "brokers" / "deriv.json"
             with open(cfg_path) as f:
@@ -736,16 +748,68 @@ class DerivConnector(BaseConnector):
             mult_map = cfg.get("multipliers", {})
             entry = mult_map.get(mapped_symbol) or mult_map.get("_default", {})
             desired = int(entry.get("default", 1000))
-            if accepted is None:
-                accepted = [int(x) for x in entry.get("accepted", _FALLBACK_ACCEPTED)]
+            if accepted is None and entry.get("accepted"):
+                accepted = [int(x) for x in entry["accepted"]]
+                source = "config"
         except Exception:
             desired = 1000
-            if accepted is None:
-                accepted = _FALLBACK_ACCEPTED
 
         if not accepted:
-            accepted = list(_FALLBACK_ACCEPTED)
+            accepted = list(_FALLBACK_ACCEPTED_MULTIPLIERS)
+            source = "fallback"
+
+        if source == "fallback":
+            self._warn_multiplier_fallback(mapped_symbol)
+
         return sorted(set(int(x) for x in accepted)), desired
+
+    def _warn_multiplier_fallback(self, mapped_symbol: str) -> None:
+        """Warn (once per symbol) that we are guessing the multiplier set.
+
+        Surfaces a silent discovery/config gap as a WARNING so it is visible in
+        the live logs instead of only at DEBUG. The order will still attempt the
+        conservative fallback and self-correct from Deriv's error.details if the
+        guessed values are rejected.
+        """
+        warned = getattr(self, "_warned_fallback_symbols", None)
+        if warned is None:
+            warned = set()
+            self._warned_fallback_symbols = warned
+        if mapped_symbol in warned:
+            return
+        warned.add(mapped_symbol)
+        logger.warning(
+            "Deriv multipliers for {} not discovered and absent from "
+            "config/brokers/deriv.json — using conservative fallback {}. "
+            "Order will self-correct from Deriv error.details if rejected; "
+            "populate deriv.json or verify discovery ran.",
+            mapped_symbol, _FALLBACK_ACCEPTED_MULTIPLIERS,
+        )
+
+    @staticmethod
+    def _error_text(error_obj: object) -> str:
+        """Flatten a Deriv error object (message + details) into one string.
+
+        Deriv returns the generic 'Input validation failed: parameters' in
+        ``message`` and the field-specific reason — including the accepted
+        multiplier list — in ``details``. Concatenating both lets the multiplier
+        and stake-cap regexes match the real cause instead of the generic
+        envelope, so the retry loop can self-correct.
+        """
+        if not isinstance(error_obj, dict):
+            return str(error_obj) if error_obj else "Unknown error"
+        parts: list[str] = []
+        msg = error_obj.get("message")
+        if msg:
+            parts.append(str(msg))
+        details = error_obj.get("details")
+        if isinstance(details, dict):
+            for value in details.values():
+                if value:
+                    parts.append(str(value))
+        elif details:
+            parts.append(str(details))
+        return " | ".join(parts) if parts else "Unknown error"
 
     def _get_multiplier(self, mapped_symbol: str) -> int:
         """Look up the correct multiplier for a Deriv symbol.
@@ -965,39 +1029,34 @@ class DerivConnector(BaseConnector):
 
         MAX_RETRIES = 5
         _MIN_STAKE = 1.0
-        err: Optional[str] = resp["error"].get("message", "Unknown error") if resp.get("error") else None
+        err: Optional[str] = self._error_text(resp["error"]) if resp.get("error") else None
 
         for _attempt in range(MAX_RETRIES):
             if err is None:
                 break
 
             changed = False
-            if (
-                "Input validation failed: parameters" in err
-                and send_limit_order
-            ):
-                logger.warning(
-                    "Deriv rejected limit_order (SL/TP) params for {} — retrying without limit_order. "
-                    "Check SL/TP bounds in config.",
-                    mapped,
-                )
-                send_limit_order = False
-                changed = True
 
-            # ── 1. Multiplier correction (always fix this first) ───────────
+            # ── 1. Multiplier correction (highest priority — the real cause) ──
+            # Deriv puts the accepted list in error.details; _error_text already
+            # folded that into ``err`` so this regex can fire. Fixing the
+            # multiplier first prevents misattributing the rejection to SL/TP.
             _mult_match = _re.search(
                 r"Multiplier is not in acceptable range.*?Accepts\s+([\d,\s]+)", err
             )
             if _mult_match:
                 valid = sorted(int(x.strip()) for x in _mult_match.group(1).split(",") if x.strip().isdigit())
                 if valid:
-                    corrected = min(valid, key=lambda x: abs(x - multiplier))
+                    self._discovered_multipliers[mapped] = valid
+                    nearest = min(valid, key=lambda x: abs(x - multiplier))
+                    # Re-fit against the now-known valid list so the SL still
+                    # fits within the stake (uses the existing fitting math).
+                    corrected = self._fit_multiplier_for_sl(nearest, sl_pct, valid)
                     logger.warning(
                         "Deriv multiplier {} rejected for {} — retrying with {} (valid: {}). "
                         "Update config/brokers/deriv.json!",
                         multiplier, mapped, corrected, valid,
                     )
-                    self._discovered_multipliers[mapped] = valid
                     if corrected > 0:
                         amount = round(max(_MIN_STAKE, amount * multiplier / corrected), 2)
                     multiplier = corrected
@@ -1024,6 +1083,30 @@ class DerivConnector(BaseConnector):
                     amount = capped
                     changed = True
 
+            # ── 3. limit_order strip — only when SL/TP is the real culprit ──
+            # Drop the SL/TP bounds when the error explicitly references them, or
+            # as a last resort for a generic validation failure that nothing else
+            # has already addressed. Reordering this AFTER multiplier/cap stops a
+            # generic 'Input validation failed' from blindly blaming SL/TP while
+            # the actual cause (a bad multiplier) goes uncorrected.
+            _err_low = err.lower()
+            references_sltp = any(
+                k in _err_low
+                for k in ("stop_loss", "take_profit", "stop loss", "take profit",
+                          "limit_order", "limit order")
+            )
+            if send_limit_order and (
+                references_sltp
+                or (not changed and "Input validation failed: parameters" in err)
+            ):
+                logger.warning(
+                    "Deriv rejected limit_order (SL/TP) params for {} — retrying without limit_order. "
+                    "Check SL/TP bounds in config.",
+                    mapped,
+                )
+                send_limit_order = False
+                changed = True
+
             if not changed:
                 break
 
@@ -1042,7 +1125,7 @@ class DerivConnector(BaseConnector):
                 }
 
             resp = self._sync_send(retry_payload)
-            err = resp["error"].get("message", "Unknown error") if resp.get("error") else None
+            err = self._error_text(resp["error"]) if resp.get("error") else None
 
 
         if err:
