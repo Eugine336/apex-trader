@@ -63,6 +63,17 @@ class SituationAssessment:
     primary_label: str = "UNKNOWN"
     evidence: list[str] = field(default_factory=list)
 
+    # ── Per-timeframe alignment vector (kept alongside the scalar) ────────
+    # Signed alignment in [-1, +1] for each higher timeframe, so a consumer can
+    # see *which* timeframe conflicts instead of only the collapsed scalar
+    # ``tf_alignment``. A conflict (D1 +0.8, H4 -0.6) is then distinguishable
+    # from genuine neutrality (all ~0) — the scalar alone hides that.
+    tf_components: dict = field(default_factory=dict)
+
+    def tf_vector(self) -> dict:
+        """Return the per-timeframe signed alignment map ({"D1": float, ...})."""
+        return dict(self.tf_components)
+
 
 class SituationEngine:
     """Reads analysis outputs → computes continuous situation dimensions."""
@@ -78,6 +89,11 @@ class SituationEngine:
 
         # ── 1. Timeframe alignment ───────────────────────────────────────
         sa.tf_alignment = self._compute_tf_alignment(ctx, evidence)
+        sa.tf_components = {
+            "D1": round(self._trend_alignment_score(ctx.d1_trend, ctx.d1_confidence, ctx.is_long), 4),
+            "H4": round(self._trend_alignment_score(ctx.h4_trend, ctx.h4_confidence, ctx.is_long), 4),
+            "H1": round(self._trend_alignment_score(ctx.h1_trend, ctx.h1_confidence, ctx.is_long), 4),
+        }
 
         # ── 2. Momentum ─────────────────────────────────────────────────
         sa.momentum = self._compute_momentum(ctx, evidence)
@@ -120,6 +136,7 @@ class SituationEngine:
         sa.tf_alignment = max(-1.0, min(1.0,
             d1 * self._D1_WEIGHT + h4 * self._H4_WEIGHT + h1 * self._H1_WEIGHT
         ))
+        sa.tf_components = {"D1": round(d1, 4), "H4": round(h4, 4), "H1": round(h1, 4)}
         parts = []
         if abs(d1) > 0.1:
             parts.append(f"D1={'support' if d1 > 0 else 'oppose'}({ctx.d1_confidence:.2f})")

@@ -287,6 +287,31 @@ class TradePlanner:
         raw = num / denom            # −1..+1
         return max(0.0, min(1.0, (raw + 1.0) / 2.0))
 
+    def advisor_vector(self, ctx: TradePlanContext) -> dict:
+        """Per-advisor signed alignment in [-1, +1] kept alongside the mean.
+
+        Where ``_advisor_agreement`` collapses the four advisors (scanner,
+        decision engine, RL, adaptive pair win-rate) into one number, this keeps
+        each advisor's signed read intact so a consumer (e.g. the orchestrator)
+        can see *disagreement shape* — a strong scanner opposed by RL is very
+        different from four mediocre advisors, but the mean hides that. Abstaining
+        advisors are omitted. ``agreement`` mirrors ``_advisor_agreement``.
+        """
+        vec: dict = {}
+        vec["scanner"] = round(max(0.0, min(1.0, ctx.scanner_score / 100.0)), 4)
+        if abs(ctx.de_tf_alignment) > 1e-6 or ctx.de_confidence > 0:
+            vec["decision_engine"] = round(max(-1.0, min(1.0, ctx.de_tf_alignment)), 4)
+        if ctx.rl_action in (1, 2):
+            rl_supports = (
+                (ctx.is_long and ctx.rl_action == 1)
+                or (not ctx.is_long and ctx.rl_action == 2)
+            )
+            rl_align = ctx.rl_confidence if rl_supports else -ctx.rl_confidence
+            vec["rl"] = round(max(-1.0, min(1.0, rl_align)), 4)
+        if ctx.pair_win_rate > 0:
+            vec["pair_win_rate"] = round(max(-1.0, min(1.0, (ctx.pair_win_rate - 0.5) * 2.0)), 4)
+        return {"advisors": vec, "agreement": round(self._advisor_agreement(ctx), 4)}
+
     def _confidence(self, ctx: TradePlanContext, agreement: float) -> float:
         """Blend DE confidence, advisor agreement and structure quality."""
         de = max(0.0, min(1.0, ctx.de_confidence))

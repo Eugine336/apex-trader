@@ -18,6 +18,8 @@ const NAV = [
   { to: '/governor', icon: '🏛', label: 'Governor' },
   { to: '/planner', icon: '🗺', label: 'Planner' },
   { to: '/decision-trace', icon: '🧬', label: 'Decision Trace' },
+  { to: '/orchestrator', icon: '🎛', label: 'Orchestrator' },
+  { to: '/feedback', icon: '🔁', label: 'Outcome Feedback' },
   { to: '/activity', icon: '🔔', label: 'Activity' },
   { to: '/shadow', icon: '👻', label: 'Shadow Outcomes' },
   { to: '/reconciliation', icon: '⚖', label: 'Reconciliation' },
