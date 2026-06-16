@@ -163,6 +163,15 @@ class TradeProposal:
     # ── Scanner evidence ─────────────────────────────────────────────────
     scan_score: Optional[float] = None      # 0..~123 confluence score
 
+    # ── Accumulated-risk evidence (#24) ───────────────────────────────────
+    # Bounded [floor, 1.0] dimmer the risk governor / portfolio governor handed
+    # through when an analytical risk dimension (portfolio heat, spread, R:R,
+    # currency / sector / correlated concentration) was near or over its limit
+    # but did NOT trip a physics veto. 1.0 = clear of every analytical limit
+    # (neutral). The orchestrator folds it into size so a near-limit trade is
+    # sized DOWN instead of being killed on the first breach.
+    risk_multiplier: float = 1.0
+
     # ── Upstream gate-softening multipliers (Phase 9) ─────────────────────
     # Each is a bounded [gate_floor, 1.0] factor a softened upstream QUALITY
     # gate handed through instead of killing the setup: how far below the kill
@@ -193,6 +202,7 @@ class TradeProposal:
             "advisor_agreement": self.advisor_agreement,
             "advisor_vector": self.advisor_vector,
             "scan_score": self.scan_score,
+            "risk_multiplier": self.risk_multiplier,
             "gate_quality_multiplier": self.gate_quality_multiplier,
             "planner_quality_multiplier": self.planner_quality_multiplier,
             "entry_quality_multiplier": self.entry_quality_multiplier,
@@ -571,6 +581,12 @@ class Orchestrator:
             ("scanner_gate", proposal.gate_quality_multiplier),
             ("planner_gate", proposal.planner_quality_multiplier),
             ("entry_gate", proposal.entry_quality_multiplier),
+            # #24 — accumulated analytical-risk dimmer. The risk/portfolio
+            # governor handed this through instead of a first-breach veto when a
+            # heat / spread / R:R / concentration dimension was near or over its
+            # limit. Treated like a softened gate so a genuinely near-limit trade
+            # can size BELOW the analytic floor (down to the gate floor).
+            ("accumulated_risk", proposal.risk_multiplier),
         ]
         softened = False
         for name, gm in gate_mults:

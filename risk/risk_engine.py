@@ -24,6 +24,7 @@ from config import (
 from risk.daily_tracker import PnLTracker
 from risk.position_sizer import PositionSizer
 from risk.spread_monitor import SpreadMonitor
+from risk import risk_accumulation as ra
 from platform_context import PlatformContext, build_context_for_symbol
 from adaptive.ev_estimator import EVEstimator
 
@@ -45,6 +46,13 @@ class RiskAssessment:
     sizing_mode: str = "lots"       # "lots" | "stake"
     ev_estimate: float = 0.0
     ev_confidence: str = "unknown"
+    # #24 — accumulated near-/over-limit analytical risk dimensions, reported
+    # additively alongside the (unchanged) hard physics rejections. ``risk_score``
+    # (0..1) is the closeness of the nearest analytical limit and
+    # ``risk_near_breaches`` names the dimensions at/over their limit — surfaced
+    # for the trace / dashboard so a trade taken with little headroom is visible.
+    risk_score: float = 0.0
+    risk_near_breaches: list[str] = field(default_factory=list)
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -401,7 +409,68 @@ class RiskEngine:
             sizing_mode=size_result.sizing_mode,
             ev_estimate=ev_est.expected_value if ev_est else 0.0,
             ev_confidence=ev_est.confidence if ev_est else "unknown",
+            risk_dimensions=self._risk_dimensions(
+                open_count=len(trades),
+                exposure_pct=exposure_map.max_single_currency_exposure,
+                ev_est=ev_est,
+                current_spread_pips=current_spread_pips,
+                pair=pair,
+            ),
         )
+
+    def _risk_dimensions(
+        self,
+        *,
+        open_count: int,
+        exposure_pct: float,
+        ev_est: Any,
+        current_spread_pips: float | None,
+        pair: str,
+    ) -> "ra.RiskScore":
+        """Measure every analytical risk dimension for reporting (#24).
+
+        Purely informational — the hard physics/safety rejections above are
+        unchanged. This accumulates the open-count, currency-exposure, EV and
+        spread proximities so a near-limit (but approved) trade is visible on the
+        trace / dashboard instead of every dimension but the first being lost.
+        """
+        dims: list[ra.RiskDimension] = []
+        try:
+            if self.risk_cfg.max_open_trades > 0:
+                dims.append(ra.dimension(
+                    "open_trades", open_count, self.risk_cfg.max_open_trades,
+                    f"{open_count}/{self.risk_cfg.max_open_trades} open",
+                ))
+            max_cur = self.correlation_engine.max_single_currency_exposure
+            if max_cur and max_cur > 0:
+                dims.append(ra.dimension(
+                    "currency_exposure", exposure_pct, max_cur,
+                    f"exposure {exposure_pct:.2%} vs {max_cur:.2%}",
+                ))
+            if ev_est is not None and ev_est.confidence in ("high", "medium"):
+                # EV above the threshold is safe; closeness to (or below) it is
+                # risk. Offset both sides by the same constant so a negative
+                # threshold still yields a sensible positive ratio.
+                offset = 1.0
+                dims.append(ra.dimension(
+                    "expected_value",
+                    offset + self.risk_cfg.ev_threshold,
+                    max(1e-6, offset + ev_est.expected_value),
+                    f"EV {ev_est.expected_value:+.4f} vs threshold {self.risk_cfg.ev_threshold:+.4f}",
+                    lower_is_riskier=True,
+                ))
+            if current_spread_pips is not None:
+                typical = self.spread_monitor.typical_spread(pair) if hasattr(self.spread_monitor, "typical_spread") else 0.0
+                if typical and typical > 0:
+                    dims.append(ra.dimension(
+                        "spread", current_spread_pips,
+                        typical * self.risk_cfg.max_spread_multiplier,
+                        f"spread {current_spread_pips:.1f} vs cap "
+                        f"{typical * self.risk_cfg.max_spread_multiplier:.1f}",
+                    ))
+        except Exception:  # noqa: BLE001
+            pass
+        return ra.accumulate(dims)
 
     def record_trade_result(
         self,
@@ -650,6 +719,7 @@ class RiskEngine:
         sizing_mode: str = "lots",
         ev_estimate: float = 0.0,
         ev_confidence: str = "unknown",
+        risk_dimensions: "ra.RiskScore | None" = None,
     ) -> RiskAssessment:
         pnl_snap = self.pnl_tracker.get_snapshot(account_balance=self.balance, timestamp=now)
         return RiskAssessment(
@@ -668,6 +738,11 @@ class RiskEngine:
             sizing_mode=sizing_mode,
             ev_estimate=ev_estimate,
             ev_confidence=ev_confidence,
+            risk_score=(round(risk_dimensions.score, 4) if risk_dimensions is not None else 0.0),
+            risk_near_breaches=(
+                (risk_dimensions.near_breaches + risk_dimensions.breaches)
+                if risk_dimensions is not None else []
+            ),
             timestamp=now,
         )
 

@@ -69,6 +69,15 @@ class EntryDecision:
     # folds into sizing.
     gate_softened: bool = False
     de_quality_multiplier: float = 1.0
+    # #24 — accumulated-risk dimmer. When the risk governor runs in graded mode
+    # it no longer hard-vetoes on the FIRST analytical breach (portfolio heat,
+    # spread, R:R); it measures EVERY dimension, keeps physics (position limits)
+    # hard, and folds the analytical near-/over-limit dimensions into this
+    # bounded multiplier (1.0 = clear of all limits) so the orchestrator sizes
+    # the trade DOWN instead of the gate killing it. ``risk_near_breaches`` names
+    # the dimensions at or past their limit for the trace / dashboard.
+    risk_multiplier: float = 1.0
+    risk_near_breaches: list[str] = field(default_factory=list)
     evidence: list[str] = field(default_factory=list)
     governor_vetoed: bool = False
     governor_reason: str = ""

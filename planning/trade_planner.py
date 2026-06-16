@@ -308,6 +308,18 @@ class TradePlanner:
                 )
                 return plan
 
+            # Allowed — capture any graded analytical-risk dimmer (#24) so the
+            # orchestrator sizes a near-/over-limit concentration DOWN instead of
+            # opening it at full size (the governor no longer hard-blocks it in
+            # graded mode, so the dimmer must be applied downstream).
+            if verdict is not None:
+                try:
+                    plan.governor_risk_multiplier = float(
+                        getattr(verdict, "risk_multiplier", 1.0) or 1.0
+                    )
+                except (TypeError, ValueError):
+                    plan.governor_risk_multiplier = 1.0
+
         plan.action = "ENTER"
 
         # ── 2. Entry mode ────────────────────────────────────────────────
