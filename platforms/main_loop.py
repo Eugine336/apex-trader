@@ -40,6 +40,17 @@ from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open
 from management.re_entry import ReEntryManager
 from management.exit_cause import ExitCause
 from management.opportunity_executor import OpportunityExecutor
+from brain.decision_trace import (
+    DecisionTraceRecorder,
+    STAGE_RANKER,
+    STAGE_CORRELATION,
+    STAGE_MARGIN,
+    STAGE_MAX_TRADES,
+    STAGE_ENTRY_ENGINE,
+    STAGE_DECISION_ENGINE,
+    STAGE_GOVERNOR,
+    STAGE_PLANNER,
+)
 from management.trade_manager import (
     TradeManager,
     TradeStatus,
@@ -200,6 +211,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # candidates when OpportunityRankerConfig.execute is on. Shadow no-op
         # otherwise (the scalar consensus direction is used unchanged).
         self._opportunity_executor = OpportunityExecutor(self.config.opportunity_ranker)
+        # Decision trace recorder — threads one awareness record through every
+        # entry-pipeline stage so each component sees (and can challenge) the
+        # others' verdicts. Additive: records decisions, never changes them.
+        self._trace_recorder = DecisionTraceRecorder(self.config.decision_trace)
         self.scheduler = ScanScheduler()
         risk_cfg = self.config.risk
         self.entry_engine = EntryEngine(
@@ -1040,6 +1055,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             if result.pair in open_pairs:
                 continue
 
+            # Open a fresh awareness trace for this setup. Every stage below
+            # stamps its verdict onto it; it is finalised on rejection
+            # (_log_rejection) or on a placed trade.
+            self._trace_begin(result.pair)
+
             # ── Opportunity executor — graded direction selection ─────────
             # When execute is on, the ranked candidates (coherent vote clusters
             # scored by EV) choose the live direction instead of the scalar
@@ -1047,8 +1067,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             # below (correlation/CP4, margin, max-trades, planner, governor)
             # unchanged. When execute is off this is a no-op: the scalar
             # direction stands and behaviour is identical to before.
+            scalar_dir = result.direction
+            ranker_override = False
+            selected_opp = None
             if self.config.opportunity_ranker.execute:
-                scalar_dir = result.direction  # direction the scalar decide() chose
                 try:
                     opp = self._opportunity_executor.select(getattr(result, "candidates", None))
                 except Exception as exc:
@@ -1056,7 +1078,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     opp = None
                 if opp is not None and opp.direction in ("LONG", "SHORT"):
                     result.selected_horizon = opp.timeframe_class
+                    selected_opp = opp
                     if opp.direction != scalar_dir:
+                        ranker_override = True
                         logger.info(
                             "[executor] {} RANKER OVERRIDE — consensus={} → ranker={} "
                             "EV={:+.2f}R horizon={} | {}",
@@ -1074,6 +1098,42 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     # stands; no ranker horizon, so downstream HTF authority is
                     # unchanged (full authority).
                     result.selected_horizon = ""
+
+            # Stamp the direction-selection verdict (ranker when it drove the
+            # choice, else the scalar consensus that stood).
+            if selected_opp is not None:
+                self._trace_stamp(
+                    STAGE_RANKER, "opportunity_ranker",
+                    f"{selected_opp.direction}_{selected_opp.timeframe_class}",
+                    (f"ranker {'OVERRODE consensus ' + (scalar_dir or 'NEUTRAL') if ranker_override else 'confirmed'} "
+                     f"— best EV cluster {selected_opp.expected_value:+.2f}R on {selected_opp.timeframe_class} "
+                     f"from {', '.join(selected_opp.contributors) or 'none'}"),
+                    evidence={
+                        "direction": selected_opp.direction,
+                        "horizon": selected_opp.timeframe_class,
+                        "ev_r": round(selected_opp.expected_value, 3),
+                        "win_prob": round(selected_opp.win_prob, 3),
+                        "coherence": round(selected_opp.coherence, 3),
+                        "scalar_consensus": scalar_dir or "NEUTRAL",
+                        "override": ranker_override,
+                        "candidates": len(getattr(result, "candidates", []) or []),
+                    },
+                    confidence=float(getattr(selected_opp, "confidence", 0.0) or 0.0),
+                )
+            else:
+                self._trace_stamp(
+                    STAGE_RANKER, "directional_consensus",
+                    result.direction or "NEUTRAL",
+                    (f"scalar consensus {result.direction or 'NEUTRAL'} stands "
+                     f"(score {int(result.score)}); no ranked candidate selected"),
+                    evidence={
+                        "direction": result.direction or "NEUTRAL",
+                        "scan_score": int(result.score),
+                        "ranker_execute": bool(self.config.opportunity_ranker.execute),
+                        "candidates": len(getattr(result, "candidates", []) or []),
+                    },
+                    confidence=0.5,
+                )
 
             # P5: per-pair cooldown after a breakeven stop-out. In chop a pair
             # can cycle enter → BE → stopped at BE → re-enter, bleeding spread
@@ -1097,14 +1157,32 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             ]
             can_open, corr_reason = self.correlation.can_open_trade(result.pair, result.direction, open_trades)
             if not can_open:
+                self._trace_stamp(
+                    STAGE_CORRELATION, "correlation_engine", "BLOCK", corr_reason,
+                    evidence={"open_trades": len(open_trades), "direction": result.direction},
+                    blocking=True,
+                )
                 self._log_rejection(result.pair, result.direction, result.score, corr_reason)
                 continue
+            self._trace_stamp(
+                STAGE_CORRELATION, "correlation_engine", "PASS",
+                f"no correlation/hedge conflict with {len(open_trades)} open position(s)",
+                evidence={"open_trades": len(open_trades), "direction": result.direction},
+            )
 
             if self.config.risk.margin_guardian_enabled:
                 margin_ok, margin_reason = self._check_margin_for_entry(result.pair)
                 if not margin_ok:
+                    self._trace_stamp(
+                        STAGE_MARGIN, "margin_guardian", "BLOCK", margin_reason,
+                        blocking=True,
+                    )
                     self._log_rejection(result.pair, result.direction, result.score, margin_reason)
                     continue
+                self._trace_stamp(
+                    STAGE_MARGIN, "margin_guardian", "PASS",
+                    "sufficient free margin for this entry",
+                )
 
             if len(self.managed_positions) >= self.config.risk.max_open_trades:
                 self._last_slot_blocked_candidate = {
@@ -1112,14 +1190,36 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     "direction": result.direction,
                     "score": result.score,
                 }
+                self._trace_stamp(
+                    STAGE_MAX_TRADES, "risk_limits", "BLOCK",
+                    f"max open trades reached ({len(self.managed_positions)}/{self.config.risk.max_open_trades})",
+                    evidence={
+                        "open": len(self.managed_positions),
+                        "limit": self.config.risk.max_open_trades,
+                    },
+                    blocking=True,
+                )
                 self._log_rejection(result.pair, result.direction, result.score, "Max trades reached")
                 break
+            self._trace_stamp(
+                STAGE_MAX_TRADES, "risk_limits", "PASS",
+                f"trade-slot available ({len(self.managed_positions)}/{self.config.risk.max_open_trades} used)",
+                evidence={
+                    "open": len(self.managed_positions),
+                    "limit": self.config.risk.max_open_trades,
+                },
+            )
 
             cycle["entries_attempted"] += 1
             filled = self._execute_entry(result, session_status.current_session, now)
             if filled:
                 cycle["entries_filled"] += 1
                 open_pairs.append(result.pair)
+            else:
+                # Safety net: if a downstream return path did not go through
+                # _log_rejection (e.g. a circuit-breaker / in-flight skip), the
+                # trace is still open — close it loudly rather than leak it.
+                self._trace_finalize_abandoned("entry path returned without placing a trade")
 
     def _fetch_open_trade_market_data(self, now: datetime) -> dict[str, dict[str, pd.DataFrame]]:
         if not self.managed_positions:
@@ -1563,6 +1663,15 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 entry_context["entry_price"] = signal.entry_price
             if signal.stop_loss is not None:
                 entry_context["stop_loss"] = signal.stop_loss
+            self._trace_stamp(
+                STAGE_ENTRY_ENGINE, "entry_engine", "REJECT", signal.reason,
+                evidence={
+                    "horizon": getattr(result, "selected_horizon", "") or "",
+                    "entry_price": signal.entry_price,
+                    "stop_loss": signal.stop_loss,
+                },
+                blocking=True,
+            )
             self._log_rejection(pair, direction, result.score, signal.reason,
                                 entry_context=entry_context or None)
             if signal.entry_price is not None and signal.stop_loss is not None and h1_df is not None:
@@ -1579,6 +1688,19 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 except Exception:
                     logger.debug("[ShadowContract] TP computation failed for entry rejection on {}", pair)
             return False
+
+        _entry_horizon = getattr(result, "selected_horizon", "") or "full-HTF"
+        self._trace_stamp(
+            STAGE_ENTRY_ENGINE, "entry_engine", "PASS",
+            (f"entry geometry built @ {signal.entry_price} SL {signal.stop_loss} "
+             f"(horizon {_entry_horizon} — H4 penalty scaled to this horizon)"),
+            evidence={
+                "entry_price": signal.entry_price,
+                "stop_loss": signal.stop_loss,
+                "entry_mode": getattr(signal, "entry_mode", ""),
+                "horizon": getattr(result, "selected_horizon", "") or "",
+            },
+        )
 
         spread = 0.0
         try:
@@ -1610,6 +1732,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 )
                 sa = self._situation_engine.assess_entry(entry_ctx)
                 entry_decision = self._decision_engine.decide_entry(entry_ctx, sa)
+                _pre_gov_action = getattr(getattr(entry_decision, "action", None), "value", str(getattr(entry_decision, "action", "")))
+                _tf_align = getattr(sa, "tf_alignment", None)
+                _de_horizon = getattr(result, "selected_horizon", "") or ""
 
                 governor_changed = False
                 if self._risk_governor is not None:
@@ -1621,6 +1746,42 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 if self._decision_journal is not None:
                     self._decision_journal.log_entry(entry_ctx, sa, entry_decision, governor_changed)
 
+                _de_action = getattr(getattr(entry_decision, "action", None), "value", str(getattr(entry_decision, "action", "")))
+                _is_reversal = "[REVERSAL]" in getattr(entry_decision, "reason", "")
+                _de_evidence = {
+                    "action": _de_action,
+                    "conviction": round(float(getattr(entry_decision, "conviction", 0.0) or 0.0), 3),
+                    "size_mult": round(float(getattr(entry_decision, "size_multiplier", 1.0) or 1.0), 3),
+                    "tf_alignment": (round(float(_tf_align), 3) if _tf_align is not None else None),
+                    "horizon": _de_horizon,
+                    "htf_scaled": bool(_de_horizon),
+                    "reversal": _is_reversal,
+                }
+                self._trace_stamp(
+                    STAGE_DECISION_ENGINE, "decision_engine",
+                    _de_action if entry_decision.should_enter else f"SKIP:{_de_action}",
+                    (getattr(entry_decision, "reason", "") or "decision engine verdict").strip(),
+                    evidence=_de_evidence,
+                    confidence=float(getattr(entry_decision, "conviction", 0.0) or 0.0),
+                    blocking=not entry_decision.should_enter,
+                )
+                # The governor reviews the decision engine — record its verdict
+                # and, when it overrode the engine, a formal challenge so the
+                # disagreement is visible (the engine owner must justify it).
+                self._trace_stamp(
+                    STAGE_GOVERNOR, "risk_governor",
+                    "CHANGED" if governor_changed else "PASS",
+                    (f"governor overrode decision engine ({_pre_gov_action} → {_de_action})"
+                     if governor_changed else
+                     f"governor upheld decision engine verdict ({_de_action})"),
+                    evidence={"pre": _pre_gov_action, "post": _de_action, "changed": governor_changed},
+                )
+                if governor_changed:
+                    self._trace_challenge(
+                        "governor", STAGE_DECISION_ENGINE,
+                        f"risk governor disagreed with decision engine: changed {_pre_gov_action} → {_de_action}",
+                    )
+
                 if not entry_decision.should_enter:
                     self._log_rejection(
                         pair, direction, result.score,
@@ -1631,6 +1792,19 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         rejecting_gate=f"decision_engine:{entry_decision.action.value}",
                     )
                     return False
+
+                # Awareness: a high-EV ranker pick that the decision engine only
+                # weakly supports (low conviction) is worth flagging — the
+                # downstream owner should be able to justify entering anyway.
+                if (
+                    getattr(result, "selected_horizon", "")
+                    and float(getattr(entry_decision, "conviction", 1.0) or 1.0) < 0.35
+                ):
+                    self._trace_challenge(
+                        "decision_engine", STAGE_RANKER,
+                        (f"ranker selected {direction} {result.selected_horizon} but decision-engine "
+                         f"conviction is low ({float(entry_decision.conviction):.2f})"),
+                    )
 
                 # Apply conviction-based sizing
                 conviction_mult = entry_decision.size_multiplier
@@ -1662,7 +1836,18 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                             result, signal, entry_ctx, sa, spread, _exec_risk, now,
                         )
                         plan = self._planner.plan_trade(plan_ctx)
+                        _plan_advisors = {
+                            "scan_score": int(getattr(result, "score", 0) or 0),
+                            "de_conviction": round(float(getattr(entry_decision, "conviction", 0.0) or 0.0), 3),
+                            "risk_pct": round(float(getattr(plan, "risk_pct", 0.0) or 0.0), 4),
+                            "is_market": bool(getattr(plan, "is_market", False)),
+                        }
                         if plan.action == "SKIP":
+                            self._trace_stamp(
+                                STAGE_PLANNER, "trade_planner", "SKIP",
+                                (getattr(plan, "reasoning", "") or "planner skipped this setup").strip(),
+                                evidence=_plan_advisors, blocking=True,
+                            )
                             self._log_rejection(
                                 pair, direction, result.score,
                                 f"Planner SKIP: {plan.reasoning}",
@@ -1674,6 +1859,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                                 "[Planner] WAIT {} {} — {} (re-evaluated next scan)",
                                 direction, pair, plan.wait_reason,
                             )
+                            self._trace_stamp(
+                                STAGE_PLANNER, "trade_planner", "WAIT",
+                                (getattr(plan, "reasoning", "") or getattr(plan, "wait_reason", "") or "planner waiting").strip(),
+                                evidence=_plan_advisors, blocking=True,
+                            )
                             self._log_rejection(
                                 pair, direction, result.score,
                                 f"Planner WAIT: {plan.reasoning}",
@@ -1684,6 +1874,24 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                             self._persist_shadow_contract(signal, rejecting_gate="planner:WAIT")
                             return False
                         # ENTER — adopt the plan's sizing and entry mode.
+                        self._trace_stamp(
+                            STAGE_PLANNER, "trade_planner", "ENTER",
+                            (getattr(plan, "reasoning", "") or "planner approved entry timing/sizing").strip(),
+                            evidence=_plan_advisors,
+                        )
+                        # The planner refines sizing/timing on the direction the
+                        # ranker chose — flag when it sized down a ranker pick it
+                        # only weakly agrees with (low scan score) so the
+                        # disagreement is visible.
+                        if (
+                            getattr(result, "selected_horizon", "")
+                            and int(getattr(result, "score", 0) or 0) < 50
+                        ):
+                            self._trace_challenge(
+                                "planner", STAGE_RANKER,
+                                (f"planner entered ranker's {direction} {result.selected_horizon} pick "
+                                 f"but scanner score is weak ({int(result.score)})"),
+                            )
                         base_pct = max(_exec_risk * 100.0, 1e-6)
                         conviction_mult = max(0.3, min(2.0, plan.risk_pct / base_pct))
                         signal.entry_mode = "MARKET" if plan.is_market else signal.entry_mode
@@ -2132,6 +2340,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     "📋 PENDING ORDER PLACED — {} {} @ {:.5f} | expires in {}min",
                     order_kind, pair, signal.entry_price, max_wait,
                 )
+                self._trace_finalize_success()
                 return True
             self._execution_breaker.record_failure()
             if self.position_store:
@@ -2418,6 +2627,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             )
         except Exception as exc:
             logger.debug("TRADE_OPEN emit failed: {}", exc)
+        self._trace_finalize_success()
         return True
 
     # ── Pending order management ────────────────────────────────────────
@@ -5145,9 +5355,56 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             except Exception as exc:
                 logger.debug("[ShadowContract] scanner rejection persist failed for {}: {}", rs.symbol, exc)
 
+    # ── Decision trace helpers (guarded — never break the live loop) ──────
+    def _trace_begin(self, pair: str) -> None:
+        try:
+            self._trace_recorder.begin(
+                pair,
+                cycle_id=getattr(self, "_current_cycle_id", "") or "",
+                setup_id=getattr(self, "_current_setup_id", "") or "",
+            )
+        except Exception as exc:
+            logger.debug("[decision_trace] begin failed for {}: {}", pair, exc)
+
+    def _trace_stamp(self, stage: str, owner: str, verdict: str, justification: str,
+                     *, evidence: dict | None = None, confidence: float = 1.0,
+                     blocking: bool = False) -> None:
+        try:
+            self._trace_recorder.stamp(
+                stage, owner, verdict, justification,
+                evidence=evidence, confidence=confidence, blocking=blocking,
+            )
+        except Exception as exc:
+            logger.debug("[decision_trace] stamp '{}' failed: {}", stage, exc)
+
+    def _trace_challenge(self, challenger: str, target_stage: str, reason: str) -> None:
+        try:
+            self._trace_recorder.challenge(challenger, target_stage, reason)
+        except Exception as exc:
+            logger.debug("[decision_trace] challenge failed: {}", exc)
+
+    def _trace_finalize_success(self) -> None:
+        try:
+            self._trace_recorder.finalize_success()
+        except Exception as exc:
+            logger.debug("[decision_trace] finalize_success failed: {}", exc)
+
+    def _trace_finalize_abandoned(self, reason: str = "") -> None:
+        try:
+            self._trace_recorder.finalize_abandoned(reason)
+        except Exception as exc:
+            logger.debug("[decision_trace] finalize_abandoned failed: {}", exc)
+
     def _log_rejection(self, pair: str, direction: str, score: int, reason: str,
                        entry_context: dict | None = None) -> None:
         logger.debug("❌ REJECTED {} {} (score {}) — {}", direction, pair, score, reason)
+        # Close out the awareness trace for this setup (if one is open) so the
+        # rejection is attributed to the gate that blocked it. No-op when
+        # tracing is off or no trace is active.
+        try:
+            self._trace_recorder.finalize_rejection(reason)
+        except Exception as exc:
+            logger.debug("[decision_trace] finalize_rejection failed: {}", exc)
         self._add_warning(
             level="rejection",
             symbol=pair,

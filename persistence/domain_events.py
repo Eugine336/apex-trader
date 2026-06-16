@@ -7,6 +7,13 @@ Prevents stringly-typed drift across modules.
 # ── Decision events ──────────────────────────────────────────────────────────
 DECISION_REJECT = "DECISION_REJECT"
 
+# ── Pipeline awareness (Decision Trace) ──────────────────────────────────────
+# One event per completed scan→entry pipeline pass: the full chain of stage
+# verdicts (ranker, correlation, margin, entry/decision/governor/planner), any
+# downstream challenges, and the terminal outcome. Powers the dashboard's
+# pipeline-funnel / rejection-breakdown / challenge-feed panels.
+DECISION_TRACE = "DECISION_TRACE"
+
 # ── Scanner-stage events ────────────────────────────────────────────────────
 SETUP_SKIPPED = "SETUP_SKIPPED"
 
