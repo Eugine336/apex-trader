@@ -16,6 +16,8 @@ import Decisions from './pages/Decisions';
 import Governor from './pages/Governor';
 import Planner from './pages/Planner';
 import DecisionTrace from './pages/DecisionTrace';
+import Orchestrator from './pages/Orchestrator';
+import Feedback from './pages/Feedback';
 import ShadowOutcomes from './pages/ShadowOutcomes';
 import Reconciliation from './pages/Reconciliation';
 
@@ -37,6 +39,8 @@ export default function App() {
           <Route path="governor" element={<Governor />} />
           <Route path="planner" element={<Planner />} />
           <Route path="decision-trace" element={<DecisionTrace />} />
+          <Route path="orchestrator" element={<Orchestrator />} />
+          <Route path="feedback" element={<Feedback />} />
           <Route path="controls" element={<Controls />} />
           <Route path="activity" element={<Activity />} />
           <Route path="shadow" element={<ShadowOutcomes />} />

@@ -37,3 +37,15 @@ TRADING_LOOP_HALTED = "TRADING_LOOP_HALTED"
 
 # ── Backfill (Phase 6) ─────────────────────────────────────────────────────
 TRADE_CLOSE_DERIVED = "TRADE_CLOSE_DERIVED"
+
+# ── Orchestrator (round table — graded sizing) ──────────────────────────────
+# One event per entry attempt the orchestrator graded: the collected evidence
+# proposal and the resulting bounded size multiplier (or physics veto). Powers
+# the dashboard's Orchestrator panel.
+ORCHESTRATOR_PROPOSAL = "ORCHESTRATOR_PROPOSAL"
+
+# ── Outcome feedback (post-trade learning loop) ─────────────────────────────
+# One event per closed trade linking the realised R back to the modules /
+# opportunity that drove the entry, so per-module accuracy can be measured.
+OUTCOME_FEEDBACK = "OUTCOME_FEEDBACK"
+

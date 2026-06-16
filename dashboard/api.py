@@ -280,6 +280,16 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
         """Ranked opportunities (coherent vote clusters) per pair with EV/horizon aggregates."""
         return _state.get_ranker()
 
+    @app.get("/api/orchestrator")
+    def orchestrator(limit: int = 100, symbol: str = ""):
+        """Round-table graded-sizing proposals — per-dimension multipliers + applied size."""
+        return _state.get_orchestrator(limit=min(limit, 500), symbol=symbol)
+
+    @app.get("/api/outcome-feedback")
+    def outcome_feedback():
+        """Per-module / per-horizon accuracy + confidence calibration from closed trades."""
+        return _state.get_outcome_feedback()
+
     @app.post("/api/control")
     async def control(body: dict):
         action = body.get("action", "")

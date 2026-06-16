@@ -55,6 +55,10 @@ class EntryDecision:
     confidence: float = 0.5
     conviction: float = 0.5       # 0.0–1.0, drives position sizing
     size_multiplier: float = 1.0  # conviction-derived lot scaling
+    # Continuous enter-skip margin (enter_score − skip_score). Exposed so the
+    # orchestrator can size by *how strongly* ENTER won, not just the binary —
+    # a margin of 0.01 and 5.0 both mean ENTER but carry very different weight.
+    entry_margin: float = 0.0
     evidence: list[str] = field(default_factory=list)
     governor_vetoed: bool = False
     governor_reason: str = ""

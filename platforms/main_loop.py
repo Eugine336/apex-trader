@@ -40,6 +40,8 @@ from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open
 from management.re_entry import ReEntryManager
 from management.exit_cause import ExitCause
 from management.opportunity_executor import OpportunityExecutor
+from brain.orchestrator import Orchestrator, TradeProposal
+from brain.outcome_feedback import OutcomeFeedback
 from brain.decision_trace import (
     DecisionTraceRecorder,
     STAGE_RANKER,
@@ -89,6 +91,7 @@ from persistence.domain_events import (
     DECISION_REJECT, ORDER_SENT, ORDER_FILLED, TRADE_OPEN, TRADE_CLOSE,
     SETUP_SKIPPED, SHADOW_CONTRACT_CREATED, BALANCE_UNAVAILABLE,
     PERSISTENCE_DEGRADED, CYCLE_FAILED, TRADING_LOOP_HALTED,
+    ORCHESTRATOR_PROPOSAL, OUTCOME_FEEDBACK,
 )
 from persistence.shadow_store import ShadowStore, ShadowContract, new_contract_id
 
@@ -215,6 +218,15 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # entry-pipeline stage so each component sees (and can challenge) the
         # others' verdicts. Additive: records decisions, never changes them.
         self._trace_recorder = DecisionTraceRecorder(self.config.decision_trace)
+        # Orchestrator — the round table. Collects every stage's evidence for an
+        # entry and folds it into ONE bounded graded size multiplier (a dimmer,
+        # not a kill switch): weak dimensions size the trade down, only physics
+        # (handled by the existing risk gates) can veto. Records every proposal.
+        self._orchestrator = Orchestrator(self.config.orchestrator)
+        # Outcome feedback — closes the loop: links each placed trade's realised
+        # R back to the modules / opportunity that drove it, for per-module
+        # accuracy. Observational only; never changes a live decision.
+        self._outcome_feedback = OutcomeFeedback(self.config.outcome_feedback)
         self.scheduler = ScanScheduler()
         risk_cfg = self.config.risk
         self.entry_engine = EntryEngine(
@@ -1741,6 +1753,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # Stays None when the Decision Engine is disabled, in which case the
         # engine falls back to the legacy stale-score scaler.
         entry_conviction: float | None = None
+        # Hoisted so the orchestrator (below) can read the decision/planner
+        # evidence regardless of which branch produced it. None when a stage
+        # did not run — the orchestrator treats a missing dimension as neutral.
+        _orch_sa = None
+        _orch_decision = None
+        _orch_plan = None
+        _orch_plan_ctx = None
         if self._decision_enabled:
             try:
                 entry_ctx = self._build_entry_context(
@@ -1748,6 +1767,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 )
                 sa = self._situation_engine.assess_entry(entry_ctx)
                 entry_decision = self._decision_engine.decide_entry(entry_ctx, sa)
+                _orch_sa = sa
+                _orch_decision = entry_decision
                 _pre_gov_action = getattr(getattr(entry_decision, "action", None), "value", str(getattr(entry_decision, "action", "")))
                 _tf_align = getattr(sa, "tf_alignment", None)
                 _de_horizon = getattr(result, "selected_horizon", "") or ""
@@ -1912,6 +1933,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         conviction_mult = max(0.3, min(2.0, plan.risk_pct / base_pct))
                         signal.entry_mode = "MARKET" if plan.is_market else signal.entry_mode
                         plan_to_store = (plan, plan_ctx)
+                        _orch_plan = plan
+                        _orch_plan_ctx = plan_ctx
                     except Exception as exc:
                         logger.warning("[Planner] error — keeping decision-engine sizing: {}", exc)
                         # Surface so the 'trades open but no plan logged' symptom
@@ -2170,6 +2193,46 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 )
                 return False
 
+        # ── Orchestrator — the round table (graded sizing, dimmer not switch) ─
+        # Every prior stage's evidence (ranker EV/coherence, HTF alignment,
+        # decision-engine margin/conviction, planner advisor agreement, scan
+        # score) is folded into ONE bounded size multiplier. Weak dimensions
+        # size the trade DOWN; only physics (already enforced by the risk gates
+        # above) can veto. When apply_sizing is on the multiplier scales the live
+        # position — bounded [size_floor, 1.0] so it can only reduce a trade the
+        # gates already approved, never create one or oversize it.
+        orch_verdict = None
+        if self.config.orchestrator.enabled:
+            try:
+                orch_verdict = self._evaluate_orchestrator(
+                    result, _orch_sa, _orch_decision, _orch_plan, _orch_plan_ctx,
+                )
+            except Exception as exc:
+                logger.error(
+                    "[orchestrator] {} evaluation failed — keeping pipeline sizing: {}",
+                    pair, exc,
+                )
+                orch_verdict = None
+            if orch_verdict is not None:
+                applied = bool(self.config.orchestrator.apply_sizing)
+                if applied and orch_verdict.size_multiplier > 0:
+                    conviction_mult *= orch_verdict.size_multiplier
+                self._record_orchestrator_proposal(result, orch_verdict, applied)
+                self._trace_stamp(
+                    "orchestrator", "orchestrator",
+                    f"SIZE×{orch_verdict.size_multiplier:.2f}",
+                    (f"round table graded size ×{orch_verdict.size_multiplier:.2f} "
+                     f"{'(applied)' if applied else '(recorded only)'} — "
+                     + "; ".join(f"{d.name}×{d.multiplier:.2f}" for d in orch_verdict.dimensions)),
+                    evidence={
+                        "size_multiplier": round(orch_verdict.size_multiplier, 3),
+                        "applied": applied,
+                        "horizon": orch_verdict.horizon or "",
+                        "dimensions": {d.name: round(d.multiplier, 3) for d in orch_verdict.dimensions},
+                    },
+                    confidence=float(orch_verdict.size_multiplier),
+                )
+
         try:
             adjustments = self.ml.get_trade_adjustments(
                 pair=pair,
@@ -2352,6 +2415,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 }
                 if self.position_store:
                     self.position_store.resolve_in_flight(idem_key, pending_id)
+                self._record_entry_attribution(pending_id, result, orch_verdict, _orch_decision)
                 logger.info(
                     "📋 PENDING ORDER PLACED — {} {} @ {:.5f} | expires in {}min",
                     order_kind, pair, signal.entry_price, max_wait,
@@ -2430,6 +2494,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._execution_breaker.record_success()
         if self.position_store:
             self.position_store.resolve_in_flight(idem_key, order.order_id)
+
+        # Outcome-feedback attribution — record which modules / opportunity drove
+        # this fill, keyed by the broker order id so the realised R can be linked
+        # back at close. Observational only.
+        self._record_entry_attribution(order.order_id, result, orch_verdict, _orch_decision)
 
         if not ctx.uses_stake:
             self.execution_monitor.record_execution(
@@ -5147,6 +5216,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             except Exception as exc:
                 logger.debug("[Planner] outcome log failed for {}: {}", pos.symbol, exc)
 
+        # ── Outcome feedback — link realised R back to the entry attribution ──
+        # Closes the module-accountability loop: per-module / per-horizon
+        # accuracy is computed from these joins. Observational only.
+        try:
+            _plan_sl = float(getattr(pos, "plan_sl_pips", 0.0) or 0.0)
+            _fb_pnl_r = (pnl_pips / _plan_sl) if _plan_sl > 1e-8 else (1.0 if pnl_dollars > 0 else -1.0)
+            self._record_trade_outcome(pos, pnl_pips, pnl_dollars, _fb_pnl_r, outcome, cause_value)
+        except Exception as exc:
+            logger.debug("[outcome_feedback] close hook failed for {}: {}", pos.symbol, exc)
+
         if exit_reason_discrepancy:
             logger.warning(
                 "⚠️ EXIT ATTRIBUTION DISCREPANCY — {} {}: broker={} but manager intended '{}'",
@@ -5410,6 +5489,148 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self._trace_recorder.finalize_abandoned(reason)
         except Exception as exc:
             logger.debug("[decision_trace] finalize_abandoned failed: {}", exc)
+
+    # ── Orchestrator + outcome-feedback helpers (guarded) ─────────────────
+    def _select_candidate(self, result):
+        """The ranker opportunity driving this entry (matching dir + horizon)."""
+        candidates = getattr(result, "candidates", None) or []
+        if not candidates:
+            return None
+        direction = getattr(result, "direction", "")
+        horizon = getattr(result, "selected_horizon", "") or ""
+        for c in candidates:
+            if getattr(c, "direction", "") == direction and (
+                not horizon or getattr(c, "timeframe_class", "") == horizon
+            ):
+                return c
+        for c in candidates:
+            if getattr(c, "direction", "") == direction:
+                return c
+        return candidates[0]
+
+    def _evaluate_orchestrator(self, result, sa, entry_decision, plan, plan_ctx):
+        """Build a TradeProposal from the collected evidence and grade it."""
+        opp = self._select_candidate(result)
+        advisor_agreement = None
+        advisor_vector: dict = {}
+        if plan is not None:
+            agree = getattr(plan, "advisor_agreement", None)
+            advisor_agreement = float(agree) if agree is not None else None
+        if plan_ctx is not None:
+            try:
+                av = self._planner.advisor_vector(plan_ctx)
+                advisor_vector = av.get("advisors", {}) or {}
+                if advisor_agreement is None:
+                    advisor_agreement = float(av.get("agreement")) if av.get("agreement") is not None else None
+            except Exception as exc:
+                logger.debug("[orchestrator] advisor vector unavailable: {}", exc)
+
+        proposal = TradeProposal(
+            pair=result.pair,
+            direction=getattr(result, "direction", ""),
+            horizon=getattr(result, "selected_horizon", "") or "",
+            ranker_ev=(float(opp.expected_value) if opp is not None else None),
+            ranker_coherence=(float(opp.coherence) if opp is not None else None),
+            ranker_confidence=(float(opp.confidence) if opp is not None else None),
+            candidate_count=len(getattr(result, "candidates", []) or []),
+            tf_alignment=(float(getattr(sa, "tf_alignment", 0.0)) if sa is not None else None),
+            tf_vector=(sa.tf_vector() if sa is not None and hasattr(sa, "tf_vector") else {}),
+            de_margin=(float(getattr(entry_decision, "entry_margin", 0.0)) if entry_decision is not None else None),
+            de_conviction=(float(getattr(entry_decision, "conviction", 0.0)) if entry_decision is not None else None),
+            advisor_agreement=advisor_agreement,
+            advisor_vector=advisor_vector,
+            scan_score=float(getattr(result, "score", 0) or 0),
+        )
+        verdict = self._orchestrator.evaluate(proposal)
+        # Stash the proposal alongside the verdict so the recorder/feedback can
+        # serialise the full evidence without recomputing it.
+        verdict._proposal = proposal  # type: ignore[attr-defined]
+        return verdict
+
+    def _record_orchestrator_proposal(self, result, verdict, applied: bool) -> None:
+        try:
+            store = get_event_store()
+            if store is None:
+                return
+            payload = verdict.to_dict()
+            payload["applied"] = bool(applied)
+            proposal = getattr(verdict, "_proposal", None)
+            if proposal is not None:
+                payload["proposal"] = proposal.to_dict()
+            store.emit(
+                event_type=ORCHESTRATOR_PROPOSAL,
+                severity="INFO",
+                symbol=getattr(result, "pair", ""),
+                correlation_id=getattr(self, "_current_cycle_id", None),
+                parent_id=getattr(self, "_current_setup_id", None),
+                source_module="brain.orchestrator",
+                payload=payload,
+            )
+        except Exception as exc:
+            logger.debug("[orchestrator] proposal persist failed: {}", exc)
+
+    def _record_entry_attribution(self, trade_key, result, verdict, entry_decision) -> None:
+        """Persist which modules/opportunity drove a placed trade (feedback loop)."""
+        fb = getattr(self, "_outcome_feedback", None)
+        if fb is None or not fb.enabled or not trade_key:
+            return
+        try:
+            opp = self._select_candidate(result)
+            votes_map: dict = {}
+            for v in getattr(result, "votes", None) or []:
+                module = str(getattr(v, "module", "") or "")
+                direction = str(getattr(v, "direction", "NEUTRAL") or "NEUTRAL")
+                if module and direction in ("LONG", "SHORT"):
+                    votes_map[module] = [direction, round(float(getattr(v, "confidence", 0.0) or 0.0), 4)]
+            attribution = {
+                "pair": getattr(result, "pair", ""),
+                "direction": getattr(result, "direction", ""),
+                "horizon": getattr(result, "selected_horizon", "") or "",
+                "scan_score": int(getattr(result, "score", 0) or 0),
+                "ranker_ev": (round(float(opp.expected_value), 4) if opp is not None else None),
+                "ranker_confidence": (round(float(opp.confidence), 4) if opp is not None else None),
+                "contributors": (list(getattr(opp, "contributors", []) or []) if opp is not None else []),
+                "votes": votes_map,
+                "de_conviction": (round(float(getattr(entry_decision, "conviction", 0.0) or 0.0), 4) if entry_decision is not None else None),
+                "orchestrator_size_multiplier": (round(float(verdict.size_multiplier), 4) if verdict is not None else None),
+                "cycle_id": getattr(self, "_current_cycle_id", "") or "",
+                "setup_id": getattr(self, "_current_setup_id", "") or "",
+            }
+            fb.record_entry(str(trade_key), attribution)
+        except Exception as exc:
+            logger.debug("[outcome_feedback] entry attribution failed: {}", exc)
+
+    def _record_trade_outcome(self, pos, pnl_pips, pnl_dollars, pnl_r, outcome, cause_value) -> None:
+        """Link a closed trade's realised R back to its entry attribution."""
+        fb = getattr(self, "_outcome_feedback", None)
+        if fb is None or not fb.enabled:
+            return
+        try:
+            key = getattr(pos, "order_id", "")
+            if not key:
+                return
+            payload = {
+                "pair": pos.symbol,
+                "direction": pos.direction,
+                "pnl_r": round(float(pnl_r), 4),
+                "pnl_pips": round(float(pnl_pips), 2),
+                "pnl_dollars": round(float(pnl_dollars), 2),
+                "won": float(pnl_dollars) > 0,
+                "outcome": outcome,
+                "exit_cause": cause_value,
+            }
+            fb.record_outcome(str(key), payload)
+            store = get_event_store()
+            if store is not None:
+                store.emit(
+                    event_type=OUTCOME_FEEDBACK,
+                    severity="INFO",
+                    symbol=pos.symbol,
+                    source_module="brain.outcome_feedback",
+                    payload={"trade_key": str(key), **payload},
+                )
+        except Exception as exc:
+            logger.debug("[outcome_feedback] outcome record failed: {}", exc)
 
     def _log_rejection(self, pair: str, direction: str, score: int, reason: str,
                        entry_context: dict | None = None) -> None:

@@ -867,6 +867,7 @@ class DecisionEngine:
                 confidence=min(1.0, abs(margin) + 0.3),
                 conviction=0.0,
                 size_multiplier=0.0,
+                entry_margin=margin,
                 evidence=skip_parts,
             )
 
@@ -904,6 +905,7 @@ class DecisionEngine:
             confidence=min(1.0, margin + 0.3),
             conviction=conviction,
             size_multiplier=size_mult,
+            entry_margin=margin,
             evidence=evidence,
         )
 

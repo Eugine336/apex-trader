@@ -1103,6 +1103,84 @@ class DecisionTraceConfig:
 
 
 @dataclass
+class OrchestratorConfig:
+    """Settings for the Trade Orchestrator (the round table / graded sizer).
+
+    The orchestrator collects every stage's evidence (ranker EV/coherence,
+    situation HTF alignment, decision-engine margin/conviction, planner advisor
+    agreement, scan score) and folds each dimension into a *bounded size
+    multiplier* in ``[size_floor, 1.0]`` — weak dimensions dim the size, they
+    never extinguish the trade.  The only hard vetoes are physics (negative
+    margin, market closed, duplicate, below broker min lot), which the live risk
+    gates already enforce — so the orchestrator can only SIZE DOWN a trade the
+    pipeline already approved, never place one it would have refused.
+
+    ``enabled`` — collect + record the proposal/verdict on every entry attempt
+    (drives the dashboard + outcome feedback). ``apply_sizing`` — let the graded
+    multiplier actually scale the live position. Both LIVE by default per the
+    "live, not shadow, but fully logged" mandate; flip ``apply_sizing`` off to
+    record without touching live lots.
+    """
+
+    enabled: bool = True
+    apply_sizing: bool = True
+    # Lower bound on the overall multiplier — a graded "no" is still a small
+    # trade, never zero (physics vetoes aside). 1.0 would make it inert.
+    size_floor: float = 0.5
+    # Lower bound on each individual dimension's contribution.
+    dimension_floor: float = 0.6
+    # Per-dimension "full credit" reference points.
+    ranker_ev_full: float = 1.5      # R units at which ranker EV gives full size
+    de_margin_full: float = 0.5      # enter-skip margin at which DE gives full size
+    scan_score_full: float = 100.0   # confluence score giving full size
+    # How much an opposing HTF dims a SCALP (vs a SWING which feels it fully).
+    scalp_htf_opposition_scale: float = 0.3
+    # Max concurrent trades the orchestrator may dispatch per scan cycle.
+    max_concurrent_trades: int = 1
+
+    def __post_init__(self) -> None:
+        for label, val in [
+            ("size_floor", self.size_floor),
+            ("dimension_floor", self.dimension_floor),
+            ("scalp_htf_opposition_scale", self.scalp_htf_opposition_scale),
+        ]:
+            if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
+                raise ValueError(
+                    f"OrchestratorConfig.{label} must be in [0, 1], got {val!r}"
+                )
+        for label, val in [
+            ("ranker_ev_full", self.ranker_ev_full),
+            ("de_margin_full", self.de_margin_full),
+            ("scan_score_full", self.scan_score_full),
+        ]:
+            if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
+                raise ValueError(
+                    f"OrchestratorConfig.{label} must be finite > 0, got {val!r}"
+                )
+        if not isinstance(self.max_concurrent_trades, int) or self.max_concurrent_trades < 1:
+            raise ValueError(
+                "OrchestratorConfig.max_concurrent_trades must be an int >= 1, "
+                f"got {self.max_concurrent_trades!r}"
+            )
+
+
+@dataclass
+class OutcomeFeedbackConfig:
+    """Settings for the post-trade Outcome Feedback loop.
+
+    On entry it records which modules/opportunity drove the trade (attribution);
+    on close it links the realised R back to that attribution so per-module,
+    per-horizon accuracy can be measured over time and surfaced on the dashboard.
+    Purely observational — it never changes a live decision.
+    """
+
+    enabled: bool = True
+    journal_path: str = "data/outcome_feedback.jsonl"
+    # Rolling window (most recent N completed trades) for accuracy aggregation.
+    accuracy_lookback: int = 300
+
+
+@dataclass
 class AppConfig:
     # All 4 categories enabled — forex, commodity, index, synthetic
     enabled_categories: list[str] = field(
@@ -1120,6 +1198,8 @@ class AppConfig:
     consensus: ConsensusConfig = field(default_factory=ConsensusConfig)
     opportunity_ranker: OpportunityRankerConfig = field(default_factory=OpportunityRankerConfig)
     decision_trace: DecisionTraceConfig = field(default_factory=DecisionTraceConfig)
+    orchestrator: OrchestratorConfig = field(default_factory=OrchestratorConfig)
+    outcome_feedback: OutcomeFeedbackConfig = field(default_factory=OutcomeFeedbackConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)
