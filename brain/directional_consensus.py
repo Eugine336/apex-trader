@@ -24,6 +24,11 @@ class Vote:
     direction: str          # "LONG", "SHORT", "NEUTRAL"
     confidence: float       # 0.0 .. 1.0
     weight: float           # from ConsensusConfig.weights
+    # Optional: the timeframe label this vote was actually computed on
+    # (e.g. "M5", "H1", "H4"). Empty when the producer does not record it.
+    # The ranker uses it to classify the opportunity's real horizon instead
+    # of inferring SCALP/SWING from the module name alone (collapse #12).
+    timeframe: str = ""
 
     @property
     def signed(self) -> float:
@@ -220,6 +225,7 @@ def decide_opportunities(
     min_expected_value: float = 0.0,
     min_cluster_confidence: float = 0.0,
     min_cluster_contributors: int = 1,
+    win_rate_provider=None,
 ):
     """Open-ended counterpart to ``decide``.
 
@@ -249,6 +255,7 @@ def decide_opportunities(
         min_expected_value=min_expected_value,
         min_cluster_confidence=min_cluster_confidence,
         min_cluster_contributors=min_cluster_contributors,
+        win_rate_provider=win_rate_provider,
     )
 
 

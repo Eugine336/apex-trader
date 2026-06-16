@@ -1157,7 +1157,23 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         reranked = self.ranker.rank_opportunities(ready_results, pair_mult_map)
         # Rebuild ranked list preserving RankedSetup structure
         rank_map = {s.result.pair: s for s in ranked}
-        top_results = reranked[:3]
+        # ── Capacity-aware dispatch cut (collapse #13 / #15) ──────────────
+        # Legacy: a hardcoded reranked[:3] dropped the 4th+ best setup every
+        # cycle regardless of quality or free slots. ``dispatch_top_n`` makes the
+        # cut configurable (default 3 = legacy); ``slot_aware_dispatch`` instead
+        # tracks real free trade slots so the ranked tail is only cut by
+        # capacity, not a magic number. Every dispatched setup still runs every
+        # downstream gate independently.
+        _rc = getattr(self.config, "opportunity_ranker", None)
+        _dispatch_n = int(getattr(_rc, "dispatch_top_n", 3) or 3) if _rc is not None else 3
+        if _rc is not None and getattr(_rc, "slot_aware_dispatch", False):
+            _free_slots = int(self.config.risk.max_open_trades) - len(self.managed_positions)
+            _dispatch_n = max(0, min(int(getattr(_rc, "dispatch_max_n", 10) or 10), _free_slots))
+            logger.debug(
+                "[dispatch] slot-aware cut — {} free slot(s), dispatching up to {} of {} ranked setup(s)",
+                _free_slots, _dispatch_n, len(reranked),
+            )
+        top_results = reranked[:_dispatch_n]
         top = [rank_map[r.pair] for r in top_results if r.pair in rank_map]
 
         self._last_slot_blocked_candidate = None

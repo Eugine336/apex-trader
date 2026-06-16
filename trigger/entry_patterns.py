@@ -182,3 +182,60 @@ class EntryPatternDetector:
                 return name, desc
 
         return "", ""
+
+    def get_all_patterns(
+        self,
+        df: pd.DataFrame,
+        direction: str,
+        zone_top: float,
+        zone_bottom: float,
+        pip_size: float,
+    ) -> list[PatternMatch]:
+        """Run every detector and return ALL matches (strongest first).
+
+        ``get_best_pattern`` collapses every co-occurring confirmation into the
+        single strongest pattern (collapse #21) — so an engulfing candle that is
+        ALSO a pin bar AND prints a volume spike scores identically to a lone
+        engulfing.  This preserves the full set of simultaneous confirmations so
+        a consumer can reward genuine confluence instead of discarding it.
+        """
+        checks: list[tuple[int, str, tuple[bool, str]]] = [
+            (5, "engulfing", self.detect_engulfing(df, direction)),
+            (4, "rejection_wick", self.detect_rejection_wick(df, zone_top, zone_bottom, direction, pip_size)),
+            (3, "pin_bar", self.detect_pin_bar(df, direction, pip_size)),
+            (2, "volume_spike", self.detect_volume_spike_at_zone(df, zone_top, zone_bottom)),
+            (1, "inside_bar_breakout", self.detect_inside_bar_breakout(df, direction)),
+        ]
+        matches = [
+            PatternMatch(name=name, description=desc, strength=strength, candle_index=-1)
+            for strength, name, (detected, desc) in checks
+            if detected
+        ]
+        matches.sort(key=lambda m: m.strength, reverse=True)
+        return matches
+
+    def get_pattern_confluence(
+        self,
+        df: pd.DataFrame,
+        direction: str,
+        zone_top: float,
+        zone_bottom: float,
+        pip_size: float,
+    ) -> tuple[str, str, list[PatternMatch]]:
+        """Return (best_name, best_desc, all_matches).
+
+        Backward-compatible with ``get_best_pattern`` for the first two values
+        while also surfacing the full co-occurring confirmation set so the
+        caller can grade confluence rather than only the strongest single
+        pattern (collapse #21).
+        """
+        matches = self.get_all_patterns(df, direction, zone_top, zone_bottom, pip_size)
+        if not matches:
+            return "", "", []
+        best = matches[0]
+        if len(matches) > 1:
+            logger.debug(
+                "M1 pattern confluence: {} confirmations — {}",
+                len(matches), ", ".join(m.name for m in matches),
+            )
+        return best.name, best.description, matches
