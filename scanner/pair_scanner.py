@@ -33,6 +33,7 @@ from brain.directional_consensus import (
     vote_from_liquidity, vote_from_momentum, vote_from_vwap,
 )
 from brain.session_engine import SessionEngine, NewsGuard
+from brain.orchestrator import gate_quality_multiplier as _gate_quality_multiplier
 from adaptive.ev_estimator import EVEstimator
 from brain.volume_analyzer import VolumeAnalyzer
 from brain.inducement_detector import InducementDetector
@@ -158,6 +159,44 @@ def _mt5_market_open(symbol: str, connector=None, info_cache: Optional[dict] = N
         return True  # on any error, don't block
 
 
+def soften_scanner_gate(status, trade_dir, oq_score, eq_score, score, ld_cfg, orch):
+    """Phase 9: pure decision for softening the scanner READY quality gate.
+
+    Returns ``(status, gate_quality_multiplier)``. When the orchestrator is the
+    live sizer (``enabled`` + ``soften_scanner_gates``) a WATCHLIST/WAITING
+    directional setup that fell short of the READY quality floors (OQ/EQ/score)
+    but cleared the hard SAFETY floors is promoted to READY carrying a bounded
+    quality multiplier the orchestrator folds into graded size — so a near-miss
+    trades SMALL instead of being dropped. Below the safety floors (or with
+    softening off) the status and a neutral 1.0 multiplier are returned
+    unchanged. Pure function — no I/O, trivially unit-testable.
+    """
+    if (
+        orch is None
+        or not getattr(orch, "enabled", False)
+        or not getattr(orch, "soften_scanner_gates", False)
+        or not getattr(ld_cfg, "enabled", False)
+        or status not in ("WATCHLIST", "WAITING")
+        or trade_dir not in ("LONG", "SHORT")
+    ):
+        return status, 1.0
+    safe_oq = float(getattr(orch, "scanner_safety_oq", 2.0))
+    safe_eq = float(getattr(orch, "scanner_safety_eq", 2.0))
+    safe_score = float(getattr(orch, "scanner_safety_score", 50.0))
+    if oq_score < safe_oq or eq_score < safe_eq or score < safe_score:
+        return status, 1.0
+    floor = float(getattr(orch, "gate_quality_floor", 0.15))
+    mult = _gate_quality_multiplier(
+        [
+            (oq_score, ld_cfg.opportunity_quality_min),
+            (eq_score, ld_cfg.entry_quality_min),
+            (score, ld_cfg.ready_min_score),
+        ],
+        floor,
+    )
+    return "READY", mult
+
+
 @dataclass
 class PairScanResult:
     pair: str
@@ -206,6 +245,12 @@ class PairScanResult:
     # to drive ``direction`` live. Empty when the scalar consensus path stands
     # (no ranker pick) — downstream HTF demotion is then inert (full authority).
     selected_horizon: str = ""
+    # Phase 9 gate softening: a bounded [gate_floor, 1.0] quality multiplier set
+    # when the orchestrator is live and this directional setup fell short of the
+    # READY quality floors (OQ/EQ/score) but cleared the hard safety floors. The
+    # setup is then promoted to READY carrying this factor instead of dropped,
+    # and the orchestrator folds it into graded size. 1.0 = passed cleanly.
+    gate_quality_multiplier: float = 1.0
 
 
 @dataclass
@@ -1060,6 +1105,35 @@ class PairScanner:
             else:
                 status = "WAITING"
 
+        # ── Phase 9: soften the scanner READY quality gate into a dimmer ──
+        # When the orchestrator is the live sizer, a directional setup that
+        # fell short of the READY quality floors (OQ/EQ/score) but cleared the
+        # hard SAFETY floors is promoted to READY carrying a bounded quality
+        # multiplier — the orchestrator folds it into graded size so the
+        # near-miss trades SMALL instead of being dropped. Truly hopeless
+        # setups (below the safety floors) still die. Best-effort: any error
+        # falls back to the legacy hard gate (multiplier stays 1.0).
+        gate_quality_multiplier = 1.0
+        try:
+            status, gate_quality_multiplier = soften_scanner_gate(
+                status, trade_dir, oq_score, eq_score, score, ld_cfg,
+                getattr(self.config, "orchestrator", None),
+            )
+            if gate_quality_multiplier < 1.0:
+                logger.info(
+                    "[gate-soften] scanner {} {} OQ={:.1f} EQ={:.1f} score={} "
+                    "below READY floors but above safety — promoting to "
+                    "READY ×{:.2f}",
+                    pair, trade_dir, oq_score, eq_score, score,
+                    gate_quality_multiplier,
+                )
+        except Exception as exc:
+            logger.debug(
+                "[gate-soften] scanner softening failed for {} — legacy gate: {}",
+                pair, exc,
+            )
+            gate_quality_multiplier = 1.0
+
         # ── Scanner-stage rejection capture (counterfactual shadow) ────
         # When a directional setup fails the scanner-stage quality/score gates
         # it never reaches the planner, so it would otherwise be invisible to
@@ -1187,6 +1261,7 @@ class PairScanner:
             rejection=rejection,
             candidates=candidates,
             votes=dir_votes,
+            gate_quality_multiplier=gate_quality_multiplier,
         )
 
     # ------------------------------------------------------------------

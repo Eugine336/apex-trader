@@ -63,6 +63,41 @@ PHYSICS_VETOES: tuple[str, ...] = (
 )
 
 
+def gate_quality_multiplier(
+    measures: list[tuple[float, float]], floor: float = 0.15
+) -> float:
+    """Bounded quality multiplier for a *softened* upstream kill-gate.
+
+    The serial pipeline historically *killed* any setup that fell short of a
+    hard quality threshold (scanner OQ/EQ/score, planner conviction, entry
+    score). With the orchestrator as the live sizer those gates can instead
+    *dim* the trade: a near-miss flows through small, a far-miss flows through
+    tiny, only a truly hopeless setup (caught by a separate hard safety floor)
+    still dies.
+
+    ``measures`` is a list of ``(value, threshold)`` pairs. A dimension at or
+    above its threshold contributes ``1.0`` (no penalty); a dimension below
+    contributes ``value / threshold`` (<1.0). The result is the product of the
+    per-dimension ratios, bounded to ``[floor, 1.0]`` — so being short on two
+    dimensions dims more than being short on one, and the multiplier is never
+    zero (a graded "barely" is still a tiny trade) nor above 1.0 (a gate can
+    only size DOWN, never up). Pure function — trivially unit-testable.
+    """
+    mult = 1.0
+    for value, threshold in measures:
+        try:
+            threshold = float(threshold)
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if threshold <= 0:
+            continue
+        ratio = value / threshold
+        if ratio < 1.0:
+            mult *= max(0.0, ratio)
+    return max(floor, min(1.0, mult))
+
+
 @dataclass
 class DimensionContribution:
     """One evidence dimension's contribution to the graded size.
@@ -120,6 +155,15 @@ class TradeProposal:
     # ── Scanner evidence ─────────────────────────────────────────────────
     scan_score: Optional[float] = None      # 0..~123 confluence score
 
+    # ── Upstream gate-softening multipliers (Phase 9) ─────────────────────
+    # Each is a bounded [gate_floor, 1.0] factor a softened upstream QUALITY
+    # gate handed through instead of killing the setup: how far below the kill
+    # threshold it was. 1.0 = the gate passed cleanly (no penalty). The
+    # orchestrator folds these into the final size so a near-miss trades SMALL.
+    gate_quality_multiplier: float = 1.0      # scanner READY + revalidation
+    planner_quality_multiplier: float = 1.0   # planner conviction floor
+    entry_quality_multiplier: float = 1.0     # entry-score floor
+
     # ── Physics flags (the only hard vetoes) ─────────────────────────────
     # A truthy flag here means the trade is physically impossible right now.
     physics_vetoes: list[str] = field(default_factory=list)
@@ -140,6 +184,9 @@ class TradeProposal:
             "advisor_agreement": self.advisor_agreement,
             "advisor_vector": self.advisor_vector,
             "scan_score": self.scan_score,
+            "gate_quality_multiplier": self.gate_quality_multiplier,
+            "planner_quality_multiplier": self.planner_quality_multiplier,
+            "entry_quality_multiplier": self.entry_quality_multiplier,
             "physics_vetoes": list(self.physics_vetoes),
         }
 
@@ -449,7 +496,39 @@ class Orchestrator:
         for d in dims:
             product *= d.multiplier
 
+        # ── Upstream gate-softening multipliers (Phase 9) ─────────────────
+        # When an upstream QUALITY gate (scanner READY / OQ-EQ revalidation,
+        # planner conviction floor, entry-score floor) softened a near-miss
+        # instead of killing it, it handed through a bounded multiplier. Fold
+        # each into the size so the marginal setup it rescued trades SMALL.
+        # These are only added as dimensions when actually < 1.0 so a clean
+        # full-quality setup's trace/sizing is identical to before.
+        gate_floor = float(self._cfg("gate_quality_floor", 0.15))
+        gate_mults = [
+            ("scanner_gate", proposal.gate_quality_multiplier),
+            ("planner_gate", proposal.planner_quality_multiplier),
+            ("entry_gate", proposal.entry_quality_multiplier),
+        ]
+        softened = False
+        for name, gm in gate_mults:
+            try:
+                gm = float(gm)
+            except (TypeError, ValueError):
+                continue
+            if gm < 1.0 - 1e-9:
+                gm = self._bound(gm, gate_floor, 1.0)
+                product *= gm
+                softened = True
+                dims.append(DimensionContribution(
+                    name, gm, gm, f"upstream gate softened — quality ×{gm:.2f}",
+                ))
+
         size_floor = float(self._cfg("size_floor", 0.5))
+        # A softened setup only reached the round table because an upstream gate
+        # dimmed rather than killed it — let it size BELOW the analytic floor,
+        # down to the gate floor, so a near-miss is a genuinely small trade.
+        if softened:
+            size_floor = min(size_floor, gate_floor)
         size_mult = self._bound(product, size_floor, 1.0)
 
         verdict = OrchestratorVerdict(
