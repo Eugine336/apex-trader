@@ -279,6 +279,11 @@ class ConsensusConfig:
     )
     high_authority_oppose_confidence: float = 0.6
     min_contributors: int = 2
+    # PR10 Phase 0: when the panel collapses to NEUTRAL on the agreement gate,
+    # log the suppressed minority cluster and emit a counterfactual shadow so
+    # the opportunity cost of the collapse can be measured. Logging/shadow only
+    # — it never changes the consensus verdict.
+    log_suppressed_minorities: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.min_contributors, int) or self.min_contributors < 1:
@@ -315,9 +320,93 @@ class ConsensusConfig:
 
 
 # ---------------------------------------------------------------------------
-# Layered decision — Opportunity Quality + Entry Quality gates
+# Opportunity ranker — open-ended trade ideas from the same module votes.
+# Instead of collapsing votes to one scalar (LONG/SHORT/NEUTRAL), coherent vote
+# clusters (direction × timeframe) are scored as independent opportunities with
+# their own expected value.  Additive: ``enabled`` controls computing candidates
+# (shadow), ``execute`` controls whether the executor selects the live direction.
 # ---------------------------------------------------------------------------
 
+_DEFAULT_SCALP_MODULES: list[str] = ["momentum", "volume", "vwap", "liquidity"]
+_DEFAULT_SWING_MODULES: list[str] = [
+    "structure",
+    "currency_strength",
+    "wyckoff",
+    "order_block",
+    "fvg",
+]
+
+
+@dataclass
+class OpportunityRankerConfig:
+    enabled: bool = True            # compute + attach ranked candidates
+    execute: bool = True            # LIVE: the executor picks the live direction
+    scalp_modules: list[str] = field(default_factory=lambda: list(_DEFAULT_SCALP_MODULES))
+    swing_modules: list[str] = field(default_factory=lambda: list(_DEFAULT_SWING_MODULES))
+    scalp_reward_risk: float = 1.5
+    swing_reward_risk: float = 2.5
+    base_win_rate: float = 0.40
+    confidence_win_rate_gain: float = 0.40
+    min_expected_value: float = 0.0       # R — drop opportunities below this EV
+    min_cluster_confidence: float = 0.0
+    min_cluster_contributors: int = 1
+    max_concurrent: int = 1               # executor: max opportunities per result
+
+    # ── HTF demotion to pure context (per selected-opportunity horizon) ──
+    # When the ranker selects the live direction, the higher-timeframe (H4/D1)
+    # bias downstream is scaled by the opportunity's horizon instead of holding
+    # blanket authority. A SCALP idea (fast modules) should not be suppressed by
+    # an opposing H4 it does not trade on; a SWING idea should still respect it.
+    # These multipliers apply to BOTH the EntryEngine H4 counter-trend penalty
+    # and the DecisionEngine HTF enter/skip/conviction weights. They are inert
+    # (full HTF authority, scale 1.0) for any trade with no ranker horizon —
+    # e.g. the scalar fallback — so behaviour is unchanged when no candidate is
+    # selected. 0.0 = HTF fully demoted to context; 1.0 = full HTF authority.
+    scalp_htf_penalty_scale: float = 0.0
+    swing_htf_penalty_scale: float = 1.0
+    mixed_htf_penalty_scale: float = 0.5
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.min_cluster_contributors, int) or self.min_cluster_contributors < 1:
+            raise ValueError(
+                "OpportunityRankerConfig.min_cluster_contributors must be an int >= 1, "
+                f"got {self.min_cluster_contributors!r}"
+            )
+        if not isinstance(self.max_concurrent, int) or self.max_concurrent < 1:
+            raise ValueError(
+                "OpportunityRankerConfig.max_concurrent must be an int >= 1, "
+                f"got {self.max_concurrent!r}"
+            )
+        for label, val in [
+            ("scalp_reward_risk", self.scalp_reward_risk),
+            ("swing_reward_risk", self.swing_reward_risk),
+        ]:
+            if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
+                raise ValueError(
+                    f"OpportunityRankerConfig.{label} must be finite > 0, got {val!r}"
+                )
+        for label, val in [
+            ("base_win_rate", self.base_win_rate),
+            ("confidence_win_rate_gain", self.confidence_win_rate_gain),
+        ]:
+            if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
+                raise ValueError(
+                    f"OpportunityRankerConfig.{label} must be in [0, 1], got {val!r}"
+                )
+        for label, val in [
+            ("scalp_htf_penalty_scale", self.scalp_htf_penalty_scale),
+            ("swing_htf_penalty_scale", self.swing_htf_penalty_scale),
+            ("mixed_htf_penalty_scale", self.mixed_htf_penalty_scale),
+        ]:
+            if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
+                raise ValueError(
+                    f"OpportunityRankerConfig.{label} must be in [0, 1], got {val!r}"
+                )
+
+
+# ---------------------------------------------------------------------------
+# Layered decision — Opportunity Quality + Entry Quality gates
+# ---------------------------------------------------------------------------
 _DEFAULT_OQ_WEIGHTS: dict[str, float] = {
     "volatility": 1.5,
     "spread": 1.5,
@@ -878,6 +967,21 @@ class DecisionConfig:
     oq_floor: float = 5.0                    # live OQ below this → CLOSE/TIGHTEN pressure
     eq_floor: float = 5.0                    # live EQ below this → TIGHTEN pressure
     oq_decay_significant: float = 2.0        # OQ drop (even above floor) → TIGHTEN pressure
+    # ── Fast-cluster opposition decay (PR10) ──────────────────────────────
+    # Data showed the management engine holds losing trades while the fast-
+    # evidence cluster (momentum + M1 alignment) has flipped against the
+    # position, anchored by "HTF aligned" as the hold reason. When the fast
+    # cluster has opposed for ``fast_opposition_min_streak`` consecutive
+    # management cycles AND the trade is NOT meaningfully in profit (profit_r <
+    # fast_opposition_profit_threshold), add bounded, progressively-ramping
+    # CLOSE pressure (weight × min(streak/max_streak, 1)). Additive only — it
+    # never overrides a stronger verdict and never touches the stop. Winners are
+    # unaffected. Set enabled=False to disable.
+    fast_opposition_decay_enabled: bool = True
+    fast_opposition_min_streak: int = 3      # cycles of opposition before pressure starts
+    fast_opposition_max_streak: int = 8      # streak at which the pressure ramp caps
+    fast_opposition_decay_weight: float = 0.15  # max CLOSE pressure at full ramp
+    fast_opposition_profit_threshold: float = 0.3  # only applies below this R
 
 
 # ---------------------------------------------------------------------------
@@ -930,6 +1034,7 @@ class AppConfig:
     risk: RiskConfig = field(default_factory=RiskConfig)
     confirmation_penalties: ConfirmationPenaltyConfig = field(default_factory=ConfirmationPenaltyConfig)
     consensus: ConsensusConfig = field(default_factory=ConsensusConfig)
+    opportunity_ranker: OpportunityRankerConfig = field(default_factory=OpportunityRankerConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)

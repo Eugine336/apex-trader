@@ -30,6 +30,11 @@ class ManagementDecision:
     partial_ratio: float = 0.0
     scale_lots: float = 0.0
     evidence: list[str] = field(default_factory=list)
+    # Normalised exit-cause tag (an ``ExitCause`` value string) set at the
+    # decision source when a specific management behaviour drove the verdict —
+    # e.g. fast-cluster opposition decay. Left None for the generic strategic
+    # close so the executor falls back to its default cause mapping.
+    exit_cause: Optional[str] = None
 
     @property
     def should_close(self) -> bool:

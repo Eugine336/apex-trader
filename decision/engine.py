@@ -23,6 +23,11 @@ from decision.situation import SituationAssessment
 # sell a future winner?") so the hard-close can be validated, not just trusted.
 SEVERE_THESIS_CLOSE_PREFIX = "SEVERE thesis collapse while in profit"
 
+# Exit-cause tag (an ExitCause value string) stamped on a CLOSE that the
+# fast-cluster opposition decay contributed to, so the executor can attribute
+# the exit to that management behaviour for the learners (PR10).
+FAST_OPPOSITION_EXIT_CAUSE = "fast_opposition_decay"
+
 
 @dataclass(frozen=True)
 class DecisionWeights:
@@ -63,6 +68,9 @@ class DecisionEngine:
         reversal_no_evidence_skip_penalty: float = 0.30,
         htf_aligned_size_bonus: float = 0.15,
         htf_aligned_threshold: float = 0.5,
+        scalp_htf_scale: float = 0.0,
+        swing_htf_scale: float = 1.0,
+        mixed_htf_scale: float = 0.5,
         thesis_secure_enabled: bool = True,
         thesis_secure_min_profit_usd: float = 15.0,
         thesis_secure_min_profit_pips: float = 12.0,
@@ -79,6 +87,11 @@ class DecisionEngine:
         oq_floor: float = 5.0,
         eq_floor: float = 5.0,
         oq_decay_significant: float = 2.0,
+        fast_opposition_decay_enabled: bool = True,
+        fast_opposition_min_streak: int = 3,
+        fast_opposition_max_streak: int = 8,
+        fast_opposition_decay_weight: float = 0.15,
+        fast_opposition_profit_threshold: float = 0.3,
     ) -> None:
         self.weights = weights or DecisionWeights()
         # Roadmap D — regime-dependent weighting.
@@ -93,6 +106,13 @@ class DecisionEngine:
         # HTF = bounded context — size bonus when the full stack agrees.
         self.htf_aligned_size_bonus = max(0.0, htf_aligned_size_bonus)
         self.htf_aligned_threshold = htf_aligned_threshold
+        # HTF demotion by ranker horizon — a fast SCALP idea should not be
+        # vetoed by an opposing HTF it does not trade on; a SWING idea should
+        # still respect it. Scales enter/skip/conviction HTF weights. A trade
+        # with no ranker horizon ("") keeps full authority (scale 1.0).
+        self.scalp_htf_scale = max(0.0, min(1.0, scalp_htf_scale))
+        self.swing_htf_scale = max(0.0, min(1.0, swing_htf_scale))
+        self.mixed_htf_scale = max(0.0, min(1.0, mixed_htf_scale))
         # Roadmap G — thesis-deterioration secure (R-independent profit protection).
         self.thesis_secure_enabled = thesis_secure_enabled
         self.thesis_secure_min_profit_usd = max(0.0, thesis_secure_min_profit_usd)
@@ -111,6 +131,14 @@ class DecisionEngine:
         self.oq_floor = oq_floor
         self.eq_floor = eq_floor
         self.oq_decay_significant = max(0.0, oq_decay_significant)
+        # PR10 — fast-cluster opposition decay (loser stuck against the current).
+        self.fast_opposition_decay_enabled = fast_opposition_decay_enabled
+        self.fast_opposition_min_streak = max(1, int(fast_opposition_min_streak))
+        self.fast_opposition_max_streak = max(
+            self.fast_opposition_min_streak, int(fast_opposition_max_streak)
+        )
+        self.fast_opposition_decay_weight = max(0.0, fast_opposition_decay_weight)
+        self.fast_opposition_profit_threshold = fast_opposition_profit_threshold
 
     # ── Roadmap D/E helpers ───────────────────────────────────────────────
 
@@ -127,6 +155,46 @@ class DecisionEngine:
             return self.weights
         w = self.weights
         s = self.regime_ranging_htf_scale
+        htf_conv_freed = w.conviction_htf * (1.0 - s)  # keep conviction sum stable
+        return DecisionWeights(
+            conviction_htf=w.conviction_htf * s,
+            conviction_structure=w.conviction_structure,
+            conviction_momentum=w.conviction_momentum + htf_conv_freed,
+            conviction_confidence=w.conviction_confidence,
+            enter_htf=w.enter_htf * s,
+            enter_structure=w.enter_structure,
+            enter_momentum=w.enter_momentum,
+            skip_htf=w.skip_htf * s,
+            skip_momentum=w.skip_momentum,
+        )
+
+    def _horizon_htf_scale(self, horizon: str) -> float:
+        """HTF authority multiplier for a ranker-selected trade's horizon.
+
+        ``1.0`` (full authority, unchanged) for any trade with no ranker horizon
+        — e.g. the scalar fallback. SCALP/SWING/MIXED map to the configured
+        scales so a fast idea is judged on its lower-timeframe evidence rather
+        than being overruled by an opposing higher timeframe.
+        """
+        h = str(horizon or "").upper()
+        if h == "SCALP":
+            return self.scalp_htf_scale
+        if h == "SWING":
+            return self.swing_htf_scale
+        if h == "MIXED":
+            return self.mixed_htf_scale
+        return 1.0
+
+    def _apply_horizon_scaling(self, w: DecisionWeights, horizon: str) -> DecisionWeights:
+        """Scale HTF enter/skip/conviction weights by the trade's horizon.
+
+        Mirrors :meth:`_weights_for_regime` — the freed HTF conviction mass is
+        moved onto momentum so the conviction weights still sum to the same
+        total. Inert (returns ``w`` unchanged) when the scale is 1.0.
+        """
+        s = self._horizon_htf_scale(horizon)
+        if s >= 1.0:
+            return w
         htf_conv_freed = w.conviction_htf * (1.0 - s)  # keep conviction sum stable
         return DecisionWeights(
             conviction_htf=w.conviction_htf * s,
@@ -208,6 +276,39 @@ class DecisionEngine:
 
         return close_pressure, tighten_pressure, reasons
 
+    def _fast_opposition_pressure(
+        self, ctx: TradeContext,
+    ) -> tuple[float, list[str]]:
+        """Bounded CLOSE pressure from a sustained fast-cluster opposition (PR10).
+
+        Returns ``(close_pressure, reasons)``. Inert (0.0, []) unless the
+        feature is on, the fast-evidence cluster has opposed the position for at
+        least ``fast_opposition_min_streak`` consecutive cycles, AND the trade is
+        NOT meaningfully in profit (``profit_r`` below the threshold). The
+        pressure ramps linearly with the streak up to ``fast_opposition_max_streak``
+        and is capped by ``fast_opposition_decay_weight`` — additive only, never
+        a hard override, and never applied to a winner.
+        """
+        if not self.fast_opposition_decay_enabled:
+            return 0.0, []
+        streak = int(getattr(ctx, "fast_opposition_streak", 0) or 0)
+        if streak < self.fast_opposition_min_streak:
+            return 0.0, []
+        if ctx.profit_r >= self.fast_opposition_profit_threshold:
+            return 0.0, []
+
+        ramp = min(streak / max(self.fast_opposition_max_streak, 1), 1.0)
+        pressure = self.fast_opposition_decay_weight * ramp
+        reason = (
+            f"fast cluster opposing {streak} cycles "
+            f"(profit {ctx.profit_r:+.1f}R)"
+        )
+        logger.info(
+            "FAST_OPP_DECAY: {} streak={} pressure={:.2f} profit_r={:.2f}",
+            ctx.symbol, streak, pressure, ctx.profit_r,
+        )
+        return pressure, [reason]
+
     def decide_management(
         self,
         ctx: TradeContext,
@@ -225,6 +326,12 @@ class DecisionEngine:
         oq_close_pressure, oq_tighten_pressure, oq_eq_reasons = (
             self._oq_eq_decay_pressure(ctx)
         )
+
+        # Fast-cluster opposition decay (PR10) — bounded CLOSE pressure when the
+        # fast-evidence cluster has opposed a non-winning position for several
+        # consecutive cycles. Computed once; inert when off / streak too short /
+        # in profit.
+        fast_opp_pressure, fast_opp_reasons = self._fast_opposition_pressure(ctx)
 
         # ── HOLD ─────────────────────────────────────────────────────────
         hold_score = 0.30  # moderate base — default action
@@ -302,6 +409,12 @@ class DecisionEngine:
         if oq_close_pressure > 0.0:
             close_score += oq_close_pressure
             close_reason_parts.extend(oq_eq_reasons)
+
+        # Fast-cluster opposition decay (PR10) — bounded additive CLOSE pressure
+        # for a non-winning trade the fast cluster has opposed for N cycles.
+        if fast_opp_pressure > 0.0:
+            close_score += fast_opp_pressure
+            close_reason_parts.extend(fast_opp_reasons)
 
         scores[Action.CLOSE] = close_score
         reasons[Action.CLOSE] = "; ".join(close_reason_parts) if close_reason_parts else "no close pressure"
@@ -390,6 +503,12 @@ class DecisionEngine:
             confidence=confidence,
             evidence=evidence_map.get(best_action, []),
         )
+
+        # PR10: attribute the close to fast-cluster opposition decay when that
+        # pressure contributed to a CLOSE verdict, so the executor tags the
+        # learners' exit_cause feature accordingly.
+        if best_action == Action.CLOSE and fast_opp_pressure > 0.0:
+            decision.exit_cause = FAST_OPPOSITION_EXIT_CAUSE
 
         if best_action == Action.TIGHTEN_SL:
             decision.new_sl = self._compute_tightened_sl(ctx)
@@ -643,6 +762,17 @@ class DecisionEngine:
         # Roadmap D — pick regime-appropriate weights (ranging/reversal shifts
         # influence off HTF onto M1 momentum; trending keeps the base weights).
         w = self._weights_for_regime(ctx.regime)
+        # HTF demotion — when the opportunity ranker selected this trade, scale
+        # HTF authority by its horizon so a fast SCALP idea is judged on its
+        # lower-timeframe evidence instead of being overruled by an opposing
+        # higher timeframe. Inert (no change) when no ranker horizon is set.
+        horizon = str(getattr(ctx, "horizon", "") or "")
+        htf_scale = self._horizon_htf_scale(horizon)
+        if htf_scale < 1.0:
+            w = self._apply_horizon_scaling(w, horizon)
+            evidence.append(
+                f"HTF demoted ×{htf_scale:.2f} ({horizon.upper()} horizon)"
+            )
 
         # ── ENTER score ──────────────────────────────────────────────────
         enter_score = 0.20  # baseline: slight inclination to trade

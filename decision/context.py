@@ -78,6 +78,13 @@ class TradeContext:
     m1_event: str = "NONE"
     m1_aligned_count: int = 0     # 0-5 candles aligned
 
+    # ── Fast-cluster opposition streak (PR10) ────────────────────────────
+    # Consecutive management cycles the fast-evidence cluster (momentum + M1
+    # alignment) has opposed the open position. Maintained by the main loop
+    # per order_id and read by ``decide_management`` to add bounded CLOSE
+    # pressure on a losing trade stuck against the current. 0 = aligned / reset.
+    fast_opposition_streak: int = 0
+
     # ── Score history ────────────────────────────────────────────────────
     score_history: list[int] = field(default_factory=list)
 
@@ -185,6 +192,15 @@ class EntryContext:
     regime: str = ""
     ev_estimate: float = 0.0
     pair_multiplier: float = 1.0
+
+    # ── Ranker horizon ───────────────────────────────────────────────────
+    # "SCALP"/"SWING"/"MIXED" when the opportunity ranker selected this trade's
+    # direction; "" when the scalar consensus path stands. The decision engine
+    # uses it to scale HTF (D1/H4) authority down to pure context for fast-
+    # horizon ideas, so an opposing higher timeframe does not veto a scalp the
+    # ranker already judged on its lower-timeframe evidence. Empty = full HTF
+    # authority (unchanged behaviour).
+    horizon: str = ""
 
     # ── Confluences from scan ────────────────────────────────────────────
     confluences: list[str] = field(default_factory=list)

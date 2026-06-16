@@ -25,7 +25,7 @@ from brain.order_block import OrderBlockDetector, OBStatus
 from brain.liquidity_mapper import LiquidityMapper
 from brain.currency_strength import CurrencyStrengthMeter, CURRENCY_PAIRS
 from brain.directional_consensus import (
-    Vote, decide,
+    Vote, decide, decide_opportunities,
     vote_from_structure, vote_from_currency_strength,
     vote_from_volume, vote_from_wyckoff,
     vote_from_order_blocks, vote_from_fvg,
@@ -131,6 +131,13 @@ class PairScanResult:
     d1_aligned: bool = False
     d1_confidence: float = 0.0
     rejection: Optional["RejectedSetup"] = None
+    # Open-ended ranked trade ideas from the same module votes (shadow unless
+    # OpportunityRankerConfig.execute is on). Best-first list of Opportunity.
+    candidates: list = field(default_factory=list)
+    # Horizon ("SCALP"/"SWING") of the ranker opportunity the executor selected
+    # to drive ``direction`` live. Empty when the scalar consensus path stands
+    # (no ranker pick) — downstream HTF demotion is then inert (full authority).
+    selected_horizon: str = ""
 
 
 @dataclass
@@ -367,6 +374,7 @@ class PairScanner:
         # Each brain module casts a direction-independent signed vote.
         # Direction is the weighted net; disagreement kills the trade.
         cc = self.config.consensus
+        candidates: list = []
         if cc.enabled:
             dir_votes: list[Vote] = []
 
@@ -483,9 +491,33 @@ class PairScanner:
                 high_authority_modules=cc.high_authority_modules,
                 high_authority_oppose_confidence=cc.high_authority_oppose_confidence,
                 min_contributors=cc.min_contributors,
+                log_suppressed_minorities=cc.log_suppressed_minorities,
             )
             trade_dir = decision.direction
             logger.info("[consensus] {} — {}", pair, decision.summary)
+
+            # ── Open-ended opportunity ranking (additive) ───────────────
+            # Reuse the SAME votes to build a ranked list of independent trade
+            # ideas. Shadow-only unless OpportunityRankerConfig.execute is on;
+            # the scalar trade_dir above is unchanged either way.
+            rc = getattr(self.config, "opportunity_ranker", None)
+            if rc is not None and getattr(rc, "enabled", False):
+                try:
+                    candidates = decide_opportunities(
+                        dir_votes,
+                        scalp_modules=rc.scalp_modules,
+                        swing_modules=rc.swing_modules,
+                        scalp_reward_risk=rc.scalp_reward_risk,
+                        swing_reward_risk=rc.swing_reward_risk,
+                        base_win_rate=rc.base_win_rate,
+                        confidence_win_rate_gain=rc.confidence_win_rate_gain,
+                        min_expected_value=rc.min_expected_value,
+                        min_cluster_confidence=rc.min_cluster_confidence,
+                        min_cluster_contributors=rc.min_cluster_contributors,
+                    )
+                except Exception as exc:
+                    logger.warning("[ranker] {} candidate build failed: {}", pair, exc)
+                    candidates = []
         else:
             # Fallback: legacy single-module direction
             direction = bias["direction"]
@@ -844,6 +876,7 @@ class PairScanner:
                         consensus_agreement=decision.agreement if decision else 0.0,
                         opportunity_quality=0.0,
                         entry_quality=0.0,
+                        candidates=candidates,
                     )
 
                 score        = int(rl_result.final_score)
@@ -976,6 +1009,50 @@ class PairScanner:
                     metadata={"status": status},
                 )
 
+        # ── PR10 Phase 0: suppressed-minority counterfactual shadow ────
+        # When the consensus collapsed to NEUTRAL on the agreement gate, the
+        # coherent minority cluster (the suppressed counter-trend opportunity)
+        # never becomes a tradeable direction and would be invisible to the
+        # shadow engine. Synthesise an approximate trade for that minority side
+        # so the gate tuner can measure how often these would have won. Logging/
+        # measurement only — the live verdict stays NEUTRAL.
+        if (
+            rejection is None
+            and trade_dir == "NEUTRAL"
+            and cc.enabled
+            and cc.log_suppressed_minorities
+            and decision is not None
+            and getattr(decision, "suppressed_direction", "NEUTRAL") in ("LONG", "SHORT")
+        ):
+            atr_pips = _atr_pips
+            if atr_pips is None:
+                try:
+                    tr_series = (m5_df["high"] - m5_df["low"]).abs().tail(14)
+                    if len(tr_series) > 0 and pip_size > 0:
+                        atr_pips = float(tr_series.mean()) / pip_size
+                except Exception:
+                    atr_pips = None
+            minority_dir = decision.suppressed_direction
+            rejection = build_rejected_setup(
+                symbol=pair,
+                direction=minority_dir,
+                rejecting_gate="consensus_agreement",
+                current_price=current_price,
+                atr_pips=atr_pips,
+                pip_size=pip_size,
+                scan_timestamp=utc_now.timestamp(),
+                oq=None,
+                eq=None,
+                score=score,
+                metadata={
+                    "status": status,
+                    "majority_direction": "LONG" if minority_dir == "SHORT" else "SHORT",
+                    "suppressed_modules": list(decision.suppressed_modules),
+                    "suppressed_strength": round(decision.suppressed_strength, 3),
+                    "agreement": round(decision.agreement, 3),
+                },
+            )
+
         return PairScanResult(
             pair=pair,
             direction=trade_dir,
@@ -1011,6 +1088,7 @@ class PairScanner:
             d1_aligned=bias.get("d1_aligned", False),
             d1_confidence=bias.get("d1_confidence", 0.0),
             rejection=rejection,
+            candidates=candidates,
         )
 
     # ------------------------------------------------------------------
