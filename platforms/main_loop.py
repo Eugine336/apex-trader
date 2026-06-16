@@ -473,6 +473,17 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             fast_opposition_max_streak=dcfg.fast_opposition_max_streak,
             fast_opposition_decay_weight=dcfg.fast_opposition_decay_weight,
             fast_opposition_profit_threshold=dcfg.fast_opposition_profit_threshold,
+            # #6 — soften the enter/skip binary into a dimmer, but ONLY when the
+            # orchestrator round table is enabled to make the final sizing call.
+            # A mildly-negative margin then flows through (carrying a bounded
+            # quality multiplier) instead of hard-killing the setup upstream of
+            # the orchestrator; a margin below the safety floor still hard-SKIPs.
+            soften_gate=bool(
+                getattr(self.config.orchestrator, "enabled", False)
+                and getattr(self.config.orchestrator, "soften_de_gate", False)
+            ),
+            gate_safety_margin=float(getattr(self.config.orchestrator, "de_safety_margin", -1.0)),
+            gate_quality_floor=float(getattr(self.config.orchestrator, "de_gate_quality_floor", 0.15)),
         )
         self._risk_governor = RiskGovernor() if dcfg.governor_enabled else None
         self._decision_journal = DecisionJournal(dcfg.journal_dir) if dcfg.journal_enabled else None
@@ -1808,6 +1819,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     "horizon": _de_horizon,
                     "htf_scaled": bool(_de_horizon),
                     "reversal": _is_reversal,
+                    "gate_softened": bool(getattr(entry_decision, "gate_softened", False)),
+                    "de_quality_mult": round(float(getattr(entry_decision, "de_quality_multiplier", 1.0) or 1.0), 3),
                 }
                 self._trace_stamp(
                     STAGE_DECISION_ENGINE, "decision_engine",
@@ -1856,6 +1869,19 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         "decision_engine", STAGE_RANKER,
                         (f"ranker selected {direction} {result.selected_horizon} but decision-engine "
                          f"conviction is low ({float(entry_decision.conviction):.2f})"),
+                    )
+
+                # Awareness: the DE enter/skip gate was softened (#6) — a setup
+                # the legacy binary would have killed (margin <= 0) is flowing
+                # through for the orchestrator to size. Flag it so the round
+                # table's owner can justify (or dim) it; never a silent pass.
+                if getattr(entry_decision, "gate_softened", False):
+                    self._trace_challenge(
+                        "orchestrator", STAGE_DECISION_ENGINE,
+                        (f"decision-engine gate softened for {direction} {pair} "
+                         f"(margin {float(getattr(entry_decision, 'entry_margin', 0.0)):+.2f}, "
+                         f"quality ×{float(getattr(entry_decision, 'de_quality_multiplier', 1.0)):.2f}) "
+                         f"— orchestrator sizes instead of a hard SKIP"),
                     )
 
                 # Apply conviction-based sizing
@@ -5793,6 +5819,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             tf_vector=(sa.tf_vector() if sa is not None and hasattr(sa, "tf_vector") else {}),
             de_margin=(float(getattr(entry_decision, "entry_margin", 0.0)) if entry_decision is not None else None),
             de_conviction=(float(getattr(entry_decision, "conviction", 0.0)) if entry_decision is not None else None),
+            de_quality_multiplier=(
+                float(getattr(entry_decision, "de_quality_multiplier", 1.0))
+                if entry_decision is not None and getattr(entry_decision, "gate_softened", False)
+                else None
+            ),
             advisor_agreement=advisor_agreement,
             advisor_vector=advisor_vector,
             scan_score=float(getattr(result, "score", 0) or 0),
