@@ -67,6 +67,9 @@ class DecisionEngine:
         reversal_required_evidence: int = 3,
         reversal_size_multiplier: float = 0.5,
         reversal_no_evidence_skip_penalty: float = 0.30,
+        reversal_weighted_evidence: bool = False,
+        reversal_required_strength: float = 2.0,
+        reversal_momentum_full: float = 0.6,
         htf_aligned_size_bonus: float = 0.15,
         htf_aligned_threshold: float = 0.5,
         scalp_htf_scale: float = 0.0,
@@ -111,6 +114,14 @@ class DecisionEngine:
         self.reversal_required_evidence = int(reversal_required_evidence)
         self.reversal_size_multiplier = max(0.0, min(1.0, reversal_size_multiplier))
         self.reversal_no_evidence_skip_penalty = max(0.0, reversal_no_evidence_skip_penalty)
+        # #17 — weighted reversal evidence. Legacy counts independent signals
+        # (M5 sweep + M1 BOS + momentum) and gates on an integer ≥ count, so a
+        # +0.21 momentum reads identical to +0.95 and two strong signals lose to
+        # three weak ones. When enabled, each signal contributes a continuous
+        # strength and the gate compares the summed strength to a threshold.
+        self.reversal_weighted_evidence = bool(reversal_weighted_evidence)
+        self.reversal_required_strength = max(0.0, float(reversal_required_strength))
+        self.reversal_momentum_full = max(1e-6, float(reversal_momentum_full))
         # HTF = bounded context — size bonus when the full stack agrees.
         self.htf_aligned_size_bonus = max(0.0, htf_aligned_size_bonus)
         self.htf_aligned_threshold = htf_aligned_threshold
@@ -154,32 +165,6 @@ class DecisionEngine:
         # hiding the conflict. Scaled by the same horizon demotion as the other
         # HTF weights, so a demoted SCALP is unaffected. Inert when off.
         self.tf_conflict_aware = bool(tf_conflict_aware)
-
-    @staticmethod
-    def _tf_conflict_opposition(sa: SituationAssessment) -> float:
-        """Magnitude of per-timeframe opposition the scalar tf_alignment hides.
-
-        The scalar is a weighted average, so a strongly-opposing timeframe can be
-        averaged into a mild net value that reads like consensus. This returns the
-        summed magnitude (bounded [0, 1]) of the timeframe components whose sign
-        opposes the net read — 0.0 when the stack genuinely agrees (or there is no
-        vector to inspect).
-        """
-        comps = sa.tf_vector() if hasattr(sa, "tf_vector") else {}
-        if not comps:
-            return 0.0
-        try:
-            vals = [float(v) for v in comps.values()]
-        except (TypeError, ValueError):
-            return 0.0
-        if not vals:
-            return 0.0
-        net = float(getattr(sa, "tf_alignment", 0.0))
-        if net >= 0:
-            opp = sum(-v for v in vals if v < 0)
-        else:
-            opp = sum(v for v in vals if v > 0)
-        return max(0.0, min(1.0, opp))
         # #6 — enter/skip dimmer. When ``soften_gate`` is on (set by the caller
         # only when the orchestrator is the final sizer), a non-positive ENTER/SKIP
         # margin no longer hard-kills the setup: as long as the margin stays above
@@ -206,6 +191,32 @@ class DecisionEngine:
         # market score are now smooth ramps (no 0.3/0.5/80 cliffs); this is the
         # final preference threshold on the already-continuous score.
         self.market_mode_threshold = max(0.0, min(1.0, float(market_mode_threshold)))
+
+    @staticmethod
+    def _tf_conflict_opposition(sa: SituationAssessment) -> float:
+        """Magnitude of per-timeframe opposition the scalar tf_alignment hides.
+
+        The scalar is a weighted average, so a strongly-opposing timeframe can be
+        averaged into a mild net value that reads like consensus. This returns the
+        summed magnitude (bounded [0, 1]) of the timeframe components whose sign
+        opposes the net read — 0.0 when the stack genuinely agrees (or there is no
+        vector to inspect).
+        """
+        comps = sa.tf_vector() if hasattr(sa, "tf_vector") else {}
+        if not comps:
+            return 0.0
+        try:
+            vals = [float(v) for v in comps.values()]
+        except (TypeError, ValueError):
+            return 0.0
+        if not vals:
+            return 0.0
+        net = float(getattr(sa, "tf_alignment", 0.0))
+        if net >= 0:
+            opp = sum(-v for v in vals if v < 0)
+        else:
+            opp = sum(v for v in vals if v > 0)
+        return max(0.0, min(1.0, opp))
 
     # ── Roadmap D/E helpers ───────────────────────────────────────────────
 
@@ -299,6 +310,43 @@ class DecisionEngine:
         if sa.momentum >= self.reversal_min_momentum:
             labels.append(f"momentum {sa.momentum:+.2f}")
         return len(labels), labels
+
+    def _reversal_evidence_strength(
+        self, ctx: EntryContext, sa: SituationAssessment
+    ) -> tuple[float, list[str]]:
+        """#17: continuous reversal-evidence strength for a counter-HTF setup.
+
+        Mirrors :meth:`_reversal_evidence` but each signal contributes a graded
+        strength instead of a binary +1:
+
+        * **M5 sweep** and **aligned M1 BOS/CHoCH** are discrete events → 1.0 each
+          when present.
+        * **Momentum** ramps continuously from 0 at ``reversal_min_momentum`` to
+          1.0 at ``reversal_momentum_full`` (and can exceed 1.0 for very strong
+          momentum, capped at 1.5), so +0.21 and +0.95 no longer read the same.
+
+        Returns ``(strength, labels)``; the caller gates on
+        ``strength >= reversal_required_strength``.
+        """
+        labels: list[str] = []
+        strength = 0.0
+        et = str(ctx.entry_type).upper()
+        mc = str(ctx.micro_confirmation).lower()
+        if "SWEEP" in et or "sweep" in mc:
+            strength += 1.0
+            labels.append("M5 sweep")
+        m1ev = str(ctx.m1_event).upper()
+        aligned_dir = ("BULLISH" in m1ev) if ctx.is_long else ("BEARISH" in m1ev)
+        if ("BOS" in m1ev or "CHOCH" in m1ev) and aligned_dir:
+            strength += 1.0
+            labels.append("M1 BOS")
+        if sa.momentum >= self.reversal_min_momentum:
+            span = max(self.reversal_momentum_full - self.reversal_min_momentum, 1e-6)
+            mom_strength = (sa.momentum - self.reversal_min_momentum) / span
+            mom_strength = max(0.0, min(1.5, mom_strength))
+            strength += mom_strength
+            labels.append(f"momentum {sa.momentum:+.2f}×{mom_strength:.2f}")
+        return strength, labels
 
     def _oq_eq_decay_pressure(
         self, ctx: TradeContext,
@@ -934,17 +982,30 @@ class DecisionEngine:
         # reversals are allowed but sized DOWN (haircut applied below).
         is_reversal = False
         if self.reversal_enabled and self._is_counter_htf(ctx):
-            ev_count, ev_labels = self._reversal_evidence(ctx, sa)
-            if ev_count >= self.reversal_required_evidence:
-                is_reversal = True
-                evidence.append(f"counter-HTF reversal [{', '.join(ev_labels)}]")
+            if self.reversal_weighted_evidence:
+                ev_strength, ev_labels = self._reversal_evidence_strength(ctx, sa)
+                if ev_strength >= self.reversal_required_strength:
+                    is_reversal = True
+                    evidence.append(f"counter-HTF reversal [{', '.join(ev_labels)}]")
+                else:
+                    skip_score += self.reversal_no_evidence_skip_penalty
+                    skip_parts.append(
+                        f"counter-trend without reversal evidence "
+                        f"(strength {ev_strength:.2f}/{self.reversal_required_strength:.2f}) "
+                        f"+{self.reversal_no_evidence_skip_penalty:.2f}"
+                    )
             else:
-                skip_score += self.reversal_no_evidence_skip_penalty
-                skip_parts.append(
-                    f"counter-trend without reversal evidence "
-                    f"({ev_count}/{self.reversal_required_evidence}) "
-                    f"+{self.reversal_no_evidence_skip_penalty:.2f}"
-                )
+                ev_count, ev_labels = self._reversal_evidence(ctx, sa)
+                if ev_count >= self.reversal_required_evidence:
+                    is_reversal = True
+                    evidence.append(f"counter-HTF reversal [{', '.join(ev_labels)}]")
+                else:
+                    skip_score += self.reversal_no_evidence_skip_penalty
+                    skip_parts.append(
+                        f"counter-trend without reversal evidence "
+                        f"({ev_count}/{self.reversal_required_evidence}) "
+                        f"+{self.reversal_no_evidence_skip_penalty:.2f}"
+                    )
 
         # ── Pick winner ──────────────────────────────────────────────────
         margin = enter_score - skip_score
@@ -1097,4 +1158,4 @@ class DecisionEngine:
         distinct multipliers. Defaults (0.5–1.5) reproduce the legacy mapping."""
         c = clamp(conviction, 0.0, 1.0)
         lo, hi = self.conviction_size_min, self.conviction_size_max
-        return round(lo + (hi - lo) * c, 2)
+        return round(lo + (hi - lo) * c, 3)
