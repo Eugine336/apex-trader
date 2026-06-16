@@ -489,6 +489,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             ),
             gate_safety_margin=float(getattr(self.config.orchestrator, "de_safety_margin", -1.0)),
             gate_quality_floor=float(getattr(self.config.orchestrator, "de_gate_quality_floor", 0.15)),
+            conviction_size_min=float(getattr(dcfg, "conviction_size_min", 0.5)),
+            conviction_size_max=float(getattr(dcfg, "conviction_size_max", 1.5)),
+            market_mode_threshold=float(getattr(dcfg, "market_mode_threshold", 0.40)),
         )
         self._risk_governor = RiskGovernor() if dcfg.governor_enabled else None
         self._decision_journal = DecisionJournal(dcfg.journal_dir) if dcfg.journal_enabled else None

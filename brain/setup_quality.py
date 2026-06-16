@@ -22,6 +22,8 @@ from typing import Optional
 
 from loguru import logger
 
+from brain.smoothing import piecewise_linear
+
 
 _DEFAULT_OQ_WEIGHTS: dict[str, float] = {
     "volatility": 1.5,
@@ -98,27 +100,20 @@ def compute_opportunity_quality(
 
     try:
         # --- Volatility (0-10): prefer moderate ATR percentile ---
+        # Continuous curve anchored on the old tier values (peak in the healthy
+        # mid-band, decaying toward dead-low and extreme-high). No cliffs.
         atr_pct = _safe_finite(atr_percentile, -1.0)
         if atr_pct < 0:
             components["volatility"] = 3.0
             reasons.append("volatility: no ATR data, degraded")
-        elif atr_pct < 10:
-            components["volatility"] = 1.0
-            reasons.append("volatility: dead regime (<10th pctl)")
-        elif atr_pct < 25:
-            components["volatility"] = 5.0
-            reasons.append("volatility: low-moderate")
-        elif atr_pct <= 75:
-            components["volatility"] = 10.0
-            reasons.append("volatility: healthy regime")
-        elif atr_pct <= 90:
-            components["volatility"] = 6.0
-            reasons.append("volatility: elevated")
         else:
-            components["volatility"] = 2.0
-            reasons.append("volatility: extreme spike (>90th pctl)")
+            components["volatility"] = round(piecewise_linear(
+                atr_pct,
+                ((5.0, 1.0), (17.0, 5.0), (50.0, 10.0), (82.0, 6.0), (95.0, 2.0)),
+            ), 2)
+            reasons.append(f"volatility: {atr_pct:.0f}th pctl → {components['volatility']:.1f}")
 
-        # --- Spread (0-10): current vs typical ---
+        # --- Spread (0-10): current vs typical, smooth decay as it widens ---
         s_cur = _safe_finite(spread_current, -1.0)
         s_typ = _safe_finite(spread_typical, -1.0)
         if s_cur < 0 or s_typ <= 0:
@@ -126,21 +121,11 @@ def compute_opportunity_quality(
             reasons.append("spread: no data, degraded")
         else:
             ratio = s_cur / s_typ
-            if ratio <= 1.0:
-                components["spread"] = 10.0
-                reasons.append(f"spread: tight ({ratio:.1f}x)")
-            elif ratio <= 1.5:
-                components["spread"] = 8.0
-                reasons.append(f"spread: normal ({ratio:.1f}x)")
-            elif ratio <= 2.5:
-                components["spread"] = 5.0
-                reasons.append(f"spread: widened ({ratio:.1f}x)")
-            elif ratio <= 4.0:
-                components["spread"] = 2.0
-                reasons.append(f"spread: wide ({ratio:.1f}x)")
-            else:
-                components["spread"] = 0.0
-                reasons.append(f"spread: extreme ({ratio:.1f}x)")
+            components["spread"] = round(piecewise_linear(
+                ratio,
+                ((1.0, 10.0), (1.5, 8.0), (2.5, 5.0), (4.0, 2.0), (6.0, 0.0)),
+            ), 2)
+            reasons.append(f"spread: {ratio:.1f}x → {components['spread']:.1f}")
 
         # --- News proximity (0-10) ---
         if news_is_clear is None:
@@ -151,20 +136,14 @@ def compute_opportunity_quality(
             reasons.append("news: clear")
         else:
             mins = _safe_finite(news_minutes_to_next_high, 0)
-            if mins <= 5:
-                components["news"] = 0.0
-                reasons.append(f"news: imminent high-impact ({mins}m)")
-            elif mins <= 15:
-                components["news"] = 3.0
-                reasons.append(f"news: nearby high-impact ({mins}m)")
-            elif mins <= 30:
-                components["news"] = 6.0
-                reasons.append(f"news: approaching ({mins}m)")
-            else:
-                components["news"] = 8.0
-                reasons.append(f"news: distant ({mins}m)")
+            # Smooth ramp away from an imminent high-impact event.
+            components["news"] = round(piecewise_linear(
+                mins,
+                ((5.0, 0.0), (15.0, 3.0), (30.0, 6.0), (60.0, 8.0)),
+            ), 2)
+            reasons.append(f"news: {mins:.0f}m to high-impact → {components['news']:.1f}")
 
-        # --- Session quality (0-10) ---
+        # --- Session quality (0-10) — discrete liquidity label ---
         liq = (session_liquidity or "").upper()
         tradeable = session_is_tradeable if session_is_tradeable is not None else True
         if not tradeable:
@@ -186,43 +165,31 @@ def compute_opportunity_quality(
             components["session"] = 5.0
             reasons.append("session: unknown, neutral")
 
-        # --- Reward/risk magnitude (0-10, direction-free) ---
+        # --- Reward/risk magnitude (0-10, direction-free), smooth rising ---
         rr = _safe_finite(reward_risk_magnitude, -1.0)
         if rr < 0:
             components["reward_risk"] = 2.0
             reasons.append("rr: no data, degraded")
-        elif rr < 1.0:
-            components["reward_risk"] = 1.0
-            reasons.append(f"rr: poor ({rr:.1f})")
-        elif rr < 1.5:
-            components["reward_risk"] = 5.0
-            reasons.append(f"rr: acceptable ({rr:.1f})")
-        elif rr < 2.5:
-            components["reward_risk"] = 8.0
-            reasons.append(f"rr: good ({rr:.2f})")
         else:
-            components["reward_risk"] = 10.0
-            reasons.append(f"rr: excellent ({rr:.2f})")
+            components["reward_risk"] = round(piecewise_linear(
+                rr,
+                ((0.0, 1.0), (1.0, 3.0), (1.5, 6.0), (2.0, 8.0), (2.5, 9.0), (3.0, 10.0)),
+            ), 2)
+            reasons.append(f"rr: {rr:.2f} → {components['reward_risk']:.1f}")
 
-        # --- Historical edge / EV (0-10) ---
+        # --- Historical edge / EV (0-10), smooth rising ---
         ev = _safe_finite(ev_estimate, -999.0)
         if ev < -900:
             components["historical_ev"] = 5.0
             reasons.append("ev: no data, neutral")
-        elif ev < 0:
-            components["historical_ev"] = 2.0
-            reasons.append(f"ev: negative ({ev:.2f})")
-        elif ev < 0.3:
-            components["historical_ev"] = 5.0
-            reasons.append(f"ev: marginal ({ev:.2f})")
-        elif ev < 0.8:
-            components["historical_ev"] = 8.0
-            reasons.append(f"ev: positive ({ev:.2f})")
         else:
-            components["historical_ev"] = 10.0
-            reasons.append(f"ev: strong ({ev:.2f})")
+            components["historical_ev"] = round(piecewise_linear(
+                ev,
+                ((-1.0, 1.0), (0.0, 3.0), (0.3, 5.0), (0.8, 8.0), (1.2, 10.0)),
+            ), 2)
+            reasons.append(f"ev: {ev:.2f} → {components['historical_ev']:.1f}")
 
-        # --- Volume health (0-10, direction-free) ---
+        # --- Volume health (0-10, direction-free), peak in the healthy band ---
         vratio = _safe_finite(volume_ratio, -1.0)
         climax = volume_climax if volume_climax is not None else False
         if vratio < 0:
@@ -231,15 +198,12 @@ def compute_opportunity_quality(
         elif climax:
             components["volume_health"] = 1.0
             reasons.append(f"volume: climax warning ({vratio:.1f}x)")
-        elif vratio < 0.5:
-            components["volume_health"] = 3.0
-            reasons.append(f"volume: thin ({vratio:.1f}x)")
-        elif vratio <= 2.0:
-            components["volume_health"] = 10.0
-            reasons.append(f"volume: healthy ({vratio:.1f}x)")
         else:
-            components["volume_health"] = 6.0
-            reasons.append(f"volume: elevated ({vratio:.1f}x)")
+            components["volume_health"] = round(piecewise_linear(
+                vratio,
+                ((0.0, 2.0), (0.5, 4.0), (1.0, 10.0), (2.0, 10.0), (3.5, 6.0)),
+            ), 2)
+            reasons.append(f"volume: {vratio:.1f}x → {components['volume_health']:.1f}")
 
         # --- Weighted aggregate ---
         total_w = sum(weights.get(k, 0.0) for k in components)
@@ -289,70 +253,46 @@ def compute_entry_quality(
     try:
         atr = _safe_finite(atr_pips, -1.0)
 
-        # --- OB proximity (0-10): closer is better ---
+        # --- OB proximity (0-10): closer is better, smooth decay ---
         ob_dist = _safe_finite(nearest_ob_distance_pips, -1.0)
         if ob_dist < 0 or atr <= 0:
             components["ob_proximity"] = 3.0
             reasons.append("ob: no data, degraded")
         else:
             ratio = ob_dist / atr if atr > 0 else 999.0
-            if ratio <= 0.3:
-                components["ob_proximity"] = 10.0
-                reasons.append(f"ob: very close ({ratio:.1f}x ATR)")
-            elif ratio <= 0.7:
-                components["ob_proximity"] = 8.0
-                reasons.append(f"ob: near ({ratio:.1f}x ATR)")
-            elif ratio <= 1.5:
-                components["ob_proximity"] = 5.0
-                reasons.append(f"ob: moderate ({ratio:.1f}x ATR)")
-            elif ratio <= 3.0:
-                components["ob_proximity"] = 2.0
-                reasons.append(f"ob: far ({ratio:.1f}x ATR)")
-            else:
-                components["ob_proximity"] = 0.0
-                reasons.append(f"ob: too far ({ratio:.1f}x ATR)")
+            components["ob_proximity"] = round(piecewise_linear(
+                ratio,
+                ((0.3, 10.0), (0.7, 8.0), (1.5, 5.0), (3.0, 2.0), (5.0, 0.0)),
+            ), 2)
+            reasons.append(f"ob: {ratio:.1f}x ATR → {components['ob_proximity']:.1f}")
 
-        # --- FVG proximity (0-10): closer is better ---
+        # --- FVG proximity (0-10): closer is better, smooth decay ---
         fvg_dist = _safe_finite(nearest_fvg_distance_pips, -1.0)
         if fvg_dist < 0 or atr <= 0:
             components["fvg_proximity"] = 3.0
             reasons.append("fvg: no data, degraded")
         else:
             ratio = fvg_dist / atr if atr > 0 else 999.0
-            if ratio <= 0.3:
-                components["fvg_proximity"] = 10.0
-                reasons.append(f"fvg: very close ({ratio:.1f}x ATR)")
-            elif ratio <= 0.7:
-                components["fvg_proximity"] = 8.0
-                reasons.append(f"fvg: near ({ratio:.1f}x ATR)")
-            elif ratio <= 1.5:
-                components["fvg_proximity"] = 5.0
-                reasons.append(f"fvg: moderate ({ratio:.1f}x ATR)")
-            else:
-                components["fvg_proximity"] = 1.0
-                reasons.append(f"fvg: far ({ratio:.1f}x ATR)")
+            components["fvg_proximity"] = round(piecewise_linear(
+                ratio,
+                ((0.3, 10.0), (0.7, 8.0), (1.5, 5.0), (3.0, 1.0)),
+            ), 2)
+            reasons.append(f"fvg: {ratio:.1f}x ATR → {components['fvg_proximity']:.1f}")
 
-        # --- Liquidity proximity (0-10): closer is better ---
+        # --- Liquidity proximity (0-10): closer is better, smooth decay ---
         liq_dist = _safe_finite(nearest_liq_distance_pips, -1.0)
         if liq_dist < 0 or atr <= 0:
             components["liquidity_proximity"] = 5.0
             reasons.append("liquidity: no data, neutral")
         else:
             ratio = liq_dist / atr if atr > 0 else 999.0
-            if ratio <= 0.5:
-                components["liquidity_proximity"] = 10.0
-                reasons.append(f"liquidity: very close ({ratio:.1f}x ATR)")
-            elif ratio <= 1.5:
-                components["liquidity_proximity"] = 7.0
-                reasons.append(f"liquidity: near ({ratio:.1f}x ATR)")
-            elif ratio <= 3.0:
-                components["liquidity_proximity"] = 4.0
-                reasons.append(f"liquidity: moderate ({ratio:.1f}x ATR)")
-            else:
-                components["liquidity_proximity"] = 1.0
-                reasons.append(f"liquidity: far ({ratio:.1f}x ATR)")
+            components["liquidity_proximity"] = round(piecewise_linear(
+                ratio,
+                ((0.5, 10.0), (1.5, 7.0), (3.0, 4.0), (5.0, 1.0)),
+            ), 2)
+            reasons.append(f"liquidity: {ratio:.1f}x ATR → {components['liquidity_proximity']:.1f}")
 
-        # --- ATR extension (0-10): prefer un-extended entries ---
+        # --- ATR extension (0-10): prefer un-extended entries, smooth decay ---
         c_price = _safe_finite(current_price, -1.0)
         e_price = _safe_finite(entry_price, -1.0)
         if c_price <= 0 or e_price <= 0 or atr <= 0:
@@ -361,41 +301,24 @@ def compute_entry_quality(
         else:
             pip_ext = abs(c_price - e_price)
             atr_ratio = pip_ext / atr if atr > 0 else 999.0
-            if atr_ratio <= 0.3:
-                components["atr_extension"] = 10.0
-                reasons.append(f"extension: minimal ({atr_ratio:.1f}x ATR)")
-            elif atr_ratio <= 0.7:
-                components["atr_extension"] = 8.0
-                reasons.append(f"extension: moderate ({atr_ratio:.1f}x ATR)")
-            elif atr_ratio <= 1.5:
-                components["atr_extension"] = 4.0
-                reasons.append(f"extension: extended ({atr_ratio:.1f}x ATR)")
-            else:
-                components["atr_extension"] = 1.0
-                reasons.append(f"extension: over-extended ({atr_ratio:.1f}x ATR)")
+            components["atr_extension"] = round(piecewise_linear(
+                atr_ratio,
+                ((0.3, 10.0), (0.7, 8.0), (1.5, 4.0), (3.0, 1.0)),
+            ), 2)
+            reasons.append(f"extension: {atr_ratio:.1f}x ATR → {components['atr_extension']:.1f}")
 
-        # --- Stop placement quality (0-10) ---
+        # --- Stop placement quality (0-10): plateau in the well-placed band ---
         stop_dist = _safe_finite(stop_distance_pips, -1.0)
         if stop_dist <= 0 or atr <= 0:
             components["stop_quality"] = 3.0
             reasons.append("stop: no data, degraded")
         else:
             ratio = stop_dist / atr
-            if 0.5 <= ratio <= 1.5:
-                components["stop_quality"] = 10.0
-                reasons.append(f"stop: well-placed ({ratio:.1f}x ATR)")
-            elif 0.3 <= ratio < 0.5:
-                components["stop_quality"] = 6.0
-                reasons.append(f"stop: tight ({ratio:.1f}x ATR)")
-            elif 1.5 < ratio <= 2.5:
-                components["stop_quality"] = 5.0
-                reasons.append(f"stop: wide ({ratio:.1f}x ATR)")
-            elif ratio < 0.3:
-                components["stop_quality"] = 2.0
-                reasons.append(f"stop: too tight ({ratio:.1f}x ATR)")
-            else:
-                components["stop_quality"] = 1.0
-                reasons.append(f"stop: too wide ({ratio:.1f}x ATR)")
+            components["stop_quality"] = round(piecewise_linear(
+                ratio,
+                ((0.3, 2.0), (0.5, 10.0), (1.5, 10.0), (2.5, 5.0), (4.0, 1.0)),
+            ), 2)
+            reasons.append(f"stop: {ratio:.1f}x ATR → {components['stop_quality']:.1f}")
 
         # --- Weighted aggregate ---
         total_w = sum(weights.get(k, 0.0) for k in components)
