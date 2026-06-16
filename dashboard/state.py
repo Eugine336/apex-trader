@@ -28,6 +28,7 @@ from dashboard.state_decisions import DecisionMixin
 from dashboard.state_planner import PlannerMixin
 from dashboard.state_governor import GovernorMixin
 from dashboard.state_decision_trace import DecisionTraceMixin
+from dashboard.state_brain import BrainMixin
 
 
 class LiveState(
@@ -45,6 +46,7 @@ class LiveState(
     PlannerMixin,
     GovernorMixin,
     DecisionTraceMixin,
+    BrainMixin,
 ):
     """
     Central state provider for the dashboard.
