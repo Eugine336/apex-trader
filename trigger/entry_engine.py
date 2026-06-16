@@ -479,25 +479,21 @@ class EntryEngine:
             )
             risk_distance_local = abs(target_entry_price - stop_loss_local)
 
-            # ── SL floor for synthetics and crypto — MUST run before calculate_targets ──
+            # ── SL floor — MUST run before calculate_targets ──
             # calculate_targets uses risk_distance to validate the 2.5R minimum for TP2.
             # If the floor widens the SL AFTER targets are set, the effective R:R collapses
             # and the validator rejects a perfectly good setup with "R:R to TP2 below minimum".
             # Fix: apply the floor here so calculate_targets sees the real risk distance.
-            if category == "synthetic":
-                pct_floor = target_entry_price * 0.003  # 0.3%
-                if risk_distance_local < pct_floor:
-                    stop_loss_local = (
-                        target_entry_price - pct_floor if direction == "LONG" else target_entry_price + pct_floor
-                    )
-                    risk_distance_local = pct_floor
-            elif category == "crypto":
-                pct_floor = target_entry_price * 0.0015  # 0.15%
-                if risk_distance_local < pct_floor:
-                    stop_loss_local = (
-                        target_entry_price - pct_floor if direction == "LONG" else target_entry_price + pct_floor
-                    )
-                    risk_distance_local = pct_floor
+            stop_loss_local, risk_distance_local = self._apply_sl_floor(
+                direction=direction,
+                entry_price=target_entry_price,
+                stop_loss=stop_loss_local,
+                risk_distance=risk_distance_local,
+                pip_size=pip_size,
+                category=category,
+                min_risk_distance=min_risk_distance,
+                pair=pair,
+            )
 
             tp1_local, tp2_local = self.calculate_targets(
                 pair, direction, target_entry_price, stop_loss_local, h1_df, pip_size
@@ -1080,6 +1076,57 @@ class EntryEngine:
             )
 
         return atr_sl
+
+    @staticmethod
+    def _apply_sl_floor(
+        *,
+        direction: str,
+        entry_price: float,
+        stop_loss: float,
+        risk_distance: float,
+        pip_size: float,
+        category: str,
+        min_risk_distance: float,
+        pair: str = "",
+    ) -> tuple[float, float]:
+        """Widen a real-but-too-tight stop up to the per-category minimum distance.
+
+        A tight entry zone — or a low-volatility ATR stop that lands inside the
+        minimum — can produce a sub-minimum SL that the risk-distance gate rejects
+        outright (e.g. a 2.1-pip forex stop below the 5.0-pip floor), killing an
+        otherwise valid setup. Rather than dropping it, we floor the stop to the
+        minimum so the trade proceeds with a sane risk distance.
+
+        Synthetics/crypto floor to a price-relative percentage; forex, commodities
+        and indices floor to the per-category ``min_risk_pips`` distance. Only a
+        real-but-too-tight stop is widened — degenerate zones (< 1 pip) are left
+        untouched so the caller's invalid-zone rejection still fires.
+
+        Returns the (possibly widened) ``(stop_loss, risk_distance)`` pair.
+        """
+        if category == "synthetic":
+            floor_distance = entry_price * 0.003  # 0.3%
+        elif category == "crypto":
+            floor_distance = entry_price * 0.0015  # 0.15%
+        else:
+            floor_distance = min_risk_distance
+
+        if not (pip_size <= risk_distance < floor_distance):
+            return stop_loss, risk_distance
+
+        original_pips = risk_distance / pip_size if pip_size > 0 else 0.0
+        floored_sl = (
+            entry_price - floor_distance if direction.upper() in ("LONG", "BUY") else entry_price + floor_distance
+        )
+        logger.info(
+            "[{}] SL floor applied — risk distance widened {:.1f} -> {:.1f} pips (min {:.1f} for {})",
+            pair or "unknown",
+            original_pips,
+            floor_distance / pip_size if pip_size > 0 else 0.0,
+            min_risk_distance / pip_size if pip_size > 0 else 0.0,
+            category,
+        )
+        return floored_sl, floor_distance
 
     def calculate_targets(
         self,
