@@ -1110,7 +1110,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             # below (correlation/CP4, margin, max-trades, planner, governor)
             # unchanged. When execute is off this is a no-op: the scalar
             # direction stands and behaviour is identical to before.
-            scalar_dir = result.direction
+            # The genuine scalar verdict (incl. NEUTRAL) is preserved on
+            # ``consensus_direction``; ``result.direction`` may already have been
+            # promoted by the scanner's NEUTRAL rescue. Trace against the genuine
+            # verdict so a rescue is visible (scalar NEUTRAL → ranker direction)
+            # rather than hidden behind the already-promoted direction.
+            scalar_dir = getattr(result, "consensus_direction", "") or result.direction
+            rescued_from_neutral = (
+                scalar_dir not in ("LONG", "SHORT")
+                and result.direction in ("LONG", "SHORT")
+            )
             ranker_override = False
             selected_opp = None
             if self.config.opportunity_ranker.execute:
@@ -1145,10 +1154,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             # Stamp the direction-selection verdict (ranker when it drove the
             # choice, else the scalar consensus that stood).
             if selected_opp is not None:
+                if rescued_from_neutral:
+                    _ranker_verb = f"RESCUED NEUTRAL consensus → {selected_opp.direction}"
+                elif ranker_override:
+                    _ranker_verb = f"OVERRODE consensus {scalar_dir or 'NEUTRAL'}"
+                else:
+                    _ranker_verb = "confirmed"
                 self._trace_stamp(
                     STAGE_RANKER, "opportunity_ranker",
                     f"{selected_opp.direction}_{selected_opp.timeframe_class}",
-                    (f"ranker {'OVERRODE consensus ' + (scalar_dir or 'NEUTRAL') if ranker_override else 'confirmed'} "
+                    (f"ranker {_ranker_verb} "
                      f"— best EV cluster {selected_opp.expected_value:+.2f}R on {selected_opp.timeframe_class} "
                      f"from {', '.join(selected_opp.contributors) or 'none'}"),
                     evidence={
@@ -1159,6 +1174,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         "coherence": round(selected_opp.coherence, 3),
                         "scalar_consensus": scalar_dir or "NEUTRAL",
                         "override": ranker_override,
+                        "rescued_from_neutral": rescued_from_neutral,
                         "candidates": len(getattr(result, "candidates", []) or []),
                     },
                     confidence=float(getattr(selected_opp, "confidence", 0.0) or 0.0),
