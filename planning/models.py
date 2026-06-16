@@ -220,6 +220,13 @@ class TradePlan:
     reasoning: str = ""
     advisor_agreement: float = 0.0   # 0–1
     governor_blocked_by: Optional[str] = None  # which governor check blocked, if any
+    # #24 — portfolio-governor accumulated-risk dimmer. When the governor runs in
+    # graded mode it no longer hard-blocks an analytical concentration limit
+    # (currency / sector / correlated); it allows the trade carrying this bounded
+    # [floor, 1.0] multiplier, which the orchestrator folds into size so the
+    # near-/over-limit concentration sizes DOWN instead of opening at full size.
+    # 1.0 = clear of every analytical limit (or governor not graded).
+    governor_risk_multiplier: float = 1.0
     # Phase 9 gate softening: bounded [gate_floor, 1.0] quality multiplier set
     # when the planner's conviction floor was softened (orchestrator live) — the
     # setup flows as ENTER carrying this factor instead of SKIP, and the

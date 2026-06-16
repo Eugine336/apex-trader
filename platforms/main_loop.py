@@ -82,6 +82,7 @@ from risk.portfolio_risk_state import (
 from risk.risk_engine import RiskEngine
 from risk.risk_reporter import RiskReporter
 from risk.account_risk import AccountRiskManager
+from risk import risk_accumulation as ra
 from scanner import PairScanner, PairRanker, ScanScheduler
 from trigger.entry_engine import EntryEngine, EntryRejection
 from trigger.entry_validator import EntryValidator
@@ -493,7 +494,25 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             conviction_size_max=float(getattr(dcfg, "conviction_size_max", 1.5)),
             market_mode_threshold=float(getattr(dcfg, "market_mode_threshold", 0.40)),
         )
-        self._risk_governor = RiskGovernor() if dcfg.governor_enabled else None
+        # #24 — when the orchestrator round table is the live sizer, the risk
+        # governor's entry review stops hard-vetoing on the first analytical
+        # breach (heat / spread / R:R) and instead hands through a graded risk
+        # multiplier the orchestrator sizes by; physics (position limits) stay a
+        # hard veto. Inert (legacy first-breach veto) when the orchestrator is
+        # off or accumulate_risk is disabled.
+        _orch_cfg_gov = getattr(self.config, "orchestrator", None)
+        _graded_risk = bool(
+            _orch_cfg_gov is not None
+            and getattr(_orch_cfg_gov, "enabled", False)
+            and getattr(_orch_cfg_gov, "accumulate_risk", False)
+        )
+        self._risk_governor = (
+            RiskGovernor(
+                graded_risk=_graded_risk,
+                risk_floor=float(getattr(_orch_cfg_gov, "risk_multiplier_floor", 0.15)),
+            )
+            if dcfg.governor_enabled else None
+        )
         self._decision_journal = DecisionJournal(dcfg.journal_dir) if dcfg.journal_enabled else None
 
         # ── Trade Planner — coordinator between advisors and execution ───
@@ -527,6 +546,19 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         # ── Portfolio Governor — portfolio-level risk limits ─────────────
         gcfg = getattr(self.config, "governor", None)
+        # #24 — graded analytical concentration: when the orchestrator is the
+        # live sizer, the portfolio governor's currency / sector / correlated
+        # limits become a graded dimmer (verdict stays allowed, carries a risk
+        # multiplier) instead of a first-breach hard block; physics (max
+        # positions) and the daily-loss halt stay hard. Inert otherwise.
+        if gcfg is not None and _graded_risk:
+            try:
+                gcfg.graded_exposure = True
+                gcfg.risk_multiplier_floor = float(
+                    getattr(_orch_cfg_gov, "risk_multiplier_floor", 0.15)
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[Governor] graded_exposure wiring skipped: {}", exc)
         self._governor = PortfolioGovernor(gcfg) if (gcfg is None or gcfg.enabled) else None
         if self._governor is not None:
             self._planner.set_governor(self._governor)
@@ -5906,6 +5938,41 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 return c
         return candidates[0]
 
+    def _risk_headroom_multiplier(self, result, entry_decision) -> float:
+        """Accumulated analytical-risk multiplier for the orchestrator (#24/#23).
+
+        Folds the risk governor's graded entry review (heat / spread / R:R,
+        carried on ``entry_decision.risk_multiplier``) together with the live
+        trade-slot headroom (how full the position book is) into one bounded
+        ``[risk_multiplier_floor, 1.0]`` factor. The hard physics gates
+        (correlation conflict, margin, the max-trades cap) already ran upstream
+        as absolute blocks; this only sizes a *near-limit* survivor DOWN so a
+        trade taken with little headroom rides smaller. Returns 1.0 (neutral) on
+        any failure — never blocks the entry.
+        """
+        floor = float(getattr(self.config.orchestrator, "risk_multiplier_floor", 0.15))
+        try:
+            review_mult = (
+                float(getattr(entry_decision, "risk_multiplier", 1.0) or 1.0)
+                if entry_decision is not None else 1.0
+            )
+            dims = []
+            try:
+                max_trades = int(self.config.risk.max_open_trades)
+                open_count = len(self.managed_positions)
+                if max_trades > 0:
+                    dims.append(ra.dimension(
+                        "trade_slots", open_count + 1, max_trades,
+                        f"slot {open_count + 1}/{max_trades}",
+                    ))
+            except Exception:  # noqa: BLE001
+                pass
+            headroom = ra.accumulate(dims, floor=floor).multiplier if dims else 1.0
+            return max(floor, min(1.0, headroom * review_mult))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[orchestrator] risk headroom unavailable: {}", exc)
+            return 1.0
+
     def _evaluate_orchestrator(self, result, sa, entry_decision, plan, plan_ctx, signal=None):
         """Build a TradeProposal from the collected evidence and grade it."""
         opp = self._select_candidate(result)
@@ -5928,6 +5995,18 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         planner_mult = float(getattr(plan, "gate_quality_multiplier", 1.0) or 1.0) if plan is not None else 1.0
         entry_mult = float(getattr(signal, "entry_quality_multiplier", 1.0) or 1.0) if signal is not None else 1.0
 
+        # #24 / #23 — accumulated analytical-risk dimmer: the risk governor's
+        # graded entry review (heat / spread / R:R) and the portfolio governor's
+        # graded concentration limits (currency / sector / correlated), combined
+        # with the live trade-slot headroom. Physics already enforced as hard
+        # gates above; this only sizes a near-limit trade DOWN.
+        risk_mult = self._risk_headroom_multiplier(result, entry_decision)
+        gov_risk = float(getattr(plan, "governor_risk_multiplier", 1.0) or 1.0) if plan is not None else 1.0
+        risk_mult = max(
+            float(getattr(self.config.orchestrator, "risk_multiplier_floor", 0.15)),
+            min(1.0, risk_mult * gov_risk),
+        )
+
         proposal = TradeProposal(
             pair=result.pair,
             direction=getattr(result, "direction", ""),
@@ -5948,6 +6027,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             advisor_agreement=advisor_agreement,
             advisor_vector=advisor_vector,
             scan_score=float(getattr(result, "score", 0) or 0),
+            risk_multiplier=risk_mult,
             gate_quality_multiplier=gate_mult,
             planner_quality_multiplier=planner_mult,
             entry_quality_multiplier=entry_mult,
