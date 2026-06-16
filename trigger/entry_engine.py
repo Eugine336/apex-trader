@@ -24,6 +24,7 @@ from brain.order_block import OrderBlockDetector, OrderBlock, OBStatus
 from brain.liquidity_mapper import LiquidityMapper
 from brain.drawdown_guard import DrawdownGuard
 from brain.session_engine import NewsGuard, SessionEngine
+from brain.orchestrator import gate_quality_multiplier as _gate_quality_multiplier
 from trigger.entry_patterns import EntryPatternDetector
 
 
@@ -54,6 +55,11 @@ class EntrySignal:
     # "MARKET"  — price is inside or right at the zone; enter now
     # "PENDING" — price has not yet reached the zone; wait for retrace
     entry_mode: str = "PENDING"  # default conservative; engine overrides this
+    # Phase 9 gate softening: bounded [gate_floor, 1.0] quality multiplier set
+    # when the entry-score floor was softened (orchestrator live) — the signal
+    # is emitted carrying this factor instead of an EntryRejection, and the
+    # orchestrator folds it into graded size. 1.0 = score floor passed cleanly.
+    entry_quality_multiplier: float = 1.0
 
 
 @dataclass
@@ -138,6 +144,25 @@ class EntryEngine:
         except (TypeError, ValueError):
             return 1.0
 
+    def _entry_gate_softening(self):
+        """Return the orchestrator config when the entry-score floor should be
+        softened into a dimmer, else ``None`` (legacy hard rejection).
+
+        Active only when the orchestrator is enabled AND ``soften_entry_gates``
+        is on — so when the orchestrator is the live sizer the score floor hands
+        a near-miss through (carrying a quality multiplier) instead of killing
+        it. Structural rejections (no zone, stale feed, news, …) are NOT
+        softened — only the QUALITY score floor.
+        """
+        orch = getattr(self.config, "orchestrator", None)
+        if (
+            orch is not None
+            and getattr(orch, "enabled", False)
+            and getattr(orch, "soften_entry_gates", False)
+        ):
+            return orch
+        return None
+
     def calculate_entry(
         self,
         pair: str,
@@ -156,6 +181,10 @@ class EntryEngine:
         now = datetime.now(timezone.utc)
         score = scan_result.score
         confluences = list(scan_result.confluences)
+        # Phase 9: bounded quality multiplier when the entry-score floor is
+        # softened into a dimmer (orchestrator live). Stays 1.0 unless the final
+        # score lands below the floor but above the hard safety floor.
+        entry_quality_multiplier = 1.0
         try:
             get_instrument(pair)
         except KeyError:
@@ -288,12 +317,22 @@ class EntryEngine:
             status.current_score_threshold,
         )
         if score < effective_min_score:
-            return EntryRejection(
-                pair=pair,
-                reason=f"score {score} < drawdown floor {effective_min_score} (mode={status.mode})",
-                score=score,
-                timestamp=now,
-            )
+            _orch = self._entry_gate_softening()
+            if _orch is not None and score >= float(getattr(_orch, "entry_safety_score", 40.0)):
+                # Softened: proceed; the final (post-M1) score sets the quality
+                # multiplier below. Only the hard safety floor still kills here.
+                logger.info(
+                    "[gate-soften] entry {} pre-M1 score {} < floor {} but >= "
+                    "safety — proceeding (orchestrator sizes)",
+                    pair, score, effective_min_score,
+                )
+            else:
+                return EntryRejection(
+                    pair=pair,
+                    reason=f"score {score} < drawdown floor {effective_min_score} (mode={status.mode})",
+                    score=score,
+                    timestamp=now,
+                )
 
         # ── H4 bias gate ─────────────────────────────────────────────────
         # Handled above as a CONTEXT penalty (before the entry bar) so a
@@ -391,14 +430,30 @@ class EntryEngine:
         confluences.append(f"M1 net adjustment: {m1_adjustment:+d}")
 
         if score < effective_min_score:
-            return EntryRejection(
-                pair=pair,
-                reason=(f"Score {score} dropped below {effective_min_score} after M1 adjustment ({m1_adjustment:+d})"),
-                score=score,
-                timestamp=now,
-                entry_price=zone.get("midpoint"),
-                direction=direction,
-            )
+            _orch = self._entry_gate_softening()
+            if _orch is not None and score >= float(getattr(_orch, "entry_safety_score", 40.0)):
+                # Softened into a dimmer: emit the signal carrying a bounded
+                # quality multiplier (how far below the floor) the orchestrator
+                # folds into graded size, instead of killing the setup.
+                entry_quality_multiplier = _gate_quality_multiplier(
+                    [(score, effective_min_score)],
+                    float(getattr(_orch, "gate_quality_floor", 0.15)),
+                )
+                logger.info(
+                    "[gate-soften] entry {} score {} < floor {} after M1 "
+                    "({:+d}) — flowing ×{:.2f}",
+                    pair, score, effective_min_score, m1_adjustment,
+                    entry_quality_multiplier,
+                )
+            else:
+                return EntryRejection(
+                    pair=pair,
+                    reason=(f"Score {score} dropped below {effective_min_score} after M1 adjustment ({m1_adjustment:+d})"),
+                    score=score,
+                    timestamp=now,
+                    entry_price=zone.get("midpoint"),
+                    direction=direction,
+                )
 
         if pattern_label != "none":
             micro_confirmation = pattern_label
@@ -424,25 +479,21 @@ class EntryEngine:
             )
             risk_distance_local = abs(target_entry_price - stop_loss_local)
 
-            # ── SL floor for synthetics and crypto — MUST run before calculate_targets ──
+            # ── SL floor — MUST run before calculate_targets ──
             # calculate_targets uses risk_distance to validate the 2.5R minimum for TP2.
             # If the floor widens the SL AFTER targets are set, the effective R:R collapses
             # and the validator rejects a perfectly good setup with "R:R to TP2 below minimum".
             # Fix: apply the floor here so calculate_targets sees the real risk distance.
-            if category == "synthetic":
-                pct_floor = target_entry_price * 0.003  # 0.3%
-                if risk_distance_local < pct_floor:
-                    stop_loss_local = (
-                        target_entry_price - pct_floor if direction == "LONG" else target_entry_price + pct_floor
-                    )
-                    risk_distance_local = pct_floor
-            elif category == "crypto":
-                pct_floor = target_entry_price * 0.0015  # 0.15%
-                if risk_distance_local < pct_floor:
-                    stop_loss_local = (
-                        target_entry_price - pct_floor if direction == "LONG" else target_entry_price + pct_floor
-                    )
-                    risk_distance_local = pct_floor
+            stop_loss_local, risk_distance_local = self._apply_sl_floor(
+                direction=direction,
+                entry_price=target_entry_price,
+                stop_loss=stop_loss_local,
+                risk_distance=risk_distance_local,
+                pip_size=pip_size,
+                category=category,
+                min_risk_distance=min_risk_distance,
+                pair=pair,
+            )
 
             tp1_local, tp2_local = self.calculate_targets(
                 pair, direction, target_entry_price, stop_loss_local, h1_df, pip_size
@@ -621,6 +672,7 @@ class EntryEngine:
             instrument_category=category,
             entry_timeframe=entry_timeframe,
             entry_mode=entry_mode,
+            entry_quality_multiplier=entry_quality_multiplier,
         )
 
         logger.info(
@@ -1024,6 +1076,57 @@ class EntryEngine:
             )
 
         return atr_sl
+
+    @staticmethod
+    def _apply_sl_floor(
+        *,
+        direction: str,
+        entry_price: float,
+        stop_loss: float,
+        risk_distance: float,
+        pip_size: float,
+        category: str,
+        min_risk_distance: float,
+        pair: str = "",
+    ) -> tuple[float, float]:
+        """Widen a real-but-too-tight stop up to the per-category minimum distance.
+
+        A tight entry zone — or a low-volatility ATR stop that lands inside the
+        minimum — can produce a sub-minimum SL that the risk-distance gate rejects
+        outright (e.g. a 2.1-pip forex stop below the 5.0-pip floor), killing an
+        otherwise valid setup. Rather than dropping it, we floor the stop to the
+        minimum so the trade proceeds with a sane risk distance.
+
+        Synthetics/crypto floor to a price-relative percentage; forex, commodities
+        and indices floor to the per-category ``min_risk_pips`` distance. Only a
+        real-but-too-tight stop is widened — degenerate zones (< 1 pip) are left
+        untouched so the caller's invalid-zone rejection still fires.
+
+        Returns the (possibly widened) ``(stop_loss, risk_distance)`` pair.
+        """
+        if category == "synthetic":
+            floor_distance = entry_price * 0.003  # 0.3%
+        elif category == "crypto":
+            floor_distance = entry_price * 0.0015  # 0.15%
+        else:
+            floor_distance = min_risk_distance
+
+        if not (pip_size <= risk_distance < floor_distance):
+            return stop_loss, risk_distance
+
+        original_pips = risk_distance / pip_size if pip_size > 0 else 0.0
+        floored_sl = (
+            entry_price - floor_distance if direction.upper() in ("LONG", "BUY") else entry_price + floor_distance
+        )
+        logger.info(
+            "[{}] SL floor applied — risk distance widened {:.1f} -> {:.1f} pips (min {:.1f} for {})",
+            pair or "unknown",
+            original_pips,
+            floor_distance / pip_size if pip_size > 0 else 0.0,
+            min_risk_distance / pip_size if pip_size > 0 else 0.0,
+            category,
+        )
+        return floored_sl, floor_distance
 
     def calculate_targets(
         self,

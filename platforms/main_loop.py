@@ -46,6 +46,7 @@ from brain.orchestrator import (
     PositionEvidence,
     PositionHealthReport,
     ManagementAction,
+    gate_quality_multiplier as _gate_quality_multiplier,
 )
 from brain.outcome_feedback import OutcomeFeedback
 from brain.decision_trace import (
@@ -496,6 +497,20 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         planner_cfg = persisted if pcfg.enabled else pcfg
         planner_cfg.enabled = pcfg.enabled
         self._planner_enabled = planner_cfg.enabled
+        # Phase 9: when the orchestrator is the live sizer, soften the planner's
+        # conviction floor into a dimmer (it hands low-conviction setups through
+        # as ENTER carrying a quality multiplier instead of SKIP — the governor
+        # veto stays hard). Inert when the orchestrator is off.
+        _orch_cfg_init = getattr(self.config, "orchestrator", None)
+        if (
+            _orch_cfg_init is not None
+            and getattr(_orch_cfg_init, "enabled", False)
+            and getattr(_orch_cfg_init, "soften_planner_gates", False)
+        ):
+            planner_cfg.soften_gates = True
+            planner_cfg.gate_quality_floor = float(
+                getattr(_orch_cfg_init, "gate_quality_floor", 0.15)
+            )
         self._planner = TradePlanner(planner_cfg)
         self._outcome_logger = OutcomeLogger(planner_cfg.journal_path) if planner_cfg.enabled else None
         self._calibrator = Calibrator(planner_cfg) if planner_cfg.enabled else None
@@ -1121,7 +1136,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             # below (correlation/CP4, margin, max-trades, planner, governor)
             # unchanged. When execute is off this is a no-op: the scalar
             # direction stands and behaviour is identical to before.
-            scalar_dir = result.direction
+            # The genuine scalar verdict (incl. NEUTRAL) is preserved on
+            # ``consensus_direction``; ``result.direction`` may already have been
+            # promoted by the scanner's NEUTRAL rescue. Trace against the genuine
+            # verdict so a rescue is visible (scalar NEUTRAL → ranker direction)
+            # rather than hidden behind the already-promoted direction.
+            scalar_dir = getattr(result, "consensus_direction", "") or result.direction
+            rescued_from_neutral = (
+                scalar_dir not in ("LONG", "SHORT")
+                and result.direction in ("LONG", "SHORT")
+            )
             ranker_override = False
             selected_opp = None
             if self.config.opportunity_ranker.execute:
@@ -1156,10 +1180,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             # Stamp the direction-selection verdict (ranker when it drove the
             # choice, else the scalar consensus that stood).
             if selected_opp is not None:
+                if rescued_from_neutral:
+                    _ranker_verb = f"RESCUED NEUTRAL consensus → {selected_opp.direction}"
+                elif ranker_override:
+                    _ranker_verb = f"OVERRODE consensus {scalar_dir or 'NEUTRAL'}"
+                else:
+                    _ranker_verb = "confirmed"
                 self._trace_stamp(
                     STAGE_RANKER, "opportunity_ranker",
                     f"{selected_opp.direction}_{selected_opp.timeframe_class}",
-                    (f"ranker {'OVERRODE consensus ' + (scalar_dir or 'NEUTRAL') if ranker_override else 'confirmed'} "
+                    (f"ranker {_ranker_verb} "
                      f"— best EV cluster {selected_opp.expected_value:+.2f}R on {selected_opp.timeframe_class} "
                      f"from {', '.join(selected_opp.contributors) or 'none'}"),
                     evidence={
@@ -1170,6 +1200,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         "coherence": round(selected_opp.coherence, 3),
                         "scalar_consensus": scalar_dir or "NEUTRAL",
                         "override": ranker_override,
+                        "rescued_from_neutral": rescued_from_neutral,
                         "candidates": len(getattr(result, "candidates", []) or []),
                     },
                     confidence=float(getattr(selected_opp, "confidence", 0.0) or 0.0),
@@ -1611,34 +1642,74 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 )
                 return False
 
-            if fresh_oq < _ld_cfg.revalidate_opportunity_quality_min:
-                logger.info(
-                    "[entry] {} market conditions shifted since scan: "
-                    "OQ {:.2f} < {:.2f} — rejecting entry",
-                    pair, fresh_oq, _ld_cfg.revalidate_opportunity_quality_min,
-                )
-                self._log_rejection(
-                    pair, direction, result.score,
-                    f"OQ decayed since scan ({fresh_oq:.2f} < "
-                    f"{_ld_cfg.revalidate_opportunity_quality_min:.2f})",
-                )
-                return False
-            if fresh_eq < _ld_cfg.revalidate_entry_quality_min:
-                logger.info(
-                    "[entry] {} entry geometry degraded since scan: "
-                    "EQ {:.2f} < {:.2f} — rejecting entry",
-                    pair, fresh_eq, _ld_cfg.revalidate_entry_quality_min,
-                )
-                self._log_rejection(
-                    pair, direction, result.score,
-                    f"EQ decayed since scan ({fresh_eq:.2f} < "
-                    f"{_ld_cfg.revalidate_entry_quality_min:.2f})",
-                )
-                return False
+            # ── Phase 9: soften the entry-time re-validation gate ─────────
+            # The scan-stage scanner gate (#3) may have softened this setup to
+            # READY; this re-validation floor would otherwise re-kill it from
+            # the same kill pattern. When the orchestrator is the live sizer,
+            # fold a below-floor (but above-safety) re-validation into the
+            # setup's quality multiplier instead of dropping it. Truly decayed
+            # setups (below the hard safety floors) still reject.
+            _orch_cfg_rv = getattr(self.config, "orchestrator", None)
+            _soften_reval = (
+                _orch_cfg_rv is not None
+                and getattr(_orch_cfg_rv, "enabled", False)
+                and getattr(_orch_cfg_rv, "soften_scanner_gates", False)
+            )
+            _oq_floor = _ld_cfg.revalidate_opportunity_quality_min
+            _eq_floor = _ld_cfg.revalidate_entry_quality_min
+            _reval_softened = False
+            if _soften_reval and (fresh_oq < _oq_floor or fresh_eq < _eq_floor):
+                _safe_oq = float(getattr(_orch_cfg_rv, "scanner_safety_oq", 2.0))
+                _safe_eq = float(getattr(_orch_cfg_rv, "scanner_safety_eq", 2.0))
+                if fresh_oq >= _safe_oq and fresh_eq >= _safe_eq:
+                    _floor = float(getattr(_orch_cfg_rv, "gate_quality_floor", 0.15))
+                    _reval_mult = _gate_quality_multiplier(
+                        [(fresh_oq, _oq_floor), (fresh_eq, _eq_floor)], _floor,
+                    )
+                    try:
+                        result.gate_quality_multiplier = (
+                            float(getattr(result, "gate_quality_multiplier", 1.0))
+                            * _reval_mult
+                        )
+                    except Exception:
+                        result.gate_quality_multiplier = _reval_mult
+                    logger.info(
+                        "[gate-soften] revalidation {} OQ={:.2f}/EQ={:.2f} below "
+                        "floors but above safety — flowing ×{:.2f} (orchestrator sizes)",
+                        pair, fresh_oq, fresh_eq, _reval_mult,
+                    )
+                    entry_oq, entry_eq = fresh_oq, fresh_eq
+                    _reval_softened = True
 
-            # Both floors cleared — these fresh, entry-time scores are the
-            # baseline management measures decay against (P3).
-            entry_oq, entry_eq = fresh_oq, fresh_eq
+            if not _reval_softened:
+                if fresh_oq < _ld_cfg.revalidate_opportunity_quality_min:
+                    logger.info(
+                        "[entry] {} market conditions shifted since scan: "
+                        "OQ {:.2f} < {:.2f} — rejecting entry",
+                        pair, fresh_oq, _ld_cfg.revalidate_opportunity_quality_min,
+                    )
+                    self._log_rejection(
+                        pair, direction, result.score,
+                        f"OQ decayed since scan ({fresh_oq:.2f} < "
+                        f"{_ld_cfg.revalidate_opportunity_quality_min:.2f})",
+                    )
+                    return False
+                if fresh_eq < _ld_cfg.revalidate_entry_quality_min:
+                    logger.info(
+                        "[entry] {} entry geometry degraded since scan: "
+                        "EQ {:.2f} < {:.2f} — rejecting entry",
+                        pair, fresh_eq, _ld_cfg.revalidate_entry_quality_min,
+                    )
+                    self._log_rejection(
+                        pair, direction, result.score,
+                        f"EQ decayed since scan ({fresh_eq:.2f} < "
+                        f"{_ld_cfg.revalidate_entry_quality_min:.2f})",
+                    )
+                    return False
+
+                # Both floors cleared — these fresh, entry-time scores are the
+                # baseline management measures decay against (P3).
+                entry_oq, entry_eq = fresh_oq, fresh_eq
 
         balance = self.platforms.get_platform_balance(pair)
         if not balance:
@@ -1744,15 +1815,21 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             return False
 
         _entry_horizon = getattr(result, "selected_horizon", "") or "full-HTF"
+        _entry_qmult = float(getattr(signal, "entry_quality_multiplier", 1.0) or 1.0)
+        _scan_qmult = float(getattr(result, "gate_quality_multiplier", 1.0) or 1.0)
         self._trace_stamp(
             STAGE_ENTRY_ENGINE, "entry_engine", "PASS",
             (f"entry geometry built @ {signal.entry_price} SL {signal.stop_loss} "
-             f"(horizon {_entry_horizon} — H4 penalty scaled to this horizon)"),
+             f"(horizon {_entry_horizon} — H4 penalty scaled to this horizon)"
+             + (f" | entry-score gate softened ×{_entry_qmult:.2f}" if _entry_qmult < 1.0 else "")
+             + (f" | scanner gate softened ×{_scan_qmult:.2f}" if _scan_qmult < 1.0 else "")),
             evidence={
                 "entry_price": signal.entry_price,
                 "stop_loss": signal.stop_loss,
                 "entry_mode": getattr(signal, "entry_mode", ""),
                 "horizon": getattr(result, "selected_horizon", "") or "",
+                "entry_quality_multiplier": round(_entry_qmult, 3),
+                "scanner_quality_multiplier": round(_scan_qmult, 3),
             },
         )
 
@@ -1919,6 +1996,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                             "de_conviction": round(float(getattr(entry_decision, "conviction", 0.0) or 0.0), 3),
                             "risk_pct": round(float(getattr(plan, "risk_pct", 0.0) or 0.0), 4),
                             "is_market": bool(getattr(plan, "is_market", False)),
+                            "planner_quality_multiplier": round(float(getattr(plan, "gate_quality_multiplier", 1.0) or 1.0), 3),
                         }
                         if plan.action == "SKIP":
                             self._trace_stamp(
@@ -2246,7 +2324,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         if self.config.orchestrator.enabled:
             try:
                 orch_verdict = self._evaluate_orchestrator(
-                    result, _orch_sa, _orch_decision, _orch_plan, _orch_plan_ctx,
+                    result, _orch_sa, _orch_decision, _orch_plan, _orch_plan_ctx, signal,
                 )
             except Exception as exc:
                 logger.error(
@@ -5790,7 +5868,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 return c
         return candidates[0]
 
-    def _evaluate_orchestrator(self, result, sa, entry_decision, plan, plan_ctx):
+    def _evaluate_orchestrator(self, result, sa, entry_decision, plan, plan_ctx, signal=None):
         """Build a TradeProposal from the collected evidence and grade it."""
         opp = self._select_candidate(result)
         advisor_agreement = None
@@ -5806,6 +5884,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     advisor_agreement = float(av.get("agreement")) if av.get("agreement") is not None else None
             except Exception as exc:
                 logger.debug("[orchestrator] advisor vector unavailable: {}", exc)
+
+        # Phase 9 gate-softening multipliers (1.0 = the gate passed cleanly).
+        gate_mult = float(getattr(result, "gate_quality_multiplier", 1.0) or 1.0)
+        planner_mult = float(getattr(plan, "gate_quality_multiplier", 1.0) or 1.0) if plan is not None else 1.0
+        entry_mult = float(getattr(signal, "entry_quality_multiplier", 1.0) or 1.0) if signal is not None else 1.0
 
         proposal = TradeProposal(
             pair=result.pair,
@@ -5827,6 +5910,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             advisor_agreement=advisor_agreement,
             advisor_vector=advisor_vector,
             scan_score=float(getattr(result, "score", 0) or 0),
+            gate_quality_multiplier=gate_mult,
+            planner_quality_multiplier=planner_mult,
+            entry_quality_multiplier=entry_mult,
         )
         verdict = self._orchestrator.evaluate(proposal)
         # Stash the proposal alongside the verdict so the recorder/feedback can
