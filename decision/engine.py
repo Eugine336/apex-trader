@@ -68,6 +68,9 @@ class DecisionEngine:
         reversal_no_evidence_skip_penalty: float = 0.30,
         htf_aligned_size_bonus: float = 0.15,
         htf_aligned_threshold: float = 0.5,
+        scalp_htf_scale: float = 0.0,
+        swing_htf_scale: float = 1.0,
+        mixed_htf_scale: float = 0.5,
         thesis_secure_enabled: bool = True,
         thesis_secure_min_profit_usd: float = 15.0,
         thesis_secure_min_profit_pips: float = 12.0,
@@ -103,6 +106,13 @@ class DecisionEngine:
         # HTF = bounded context — size bonus when the full stack agrees.
         self.htf_aligned_size_bonus = max(0.0, htf_aligned_size_bonus)
         self.htf_aligned_threshold = htf_aligned_threshold
+        # HTF demotion by ranker horizon — a fast SCALP idea should not be
+        # vetoed by an opposing HTF it does not trade on; a SWING idea should
+        # still respect it. Scales enter/skip/conviction HTF weights. A trade
+        # with no ranker horizon ("") keeps full authority (scale 1.0).
+        self.scalp_htf_scale = max(0.0, min(1.0, scalp_htf_scale))
+        self.swing_htf_scale = max(0.0, min(1.0, swing_htf_scale))
+        self.mixed_htf_scale = max(0.0, min(1.0, mixed_htf_scale))
         # Roadmap G — thesis-deterioration secure (R-independent profit protection).
         self.thesis_secure_enabled = thesis_secure_enabled
         self.thesis_secure_min_profit_usd = max(0.0, thesis_secure_min_profit_usd)
@@ -145,6 +155,46 @@ class DecisionEngine:
             return self.weights
         w = self.weights
         s = self.regime_ranging_htf_scale
+        htf_conv_freed = w.conviction_htf * (1.0 - s)  # keep conviction sum stable
+        return DecisionWeights(
+            conviction_htf=w.conviction_htf * s,
+            conviction_structure=w.conviction_structure,
+            conviction_momentum=w.conviction_momentum + htf_conv_freed,
+            conviction_confidence=w.conviction_confidence,
+            enter_htf=w.enter_htf * s,
+            enter_structure=w.enter_structure,
+            enter_momentum=w.enter_momentum,
+            skip_htf=w.skip_htf * s,
+            skip_momentum=w.skip_momentum,
+        )
+
+    def _horizon_htf_scale(self, horizon: str) -> float:
+        """HTF authority multiplier for a ranker-selected trade's horizon.
+
+        ``1.0`` (full authority, unchanged) for any trade with no ranker horizon
+        — e.g. the scalar fallback. SCALP/SWING/MIXED map to the configured
+        scales so a fast idea is judged on its lower-timeframe evidence rather
+        than being overruled by an opposing higher timeframe.
+        """
+        h = str(horizon or "").upper()
+        if h == "SCALP":
+            return self.scalp_htf_scale
+        if h == "SWING":
+            return self.swing_htf_scale
+        if h == "MIXED":
+            return self.mixed_htf_scale
+        return 1.0
+
+    def _apply_horizon_scaling(self, w: DecisionWeights, horizon: str) -> DecisionWeights:
+        """Scale HTF enter/skip/conviction weights by the trade's horizon.
+
+        Mirrors :meth:`_weights_for_regime` — the freed HTF conviction mass is
+        moved onto momentum so the conviction weights still sum to the same
+        total. Inert (returns ``w`` unchanged) when the scale is 1.0.
+        """
+        s = self._horizon_htf_scale(horizon)
+        if s >= 1.0:
+            return w
         htf_conv_freed = w.conviction_htf * (1.0 - s)  # keep conviction sum stable
         return DecisionWeights(
             conviction_htf=w.conviction_htf * s,
@@ -712,6 +762,17 @@ class DecisionEngine:
         # Roadmap D — pick regime-appropriate weights (ranging/reversal shifts
         # influence off HTF onto M1 momentum; trending keeps the base weights).
         w = self._weights_for_regime(ctx.regime)
+        # HTF demotion — when the opportunity ranker selected this trade, scale
+        # HTF authority by its horizon so a fast SCALP idea is judged on its
+        # lower-timeframe evidence instead of being overruled by an opposing
+        # higher timeframe. Inert (no change) when no ranker horizon is set.
+        horizon = str(getattr(ctx, "horizon", "") or "")
+        htf_scale = self._horizon_htf_scale(horizon)
+        if htf_scale < 1.0:
+            w = self._apply_horizon_scaling(w, horizon)
+            evidence.append(
+                f"HTF demoted ×{htf_scale:.2f} ({horizon.upper()} horizon)"
+            )
 
         # ── ENTER score ──────────────────────────────────────────────────
         enter_score = 0.20  # baseline: slight inclination to trade

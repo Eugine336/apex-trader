@@ -193,6 +193,15 @@ class EntryContext:
     ev_estimate: float = 0.0
     pair_multiplier: float = 1.0
 
+    # ── Ranker horizon ───────────────────────────────────────────────────
+    # "SCALP"/"SWING"/"MIXED" when the opportunity ranker selected this trade's
+    # direction; "" when the scalar consensus path stands. The decision engine
+    # uses it to scale HTF (D1/H4) authority down to pure context for fast-
+    # horizon ideas, so an opposing higher timeframe does not veto a scalp the
+    # ranker already judged on its lower-timeframe evidence. Empty = full HTF
+    # authority (unchanged behaviour).
+    horizon: str = ""
+
     # ── Confluences from scan ────────────────────────────────────────────
     confluences: list[str] = field(default_factory=list)
 

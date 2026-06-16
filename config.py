@@ -390,8 +390,8 @@ _DEFAULT_SWING_MODULES: list[str] = [
 
 @dataclass
 class OpportunityRankerConfig:
-    enabled: bool = True            # compute + attach ranked candidates (shadow)
-    execute: bool = False           # let the executor pick the live direction
+    enabled: bool = True            # compute + attach ranked candidates
+    execute: bool = True            # LIVE: the executor picks the live direction
     scalp_modules: list[str] = field(default_factory=lambda: list(_DEFAULT_SCALP_MODULES))
     swing_modules: list[str] = field(default_factory=lambda: list(_DEFAULT_SWING_MODULES))
     scalp_reward_risk: float = 1.5
@@ -402,6 +402,20 @@ class OpportunityRankerConfig:
     min_cluster_confidence: float = 0.0
     min_cluster_contributors: int = 1
     max_concurrent: int = 1               # executor: max opportunities per result
+
+    # ── HTF demotion to pure context (per selected-opportunity horizon) ──
+    # When the ranker selects the live direction, the higher-timeframe (H4/D1)
+    # bias downstream is scaled by the opportunity's horizon instead of holding
+    # blanket authority. A SCALP idea (fast modules) should not be suppressed by
+    # an opposing H4 it does not trade on; a SWING idea should still respect it.
+    # These multipliers apply to BOTH the EntryEngine H4 counter-trend penalty
+    # and the DecisionEngine HTF enter/skip/conviction weights. They are inert
+    # (full HTF authority, scale 1.0) for any trade with no ranker horizon —
+    # e.g. the scalar fallback — so behaviour is unchanged when no candidate is
+    # selected. 0.0 = HTF fully demoted to context; 1.0 = full HTF authority.
+    scalp_htf_penalty_scale: float = 0.0
+    swing_htf_penalty_scale: float = 1.0
+    mixed_htf_penalty_scale: float = 0.5
 
     def __post_init__(self) -> None:
         if not isinstance(self.min_cluster_contributors, int) or self.min_cluster_contributors < 1:
@@ -425,6 +439,15 @@ class OpportunityRankerConfig:
         for label, val in [
             ("base_win_rate", self.base_win_rate),
             ("confidence_win_rate_gain", self.confidence_win_rate_gain),
+        ]:
+            if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
+                raise ValueError(
+                    f"OpportunityRankerConfig.{label} must be in [0, 1], got {val!r}"
+                )
+        for label, val in [
+            ("scalp_htf_penalty_scale", self.scalp_htf_penalty_scale),
+            ("swing_htf_penalty_scale", self.swing_htf_penalty_scale),
+            ("mixed_htf_penalty_scale", self.mixed_htf_penalty_scale),
         ]:
             if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
                 raise ValueError(

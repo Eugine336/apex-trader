@@ -114,6 +114,30 @@ class EntryEngine:
     # Main entry calculation
     # ------------------------------------------------------------------
 
+    def _htf_penalty_scale(self, horizon: str) -> float:
+        """Horizon-based multiplier for H4 counter-trend authority.
+
+        Returns ``1.0`` (full authority, unchanged behaviour) for any trade
+        without a ranker horizon — e.g. the scalar consensus fallback. When the
+        opportunity ranker selected the direction, the per-horizon scale from
+        :class:`OpportunityRankerConfig` is used so a fast SCALP idea is not
+        suppressed by an opposing higher timeframe it does not trade on, while a
+        SWING idea still respects it. ``0.0`` demotes H4 to pure context.
+        """
+        h = str(horizon or "").upper()
+        rc = getattr(self.config, "opportunity_ranker", None)
+        if rc is None or h not in ("SCALP", "SWING", "MIXED"):
+            return 1.0
+        scale = {
+            "SCALP": getattr(rc, "scalp_htf_penalty_scale", 0.0),
+            "SWING": getattr(rc, "swing_htf_penalty_scale", 1.0),
+            "MIXED": getattr(rc, "mixed_htf_penalty_scale", 0.5),
+        }[h]
+        try:
+            return max(0.0, min(1.0, float(scale)))
+        except (TypeError, ValueError):
+            return 1.0
+
     def calculate_entry(
         self,
         pair: str,
@@ -211,7 +235,14 @@ class EntryEngine:
                 or (direction == "SHORT" and h4_trend == "BULLISH")
             )
             if counter_h4:
-                if h4_gate_mode == "veto":
+                # HTF demotion: when the opportunity ranker selected this
+                # direction, scale H4 authority by the trade's horizon. A SCALP
+                # idea (scale 0) treats H4 as pure context; a SWING idea (scale
+                # 1) respects it fully. No ranker horizon → scale 1.0 (unchanged).
+                horizon = str(getattr(scan_result, "selected_horizon", "") or "").upper()
+                htf_scale = self._htf_penalty_scale(horizon)
+
+                if h4_gate_mode == "veto" and htf_scale > 0.0:
                     return EntryRejection(
                         pair=pair,
                         reason=f"H4 bias gate (veto) — {direction} against H4 {h4_trend}",
@@ -219,11 +250,25 @@ class EntryEngine:
                         timestamp=now,
                         direction=direction,
                     )
-                penalty = max(0, int(getattr(self.config.risk, "h4_counter_trend_penalty", 15)))
-                score = max(0, score - penalty)
-                confluences.append(
-                    f"H4 counter-trend ({h4_trend}) — context penalty −{penalty}"
-                )
+                if h4_gate_mode == "veto" and htf_scale <= 0.0:
+                    logger.info(
+                        "[{}] H4 veto demoted to context — {} horizon ({} against H4 {})",
+                        pair, horizon or "NONE", direction, h4_trend,
+                    )
+
+                base_penalty = max(0, int(getattr(self.config.risk, "h4_counter_trend_penalty", 15)))
+                penalty = int(round(base_penalty * htf_scale))
+                if horizon and penalty != base_penalty:
+                    logger.info(
+                        "[{}] H4 counter-trend penalty {} → {} ({} horizon ×{:.2f})",
+                        pair, base_penalty, penalty, horizon, htf_scale,
+                    )
+                if penalty > 0:
+                    score = max(0, score - penalty)
+                    confluences.append(
+                        f"H4 counter-trend ({h4_trend}) — context penalty −{penalty}"
+                        + (f" [{horizon} ×{htf_scale:.2f}]" if horizon else "")
+                    )
 
         # Base entry bar = configured min score, optionally LOOSENED by the
         # shadow-fed gate tuner (bounded). It can never drop below the watchlist

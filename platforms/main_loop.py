@@ -407,6 +407,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             reversal_no_evidence_skip_penalty=dcfg.reversal_no_evidence_skip_penalty,
             htf_aligned_size_bonus=dcfg.htf_aligned_size_bonus,
             htf_aligned_threshold=dcfg.htf_aligned_threshold,
+            scalp_htf_scale=self.config.opportunity_ranker.scalp_htf_penalty_scale,
+            swing_htf_scale=self.config.opportunity_ranker.swing_htf_penalty_scale,
+            mixed_htf_scale=self.config.opportunity_ranker.mixed_htf_penalty_scale,
             thesis_secure_enabled=dcfg.thesis_secure_enabled,
             thesis_secure_min_profit_usd=dcfg.thesis_secure_min_profit_usd,
             thesis_secure_min_profit_pips=dcfg.thesis_secure_min_profit_pips,
@@ -1045,19 +1048,32 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             # unchanged. When execute is off this is a no-op: the scalar
             # direction stands and behaviour is identical to before.
             if self.config.opportunity_ranker.execute:
+                scalar_dir = result.direction  # direction the scalar decide() chose
                 try:
                     opp = self._opportunity_executor.select(getattr(result, "candidates", None))
                 except Exception as exc:
                     logger.error("[executor] {} selection failed — keeping scalar direction: {}", result.pair, exc)
                     opp = None
                 if opp is not None and opp.direction in ("LONG", "SHORT"):
-                    if opp.direction != result.direction:
+                    result.selected_horizon = opp.timeframe_class
+                    if opp.direction != scalar_dir:
                         logger.info(
-                            "[executor] {} direction {} → {} | {}",
-                            result.pair, result.direction or "NEUTRAL", opp.direction, opp.summary,
+                            "[executor] {} RANKER OVERRIDE — consensus={} → ranker={} "
+                            "EV={:+.2f}R horizon={} | {}",
+                            result.pair, scalar_dir or "NEUTRAL", opp.direction,
+                            opp.expected_value, opp.timeframe_class, opp.summary,
+                        )
+                    else:
+                        logger.info(
+                            "[executor] {} ranker confirms {} EV={:+.2f}R horizon={}",
+                            result.pair, opp.direction, opp.expected_value, opp.timeframe_class,
                         )
                     result.direction = opp.direction
-                # No qualifying candidate → fall back to the scalar direction.
+                else:
+                    # No qualifying candidate → the scalar consensus direction
+                    # stands; no ranker horizon, so downstream HTF authority is
+                    # unchanged (full authority).
+                    result.selected_horizon = ""
 
             # P5: per-pair cooldown after a breakeven stop-out. In chop a pair
             # can cycle enter → BE → stopped at BE → re-enter, bleeding spread
@@ -3675,6 +3691,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             regime=getattr(result, "regime", ""),
             ev_estimate=getattr(result, "ev_estimate", 0.0),
             confluences=getattr(result, "confluences", []),
+            horizon=getattr(result, "selected_horizon", ""),
         )
 
         try:

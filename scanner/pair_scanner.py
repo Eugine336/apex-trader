@@ -135,6 +135,10 @@ class PairScanResult:
     # Open-ended ranked trade ideas from the same module votes (shadow unless
     # OpportunityRankerConfig.execute is on). Best-first list of Opportunity.
     candidates: list = field(default_factory=list)
+    # Horizon ("SCALP"/"SWING") of the ranker opportunity the executor selected
+    # to drive ``direction`` live. Empty when the scalar consensus path stands
+    # (no ranker pick) — downstream HTF demotion is then inert (full authority).
+    selected_horizon: str = ""
 
 
 @dataclass
@@ -874,7 +878,7 @@ class PairScanner:
                         consensus_agreement=decision.agreement if decision else 0.0,
                         opportunity_quality=0.0,
                         entry_quality=0.0,
-                        candidates=dir_opportunities,
+                        candidates=candidates,
                     )
 
                 score        = int(rl_result.final_score)
