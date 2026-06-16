@@ -130,6 +130,7 @@ class PairScanResult:
     trend_d1: str = "UNKNOWN"
     d1_aligned: bool = False
     d1_confidence: float = 0.0
+    candidates: list = field(default_factory=list)
     rejection: Optional["RejectedSetup"] = None
     # Open-ended ranked trade ideas from the same module votes (shadow unless
     # OpportunityRankerConfig.execute is on). Best-first list of Opportunity.
@@ -523,6 +524,7 @@ class PairScanner:
             direction = bias["direction"]
             trade_dir = {"BULLISH": "LONG", "BEARISH": "SHORT"}.get(direction, "NEUTRAL")
             decision = None
+            dir_opportunities = []
             # Lazy-init analysis objects for the scoring section below
             strength = None
             vol_analysis = None
@@ -1087,6 +1089,7 @@ class PairScanner:
             trend_d1=bias.get("d1_trend", "UNKNOWN"),
             d1_aligned=bias.get("d1_aligned", False),
             d1_confidence=bias.get("d1_confidence", 0.0),
+            candidates=dir_opportunities,
             rejection=rejection,
             candidates=candidates,
         )
