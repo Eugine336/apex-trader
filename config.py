@@ -225,16 +225,14 @@ class ScoringConfig:
     ranging_score_cap: int = 85  # Must exceed DrawdownGuard score floors (65/70/75) to allow ranging trades
     volatile_score_cap: int = 100  # FIX: was 0 — killed all volatile-regime trades
     use_adaptive_scoring_weights: bool = True
-    # #20 — graded entry-mode decision. Legacy _decide_entry_mode() runs a hard
-    # threshold cascade returning one of two modes (MARKET/PENDING), so a
-    # 3.0-vs-3.1 pip near-miss flips the mode at a cliff. When enabled, the same
-    # inputs (proximity, confirmation, sweep, R:R, score, momentum) blend into a
-    # continuous [0,1] readiness compared against entry_mode_market_threshold —
-    # the choice degrades smoothly. Off by default → legacy cascade. The
-    # continuous readiness is recorded on EntrySignal.entry_mode_confidence
-    # either way for observability.
-    entry_mode_graded_enabled: bool = False
-    entry_mode_market_threshold: float = 0.50
+    # ── M1 pattern confluence (collapse #21) ─────────────────────────────
+    # ``get_best_pattern`` keeps only the single strongest M1 confirmation;
+    # co-occurring confirmations (e.g. engulfing + pin bar + volume spike) are
+    # discarded. When this is on, the entry engine adds a small bounded bonus
+    # for EXTRA simultaneous confirmations beyond the strongest one, capped at
+    # ``pattern_confluence_max_bonus``. Default OFF — behaviour unchanged.
+    pattern_confluence_bonus: bool = True
+    pattern_confluence_max_bonus: int = 2
 
 
 # ---------------------------------------------------------------------------
@@ -391,7 +389,7 @@ class OpportunityRankerConfig:
     # (correlation/CP4, margin, max-trades, planner, governor) are unchanged and
     # still independently approve or reject each dispatched setup.
     dispatch_top_n: int = 3
-    slot_aware_dispatch: bool = False
+    slot_aware_dispatch: bool = True
     dispatch_max_n: int = 10
 
     # When the scalar ``decide`` consensus collapses a mixed panel (fast vs slow
