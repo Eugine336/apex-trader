@@ -158,6 +158,8 @@ class TradeManager:
         trailing_swing_lookback: int = 12,
         strategic_structure_intact_threshold: float = 0.6,
         strategic_structure_max_age_seconds: float = 600.0,
+        structure_exit_tf_alignment_enabled: bool = False,
+        structure_exit_tf_alignment_defer: float = 0.5,
         heat_trail_tighten_enabled: bool = False,
         heat_trail_factor_defensive: float = 0.7,
         heat_trail_factor_reducing: float = 0.5,
@@ -179,6 +181,14 @@ class TradeManager:
         # fires with higher confidence when the strategic read says broken.
         self.strategic_structure_intact_threshold = strategic_structure_intact_threshold
         self.strategic_structure_max_age_seconds = max(0.0, strategic_structure_max_age_seconds)
+        # #32: the M5 structure-exit fires a full close on the first counter-
+        # direction CHoCH/BOS and never consults the strategic tf_alignment it
+        # already carries. When enabled, a fresh strategic tf_alignment that
+        # still strongly supports the trade direction DEFERS that mechanical
+        # exit (the higher-timeframe trend says the break is noise, not a
+        # reversal). Off by default → legacy binary structure exit.
+        self.structure_exit_tf_alignment_enabled = bool(structure_exit_tf_alignment_enabled)
+        self.structure_exit_tf_alignment_defer = max(0.0, min(1.0, structure_exit_tf_alignment_defer))
         # P8: heat-aware trail tightening. When the portfolio-heat state machine
         # is in DEFENSIVE/REDUCING/EMERGENCY, multiply the structure-trail buffer
         # by the matching factor so a post-BE runner locks gains faster in a
@@ -663,6 +673,28 @@ class TradeManager:
             and strat[0] < self.strategic_structure_intact_threshold
         )
         confirm = " (strategic structure confirms break)" if strat_confirms_break else ""
+        # #32: consult the carried strategic tf_alignment. We only reach here
+        # when the strategic structure read is NOT intact (an intact read already
+        # deferred above) — but a fresh tf_alignment can still strongly support
+        # the trade direction, meaning the higher-timeframe trend treats this M5
+        # break as a pullback, not a reversal. In that case defer the full close
+        # (the trade keeps running under its existing stop) instead of ignoring
+        # the alignment the engine already recorded.
+        if self.structure_exit_tf_alignment_enabled and strat is not None:
+            tf_align = strat[1]
+            supports = (
+                tf_align >= self.structure_exit_tf_alignment_defer
+                if is_long
+                else tf_align <= -self.structure_exit_tf_alignment_defer
+            )
+            if supports:
+                logger.debug(
+                    "[structure-exit] {} deferred — strategic tf_alignment "
+                    "{:+.2f} still supports {} (|·| ≥ {:.2f})",
+                    trade.pair, tf_align, trade.direction,
+                    self.structure_exit_tf_alignment_defer,
+                )
+                return False
         if is_long and analysis.last_event in (StructureEvent.CHOCH_BEARISH, StructureEvent.BOS_BEARISH):
             self.close_trade(
                 trade,

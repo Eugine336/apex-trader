@@ -225,6 +225,16 @@ class ScoringConfig:
     ranging_score_cap: int = 85  # Must exceed DrawdownGuard score floors (65/70/75) to allow ranging trades
     volatile_score_cap: int = 100  # FIX: was 0 — killed all volatile-regime trades
     use_adaptive_scoring_weights: bool = True
+    # #20 — graded entry-mode decision. Legacy _decide_entry_mode() runs a hard
+    # threshold cascade returning one of two modes (MARKET/PENDING), so a
+    # 3.0-vs-3.1 pip near-miss flips the mode at a cliff. When enabled, the same
+    # inputs (proximity, confirmation, sweep, R:R, score, momentum) blend into a
+    # continuous [0,1] readiness compared against entry_mode_market_threshold —
+    # the choice degrades smoothly. Off by default → legacy cascade. The
+    # continuous readiness is recorded on EntrySignal.entry_mode_confidence
+    # either way for observability.
+    entry_mode_graded_enabled: bool = False
+    entry_mode_market_threshold: float = 0.50
 
 
 # ---------------------------------------------------------------------------
@@ -516,6 +526,18 @@ class RiskConfig:
     # history (see AdaptiveOptimizer.is_losing_pattern). Only ever blocks; the
     # gate is neutral until enough trades accumulate.
     losing_pattern_block_enabled: bool = True
+    # #33 — graded defensive gates. The EV gate, losing-pattern gate and the ML
+    # should_trade veto each hard `return False` (legacy "veto"). When set to
+    # "penalty" the setup instead flows through carrying a bounded size haircut
+    # (the orchestrator/risk stack folds it into the final lots) — rich evidence
+    # is no longer destroyed by a single first-breach kill. Default "veto" keeps
+    # the legacy hard rejection. Fail-safe error paths always stay hard skips.
+    ev_gate_mode: str = "veto"               # "veto" | "penalty"
+    ev_gate_below_size_mult: float = 0.5
+    losing_pattern_mode: str = "veto"        # "veto" | "penalty"
+    losing_pattern_size_mult: float = 0.5
+    ml_should_trade_mode: str = "veto"       # "veto" | "penalty"
+    ml_should_trade_size_mult: float = 0.5
     tp_adjust_enabled: bool = True
     pending_orders_enabled: bool = True
     pending_max_wait_minutes: int = 30
@@ -777,7 +799,15 @@ class RiskConfig:
     # M5 structure, giving runners room to reach H1 swing targets.
     trailing_swing_lookback: int = 12
 
-    # ── Absolute / early profit protection ───────────────────────────────
+    # #32 — tf-alignment-aware structure exit. The M5 structure-exit fires a
+    # full close on the first counter-direction CHoCH/BOS and ignores the
+    # strategic tf_alignment it already records. When enabled, a fresh strategic
+    # tf_alignment that still strongly supports the trade direction (|·| ≥
+    # structure_exit_tf_alignment_defer, signed toward the trade) defers that
+    # mechanical exit — the HTF trend treats the M5 break as noise. Off by
+    # default → legacy binary structure exit.
+    structure_exit_tf_alignment_enabled: bool = False
+    structure_exit_tf_alignment_defer: float = 0.5
     # All R-gated breakeven logic (TP1 partial, breakeven_min_profit_r) needs
     # a known original risk to compute an R-multiple. Adopted/orphan trades
     # carry entry_type="ORPHAN_ADOPTED" with no reliable original risk, so the
@@ -932,6 +962,16 @@ class DecisionConfig:
     reversal_required_evidence: int = 3
     reversal_size_multiplier: float = 0.7   # counter-trend reversals run at −30% size
     reversal_no_evidence_skip_penalty: float = 0.30
+    # #17 — weighted reversal evidence. Legacy counts the M5-sweep / M1-BOS /
+    # momentum signals and gates on an integer (≥ reversal_required_evidence),
+    # so a +0.21 momentum reads identical to +0.95 and two strong signals lose
+    # to three weak ones. When enabled, each signal contributes a continuous
+    # strength and the gate compares the summed strength to
+    # reversal_required_strength (default 2.0 ≈ two full signals). Off by
+    # default → legacy integer-count behaviour.
+    reversal_weighted_evidence: bool = False
+    reversal_required_strength: float = 2.0
+    reversal_momentum_full: float = 0.6      # momentum reaching this counts as full strength
     # ── HTF = bounded context (Scenario A) ────────────────────────────────
     # When the full HTF stack (D1+H4+H1) supports the trade direction, give a
     # bounded size BONUS on top of the conviction model — HTF helps when it

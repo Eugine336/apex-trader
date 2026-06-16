@@ -296,6 +296,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             tp3_close_ratio=self.config.risk.tp3_close_ratio,
             breakeven_min_profit_r=self.config.risk.breakeven_min_profit_r,
             trailing_swing_lookback=self.config.risk.trailing_swing_lookback,
+            structure_exit_tf_alignment_enabled=getattr(self.config.risk, "structure_exit_tf_alignment_enabled", False),
+            structure_exit_tf_alignment_defer=getattr(self.config.risk, "structure_exit_tf_alignment_defer", 0.5),
             heat_trail_tighten_enabled=self.config.risk.heat_trail_tighten_enabled,
             heat_trail_factor_defensive=self.config.risk.heat_trail_factor_defensive,
             heat_trail_factor_reducing=self.config.risk.heat_trail_factor_reducing,
@@ -326,6 +328,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             tp3_close_ratio=self.config.risk.tp3_close_ratio,
             breakeven_min_profit_r=self.config.risk.breakeven_min_profit_r,
             trailing_swing_lookback=self.config.risk.trailing_swing_lookback,
+            structure_exit_tf_alignment_enabled=getattr(self.config.risk, "structure_exit_tf_alignment_enabled", False),
+            structure_exit_tf_alignment_defer=getattr(self.config.risk, "structure_exit_tf_alignment_defer", 0.5),
         )
         self._active_shadows: dict = {}      # contract_id -> paper position namespace
         self._max_active_shadows = 20        # bound live re-scan cost
@@ -449,6 +453,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             reversal_required_evidence=dcfg.reversal_required_evidence,
             reversal_size_multiplier=dcfg.reversal_size_multiplier,
             reversal_no_evidence_skip_penalty=dcfg.reversal_no_evidence_skip_penalty,
+            reversal_weighted_evidence=getattr(dcfg, "reversal_weighted_evidence", False),
+            reversal_required_strength=getattr(dcfg, "reversal_required_strength", 2.0),
+            reversal_momentum_full=getattr(dcfg, "reversal_momentum_full", 0.6),
             htf_aligned_size_bonus=dcfg.htf_aligned_size_bonus,
             htf_aligned_threshold=dcfg.htf_aligned_threshold,
             scalp_htf_scale=self.config.opportunity_ranker.scalp_htf_penalty_scale,
@@ -2342,11 +2349,22 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 )
                 pair_mult = 0.0
             if pair_mult < 1.0:
-                self._log_rejection(
-                    pair, direction, result.score, f"EV gate: negative EV ({ev_val:.4f}) + pair_mult={pair_mult:.2f}"
-                )
-                self._persist_shadow_contract(signal, rejecting_gate=f"ev_gate:ev={ev_val:.4f}")
-                return False
+                _ev_mode = str(getattr(self.config.risk, "ev_gate_mode", "veto")).lower()
+                if _ev_mode == "penalty":
+                    _ev_mult = max(0.0, min(1.0, float(getattr(
+                        self.config.risk, "ev_gate_below_size_mult", 0.5))))
+                    conviction_mult *= _ev_mult
+                    logger.info(
+                        "[entry] EV gate (penalty) {} — negative EV ({:.4f}) + "
+                        "pair_mult={:.2f} → size ×{:.2f} (bounded, not vetoed)",
+                        pair, ev_val, pair_mult, _ev_mult,
+                    )
+                else:
+                    self._log_rejection(
+                        pair, direction, result.score, f"EV gate: negative EV ({ev_val:.4f}) + pair_mult={pair_mult:.2f}"
+                    )
+                    self._persist_shadow_contract(signal, rejecting_gate=f"ev_gate:ev={ev_val:.4f}")
+                    return False
 
         # ── Losing-pattern gate (defensive) ──────────────────────────────
         # Block setups whose pair/session/regime/entry-type combination is a
@@ -2363,14 +2381,25 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     entry_type=getattr(signal, "entry_type", "") or "",
                 )
                 if _is_loser:
-                    self._log_rejection(
-                        pair, direction, result.score,
-                        f"Losing pattern: {_lp_reason}",
-                    )
-                    self._persist_shadow_contract(
-                        signal, rejecting_gate=f"losing_pattern:{_lp_reason}",
-                    )
-                    return False
+                    _lp_mode = str(getattr(self.config.risk, "losing_pattern_mode", "veto")).lower()
+                    if _lp_mode == "penalty":
+                        _lp_mult = max(0.0, min(1.0, float(getattr(
+                            self.config.risk, "losing_pattern_size_mult", 0.5))))
+                        conviction_mult *= _lp_mult
+                        logger.info(
+                            "[entry] losing-pattern gate (penalty) {} — {} → "
+                            "size ×{:.2f} (bounded, not vetoed)",
+                            pair, _lp_reason, _lp_mult,
+                        )
+                    else:
+                        self._log_rejection(
+                            pair, direction, result.score,
+                            f"Losing pattern: {_lp_reason}",
+                        )
+                        self._persist_shadow_contract(
+                            signal, rejecting_gate=f"losing_pattern:{_lp_reason}",
+                        )
+                        return False
             except Exception as exc:
                 logger.error(
                     "[entry] losing-pattern gate failed for {} — skipping entry "
@@ -2429,9 +2458,20 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 session=session,
             )
             if not adjustments.should_trade:
-                self._log_rejection(pair, direction, result.score, f"ML: {adjustments.reason}")
-                self._persist_shadow_contract(signal, rejecting_gate=f"ml:{adjustments.reason}")
-                return False
+                _ml_mode = str(getattr(self.config.risk, "ml_should_trade_mode", "veto")).lower()
+                if _ml_mode == "penalty":
+                    _ml_mult = max(0.0, min(1.0, float(getattr(
+                        self.config.risk, "ml_should_trade_size_mult", 0.5))))
+                    conviction_mult *= _ml_mult
+                    logger.info(
+                        "[entry] ML should_trade (penalty) {} — {} → size ×{:.2f} "
+                        "(bounded, not vetoed)",
+                        pair, adjustments.reason, _ml_mult,
+                    )
+                else:
+                    self._log_rejection(pair, direction, result.score, f"ML: {adjustments.reason}")
+                    self._persist_shadow_contract(signal, rejecting_gate=f"ml:{adjustments.reason}")
+                    return False
             density_mult = self.density_tracker.get_size_multiplier()
             vol_mult = self.vol_monitor.get_size_multiplier()
             exec_mult = (
