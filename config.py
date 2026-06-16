@@ -294,6 +294,24 @@ class ConsensusConfig:
     # the opportunity cost of the collapse can be measured. Logging/shadow only
     # — it never changes the consensus verdict.
     log_suppressed_minorities: bool = True
+    # ── Signal-fidelity flags (Session 4) ─────────────────────────────────
+    # #11 — derive the momentum vote's confidence continuously from how far RSI
+    # is past the 70/30 extreme and the MACD histogram magnitude, instead of the
+    # legacy hardcoded 0.8 (both agree) / 0.4 (one source). Set False to restore
+    # the constant confidences.
+    momentum_continuous_confidence: bool = True
+    # #25 — let stacked same-side order-block / FVG zones reinforce each other
+    # (three bullish OBs read stronger than one) instead of only the single best
+    # zone counting. ``zone_confluence_step`` is the diminishing weight each extra
+    # stacked zone adds on top of the best. Set ``zone_confluence_bonus=False`` to
+    # restore the legacy best-per-side ``max()``.
+    zone_confluence_bonus: bool = True
+    zone_confluence_step: float = 0.15
+    # #26 — carry each module's richer secondary read (RSI level, MACD histogram,
+    # zone stacking, sweep type, …) onto the Vote.evidence map instead of
+    # discarding it at the (direction, confidence) collapse. Additive context for
+    # the ranker / orchestrator / dashboard — never changes the consensus verdict.
+    carry_vote_evidence: bool = True
 
     def __post_init__(self) -> None:
         if not isinstance(self.min_contributors, int) or self.min_contributors < 1:
@@ -362,6 +380,20 @@ class OpportunityRankerConfig:
     min_cluster_contributors: int = 1
     max_concurrent: int = 1               # executor: max opportunities per result
 
+    # ── Capacity-aware dispatch (collapse #13 / #15) ─────────────────────
+    # The main loop historically dispatched a hardcoded ``reranked[:3]`` READY
+    # setups per cycle — the 4th+ best opportunity was dropped regardless of its
+    # quality or whether trade slots were free. ``dispatch_top_n`` makes that cut
+    # configurable (default 3 = legacy behaviour). With ``slot_aware_dispatch``
+    # on, the cut instead tracks the real free trade slots (max_open_trades minus
+    # open positions), bounded by ``dispatch_max_n`` — so the ranked tail is only
+    # cut by available capacity, never a magic number. Downstream gates
+    # (correlation/CP4, margin, max-trades, planner, governor) are unchanged and
+    # still independently approve or reject each dispatched setup.
+    dispatch_top_n: int = 3
+    slot_aware_dispatch: bool = False
+    dispatch_max_n: int = 10
+
     # When the scalar ``decide`` consensus collapses a mixed panel (fast vs slow
     # modules disagreeing on horizon) to NEUTRAL, the scanner marks the setup
     # WAITING (non-tradeable) BEFORE the main-loop executor ever runs — so the
@@ -397,6 +429,14 @@ class OpportunityRankerConfig:
                 "OpportunityRankerConfig.max_concurrent must be an int >= 1, "
                 f"got {self.max_concurrent!r}"
             )
+        for label, val in [
+            ("dispatch_top_n", self.dispatch_top_n),
+            ("dispatch_max_n", self.dispatch_max_n),
+        ]:
+            if not isinstance(val, int) or val < 1:
+                raise ValueError(
+                    f"OpportunityRankerConfig.{label} must be an int >= 1, got {val!r}"
+                )
         for label, val in [
             ("scalp_reward_risk", self.scalp_reward_risk),
             ("swing_reward_risk", self.swing_reward_risk),

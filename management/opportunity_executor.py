@@ -39,6 +39,10 @@ class ExecutionOutcome:
     executed: int = 0
     shadow: bool = False
     reason: str = ""
+    # The ranked candidates that were NOT selected this pass (collapse #13).
+    # Kept so the discarded tail is visible to the orchestrator / trace / dash
+    # instead of silently vanishing after the top-N cut.
+    alternatives: list[Opportunity] = field(default_factory=list)
 
     @property
     def any_executed(self) -> bool:
@@ -92,11 +96,22 @@ class OpportunityExecutor:
                 best_score, best = s, c
         return best
 
-    def select_top(self, candidates: Optional[list[Opportunity]]) -> list[Opportunity]:
-        """Return up to ``max_concurrent`` best opportunities."""
+    def select_top(
+        self,
+        candidates: Optional[list[Opportunity]],
+        max_concurrent: Optional[int] = None,
+    ) -> list[Opportunity]:
+        """Return up to ``max_concurrent`` best opportunities.
+
+        ``max_concurrent`` defaults to the config value but can be overridden by
+        the caller (e.g. capacity-aware dispatch) so the cut tracks real free
+        trade slots instead of a fixed config constant (collapse #13).
+        """
         if not candidates:
             return []
-        max_concurrent = int(getattr(self.config, "max_concurrent", 1) or 1)
+        if max_concurrent is None:
+            max_concurrent = int(getattr(self.config, "max_concurrent", 1) or 1)
+        max_concurrent = max(0, int(max_concurrent))
         return list(candidates[:max_concurrent])
 
     # ── Execution ─────────────────────────────────────────────────────────
@@ -107,19 +122,25 @@ class OpportunityExecutor:
         dispatch: Callable[[Opportunity], bool],
         *,
         label: str = "",
+        max_concurrent: Optional[int] = None,
     ) -> ExecutionOutcome:
         """Drive the injected pipeline for the selected opportunities.
 
         In shadow mode the candidates are logged and returned without ever
         calling ``dispatch``.  In execute mode each selected opportunity is
         dispatched in rank order until one is placed or capacity is exhausted.
+        ``max_concurrent`` overrides the config cap (capacity-aware dispatch).
+        The un-selected ranked tail is preserved on ``alternatives`` rather than
+        silently discarded (collapse #13).
         """
         execute_live = bool(getattr(self.config, "execute", False))
-        chosen = self.select_top(candidates)
+        chosen = self.select_top(candidates, max_concurrent=max_concurrent)
+        chosen_ids = {id(c) for c in chosen}
+        alternatives = [c for c in (candidates or []) if id(c) not in chosen_ids]
 
         if not chosen:
             return ExecutionOutcome(selected=[], executed=0, shadow=not execute_live,
-                                    reason="no candidates")
+                                    reason="no candidates", alternatives=alternatives)
 
         if not execute_live:
             logger.info(
@@ -131,6 +152,7 @@ class OpportunityExecutor:
             return ExecutionOutcome(
                 selected=chosen, executed=0, shadow=True,
                 reason="shadow mode (execute disabled)",
+                alternatives=alternatives,
             )
 
         executed = 0
@@ -159,4 +181,5 @@ class OpportunityExecutor:
         return ExecutionOutcome(
             selected=chosen, executed=executed, shadow=False,
             reason=f"executed {executed}/{len(chosen)}",
+            alternatives=alternatives,
         )

@@ -377,7 +377,7 @@ class EntryEngine:
 
         zone_top = zone["top"]
         zone_bottom = zone["bottom"]
-        pattern_name, _pattern_desc = self.pattern_detector.get_best_pattern(
+        pattern_name, _pattern_desc, _pattern_matches = self.pattern_detector.get_pattern_confluence(
             drop_forming_bar(m1_df),
             direction,
             zone_top,
@@ -404,6 +404,26 @@ class EntryEngine:
         if choch_or_bos and pattern_score < 5:
             pattern_score = 5
             pattern_label = "choch_bos"
+
+        # ── Co-occurring confirmation bonus (collapse #21, opt-in) ────────
+        # When multiple M1 patterns confirm at once, reward the extra confluence
+        # with a small bounded bonus instead of discarding everything but the
+        # strongest. Off by default → score unchanged.
+        _scoring_cfg = getattr(self.config, "scoring", None)
+        if (
+            _scoring_cfg is not None
+            and getattr(_scoring_cfg, "pattern_confluence_bonus", False)
+            and len(_pattern_matches) > 1
+        ):
+            _extra = len(_pattern_matches) - 1
+            _cap = int(getattr(_scoring_cfg, "pattern_confluence_max_bonus", 2) or 0)
+            _bonus = min(_extra, _cap)
+            if _bonus > 0:
+                pattern_score += _bonus
+                pattern_label = (
+                    f"{pattern_label}+{_extra}confluence"
+                    f"({','.join(m.name for m in _pattern_matches[1:])})"
+                )
 
         recent = m1_df.iloc[-5:] if len(m1_df) >= 5 else m1_df.iloc[-3:]
         n = len(recent)
