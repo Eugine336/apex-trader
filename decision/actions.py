@@ -59,6 +59,16 @@ class EntryDecision:
     # orchestrator can size by *how strongly* ENTER won, not just the binary —
     # a margin of 0.01 and 5.0 both mean ENTER but carry very different weight.
     entry_margin: float = 0.0
+    # #6 — DE enter/skip dimmer. When the margin was non-positive but above the
+    # hard safety floor and the orchestrator is the final sizer, the gate is
+    # *softened* instead of killing the setup: ENTER flows through carrying a
+    # bounded quality multiplier (derived from how negative the margin was) so
+    # the round table can grade it against every other dimension rather than the
+    # binary collapsing it to nothing. ``gate_softened`` marks that path;
+    # ``de_quality_multiplier`` (1.0 = full credit) is the gradient the orchestrator
+    # folds into sizing.
+    gate_softened: bool = False
+    de_quality_multiplier: float = 1.0
     evidence: list[str] = field(default_factory=list)
     governor_vetoed: bool = False
     governor_reason: str = ""

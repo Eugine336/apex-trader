@@ -92,6 +92,9 @@ class DecisionEngine:
         fast_opposition_max_streak: int = 8,
         fast_opposition_decay_weight: float = 0.15,
         fast_opposition_profit_threshold: float = 0.3,
+        soften_gate: bool = False,
+        gate_safety_margin: float = -1.0,
+        gate_quality_floor: float = 0.15,
     ) -> None:
         self.weights = weights or DecisionWeights()
         # Roadmap D — regime-dependent weighting.
@@ -139,6 +142,16 @@ class DecisionEngine:
         )
         self.fast_opposition_decay_weight = max(0.0, fast_opposition_decay_weight)
         self.fast_opposition_profit_threshold = fast_opposition_profit_threshold
+        # #6 — enter/skip dimmer. When ``soften_gate`` is on (set by the caller
+        # only when the orchestrator is the final sizer), a non-positive ENTER/SKIP
+        # margin no longer hard-kills the setup: as long as the margin stays above
+        # ``gate_safety_margin`` (a genuinely hopeless floor that still hard-SKIPs)
+        # the trade flows through as ENTER carrying a bounded quality multiplier in
+        # ``[gate_quality_floor, 1.0]``, leaving the final "how big?" to the
+        # orchestrator round table. Inert by default → legacy hard-SKIP behaviour.
+        self.soften_gate = bool(soften_gate)
+        self.gate_safety_margin = float(gate_safety_margin)
+        self.gate_quality_floor = max(0.0, min(1.0, float(gate_quality_floor)))
 
     # ── Roadmap D/E helpers ───────────────────────────────────────────────
 
@@ -856,19 +869,44 @@ class DecisionEngine:
 
         # ── Pick winner ──────────────────────────────────────────────────
         margin = enter_score - skip_score
+        gate_softened = False
+        de_quality_mult = 1.0
         if margin <= 0:
-            reason = (
-                f"[{sa.primary_label}] SKIP: {'; '.join(skip_parts)} | "
-                f"enter={enter_score:.2f} skip={skip_score:.2f} margin={margin:.2f}"
-            )
-            return EntryDecision(
-                action=EntryAction.SKIP,
-                reason=reason,
-                confidence=min(1.0, abs(margin) + 0.3),
-                conviction=0.0,
-                size_multiplier=0.0,
-                entry_margin=margin,
-                evidence=skip_parts,
+            # #6 — bounded dimmer instead of a hard kill. The enter/skip binary
+            # (margin <= 0 → SKIP) was the last CRITICAL collapse: a marginally
+            # negative margin (-0.01) died exactly like a hopeless one (-5.0),
+            # and the setup never reached the orchestrator round table. When the
+            # orchestrator is the final sizer (``soften_gate``) and the margin is
+            # only *mildly* negative (above the hard ``gate_safety_margin`` floor),
+            # let the trade flow through as ENTER carrying a bounded quality
+            # multiplier instead — the round table decides *how big*, not whether.
+            # A margin at/below the safety floor is genuinely hopeless → hard SKIP.
+            try:
+                soften = self.soften_gate and margin > self.gate_safety_margin
+            except Exception:
+                soften = False
+            if not soften:
+                reason = (
+                    f"[{sa.primary_label}] SKIP: {'; '.join(skip_parts)} | "
+                    f"enter={enter_score:.2f} skip={skip_score:.2f} margin={margin:.2f}"
+                )
+                return EntryDecision(
+                    action=EntryAction.SKIP,
+                    reason=reason,
+                    confidence=min(1.0, abs(margin) + 0.3),
+                    conviction=0.0,
+                    size_multiplier=0.0,
+                    entry_margin=margin,
+                    evidence=skip_parts,
+                )
+            gate_softened = True
+            # margin in (gate_safety_margin, 0] → multiplier in (gate_quality_floor, 1.0].
+            # e.g. margin -0.01 → ~0.99 (nearly full), margin -0.50 → 0.50, and a
+            # deeply negative margin clamps up from the quality floor.
+            de_quality_mult = round(max(1.0 + margin, self.gate_quality_floor), 4)
+            evidence.append(
+                f"DE gate softened: margin={margin:+.2f} → quality×{de_quality_mult:.2f} "
+                f"(orchestrator sizes)"
             )
 
         # ── Decide MARKET vs PENDING ─────────────────────────────────────
@@ -898,14 +936,17 @@ class DecisionEngine:
             f"enter={enter_score:.2f} skip={skip_score:.2f} margin={margin:.2f} "
             f"conviction={conviction:.2f} size×{size_mult:.2f}"
             f"{' [REVERSAL]' if is_reversal else ''}"
+            f"{' [DE-SOFTENED]' if gate_softened else ''}"
         )
         return EntryDecision(
             action=entry_action,
             reason=reason,
-            confidence=min(1.0, margin + 0.3),
+            confidence=max(0.0, min(1.0, margin + 0.3)),
             conviction=conviction,
             size_multiplier=size_mult,
             entry_margin=margin,
+            gate_softened=gate_softened,
+            de_quality_multiplier=de_quality_mult,
             evidence=evidence,
         )
 

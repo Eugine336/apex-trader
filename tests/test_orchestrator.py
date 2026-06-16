@@ -128,10 +128,10 @@ class TestDimensionsRecorded:
         names = {d.name for d in v.dimensions}
         assert names == {
             "ranker_ev", "coherence", "tf_alignment", "de_margin",
-            "conviction", "advisor_agreement", "scan_score",
+            "de_quality", "conviction", "advisor_agreement", "scan_score",
         }
         d = v.to_dict()
-        assert "dimensions" in d and len(d["dimensions"]) == 7
+        assert "dimensions" in d and len(d["dimensions"]) == 8
         for dim in v.dimensions:
             assert isinstance(dim, DimensionContribution)
             assert dim.reason  # never silently empty
