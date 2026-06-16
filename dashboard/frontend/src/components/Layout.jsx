@@ -9,6 +9,8 @@ const NAV = [
   { to: '/trades', icon: '⚡', label: 'Active Trades' },
   { to: '/history', icon: '📋', label: 'Trade History' },
   { to: '/scanner', icon: '◎', label: 'Scanner' },
+  { to: '/module-votes', icon: '🗳', label: 'Module Votes' },
+  { to: '/ranker', icon: '🏆', label: 'Ranker' },
   { to: '/performance', icon: '📈', label: 'Performance' },
   { to: '/risk', icon: '🛡', label: 'Risk Monitor' },
   { to: '/ml', icon: '🧠', label: 'ML Insights' },

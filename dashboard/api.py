@@ -270,6 +270,16 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
         """Aggregated pipeline stats — funnel, rejection breakdown, challenges, confidence."""
         return _state.get_decision_trace_stats()
 
+    @app.get("/api/module-votes")
+    def module_votes():
+        """Per-pair grid of the 9 brain modules' directional votes + per-module stats."""
+        return _state.get_module_votes()
+
+    @app.get("/api/ranker")
+    def ranker():
+        """Ranked opportunities (coherent vote clusters) per pair with EV/horizon aggregates."""
+        return _state.get_ranker()
+
     @app.post("/api/control")
     async def control(body: dict):
         action = body.get("action", "")

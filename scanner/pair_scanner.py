@@ -166,6 +166,10 @@ class PairScanResult:
     # Open-ended ranked trade ideas from the same module votes (shadow unless
     # OpportunityRankerConfig.execute is on). Best-first list of Opportunity.
     candidates: list = field(default_factory=list)
+    # Raw per-module directional votes (Vote objects) that fed both the scalar
+    # consensus AND the ranker this cycle. Kept so the dashboard can show what
+    # each of the 9 modules actually saw per pair × horizon. Never mutated.
+    votes: list = field(default_factory=list)
     # Horizon ("SCALP"/"SWING") of the ranker opportunity the executor selected
     # to drive ``direction`` live. Empty when the scalar consensus path stands
     # (no ranker pick) — downstream HTF demotion is then inert (full authority).
@@ -415,8 +419,8 @@ class PairScanner:
         # Direction is the weighted net; disagreement kills the trade.
         cc = self.config.consensus
         candidates: list = []
+        dir_votes: list[Vote] = []
         if cc.enabled:
-            dir_votes: list[Vote] = []
 
             # Structure vote
             try:
@@ -919,6 +923,7 @@ class PairScanner:
                         opportunity_quality=0.0,
                         entry_quality=0.0,
                         candidates=candidates,
+                        votes=dir_votes,
                     )
 
                 score        = int(rl_result.final_score)
@@ -1131,6 +1136,7 @@ class PairScanner:
             d1_confidence=bias.get("d1_confidence", 0.0),
             rejection=rejection,
             candidates=candidates,
+            votes=dir_votes,
         )
 
     # ------------------------------------------------------------------
