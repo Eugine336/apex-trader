@@ -55,6 +55,10 @@ STAGE_PLANNER = "planner"
 # Catch-all bucket for the secondary risk-stack gates (spread, regime, risk
 # engine, EV, ML, validator, sidedness …) that reject after the core stages.
 STAGE_RISK_STACK = "risk_stack"
+# Live-position management evaluation (orchestrator round table for OPEN trades).
+# Not part of the scan→entry funnel; named here so the loop, the dashboard and
+# the tests share one constant when referring to a management verdict.
+STAGE_MANAGEMENT = "management"
 
 # Ordered for funnel rendering (best-effort pipeline order).
 PIPELINE_STAGES: tuple[str, ...] = (

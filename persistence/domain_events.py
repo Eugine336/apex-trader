@@ -49,3 +49,10 @@ ORCHESTRATOR_PROPOSAL = "ORCHESTRATOR_PROPOSAL"
 # opportunity that drove the entry, so per-module accuracy can be measured.
 OUTCOME_FEEDBACK = "OUTCOME_FEEDBACK"
 
+# ── Position health (orchestrator live-management round table) ───────────────
+# One event per open-position management evaluation: the re-evaluated evidence,
+# the per-dimension health multipliers, the overall health score, the graded
+# management action and how it changed since entry. Powers the dashboard's
+# Position Health panel (health-over-time, dimension breakdown, action log).
+POSITION_HEALTH = "POSITION_HEALTH"
+

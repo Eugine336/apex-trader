@@ -1138,11 +1138,54 @@ class OrchestratorConfig:
     # Max concurrent trades the orchestrator may dispatch per scan cycle.
     max_concurrent_trades: int = 1
 
+    # ── Live position management (round table for OPEN trades) ────────────
+    # Every cycle the orchestrator re-evaluates each open position into a
+    # continuous health score (product of dimension healths) and maps it to a
+    # bounded management action — replacing the old argmax management collapse.
+    # It is a one-way de-risk (hold/tighten/trim/exit); SCALE_UP is opt-in.
+    manage_open_positions: bool = True
+    allow_scale_up: bool = False
+    # Per-dimension lower bound for the HEALTH product. Unlike entry sizing
+    # (dimension_floor), an open position is protecting capital already at risk,
+    # so a destroyed dimension is allowed to drive an exit → floor defaults to 0.
+    health_dimension_floor: float = 0.0
+    # Health → action thresholds (>= hold: HOLD; >= tighten: TIGHTEN_SL;
+    # >= scale_down: SCALE_DOWN; >= exit_partial: EXIT_PARTIAL; else EXIT_FULL).
+    health_thresholds: dict[str, float] = field(
+        default_factory=lambda: {
+            "hold": 0.8, "tighten": 0.6, "scale_down": 0.4, "exit_partial": 0.2,
+        }
+    )
+    # Reference points for the health dimensions.
+    risk_heat_full_pct: float = 100.0      # portfolio heat giving full risk dim
+    risk_drawdown_full_r: float = 2.0      # loss (R) fully draining risk dim
+    profit_loss_full_r: float = 1.0        # loss (R) fully draining profit dim
+    time_decay_span_mult: float = 2.0      # decay reaches floor at N×expected hold
+    situation_shift_full: float = 1.0      # adverse shift fully draining the dim
+    thesis_change_flag: float = 0.6        # dim below this is flagged as a change
+    # Expected holding period (minutes) per horizon — drives the time-decay dim.
+    expected_hold_minutes_scalp: float = 30.0
+    expected_hold_minutes_swing: float = 240.0
+    # Trim fractions (portion to CLOSE) for the partial actions.
+    scale_down_close_pct: float = 0.33
+    exit_partial_close_pct: float = 0.6
+    # SCALE_UP gating (only honoured when allow_scale_up=True).
+    scale_up_min_health: float = 0.85
+    scale_up_min_delta: float = 0.1
+    # Pacing: don't manage immediately after entry, nor every single cycle.
+    min_cycles_before_management: int = 3
+    management_cooldown_cycles: int = 2
+
     def __post_init__(self) -> None:
         for label, val in [
             ("size_floor", self.size_floor),
             ("dimension_floor", self.dimension_floor),
             ("scalp_htf_opposition_scale", self.scalp_htf_opposition_scale),
+            ("health_dimension_floor", self.health_dimension_floor),
+            ("scale_up_min_health", self.scale_up_min_health),
+            ("scale_up_min_delta", self.scale_up_min_delta),
+            ("scale_down_close_pct", self.scale_down_close_pct),
+            ("exit_partial_close_pct", self.exit_partial_close_pct),
         ]:
             if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
                 raise ValueError(
@@ -1152,6 +1195,13 @@ class OrchestratorConfig:
             ("ranker_ev_full", self.ranker_ev_full),
             ("de_margin_full", self.de_margin_full),
             ("scan_score_full", self.scan_score_full),
+            ("risk_heat_full_pct", self.risk_heat_full_pct),
+            ("risk_drawdown_full_r", self.risk_drawdown_full_r),
+            ("profit_loss_full_r", self.profit_loss_full_r),
+            ("time_decay_span_mult", self.time_decay_span_mult),
+            ("situation_shift_full", self.situation_shift_full),
+            ("expected_hold_minutes_scalp", self.expected_hold_minutes_scalp),
+            ("expected_hold_minutes_swing", self.expected_hold_minutes_swing),
         ]:
             if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
                 raise ValueError(
@@ -1162,6 +1212,16 @@ class OrchestratorConfig:
                 "OrchestratorConfig.max_concurrent_trades must be an int >= 1, "
                 f"got {self.max_concurrent_trades!r}"
             )
+        for label, val in [
+            ("min_cycles_before_management", self.min_cycles_before_management),
+            ("management_cooldown_cycles", self.management_cooldown_cycles),
+        ]:
+            if not isinstance(val, int) or val < 0:
+                raise ValueError(
+                    f"OrchestratorConfig.{label} must be an int >= 0, got {val!r}"
+                )
+        if not isinstance(self.health_thresholds, dict):
+            raise ValueError("OrchestratorConfig.health_thresholds must be a dict")
 
 
 @dataclass

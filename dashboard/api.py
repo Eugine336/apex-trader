@@ -290,6 +290,11 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
         """Per-module / per-horizon accuracy + confidence calibration from closed trades."""
         return _state.get_outcome_feedback()
 
+    @app.get("/api/position-health")
+    def position_health(limit: int = 200, symbol: str = ""):
+        """Live-management round table — open-position health scores, per-dimension breakdown + action log."""
+        return _state.get_position_health(limit=min(limit, 1000), symbol=symbol)
+
     @app.post("/api/control")
     async def control(body: dict):
         action = body.get("action", "")
