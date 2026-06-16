@@ -244,7 +244,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # R back to the modules / opportunity that drove it, for per-module
         # accuracy. Observational only; never changes a live decision.
         self._outcome_feedback = OutcomeFeedback(self.config.outcome_feedback)
-        self.scheduler = ScanScheduler()
+        self.scheduler = ScanScheduler(config=self.config)
         risk_cfg = self.config.risk
         self.entry_engine = EntryEngine(
             config=self.config,

@@ -34,7 +34,7 @@ from loguru import logger
 # Default TTL (seconds) per timeframe — kept just under the bar period so the
 # latest closed bar is always fresh. Overridable via PerformanceConfig.
 _DEFAULT_TTL: dict[str, float] = {
-    "M1": 3.0,
+    "M1": 1.0,
     "M5": 5.0,
     "M15": 15.0,
     "M30": 25.0,

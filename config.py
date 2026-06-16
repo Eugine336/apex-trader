@@ -1111,7 +1111,7 @@ class PerformanceConfig:
     candle_cache_enabled: bool = True
     candle_cache_ttl: dict[str, float] = field(
         default_factory=lambda: {
-            "M1": 3.0,
+            "M1": 1.0,
             "M5": 5.0,
             "M15": 15.0,
             "M30": 25.0,
@@ -1121,6 +1121,17 @@ class PerformanceConfig:
         }
     )
     candle_cache_default_ttl: float = 5.0  # unknown timeframes — conservative
+    # M1 TTL knob — dropped to 1s so a freshly closed M1 bar (and the engulfing
+    # it completes) is detected within ~1s of close instead of up to 3s. This is
+    # the authoritative M1 setting and overrides candle_cache_ttl["M1"].
+    m1_cache_ttl: float = 1.0
+
+    # ── Scan cadence (M1 scalping) ──
+    # Active/overlap sessions and any cycle with open positions scan every 5s so
+    # a closed M1 engulfing is acted on within ~5s of bar close instead of the
+    # old 10–15s. Quiet/dead/news cadences are unchanged (see ScanScheduler).
+    scan_interval_active: int = 5
+    scan_interval_with_positions: int = 5
 
     # ── Parallel pair scan (Fix #3) ──
     # The 9 analysis modules are pure pandas/numpy (no broker I/O), so pairs are
@@ -1149,6 +1160,19 @@ class PerformanceConfig:
             if not isinstance(ttl, (int, float)) or not math.isfinite(ttl) or ttl <= 0:
                 raise ValueError(
                     f"PerformanceConfig.candle_cache_ttl[{tf!r}] must be finite > 0, got {ttl!r}"
+                )
+        if not isinstance(self.m1_cache_ttl, (int, float)) or \
+                not math.isfinite(self.m1_cache_ttl) or self.m1_cache_ttl <= 0:
+            raise ValueError(
+                f"PerformanceConfig.m1_cache_ttl must be finite > 0, got {self.m1_cache_ttl!r}"
+            )
+        # m1_cache_ttl is the authoritative M1 knob — keep the TTL dict in sync.
+        self.candle_cache_ttl["M1"] = float(self.m1_cache_ttl)
+        for name in ("scan_interval_active", "scan_interval_with_positions"):
+            value = getattr(self, name)
+            if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+                raise ValueError(
+                    f"PerformanceConfig.{name} must be an int >= 1, got {value!r}"
                 )
 
 
