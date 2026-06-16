@@ -18,6 +18,7 @@ import Planner from './pages/Planner';
 import DecisionTrace from './pages/DecisionTrace';
 import Orchestrator from './pages/Orchestrator';
 import Feedback from './pages/Feedback';
+import PositionHealth from './pages/PositionHealth';
 import ShadowOutcomes from './pages/ShadowOutcomes';
 import Reconciliation from './pages/Reconciliation';
 
@@ -41,6 +42,7 @@ export default function App() {
           <Route path="decision-trace" element={<DecisionTrace />} />
           <Route path="orchestrator" element={<Orchestrator />} />
           <Route path="feedback" element={<Feedback />} />
+          <Route path="position-health" element={<PositionHealth />} />
           <Route path="controls" element={<Controls />} />
           <Route path="activity" element={<Activity />} />
           <Route path="shadow" element={<ShadowOutcomes />} />

@@ -40,7 +40,13 @@ from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open
 from management.re_entry import ReEntryManager
 from management.exit_cause import ExitCause
 from management.opportunity_executor import OpportunityExecutor
-from brain.orchestrator import Orchestrator, TradeProposal
+from brain.orchestrator import (
+    Orchestrator,
+    TradeProposal,
+    PositionEvidence,
+    PositionHealthReport,
+    ManagementAction,
+)
 from brain.outcome_feedback import OutcomeFeedback
 from brain.decision_trace import (
     DecisionTraceRecorder,
@@ -91,7 +97,7 @@ from persistence.domain_events import (
     DECISION_REJECT, ORDER_SENT, ORDER_FILLED, TRADE_OPEN, TRADE_CLOSE,
     SETUP_SKIPPED, SHADOW_CONTRACT_CREATED, BALANCE_UNAVAILABLE,
     PERSISTENCE_DEGRADED, CYCLE_FAILED, TRADING_LOOP_HALTED,
-    ORCHESTRATOR_PROPOSAL, OUTCOME_FEEDBACK,
+    ORCHESTRATOR_PROPOSAL, OUTCOME_FEEDBACK, POSITION_HEALTH,
 )
 from persistence.shadow_store import ShadowStore, ShadowContract, new_contract_id
 
@@ -223,6 +229,15 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # not a kill switch): weak dimensions size the trade down, only physics
         # (handled by the existing risk gates) can veto. Records every proposal.
         self._orchestrator = Orchestrator(self.config.orchestrator)
+        # Live-management state for the orchestrator round table on OPEN trades:
+        #   * entry-health snapshot (the graded evidence baseline captured when a
+        #     trade was opened) keyed by broker order id — lets management compare
+        #     "then vs now" for thesis-integrity / situation-shift.
+        #   * per-position management cycle counter + last-evaluated cycle, for the
+        #     min-cycles-before-management and cooldown pacing.
+        self._entry_health_snapshot: dict[str, dict] = {}
+        self._mgmt_cycle_count: dict[str, int] = {}
+        self._mgmt_last_eval_cycle: dict[str, int] = {}
         # Outcome feedback — closes the loop: links each placed trade's realised
         # R back to the modules / opportunity that drove it, for per-module
         # accuracy. Observational only; never changes a live decision.
@@ -2416,6 +2431,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 if self.position_store:
                     self.position_store.resolve_in_flight(idem_key, pending_id)
                 self._record_entry_attribution(pending_id, result, orch_verdict, _orch_decision)
+                self._snapshot_entry_health(pending_id, result, orch_verdict, _orch_sa)
                 logger.info(
                     "📋 PENDING ORDER PLACED — {} {} @ {:.5f} | expires in {}min",
                     order_kind, pair, signal.entry_price, max_wait,
@@ -2499,6 +2515,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # this fill, keyed by the broker order id so the realised R can be linked
         # back at close. Observational only.
         self._record_entry_attribution(order.order_id, result, orch_verdict, _orch_decision)
+        self._snapshot_entry_health(order.order_id, result, orch_verdict, _orch_sa)
 
         if not ctx.uses_stake:
             self.execution_monitor.record_execution(
@@ -3696,7 +3713,12 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             # bounded close pressure when a non-winning trade is stuck against
             # the current.
             self._update_fast_opposition_streak(oid, ctx, sa)
-            decision = self._decision_engine.decide_management(ctx, sa)
+            # Live-management round table: the orchestrator grades the position's
+            # current evidence into a continuous health score and a bounded
+            # management action — replacing the argmax collapse. Falls back to the
+            # legacy decide_management() when disabled, pacing-gated, or on error,
+            # so a position is never left unmanaged.
+            decision = self._decide_management(oid, pos, ctx, sa)
 
             governor_changed = False
             if self._risk_governor is not None:
@@ -3752,6 +3774,185 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 k for k in self._degraded_management if k not in self.managed_positions
             ]:
                 self._degraded_management.pop(stale, None)
+
+    # ── Orchestrator live-position management (round table for OPEN trades) ─
+    def _decide_management(
+        self,
+        oid: str,
+        pos: "ManagedPosition",
+        ctx: "TradeContext",
+        sa: "SituationAssessment",
+    ) -> ManagementDecision:
+        """Grade the open position's health → bounded action, or fall back.
+
+        The orchestrator round table re-evaluates the position's current evidence
+        into a continuous health score and maps it to a bounded management action
+        (HOLD / TIGHTEN_SL / SCALE_DOWN / EXIT_PARTIAL / EXIT_FULL, plus opt-in
+        SCALE_UP). This replaces the old argmax collapse in
+        ``decide_management``.
+
+        It is a strict superset of safety:
+          * disabled, paced-out (first N cycles / cooldown), or any exception →
+            fall back to the proven ``decide_management`` so a position is never
+            left unmanaged;
+          * the action is a one-way de-risk — it can only hold, tighten, trim or
+            exit; SCALE_UP is recorded but never auto-adds exposure here (adds go
+            through the existing governed scale-in path).
+        """
+        cfg = self.config.orchestrator
+        if not getattr(cfg, "manage_open_positions", False):
+            return self._decision_engine.decide_management(ctx, sa)
+
+        # Pacing — don't manage immediately after entry, nor every cycle.
+        count = self._mgmt_cycle_count.get(oid, 0) + 1
+        self._mgmt_cycle_count[oid] = count
+        if count <= int(getattr(cfg, "min_cycles_before_management", 0)):
+            return self._decision_engine.decide_management(ctx, sa)
+        cooldown = int(getattr(cfg, "management_cooldown_cycles", 0))
+        last = self._mgmt_last_eval_cycle.get(oid, -(10**9))
+        if cooldown > 0 and (count - last) < cooldown:
+            return self._decision_engine.decide_management(ctx, sa)
+
+        try:
+            evidence = self._build_position_evidence(oid, pos, ctx, sa)
+            report = self._orchestrator.evaluate_open_position(evidence)
+            self._mgmt_last_eval_cycle[oid] = count
+            self._record_position_health(pos, ctx, report)
+            decision = self._management_decision_from_health(report, ctx)
+            logger.info(
+                "🧭 ORCH MANAGE — {} {} health={:.2f} (Δ{:+.2f}) → {} | {}",
+                pos.direction, pos.symbol, report.health_score,
+                report.health_delta, report.action.value,
+                decision.action.value,
+            )
+            return decision
+        except Exception as exc:
+            logger.error(
+                "[orchestrator/health] {} ({}) management evaluation failed — "
+                "falling back to decide_management: {}",
+                pos.symbol, oid, exc,
+            )
+            return self._decision_engine.decide_management(ctx, sa)
+
+    def _build_position_evidence(
+        self,
+        oid: str,
+        pos: "ManagedPosition",
+        ctx: "TradeContext",
+        sa: "SituationAssessment",
+    ) -> PositionEvidence:
+        """Assemble the re-evaluated evidence for one open position.
+
+        Reuses the situation assessment already computed this cycle (so no
+        re-analysis) and the entry-health snapshot captured at open.
+        """
+        cfg = self.config.orchestrator
+        snap = self._entry_health_snapshot.get(oid, {}) or {}
+        horizon = str(snap.get("horizon", "") or "").upper()
+        if horizon == "SCALP":
+            expected = float(getattr(cfg, "expected_hold_minutes_scalp", 30.0))
+        else:
+            # SWING / MIXED / unknown all use the slower reference.
+            expected = float(getattr(cfg, "expected_hold_minutes_swing", 240.0))
+        return PositionEvidence(
+            pair=pos.symbol,
+            direction=str(pos.direction),
+            horizon=horizon,
+            profit_r=ctx.profit_r,
+            momentum=sa.momentum,
+            structure_integrity=sa.structure_integrity,
+            tf_alignment=sa.tf_alignment,
+            tf_vector=sa.tf_vector(),
+            read_confidence=sa.read_confidence,
+            urgency=sa.urgency,
+            hold_minutes=float(ctx.hold_minutes or 0.0),
+            expected_hold_minutes=expected,
+            portfolio_heat_pct=float(ctx.portfolio_heat_pct or 0.0),
+            entry_health=snap.get("entry_health"),
+            entry_structure_integrity=snap.get("structure_integrity"),
+            entry_tf_alignment=snap.get("tf_alignment"),
+        )
+
+    def _management_decision_from_health(
+        self, report: "PositionHealthReport", ctx: "TradeContext",
+    ) -> ManagementDecision:
+        """Translate a health report into an executable ManagementDecision.
+
+        Maps the orchestrator's graded action onto the existing executor's
+        ``Action`` vocabulary, reusing the decision engine's SL geometry for
+        tightens. SCALE_UP is recorded on the report but executed as HOLD here —
+        increasing exposure stays the responsibility of the governed scale-in
+        path, keeping this translation a one-way de-risk.
+        """
+        action = report.action
+        base = (
+            f"orchestrator health {report.health_score:.2f} "
+            f"(Δ{report.health_delta:+.2f})"
+        )
+        if report.thesis_changes:
+            base += " — " + "; ".join(report.thesis_changes[:3])
+
+        if action == ManagementAction.EXIT_FULL:
+            return ManagementDecision(
+                action=Action.CLOSE,
+                reason=f"{base} → EXIT_FULL",
+                confidence=round(1.0 - report.health_score, 4),
+                evidence=list(report.thesis_changes),
+            )
+        if action in (ManagementAction.SCALE_DOWN, ManagementAction.EXIT_PARTIAL):
+            ratio = float(report.recommended_size_pct or 0.0)
+            if ratio <= 0.0:
+                return ManagementDecision(action=Action.HOLD, reason=f"{base} → trim (no ratio)")
+            return ManagementDecision(
+                action=Action.PARTIAL_CLOSE,
+                reason=f"{base} → {action.value} {int(ratio * 100)}%",
+                confidence=round(1.0 - report.health_score, 4),
+                partial_ratio=ratio,
+                evidence=list(report.thesis_changes),
+            )
+        if action == ManagementAction.TIGHTEN_SL:
+            new_sl = None
+            try:
+                new_sl = self._decision_engine._compute_tightened_sl(ctx)
+            except Exception as exc:
+                logger.debug("[orchestrator/health] tighten SL compute failed: {}", exc)
+            if new_sl is None:
+                return ManagementDecision(action=Action.HOLD, reason=f"{base} → tighten (SL unchanged)")
+            return ManagementDecision(
+                action=Action.TIGHTEN_SL,
+                reason=f"{base} → TIGHTEN_SL",
+                confidence=round(1.0 - report.health_score, 4),
+                new_sl=new_sl,
+                evidence=list(report.thesis_changes),
+            )
+        # HOLD and SCALE_UP (opt-in, recorded but not auto-added here).
+        suffix = " → SCALE_UP (recorded; adds via governed scale-in)" if action == ManagementAction.SCALE_UP else " → HOLD"
+        return ManagementDecision(action=Action.HOLD, reason=f"{base}{suffix}")
+
+    def _record_position_health(
+        self, pos: "ManagedPosition", ctx: "TradeContext", report: "PositionHealthReport",
+    ) -> None:
+        """Persist a POSITION_HEALTH event for the dashboard (best-effort)."""
+        try:
+            store = get_event_store()
+            if store is None:
+                return
+            payload = report.to_dict()
+            payload["order_id"] = str(getattr(pos, "order_id", "") or "")
+            payload["profit_r"] = round(float(ctx.profit_r or 0.0), 4)
+            payload["pnl_dollars"] = round(float(getattr(ctx, "pnl_dollars", 0.0) or 0.0), 4)
+            payload["hold_minutes"] = round(float(ctx.hold_minutes or 0.0), 2)
+            store.emit(
+                event_type=POSITION_HEALTH,
+                severity="INFO",
+                symbol=pos.symbol,
+                correlation_id=getattr(self, "_current_cycle_id", None),
+                parent_id=str(getattr(pos, "order_id", "") or "") or None,
+                source_module="brain.orchestrator",
+                payload=payload,
+            )
+        except Exception as exc:
+            logger.debug("[orchestrator/health] persist failed for {}: {}", pos.symbol, exc)
 
     def _update_fast_opposition_streak(
         self, oid: str, ctx: "TradeContext", sa: "SituationAssessment",
@@ -4467,6 +4668,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 self._position_scores.pop(oid, None)
                 self._degraded_management.pop(oid, None)
                 self._fast_opposition_streak.pop(oid, None)
+                self._entry_health_snapshot.pop(oid, None)
+                self._mgmt_cycle_count.pop(oid, None)
+                self._mgmt_last_eval_cycle.pop(oid, None)
             else:
                 logger.warning(
                     "🧠 DECISION CLOSE FAILED — {} {} oid={} | {}",
@@ -4517,6 +4721,58 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 logger.info(
                     "🧠 DECISION BE — {} {} | SL→{:.5f} | {}",
                     pos.direction, pos.symbol, be_level, decision.reason[:80],
+                )
+
+        elif decision.action == Action.PARTIAL_CLOSE and decision.partial_ratio > 0:
+            # Orchestrator-graded trim (SCALE_DOWN / EXIT_PARTIAL). Closes a
+            # fraction of the position to de-risk while keeping a runner — a
+            # bounded de-risk, never an oversize. Instruments without partial
+            # support are skipped (a deeper health drop will close fully next
+            # cycle); broker rejections roll local size back.
+            pos_ctx = build_context_for_symbol(pos.symbol)
+            if not pos_ctx.supports_partial_close:
+                logger.info(
+                    "🧭 ORCH TRIM skipped (no partial support) — {} {} | {}",
+                    pos.direction, pos.symbol, decision.reason[:80],
+                )
+                return
+            ratio = max(0.0, min(1.0, decision.partial_ratio))
+            partial_lots = round(pos.lots * ratio, 2)
+            # Keep at least the broker minimum on both sides — never close all
+            # via the trim path (EXIT_FULL is the explicit close action).
+            partial_lots = max(0.01, partial_lots)
+            if partial_lots >= round(pos.lots - 0.01, 2):
+                logger.info(
+                    "🧭 ORCH TRIM skipped (would close whole position) — {} {}",
+                    pos.direction, pos.symbol,
+                )
+                return
+            prev_lots = pos.lots
+            result = self.platforms.close_trade(oid, pos.platform, partial_lots)
+            if result.success:
+                pos.lots = round(pos.lots - partial_lots, 2)
+                self.position_store.update_position(oid, lots=pos.lots)
+                tm_trade = self.trade_manager.get_trade(pos.tm_trade_id)
+                if tm_trade is not None:
+                    tm_trade.remaining_size_lots = pos.lots
+                    tm_trade.partial_closed = True
+                _pip = get_pip_size(pos.symbol)
+                _pips = (
+                    (result.close_price - pos.entry_price) / _pip
+                    if pos.direction.upper() in ("BUY", "LONG")
+                    else (pos.entry_price - result.close_price) / _pip
+                )
+                self._account_realized_pnl(pos, getattr(result, "pnl", 0.0), _pips, "orchestrator trim")
+                logger.info(
+                    "🧭 ORCH TRIM — {} {} | {:.2f}→{:.2f} lots ({:.0f}%) | {}",
+                    pos.direction, pos.symbol, prev_lots, pos.lots, ratio * 100,
+                    decision.reason[:80],
+                )
+            else:
+                logger.warning(
+                    "🔴 ORCH TRIM FAILED — {} {} oid={} | attempted {:.2f} lots — {}",
+                    pos.direction, pos.symbol, oid, partial_lots,
+                    getattr(result, "error", "unknown"),
                 )
 
     def _submit_scale_in(
@@ -5599,6 +5855,34 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             fb.record_entry(str(trade_key), attribution)
         except Exception as exc:
             logger.debug("[outcome_feedback] entry attribution failed: {}", exc)
+
+    def _snapshot_entry_health(self, trade_key, result, verdict, sa) -> None:
+        """Capture the entry-evidence baseline so live management can compare.
+
+        Stored keyed by broker order id: the orchestrator's graded entry size
+        multiplier (a proxy for entry conviction/health), the situation read at
+        open (structure integrity + HTF alignment) and the selected horizon.
+        Read back by ``_build_position_evidence`` for thesis-integrity and
+        situation-shift dimensions. Best-effort — never blocks the entry.
+        """
+        if not trade_key:
+            return
+        try:
+            snap = {
+                "horizon": getattr(result, "selected_horizon", "") or "",
+                "entry_health": (
+                    round(float(verdict.size_multiplier), 4) if verdict is not None else None
+                ),
+                "structure_integrity": (
+                    round(float(getattr(sa, "structure_integrity", 0.0)), 4) if sa is not None else None
+                ),
+                "tf_alignment": (
+                    round(float(getattr(sa, "tf_alignment", 0.0)), 4) if sa is not None else None
+                ),
+            }
+            self._entry_health_snapshot[str(trade_key)] = snap
+        except Exception as exc:
+            logger.debug("[orchestrator/health] entry snapshot failed: {}", exc)
 
     def _record_trade_outcome(self, pos, pnl_pips, pnl_dollars, pnl_r, outcome, cause_value) -> None:
         """Link a closed trade's realised R back to its entry attribution."""

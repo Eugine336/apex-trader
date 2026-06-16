@@ -175,7 +175,10 @@ def _de_loop():
 
 def test_run_decision_engine_returns_action_on_success():
     m = _de_loop()
-    m._decision_engine.decide_management.return_value = ManagementDecision(
+    # The decision now flows through the orchestrator-aware management seam
+    # (_decide_management), which wraps decide_management with the live-management
+    # round table + legacy fallback. _run_decision_engine returns its action.
+    m._decide_management.return_value = ManagementDecision(
         action=Action.HOLD, reason="held",
     )
     pos = SimpleNamespace(symbol="EURUSD", tm_trade_id="tm-1")
