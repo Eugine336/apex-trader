@@ -143,3 +143,34 @@ class TestNoConfigDefaults:
         v = o.evaluate(TradeProposal(pair="X", direction="LONG", ranker_ev=1.5))
         assert isinstance(v, OrchestratorVerdict)
         assert 0.0 < v.size_multiplier <= 1.0
+
+
+class TestTradeProposalSerialisation:
+    """Regression: SituationAssessment.tf_vector() returns a {tf: float} map
+    (per-timeframe signed alignment), not {tf: (dir, conf)} tuples. The persist
+    path called TradeProposal.to_dict() which did list(v) on every value and
+    crashed with 'float' object is not iterable, silently dropping the audit
+    record while the trade still fired."""
+
+    def test_float_tf_vector_serialises_without_error(self):
+        prop = TradeProposal(
+            pair="ETHUSD", direction="LONG", horizon="SWING",
+            tf_alignment=0.28,
+            tf_vector={"D1": 0.4, "H4": -0.21, "H1": 0.175},
+        )
+        d = prop.to_dict()
+        assert d["tf_vector"] == {"D1": 0.4, "H4": -0.21, "H1": 0.175}
+
+    def test_tuple_tf_vector_still_listified(self):
+        prop = TradeProposal(
+            pair="X", direction="SHORT",
+            tf_vector={"D1": ("SHORT", 0.8), "H4": ["LONG", 0.6]},
+        )
+        d = prop.to_dict()
+        assert d["tf_vector"]["D1"] == ["SHORT", 0.8]
+        assert d["tf_vector"]["H4"] == ["LONG", 0.6]
+
+    def test_empty_tf_vector_serialises(self):
+        prop = TradeProposal(pair="X", direction="LONG")
+        assert prop.to_dict()["tf_vector"] == {}
+

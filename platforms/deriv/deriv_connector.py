@@ -918,9 +918,15 @@ class DerivConnector(BaseConnector):
         if idempotency_key:
             passthrough["idem_key"] = idempotency_key
 
+        # SL/TP distances as a fraction of price — reused by the retry path when
+        # it recomputes the limit_order dollar values after an amount/multiplier
+        # change (see _limit_order_dollars below).
+        sl_pct = abs(price - sl) / price if price > 0 else 0.0
+        tp_pct = abs(tp - price) / price if price > 0 else 0.0
+
         send_limit_order = True
-        initial_sl_dollar = round(abs(price - sl) / price * amount * multiplier, 2)
-        initial_tp_dollar = round(abs(tp - price) / price * amount * multiplier, 2)
+        initial_sl_dollar = round(sl_pct * amount * multiplier, 2)
+        initial_tp_dollar = round(tp_pct * amount * multiplier, 2)
 
         def build_order_payload(amount: float, multiplier: int, limit_order_enabled: bool) -> dict:
             payload = {
