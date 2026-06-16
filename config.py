@@ -231,7 +231,7 @@ class ScoringConfig:
     # discarded. When this is on, the entry engine adds a small bounded bonus
     # for EXTRA simultaneous confirmations beyond the strongest one, capped at
     # ``pattern_confluence_max_bonus``. Default OFF — behaviour unchanged.
-    pattern_confluence_bonus: bool = False
+    pattern_confluence_bonus: bool = True
     pattern_confluence_max_bonus: int = 2
 
 
@@ -389,7 +389,7 @@ class OpportunityRankerConfig:
     # (correlation/CP4, margin, max-trades, planner, governor) are unchanged and
     # still independently approve or reject each dispatched setup.
     dispatch_top_n: int = 3
-    slot_aware_dispatch: bool = False
+    slot_aware_dispatch: bool = True
     dispatch_max_n: int = 10
 
     # When the scalar ``decide`` consensus collapses a mixed panel (fast vs slow

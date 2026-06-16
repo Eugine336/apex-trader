@@ -155,10 +155,10 @@ class TestExecutorAlternatives:
 # ── #15 — capacity-aware dispatch config ──────────────────────────────────
 
 class TestDispatchConfig:
-    def test_defaults_are_legacy(self):
+    def test_defaults_are_live(self):
         cfg = OpportunityRankerConfig()
         assert cfg.dispatch_top_n == 3
-        assert cfg.slot_aware_dispatch is False
+        assert cfg.slot_aware_dispatch is True
 
     def test_invalid_dispatch_rejected(self):
         with pytest.raises(ValueError):
@@ -224,7 +224,7 @@ class TestPatternConfluence:
 # ── #21 — scoring confluence flag is opt-in ───────────────────────────────
 
 class TestScoringConfluenceFlag:
-    def test_default_off(self):
+    def test_default_on(self):
         cfg = ScoringConfig()
-        assert cfg.pattern_confluence_bonus is False
+        assert cfg.pattern_confluence_bonus is True
         assert cfg.pattern_confluence_max_bonus == 2
