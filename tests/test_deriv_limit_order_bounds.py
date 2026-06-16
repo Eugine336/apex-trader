@@ -9,7 +9,11 @@ that prevent it: snapping the multiplier down so the SL fits, and clamping the
 limit_order dollar values as a last-resort safety net.
 """
 
-from platforms.deriv.deriv_connector import DerivConnector, _SL_STAKE_SAFETY
+from platforms.deriv.deriv_connector import (
+    DerivConnector,
+    _SL_STAKE_SAFETY,
+    _FALLBACK_ACCEPTED_MULTIPLIERS,
+)
 from platforms.base_connector import TickData
 
 
@@ -133,4 +137,90 @@ class TestPlaceOrderRetryPath:
         # The retry drops limit_order (the validation error path disables it),
         # so the second payload must not carry SL/TP bounds.
         assert "limit_order" not in seen_payloads[1]["parameters"]
+
+
+class TestErrorText:
+    """_error_text must fold error.details into the searchable string so the
+    multiplier/stake-cap regexes can match the real cause that Deriv hides in
+    details behind a generic 'Input validation failed: parameters' message."""
+
+    def test_flattens_message_and_details(self):
+        txt = DerivConnector._error_text({
+            "message": "Input validation failed: parameters",
+            "details": {
+                "multiplier": "Multiplier is not in acceptable range. Accepts 100,200,300,400,500.",
+            },
+        })
+        assert "Input validation failed" in txt
+        assert "Accepts 100,200,300,400,500" in txt
+
+    def test_message_only(self):
+        assert DerivConnector._error_text({"message": "Insufficient balance"}) == "Insufficient balance"
+
+    def test_string_details(self):
+        txt = DerivConnector._error_text({"message": "bad", "details": "extra reason"})
+        assert "bad" in txt and "extra reason" in txt
+
+    def test_empty_objects(self):
+        assert DerivConnector._error_text({}) == "Unknown error"
+        assert DerivConnector._error_text(None) == "Unknown error"
+
+
+class TestErrorDetailsSelfCorrection:
+    """Regression for the live V50_1S failure: Deriv returned the accepted
+    multiplier list in error.details (not error.message). The retry loop now
+    reads details, corrects the multiplier, and keeps limit_order instead of
+    misattributing the generic envelope to SL/TP."""
+
+    def test_details_multiplier_self_corrects_and_keeps_limit_order(self):
+        conn = _make_connector()
+        seen_payloads = []
+
+        def fake_send(payload):
+            seen_payloads.append(payload)
+            if len(seen_payloads) == 1:
+                return {"error": {
+                    "message": "Input validation failed: parameters",
+                    "details": {
+                        "multiplier": "Multiplier is not in acceptable range. Accepts 100,200,300,400,500.",
+                    },
+                }}
+            return {"buy": {"contract_id": "777"}}
+
+        conn._sync_send = fake_send
+
+        result = conn.place_order(
+            symbol="STPIDX", direction="SHORT", lots=0.01,
+            sl=7980.67, tp=7920.99, stake_usd=27.99, multiplier=1000,
+        )
+
+        assert result.success is True
+        assert result.order_id == "777"
+        # Discovered list updated from details so future orders skip the guess.
+        assert conn._discovered_multipliers["STPIDX"] == [100, 200, 300, 400, 500]
+        # Multiplier was the real cause → limit_order must NOT be stripped.
+        assert "limit_order" in seen_payloads[1]["parameters"]
+        # The retried multiplier comes from the Deriv-supplied valid set.
+        assert seen_payloads[1]["parameters"]["multiplier"] in (100, 200, 300, 400, 500)
+
+
+class TestConservativeFallback:
+    """The fallback multiplier set must not contain 80 (invalid for the 1s
+    volatility indices that caused the live rejection) and must surface a
+    warning so the silent discovery/config gap is visible."""
+
+    def test_fallback_excludes_invalid_80(self):
+        assert 80 not in _FALLBACK_ACCEPTED_MULTIPLIERS
+        assert _FALLBACK_ACCEPTED_MULTIPLIERS == [100, 200, 300, 400, 500]
+
+    def test_no_discovery_no_config_uses_fallback_and_warns(self):
+        conn = object.__new__(DerivConnector)
+        conn._discovered_multipliers = {}
+
+        accepted, desired = conn._accepted_multipliers("UNKNOWN_SYNTH_XYZ")
+
+        assert 80 not in accepted
+        assert accepted == [100, 200, 300, 400, 500]
+        # The fallback path records the symbol so the WARNING fires once.
+        assert "UNKNOWN_SYNTH_XYZ" in conn._warned_fallback_symbols
 
