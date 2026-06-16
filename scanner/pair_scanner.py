@@ -60,6 +60,38 @@ except ImportError:
     mt5 = None
 
 
+def rescue_neutral_direction(consensus_direction, candidates, ranker_config):
+    """Promote a NEUTRAL scalar consensus to the ranker's best-EV direction.
+
+    The scalar ``decide`` collapses mixed panels (fast vs slow modules
+    disagreeing on horizon) to NEUTRAL, which the scanner turns into a
+    non-tradeable WAITING setup BEFORE the main-loop executor ever runs. That
+    defeats the ranker: the coherent opportunities it already scored never reach
+    a tradeable direction. When the executor is live, promote the NEUTRAL setup
+    to the ranker's best-EV direction so OQ/EQ, the confluence score and the
+    READY gate are computed on the chosen direction and the existing pipeline
+    runs unchanged.
+
+    Returns ``(direction, opportunity)``: the rescued direction and the chosen
+    candidate when a rescue fires, else ``(consensus_direction, None)``. A rescue
+    only fires when the executor is live (``execute``), the rescue flag is on
+    (``rescue_neutral_consensus``), the scalar consensus is NEUTRAL, and the
+    top-ranked candidate carries a directional bias.
+    """
+    if ranker_config is None:
+        return consensus_direction, None
+    if not getattr(ranker_config, "execute", False):
+        return consensus_direction, None
+    if not getattr(ranker_config, "rescue_neutral_consensus", False):
+        return consensus_direction, None
+    if consensus_direction != "NEUTRAL" or not candidates:
+        return consensus_direction, None
+    best = candidates[0]
+    if getattr(best, "direction", "NEUTRAL") in ("LONG", "SHORT"):
+        return best.direction, best
+    return consensus_direction, None
+
+
 def _batch_mt5_symbol_info() -> dict:
     """Prefetch every MT5 symbol's ``symbol_info`` in ONE IPC call.
 
@@ -564,35 +596,22 @@ class PairScanner:
                     candidates = []
 
             # ── Ranker rescue of a NEUTRAL consensus ─────────────────────
-            # The scalar ``decide`` collapses mixed panels (fast vs slow modules
-            # disagreeing on horizon) to NEUTRAL, which the scanner turns into a
-            # non-tradeable WAITING setup BELOW (status gate) — BEFORE the
-            # executor in the main loop ever runs. That defeats the ranker's
-            # whole purpose: the coherent opportunities it already scored never
-            # reach a tradeable direction. When the executor is live, promote
-            # the NEUTRAL setup to the ranker's best-EV direction here so OQ/EQ,
-            # the confluence score and the READY gate are all computed on the
-            # chosen direction and the existing main-loop pipeline runs
-            # unchanged. The scalar verdict is still preserved on
-            # ``consensus_direction`` for transparency.
-            if (
-                rc is not None
-                and getattr(rc, "execute", False)
-                and getattr(rc, "rescue_neutral_consensus", False)
-                and trade_dir == "NEUTRAL"
-                and candidates
-            ):
-                best = candidates[0]
-                if getattr(best, "direction", "NEUTRAL") in ("LONG", "SHORT"):
-                    trade_dir = best.direction
-                    logger.info(
-                        "[ranker] {} consensus NEUTRAL rescued → {} ({} EV={:+.2f}R) "
-                        "— scalar net {:+.2f} agree {:.0%}",
-                        pair, best.direction, best.timeframe_class,
-                        best.expected_value,
-                        decision.net_score if decision else 0.0,
-                        decision.agreement if decision else 0.0,
-                    )
+            # When the executor is live, promote a NEUTRAL scalar consensus to
+            # the ranker's best-EV direction here (before the WAITING status
+            # gate below) so the coherent opportunity the ranker already scored
+            # can reach READY and flow through the unchanged main-loop pipeline.
+            # The scalar verdict is still preserved on ``consensus_direction``.
+            rescued_dir, rescued_opp = rescue_neutral_direction(trade_dir, candidates, rc)
+            if rescued_opp is not None:
+                trade_dir = rescued_dir
+                logger.info(
+                    "[ranker] {} consensus NEUTRAL rescued → {} ({} EV={:+.2f}R) "
+                    "— scalar net {:+.2f} agree {:.0%}",
+                    pair, rescued_opp.direction, rescued_opp.timeframe_class,
+                    rescued_opp.expected_value,
+                    decision.net_score if decision else 0.0,
+                    decision.agreement if decision else 0.0,
+                )
         else:
             # Fallback: legacy single-module direction
             direction = bias["direction"]
