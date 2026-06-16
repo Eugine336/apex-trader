@@ -147,6 +147,14 @@ class TradeProposal:
     # ── Decision engine evidence ─────────────────────────────────────────
     de_margin: Optional[float] = None       # continuous enter-skip margin
     de_conviction: Optional[float] = None   # 0..1 conviction
+    # #6 — when the DE enter/skip gate was *softened* (margin non-positive but
+    # above the hard safety floor), this carries the bounded quality multiplier
+    # the engine derived from how negative the margin was. ``None`` (the default)
+    # means the gate was not softened → neutral, no extra dimming. The existing
+    # ``de_margin`` dimension saturates at its floor for *any* negative margin,
+    # so this dimension preserves the gradient (−0.01 vs −0.9) that would
+    # otherwise be lost between the engine and the round table.
+    de_quality_multiplier: Optional[float] = None
 
     # ── Planner evidence ─────────────────────────────────────────────────
     advisor_agreement: Optional[float] = None   # 0..1 mean agreement
@@ -181,6 +189,7 @@ class TradeProposal:
             "tf_vector": {k: list(v) for k, v in self.tf_vector.items()},
             "de_margin": self.de_margin,
             "de_conviction": self.de_conviction,
+            "de_quality_multiplier": self.de_quality_multiplier,
             "advisor_agreement": self.advisor_agreement,
             "advisor_vector": self.advisor_vector,
             "scan_score": self.scan_score,
@@ -435,6 +444,27 @@ class Orchestrator:
             "de_margin", mult, margin, f"DE enter-skip margin {margin:+.2f}"
         )
 
+    def _de_quality_dim(self, quality: Optional[float]) -> DimensionContribution:
+        """Softened DE gate (#6) quality gradient.
+
+        Neutral (1.0) when the gate was not softened — the common case. When the
+        decision engine let a *mildly* negative enter/skip margin flow through
+        instead of killing it, ``quality`` is the bounded multiplier it derived
+        from how negative the margin was (−0.01 → ~0.99, −0.5 → 0.5). Folding it
+        in here is the single place the softened-DE dimming is applied, and it
+        preserves the negative-margin gradient that ``_de_margin_dim`` saturates
+        away at its floor.
+        """
+        if quality is None:
+            return DimensionContribution(
+                "de_quality", 1.0, 1.0, "DE gate not softened (neutral)"
+            )
+        mult = self._bound(float(quality), 0.0, 1.0)
+        return DimensionContribution(
+            "de_quality", mult, quality,
+            f"DE gate softened — quality ×{mult:.2f}",
+        )
+
     def _conviction_dim(self, conviction: Optional[float]) -> DimensionContribution:
         floor = self._dim_floor()
         if conviction is None:
@@ -519,6 +549,7 @@ class Orchestrator:
             self._coherence_dim(proposal.ranker_coherence),
             self._tf_alignment_dim(proposal.tf_alignment, proposal.horizon),
             self._de_margin_dim(proposal.de_margin),
+            self._de_quality_dim(proposal.de_quality_multiplier),
             self._conviction_dim(proposal.de_conviction),
             self._advisor_dim(proposal.advisor_agreement),
             self._scan_score_dim(proposal.scan_score),

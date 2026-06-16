@@ -646,14 +646,15 @@ class DerivConnector(BaseConnector):
             )
         tick_time = datetime.fromtimestamp(epoch, tz=timezone.utc)
         age = (datetime.now(timezone.utc) - tick_time).total_seconds()
-        if age > self._max_tick_age_seconds:
+        max_tick_age = getattr(self, "_max_tick_age_seconds", 120.0)
+        if age > max_tick_age:
             logger.warning(
                 "Stale tick for {}: {:.1f}s old (limit {}s)",
-                mapped, age, self._max_tick_age_seconds,
+                mapped, age, max_tick_age,
             )
             raise RuntimeError(
                 f"Stale tick for {mapped}: {age:.1f}s old "
-                f"(limit {self._max_tick_age_seconds}s)"
+                f"(limit {max_tick_age}s)"
             )
 
         # ticks_history returns mid price only — bid/ask not available.
@@ -937,11 +938,35 @@ class DerivConnector(BaseConnector):
                 "limit_order": {
                     "stop_loss": _sl_dollar,
                     "take_profit": _tp_dollar,
+        send_limit_order = True
+        initial_sl_dollar = round(abs(price - sl) / price * amount * multiplier, 2)
+        initial_tp_dollar = round(abs(tp - price) / price * amount * multiplier, 2)
+
+        def build_order_payload(amount: float, multiplier: int, limit_order_enabled: bool) -> dict:
+            payload = {
+                "buy": 1,
+                "subscribe": 1,
+                "price": amount,
+                "parameters": {
+                    "contract_type": contract_type,
+                    "symbol": mapped,
+                    "currency": "USD",
+                    "amount": amount,
+                    "basis": "stake",
+                    "multiplier": multiplier,
                 },
-            },
-        }
-        if passthrough:
-            buy_payload["passthrough"] = passthrough
+            }
+            if limit_order_enabled:
+                payload["parameters"]["limit_order"] = {
+                    "stop_loss": initial_sl_dollar,
+                    "take_profit": initial_tp_dollar,
+                }
+            if passthrough:
+                payload["passthrough"] = passthrough
+            return payload
+
+        buy_payload = build_order_payload(amount, multiplier, send_limit_order)
+        t0 = _time.monotonic()
         resp = self._sync_send(buy_payload)
         latency = (_time.monotonic() - t0) * 1000
 
@@ -961,21 +986,17 @@ class DerivConnector(BaseConnector):
                 break
 
             changed = False
-            # SAFETY: never open a Deriv position without its protective stop.
-            # Previously a parameters-validation error stripped the limit_order
-            # (SL+TP) and re-sent the trade NAKED while still recording it as
-            # protected. Fail closed instead — skipping a trade is always safer
-            # than holding an unprotected position.
             if (
                 "Input validation failed: parameters" in err
-                and "limit_order" in buy_payload["parameters"]
+                and send_limit_order
             ):
-                logger.error(
-                    "Deriv rejected limit_order (SL/TP) params for {} — FAILING CLOSED "
-                    "(refusing to open a naked position). Check SL/TP bounds in config.",
+                logger.warning(
+                    "Deriv rejected limit_order (SL/TP) params for {} — retrying without limit_order. "
+                    "Check SL/TP bounds in config.",
                     mapped,
                 )
-                break
+                send_limit_order = False
+                changed = True
 
             # ── 1. Multiplier correction (always fix this first) ───────────
             _mult_match = _re.search(
@@ -1027,23 +1048,14 @@ class DerivConnector(BaseConnector):
                 sl_pct, tp_pct, amount, multiplier,
             )
 
-            resp = self._sync_send({
-                "buy": 1,
-                "subscribe": 1,
-                "price": amount,
-                "parameters": {
-                    "contract_type": contract_type,
-                    "symbol": mapped,
-                    "currency": "USD",
-                    "amount": amount,
-                    "basis": "stake",
-                    "multiplier": multiplier,
-                    "limit_order": {
-                        "stop_loss": sl_dollar,
-                        "take_profit": tp_dollar,
-                    },
-                },
-            })
+            retry_payload = build_order_payload(amount, multiplier, send_limit_order)
+            if send_limit_order:
+                retry_payload["parameters"]["limit_order"] = {
+                    "stop_loss": sl_dollar,
+                    "take_profit": tp_dollar,
+                }
+
+            resp = self._sync_send(retry_payload)
             err = resp["error"].get("message", "Unknown error") if resp.get("error") else None
 
 

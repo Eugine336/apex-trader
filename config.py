@@ -1133,6 +1133,21 @@ class OrchestratorConfig:
     ranker_ev_full: float = 1.5      # R units at which ranker EV gives full size
     de_margin_full: float = 0.5      # enter-skip margin at which DE gives full size
     scan_score_full: float = 100.0   # confluence score giving full size
+    # ── #6 — Decision-engine enter/skip gate softening ───────────────────
+    # The DE's enter/skip binary (margin <= 0 → SKIP) was the last CRITICAL
+    # collapse that killed setups before the round table ever saw them. When
+    # ``soften_de_gate`` is on, a *mildly* negative margin no longer kills the
+    # setup — it flows through as ENTER carrying a bounded quality multiplier and
+    # the orchestrator decides how big. Only honoured when the orchestrator is
+    # enabled (the caller gates it). A margin at/below ``de_safety_margin`` is
+    # genuinely hopeless and still hard-SKIPs; ``de_gate_quality_floor`` is the
+    # smallest quality multiplier a softened setup can carry.
+    soften_de_gate: bool = True
+    de_safety_margin: float = -1.0
+    de_gate_quality_floor: float = 0.15
+    # Per-dimension "full credit" reference for the softened-DE quality gradient
+    # the orchestrator folds in (the margin-derived multiplier is already bounded
+    # in [de_gate_quality_floor, 1.0] by the decision engine).
     # How much an opposing HTF dims a SCALP (vs a SWING which feels it fully).
     scalp_htf_opposition_scale: float = 0.3
     # Max concurrent trades the orchestrator may dispatch per scan cycle.
@@ -1208,12 +1223,17 @@ class OrchestratorConfig:
             ("scale_up_min_delta", self.scale_up_min_delta),
             ("scale_down_close_pct", self.scale_down_close_pct),
             ("exit_partial_close_pct", self.exit_partial_close_pct),
-            ("gate_quality_floor", self.gate_quality_floor),
+            ("de_gate_quality_floor", self.de_gate_quality_floor),
         ]:
             if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
                 raise ValueError(
                     f"OrchestratorConfig.{label} must be in [0, 1], got {val!r}"
                 )
+        if not isinstance(self.de_safety_margin, (int, float)) or not math.isfinite(self.de_safety_margin) or self.de_safety_margin > 0:
+            raise ValueError(
+                "OrchestratorConfig.de_safety_margin must be a finite float <= 0, "
+                f"got {self.de_safety_margin!r}"
+            )
         for label, val in [
             ("ranker_ev_full", self.ranker_ev_full),
             ("de_margin_full", self.de_margin_full),
