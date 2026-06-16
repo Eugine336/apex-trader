@@ -562,6 +562,37 @@ class PairScanner:
                 except Exception as exc:
                     logger.warning("[ranker] {} candidate build failed: {}", pair, exc)
                     candidates = []
+
+            # ── Ranker rescue of a NEUTRAL consensus ─────────────────────
+            # The scalar ``decide`` collapses mixed panels (fast vs slow modules
+            # disagreeing on horizon) to NEUTRAL, which the scanner turns into a
+            # non-tradeable WAITING setup BELOW (status gate) — BEFORE the
+            # executor in the main loop ever runs. That defeats the ranker's
+            # whole purpose: the coherent opportunities it already scored never
+            # reach a tradeable direction. When the executor is live, promote
+            # the NEUTRAL setup to the ranker's best-EV direction here so OQ/EQ,
+            # the confluence score and the READY gate are all computed on the
+            # chosen direction and the existing main-loop pipeline runs
+            # unchanged. The scalar verdict is still preserved on
+            # ``consensus_direction`` for transparency.
+            if (
+                rc is not None
+                and getattr(rc, "execute", False)
+                and getattr(rc, "rescue_neutral_consensus", False)
+                and trade_dir == "NEUTRAL"
+                and candidates
+            ):
+                best = candidates[0]
+                if getattr(best, "direction", "NEUTRAL") in ("LONG", "SHORT"):
+                    trade_dir = best.direction
+                    logger.info(
+                        "[ranker] {} consensus NEUTRAL rescued → {} ({} EV={:+.2f}R) "
+                        "— scalar net {:+.2f} agree {:.0%}",
+                        pair, best.direction, best.timeframe_class,
+                        best.expected_value,
+                        decision.net_score if decision else 0.0,
+                        decision.agreement if decision else 0.0,
+                    )
         else:
             # Fallback: legacy single-module direction
             direction = bias["direction"]
