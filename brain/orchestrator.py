@@ -466,6 +466,38 @@ class Orchestrator:
             "scan_score", mult, score, f"scan score {score:.0f} vs full {score_full:.0f}"
         )
 
+    # ── Candidate selection (round table chooses among ranked ideas) ──────
+    def grade_candidate(
+        self,
+        *,
+        direction: str = "",
+        horizon: str = "",
+        ranker_ev: Optional[float] = None,
+        ranker_coherence: Optional[float] = None,
+        ranker_confidence: Optional[float] = None,
+    ) -> float:
+        """Graded standalone score for ONE ranked candidate (pure, [floor, 1.0]).
+
+        The executor historically dispatched ``candidates[0]`` — whatever the
+        ranker's raw EV sort put first. That re-collapses the very information the
+        ranker preserved (a marginally higher-EV but low-coherence idea would win
+        over a slightly-lower-EV but far more coherent one). This lets the round
+        table grade each candidate from its own evidence (EV × coherence ×
+        confidence) so the *most defensible* idea — not just the top of the EV
+        sort — can be chosen. Uses only the candidate's standalone ranker fields
+        (no downstream pipeline evidence, which is direction-specific and not yet
+        computed at selection time).
+        """
+        product = 1.0
+        product *= self._ranker_ev_dim(ranker_ev).multiplier
+        product *= self._coherence_dim(ranker_coherence).multiplier
+        if ranker_confidence is not None:
+            floor = self._dim_floor()
+            product *= self._bound(
+                floor + (1.0 - floor) * float(ranker_confidence), floor, 1.0
+            )
+        return self._bound(product, 0.0, 1.0)
+
     # ── Main entry point ─────────────────────────────────────────────────
     def evaluate(self, proposal: TradeProposal) -> OrchestratorVerdict:
         """Grade one proposal into a bounded size multiplier (or a physics veto)."""

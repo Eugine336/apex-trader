@@ -60,16 +60,37 @@ class OpportunityExecutor:
 
     # ── Selection ─────────────────────────────────────────────────────────
 
-    def select(self, candidates: Optional[list[Opportunity]]) -> Optional[Opportunity]:
+    def select(
+        self,
+        candidates: Optional[list[Opportunity]],
+        scorer: Optional[Callable[[Opportunity], float]] = None,
+    ) -> Optional[Opportunity]:
         """Return the single best opportunity, or ``None`` when there is none.
 
-        Candidates are assumed pre-ranked (best-first) by the ranker; this just
-        guards the empty / missing cases so callers can fall back to the scalar
-        direction.
+        Candidates are assumed pre-ranked (best-first) by the ranker. With no
+        ``scorer`` this just returns the ranker's top idea (legacy behaviour). A
+        ``scorer`` (e.g. the orchestrator's per-candidate grader) lets the round
+        table choose among ALL candidates by their graded evidence instead of
+        blindly taking ``candidates[0]`` — so the most defensible idea wins, not
+        merely the top of the raw EV sort. Ties keep the higher-ranked (earlier)
+        candidate since they are iterated in rank order with a strict ``>``.
         """
         if not candidates:
             return None
-        return candidates[0]
+        if scorer is None:
+            return candidates[0]
+        best = candidates[0]
+        best_score: Optional[float] = None
+        for c in candidates:
+            try:
+                s = float(scorer(c))
+            except Exception as exc:
+                logger.debug("[executor] candidate scorer failed for {}: {}",
+                             getattr(c, "summary", c), exc)
+                continue
+            if best_score is None or s > best_score:
+                best_score, best = s, c
+        return best
 
     def select_top(self, candidates: Optional[list[Opportunity]]) -> list[Opportunity]:
         """Return up to ``max_concurrent`` best opportunities."""

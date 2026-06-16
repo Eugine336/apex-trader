@@ -92,6 +92,7 @@ class DecisionEngine:
         fast_opposition_max_streak: int = 8,
         fast_opposition_decay_weight: float = 0.15,
         fast_opposition_profit_threshold: float = 0.3,
+        tf_conflict_aware: bool = False,
     ) -> None:
         self.weights = weights or DecisionWeights()
         # Roadmap D — regime-dependent weighting.
@@ -139,6 +140,39 @@ class DecisionEngine:
         )
         self.fast_opposition_decay_weight = max(0.0, fast_opposition_decay_weight)
         self.fast_opposition_profit_threshold = fast_opposition_profit_threshold
+        # #5 — TF-conflict awareness. When on, the enter/skip scoring reads the
+        # per-timeframe alignment VECTOR (not just the collapsed scalar) so a
+        # split stack (e.g. D1+H1 support but H4 opposes) erodes the HTF ENTER
+        # bonus and adds a bounded SKIP penalty — instead of the averaged scalar
+        # hiding the conflict. Scaled by the same horizon demotion as the other
+        # HTF weights, so a demoted SCALP is unaffected. Inert when off.
+        self.tf_conflict_aware = bool(tf_conflict_aware)
+
+    @staticmethod
+    def _tf_conflict_opposition(sa: SituationAssessment) -> float:
+        """Magnitude of per-timeframe opposition the scalar tf_alignment hides.
+
+        The scalar is a weighted average, so a strongly-opposing timeframe can be
+        averaged into a mild net value that reads like consensus. This returns the
+        summed magnitude (bounded [0, 1]) of the timeframe components whose sign
+        opposes the net read — 0.0 when the stack genuinely agrees (or there is no
+        vector to inspect).
+        """
+        comps = sa.tf_vector() if hasattr(sa, "tf_vector") else {}
+        if not comps:
+            return 0.0
+        try:
+            vals = [float(v) for v in comps.values()]
+        except (TypeError, ValueError):
+            return 0.0
+        if not vals:
+            return 0.0
+        net = float(getattr(sa, "tf_alignment", 0.0))
+        if net >= 0:
+            opp = sum(-v for v in vals if v < 0)
+        else:
+            opp = sum(v for v in vals if v > 0)
+        return max(0.0, min(1.0, opp))
 
     # ── Roadmap D/E helpers ───────────────────────────────────────────────
 
@@ -777,10 +811,23 @@ class DecisionEngine:
         # ── ENTER score ──────────────────────────────────────────────────
         enter_score = 0.20  # baseline: slight inclination to trade
 
+        # #5 — hidden per-timeframe opposition the scalar tf_alignment averages
+        # away. Bounded [0, 1]; 0 when the stack agrees or the feature is off.
+        tf_opp = self._tf_conflict_opposition(sa) if self.tf_conflict_aware else 0.0
+
         if sa.tf_alignment > 0.2:
             contrib = sa.tf_alignment * w.enter_htf
+            if tf_opp > 0:
+                # A split stack erodes the HTF ENTER bonus — the supportive net
+                # value is partly an illusion created by averaging.
+                contrib *= max(0.0, 1.0 - tf_opp)
+                evidence.append(
+                    f"HTF aligned ({sa.tf_alignment:+.2f}) but split "
+                    f"(opp {tf_opp:.2f}) +{contrib:.2f}"
+                )
+            else:
+                evidence.append(f"HTF aligned ({sa.tf_alignment:+.2f}) +{contrib:.2f}")
             enter_score += contrib
-            evidence.append(f"HTF aligned ({sa.tf_alignment:+.2f}) +{contrib:.2f}")
 
         if sa.structure_integrity > 0.5:
             contrib = (sa.structure_integrity - 0.5) * w.enter_structure
@@ -809,6 +856,18 @@ class DecisionEngine:
             penalty = abs(sa.tf_alignment) * w.skip_htf
             skip_score += penalty
             skip_parts.append(f"HTF opposing ({sa.tf_alignment:+.2f}) +{penalty:.2f}")
+
+        # #5 — a net-supportive scalar that nonetheless hides a strongly-opposing
+        # timeframe still adds a bounded SKIP penalty (scaled by w.skip_htf, which
+        # is already horizon-demoted, so a SCALP idea is unaffected). This is what
+        # the averaged scalar alone could never express.
+        if tf_opp > 0 and sa.tf_alignment >= -0.1:
+            penalty = tf_opp * w.skip_htf
+            if penalty > 0:
+                skip_score += penalty
+                skip_parts.append(
+                    f"HTF split (hidden opposition {tf_opp:.2f}) +{penalty:.2f}"
+                )
 
         if sa.structure_integrity < 0.3:
             penalty = (0.3 - sa.structure_integrity) * 0.60

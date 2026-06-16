@@ -79,7 +79,7 @@ class ExitChecksMixin:
         they don't wait for SL to get hit.
         """
         cfg = self.config.risk
-        is_long = pos.direction == "BUY"
+        is_long = pos.direction.upper() in ("BUY", "LONG")
         result_direction = scan_result.direction  # "LONG", "SHORT", or "NEUTRAL"
 
         # Score too low overall — market has lost conviction on any direction
@@ -226,7 +226,7 @@ class ExitChecksMixin:
         if candle_open == 0 or candle_close == 0:
             return
 
-        is_long = pos.direction == "BUY"
+        is_long = pos.direction.upper() in ("BUY", "LONG")
         candle_bearish = candle_close < candle_open
         candle_bullish = candle_close > candle_open
 
@@ -293,7 +293,7 @@ class ExitChecksMixin:
         if tm_trade is None or not tm_trade.breakeven_active:
             return
 
-        is_long = pos.direction == "BUY"
+        is_long = pos.direction.upper() in ("BUY", "LONG")
         try:
             tick = self.platforms.get_price(pos.symbol)
             current = tick.bid if is_long else tick.ask
@@ -496,7 +496,7 @@ class ExitChecksMixin:
             return
 
         pip_size = get_pip_size(pos.symbol) or 0.0001
-        is_buy = pos.direction == "BUY"
+        is_buy = pos.direction.upper() in ("BUY", "LONG")
 
         # ── Open profit in pips (live price preferred) ───────────────────
         if current_price and pos.entry_price:
@@ -714,8 +714,8 @@ class ExitChecksMixin:
                         pos.entry_price, direction_norm, 2.0, pip_size,
                     )
                     is_improvement = (
-                        (pos.direction == "BUY" and be_level > pos.sl)
-                        or (pos.direction == "SELL" and be_level < pos.sl)
+                        (direction_norm == "LONG" and be_level > pos.sl)
+                        or (direction_norm == "SHORT" and be_level < pos.sl)
                     )
                     if not is_improvement:
                         continue

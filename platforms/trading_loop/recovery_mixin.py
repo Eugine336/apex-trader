@@ -297,7 +297,7 @@ class RecoveryReconciliationMixin:
                     if close_price == pos.entry_price:
                         try:
                             tick = self.platforms.get_price(pos.symbol)
-                            is_buy = pos.direction == "BUY"
+                            is_buy = pos.direction.upper() in ("BUY", "LONG")
                             close_price = tick.bid if is_buy else tick.ask
                         except Exception as exc:
                             logger.debug(
@@ -577,7 +577,7 @@ class RecoveryReconciliationMixin:
             )
             try:
                 tick = self.platforms.get_price(pos.symbol)
-                is_buy = pos.direction == "BUY"
+                is_buy = pos.direction.upper() in ("BUY", "LONG")
                 fake_close.close_price = tick.bid if is_buy else tick.ask
             except Exception as exc:
                 logger.debug("[Reconcile] close-price fetch failed for {} {}, using fallback price: {}", pos.direction, pos.symbol, exc)
