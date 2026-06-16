@@ -48,20 +48,22 @@ class LiquidityMapper:
         Full liquidity mapping on OHLC data.
         Returns all buy/sell side liquidity zones.
         """
-        self.equal_threshold = 3.0 * pip_size
+        # Per-call threshold (do NOT mutate self — keeps map() thread-safe when
+        # different-pip-size symbols are scanned concurrently).
+        threshold = 3.0 * pip_size
 
         df = df.copy().reset_index(drop=True)
         current_price = df["close"].iloc[-1]
 
         # Find equal highs (sell side liquidity — stops above)
-        equal_highs = self._find_equal_levels(df, "high")
+        equal_highs = self._find_equal_levels(df, "high", threshold)
 
         # Find equal lows (buy side liquidity — stops below)
-        equal_lows = self._find_equal_levels(df, "low")
+        equal_lows = self._find_equal_levels(df, "low", threshold)
 
         # Find swing-based liquidity (more prominent levels)
-        swing_highs = self._find_swing_liquidity(df, "high")
-        swing_lows  = self._find_swing_liquidity(df, "low")
+        swing_highs = self._find_swing_liquidity(df, "high", threshold)
+        swing_lows  = self._find_swing_liquidity(df, "low", threshold)
 
         # Build zones
         buy_side  = []  # Above price
@@ -91,11 +93,12 @@ class LiquidityMapper:
             current_price=current_price,
         )
 
-    def _find_equal_levels(self, df: pd.DataFrame, column: str) -> list[LiquidityZone]:
+    def _find_equal_levels(self, df: pd.DataFrame, column: str, threshold: float | None = None) -> list[LiquidityZone]:
         """
         Find equal highs or equal lows within threshold.
         These are the stop clusters institutions hunt.
         """
+        thr = threshold if threshold is not None else self.equal_threshold
         values = df[column].values
         timestamps = df["time"].values if "time" in df.columns else [pd.Timestamp.now()] * len(df)
         zones = []
@@ -109,7 +112,7 @@ class LiquidityMapper:
             for j in range(i + 1, len(values)):
                 if j in used:
                     continue
-                if abs(values[i] - values[j]) <= self.equal_threshold:
+                if abs(values[i] - values[j]) <= thr:
                     cluster.append(j)
                     used.add(j)
 
@@ -134,7 +137,7 @@ class LiquidityMapper:
 
         return zones
 
-    def _find_swing_liquidity(self, df: pd.DataFrame, column: str) -> list[LiquidityZone]:
+    def _find_swing_liquidity(self, df: pd.DataFrame, column: str, threshold: float | None = None) -> list[LiquidityZone]:
         """
         Find significant swing high/low liquidity pools.
         These are cleaner stop clusters from obvious swing points.
@@ -149,7 +152,7 @@ class LiquidityMapper:
 
             if column == "high" and values[i] == max(window):
                 # Significant swing high — buy stops rest above this
-                touches = self._count_touches(df, values[i], column)
+                touches = self._count_touches(df, values[i], column, threshold)
                 zones.append(LiquidityZone(
                     price=values[i],
                     kind="BUY_SIDE",
@@ -162,7 +165,7 @@ class LiquidityMapper:
 
             elif column == "low" and values[i] == min(window):
                 # Significant swing low — sell stops rest below this
-                touches = self._count_touches(df, values[i], column)
+                touches = self._count_touches(df, values[i], column, threshold)
                 zones.append(LiquidityZone(
                     price=values[i],
                     kind="SELL_SIDE",
@@ -175,9 +178,10 @@ class LiquidityMapper:
 
         return zones
 
-    def _count_touches(self, df: pd.DataFrame, level: float, column: str) -> int:
+    def _count_touches(self, df: pd.DataFrame, level: float, column: str, threshold: float | None = None) -> int:
         """Count how many candles touched near this level."""
-        return int(((df[column] - level).abs() <= self.equal_threshold * 2).sum())
+        thr = threshold if threshold is not None else self.equal_threshold
+        return int(((df[column] - level).abs() <= thr * 2).sum())
 
     def _determine_bias(
         self,
@@ -278,11 +282,11 @@ class LiquidityMapper:
             if len(pre_reaction) < 3:
                 return ("NONE", "NEUTRAL", 0.0)
 
-            self.equal_threshold = 3.0 * pip_size
-            equal_highs = self._find_equal_levels(pre_reaction, "high")
-            equal_lows = self._find_equal_levels(pre_reaction, "low")
-            swing_highs = self._find_swing_liquidity(pre_reaction, "high")
-            swing_lows = self._find_swing_liquidity(pre_reaction, "low")
+            threshold = 3.0 * pip_size
+            equal_highs = self._find_equal_levels(pre_reaction, "high", threshold)
+            equal_lows = self._find_equal_levels(pre_reaction, "low", threshold)
+            swing_highs = self._find_swing_liquidity(pre_reaction, "high", threshold)
+            swing_lows = self._find_swing_liquidity(pre_reaction, "low", threshold)
             all_zones = equal_highs + swing_highs + equal_lows + swing_lows
 
             if not all_zones:

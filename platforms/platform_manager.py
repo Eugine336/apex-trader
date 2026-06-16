@@ -103,6 +103,16 @@ class PlatformManager:
     def __init__(self, config: Optional[AppConfig] = None):
         self.config = config or AppConfig()
 
+        # ── Intraday candle cache (Phase 5): transparent TTL cache in front of
+        # per-symbol/timeframe broker fetches. See platforms/candle_cache.py. ─
+        from platforms.candle_cache import CandleCache
+        _perf = getattr(self.config, "performance", None)
+        self.candle_cache = CandleCache(
+            ttl_by_tf=getattr(_perf, "candle_cache_ttl", None),
+            default_ttl=getattr(_perf, "candle_cache_default_ttl", 5.0),
+            enabled=getattr(_perf, "candle_cache_enabled", True),
+        )
+
         # ── MT5: one connector per broker account ────────────────────────
         mt5_configs = _load_mt5_configs()
         self.mt5_connectors: list[MT5Connector] = [
@@ -787,7 +797,15 @@ class PlatformManager:
 
         for tf in timeframes:
             try:
-                data[tf] = connector.get_ohlcv(symbol, tf, count)
+                cache = getattr(self, "candle_cache", None)
+                cached = cache.get(symbol, tf, count) if cache is not None else None
+                if cached is not None:
+                    data[tf] = cached
+                    continue
+                df = connector.get_ohlcv(symbol, tf, count)
+                data[tf] = df
+                if cache is not None:
+                    cache.put(symbol, tf, count, df)
             except Exception as exc:
                 exc_str = str(exc)
                 if "not available on broker" in exc_str or "not found" in exc_str.lower():

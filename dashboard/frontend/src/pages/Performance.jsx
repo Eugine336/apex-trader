@@ -7,9 +7,14 @@ export default function Performance() {
   const { state } = useOutletContext();
   const { data: perfData } = useApi('/api/performance', 0);
   const { data: mlData } = useApi('/api/ml', 0);
+  const { data: sysData } = useApi('/api/system-performance', 0);
 
   const p = perfData || state.performance || {};
   const ml = mlData || {};
+  const sys = sysData || {};
+  const cache = sys.candle_cache || {};
+  const cyc = sys.cycle || {};
+  const par = sys.parallel_scan || {};
 
   const sessionData = React.useMemo(() => {
     if (!ml.session_stats) return [];
@@ -65,6 +70,33 @@ export default function Performance() {
         <div className="card">
           <div className="card-header"><span className="card-title">Trade Count by Instrument</span></div>
           <HorizontalBarChart data={pairData} />
+        </div>
+      </div>
+
+      <div className="stats-grid mb-20" style={{ gridTemplateColumns: 'repeat(6, 1fr)' }}>
+        <div className="stat-card"><div className="stat-label">Cache Hit Rate</div><div className="stat-value positive">{((cache.hit_rate || 0) * 100).toFixed(1)}%</div></div>
+        <div className="stat-card"><div className="stat-label">Cache Hits / Miss</div><div className="stat-value neutral">{cache.hits || 0} / {cache.misses || 0}</div></div>
+        <div className="stat-card"><div className="stat-label">Cached Frames</div><div className="stat-value neutral">{cache.entries || 0}</div></div>
+        <div className="stat-card"><div className="stat-label">Cycle Avg</div><div className="stat-value neutral">{(cyc.avg_ms || 0).toFixed(0)} ms</div></div>
+        <div className="stat-card"><div className="stat-label">Cycle p95</div><div className="stat-value neutral">{(cyc.p95_ms || 0).toFixed(0)} ms</div></div>
+        <div className="stat-card"><div className="stat-label">Scan Workers</div><div className="stat-value neutral">{par.enabled ? (par.max_workers || 0) : 'off'}</div></div>
+      </div>
+
+      <div className="card mb-20">
+        <div className="card-header"><span className="card-title">System Performance — Cache &amp; Latency</span></div>
+        <div className="table-wrap">
+          <table>
+            <tbody>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Candle cache hit rate</td><td className="right">{((cache.hit_rate || 0) * 100).toFixed(1)}%</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Hits / Misses / Expired</td><td className="right">{cache.hits || 0} / {cache.misses || 0} / {cache.expired || 0}</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Cached frames in memory</td><td className="right">{cache.entries || 0}</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Scan cycle — last</td><td className="right">{(cyc.last_ms || 0).toFixed(1)} ms</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Scan cycle — avg / p50 / p95</td><td className="right">{(cyc.avg_ms || 0).toFixed(0)} / {(cyc.p50_ms || 0).toFixed(0)} / {(cyc.p95_ms || 0).toFixed(0)} ms</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Scan cycle — max ({cyc.samples || 0} samples)</td><td className="right">{(cyc.max_ms || 0).toFixed(0)} ms</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Parallel scan</td><td className="right">{par.enabled ? `on (${par.max_workers} workers)` : 'off'}</td></tr>
+              <tr><td className="text-col" style={{ color: 'var(--text-muted)' }}>Account-info cache</td><td className="right">{sys.account_info_cache_enabled ? 'on' : 'off'}</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
 

@@ -686,6 +686,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
     def _run_once_inner(self, cycle_id: str) -> dict:
         self._current_cycle_id = cycle_id
         self._current_setup_id = None
+        _cycle_start_mono = _time.monotonic()
         now = datetime.now(timezone.utc)
         cycle: dict = {
             "timestamp": now.isoformat(),
@@ -835,7 +836,22 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 except Exception as exc:
                     logger.warning("Periodic reconciliation error: {}", exc)
 
+        cycle["duration_ms"] = round((_time.monotonic() - _cycle_start_mono) * 1000.0, 1)
+        self._record_cycle_timing(cycle["duration_ms"])
         return cycle
+
+    def _record_cycle_timing(self, duration_ms: float) -> None:
+        """Keep a small ring buffer of recent cycle durations for the dashboard
+        performance panel. Never raises — pure observability."""
+        try:
+            buf = getattr(self, "_cycle_durations_ms", None)
+            if buf is None:
+                buf = self._cycle_durations_ms = []
+            buf.append(float(duration_ms))
+            if len(buf) > 200:
+                del buf[:-200]
+        except Exception:
+            pass
 
     def stop(self) -> None:
         self.running = False
