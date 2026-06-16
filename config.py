@@ -938,6 +938,14 @@ class DecisionConfig:
     # agrees, hurts (reversal haircut) when it opposes, but never dictates.
     htf_aligned_size_bonus: float = 0.15     # +15% size on a fully-aligned stack
     htf_aligned_threshold: float = 0.5       # min tf_alignment to count as "aligned"
+    # ── Conviction → size mapping (#18, smooth curves) ────────────────────
+    # Conviction 0→min, 1→max, mapped linearly (continuous, no tier cliffs, so
+    # 0.879 and 0.851 size differently). Defaults reproduce the legacy 0.5–1.5×
+    # mapping; widen (e.g. 0.25–2.0) to let strong/weak conviction express more.
+    conviction_size_min: float = 0.5
+    conviction_size_max: float = 1.5
+    # MARKET vs PENDING preference cutoff on the (now smooth) market score.
+    market_mode_threshold: float = 0.40
     # ── Thesis-deterioration secure (roadmap G) ───────────────────────────
     # The exit brain's profit-securing actions (MOVE_TO_BREAKEVEN, TIGHTEN_SL)
     # are all gated on profit_state (an R-multiple). Adopted/orphan trades carry

@@ -16,6 +16,7 @@ from loguru import logger
 from decision.actions import Action, EntryAction, EntryDecision, ManagementDecision
 from decision.context import EntryContext, TradeContext
 from decision.situation import SituationAssessment
+from brain.smoothing import clamp, smoothstep
 
 
 # Reason prefix stamped on a severe-decay hard-close. main_loop matches this to
@@ -96,6 +97,9 @@ class DecisionEngine:
         soften_gate: bool = False,
         gate_safety_margin: float = -1.0,
         gate_quality_floor: float = 0.15,
+        conviction_size_min: float = 0.5,
+        conviction_size_max: float = 1.5,
+        market_mode_threshold: float = 0.40,
     ) -> None:
         self.weights = weights or DecisionWeights()
         # Roadmap D — regime-dependent weighting.
@@ -186,6 +190,22 @@ class DecisionEngine:
         self.soften_gate = bool(soften_gate)
         self.gate_safety_margin = float(gate_safety_margin)
         self.gate_quality_floor = max(0.0, min(1.0, float(gate_quality_floor)))
+        # #18 — conviction → size multiplier as a continuous, configurable range.
+        # Conviction 0→``conviction_size_min``, 1→``conviction_size_max``, mapped
+        # linearly (no tier cliffs). Defaults (0.5–1.5) preserve the legacy
+        # mapping exactly; widen (e.g. 0.25–2.0) without code changes. The
+        # dominant conviction dimension is surfaced in the decision evidence so
+        # sizing provenance is visible, not hidden behind one clamped scalar.
+        lo = float(conviction_size_min)
+        hi = float(conviction_size_max)
+        if hi < lo:
+            lo, hi = hi, lo
+        self.conviction_size_min = max(0.0, lo)
+        self.conviction_size_max = max(self.conviction_size_min, hi)
+        # #29 — MARKET vs PENDING preference cutoff. The *inputs* feeding the
+        # market score are now smooth ramps (no 0.3/0.5/80 cliffs); this is the
+        # final preference threshold on the already-continuous score.
+        self.market_mode_threshold = max(0.0, min(1.0, float(market_mode_threshold)))
 
     # ── Roadmap D/E helpers ───────────────────────────────────────────────
 
@@ -973,6 +993,11 @@ class DecisionEngine:
 
         conviction = self.compute_conviction(sa, weights=w)
         size_mult = self._conviction_to_size_multiplier(conviction)
+        dom_label, dom_contrib = self._dominant_conviction_dimension(sa, w)
+        evidence.append(
+            f"conviction {conviction:.2f} (driven by {dom_label} +{dom_contrib:.2f}) "
+            f"→ size×{size_mult:.2f}"
+        )
         if is_reversal:
             # Reversals run smaller until they prove themselves (roadmap E).
             size_mult = round(size_mult * self.reversal_size_multiplier, 2)
@@ -1012,21 +1037,28 @@ class DecisionEngine:
     def _decide_entry_action(
         self, ctx: EntryContext, sa: SituationAssessment,
     ) -> EntryAction:
-        """Choose MARKET vs PENDING based on situation, not fixed rules."""
+        """Choose MARKET vs PENDING based on situation, not fixed rules.
+
+        #29 — the contributions are smooth ramps that *complete* at the old
+        thresholds, so a value just below a boundary earns ~95% of its weight
+        instead of zero (no cliff), while values at/above the old threshold are
+        unchanged. The micro-confirmation term stays discrete (it is a named
+        event, not a continuous scalar)."""
         if ctx.entry_mode == "MARKET":
             return EntryAction.ENTER_MARKET
 
         market_score = 0.0
-        if sa.momentum > 0.3:
-            market_score += 0.30
-        if sa.tf_alignment > 0.5:
-            market_score += 0.20
+        # momentum: full weight by the old 0.3 boundary, ramped in from 0.1.
+        market_score += 0.30 * smoothstep(sa.momentum, 0.1, 0.3)
+        # tf_alignment: full weight by the old 0.5 boundary, ramped from 0.3.
+        market_score += 0.20 * smoothstep(sa.tf_alignment, 0.3, 0.5)
+        # discrete micro-confirmation event.
         if ctx.micro_confirmation in ("choch_bos", "engulfing", "pin_bar"):
             market_score += 0.25
-        if ctx.scan_score >= 80:
-            market_score += 0.15
+        # scan_score: full weight by the old 80 boundary, ramped from 60.
+        market_score += 0.15 * smoothstep(float(ctx.scan_score), 60.0, 80.0)
 
-        if market_score >= 0.40:
+        if market_score >= self.market_mode_threshold:
             return EntryAction.ENTER_MARKET
         return EntryAction.ENTER_PENDING
 
@@ -1044,6 +1076,25 @@ class DecisionEngine:
         return max(0.0, min(1.0, c))
 
     @staticmethod
-    def _conviction_to_size_multiplier(conviction: float) -> float:
-        """Map conviction 0–1 to size multiplier 0.5–1.5."""
-        return round(0.5 + conviction, 2)
+    def _dominant_conviction_dimension(
+        sa: SituationAssessment, w: DecisionWeights,
+    ) -> tuple[str, float]:
+        """Return the (label, weighted-contribution) of the conviction
+        dimension that contributed most — sizing provenance for #18."""
+        contribs = {
+            "HTF": (sa.tf_alignment + 1.0) / 2.0 * w.conviction_htf,
+            "structure": sa.structure_integrity * w.conviction_structure,
+            "momentum": (sa.momentum + 1.0) / 2.0 * w.conviction_momentum,
+            "confidence": sa.read_confidence * w.conviction_confidence,
+        }
+        label = max(contribs, key=lambda k: contribs[k])
+        return label, round(contribs[label], 3)
+
+    def _conviction_to_size_multiplier(self, conviction: float) -> float:
+        """Map conviction 0–1 to a size multiplier on a continuous, configurable
+        range (#18). Linear interpolation between ``conviction_size_min`` and
+        ``conviction_size_max`` — no tier cliffs, so 0.879 and 0.851 map to
+        distinct multipliers. Defaults (0.5–1.5) reproduce the legacy mapping."""
+        c = clamp(conviction, 0.0, 1.0)
+        lo, hi = self.conviction_size_min, self.conviction_size_max
+        return round(lo + (hi - lo) * c, 2)

@@ -15,6 +15,7 @@ from loguru import logger
 
 from brain.correlation_engine import CorrelationEngine, OpenTrade
 from brain.drawdown_guard import DrawdownGuard, DrawdownMode
+from brain.smoothing import piecewise_linear
 from config import (
     INSTRUMENT_REGISTRY,
     AppConfig,
@@ -563,52 +564,44 @@ class RiskEngine:
     def _scale_by_conviction(conviction: float) -> float:
         """Fresh-conviction sizing factor (P3) — 0–1 conviction → [0,1] factor.
 
-        Mirrors the legacy score tiers (92/88/85) mapped onto the 0–1
-        conviction range, replacing the stale scanner score as the sizing
-        input. De-risking only — never amplifies.
+        #30 — a continuous monotonic curve anchored on the old 0.85/0.88/0.92
+        tier values instead of a step function, so 0.879 and 0.851 size
+        *differently* (0.845 vs 0.705) rather than collapsing onto 0.7. De-risking
+        only — never amplifies above 1.0.
         """
         c = max(0.0, min(1.0, conviction))
-        if c >= 0.92:
-            return 1.0
-        if c >= 0.88:
-            return 0.85
-        if c >= 0.85:
-            return 0.7
-        return 0.5
+        return round(piecewise_linear(
+            c,
+            ((0.0, 0.5), (0.85, 0.7), (0.88, 0.85), (0.92, 1.0), (1.0, 1.0)),
+        ), 4)
 
     @staticmethod
     def _scale_by_portfolio_heat(heat_pct: float) -> float:
-        """Portfolio-heat sizing factor — de-risk as live heat climbs toward
-        the block threshold. Heat is expressed in percent of equity.
+        """Portfolio-heat sizing factor — de-risk smoothly as live heat climbs
+        toward the block threshold. Heat is expressed in percent of equity.
 
-        TODO: thresholds are sensible defaults — tune against realised heat
-        distributions / ``portfolio_heat_block_pct``.
+        #30 — continuous curve anchored on the old 1.0/1.5/2.0% tier edges so a
+        heat of 1.49% and 1.51% no longer jump from 0.85 to 0.7.
         """
         h = max(0.0, heat_pct)
-        if h < 1.0:
-            return 1.0
-        if h < 1.5:
-            return 0.85
-        if h < 2.0:
-            return 0.7
-        return 0.5
+        return round(piecewise_linear(
+            h,
+            ((1.0, 1.0), (1.5, 0.85), (2.0, 0.7), (3.0, 0.5)),
+        ), 4)
 
     @staticmethod
     def _scale_by_drawdown(dd_pct: float) -> float:
         """Drawdown-from-peak sizing factor — de-risk deeper into drawdown.
         ``dd_pct`` is a fraction (0.10 == 10% below the high-water mark).
 
-        TODO: thresholds are sensible defaults — tune against equity-curve
-        recovery behaviour.
+        #30 — continuous curve anchored on the old 5/10/15% tier edges so the
+        factor transitions smoothly instead of stepping at the boundaries.
         """
         d = max(0.0, dd_pct)
-        if d < 0.05:
-            return 1.0
-        if d < 0.10:
-            return 0.85
-        if d < 0.15:
-            return 0.7
-        return 0.5
+        return round(piecewise_linear(
+            d,
+            ((0.05, 1.0), (0.10, 0.85), (0.15, 0.7), (0.25, 0.5)),
+        ), 4)
 
     def _scale_risk_by_score_DEPRECATED(
         self, base_risk_pct: float, score: int, hwm_state: dict,

@@ -270,14 +270,15 @@ class PositionSizer:
 
         ratio = current_atr / average_atr
 
+        # #30 — continuous everywhere (the old ``ratio < 0.5 → 1.5`` branch
+        # created a jump from 1.25 to 1.5 at ratio 0.5). The low-volatility
+        # up-scaling now extends the same linear ramp and is capped at 1.5.
         if ratio >= 2.0:
             factor = max_adjustment
         elif ratio > 1.0:
             factor = 1.0 - (ratio - 1.0) * (1.0 - max_adjustment)
-        elif ratio < 0.5:
-            factor = 1.5
         else:
-            factor = 1.0 + (1.0 - ratio) * 0.5
+            factor = min(1.5, 1.0 + (1.0 - ratio) * 0.5)
 
         adjusted = base_lots * factor
         return round(max(self.MIN_LOT, min(adjusted, self.MAX_LOT)), 2)

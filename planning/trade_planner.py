@@ -51,6 +51,27 @@ def _gate_quality_multiplier(
     return max(floor, min(1.0, mult))
 
 
+def _smoothstep(x: float, edge0: float, edge1: float) -> float:
+    """Cubic Hermite smoothstep — 0 below ``edge0``, 1 above ``edge1`` with a
+    continuous transition. Kept inline so the planner stays a leaf module."""
+    if edge1 == edge0:
+        return 0.0 if x < edge0 else 1.0
+    t = max(0.0, min(1.0, (x - edge0) / (edge1 - edge0)))
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _smooth_derisk(value: float, threshold: float, reduction: float, band: float) -> float:
+    """Continuous de-risk factor centred on ``threshold``.
+
+    Returns ~1.0 well below the threshold and ~``reduction`` well above it, with
+    a smooth ramp through the threshold (half-applied at the threshold itself).
+    Replaces the old hard step where ``value`` of 0.049 vs 0.051 jumped from
+    1.0 to ``reduction``."""
+    band = max(1e-9, band)
+    t = _smoothstep(value, threshold - band, threshold + band)
+    return 1.0 - (1.0 - reduction) * t
+
+
 @dataclass
 class PlannerConfig:
     """All tunable parameters for the planner.
@@ -120,6 +141,13 @@ class PlannerConfig:
     high_conviction_agreement: float = 0.75      # agreement above this earns the boost
     max_risk_pct: float = 2.0
     min_risk_pct: float = 0.1
+    # #22 — transition bands for the smooth (continuous) sizing curves. A value
+    # just below a threshold no longer behaves identically to one far below it;
+    # the de-risk / boost ramps in across ±band centred on the threshold. Set a
+    # band to ~0 to recover near-step behaviour.
+    correlation_size_band: float = 0.15          # exposure units (0–1 scale)
+    drawdown_size_band: float = 2.0              # drawdown percent
+    conviction_boost_band: float = 0.15          # agreement/confidence units
 
     # ── BE / trailing ────────────────────────────────────────────────────
     default_be_trigger_r: float = 0.5
@@ -556,17 +584,46 @@ class TradePlanner:
         risk = ctx.base_risk_pct
         parts: list[str] = [f"base {risk:.2f}%"]
 
-        if ctx.correlated_exposure >= cfg.correlation_threshold:
-            risk *= cfg.correlation_size_reduction
-            parts.append(f"×{cfg.correlation_size_reduction} correlated")
+        # #22 — correlated-exposure de-risk as a smooth ramp (no cliff at the
+        # threshold). Below the band → no reduction; well above → full reduction.
+        corr_factor = _smooth_derisk(
+            ctx.correlated_exposure,
+            cfg.correlation_threshold,
+            cfg.correlation_size_reduction,
+            cfg.correlation_size_band,
+        )
+        if corr_factor < 1.0 - 1e-6:
+            risk *= corr_factor
+            parts.append(f"×{corr_factor:.2f} correlated")
 
-        if ctx.current_drawdown_pct >= cfg.drawdown_size_reduction_threshold:
-            risk *= cfg.drawdown_size_reduction
-            parts.append(f"×{cfg.drawdown_size_reduction} drawdown")
+        # Drawdown de-risk — smooth ramp through the threshold.
+        dd_factor = _smooth_derisk(
+            ctx.current_drawdown_pct,
+            cfg.drawdown_size_reduction_threshold,
+            cfg.drawdown_size_reduction,
+            cfg.drawdown_size_band,
+        )
+        if dd_factor < 1.0 - 1e-6:
+            risk *= dd_factor
+            parts.append(f"×{dd_factor:.2f} drawdown")
 
-        if agreement >= cfg.high_conviction_agreement and confidence >= cfg.min_confidence_to_enter:
-            risk *= cfg.high_conviction_size_boost
-            parts.append(f"×{cfg.high_conviction_size_boost} conviction")
+        # High-conviction boost — ramps in with agreement, gated smoothly by
+        # confidence. Strong agreement+confidence → ~full boost; a single weak
+        # input scales the boost down instead of switching it off.
+        boost_t = _smoothstep(
+            agreement,
+            cfg.high_conviction_agreement - cfg.conviction_boost_band,
+            cfg.high_conviction_agreement + cfg.conviction_boost_band,
+        )
+        conf_gate = _smoothstep(
+            confidence,
+            cfg.min_confidence_to_enter - cfg.conviction_boost_band,
+            cfg.min_confidence_to_enter + cfg.conviction_boost_band,
+        )
+        boost_factor = 1.0 + (cfg.high_conviction_size_boost - 1.0) * boost_t * conf_gate
+        if boost_factor > 1.0 + 1e-6:
+            risk *= boost_factor
+            parts.append(f"×{boost_factor:.2f} conviction")
 
         # Adaptive pair multiplier folds in too.
         if ctx.pair_multiplier > 0 and abs(ctx.pair_multiplier - 1.0) > 1e-6:
