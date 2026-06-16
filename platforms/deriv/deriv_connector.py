@@ -918,26 +918,6 @@ class DerivConnector(BaseConnector):
         if idempotency_key:
             passthrough["idem_key"] = idempotency_key
 
-        t0 = _time.monotonic()
-        sl_pct = abs(price - sl) / price if price > 0 else 0
-        tp_pct = abs(tp - price) / price if price > 0 else 0
-        _sl_dollar, _tp_dollar = self._limit_order_dollars(
-            sl_pct, tp_pct, amount, multiplier,
-        )
-        buy_payload: dict = {
-            "buy": 1,
-            "subscribe": 1,
-            "price": amount,
-            "parameters": {
-                "contract_type": contract_type,
-                "symbol": mapped,
-                "currency": "USD",
-                "amount": amount,
-                "basis": "stake",
-                "multiplier": multiplier,
-                "limit_order": {
-                    "stop_loss": _sl_dollar,
-                    "take_profit": _tp_dollar,
         send_limit_order = True
         initial_sl_dollar = round(abs(price - sl) / price * amount * multiplier, 2)
         initial_tp_dollar = round(abs(tp - price) / price * amount * multiplier, 2)
