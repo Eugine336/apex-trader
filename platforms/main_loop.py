@@ -1078,6 +1078,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     getattr(
                         getattr(self.config, "counterfactual", None),
                         "min_trades_for_attribution", 50,
+                    )
+                ),
+            ))
         # L5a — parameter evolution (periodic; depends on counterfactual).
         if self._param_evolver is not None:
             agent.register(ParameterEvolverTunable(
