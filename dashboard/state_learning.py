@@ -836,6 +836,25 @@ class LearningMixin:
                 "pair_a": str(c.get("pair_a", "")),
                 "pair_b": str(c.get("pair_b", "")),
                 "correlation": _round(c.get("correlation", 0.0), 4),
+            })
+        return {
+            "enabled": bool(state.get("enabled", False)),
+            "source": "live",
+            "state": str(state.get("state", "")),
+            "rolling_drawdown_pct": _round(state.get("rolling_drawdown_pct", 0.0), 3),
+            "daily_drawdown_pct": _round(state.get("daily_drawdown_pct", 0.0), 3),
+            "peak_equity": _round(state.get("peak_equity", 0.0), 2),
+            "current_equity": _round(state.get("current_equity", 0.0), 2),
+            "sizing_factor": _round(state.get("sizing_factor", 1.0), 4),
+            "should_flatten": bool(state.get("should_flatten", False)),
+            "cooldown_until": state.get("cooldown_until"),
+            "limits": state.get("limits", {}) or {},
+            "risk_events": events,
+            "equity_curve": curve,
+            "correlations": correlations,
+            **meta,
+        }
+
     # ── Behaviour Discovery (L6) ──────────────────────────────────────────────
     def _learning_behavior_discovery(self) -> dict:
         engine = self._behavior_discovery_obj()
@@ -866,21 +885,6 @@ class LearningMixin:
         return {
             "enabled": bool(state.get("enabled", False)),
             "source": "live",
-            "state": str(state.get("state", "")),
-            "rolling_drawdown_pct": _round(state.get("rolling_drawdown_pct", 0.0), 3),
-            "daily_drawdown_pct": _round(state.get("daily_drawdown_pct", 0.0), 3),
-            "peak_equity": _round(state.get("peak_equity", 0.0), 2),
-            "current_equity": _round(state.get("current_equity", 0.0), 2),
-            "sizing_factor": _round(state.get("sizing_factor", 1.0), 4),
-            "should_flatten": bool(state.get("should_flatten", False)),
-            "cooldown_until": state.get("cooldown_until"),
-            "limits": state.get("limits", {}) or {},
-            "risk_events": events,
-            "equity_curve": curve,
-            "correlations": correlations,
-            **meta,
-        }
-
             "lookback": int(state.get("lookback", 0) or 0),
             "interval": int(state.get("interval", 0) or 0),
             "cluster_eps": _round(state.get("cluster_eps", 0.0), 3),

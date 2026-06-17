@@ -54,6 +54,11 @@ class Vote:
     direction: str          # "LONG", "SHORT", "NEUTRAL"
     confidence: float       # 0.0 .. 1.0
     weight: float           # from ConsensusConfig.weights
+    # Optional: the timeframe label this vote was actually computed on
+    # (e.g. "M5", "H1", "H4"). Empty when the producer does not record it.
+    # The ranker uses it to classify the opportunity's real horizon instead
+    # of inferring SCALP/SWING from the module name alone (collapse #12).
+    timeframe: str = ""
     # ── Per-module evidence (#26) ─────────────────────────────────────────
     # The richer read behind this vote: secondary measurements the module
     # computed (RSI level, MACD histogram, zone stacking, sweep type, …) that the

@@ -2526,6 +2526,10 @@ class RiskManagementConfig:
             raise ValueError(
                 "RiskManagementConfig.correlation_threshold must be in [0, 1], "
                 f"got {self.correlation_threshold!r}"
+            )
+
+
+@dataclass
 class BehaviorDiscoveryConfig:
     """Settings for the Behaviour Discovery engine (L6).
 
