@@ -30,15 +30,17 @@ class GovernorConfig:
     daily_loss_cap_pct: float = 3.0  # halt new entries after −this% daily drawdown
     daily_loss_recovery_pct: float = 1.5  # resume only once DD recovers above −this%
     max_sector_exposure: int = 4  # max positions in one category (forex/index/commodity/crypto)
-    # #24 — accumulated-risk mode. When False (default) the governor keeps its
-    # legacy first-breach behaviour: the analytical concentration limits
+    # #24 — accumulated-risk mode. When False the governor keeps its legacy
+    # first-breach behaviour: the analytical concentration limits
     # (currency / sector / correlated exposure) HARD-block on the first breach.
     # When True those analytical limits become a graded *dimmer* instead — the
     # verdict stays ``allowed`` but carries a bounded ``risk_multiplier`` (folded
     # into sizing by the orchestrator) so a near-/over-limit concentration sizes
     # the trade DOWN rather than killing it. The physics caps (max open
     # positions) and the daily-loss safety halt always stay HARD regardless.
-    graded_exposure: bool = False
+    # Default True reflects the live orchestrator-on mode (main_loop re-affirms
+    # it from the orchestrator config).
+    graded_exposure: bool = True
     # Lower bound on the graded risk multiplier — a graded "at every limit" is
     # still a small trade, never zero.
     risk_multiplier_floor: float = 0.15

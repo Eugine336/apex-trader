@@ -274,7 +274,7 @@ class TestExpectancyAwareCalibration:
         return [_trade(strategy, r) for r in rs]
 
     def test_legacy_winrate_demotes_high_payoff_group(self):
-        cfg = PlannerConfig()  # expectancy-aware off
+        cfg = PlannerConfig(calibration_expectancy_aware=False)  # legacy win-rate mode
         cal = Calibrator(cfg)
         # structure: 40% win rate but huge payoff; atr: 60% win rate, tiny payoff.
         structure = self._group("structure", [3.0, 3.0, 3.0, 3.0, -1, -1, -1, -1, -1, -1])
@@ -297,8 +297,9 @@ class TestExpectancyAwareCalibration:
         assert "prefer_structure_sl_within_atr" in updates
         assert updates["prefer_structure_sl_within_atr"] > cfg.prefer_structure_sl_within_atr
 
-    def test_config_default_is_legacy(self):
-        assert PlannerConfig().calibration_expectancy_aware is False
+    def test_config_default_is_live(self):
+        # Flipped live: calibration compares groups by expectancy, not win-rate.
+        assert PlannerConfig().calibration_expectancy_aware is True
 
 
 # ===========================================================================

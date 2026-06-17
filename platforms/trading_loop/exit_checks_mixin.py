@@ -434,6 +434,29 @@ class ExitChecksMixin:
                                 pos.direction, pos.symbol, profit_r, be_level, event_name, minutes_until,
                             )
                 else:
+                    # Flat/loss trade ahead of news. news_exit_mode selects the
+                    # protective action: "tighten" moves SL to breakeven (keep the
+                    # position but cap news risk); "close" (default) flattens it.
+                    news_mode = getattr(cfg, "news_exit_mode", "close")
+                    if news_mode == "tighten" and tm_trade is not None:
+                        be_level = pos.entry_price
+                        success = self.platforms.modify_trade(oid, pos.platform, new_sl=be_level)
+                        if success:
+                            pos.sl = be_level
+                            tm_trade.stop_loss = be_level
+                            self._news_exit_protected.add(oid)
+                            self.position_store.update_position(oid, sl=be_level)
+                            logger.info(
+                                "📰 NEWS TIGHTEN (flat/loss) — {} {} | {:.1f}R | SL→entry {:.5f} | {} in {:.0f}min",
+                                pos.direction, pos.symbol, profit_r, be_level, event_name, minutes_until,
+                            )
+                        else:
+                            logger.error(
+                                "📰 NEWS TIGHTEN FAILED — {} {} oid={} | {} in {:.0f}min | "
+                                "position retained, UNPROTECTED from news",
+                                pos.direction, pos.symbol, oid, event_name, minutes_until,
+                            )
+                        continue
                     result = self.platforms.close_trade(oid, pos.platform)
                     if result.success:
                         logger.info(

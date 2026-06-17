@@ -222,12 +222,15 @@ class TestPendingOrderMinlotInflation:
 
 class TestConfigDefault:
 
-    def test_config_flag_defaults_false(self):
+    def test_config_flag_defaults_true(self):
+        # Flipped live: an inflated min-lot order is rejected by default.
         from config import RiskConfig
         cfg = RiskConfig()
-        assert cfg.reject_on_minlot_inflation is False
+        assert cfg.reject_on_minlot_inflation is True
 
     def test_connector_default_is_false(self):
+        # The connector's standalone default stays False; the live value flows
+        # from config.risk.reject_on_minlot_inflation via platform_manager.
         from platforms.mt5.mt5_connector import MT5Connector
         c = MT5Connector()
         assert c._reject_on_minlot_inflation is False

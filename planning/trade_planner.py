@@ -99,9 +99,9 @@ class PlannerConfig:
     # needs to *kill* a low-conviction setup — it can hand it through as ENTER
     # carrying a bounded quality multiplier the orchestrator folds into size, so
     # a near-miss trades SMALL instead of being dropped. The governor veto below
-    # stays hard regardless. main_loop sets ``soften_gates`` from the
-    # orchestrator config; default False keeps the legacy hard SKIP.
-    soften_gates: bool = False
+    # stays hard regardless. main_loop re-affirms ``soften_gates`` from the
+    # orchestrator config; default True reflects the live orchestrator-on mode.
+    soften_gates: bool = True
     gate_quality_floor: float = 0.15
 
     # ── Dispersion-aware advisor agreement (#8) ───────────────────────────
@@ -111,8 +111,9 @@ class PlannerConfig:
     # gate metric is pulled toward the WEAKEST advisor by the dispersion between
     # the mean and the minimum — so a split panel reads lower (and, with
     # soften_gates, sizes down) instead of the mean hiding the disagreement.
-    # main_loop sets this from the orchestrator config; default False is legacy.
-    dispersion_aware_agreement: bool = False
+    # main_loop re-affirms this from the orchestrator config; default True
+    # reflects the live orchestrator-on mode.
+    dispersion_aware_agreement: bool = True
     advisor_dispersion_penalty: float = 0.5
 
     # ── Entry mode rules ─────────────────────────────────────────────────
@@ -165,9 +166,8 @@ class PlannerConfig:
     # #34 — expectancy-aware calibration. The SL-strategy and min-confidence
     # analyses compare groups by WIN-RATE only, so a 3R win and a 0.1R win count
     # the same and a lower-win-rate / higher-payoff group is wrongly demoted.
-    # When enabled, those analyses compare by EXPECTANCY (mean R, magnitude-
-    # aware) instead. Off by default → legacy win-rate behaviour.
-    calibration_expectancy_aware: bool = False
+    # aware) instead. LIVE: groups are compared by expectancy (mean R).
+    calibration_expectancy_aware: bool = True
     calibration_expectancy_margin: float = 0.10  # min R gap between groups to act
 
     # ── Serialisation ────────────────────────────────────────────────────

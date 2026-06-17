@@ -107,6 +107,11 @@ class SituationEngine:
     _H4_WEIGHT = 0.35
     _H1_WEIGHT = 0.25
 
+    def __init__(self, adopted_observation_minutes: float = 10.0) -> None:
+        # Observation window for adopted/orphan trades before a real label is
+        # derived (config-driven; was a hardcoded 10-minute literal).
+        self.adopted_observation_minutes = max(0.0, float(adopted_observation_minutes))
+
     def assess_open_trade(self, ctx: TradeContext) -> SituationAssessment:
         sa = SituationAssessment()
         evidence: list[str] = []
@@ -546,7 +551,7 @@ class SituationEngine:
     def _derive_label(
         self, sa: SituationAssessment, ctx: TradeContext,
     ) -> str:
-        if ctx.is_adopted and ctx.hold_minutes < 10:
+        if ctx.is_adopted and ctx.hold_minutes < self.adopted_observation_minutes:
             return "ADOPTED_OBSERVING"
 
         if sa.structure_integrity < 0.2:

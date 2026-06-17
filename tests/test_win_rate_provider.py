@@ -246,11 +246,11 @@ class TestProvenanceStamping:
 # ── Config flag ─────────────────────────────────────────────────────────────
 
 class TestConfigFlag:
-    def test_flag_defaults_off(self):
+    def test_flag_defaults_on(self):
         from config import OpportunityRankerConfig
 
         rc = OpportunityRankerConfig()
-        assert rc.adaptive_win_rate_provider_enabled is False
+        assert rc.adaptive_win_rate_provider_enabled is True
         assert rc.adaptive_win_rate_prior == pytest.approx(0.40)
         assert rc.adaptive_win_rate_min_trades == 10
         assert rc.adaptive_win_rate_clamp_low == pytest.approx(0.15)

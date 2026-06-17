@@ -70,7 +70,9 @@ def test_weak_conflicted_setup_skips():
         rl_confidence=0.5,
         pair_win_rate=0.4,
     )
-    plan = TradePlanner().plan_trade(ctx)
+    # soften_gates is now live by default (low-conviction flows as ENTER and is
+    # sized down). This test asserts the legacy hard-SKIP path explicitly.
+    plan = TradePlanner(PlannerConfig(soften_gates=False)).plan_trade(ctx)
     assert plan.action == "SKIP"
     assert plan.risk_pct == 0.0 or plan.action == "SKIP"
 

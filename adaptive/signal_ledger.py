@@ -154,12 +154,16 @@ class SignalLedger:
         grading_delay_minutes: float = 30.0,
         check_intervals: Optional[List[int]] = None,
         min_move_pct: float = _DEFAULT_MIN_MOVE_PCT,
+        accuracy_lookback: int = 100,
         trade_outcome_provider: Optional[Callable[[str], Optional[dict]]] = None,
     ) -> None:
         self._db_path = Path(db_path) if db_path is not None else _DB_PATH
         self._grading_delay_minutes = float(grading_delay_minutes)
         self._check_intervals = sorted(check_intervals or [5, 15, 30, 60])
         self._min_move_pct = float(min_move_pct)
+        # Default rolling window (most-recent graded signals) for accuracy
+        # aggregation when a caller does not specify its own lookback.
+        self._accuracy_lookback = int(accuracy_lookback) if accuracy_lookback and accuracy_lookback > 0 else 100
         # Optional hook: given a trade_id, return realised trade-outcome data to
         # merge into the signal outcome (e.g. a PostCloseTracker lookup). Kept
         # injectable so this module stays a leaf with no learning-layer imports.
@@ -619,18 +623,21 @@ class SignalLedger:
         return rows
 
     def get_emitter_accuracy(
-        self, emitter: str, pair: Optional[str] = None, lookback_trades: int = 100,
+        self, emitter: str, pair: Optional[str] = None, lookback_trades: Optional[int] = None,
     ) -> dict:
         """Accuracy stats for one emitter over its most recent graded signals.
 
         Splits accuracy into *all* / *traded* / *blocked* so the selection bias
         is visible: if blocked accuracy is high, a gate is over-filtering.
+        When ``lookback_trades`` is None the configured default window is used.
         """
-        rows = self.get_graded_signals(emitter=emitter, pair=pair, lookback=lookback_trades)
+        lb = int(lookback_trades) if lookback_trades else self._accuracy_lookback
+        rows = self.get_graded_signals(emitter=emitter, pair=pair, lookback=lb)
         return _accuracy_from_rows(emitter, rows)
 
-    def get_emitter_accuracy_all(self, lookback_trades: int = 100) -> Dict[str, dict]:
+    def get_emitter_accuracy_all(self, lookback_trades: Optional[int] = None) -> Dict[str, dict]:
         """Per-emitter accuracy across all known emitters."""
+        lb = int(lookback_trades) if lookback_trades else self._accuracy_lookback
         if self._conn is None:
             return {}
         with self._lock:
@@ -643,7 +650,7 @@ class SignalLedger:
                 logger.debug("[SignalLedger] get_emitter_accuracy_all failed: {}", exc)
                 return {}
         return {
-            e: self.get_emitter_accuracy(e, lookback_trades=lookback_trades)
+            e: self.get_emitter_accuracy(e, lookback_trades=lb)
             for e in emitters
         }
 
