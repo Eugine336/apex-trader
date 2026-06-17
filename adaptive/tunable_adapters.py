@@ -1036,6 +1036,29 @@ class ModuleGovernorTunable(_BaseTunable):
         )
 
 
+# ─────────────────────── Module interaction discovery ───────────────────
+
+
+class InteractionAnalyzerTunable(_BaseTunable):
+    """Wraps ``InteractionAnalyzer.maybe_recompute`` — periodic leave-K-out
+    module-interaction discovery (L5b).
+
+    Pure analysis: the engine only reads the L4 counterfactual snapshots and
+    caches a pairwise interaction matrix + optimal-subset recommendation, so
+    there is nothing to validate or roll back. Runs on the trade-close batch
+    cadence (every ``interaction_interval`` trades, gated by ``min_trades``);
+    a cycle that does not recompute records a harmless skip. Depends on
+    ``counterfactual`` so it runs after the leave-one-out attribution refreshes
+    the trade store. ``interaction_lookback`` and ``interaction_interval`` are
+    exposed as the tunable knobs.
+    """
+
+    def __init__(
+        self, analyzer, *, min_trades: int = 50, min_interval: float = 0.0,
+    ) -> None:
+        super().__init__(
+            name="interaction_analyzer",
+            frequency=TuneFrequency.ON_TRADE_BATCH,
 # ───────────────────── L5 — evolution / discovery ──────────────────────
 
 
@@ -1059,6 +1082,44 @@ class ParameterEvolverTunable(_BaseTunable):
             min_trades=int(min_trades),
             min_interval=float(min_interval),
         )
+        self._analyzer = analyzer
+
+    def _read_params(self) -> dict:
+        return {
+            "enabled": bool(getattr(self._analyzer, "enabled", False)),
+            "lookback": int(getattr(self._analyzer, "lookback", 0) or 0),
+            "interval": int(getattr(self._analyzer, "interval", 0) or 0),
+            "toxic_threshold": float(getattr(self._analyzer, "toxic_threshold", 0.0) or 0.0),
+            "synergy_threshold": float(getattr(self._analyzer, "synergy_threshold", 0.0) or 0.0),
+        }
+
+    def _apply_params(self, params: dict) -> None:
+        if not params:
+            return
+        self._analyzer.set_params(
+            lookback=params.get("lookback"),
+            interval=params.get("interval"),
+        )
+
+    def rollback(self) -> bool:
+        if self._snapshot is None:
+            return True
+        try:
+            self._apply_params(self._snapshot)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[interaction_analyzer] rollback failed: {}", exc)
+            return False
+
+    def tune(self, ctx: TuneContext) -> TuneResult:
+        before = self._begin()
+        if not getattr(self._analyzer, "enabled", False):
+            return TuneResult(
+                tunable_name=self._name, success=True, skipped=True,
+                params_before=before, params_after=before,
+                reason="analyzer disabled",
+            )
+        payload = self._analyzer.maybe_recompute(ctx.total_trades)
         self._evolver = evolver
 
     def _read_params(self) -> dict:
@@ -1155,6 +1216,20 @@ class _AnalysisRecomputeTunable(_BaseTunable):
                 params_before=before, params_after=before,
                 reason="not due / insufficient trades",
             )
+        after = self._read_params()
+        analyzed = int(payload.get("trades_analyzed", 0) or 0)
+        toxic = len(payload.get("toxic_pairs", []) or [])
+        synergy = len(payload.get("synergy_pairs", []) or [])
+        return TuneResult(
+            tunable_name=self._name, success=True, changed=True,
+            params_before=before, params_after=after,
+            reason=(
+                f"interactions over {analyzed} trades — "
+                f"{toxic} toxic, {synergy} synergistic pair(s)"
+            ),
+        )
+
+
         return TuneResult(
             tunable_name=self._name, success=True, changed=True,
             params_before=before, params_after=self._read_params(),
@@ -1283,6 +1358,7 @@ __all__ = [
     "VoteCalibratorTunable",
     "CounterfactualTunable",
     "ModuleGovernorTunable",
+    "InteractionAnalyzerTunable",
     "ParameterEvolverTunable",
     "ModuleInteractionTunable",
     "SignalDiscoveryTunable",
