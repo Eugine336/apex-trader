@@ -10,6 +10,7 @@ const NAV = [
   { to: '/history', icon: '📋', label: 'Trade History' },
   { to: '/scanner', icon: '◎', label: 'Scanner' },
   { to: '/module-votes', icon: '🗳', label: 'Module Votes' },
+  { to: '/module-governor', icon: '🚦', label: 'Module Governor' },
   { to: '/ranker', icon: '🏆', label: 'Ranker' },
   { to: '/performance', icon: '📈', label: 'Performance' },
   { to: '/risk', icon: '🛡', label: 'Risk Monitor' },
