@@ -31,6 +31,31 @@ function fmtTime(ts) {
   }
 }
 
+function fmtMarginalR(v) {
+  if (v === null || v === undefined) return '—';
+  const n = Number(v);
+  if (!Number.isFinite(n)) return '—';
+  return `${n >= 0 ? '+' : ''}${n.toFixed(3)}R`;
+}
+
+function marginalRColor(v) {
+  if (v === null || v === undefined || !Number.isFinite(Number(v))) {
+    return 'var(--text-muted)';
+  }
+  return Number(v) < 0 ? 'var(--red-bright)' : 'var(--green-bright)';
+}
+
+function triggerStyle(trigger) {
+  const t = (trigger || 'accuracy').toLowerCase();
+  if (t === 'counterfactual') {
+    return { color: 'var(--purple, #a855f7)', background: 'rgba(168,85,247,0.15)' };
+  }
+  if (t === 'both') {
+    return { color: 'var(--amber, #f59e0b)', background: 'rgba(245,158,11,0.15)' };
+  }
+  return { color: 'var(--text-muted)', background: 'rgba(148,163,184,0.12)' };
+}
+
 export default function ModuleGovernor() {
   const { data, loading } = useApi('/api/module-governor', 5000);
 
@@ -38,6 +63,7 @@ export default function ModuleGovernor() {
   const transitions = data?.transitions || [];
   const counts = data?.counts || {};
   const enabled = !!data?.enabled;
+  const cfSignal = !!data?.counterfactual_signal;
 
   const sorted = useMemo(
     () =>
@@ -58,9 +84,31 @@ export default function ModuleGovernor() {
         <p>
           Shadow mode — a module whose graded accuracy drops keeps running and being
           measured, but its vote is suppressed (weight 0). It returns to ACTIVE if it
-          recovers, or is DISABLED if it stays poor.
+          recovers, or is DISABLED if it stays poor. When the counterfactual signal is
+          active, a module that is accurate yet harmful by marginal R can also be
+          shadowed.
         </p>
       </div>
+
+      {enabled && (
+        <div
+          className="card mb-20"
+          style={{
+            borderLeft: `3px solid ${cfSignal ? 'var(--purple, #a855f7)' : 'var(--text-muted)'}`,
+            padding: 10,
+            fontSize: 12,
+            color: 'var(--text-muted)',
+          }}
+        >
+          Counterfactual signal:{' '}
+          <strong style={{ color: cfSignal ? 'var(--purple, #a855f7)' : 'var(--text-muted)' }}>
+            {cfSignal ? 'ACTIVE' : 'OFF'}
+          </strong>{' '}
+          — {cfSignal
+            ? 'shadow/disable can be driven by marginal R (better-off-without), reactivation requires both accuracy AND marginal R to recover.'
+            : 'governance uses graded accuracy only.'}
+        </div>
+      )}
 
       {!enabled && (
         <div
@@ -109,6 +157,7 @@ export default function ModuleGovernor() {
                 <th>Module</th>
                 <th style={{ width: 100 }}>Mode</th>
                 <th className="right" style={{ width: 90 }}>Acc @ Move</th>
+                <th className="right" style={{ width: 110 }}>Marginal R</th>
                 <th className="right" style={{ width: 90 }}>In Mode</th>
                 <th>Reason</th>
               </tr>
@@ -116,7 +165,7 @@ export default function ModuleGovernor() {
             <tbody>
               {sorted.length === 0 && (
                 <tr>
-                  <td colSpan={5} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 32 }}>
+                  <td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 32 }}>
                     {loading ? 'Loading…' : 'No governed modules yet.'}
                   </td>
                 </tr>
@@ -134,6 +183,17 @@ export default function ModuleGovernor() {
                   </td>
                   <td className="right" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
                     {Number(m.accuracy_at_transition || 0).toFixed(2)}
+                  </td>
+                  <td
+                    className="right"
+                    style={{ fontFamily: "'JetBrains Mono', monospace", color: marginalRColor(m.marginal_r) }}
+                    title={
+                      m.marginal_r_trades
+                        ? `${m.marginal_r_trades} attributed trades${m.better_off_without ? ' · better off without' : ''}`
+                        : 'no attribution data yet'
+                    }
+                  >
+                    {fmtMarginalR(m.marginal_r)}
                   </td>
                   <td className="right" style={{ color: 'var(--text-muted)' }}>
                     {fmtAge(m.seconds_in_mode)}
@@ -158,7 +218,9 @@ export default function ModuleGovernor() {
                 <th style={{ width: 110 }}>Time</th>
                 <th>Module</th>
                 <th style={{ width: 160 }}>Change</th>
+                <th style={{ width: 110 }}>Trigger</th>
                 <th className="right" style={{ width: 80 }}>Acc</th>
+                <th className="right" style={{ width: 100 }}>Marg R</th>
                 <th className="right" style={{ width: 70 }}>N</th>
                 <th>Reason</th>
               </tr>
@@ -166,7 +228,7 @@ export default function ModuleGovernor() {
             <tbody>
               {transitions.length === 0 && (
                 <tr>
-                  <td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 32 }}>
+                  <td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 32 }}>
                     {loading ? 'Loading…' : 'No transitions recorded yet.'}
                   </td>
                 </tr>
@@ -180,8 +242,24 @@ export default function ModuleGovernor() {
                     {' → '}
                     <span style={modeStyle(t.new_mode)}>{(t.new_mode || '').toUpperCase()}</span>
                   </td>
+                  <td>
+                    <span
+                      className="badge"
+                      style={{ ...triggerStyle(t.trigger), fontSize: 11, padding: '2px 6px', borderRadius: 4 }}
+                    >
+                      {(t.trigger || 'accuracy').toUpperCase()}
+                    </span>
+                  </td>
                   <td className="right" style={{ fontFamily: "'JetBrains Mono', monospace" }}>
                     {Number(t.accuracy || 0).toFixed(2)}
+                  </td>
+                  <td
+                    className="right"
+                    style={{ fontFamily: "'JetBrains Mono', monospace", color: marginalRColor(t.marginal_r) }}
+                  >
+                    {t.trigger === 'accuracy' || t.marginal_r === undefined
+                      ? '—'
+                      : fmtMarginalR(t.marginal_r)}
                   </td>
                   <td className="right" style={{ color: 'var(--text-muted)' }}>{t.sample_size || 0}</td>
                   <td style={{ color: 'var(--text-muted)', fontSize: 12 }}>{t.reason || '—'}</td>
