@@ -240,7 +240,7 @@ class ScoringConfig:
     # commodity/index) plus a shared ``default`` used for cold-start, unknown
     # symbols, and as the Bayesian-shrinkage prior for thin classes. Default
     # OFF — single-profile behaviour is preserved byte-for-byte until enabled.
-    per_class_optimizer: bool = False
+    per_class_optimizer: bool = True
     # Minimum trades a class needs before it gets an independent profile;
     # below this it resolves to the shared default weights.
     min_trades_per_class: int = 30
@@ -1554,7 +1554,7 @@ class VoteCalibratorConfig:
     """
 
     # Master switch — replace static consensus weights with calibrated weights.
-    vote_calibration_enabled: bool = False
+    vote_calibration_enabled: bool = True
     # How accuracy maps to a multiplier: "softmax" (exp of accuracy / temp),
     # "proportional" (accuracy / mean), or "log_odds" (exp of centred logit).
     vote_weight_method: str = "softmax"

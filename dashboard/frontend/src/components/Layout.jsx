@@ -21,6 +21,7 @@ const NAV = [
   { to: '/decision-trace', icon: '🧬', label: 'Decision Trace' },
   { to: '/orchestrator', icon: '🎛', label: 'Orchestrator' },
   { to: '/feedback', icon: '🔁', label: 'Outcome Feedback' },
+  { to: '/learning', icon: '🧪', label: 'Learning Layer' },
   { to: '/position-health', icon: '🩺', label: 'Position Health' },
   { to: '/activity', icon: '🔔', label: 'Activity' },
   { to: '/shadow', icon: '👻', label: 'Shadow Outcomes' },

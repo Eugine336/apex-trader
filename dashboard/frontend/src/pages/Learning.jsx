@@ -1,0 +1,567 @@
+import React from 'react';
+import { useApi } from '../hooks/useApi';
+
+function pct(x) {
+  return `${Math.round((Number(x) || 0) * 100)}%`;
+}
+
+function accColor(a) {
+  const v = Number(a) || 0;
+  if (v >= 0.55) return 'var(--green-bright)';
+  if (v < 0.45) return 'var(--red-bright)';
+  return 'var(--yellow-bright)';
+}
+
+function multColor(m) {
+  const v = Number(m) || 0;
+  if (v > 1.05) return 'var(--green-bright)';
+  if (v < 0.95) return 'var(--red-bright)';
+  return 'var(--text-primary)';
+}
+
+function StatusPill({ on, onLabel = 'LIVE', offLabel = 'OFF' }) {
+  return (
+    <span className={`badge ${on ? 'badge-green' : 'badge-muted'}`}>
+      {on ? onLabel : offLabel}
+    </span>
+  );
+}
+
+function tsAgo(ts) {
+  if (!ts) return '—';
+  const secs = Math.max(0, Math.floor(Date.now() / 1000 - Number(ts)));
+  if (secs < 60) return `${secs}s ago`;
+  if (secs < 3600) return `${Math.floor(secs / 60)}m ago`;
+  if (secs < 86400) return `${Math.floor(secs / 3600)}h ago`;
+  return `${Math.floor(secs / 86400)}d ago`;
+}
+
+// ── Signal Ledger ────────────────────────────────────────────────────────────
+function SignalLedger({ d }) {
+  const emitters = d?.emitters || [];
+  const recent = d?.recent || [];
+  return (
+    <div className="card mb-20">
+      <div className="card-header">
+        <span className="card-title">Signal Ledger</span>
+        <StatusPill on={d?.enabled} />
+      </div>
+      <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
+        <div className="stat-card">
+          <div className="stat-label">Recorded</div>
+          <div className="stat-value">{d?.total_recorded || 0}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Graded</div>
+          <div className="stat-value">{d?.total_graded || 0}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Overall Accuracy</div>
+          <div className="stat-value" style={{ color: accColor(d?.overall_accuracy) }}>
+            {pct(d?.overall_accuracy)}
+          </div>
+        </div>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '0 12px 10px' }}>
+        Grading finalises at T+{d?.grading_delay_minutes || 0}m · checkpoints{' '}
+        {(d?.check_intervals || []).map((i) => `T+${i}m`).join(', ') || '—'} · min move{' '}
+        {d?.min_move_pct ?? 0}%
+      </div>
+
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Emitter</th>
+              <th className="right">Graded</th>
+              <th className="right">Accuracy</th>
+              <th className="right">Traded</th>
+              <th className="right">Blocked</th>
+              <th className="right">Acc (blocked)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {emitters.length === 0 && (
+              <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
+                No graded signals yet — accuracy appears as signals mature.
+              </td></tr>
+            )}
+            {emitters.map((e) => (
+              <tr key={e.emitter}>
+                <td style={{ fontWeight: 600 }}>{e.emitter}</td>
+                <td className="right">{e.total}</td>
+                <td className="right" style={{ color: accColor(e.accuracy) }}>{pct(e.accuracy)}</td>
+                <td className="right">{e.traded}</td>
+                <td className="right">{e.blocked}</td>
+                <td className="right" style={{ color: accColor(e.accuracy_blocked) }}>
+                  {e.blocked ? pct(e.accuracy_blocked) : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {recent.length > 0 && (
+        <>
+          <div className="card-header" style={{ marginTop: 8 }}>
+            <span className="card-title">Recent graded signals</span>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Pair</th>
+                  <th>Emitter</th>
+                  <th>Dir</th>
+                  <th className="right">Strength</th>
+                  <th>State</th>
+                  <th className="right">Correct</th>
+                  <th className="right">MFE%</th>
+                  <th className="right">MAE%</th>
+                </tr>
+              </thead>
+              <tbody>
+                {recent.map((r, i) => (
+                  <tr key={i}>
+                    <td>{r.pair}</td>
+                    <td>{r.emitter}</td>
+                    <td className={`dir-${(r.direction || '').toLowerCase()}`}>{r.direction}</td>
+                    <td className="right">{Number(r.strength).toFixed(2)}</td>
+                    <td>
+                      {r.trade_opened
+                        ? <span className="badge badge-blue">traded</span>
+                        : r.gate_blocked_by
+                          ? <span className="badge badge-orange">blocked: {r.gate_blocked_by}</span>
+                          : <span className="badge badge-muted">no-trade</span>}
+                    </td>
+                    <td className="right">
+                      {r.direction_correct === null || r.direction_correct === undefined
+                        ? '—'
+                        : r.direction_correct
+                          ? <span style={{ color: 'var(--green-bright)' }}>✓</span>
+                          : <span style={{ color: 'var(--red-bright)' }}>✗</span>}
+                    </td>
+                    <td className="right" style={{ color: 'var(--green-bright)' }}>{Number(r.max_favorable_pct).toFixed(2)}</td>
+                    <td className="right" style={{ color: 'var(--red-bright)' }}>{Number(r.max_adverse_pct).toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Emitter Feedback ─────────────────────────────────────────────────────────
+function EmitterFeedback({ d }) {
+  const emitters = d?.emitters || [];
+  const gates = d?.gates || [];
+  return (
+    <div className="card mb-20">
+      <div className="card-header">
+        <span className="card-title">Emitter Feedback</span>
+        <StatusPill on={d?.enabled} />
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Module</th>
+              <th className="right">Signals</th>
+              <th className="right">Acc (all)</th>
+              <th className="right">Acc (traded)</th>
+              <th className="right">Acc (blocked)</th>
+              <th className="right">Value when blocked</th>
+            </tr>
+          </thead>
+          <tbody>
+            {emitters.length === 0 && (
+              <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
+                {d?.enabled ? 'No feedback yet — fills as signals are graded.' : 'Emitter feedback disabled.'}
+              </td></tr>
+            )}
+            {emitters.map((e) => (
+              <tr key={e.emitter}>
+                <td style={{ fontWeight: 600 }}>{e.emitter}</td>
+                <td className="right">{e.total_signals}</td>
+                <td className="right" style={{ color: accColor(e.accuracy_all) }}>{pct(e.accuracy_all)}</td>
+                <td className="right">{e.traded_signals ? pct(e.accuracy_traded) : '—'}</td>
+                <td className="right">{e.blocked_signals ? pct(e.accuracy_blocked) : '—'}</td>
+                <td className="right" style={{ color: accColor(e.signal_value_when_blocked) }}>
+                  {e.blocked_signals ? pct(e.signal_value_when_blocked) : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {gates.length > 0 && (
+        <>
+          <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '6px 12px' }}>
+            Gate effectiveness — high blocked accuracy means the gate is rejecting profitable signals.
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Gate</th>
+                  <th className="right">Blocked</th>
+                  <th className="right">Would-be correct</th>
+                  <th className="right">Blocked accuracy</th>
+                </tr>
+              </thead>
+              <tbody>
+                {gates.map((g) => (
+                  <tr key={g.gate}>
+                    <td>{g.gate}</td>
+                    <td className="right">{g.blocked}</td>
+                    <td className="right">{g.would_have_been_correct}</td>
+                    <td className="right" style={{ color: accColor(g.blocked_accuracy) }}>{pct(g.blocked_accuracy)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Vote Calibrator ──────────────────────────────────────────────────────────
+function VoteCalibrator({ d }) {
+  const modules = d?.modules || [];
+  return (
+    <div className="card mb-20">
+      <div className="card-header">
+        <span className="card-title">Vote Calibrator</span>
+        <StatusPill on={d?.enabled} />
+      </div>
+      <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
+        <div className="stat-card">
+          <div className="stat-label">Method</div>
+          <div className="stat-value" style={{ fontSize: 18 }}>{d?.method || '—'}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Calibrated Modules</div>
+          <div className="stat-value">{d?.calibrated_count || 0}/{d?.module_count || 0}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Min Signals</div>
+          <div className="stat-value">{d?.min_signals || 0}</div>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Module</th>
+              <th className="right">Weight ×</th>
+              <th className="right">Samples</th>
+              <th className="right">Accuracy</th>
+              <th className="right">Status</th>
+            </tr>
+          </thead>
+          <tbody>
+            {modules.map((m) => (
+              <tr key={m.module}>
+                <td style={{ fontWeight: 600 }}>{m.module}</td>
+                <td className="right" style={{ color: multColor(m.multiplier), fontFamily: "'JetBrains Mono', monospace" }}>
+                  {Number(m.multiplier).toFixed(2)}×
+                </td>
+                <td className="right">{m.sample_size}</td>
+                <td className="right">{m.sample_size ? pct(m.accuracy) : '—'}</td>
+                <td className="right">
+                  {m.calibrated
+                    ? <span className="badge badge-green">calibrated</span>
+                    : <span className="badge badge-muted">default 1.0×</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '6px 12px' }}>
+        Multiplier &gt;1 amplifies a module's vote, &lt;1 dampens it. Modules below the min-signal
+        threshold stay at a neutral 1.0× until enough graded signals accumulate.
+      </div>
+    </div>
+  );
+}
+
+// ── Per-class Score Optimizer ────────────────────────────────────────────────
+function ScoreOptimizer({ d }) {
+  const classes = d?.classes || [];
+  const global = d?.global_weights || {};
+  const keys = Object.keys(global);
+  return (
+    <div className="card mb-20">
+      <div className="card-header">
+        <span className="card-title">Per-Class Score Optimizer</span>
+        <StatusPill on={d?.enabled} />
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '6px 12px' }}>
+        {d?.enabled
+          ? `Separate confluence weights per asset class — diverge from the global default after ${d?.min_trades_per_class || 0} class trades.`
+          : 'Single global weight profile (per-class mode off).'}
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Class</th>
+              <th>Status</th>
+              {keys.map((k) => <th key={k} className="right">{k}</th>)}
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td style={{ fontWeight: 600 }}>global</td>
+              <td><span className="badge badge-blue">prior</span></td>
+              {keys.map((k) => <td key={k} className="right">{global[k]}</td>)}
+            </tr>
+            {classes.map((c) => (
+              <tr key={c.asset_class}>
+                <td style={{ fontWeight: 600 }}>{c.asset_class}</td>
+                <td>
+                  {c.diverged
+                    ? <span className="badge badge-green">diverged</span>
+                    : <span className="badge badge-muted">at prior</span>}
+                </td>
+                {keys.map((k) => (
+                  <td key={k} className="right"
+                      style={{ color: c.weights[k] !== global[k] ? 'var(--accent-bright)' : 'var(--text-primary)' }}>
+                    {c.weights[k] ?? '—'}
+                  </td>
+                ))}
+              </tr>
+            ))}
+            {classes.length === 0 && (
+              <tr><td colSpan={keys.length + 2} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 20 }}>
+                No per-class profiles yet — classes resolve to the global prior until they have enough trades.
+              </td></tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── Pair Learner ─────────────────────────────────────────────────────────────
+function PairLearner({ d }) {
+  const pairs = d?.pairs || [];
+  return (
+    <div className="card mb-20">
+      <div className="card-header">
+        <span className="card-title">Pair Learner</span>
+        <StatusPill on={d?.continuous_enabled} onLabel="CONTINUOUS" offLabel="BUCKETED" />
+      </div>
+      <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
+        <div className="stat-card">
+          <div className="stat-label">Learned Pairs</div>
+          <div className="stat-value">{d?.pair_count || 0}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Recommended</div>
+          <div className="stat-value" style={{ color: 'var(--green-bright)' }}>{(d?.recommended || []).length}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Avoid</div>
+          <div className="stat-value" style={{ color: 'var(--red-bright)' }}>{d?.avoid_count || 0}</div>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Pair</th>
+              <th className="right">Size ×</th>
+              <th className="right">Win Rate</th>
+              <th className="right">Trades</th>
+              <th>Recommendation</th>
+              <th className="right">Entry Acc</th>
+              <th className="right">Mgmt Score</th>
+              <th className="right">Opt SL (R)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pairs.length === 0 && (
+              <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
+                No learned pairs yet — profiles build as trades close.
+              </td></tr>
+            )}
+            {pairs.map((p) => (
+              <tr key={p.pair}>
+                <td style={{ fontWeight: 600 }}>{p.pair}</td>
+                <td className="right" style={{ color: multColor(p.multiplier), fontFamily: "'JetBrains Mono', monospace" }}>
+                  {Number(p.multiplier).toFixed(2)}×
+                </td>
+                <td className="right" style={{ color: accColor(p.win_rate) }}>{pct(p.win_rate)}</td>
+                <td className="right">{p.trades}</td>
+                <td>
+                  <span className={`badge ${
+                    p.recommendation === 'AVOID' ? 'badge-red'
+                      : p.recommendation === 'REDUCE_SIZE' ? 'badge-yellow'
+                      : p.recommendation === 'TRADE' ? 'badge-green' : 'badge-muted'}`}>
+                    {p.recommendation || '—'}
+                  </span>
+                </td>
+                <td className="right">{p.entry_accuracy === null ? '—' : pct(p.entry_accuracy)}</td>
+                <td className="right">{p.management_score === null ? '—' : Number(p.management_score).toFixed(2)}</td>
+                <td className="right">{p.optimal_sl_r === null ? '—' : Number(p.optimal_sl_r).toFixed(2)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ── Tuner Agent ──────────────────────────────────────────────────────────────
+function TunerAgent({ d }) {
+  const tunables = d?.tunables || [];
+  const audit = d?.audit || [];
+  const missing = d?.unregistered_expected || [];
+  const bypass = d?.bypass_attempts || [];
+  return (
+    <div className="card mb-20">
+      <div className="card-header">
+        <span className="card-title">Tuner Agent</span>
+        <StatusPill on={d?.enabled} onLabel="SOLE AUTHORITY" offLabel="OFF" />
+      </div>
+      <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
+        <div className="stat-card">
+          <div className="stat-label">Registered</div>
+          <div className="stat-value">{d?.registered_count || 0}/{d?.expected_count || 0}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Disabled (3-strike)</div>
+          <div className="stat-value" style={{ color: (d?.disabled_tunables || []).length ? 'var(--red-bright)' : 'var(--text-primary)' }}>
+            {(d?.disabled_tunables || []).length}
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Bypass Attempts</div>
+          <div className="stat-value" style={{ color: bypass.length ? 'var(--red-bright)' : 'var(--text-primary)' }}>
+            {bypass.length}
+          </div>
+        </div>
+      </div>
+      {missing.length > 0 && (
+        <div style={{ fontSize: 11, color: 'var(--yellow-bright)', padding: '0 12px 8px' }}>
+          Unregistered expected: {missing.join(', ')}
+        </div>
+      )}
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Tunable</th>
+              <th>Frequency</th>
+              <th className="right">Tunes</th>
+              <th className="right">Last Tune</th>
+              <th className="right">Failures</th>
+              <th>State</th>
+            </tr>
+          </thead>
+          <tbody>
+            {tunables.length === 0 && (
+              <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
+                {d?.enabled ? 'No tunables registered.' : 'Tuner agent disabled — components self-tune.'}
+              </td></tr>
+            )}
+            {tunables.map((t) => (
+              <tr key={t.name}>
+                <td style={{ fontWeight: 600 }}>{t.name}</td>
+                <td style={{ color: 'var(--text-muted)' }}>{t.frequency}</td>
+                <td className="right">{t.tune_count}</td>
+                <td className="right">{tsAgo(t.last_tune_time)}</td>
+                <td className="right" style={{ color: t.consecutive_failures ? 'var(--red-bright)' : 'var(--text-primary)' }}>
+                  {t.consecutive_failures}
+                </td>
+                <td>
+                  {t.disabled
+                    ? <span className="badge badge-red">disabled</span>
+                    : <span className="badge badge-green">active</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {audit.length > 0 && (
+        <>
+          <div className="card-header" style={{ marginTop: 8 }}>
+            <span className="card-title">Recent tune results</span>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th>Tunable</th>
+                  <th>Result</th>
+                  <th>Detail</th>
+                </tr>
+              </thead>
+              <tbody>
+                {audit.map((a, i) => (
+                  <tr key={i}>
+                    <td>{tsAgo(a.timestamp)}</td>
+                    <td>{a.tunable_name}</td>
+                    <td>
+                      {a.rollback_performed
+                        ? <span className="badge badge-orange">rolled back</span>
+                        : a.skipped
+                          ? <span className="badge badge-muted">skipped</span>
+                          : a.changed
+                            ? <span className="badge badge-green">applied</span>
+                            : a.success
+                              ? <span className="badge badge-blue">no change</span>
+                              : <span className="badge badge-red">failed</span>}
+                    </td>
+                    <td style={{ color: 'var(--text-muted)', fontSize: 11 }}>{a.error || a.reason || '—'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+export default function Learning() {
+  const { data, loading } = useApi('/api/learning', 8000);
+
+  if (loading && !data) {
+    return (
+      <div>
+        <div className="page-header"><h2>Learning Layer</h2></div>
+        <div className="skeleton skeleton-block" />
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="page-header">
+        <h2>Learning Layer</h2>
+        <p>How the system learns and tunes itself — every adaptive producer, made visible. Read-only; panels fill as signals are graded and trades close.</p>
+      </div>
+
+      <SignalLedger d={data?.signal_ledger} />
+      <EmitterFeedback d={data?.emitter_feedback} />
+      <VoteCalibrator d={data?.vote_calibrator} />
+      <ScoreOptimizer d={data?.score_optimizer} />
+      <PairLearner d={data?.pair_learner} />
+      <TunerAgent d={data?.tuner_agent} />
+    </div>
+  );
+}
