@@ -1892,6 +1892,65 @@ class CounterfactualConfig:
 
 
 @dataclass
+class InteractionConfig:
+    """Settings for the Module Interaction Discovery engine (L5b).
+
+    Extends the L4 leave-ONE-out attribution to leave-K-out: it replays the same
+    stored decision snapshots with module SUBSETS removed to measure non-additive
+    interactions. For every module pair it compares the joint removal delta to the
+    sum of the individual removal deltas — the remainder is the interaction effect
+    (SYNERGY when above ``synergy_threshold``, TOXIC when below ``toxic_threshold``).
+    It also searches for the active-module subset that would have maximised the
+    book and surfaces toxic / synergistic pairs as read-only recommendations.
+
+    Purely analytical — it never changes a weight, mode, or decision. The
+    leave-K-out replay is expensive (``2^M`` subsets over the lookback window), so
+    it runs periodically (every ``interaction_interval`` closed trades) over the
+    most recent ``interaction_lookback`` trades and the result is cached for the
+    dashboard. It reuses the Counterfactual engine's stored trade snapshots, so it
+    is only active when ``counterfactual_enabled`` is also on. Defaults OFF.
+    """
+
+    # Master switch: compute + cache the leave-K-out interaction analysis.
+    interaction_discovery_enabled: bool = False
+    # How many recent closed trades each analysis pass replays.
+    interaction_lookback: int = 500
+    # Recompute the interaction matrix every N closed trades.
+    interaction_interval: int = 500
+    # Interaction effect below this = toxic pair (reinforce each other's mistakes).
+    toxic_threshold: float = -0.05
+    # Interaction effect above this = synergistic pair (better than sum of parts).
+    synergy_threshold: float = 0.05
+    # Above this many voting modules, fall back to greedy subset search (the
+    # exhaustive 2^M sweep is only run at or below this count).
+    exhaustive_search_max_modules: int = 12
+    # SQLite path (under data/, gitignored).
+    interaction_db_path: str = "data/interaction_discovery.db"
+
+    def __post_init__(self) -> None:
+        if int(self.interaction_lookback) < 1:
+            raise ValueError(
+                "InteractionConfig.interaction_lookback must be >= 1, "
+                f"got {self.interaction_lookback!r}"
+            )
+        if int(self.interaction_interval) < 1:
+            raise ValueError(
+                "InteractionConfig.interaction_interval must be >= 1, "
+                f"got {self.interaction_interval!r}"
+            )
+        if int(self.exhaustive_search_max_modules) < 1:
+            raise ValueError(
+                "InteractionConfig.exhaustive_search_max_modules must be >= 1, "
+                f"got {self.exhaustive_search_max_modules!r}"
+            )
+        if float(self.toxic_threshold) > float(self.synergy_threshold):
+            raise ValueError(
+                "InteractionConfig.toxic_threshold must be <= synergy_threshold, "
+                f"got toxic={self.toxic_threshold!r} synergy={self.synergy_threshold!r}"
+            )
+
+
+@dataclass
 class AppConfig:
     # All 4 categories enabled — forex, commodity, index, synthetic
     enabled_categories: list[str] = field(
@@ -1918,6 +1977,7 @@ class AppConfig:
     module_governor: ModuleGovernorConfig = field(default_factory=ModuleGovernorConfig)
     tuner_agent: TunerAgentConfig = field(default_factory=TunerAgentConfig)
     counterfactual: CounterfactualConfig = field(default_factory=CounterfactualConfig)
+    interaction: InteractionConfig = field(default_factory=InteractionConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)

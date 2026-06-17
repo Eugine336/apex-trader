@@ -378,6 +378,50 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         except Exception as exc:  # noqa: BLE001
             logger.warning("[counterfactual] init failed, disabled: {}", exc)
             self._counterfactual = None
+        # ── Module interaction discovery engine (L5b) ───────────────────
+        # Extends the L4 leave-ONE-out attribution to leave-K-out: replays the
+        # same stored decision snapshots with module SUBSETS removed to measure
+        # non-additive interactions (toxic / synergistic pairs) and the active
+        # subset that would have maximised the book. Purely analytical — never
+        # changes a live decision. It reuses the counterfactual engine's trade
+        # store, so it is only built when BOTH the interaction flag and the
+        # counterfactual engine are on; a build failure leaves it None.
+        self._interaction_analyzer = None
+        try:
+            ix_cfg = getattr(self.config, "interaction", None)
+            if (
+                ix_cfg is not None
+                and getattr(ix_cfg, "interaction_discovery_enabled", False)
+            ):
+                if self._counterfactual is None:
+                    logger.warning(
+                        "[interaction] enabled but counterfactual engine is off "
+                        "— interaction discovery needs L4 snapshots; disabled."
+                    )
+                else:
+                    from adaptive.interaction_discovery import InteractionAnalyzer
+
+                    cf_cfg = getattr(self.config, "counterfactual", None)
+                    self._interaction_analyzer = InteractionAnalyzer(
+                        self._counterfactual,
+                        enabled=True,
+                        lookback=ix_cfg.interaction_lookback,
+                        interval=ix_cfg.interaction_interval,
+                        toxic_threshold=ix_cfg.toxic_threshold,
+                        synergy_threshold=ix_cfg.synergy_threshold,
+                        exhaustive_search_max_modules=ix_cfg.exhaustive_search_max_modules,
+                        min_trades=int(
+                            getattr(cf_cfg, "min_trades_for_attribution", 50)
+                        ),
+                        db_path=ix_cfg.interaction_db_path,
+                    )
+                    logger.info(
+                        "[interaction] engine enabled (lookback={}, interval={})",
+                        ix_cfg.interaction_lookback, ix_cfg.interaction_interval,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[interaction] init failed, disabled: {}", exc)
+            self._interaction_analyzer = None
         self.scheduler = ScanScheduler(config=self.config)
         risk_cfg = self.config.risk
         self.entry_engine = EntryEngine(
@@ -792,6 +836,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             VoteCalibratorTunable,
             CounterfactualTunable,
             ModuleGovernorTunable,
+            InteractionAnalyzerTunable,
             ConsumerTunable,
         )
 
@@ -866,6 +911,20 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         if self._counterfactual is not None:
             agent.register(CounterfactualTunable(
                 self._counterfactual,
+                min_trades=int(
+                    getattr(
+                        getattr(self.config, "counterfactual", None),
+                        "min_trades_for_attribution", 50,
+                    )
+                ),
+            ))
+
+        # Module interaction discovery (trade-close batch) — periodic leave-K-out
+        # interaction matrix + optimal-subset search. Pure analysis; depends on
+        # the counterfactual snapshots and recomputes on its own cadence.
+        if self._interaction_analyzer is not None:
+            agent.register(InteractionAnalyzerTunable(
+                self._interaction_analyzer,
                 min_trades=int(
                     getattr(
                         getattr(self.config, "counterfactual", None),

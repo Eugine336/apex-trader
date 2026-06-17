@@ -75,6 +75,9 @@ class LearningMixin:
     def _counterfactual_obj(self) -> Any:
         return getattr(self._loop(), "_counterfactual", None)
 
+    def _interaction_obj(self) -> Any:
+        return getattr(self._loop(), "_interaction_analyzer", None)
+
     # ── Aggregate ────────────────────────────────────────────────────────────
     def get_learning(self) -> dict:
         """Every learning-layer producer's output for the Learning panel."""
@@ -87,6 +90,7 @@ class LearningMixin:
             "pair_learner": self._safe(self._learning_pair_learner),
             "tuner_agent": self._safe(self._learning_tuner_agent),
             "counterfactual": self._safe(self._learning_counterfactual),
+            "interactions": self._safe(self._learning_interactions),
         }
 
     @staticmethod
@@ -395,5 +399,62 @@ class LearningMixin:
             "trades_analyzed": int(cached.get("trades_analyzed", 0) or 0),
             "module_count": int(cached.get("module_count", 0) or 0),
             "modules": modules,
+            **meta,
+        }
+
+    # ── Module Interaction Discovery (L5b) ────────────────────────────────────
+    def _learning_interactions(self) -> dict:
+        analyzer = self._interaction_obj()
+        cfg = getattr(self._config(), "interaction", None)
+        meta = {
+            "lookback": int(getattr(cfg, "interaction_lookback", 0) or 0),
+            "interval": int(getattr(cfg, "interaction_interval", 0) or 0),
+            "toxic_threshold": _round(getattr(cfg, "toxic_threshold", 0.0), 4),
+            "synergy_threshold": _round(getattr(cfg, "synergy_threshold", 0.0), 4),
+        }
+        if analyzer is None:
+            return _idle(meta)
+
+        cached = analyzer.get_cached() or {}
+
+        def _pair(p: dict) -> dict:
+            return {
+                "module_a": str(p.get("module_a", "")),
+                "module_b": str(p.get("module_b", "")),
+                "removal_delta_a": _round(p.get("removal_delta_a", 0.0), 3),
+                "removal_delta_b": _round(p.get("removal_delta_b", 0.0), 3),
+                "removal_delta_ab": _round(p.get("removal_delta_ab", 0.0), 3),
+                "interaction_effect": _round(p.get("interaction_effect", 0.0), 3),
+                "relationship": str(p.get("relationship", "")),
+            }
+
+        pairs = [_pair(p) for p in (cached.get("pairs", []) or [])]
+        toxic = [_pair(p) for p in (cached.get("toxic_pairs", []) or [])]
+        synergy = [_pair(p) for p in (cached.get("synergy_pairs", []) or [])]
+
+        opt = cached.get("optimal_subset", {}) or {}
+        optimal = {
+            "active_modules": list(opt.get("active_modules", []) or []),
+            "shadow_modules": list(opt.get("shadow_modules", []) or []),
+            "total_r": _round(opt.get("total_r", 0.0), 3),
+            "baseline_r": _round(opt.get("baseline_r", 0.0), 3),
+            "improvement": _round(opt.get("improvement", 0.0), 3),
+            "sharpe": _round(opt.get("sharpe", 0.0), 3),
+            "max_drawdown": _round(opt.get("max_drawdown", 0.0), 3),
+            "trades_taken": int(opt.get("trades_taken", 0) or 0),
+            "search": str(opt.get("search", "")),
+        }
+        return {
+            "enabled": bool(getattr(analyzer, "enabled", False)),
+            "source": "live",
+            "computed_at": cached.get("computed_at"),
+            "trades_analyzed": int(cached.get("trades_analyzed", 0) or 0),
+            "module_count": int(cached.get("module_count", 0) or 0),
+            "modules": list(cached.get("modules", []) or []),
+            "search": str(cached.get("search", "")),
+            "pairs": pairs,
+            "toxic_pairs": toxic,
+            "synergy_pairs": synergy,
+            "optimal_subset": optimal,
             **meta,
         }
