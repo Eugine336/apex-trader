@@ -1417,6 +1417,65 @@ class OutcomeFeedbackConfig:
 
 
 @dataclass
+class SignalLedgerConfig:
+    """Settings for the universal Signal Ledger + Emitter Feedback layer.
+
+    Records EVERY directional read each module emits — before any gate runs —
+    and grades it on whether price actually moved the predicted way, regardless
+    of whether a trade was taken. Removes the selection bias in the learning
+    layer (only taken trades were ever graded) and lets each emitter ask how it
+    is doing and whether a gate is over-filtering its correct signals.
+
+    Purely observational — nothing here changes a live decision. All switches
+    default OFF so the layer is dormant until explicitly enabled.
+    """
+
+    # Master switch: record signals at emission time.
+    signal_ledger_enabled: bool = False
+    # Run the background grading cycle (price sampling + finalisation).
+    signal_grading_enabled: bool = False
+    # Elapsed time before a signal is finalised (direction_correct decided).
+    signal_grading_delay_minutes: int = 30
+    # Minutes at which intermediate price observations are stamped.
+    signal_grading_check_intervals: list[int] = field(
+        default_factory=lambda: [5, 15, 30, 60]
+    )
+    # Minimum signed move (%) in the predicted direction to count as correct.
+    signal_min_move_pct: float = 0.1
+    # Enable the read-side EmitterFeedback service.
+    emitter_feedback_enabled: bool = False
+    # SQLite path (under data/, gitignored).
+    signal_ledger_db_path: str = "data/signal_ledger.db"
+    # Rolling window of most-recent graded signals for accuracy aggregation.
+    accuracy_lookback: int = 100
+
+    def __post_init__(self) -> None:
+        if int(self.signal_grading_delay_minutes) < 0:
+            raise ValueError(
+                "SignalLedgerConfig.signal_grading_delay_minutes must be >= 0, "
+                f"got {self.signal_grading_delay_minutes!r}"
+            )
+        if not isinstance(self.signal_grading_check_intervals, list) or not all(
+            isinstance(x, (int, float)) and x >= 0
+            for x in self.signal_grading_check_intervals
+        ):
+            raise ValueError(
+                "SignalLedgerConfig.signal_grading_check_intervals must be a list "
+                f"of non-negative numbers, got {self.signal_grading_check_intervals!r}"
+            )
+        if not (0.0 <= float(self.signal_min_move_pct) <= 100.0):
+            raise ValueError(
+                "SignalLedgerConfig.signal_min_move_pct must be in [0, 100], "
+                f"got {self.signal_min_move_pct!r}"
+            )
+        if int(self.accuracy_lookback) <= 0:
+            raise ValueError(
+                "SignalLedgerConfig.accuracy_lookback must be > 0, "
+                f"got {self.accuracy_lookback!r}"
+            )
+
+
+@dataclass
 class AppConfig:
     # All 4 categories enabled — forex, commodity, index, synthetic
     enabled_categories: list[str] = field(
@@ -1436,6 +1495,7 @@ class AppConfig:
     decision_trace: DecisionTraceConfig = field(default_factory=DecisionTraceConfig)
     orchestrator: OrchestratorConfig = field(default_factory=OrchestratorConfig)
     outcome_feedback: OutcomeFeedbackConfig = field(default_factory=OutcomeFeedbackConfig)
+    signal_ledger: SignalLedgerConfig = field(default_factory=SignalLedgerConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)
