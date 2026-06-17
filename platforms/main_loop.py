@@ -623,6 +623,225 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # ── Data backup ──────────────────────────────────────────────────
         self._last_data_backup_ts: float = 0.0
 
+        # ── Tuner Agent — central auto-tuning coordinator ────────────────
+        # One place that schedules, orders, validates, audits, and rolls back
+        # every learner/tuner. When disabled (default) the legacy scattered
+        # tuning triggers below run exactly as before; when enabled, those are
+        # routed through the agent instead (see _check_daily_reset / scan loop /
+        # _record_closed_trade). Instantiated last so all components exist.
+        self._tuner_agent = None
+        self._tuner_trade_cache: Optional[dict] = None
+        self._tuner_trade_cache_gen: int = -1
+        self._tuner_run_gen: int = 0
+        try:
+            self._setup_tuner_agent()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[tuner-agent] setup skipped: {}", exc)
+            self._tuner_agent = None
+
+    # ── Tuner Agent wiring ────────────────────────────────────────────────
+
+    def _setup_tuner_agent(self) -> None:
+        """Instantiate the TunerAgent and register every tunable (gated)."""
+        tcfg = getattr(self.config, "tuner_agent", None)
+        if tcfg is None or not getattr(tcfg, "enabled", False):
+            return
+        from adaptive.tuner_agent import TunerAgent
+        from adaptive.tunable_adapters import (
+            ScoreOptimizerTunable,
+            RegimeLearnerTunable,
+            PairLearnerTunable,
+            SessionLearnerTunable,
+            EVEstimatorTunable,
+            GateTunerTunable,
+            PlannerCalibratorTunable,
+            SignalLedgerTunable,
+        )
+
+        agent = TunerAgent(
+            enabled=True,
+            audit_db_path=tcfg.audit_db_path,
+            max_tune_duration_seconds=tcfg.max_tune_duration_seconds,
+            max_consecutive_failures=tcfg.max_consecutive_failures,
+            log_all_skips=tcfg.log_all_skips,
+        )
+
+        agent.register(ScoreOptimizerTunable(
+            self.ml.optimizer,
+            self._tuner_ml_trades_provider,
+            on_update=self._tuner_apply_scoring_weights,
+        ))
+        agent.register(RegimeLearnerTunable(
+            self.ml.regime_learner, self._tuner_ml_trades_provider,
+        ))
+        agent.register(PairLearnerTunable(
+            self.ml.pair_learner, self._tuner_ml_trades_provider,
+        ))
+        agent.register(SessionLearnerTunable(
+            self.ml.session_learner, self._tuner_ml_trades_provider,
+        ))
+        agent.register(EVEstimatorTunable(
+            getattr(self.scanner, "_ev_estimator", None),
+            refresh=self._tuner_refresh_ev_history,
+        ))
+        agent.register(GateTunerTunable(
+            self._gate_tuner,
+            lambda: self._shadow_store.get_outcomes_by_gate(),
+        ))
+        if self._calibrator is not None:
+            agent.register(PlannerCalibratorTunable(
+                self._calibrator,
+                self._tuner_completed_plans_provider,
+                planner=self._planner,
+                planner_enabled=self._planner_enabled,
+            ))
+        if self._signal_ledger is not None:
+            agent.register(SignalLedgerTunable(
+                self._signal_ledger, prices_provider=None,
+            ))
+
+        self._tuner_agent = agent
+        logger.info(
+            "🎛️ Tuner Agent ENABLED — coordinating {} tunables: {}",
+            len(agent.registered_names), ", ".join(agent.registered_names),
+        )
+
+    def _tuner_agent_active(self) -> bool:
+        return self._tuner_agent is not None and getattr(
+            self.config.tuner_agent, "enabled", False
+        )
+
+    def _tuner_fetch_ml_trades(self) -> dict:
+        """Fetch + tag-parse the journal once per agent run, cached by run gen.
+
+        Returns ``{"raw": [...], "learner": [...]}`` where ``learner`` is the
+        recency-windowed subset the AdaptiveOptimizer normally trains on. The
+        cache makes the four ML adapters share one journal read per run.
+        """
+        if self._tuner_trade_cache_gen == self._tuner_run_gen and self._tuner_trade_cache is not None:
+            return self._tuner_trade_cache
+        raw_trades: list[dict] = []
+        try:
+            raw_trades = self._journal_loop.run_until_complete(
+                self.journal.get_all_trades_as_dicts()
+            ) or []
+            for t in raw_trades:
+                raw = t.pop("confluences_raw", [])
+                if not isinstance(raw, list):
+                    raw = []
+                t["confluences_tags"] = _parse_confluence_tags(raw)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[tuner-agent] journal fetch failed: {}", exc)
+            raw_trades = []
+        try:
+            learner_trades = MLAdapter._recent_trades(
+                raw_trades, self.ml.recency_window_days, self.ml.recency_min_trades,
+            )
+        except Exception:  # noqa: BLE001
+            learner_trades = raw_trades
+        self._tuner_trade_cache = {"raw": raw_trades, "learner": learner_trades}
+        self._tuner_trade_cache_gen = self._tuner_run_gen
+        return self._tuner_trade_cache
+
+    def _tuner_ml_trades_provider(self) -> list:
+        return self._tuner_fetch_ml_trades().get("learner", [])
+
+    def _tuner_completed_plans_provider(self) -> list:
+        if self._outcome_logger is None:
+            return []
+        try:
+            return self._outcome_logger.get_completed_trades(
+                lookback=self._planner.config.calibration_lookback_trades
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[tuner-agent] completed-plans fetch failed: {}", exc)
+            return []
+
+    def _tuner_refresh_ev_history(self) -> int:
+        """Feed the latest trade history to the scanner's EVEstimator (faithful
+        to the legacy retrain step) and return the snapshot size."""
+        raw = self._tuner_fetch_ml_trades().get("raw", [])
+        try:
+            self.scanner._trade_history = raw[-500:] if len(raw) > 500 else list(raw)
+            return len(self.scanner._trade_history)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[tuner-agent] EV history refresh failed: {}", exc)
+            return 0
+
+    def _tuner_apply_scoring_weights(self, weights) -> None:
+        """Reload freshly optimised scoring weights into the live scanner —
+        the same side effect the legacy _run_ml_optimization performed."""
+        try:
+            if not self.config.scoring.use_adaptive_scoring_weights:
+                return
+            from adaptive.score_optimizer import (
+                ScoringWeights as _SW,
+                ADAPTIVE_WEIGHT_ENVELOPE_PCT as _ENV_PCT,
+            )
+            self.scanner._adaptive_weights = weights.clamped_to_envelope(
+                _SW(), _ENV_PCT
+            ).as_dict()
+            logger.info("[tuner-agent] live scanner scoring weights reloaded")
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[tuner-agent] scanner weight reload failed: {}", exc)
+
+    def _tuner_make_context(self):
+        from adaptive.tunable import TuneContext
+
+        return TuneContext(
+            total_trades=len(getattr(self.scanner, "_trade_history", []) or []),
+            trades_since_last_tune=int(getattr(self.ml, "_trades_since_train", 0) or 0),
+            seconds_since_last_tune=0.0,
+        )
+
+    def _tuner_run_trade_close(self) -> None:
+        """Route trade-close tuning through the agent (ON_TRADE_CLOSE/BATCH +
+        PERIODIC), then preserve the legacy losing-pattern cache refresh."""
+        if not self._tuner_agent_active():
+            return
+        self._tuner_run_gen += 1
+        self._tuner_trade_cache = None
+        try:
+            ctx = self._tuner_make_context()
+            results = self._tuner_agent.on_trade_close(ctx)
+            self._tuner_agent.on_periodic_tick(ctx)
+            self._tuner_refresh_losing_patterns(results)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[tuner-agent] trade-close run failed: {}", exc)
+
+    def _tuner_refresh_losing_patterns(self, results) -> None:
+        """Refresh AdaptiveOptimizer's losing-pattern cache when an ML learner
+        actually ran — faithful to run_optimization, which the agent bypasses."""
+        ml_names = {"score_optimizer", "regime_learner", "pair_learner", "session_learner"}
+        ran = any(
+            getattr(r, "tunable_name", "") in ml_names and not getattr(r, "skipped", True)
+            for r in (results or [])
+        )
+        if not ran or self._tuner_trade_cache is None:
+            return
+        try:
+            learner_trades = self._tuner_trade_cache.get("learner", [])
+            self.ml._losing_patterns = self.ml.analyzer.get_losing_patterns(learner_trades)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[tuner-agent] losing-pattern refresh failed: {}", exc)
+
+    def _tuner_run_scan_cycle(self, market_data: dict) -> None:
+        """Route per-scan-cycle tuning (signal grading) through the agent."""
+        if not self._tuner_agent_active():
+            return
+        try:
+            from adaptive.tunable import TuneContext
+
+            prices: dict = {}
+            for pair, frames in (market_data or {}).items():
+                px = self._current_price_for(pair, {pair: frames})
+                if px:
+                    prices[pair] = px
+            ctx = TuneContext(current_prices=prices)
+            self._tuner_agent.on_scan_cycle(ctx)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[tuner-agent] scan-cycle run failed: {}", exc)
+
     def _account_key(self, symbol: str) -> str:
         """Resolve the risk-silo key (broker + account login) for a symbol.
 
@@ -1136,7 +1355,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # grade prior signals against current prices. Observational — no-op
         # unless the signal ledger is enabled.
         self._record_scan_signals(report, market_data)
-        self._run_signal_grading(market_data)
+        if self._tuner_agent_active():
+            # Signal grading is coordinated by the Tuner Agent (PER_SCAN_CYCLE).
+            self._tuner_run_scan_cycle(market_data)
+        else:
+            self._run_signal_grading(market_data)
 
         qf, qt = self.scanner.get_quality_failure_stats()
         if qf > 0:
@@ -5722,6 +5945,12 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         )
         self._run_journal_async(self.journal.log_trade(trade_record))
         self.ml.register_new_trade(exit_cause=cause_value)
+        # When the Tuner Agent owns scheduling, give it a chance to run the
+        # trade-close-driven tuners (ML learners, EV, planner calibrator) plus
+        # the periodic gate tuner — each gated by its own cadence. No-op when
+        # the agent is disabled (legacy daily-reset tuning runs instead).
+        if self._tuner_agent_active():
+            self._tuner_run_trade_close()
         try:
             trade_summary = {
                 "pair": pos.symbol,
@@ -6546,6 +6775,14 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         get_event_store().vacuum()
                 except Exception as exc:
                     logger.debug("[maintenance] event-store prune failed: {}", exc)
+
+        if self._tuner_agent_active():
+            # All tuning is coordinated by the Tuner Agent on trade close / scan
+            # cycle; the legacy scattered triggers are skipped to avoid double
+            # tuning. Non-tuning maintenance (shadows, backup) still runs.
+            self._maybe_resolve_shadows()
+            self._maybe_backup_data()
+            return
 
         if self.ml.should_retrain():
             self._run_ml_optimization()
