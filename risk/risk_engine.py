@@ -137,6 +137,7 @@ class RiskEngine:
         session: str = "",
         conviction: float | None = None,
         portfolio_heat_pct: float = 0.0,
+        strategy_allocation: float = 1.0,
     ) -> RiskAssessment:
         now = datetime.now(timezone.utc)
         balance = account_balance or self.balance
@@ -276,6 +277,7 @@ class RiskEngine:
                 score=score,
                 hwm_state=hwm_state,
                 portfolio_heat_pct=portfolio_heat_pct,
+                strategy_allocation=strategy_allocation,
             )
             _src = f"conviction {conviction:.2f}" if conviction is not None else f"score {score}"
             checks.append(f"Risk scaled by {_src}: {risk_pct_decimal:.3%}")
@@ -584,6 +586,7 @@ class RiskEngine:
         score: int,
         hwm_state: dict,
         portfolio_heat_pct: float = 0.0,
+        strategy_allocation: float = 1.0,
     ) -> float:
         """Single auditable sizing chain (P7).
 
@@ -597,6 +600,11 @@ class RiskEngine:
         live path) it drives sizing via fresh data. When it is ``None`` the
         engine falls back to the legacy stale-score scaler for backward
         compatibility (e.g. Decision Engine disabled).
+
+        ``strategy_allocation`` (L5.5a) is the Capital Allocation Engine's
+        per-strategy sizing multiplier — the trade's execution-style share of
+        the book, clamped to [0,1]. Defaults to 1.0 (no-op) so the chain is
+        unchanged when the allocator is absent / disabled / cold.
         """
         if conviction is None:
             # Legacy path — preserve exact historical behaviour.
@@ -607,8 +615,10 @@ class RiskEngine:
         conviction_scale = self._scale_by_conviction(conviction)
         heat_scale = self._scale_by_portfolio_heat(portfolio_heat_pct)
         drawdown_scale = self._scale_by_drawdown(dd_pct)
+        allocation_scale = max(0.0, min(1.0, float(strategy_allocation)))
 
         size = base_risk_pct
+        size *= allocation_scale
         size *= conviction_scale
         size *= heat_scale
         size *= drawdown_scale
@@ -618,11 +628,13 @@ class RiskEngine:
 
         logger.info(
             "[RiskEngine] Sizing chain: base={:.4%} "
+            "× allocation({:.2f})={:.2f} "
             "× conviction({:.2f})={:.2f} "
             "× heat({:.2f}%)={:.2f} "
             "× drawdown({:.2%})={:.2f} "
             "= {:.4%}{}",
-            base_risk_pct, conviction, conviction_scale,
+            base_risk_pct, float(strategy_allocation), allocation_scale,
+            conviction, conviction_scale,
             portfolio_heat_pct, heat_scale,
             dd_pct, drawdown_scale,
             final, " (capped)" if capped < size else "",

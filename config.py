@@ -2235,6 +2235,89 @@ class SignalDiscoveryConfig:
 
 
 @dataclass
+class CapitalAllocationConfig:
+    """Settings for the Capital Allocation Engine (L5.5a).
+
+    Allocates capital across *strategy fingerprints* — the execution-style
+    signature of a trade (entry mode × horizon, e.g. ``MARKET|SCALP`` vs
+    ``PENDING|SWING``) — instead of picking a single "best" style. Each
+    fingerprint's expectancy is scored across three trade horizons (recent /
+    medium / long) with the long horizon dominating, so the book diversifies
+    its alpha sources and never reinvents itself on a short winning streak.
+
+    The raw allocations sum to 1.0 (a true portfolio split, shown on the
+    dashboard). The *sizing multiplier* applied to a trade is the fingerprint's
+    allocation normalised against the strongest fingerprint in the book and
+    clamped to ``[min_allocation, 1.0]`` — purely de-risking, never amplifying.
+    With insufficient history (< ``min_trades_for_scoring`` total closed trades)
+    every fingerprint resolves to a 1.0 multiplier, i.e. behaviour is identical
+    to the pre-allocator system.
+
+    Anti-thrashing: allocations only recompute every ``rebalance_interval_trades``
+    closed trades, and no single fingerprint's allocation may move more than
+    ``max_allocation_shift`` per rebalance. A ``min_allocation`` floor keeps a
+    proven-but-currently-cold style from being starved to zero.
+    """
+
+    # Master switch — ACTIVE by default. When off the engine never sizes.
+    enabled: bool = True
+
+    # Three-horizon expectancy windows (most-recent N closed trades per
+    # fingerprint) and their blend weights (long horizon dominates).
+    short_horizon_trades: int = 50
+    medium_horizon_trades: int = 500
+    long_horizon_trades: int = 5000
+    short_weight: float = 0.2
+    medium_weight: float = 0.3
+    long_weight: float = 0.5
+
+    # Recompute allocations only every N closed trades (anti-thrash cadence).
+    rebalance_interval_trades: int = 25
+    # Max fraction a single fingerprint's allocation may move per rebalance.
+    max_allocation_shift: float = 0.10
+    # Allocation floor — no active style is starved below this share.
+    min_allocation: float = 0.05
+    # Below this many total closed trades the sizing multiplier is a 1.0 no-op.
+    min_trades_for_scoring: int = 50
+    # Bayesian shrinkage strength — prior (book-average) weight in trades.
+    bayesian_prior_trades: int = 100
+    # Softmax temperature mapping blended expectancy → allocation weight.
+    allocation_temperature: float = 0.5
+    # SQLite path (under data/, gitignored).
+    capital_allocation_db_path: str = "data/capital_allocation.db"
+
+    def __post_init__(self) -> None:
+        for name in (
+            "short_horizon_trades",
+            "medium_horizon_trades",
+            "long_horizon_trades",
+            "rebalance_interval_trades",
+            "min_trades_for_scoring",
+            "bayesian_prior_trades",
+        ):
+            if int(getattr(self, name)) < 1:
+                raise ValueError(
+                    f"CapitalAllocationConfig.{name} must be >= 1, "
+                    f"got {getattr(self, name)!r}"
+                )
+        if not (0.0 < float(self.max_allocation_shift) <= 1.0):
+            raise ValueError(
+                "CapitalAllocationConfig.max_allocation_shift must be in (0, 1], "
+                f"got {self.max_allocation_shift!r}"
+            )
+        if not (0.0 <= float(self.min_allocation) < 1.0):
+            raise ValueError(
+                "CapitalAllocationConfig.min_allocation must be in [0, 1), "
+                f"got {self.min_allocation!r}"
+            )
+        if float(self.allocation_temperature) <= 0.0:
+            raise ValueError(
+                "CapitalAllocationConfig.allocation_temperature must be > 0, "
+                f"got {self.allocation_temperature!r}"
+            )
+
+
+@dataclass
 class AppConfig:
     # All 4 categories enabled — forex, commodity, index, synthetic
     enabled_categories: list[str] = field(
@@ -2264,6 +2347,7 @@ class AppConfig:
     interaction: InteractionConfig = field(default_factory=InteractionConfig)
     param_evolution: ParameterEvolutionConfig = field(default_factory=ParameterEvolutionConfig)
     signal_discovery: SignalDiscoveryConfig = field(default_factory=SignalDiscoveryConfig)
+    capital_allocation: CapitalAllocationConfig = field(default_factory=CapitalAllocationConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)

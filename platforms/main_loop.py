@@ -858,6 +858,44 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         """Instantiate the L5 evolution / discovery engines (all gated, all
         reading the counterfactual closed-trade snapshots).  Any build failure
         leaves the attribute None so the guarded tuner hooks simply no-op."""
+        # ── Capital Allocation Engine (L5.5a) ────────────────────────────────
+        # Allocates capital across execution-style fingerprints (entry mode ×
+        # horizon) via three-horizon expectancy scoring. Independent of the
+        # counterfactual snapshot store (it learns from realised R per
+        # fingerprint), so it is built up-front and unconditionally. A 1.0
+        # sizing multiplier with thin history makes it a no-op until evidence
+        # accrues; any build failure leaves it None and the guarded hooks no-op.
+        self._capital_allocator = None
+        try:
+            ca_cfg = getattr(self.config, "capital_allocation", None)
+            if ca_cfg is not None and getattr(ca_cfg, "enabled", False):
+                from adaptive.capital_allocator import CapitalAllocator
+
+                self._capital_allocator = CapitalAllocator(
+                    db_path=ca_cfg.capital_allocation_db_path,
+                    enabled=True,
+                    short_horizon_trades=ca_cfg.short_horizon_trades,
+                    medium_horizon_trades=ca_cfg.medium_horizon_trades,
+                    long_horizon_trades=ca_cfg.long_horizon_trades,
+                    short_weight=ca_cfg.short_weight,
+                    medium_weight=ca_cfg.medium_weight,
+                    long_weight=ca_cfg.long_weight,
+                    rebalance_interval_trades=ca_cfg.rebalance_interval_trades,
+                    max_allocation_shift=ca_cfg.max_allocation_shift,
+                    min_allocation=ca_cfg.min_allocation,
+                    min_trades_for_scoring=ca_cfg.min_trades_for_scoring,
+                    bayesian_prior_trades=ca_cfg.bayesian_prior_trades,
+                    allocation_temperature=ca_cfg.allocation_temperature,
+                )
+                logger.info(
+                    "[capital-allocation] engine enabled (L5.5a) — "
+                    "rebalance every {} closes, min floor {:.0%}",
+                    ca_cfg.rebalance_interval_trades, ca_cfg.min_allocation,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[capital-allocation] init failed, disabled: {}", exc)
+            self._capital_allocator = None
+
         self._param_evolver = None
         self._signal_discovery = None
         # L5c virtual voting modules — registry (vote authority) + lifecycle
@@ -1020,6 +1058,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             ParameterEvolverTunable,
             SignalDiscoveryTunable,
             VirtualSignalManagerTunable,
+            CapitalAllocatorTunable,
             ConsumerTunable,
         )
 
@@ -1151,6 +1190,20 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 ),
             ))
 
+        # L5.5a — capital allocation rebalance (trade-close batch). Records R
+        # per fingerprint on every close; the rebalance recompute is routed here
+        # so it runs on the agent's coordinated cadence.
+        if self._capital_allocator is not None:
+            agent.register(CapitalAllocatorTunable(
+                self._capital_allocator,
+                min_trades=int(
+                    getattr(
+                        getattr(self.config, "capital_allocation", None),
+                        "rebalance_interval_trades", 25,
+                    )
+                ),
+            ))
+
         # ── Make the agent the single place the WHOLE system reports to ──────
         # Hard enforcement: the components that can self-tune get a reference so
         # any direct retrain/calibrate/grade call is blocked while the agent is
@@ -1158,7 +1211,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         for _component in (
             self.ml, self._gate_tuner, self._calibrator, self._signal_ledger,
             self._vote_calibrator, self._module_governor,
-            self._virtual_signal_manager,
+            self._virtual_signal_manager, self._capital_allocator,
         ):
             if _component is not None and hasattr(_component, "set_tuner_agent"):
                 _component.set_tuner_agent(agent)
@@ -3248,6 +3301,32 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             )
             return False
 
+        # ── Capital Allocation Engine (L5.5a) — strategy sizing multiplier ───
+        # Fingerprint the trade's execution style (entry mode × horizon) and ask
+        # the allocator for its de-risking sizing multiplier (the style's share
+        # of the book, normalised to the strongest style, clamped [floor, 1.0]).
+        # 1.0 when the allocator is absent / disabled / cold — a true no-op that
+        # leaves the risk chain unchanged. The fingerprint is stamped on the
+        # managed position below so the close path credits realised R correctly.
+        strategy_fingerprint = ""
+        strategy_allocation = 1.0
+        allocator = getattr(self, "_capital_allocator", None)
+        if allocator is not None:
+            try:
+                from adaptive.capital_allocator import compute_fingerprint
+
+                strategy_fingerprint = compute_fingerprint(
+                    getattr(signal, "entry_mode", "") or "",
+                    getattr(result, "selected_horizon", "") or "",
+                )
+                strategy_allocation = float(
+                    allocator.get_sizing_multiplier(strategy_fingerprint)
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[capital-allocation] sizing multiplier failed for {}: {}", pair, exc)
+                strategy_fingerprint = ""
+                strategy_allocation = 1.0
+
         assessment = self.risk_engine.assess(
             pair=pair,
             direction=direction,
@@ -3266,6 +3345,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             trade_history=getattr(self.scanner, "_trade_history", None),
             conviction=entry_conviction,
             portfolio_heat_pct=getattr(self, "_current_portfolio_heat", 0.0),
+            strategy_allocation=strategy_allocation,
         )
         if not assessment.approved:
             reasons = "; ".join(assessment.rejections)
@@ -3765,6 +3845,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # P4: persist the entry execution quality for the close record.
         managed.entry_spread = float(spread or 0.0)
         managed.entry_slippage_pips = float(getattr(order, "slippage_pips", 0.0) or 0.0)
+        # L5.5a: stamp the capital-allocation fingerprint so the close path can
+        # credit this trade's realised R to its execution-style bucket.
+        managed.strategy_fingerprint = strategy_fingerprint
 
         info_risk = INSTRUMENT_REGISTRY.get(pair.upper())
         pip_sz = info_risk.pip_size if info_risk else 0.0001
@@ -6678,6 +6761,27 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self._counterfactual_complete(pos, _cf_pnl_r, outcome, cause_value)
         except Exception as exc:
             logger.debug("[counterfactual] close hook failed for {}: {}", pos.symbol, exc)
+
+        # ── Capital Allocation Engine — credit realised R to the style bucket ──
+        # Records this trade's R against its execution-style fingerprint so the
+        # allocator can score per-style expectancy. Pure data ingestion (never
+        # blocked by the TunerAgent). The rebalance recompute runs on its own
+        # cadence — directly here when the agent is off, or via the agent's
+        # CapitalAllocatorTunable when it owns scheduling. No-op when disabled.
+        try:
+            allocator = getattr(self, "_capital_allocator", None)
+            _ca_fp = str(getattr(pos, "strategy_fingerprint", "") or "")
+            if allocator is not None and _ca_fp:
+                _ca_plan_sl = float(getattr(pos, "plan_sl_pips", 0.0) or 0.0)
+                _ca_pnl_r = (
+                    (pnl_pips / _ca_plan_sl) if _ca_plan_sl > 1e-8
+                    else (1.0 if pnl_dollars > 0 else -1.0)
+                )
+                allocator.record_outcome(_ca_fp, _ca_pnl_r)
+                if not self._tuner_agent_active():
+                    allocator.maybe_rebalance()
+        except Exception as exc:
+            logger.debug("[capital-allocation] close hook failed for {}: {}", pos.symbol, exc)
 
         # ── Post-close price tracking — schedule forward MFE/MAE checks ──────
         # Separates entry-signal quality from management quality. Keyed by the

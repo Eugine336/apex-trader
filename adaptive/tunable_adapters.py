@@ -1410,6 +1410,74 @@ class ConsumerTunable:
         return True
 
 
+class CapitalAllocatorTunable(_BaseTunable):
+    """Wraps ``CapitalAllocator.rebalance`` — the L5.5a capital split recompute.
+
+    The allocator records realised R per execution-style fingerprint on every
+    close (data ingestion, always allowed). The *rebalance* — recomputing the
+    portfolio split — is the tuning step routed through the agent here so it
+    runs on a single coordinated cadence instead of the allocator's own
+    interval. Snapshot/rollback covers the scalar knobs (horizon weights,
+    min-allocation floor, rebalance cadence) the agent may later adjust.
+    """
+
+    def __init__(
+        self,
+        allocator,
+        *,
+        min_trades: int = 25,
+        min_interval: float = 0.0,
+    ) -> None:
+        super().__init__(
+            name="capital_allocator",
+            frequency=TuneFrequency.ON_TRADE_BATCH,
+            dependencies=[],
+            min_trades=min_trades,
+            min_interval=min_interval,
+        )
+        self._allocator = allocator
+
+    def _read_params(self) -> dict:
+        return dict(self._allocator.get_current_params())
+
+    def _apply_params(self, params: dict) -> None:
+        self._allocator.apply_params(params)
+
+    def validate_params(self, params: dict) -> tuple[bool, str]:
+        try:
+            for k in ("short_weight", "medium_weight", "long_weight"):
+                v = float(params.get(k, 0.0))
+                if v < 0.0:
+                    return False, f"{k}={v} must be >= 0"
+            floor = float(params.get("min_allocation", 0.0))
+            if not (0.0 <= floor < 1.0):
+                return False, f"min_allocation={floor} outside [0, 1)"
+            shift = float(params.get("max_allocation_shift", 0.1))
+            if not (0.0 < shift <= 1.0):
+                return False, f"max_allocation_shift={shift} outside (0, 1]"
+            interval = int(params.get("rebalance_interval_trades", 1))
+            if interval < 1:
+                return False, f"rebalance_interval_trades={interval} must be >= 1"
+            temp = float(params.get("allocation_temperature", 1.0))
+            if temp <= 0.0:
+                return False, f"allocation_temperature={temp} must be > 0"
+        except (TypeError, ValueError) as exc:
+            return False, f"invalid params: {exc}"
+        return True, "ok"
+
+    def tune(self, ctx: TuneContext) -> TuneResult:
+        before = self._begin()
+        result = self._allocator.rebalance(force=True)
+        after = self._read_params()
+        self._mark_tuned(ctx)
+        n = len(result) if isinstance(result, dict) else 0
+        return TuneResult(
+            tunable_name=self._name, success=True,
+            params_before=before, params_after=after,
+            reason=f"rebalanced {n} fingerprint(s)",
+        )
+
+
 __all__ = [
     "ScoreOptimizerTunable",
     "RegimeLearnerTunable",
@@ -1427,5 +1495,6 @@ __all__ = [
     "ParameterEvolverTunable",
     "SignalDiscoveryTunable",
     "VirtualSignalManagerTunable",
+    "CapitalAllocatorTunable",
     "ConsumerTunable",
 ]

@@ -89,6 +89,9 @@ class LearningMixin:
     def _virtual_registry_obj(self) -> Any:
         return getattr(self._loop(), "_virtual_registry", None)
 
+    def _capital_allocator_obj(self) -> Any:
+        return getattr(self._loop(), "_capital_allocator", None)
+
     # ── Aggregate ────────────────────────────────────────────────────────────
     def get_learning(self) -> dict:
         """Every learning-layer producer's output for the Learning panel."""
@@ -105,6 +108,7 @@ class LearningMixin:
             "param_evolution": self._safe(self._learning_param_evolution),
             "signal_discovery": self._safe(self._learning_signal_discovery),
             "virtual_modules": self._safe(self._learning_virtual_modules),
+            "capital_allocation": self._safe(self._learning_capital_allocation),
         }
 
     @staticmethod
@@ -636,5 +640,53 @@ class LearningMixin:
             "last_evaluation": last_eval,
             "modules": modules,
             "transitions": transitions,
+            **meta,
+        }
+
+    # ── Capital Allocation Engine (L5.5a) ─────────────────────────────────────
+    def _learning_capital_allocation(self) -> dict:
+        allocator = self._capital_allocator_obj()
+        cfg = getattr(self._config(), "capital_allocation", None)
+        meta = {
+            "rebalance_interval_trades": int(getattr(cfg, "rebalance_interval_trades", 0) or 0),
+            "min_trades_for_scoring": int(getattr(cfg, "min_trades_for_scoring", 0) or 0),
+            "config_flag": bool(getattr(cfg, "enabled", False)),
+        }
+        if allocator is None:
+            return _idle(meta)
+        state = allocator.get_state() or {}
+        fingerprints = []
+        for f in state.get("fingerprints", []) or []:
+            fingerprints.append({
+                "fingerprint": str(f.get("fingerprint", "")),
+                "trades": int(f.get("trades", 0) or 0),
+                "exp_short": _round(f.get("exp_short", 0.0), 4),
+                "exp_medium": _round(f.get("exp_medium", 0.0), 4),
+                "exp_long": _round(f.get("exp_long", 0.0), 4),
+                "blended_score": _round(f.get("blended_score", 0.0), 4),
+                "allocation": _round(f.get("allocation", 0.0), 4),
+                "sizing_multiplier": _round(f.get("sizing_multiplier", 1.0), 4),
+            })
+        rebalances = []
+        for rb in state.get("rebalance_history", []) or []:
+            rebalances.append({
+                "ts": rb.get("ts"),
+                "fingerprints": int(rb.get("fingerprints", 0) or 0),
+                "max_shift": _round(rb.get("max_shift", 0.0), 4),
+                "floored": int(rb.get("floored", 0) or 0),
+            })
+        return {
+            "enabled": bool(state.get("enabled", False)),
+            "source": "live",
+            "active": bool(state.get("active", False)),
+            "total_trades": int(state.get("total_trades", 0) or 0),
+            "trades_since_rebalance": int(state.get("trades_since_rebalance", 0) or 0),
+            "last_rebalance_ts": state.get("last_rebalance_ts"),
+            "horizon_weights": state.get("horizon_weights", {}) or {},
+            "min_allocation": _round(state.get("min_allocation", 0.0), 4),
+            "max_allocation_shift": _round(state.get("max_allocation_shift", 0.0), 4),
+            "fingerprint_count": int(state.get("fingerprint_count", 0) or 0),
+            "fingerprints": fingerprints,
+            "rebalance_history": rebalances,
             **meta,
         }
