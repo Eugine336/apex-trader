@@ -537,6 +537,83 @@ function TunerAgent({ d }) {
   );
 }
 
+// ── Counterfactual Attribution (L4) ───────────────────────────────────────────
+function CounterfactualAttribution({ d }) {
+  const modules = d?.modules || [];
+  return (
+    <div className="card mb-20">
+      <div className="card-header">
+        <span className="card-title">Counterfactual Attribution</span>
+        <StatusPill on={d?.enabled} />
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '0 12px 10px' }}>
+        Leave-one-out decision replay — each module's MARGINAL contribution to the
+        trades taken. <b>Decisive</b> = trade only happened because of it; removing
+        the module would delete those trades (and their R).
+      </div>
+      <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
+        <div className="stat-card">
+          <div className="stat-label">Modules Ranked</div>
+          <div className="stat-value">{d?.module_count || 0}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Trades Analyzed</div>
+          <div className="stat-value">{d?.trades_analyzed || 0}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Last Computed</div>
+          <div className="stat-value">{tsAgo(d?.computed_at)}</div>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Module</th>
+              <th className="right">Involved</th>
+              <th className="right">Decisive</th>
+              <th className="right">Marginal R</th>
+              <th className="right">Exp. (decisive)</th>
+              <th className="right">Sharpe</th>
+              <th className="right">Drawdown</th>
+              <th>Better off without?</th>
+            </tr>
+          </thead>
+          <tbody>
+            {modules.length === 0 && (
+              <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
+                {d?.enabled
+                  ? `No attribution computed yet — runs every ${d?.interval || 0} trades after ${d?.min_trades || 0} closed.`
+                  : 'Counterfactual engine disabled.'}
+              </td></tr>
+            )}
+            {modules.map((m) => (
+              <tr key={m.module}>
+                <td style={{ fontWeight: 600 }}>{m.module}</td>
+                <td className="right">{m.trades_involved}</td>
+                <td className="right">{m.decisive_trades}</td>
+                <td className="right" style={{ color: multColor(1 + (Number(m.marginal_r) || 0)) }}>
+                  {(Number(m.marginal_r) || 0).toFixed(2)}R
+                </td>
+                <td className="right">{(Number(m.expectancy_when_decisive) || 0).toFixed(2)}R</td>
+                <td className="right">{(Number(m.sharpe_contribution) || 0).toFixed(2)}</td>
+                <td className="right" style={{ color: 'var(--text-muted)' }}>
+                  {(Number(m.drawdown_contribution) || 0).toFixed(2)}R
+                </td>
+                <td>
+                  {m.better_off_without
+                    ? <span className="badge badge-red">yes ({(Number(m.r_difference) || 0).toFixed(2)}R)</span>
+                    : <span className="badge badge-green">no</span>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function Learning() {
   const { data, loading } = useApi('/api/learning', 8000);
 
@@ -561,6 +638,7 @@ export default function Learning() {
       <VoteCalibrator d={data?.vote_calibrator} />
       <ScoreOptimizer d={data?.score_optimizer} />
       <PairLearner d={data?.pair_learner} />
+      <CounterfactualAttribution d={data?.counterfactual} />
       <TunerAgent d={data?.tuner_agent} />
     </div>
   );

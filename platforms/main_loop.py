@@ -351,6 +351,33 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         except Exception as exc:  # noqa: BLE001
             logger.warning("[post_close] init failed, disabled: {}", exc)
             self._post_close_tracker = None
+        # ── Counterfactual attribution engine (L4) ──────────────────────
+        # Holds the exact vote panel + consensus config that opened each trade,
+        # then replays that math leaving one module out at a time to measure
+        # each module's MARGINAL contribution to the decisions taken. Purely
+        # analytical — never changes a live decision. Dormant unless
+        # CounterfactualConfig.counterfactual_enabled is on; a build failure
+        # leaves it None and the guarded capture/complete hooks no-op.
+        self._counterfactual = None
+        try:
+            cf_cfg = getattr(self.config, "counterfactual", None)
+            if cf_cfg is not None and getattr(cf_cfg, "counterfactual_enabled", False):
+                from adaptive.counterfactual import CounterfactualEngine
+
+                self._counterfactual = CounterfactualEngine(
+                    db_path=cf_cfg.counterfactual_db_path,
+                    enabled=True,
+                    attribution_lookback=cf_cfg.attribution_lookback,
+                    attribution_interval=cf_cfg.attribution_interval,
+                    min_trades_for_attribution=cf_cfg.min_trades_for_attribution,
+                )
+                logger.info(
+                    "[counterfactual] engine enabled (lookback={}, interval={})",
+                    cf_cfg.attribution_lookback, cf_cfg.attribution_interval,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[counterfactual] init failed, disabled: {}", exc)
+            self._counterfactual = None
         self.scheduler = ScanScheduler(config=self.config)
         risk_cfg = self.config.risk
         self.entry_engine = EntryEngine(
@@ -763,6 +790,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             SignalLedgerTunable,
             PostCloseTrackerTunable,
             VoteCalibratorTunable,
+            CounterfactualTunable,
             ModuleGovernorTunable,
             ConsumerTunable,
         )
@@ -832,6 +860,19 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         mg_enabled = bool(getattr(mg_cfg, "module_governor_enabled", False))
         if self._module_governor is not None and mg_enabled:
             agent.register(ModuleGovernorTunable(self._module_governor))
+
+        # Counterfactual attribution (trade-close batch) — periodic leave-one-out
+        # module attribution. Pure analysis; recomputes on its own cadence.
+        if self._counterfactual is not None:
+            agent.register(CounterfactualTunable(
+                self._counterfactual,
+                min_trades=int(
+                    getattr(
+                        getattr(self.config, "counterfactual", None),
+                        "min_trades_for_attribution", 50,
+                    )
+                ),
+            ))
 
         # ── Make the agent the single place the WHOLE system reports to ──────
         # Hard enforcement: the components that can self-tune get a reference so
@@ -3505,6 +3546,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # ledger can later join realised outcomes to the modules that called it.
         # No-op when the signal ledger is off.
         self._ledger_record_trade_opened(pair, direction, order.order_id)
+
+        # Capture the decision snapshot (vote panel + consensus config) that
+        # opened this trade so the counterfactual engine can later replay the
+        # consensus leaving one module out at a time. No-op when disabled.
+        self._counterfactual_record_open(result, order.order_id, direction)
 
         # Advance the RL live-trade counter so its authority-progression gate
         # (stages 6/7 require min_live_trades) reflects reality instead of
@@ -6313,6 +6359,17 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         except Exception as exc:
             logger.debug("[outcome_feedback] close hook failed for {}: {}", pos.symbol, exc)
 
+        # ── Counterfactual attribution — complete the entry snapshot ─────────
+        # Attach the realised R to the decision snapshot captured at entry so
+        # the leave-one-out replay can score each module's marginal P&L. Pure
+        # analysis; no-op when the engine is disabled.
+        try:
+            _cf_plan_sl = float(getattr(pos, "plan_sl_pips", 0.0) or 0.0)
+            _cf_pnl_r = (pnl_pips / _cf_plan_sl) if _cf_plan_sl > 1e-8 else (1.0 if pnl_dollars > 0 else -1.0)
+            self._counterfactual_complete(pos, _cf_pnl_r, outcome, cause_value)
+        except Exception as exc:
+            logger.debug("[counterfactual] close hook failed for {}: {}", pos.symbol, exc)
+
         # ── Post-close price tracking — schedule forward MFE/MAE checks ──────
         # Separates entry-signal quality from management quality. Keyed by the
         # broker order id so checks survive a restart. Observational only.
@@ -6989,6 +7046,88 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self._signal_ledger.attach_trade_outcome(str(trade_id), outcome or {})
         except Exception as exc:  # noqa: BLE001
             logger.debug("[signal-ledger] attach-outcome hook failed: {}", exc)
+
+    # ── Counterfactual attribution hooks ─────────────────────────────────
+
+    def _counterfactual_active(self) -> bool:
+        return self._counterfactual is not None and getattr(
+            self._counterfactual, "enabled", False
+        )
+
+    def _counterfactual_record_open(self, result, trade_id: str, direction: str) -> None:
+        """Snapshot the vote panel + consensus config that opened a trade so the
+        attribution engine can replay the consensus leave-one-out (guarded)."""
+        if not self._counterfactual_active() or not trade_id or result is None:
+            return
+        try:
+            from adaptive.counterfactual import TradeAttribution
+
+            votes_snapshot: list[dict] = []
+            for v in getattr(result, "votes", []) or []:
+                votes_snapshot.append({
+                    "module": str(getattr(v, "module", "")),
+                    "direction": str(getattr(v, "direction", "NEUTRAL")),
+                    "confidence": float(getattr(v, "confidence", 0.0) or 0.0),
+                    "weight": float(getattr(v, "weight", 0.0) or 0.0),
+                })
+            if not votes_snapshot:
+                return  # nothing to attribute (legacy single-module path)
+
+            cc = self.config.consensus
+            rc = getattr(self.config, "opportunity_ranker", None)
+            thresholds = {
+                "min_net_score": float(cc.min_net_score),
+                "min_agreement": float(cc.min_agreement),
+                "high_authority_modules": list(cc.high_authority_modules or []),
+                "high_authority_oppose_confidence": float(cc.high_authority_oppose_confidence),
+                "min_contributors": int(cc.min_contributors),
+            }
+            ranker_kwargs: dict = {}
+            if rc is not None:
+                ranker_kwargs = {
+                    "execute": bool(getattr(rc, "execute", False)),
+                    "rescue_neutral_consensus": bool(getattr(rc, "rescue_neutral_consensus", False)),
+                    "scalp_modules": list(getattr(rc, "scalp_modules", []) or []),
+                    "swing_modules": list(getattr(rc, "swing_modules", []) or []),
+                    "scalp_reward_risk": float(getattr(rc, "scalp_reward_risk", 1.5)),
+                    "swing_reward_risk": float(getattr(rc, "swing_reward_risk", 2.5)),
+                    "base_win_rate": float(getattr(rc, "base_win_rate", 0.40)),
+                    "confidence_win_rate_gain": float(getattr(rc, "confidence_win_rate_gain", 0.40)),
+                    "min_expected_value": float(getattr(rc, "min_expected_value", 0.0)),
+                    "min_cluster_confidence": float(getattr(rc, "min_cluster_confidence", 0.0)),
+                    "min_cluster_contributors": int(getattr(rc, "min_cluster_contributors", 1)),
+                }
+            self._counterfactual.record_open(TradeAttribution(
+                trade_id=str(trade_id),
+                pair=str(getattr(result, "pair", "")),
+                direction=str(direction),
+                timeframe_class=str(getattr(result, "selected_horizon", "") or ""),
+                votes=votes_snapshot,
+                consensus_direction=str(getattr(result, "consensus_direction", "") or ""),
+                consensus_net=float(getattr(result, "consensus_net", 0.0) or 0.0),
+                consensus_agreement=float(getattr(result, "consensus_agreement", 0.0) or 0.0),
+                thresholds=thresholds,
+                ranker_kwargs=ranker_kwargs,
+            ))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[counterfactual] record_open hook failed: {}", exc)
+
+    def _counterfactual_complete(self, pos, pnl_r: float, outcome: str, cause_value: str) -> None:
+        """Attach a closed trade's realised R to its entry snapshot (guarded)."""
+        if not self._counterfactual_active():
+            return
+        try:
+            trade_id = str(getattr(pos, "order_id", "") or "")
+            if not trade_id:
+                return
+            self._counterfactual.complete(trade_id, {
+                "pnl_r": round(float(pnl_r), 4),
+                "won": bool(float(pnl_r) > 0),
+                "outcome": str(outcome or ""),
+                "exit_cause": str(cause_value or ""),
+            })
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[counterfactual] complete hook failed: {}", exc)
 
     def _log_rejection(self, pair: str, direction: str, score: int, reason: str,
                        entry_context: dict | None = None) -> None:

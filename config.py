@@ -1845,6 +1845,53 @@ class TunerAgentConfig:
 
 
 @dataclass
+class CounterfactualConfig:
+    """Settings for the Counterfactual Attribution engine (L4).
+
+    For every closed trade the engine holds the exact vote panel + consensus
+    config that opened it, then replays that math with one module removed at a
+    time (leave-one-out) to measure each module's MARGINAL contribution — which
+    trades only happened *because* of it, and what those trades returned. The
+    output ranks the modules by net contribution so the system can see who is
+    helping and who is hurting from real production decisions.
+
+    Purely analytical — it never changes a weight, mode, or decision. The
+    leave-one-out pass is expensive, so it runs periodically (every
+    ``attribution_interval`` closed trades) over the most recent
+    ``attribution_lookback`` trades and the result is cached for the dashboard.
+    Defaults OFF so it stays dormant until enabled.
+    """
+
+    # Master switch: capture per-trade decision snapshots + run attribution.
+    counterfactual_enabled: bool = False
+    # How many recent closed trades each attribution pass analyses.
+    attribution_lookback: int = 500
+    # Recompute the attribution table every N closed trades.
+    attribution_interval: int = 100
+    # Minimum closed trades before any attribution is computed (avoid noise).
+    min_trades_for_attribution: int = 50
+    # SQLite path (under data/, gitignored).
+    counterfactual_db_path: str = "data/counterfactual.db"
+
+    def __post_init__(self) -> None:
+        if int(self.attribution_lookback) < 1:
+            raise ValueError(
+                "CounterfactualConfig.attribution_lookback must be >= 1, "
+                f"got {self.attribution_lookback!r}"
+            )
+        if int(self.attribution_interval) < 1:
+            raise ValueError(
+                "CounterfactualConfig.attribution_interval must be >= 1, "
+                f"got {self.attribution_interval!r}"
+            )
+        if int(self.min_trades_for_attribution) < 1:
+            raise ValueError(
+                "CounterfactualConfig.min_trades_for_attribution must be >= 1, "
+                f"got {self.min_trades_for_attribution!r}"
+            )
+
+
+@dataclass
 class AppConfig:
     # All 4 categories enabled — forex, commodity, index, synthetic
     enabled_categories: list[str] = field(
@@ -1870,6 +1917,7 @@ class AppConfig:
     vote_calibrator: VoteCalibratorConfig = field(default_factory=VoteCalibratorConfig)
     module_governor: ModuleGovernorConfig = field(default_factory=ModuleGovernorConfig)
     tuner_agent: TunerAgentConfig = field(default_factory=TunerAgentConfig)
+    counterfactual: CounterfactualConfig = field(default_factory=CounterfactualConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)
