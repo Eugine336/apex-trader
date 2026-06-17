@@ -75,6 +75,15 @@ class LearningMixin:
     def _counterfactual_obj(self) -> Any:
         return getattr(self._loop(), "_counterfactual", None)
 
+    def _param_evolution_obj(self) -> Any:
+        return getattr(self._loop(), "_param_evolver", None)
+
+    def _module_interaction_obj(self) -> Any:
+        return getattr(self._loop(), "_module_interaction", None)
+
+    def _signal_discovery_obj(self) -> Any:
+        return getattr(self._loop(), "_signal_discovery", None)
+
     # ── Aggregate ────────────────────────────────────────────────────────────
     def get_learning(self) -> dict:
         """Every learning-layer producer's output for the Learning panel."""
@@ -87,6 +96,9 @@ class LearningMixin:
             "pair_learner": self._safe(self._learning_pair_learner),
             "tuner_agent": self._safe(self._learning_tuner_agent),
             "counterfactual": self._safe(self._learning_counterfactual),
+            "param_evolution": self._safe(self._learning_param_evolution),
+            "module_interaction": self._safe(self._learning_module_interaction),
+            "signal_discovery": self._safe(self._learning_signal_discovery),
         }
 
     @staticmethod
@@ -395,5 +407,114 @@ class LearningMixin:
             "trades_analyzed": int(cached.get("trades_analyzed", 0) or 0),
             "module_count": int(cached.get("module_count", 0) or 0),
             "modules": modules,
+            **meta,
+        }
+
+    # ── Parameter Evolution (L5a) ─────────────────────────────────────────────
+    def _learning_param_evolution(self) -> dict:
+        evolver = self._param_evolution_obj()
+        cfg = getattr(self._config(), "param_evolution", None)
+        meta = {
+            "replay_lookback": int(getattr(cfg, "replay_lookback", 0) or 0),
+            "shadow_validation_trades": int(getattr(cfg, "shadow_validation_trades", 0) or 0),
+            "significance_threshold": _round(getattr(cfg, "significance_threshold", 0.0), 4),
+        }
+        if evolver is None:
+            return _idle(meta)
+        state = evolver.get_state() or {}
+        shadows = []
+        for s in state.get("active_shadows", []) or []:
+            shadows.append({
+                "param_name": str(s.get("param_name", "")),
+                "current_value": _round(s.get("current_value", 0.0), 4),
+                "proposed_value": _round(s.get("proposed_value", 0.0), 4),
+                "state": str(s.get("state", "")),
+                "shadow_trades": int(s.get("shadow_trades", 0) or 0),
+                "improvement_per_trade": _round(s.get("improvement_per_trade", 0.0), 4),
+            })
+        promotions = []
+        for p in state.get("recent_promotions", []) or []:
+            promotions.append({
+                "param_name": str(p.get("param_name", "")),
+                "old_value": _round(p.get("old_value", 0.0), 4),
+                "new_value": _round(p.get("new_value", 0.0), 4),
+                "decision": str(p.get("decision", "")),
+                "decided_at": p.get("decided_at"),
+            })
+        return {
+            "enabled": bool(state.get("enabled", False)),
+            "source": "live",
+            "evolvable_params": list(state.get("evolvable_params", []) or []),
+            "active_shadow_count": int(state.get("active_shadow_count", 0) or 0),
+            "active_shadows": shadows,
+            "recent_promotions": promotions,
+            **meta,
+        }
+
+    # ── Module Interaction Discovery (L5b) ────────────────────────────────────
+    def _learning_module_interaction(self) -> dict:
+        engine = self._module_interaction_obj()
+        cfg = getattr(self._config(), "module_interaction", None)
+        meta = {
+            "lookback": int(getattr(cfg, "interaction_lookback", 0) or 0),
+            "interval": int(getattr(cfg, "interaction_interval", 0) or 0),
+        }
+        if engine is None:
+            return _idle(meta)
+        state = engine.get_state() or {}
+        pairs = []
+        for p in state.get("pairs", []) or []:
+            pairs.append({
+                "module_a": str(p.get("module_a", "")),
+                "module_b": str(p.get("module_b", "")),
+                "interaction": _round(p.get("interaction", 0.0), 3),
+                "effect_joint": _round(p.get("effect_joint", 0.0), 3),
+                "classification": str(p.get("classification", "")),
+            })
+        return {
+            "enabled": bool(state.get("enabled", False)),
+            "source": "live",
+            "computed_at": state.get("computed_at"),
+            "trades_analyzed": int(state.get("trades_analyzed", 0) or 0),
+            "baseline_total_r": _round(state.get("baseline_total_r", 0.0), 3),
+            "module_effects": state.get("module_effects", {}) or {},
+            "optimal_subset": state.get("optimal_subset", {}) or {},
+            "pairs": pairs[:30],
+            **meta,
+        }
+
+    # ── Synthetic Signal Discovery (L5c) ──────────────────────────────────────
+    def _learning_signal_discovery(self) -> dict:
+        engine = self._signal_discovery_obj()
+        cfg = getattr(self._config(), "signal_discovery", None)
+        meta = {
+            "lookback": int(getattr(cfg, "discovery_lookback", 0) or 0),
+            "min_edge_r": _round(getattr(cfg, "min_edge_r", 0.0), 3),
+        }
+        if engine is None:
+            return _idle(meta)
+        state = engine.get_state() or {}
+        rules = []
+        for r in state.get("rules", []) or []:
+            rules.append({
+                "label": str(r.get("label", "")),
+                "size": int(r.get("size", 0) or 0),
+                "support": int(r.get("support", 0) or 0),
+                "win_rate": _round(r.get("win_rate", 0.0), 4),
+                "expectancy": _round(r.get("expectancy", 0.0), 4),
+                "edge": _round(r.get("edge", 0.0), 4),
+                "train_edge": _round(r.get("train_edge", 0.0), 4),
+                "test_edge": _round(r.get("test_edge", 0.0), 4),
+                "qualifies": bool(r.get("qualifies", False)),
+            })
+        return {
+            "enabled": bool(state.get("enabled", False)),
+            "source": "live",
+            "computed_at": state.get("computed_at"),
+            "trades_analyzed": int(state.get("trades_analyzed", 0) or 0),
+            "baseline_expectancy": _round(state.get("baseline_expectancy", 0.0), 4),
+            "rule_count": int(state.get("rule_count", 0) or 0),
+            "qualifying_count": int(state.get("qualifying_count", 0) or 0),
+            "rules": rules[:40],
             **meta,
         }
