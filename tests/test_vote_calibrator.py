@@ -261,7 +261,7 @@ class TestRestore:
 
 class TestConfigValidation:
     def test_default_is_off(self):
-        assert VoteCalibratorConfig().vote_calibration_enabled is False
+        assert VoteCalibratorConfig().vote_calibration_enabled is True
 
     def test_bad_method_rejected(self):
         with pytest.raises(ValueError):

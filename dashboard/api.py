@@ -295,6 +295,11 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
         """Live-management round table — open-position health scores, per-dimension breakdown + action log."""
         return _state.get_position_health(limit=min(limit, 1000), symbol=symbol)
 
+    @app.get("/api/learning")
+    def learning():
+        """Adaptive learning layer — signal ledger, emitter feedback, vote calibration, per-class weights, pair learner, tuner agent."""
+        return _state.get_learning()
+
     @app.post("/api/control")
     async def control(body: dict):
         action = body.get("action", "")

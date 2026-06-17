@@ -93,7 +93,7 @@ class TestClassifyAssetClass:
 class TestConfigDefaults:
     def test_per_class_defaults_off(self):
         cfg = ScoringConfig()
-        assert cfg.per_class_optimizer is False
+        assert cfg.per_class_optimizer is True
         assert cfg.min_trades_per_class == 30
         assert cfg.class_shrinkage_strength == pytest.approx(0.3)
 

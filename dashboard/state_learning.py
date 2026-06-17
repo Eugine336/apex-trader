@@ -1,0 +1,354 @@
+"""
+APEX TRADER — Dashboard Learning-Layer Mixin
+
+The adaptive learning layer produces a lot of output that was never visible on
+the dashboard.  This mixin surfaces it, read-only, in one place:
+
+  * **Signal Ledger** — every directional read recorded + graded on price move.
+  * **Emitter Feedback** — per-module accuracy, split traded vs blocked.
+  * **Vote Calibrator** — calibrated per-module vote-weight multipliers.
+  * **Per-class Score Optimizer** — confluence weight profiles per asset class.
+  * **Pair Learner** — continuous per-pair size multipliers + entry/mgmt split.
+  * **Tuner Agent** — central tuning authority status + recent tune audit.
+
+Everything here only *reads* from the live components (or returns a graceful
+empty/disabled shape when a component is off, idle, or has no data yet).  It
+never makes or mutates a decision, and never touches a learning component's
+internals beyond the read-only accessors the existing ML panel already uses.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from loguru import logger
+
+
+def _round(x: Any, ndigits: int = 4) -> float:
+    try:
+        return round(float(x), ndigits)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _idle(extra: dict | None = None) -> dict:
+    base = {"enabled": False, "source": "idle"}
+    if extra:
+        base.update(extra)
+    return base
+
+
+class LearningMixin:
+    """get_learning() — the adaptive learning layer, made visible."""
+
+    # ── Component handles (all optional, all read-only) ──────────────────────
+    def _loop(self) -> Any:
+        return self._trading_loop if self.is_live else None
+
+    def _config(self) -> Any:
+        return getattr(self._loop(), "config", None)
+
+    def _signal_ledger_obj(self) -> Any:
+        return getattr(self._loop(), "_signal_ledger", None)
+
+    def _emitter_feedback_obj(self) -> Any:
+        return getattr(self._loop(), "_emitter_feedback", None)
+
+    def _vote_calibrator_obj(self) -> Any:
+        return getattr(self._loop(), "_vote_calibrator", None)
+
+    def _ml_obj(self) -> Any:
+        return getattr(self._loop(), "ml", None)
+
+    def _score_optimizer_obj(self) -> Any:
+        ml = self._ml_obj()
+        return getattr(ml, "optimizer", None) if ml is not None else None
+
+    def _pair_learner_obj(self) -> Any:
+        ml = self._ml_obj()
+        return getattr(ml, "pair_learner", None) if ml is not None else None
+
+    def _tuner_agent_obj(self) -> Any:
+        return getattr(self._loop(), "_tuner_agent", None)
+
+    # ── Aggregate ────────────────────────────────────────────────────────────
+    def get_learning(self) -> dict:
+        """Every learning-layer producer's output for the Learning panel."""
+        return {
+            "source": "live" if self.is_live else "idle",
+            "signal_ledger": self._safe(self._learning_signal_ledger),
+            "emitter_feedback": self._safe(self._learning_emitter_feedback),
+            "vote_calibrator": self._safe(self._learning_vote_calibrator),
+            "score_optimizer": self._safe(self._learning_score_optimizer),
+            "pair_learner": self._safe(self._learning_pair_learner),
+            "tuner_agent": self._safe(self._learning_tuner_agent),
+        }
+
+    @staticmethod
+    def _safe(fn) -> dict:
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[state_learning] {} failed: {}", getattr(fn, "__name__", fn), exc)
+            return _idle({"error": str(exc)})
+
+    # ── Signal Ledger ────────────────────────────────────────────────────────
+    def _learning_signal_ledger(self) -> dict:
+        ledger = self._signal_ledger_obj()
+        cfg = getattr(self._config(), "signal_ledger", None)
+        meta = {
+            "check_intervals": list(getattr(cfg, "signal_grading_check_intervals", []) or []),
+            "grading_delay_minutes": int(getattr(cfg, "signal_grading_delay_minutes", 0) or 0),
+            "min_move_pct": _round(getattr(cfg, "signal_min_move_pct", 0.0), 3),
+            "grading_enabled": bool(getattr(cfg, "signal_grading_enabled", False)),
+        }
+        if ledger is None:
+            return _idle(meta)
+
+        # Per-emitter accuracy (graded only) + recent graded signals.
+        emitters_map = ledger.get_emitter_accuracy_all() or {}
+        emitters = sorted(emitters_map.values(), key=lambda e: e.get("total", 0), reverse=True)
+        graded = ledger.get_graded_signals(lookback=2000)
+        all_rows = ledger.get_graded_signals(lookback=2000, include_ungraded=True)
+
+        recent = []
+        for r in graded[:40]:
+            recent.append({
+                "pair": str(r.get("pair", "")),
+                "emitter": str(r.get("emitter", "")),
+                "direction": str(r.get("direction", "")),
+                "strength": _round(r.get("strength", 0.0), 3),
+                "trade_opened": bool(r.get("trade_opened")),
+                "gate_blocked_by": str(r.get("gate_blocked_by") or ""),
+                "direction_correct": r.get("direction_correct"),
+                "max_favorable_pct": _round(r.get("max_favorable_move_pct", 0.0), 3),
+                "max_adverse_pct": _round(r.get("max_adverse_move_pct", 0.0), 3),
+            })
+
+        total_graded = len(graded)
+        correct = sum(1 for r in graded if r.get("direction_correct"))
+        return {
+            "enabled": True,
+            "source": "live",
+            "total_recorded": len(all_rows),
+            "total_graded": total_graded,
+            "overall_accuracy": _round(correct / total_graded, 4) if total_graded else 0.0,
+            "emitters": emitters,
+            "recent": recent,
+            **meta,
+        }
+
+    # ── Emitter Feedback ─────────────────────────────────────────────────────
+    def _learning_emitter_feedback(self) -> dict:
+        service = self._emitter_feedback_obj()
+        cfg = getattr(self._config(), "signal_ledger", None)
+        if service is None:
+            return _idle({"feedback_flag": bool(getattr(cfg, "emitter_feedback_enabled", False))})
+
+        summaries = service.get_all_emitter_summaries(lookback=200) or {}
+        emitters = []
+        for resp in summaries.values():
+            emitters.append({
+                "emitter": getattr(resp, "emitter", ""),
+                "total_signals": int(getattr(resp, "total_signals", 0) or 0),
+                "traded_signals": int(getattr(resp, "traded_signals", 0) or 0),
+                "blocked_signals": int(getattr(resp, "blocked_signals", 0) or 0),
+                "accuracy_all": _round(getattr(resp, "accuracy_all", 0.0), 4),
+                "accuracy_traded": _round(getattr(resp, "accuracy_traded", 0.0), 4),
+                "accuracy_blocked": _round(getattr(resp, "accuracy_blocked", 0.0), 4),
+                "signal_value_when_blocked": _round(
+                    getattr(resp, "signal_value_when_blocked", 0.0), 4
+                ),
+            })
+        emitters.sort(key=lambda e: e["total_signals"], reverse=True)
+
+        gate_map = service.get_gate_effectiveness(lookback=500) or {}
+        gates = sorted(gate_map.values(), key=lambda g: g.get("blocked", 0), reverse=True)
+        return {
+            "enabled": True,
+            "source": "live",
+            "emitters": emitters,
+            "gates": gates,
+        }
+
+    # ── Vote Calibrator ──────────────────────────────────────────────────────
+    def _learning_vote_calibrator(self) -> dict:
+        vc = self._vote_calibrator_obj()
+        if vc is None:
+            return _idle()
+
+        state = vc.get_state() or {}
+        multipliers = state.get("multipliers", {}) or {}
+        last = vc.last_calibration
+        last_dict = last.to_dict() if last is not None else {}
+        sample_sizes = last_dict.get("sample_sizes", {}) or {}
+        accuracies = last_dict.get("accuracies", {}) or {}
+        raw_acc = last_dict.get("raw_accuracies", {}) or {}
+        min_signals = int(state.get("min_signals", 0) or 0)
+
+        # Total modules tracked: union of published multipliers + last-pass inputs.
+        names = set(multipliers) | set(sample_sizes)
+        try:
+            from adaptive.vote_calibrator import DEFAULT_VOTE_MODULES
+
+            names |= set(DEFAULT_VOTE_MODULES)
+        except Exception:  # noqa: BLE001
+            pass
+
+        modules = []
+        calibrated_n = 0
+        for name in sorted(names):
+            n = int(sample_sizes.get(name, 0) or 0)
+            qualified = n >= min_signals if min_signals else False
+            if qualified:
+                calibrated_n += 1
+            modules.append({
+                "module": name,
+                "multiplier": _round(multipliers.get(name, 1.0), 4),
+                "sample_size": n,
+                "accuracy": _round(accuracies.get(name, 0.0), 4),
+                "raw_accuracy": _round(raw_acc.get(name, 0.0), 4),
+                "calibrated": qualified,
+            })
+        modules.sort(key=lambda m: m["multiplier"], reverse=True)
+
+        return {
+            "enabled": bool(getattr(vc, "enabled", False)),
+            "source": "live",
+            "method": str(state.get("method", "")),
+            "temperature": _round(state.get("temperature", 1.0), 3),
+            "floor": _round(state.get("floor", 0.0), 3),
+            "ceiling": _round(state.get("ceiling", 0.0), 3),
+            "min_signals": min_signals,
+            "qualifying_modules": int(last_dict.get("qualifying_modules", calibrated_n) or 0),
+            "module_count": len(modules),
+            "calibrated_count": calibrated_n,
+            "last_reason": str(last_dict.get("reason", "")),
+            "skipped": bool(last_dict.get("skipped", False)),
+            "modules": modules,
+        }
+
+    # ── Per-class Score Optimizer ────────────────────────────────────────────
+    def _learning_score_optimizer(self) -> dict:
+        opt = self._score_optimizer_obj()
+        if opt is None:
+            return _idle()
+
+        global_w = opt.current_weights.as_dict() if opt.current_weights is not None else {}
+        class_weights = getattr(opt, "class_weights", {}) or {}
+        classes = []
+        for cls, weights in class_weights.items():
+            wd = weights.as_dict() if weights is not None else {}
+            diverged = wd != global_w
+            classes.append({
+                "asset_class": cls,
+                "weights": wd,
+                "diverged": diverged,
+            })
+        classes.sort(key=lambda c: c["asset_class"])
+
+        return {
+            "enabled": bool(getattr(opt, "per_class", False)),
+            "source": "live",
+            "min_trades_per_class": int(getattr(opt, "min_trades_per_class", 0) or 0),
+            "class_shrinkage_strength": _round(getattr(opt, "class_shrinkage_strength", 0.0), 3),
+            "global_weights": global_w,
+            "classes": classes,
+            "class_count": len(classes),
+        }
+
+    # ── Pair Learner ─────────────────────────────────────────────────────────
+    def _learning_pair_learner(self) -> dict:
+        pl = self._pair_learner_obj()
+        if pl is None:
+            return _idle()
+
+        profiles = getattr(pl, "_profiles", {}) or {}
+        rows = []
+        for pair, prof in profiles.items():
+            try:
+                mult = pl.get_pair_multiplier(pair)
+            except Exception:  # noqa: BLE001
+                mult = 0.0
+            rows.append({
+                "pair": str(pair),
+                "win_rate": _round(getattr(prof, "win_rate", 0.0), 4),
+                "trades": int(getattr(prof, "total_trades", 0) or 0),
+                "recommendation": str(getattr(prof, "recommendation", "")),
+                "multiplier": _round(mult, 4),
+                "entry_accuracy": (
+                    _round(prof.entry_accuracy, 4)
+                    if getattr(prof, "entry_accuracy", None) is not None else None
+                ),
+                "management_score": (
+                    _round(prof.management_score, 4)
+                    if getattr(prof, "management_score", None) is not None else None
+                ),
+                "optimal_sl_r": (
+                    _round(prof.optimal_sl_r, 3)
+                    if getattr(prof, "optimal_sl_r", None) is not None else None
+                ),
+            })
+        rows.sort(key=lambda r: r["multiplier"], reverse=True)
+
+        avoid = [r for r in rows if r["recommendation"] == "AVOID"]
+        return {
+            "enabled": True,
+            "source": "live",
+            "continuous_enabled": bool(getattr(pl, "continuous_enabled", False)),
+            "pair_count": len(rows),
+            "recommended": list(pl.get_recommended_pairs() or []),
+            "avoid_count": len(avoid),
+            "pairs": rows,
+        }
+
+    # ── Tuner Agent ──────────────────────────────────────────────────────────
+    def _learning_tuner_agent(self) -> dict:
+        agent = self._tuner_agent_obj()
+        if agent is None:
+            return _idle()
+
+        status = agent.get_system_tuning_status() or {}
+        registered = status.get("registered_tunables", {}) or {}
+        tunables = []
+        disabled = []
+        for name, info in registered.items():
+            row = {
+                "name": name,
+                "frequency": str(info.get("frequency", "")),
+                "tune_count": int(info.get("tune_count", 0) or 0),
+                "last_tune_time": info.get("last_tune_time"),
+                "last_success": info.get("last_success"),
+                "consecutive_failures": int(info.get("consecutive_failures", 0) or 0),
+                "disabled": bool(info.get("disabled", False)),
+            }
+            tunables.append(row)
+            if row["disabled"]:
+                disabled.append(name)
+        tunables.sort(key=lambda t: t["name"])
+
+        audit = []
+        for r in (agent.get_audit_log(limit=20) or []):
+            audit.append({
+                "timestamp": r.get("timestamp"),
+                "tunable_name": str(r.get("tunable_name", "")),
+                "success": bool(r.get("success")),
+                "changed": bool(r.get("changed")),
+                "skipped": bool(r.get("skipped")),
+                "rollback_performed": bool(r.get("rollback_performed")),
+                "reason": str(r.get("reason") or ""),
+                "error": str(r.get("error") or ""),
+            })
+
+        return {
+            "enabled": bool(status.get("agent_enabled", False)),
+            "source": "live",
+            "is_sole_authority": bool(status.get("is_sole_authority", False)),
+            "expected_count": int(status.get("expected_count", 0) or 0),
+            "registered_count": int(status.get("registered_count", 0) or 0),
+            "unregistered_expected": list(status.get("unregistered_expected", []) or []),
+            "disabled_tunables": disabled,
+            "bypass_attempts": list(status.get("bypass_attempts", []) or []),
+            "tunables": tunables,
+            "audit": audit,
+        }
