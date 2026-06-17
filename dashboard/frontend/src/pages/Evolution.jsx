@@ -5,6 +5,7 @@ import {
   ParameterEvolution,
   SignalDiscovery,
   VirtualModules,
+  CapitalAllocation,
 } from './Learning';
 
 function StatTile({ label, value, sub, cls }) {
@@ -84,6 +85,7 @@ export default function Evolution() {
       <ModuleInteractions d={data?.interactions} />
       <SignalDiscovery d={data?.signal_discovery} />
       <VirtualModules d={data?.virtual_modules} />
+      <CapitalAllocation d={data?.capital_allocation} />
     </div>
   );
 }

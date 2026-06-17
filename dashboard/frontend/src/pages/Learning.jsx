@@ -1062,6 +1062,109 @@ export function VirtualModules({ d }) {
   );
 }
 
+export function CapitalAllocation({ d }) {
+  const fps = d?.fingerprints || [];
+  const rebals = d?.rebalance_history || [];
+  const hw = d?.horizon_weights || {};
+  return (
+    <div className="card mb-20">
+      <div className="card-header">
+        <span className="card-title">Capital Allocation (L5.5a)</span>
+        <StatusPill on={d?.enabled} />
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '0 12px 10px' }}>
+        Allocates capital across execution-style fingerprints (entry mode ×
+        horizon) by three-horizon expectancy — long horizon dominates so the book
+        diversifies its alpha and never chases a short streak. The sizing
+        multiplier de-risks weak styles toward the floor; a 1.0× across the board
+        means too little history yet (no-op).
+      </div>
+      <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
+        <div className="stat-card">
+          <div className="stat-label">Fingerprints</div>
+          <div className="stat-value">{d?.fingerprint_count || 0}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Total Trades</div>
+          <div className="stat-value" style={{ color: d?.active ? 'var(--green-bright)' : 'var(--text-muted)' }}>
+            {d?.total_trades || 0}
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Horizon Weights</div>
+          <div className="stat-value" style={{ fontSize: 16 }}>
+            {`${Number(hw.short || 0).toFixed(1)}/${Number(hw.medium || 0).toFixed(1)}/${Number(hw.long || 0).toFixed(1)}`}
+          </div>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Strategy Fingerprint</th>
+              <th className="right">Allocation</th>
+              <th className="right">Size ×</th>
+              <th className="right">Trades</th>
+              <th className="right">Exp (short)</th>
+              <th className="right">Exp (med)</th>
+              <th className="right">Exp (long)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {fps.length === 0 && (
+              <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
+                {d?.enabled ? 'No closed trades fingerprinted yet.' : 'Capital allocation disabled.'}
+              </td></tr>
+            )}
+            {fps.map((f, i) => (
+              <tr key={`${f.fingerprint}-${i}`}>
+                <td style={{ fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}>{f.fingerprint}</td>
+                <td className="right">{pct(f.allocation)}</td>
+                <td className="right" style={{ color: multColor(f.sizing_multiplier), fontFamily: "'JetBrains Mono', monospace" }}>
+                  {Number(f.sizing_multiplier).toFixed(2)}×
+                </td>
+                <td className="right">{f.trades}</td>
+                <td className="right" style={{ color: multColor(1 + (Number(f.exp_short) || 0)) }}>{(Number(f.exp_short) || 0).toFixed(2)}R</td>
+                <td className="right" style={{ color: multColor(1 + (Number(f.exp_medium) || 0)) }}>{(Number(f.exp_medium) || 0).toFixed(2)}R</td>
+                <td className="right" style={{ color: multColor(1 + (Number(f.exp_long) || 0)) }}>{(Number(f.exp_long) || 0).toFixed(2)}R</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {rebals.length > 0 && (
+        <>
+          <div className="card-header" style={{ marginTop: 8 }}>
+            <span className="card-title">Recent rebalances</span>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>When</th>
+                  <th className="right">Fingerprints</th>
+                  <th className="right">Max shift</th>
+                  <th className="right">At floor</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rebals.map((r, i) => (
+                  <tr key={`reb-${i}`}>
+                    <td style={{ color: 'var(--text-muted)' }}>{tsAgo(r.ts)}</td>
+                    <td className="right">{r.fingerprints}</td>
+                    <td className="right">{Number(r.max_shift).toFixed(3)}</td>
+                    <td className="right">{r.floored}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 export default function Learning() {
   const { data, loading } = useApi('/api/learning', 8000);
 
@@ -1091,6 +1194,7 @@ export default function Learning() {
       <ParameterEvolution d={data?.param_evolution} />
       <SignalDiscovery d={data?.signal_discovery} />
       <VirtualModules d={data?.virtual_modules} />
+      <CapitalAllocation d={data?.capital_allocation} />
       <TunerAgent d={data?.tuner_agent} />
     </div>
   );

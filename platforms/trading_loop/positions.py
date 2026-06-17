@@ -49,6 +49,7 @@ class ManagedPosition:
         "plan_id",
         "plan_sl_pips",
         "plan_scale_in_allowed",
+        "strategy_fingerprint",
     )
 
     def __init__(
@@ -103,6 +104,10 @@ class ManagedPosition:
         self.plan_sl_pips: float = 0.0
         # Per-trade scale-in directive from the plan (None = use global config).
         self.plan_scale_in_allowed: bool | None = None
+        # Capital Allocation Engine — the trade's execution-style fingerprint,
+        # set at entry so the close path can credit its realised R to the
+        # right allocation bucket.
+        self.strategy_fingerprint: str = ""
 
 
 class _LockedPositions:

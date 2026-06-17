@@ -22,6 +22,11 @@ from adaptive.vote_calibrator import (
     VoteCalibration,
     DEFAULT_VOTE_MODULES,
 )
+from adaptive.capital_allocator import (
+    CapitalAllocator,
+    FingerprintStats,
+    compute_fingerprint,
+)
 from adaptive.tunable import Tunable, TuneContext, TuneResult, TuneFrequency
 from adaptive.tuner_agent import TunerAgent
 from adaptive.tunable_adapters import (
@@ -34,6 +39,7 @@ from adaptive.tunable_adapters import (
     PlannerCalibratorTunable,
     SignalLedgerTunable,
     VoteCalibratorTunable,
+    CapitalAllocatorTunable,
 )
 
 __all__ = [
@@ -47,10 +53,12 @@ __all__ = [
     "SignalLedger", "SignalRecord", "SignalOutcome",
     "EmitterFeedbackService", "EmitterFeedbackRequest", "EmitterFeedbackResponse",
     "VoteCalibrator", "VoteCalibration", "DEFAULT_VOTE_MODULES",
+    "CapitalAllocator", "FingerprintStats", "compute_fingerprint",
     "Tunable", "TuneContext", "TuneResult", "TuneFrequency",
     "TunerAgent",
     "ScoreOptimizerTunable", "RegimeLearnerTunable", "PairLearnerTunable",
     "SessionLearnerTunable", "EVEstimatorTunable", "GateTunerTunable",
     "PlannerCalibratorTunable", "SignalLedgerTunable",
     "VoteCalibratorTunable",
+    "CapitalAllocatorTunable",
 ]
