@@ -100,6 +100,8 @@ class LearningMixin:
 
     def _risk_manager_obj(self) -> Any:
         return getattr(self._loop(), "_risk_manager", None)
+    def _behavior_discovery_obj(self) -> Any:
+        return getattr(self._loop(), "_behavior_discovery", None)
 
     # ── Aggregate ────────────────────────────────────────────────────────────
     def get_learning(self) -> dict:
@@ -121,6 +123,7 @@ class LearningMixin:
             "execution_profiles": self._safe(self._learning_execution_profiles),
             "regime_detection": self._safe(self._learning_regime_detection),
             "risk_management": self._safe(self._learning_risk_management),
+            "behavior_discovery": self._safe(self._learning_behavior_discovery),
         }
 
     @staticmethod
@@ -833,6 +836,32 @@ class LearningMixin:
                 "pair_a": str(c.get("pair_a", "")),
                 "pair_b": str(c.get("pair_b", "")),
                 "correlation": _round(c.get("correlation", 0.0), 4),
+    # ── Behaviour Discovery (L6) ──────────────────────────────────────────────
+    def _learning_behavior_discovery(self) -> dict:
+        engine = self._behavior_discovery_obj()
+        cfg = getattr(self._config(), "behavior_discovery", None)
+        meta = {
+            "config_flag": bool(getattr(cfg, "behavior_discovery_enabled", False)),
+            "min_trades_to_cluster": int(getattr(cfg, "min_trades_to_cluster", 0) or 0),
+            "min_cluster_size": int(getattr(cfg, "min_cluster_size", 0) or 0),
+            "max_clusters": int(getattr(cfg, "max_clusters", 0) or 0),
+        }
+        if engine is None:
+            return _idle(meta)
+        state = engine.get_state() or {}
+        behaviors = []
+        for b in state.get("behaviors", []) or []:
+            behaviors.append({
+                "behavior_id": str(b.get("behavior_id", "")),
+                "state": str(b.get("state", "")),
+                "trades": int(b.get("trades", 0) or 0),
+                "win_rate": _round(b.get("win_rate", 0.0), 4),
+                "expectancy": _round(b.get("expectancy", 0.0), 4),
+                "shrunk_expectancy": _round(b.get("shrunk_expectancy", 0.0), 4),
+                "sharpe": _round(b.get("sharpe", 0.0), 4),
+                "percentile": _round(b.get("percentile", 0.0), 4),
+                "confirmations": int(b.get("confirmations", 0) or 0),
+                "centroid": b.get("centroid", {}) or {},
             })
         return {
             "enabled": bool(state.get("enabled", False)),
@@ -852,3 +881,17 @@ class LearningMixin:
             **meta,
         }
 
+            "lookback": int(state.get("lookback", 0) or 0),
+            "interval": int(state.get("interval", 0) or 0),
+            "cluster_eps": _round(state.get("cluster_eps", 0.0), 3),
+            "promote_threshold": _round(state.get("promote_threshold", 0.0), 3),
+            "retire_threshold": _round(state.get("retire_threshold", 0.0), 3),
+            "total_trades": int(state.get("total_trades", 0) or 0),
+            "trades_analyzed": int(state.get("trades_analyzed", 0) or 0),
+            "cluster_count": int(state.get("cluster_count", 0) or 0),
+            "behavior_count": int(state.get("behavior_count", 0) or 0),
+            "stability": _round(state.get("stability", 0.0), 4),
+            "counts": state.get("counts", {}) or {},
+            "behaviors": behaviors,
+            **meta,
+        }

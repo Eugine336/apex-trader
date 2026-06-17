@@ -1398,6 +1398,83 @@ function RiskManagement({ d }) {
           </tbody>
         </table>
       )}
+export function BehaviorDiscovery({ d }) {
+  const behaviors = d?.behaviors || [];
+  const counts = d?.counts || {};
+  const stateColor = (s) => (
+    s === 'ACTIVE' ? 'var(--green, #3fb950)'
+      : s === 'RETIRED' ? 'var(--text-muted)'
+        : 'var(--amber, #d29922)'
+  );
+  return (
+    <div className="card mb-20">
+      <div className="card-header">
+        <span className="card-title">Behaviour Discovery (L6)</span>
+        <StatusPill on={d?.enabled} />
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '0 12px 10px' }}>
+        Clusters each closed trade's execution feature vector (entry mode,
+        horizon, profile SL/TP shape, regime, consensus, conviction, time-of-day)
+        into emergent behaviours nobody hard-coded, then walks each through a
+        SHADOW → ACTIVE → RETIRED lifecycle by Bayesian-shrunk expectancy.
+        Purely advisory; dormant until enough trades are recorded.
+      </div>
+      <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
+        <div className="stat-card">
+          <div className="stat-label">Clusters / Behaviours</div>
+          <div className="stat-value">{`${d?.cluster_count || 0}/${d?.behavior_count || 0}`}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Active / Shadow / Retired</div>
+          <div className="stat-value" style={{ fontSize: 14 }}>
+            {`${counts.ACTIVE || 0} / ${counts.SHADOW || 0} / ${counts.RETIRED || 0}`}
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Trades Recorded</div>
+          <div className="stat-value">{d?.total_trades || 0}</div>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Behaviour</th>
+              <th>State</th>
+              <th>Profile</th>
+              <th>Horizon</th>
+              <th className="right">Trades</th>
+              <th className="right">Win%</th>
+              <th className="right">Expectancy</th>
+              <th className="right">Pctile</th>
+            </tr>
+          </thead>
+          <tbody>
+            {behaviors.length === 0 && (
+              <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
+                {d?.enabled ? 'No behaviours discovered yet — accruing trades.' : 'Behaviour discovery disabled.'}
+              </td></tr>
+            )}
+            {behaviors.map((b, i) => {
+              const cat = (b.centroid && b.centroid.categorical) || {};
+              return (
+                <tr key={`${b.behavior_id}-${i}`} style={{ opacity: b.state === 'RETIRED' ? 0.45 : 1 }}>
+                  <td style={{ fontFamily: "'JetBrains Mono', monospace" }}>{b.behavior_id}</td>
+                  <td style={{ color: stateColor(b.state), fontWeight: 600 }}>{b.state}</td>
+                  <td>{cat.PROFILE || '—'}</td>
+                  <td>{cat.HORIZON || '—'}</td>
+                  <td className="right">{b.trades}</td>
+                  <td className="right">{pct(b.win_rate)}</td>
+                  <td className="right" style={{ color: multColor(1 + (Number(b.shrunk_expectancy) || 0)) }}>
+                    {`${(Number(b.shrunk_expectancy) || 0).toFixed(2)}R`}
+                  </td>
+                  <td className="right">{(Number(b.percentile) || 0).toFixed(2)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }
@@ -1434,6 +1511,7 @@ export default function Learning() {
       <ExecutionProfiles d={data?.execution_profiles} />
       <RegimeDetection d={data?.regime_detection} />
       <RiskManagement d={data?.risk_management} />
+      <BehaviorDiscovery d={data?.behavior_discovery} />
       <TunerAgent d={data?.tuner_agent} />
     </div>
   );

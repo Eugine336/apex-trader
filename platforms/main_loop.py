@@ -1003,6 +1003,44 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         except Exception as exc:  # noqa: BLE001
             logger.warning("[risk-management] init failed, disabled: {}", exc)
             self._risk_manager = None
+        # ── Behaviour Discovery (L6) ─────────────────────────────────────────
+        # Records each closed trade's execution feature vector + realised R and
+        # periodically clusters them into emergent "behaviours" (execution
+        # styles nobody hard-coded), scoring + walking each through a
+        # SHADOW → ACTIVE → RETIRED lifecycle. Purely advisory + observational,
+        # independent of the counterfactual snapshot store (it learns from its
+        # own recorded features), so it is built up-front and unconditionally.
+        # Dormant until min_trades_to_cluster recorded — a true no-op until
+        # evidence accrues; any build failure leaves it None and hooks no-op.
+        self._behavior_discovery = None
+        try:
+            bd_cfg = getattr(self.config, "behavior_discovery", None)
+            if bd_cfg is not None and getattr(bd_cfg, "behavior_discovery_enabled", False):
+                from adaptive.behavior_discovery import BehaviorDiscoveryEngine
+
+                self._behavior_discovery = BehaviorDiscoveryEngine(
+                    enabled=True,
+                    db_path=bd_cfg.behavior_discovery_db_path,
+                    lookback=bd_cfg.behavior_lookback,
+                    min_trades_to_cluster=bd_cfg.min_trades_to_cluster,
+                    min_cluster_size=bd_cfg.min_cluster_size,
+                    max_clusters=bd_cfg.max_clusters,
+                    recluster_every_n_trades=bd_cfg.recluster_every_n_trades,
+                    cluster_eps=bd_cfg.cluster_eps,
+                    bayesian_prior_trades=bd_cfg.bayesian_prior_trades,
+                    promote_threshold=bd_cfg.promote_threshold,
+                    retire_threshold=bd_cfg.retire_threshold,
+                    cooldown_trades=bd_cfg.cooldown_trades,
+                    centroid_match_eps=bd_cfg.centroid_match_eps,
+                )
+                logger.info(
+                    "[behavior-discovery] engine enabled (L6) — recluster every "
+                    "{} closes, min {} to cluster",
+                    bd_cfg.recluster_every_n_trades, bd_cfg.min_trades_to_cluster,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[behavior-discovery] init failed, disabled: {}", exc)
+            self._behavior_discovery = None
 
         self._param_evolver = None
         self._signal_discovery = None
@@ -1170,6 +1208,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             ExecutionProfileTunable,
             RegimeDetectorTunable,
             RiskManagerTunable,
+            BehaviorDiscoveryTunable,
             ConsumerTunable,
         )
 
@@ -1331,6 +1370,20 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # loosen limits unaudited; ON_DEMAND skip).
         if self._risk_manager is not None:
             agent.register(RiskManagerTunable(self._risk_manager))
+        # L6 — behaviour discovery (trade-close batch). Records execution feature
+        # vectors on every close; the clustering + scoring + SHADOW→ACTIVE→RETIRED
+        # lifecycle pass is routed here so it runs on the agent's coordinated
+        # cadence (advisory — nothing to validate / roll back).
+        if self._behavior_discovery is not None:
+            agent.register(BehaviorDiscoveryTunable(
+                self._behavior_discovery,
+                min_trades=int(
+                    getattr(
+                        getattr(self.config, "behavior_discovery", None),
+                        "min_trades_to_cluster", 100,
+                    )
+                ),
+            ))
 
         # ── Make the agent the single place the WHOLE system reports to ──────
         # Hard enforcement: the components that can self-tune get a reference so
@@ -4087,6 +4140,29 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         managed.execution_profile_name = (
             getattr(execution_profile, "name", "") or ""
         )
+        # L6: stamp the trade's execution feature vector so the close path can
+        # record it (with realised R) for behaviour discovery. Best-effort —
+        # any failure just leaves the dict empty and the close hook no-ops.
+        try:
+            _bd_info = INSTRUMENT_REGISTRY.get(pair.upper())
+            _bd_cat = getattr(getattr(_bd_info, "category", None), "value", "") or ""
+            managed.behavior_features = {
+                "entry_mode": getattr(signal, "entry_mode", "") or "",
+                "horizon": getattr(result, "selected_horizon", "") or "",
+                "profile": getattr(execution_profile, "name", "") or "",
+                "direction": direction,
+                "instrument_class": _bd_cat,
+                "regime": getattr(result, "regime", "") or "",
+                "consensus_strength": float(result.score) / 100.0,
+                "conviction": float(entry_conviction or 0.0),
+                "score": float(result.score),
+                "sl_atr_mult": float(getattr(execution_profile, "sl_atr_multiplier", 0.0) or 0.0),
+                "tp1_rr": float(getattr(execution_profile, "tp_rr_ratio", 0.0) or 0.0),
+                "tp2_rr": float(getattr(execution_profile, "tp2_rr_ratio", 0.0) or 0.0),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[behavior-discovery] feature stamp failed for {}: {}", pair, exc)
+            managed.behavior_features = {}
 
         info_risk = INSTRUMENT_REGISTRY.get(pair.upper())
         pip_sz = info_risk.pip_size if info_risk else 0.0001
@@ -7091,6 +7167,26 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     risk_mgr.on_trade_closed(float(pnl_dollars), _rm_balance)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[risk-management] close hook failed for {}: {}", pos.symbol, exc)
+        # ── Behaviour Discovery (L6) — record the execution feature vector ───
+        # Stores this trade's entry-time execution features + realised R so the
+        # engine can cluster emergent behaviours. Pure data ingestion; the
+        # clustering/lifecycle recompute runs on the agent's cadence. No-op when
+        # disabled or when no features were stamped at entry.
+        try:
+            bd = getattr(self, "_behavior_discovery", None)
+            _bd_features = dict(getattr(pos, "behavior_features", {}) or {})
+            if bd is not None and _bd_features:
+                _bd_plan_sl = float(getattr(pos, "plan_sl_pips", 0.0) or 0.0)
+                _bd_pnl_r = (
+                    (pnl_pips / _bd_plan_sl) if _bd_plan_sl > 1e-8
+                    else (1.0 if pnl_dollars > 0 else -1.0)
+                )
+                bd.record_trade(
+                    _bd_features, _bd_pnl_r,
+                    trade_id=str(getattr(pos, "order_id", "") or ""),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[behavior-discovery] close hook failed for {}: {}", pos.symbol, exc)
 
         # ── Post-close price tracking — schedule forward MFE/MAE checks ──────
         # Separates entry-signal quality from management quality. Keyed by the

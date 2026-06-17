@@ -2526,6 +2526,99 @@ class RiskManagementConfig:
             raise ValueError(
                 "RiskManagementConfig.correlation_threshold must be in [0, 1], "
                 f"got {self.correlation_threshold!r}"
+class BehaviorDiscoveryConfig:
+    """Settings for the Behaviour Discovery engine (L6).
+
+    L5 discovers signal *combinations*; this layer discovers execution
+    *behaviours*. It records each closed trade's execution feature vector
+    (entry mode, horizon, the chosen profile's SL/TP shape, regime, consensus
+    strength, conviction, score, time-of-day, volatility, instrument class,
+    direction) + realised R, then periodically clusters those vectors
+    (density-based, no pre-set ``k``, no heavy ML) into emergent **Behaviours**.
+
+    Each behaviour is scored (win-rate / expectancy / Sharpe-like) with Bayesian
+    shrinkage toward the book average and walked through a SHADOW → ACTIVE →
+    RETIRED lifecycle, rate-limited by a per-behaviour cooldown so it never
+    thrashes. Purely advisory + observational — it never changes a weight, mode,
+    or decision; it surfaces what the data shows for the evolution stack (and a
+    human) to adopt.
+
+    Dormant by construction: below ``min_trades_to_cluster`` recorded trades
+    nothing clusters and every accessor returns an empty shape (a true no-op).
+    """
+
+    # Master switch — ACTIVE by default. When off, nothing is recorded/clustered.
+    behavior_discovery_enabled: bool = True
+    # How many recent closed trades each clustering pass uses.
+    behavior_lookback: int = 1000
+    # Minimum recorded trades before any clustering runs.
+    min_trades_to_cluster: int = 100
+    # Minimum trades in a density cluster for it to be a behaviour.
+    min_cluster_size: int = 20
+    # Hard cap on simultaneously tracked behaviours (largest clusters kept).
+    max_clusters: int = 15
+    # Recompute the clustering every N recorded trades.
+    recluster_every_n_trades: int = 50
+    # Neighbour radius (normalised [0,1] feature distance) for density clustering.
+    cluster_eps: float = 0.25
+    # Bayesian shrinkage strength — prior (book-average) weight in trades.
+    bayesian_prior_trades: int = 50
+    # Shrunk-expectancy percentile to promote SHADOW → ACTIVE.
+    promote_threshold: float = 0.65
+    # Shrunk-expectancy percentile to retire ACTIVE → RETIRED.
+    retire_threshold: float = 0.30
+    # Minimum recorded trades between lifecycle transitions per behaviour.
+    cooldown_trades: int = 100
+    # Centroid distance under which a fresh cluster is matched to an existing
+    # behaviour (lifecycle continuity across recompute passes).
+    centroid_match_eps: float = 0.20
+    # SQLite path (under data/, gitignored).
+    behavior_discovery_db_path: str = "data/behavior_discovery.db"
+
+    def __post_init__(self) -> None:
+        for name in (
+            "behavior_lookback",
+            "min_trades_to_cluster",
+            "min_cluster_size",
+            "max_clusters",
+            "recluster_every_n_trades",
+            "bayesian_prior_trades",
+        ):
+            if int(getattr(self, name)) < 1:
+                raise ValueError(
+                    f"BehaviorDiscoveryConfig.{name} must be >= 1, "
+                    f"got {getattr(self, name)!r}"
+                )
+        if int(self.min_cluster_size) < 2:
+            raise ValueError(
+                "BehaviorDiscoveryConfig.min_cluster_size must be >= 2, "
+                f"got {self.min_cluster_size!r}"
+            )
+        if not (0.0 < float(self.cluster_eps) <= 1.0):
+            raise ValueError(
+                "BehaviorDiscoveryConfig.cluster_eps must be in (0, 1], "
+                f"got {self.cluster_eps!r}"
+            )
+        for name in ("promote_threshold", "retire_threshold"):
+            v = float(getattr(self, name))
+            if not (0.0 <= v <= 1.0):
+                raise ValueError(
+                    f"BehaviorDiscoveryConfig.{name} must be in [0, 1], got {v!r}"
+                )
+        if float(self.retire_threshold) > float(self.promote_threshold):
+            raise ValueError(
+                "BehaviorDiscoveryConfig.retire_threshold must be <= "
+                "promote_threshold"
+            )
+        if int(self.cooldown_trades) < 0:
+            raise ValueError(
+                "BehaviorDiscoveryConfig.cooldown_trades must be >= 0, "
+                f"got {self.cooldown_trades!r}"
+            )
+        if not (0.0 < float(self.centroid_match_eps) <= 1.0):
+            raise ValueError(
+                "BehaviorDiscoveryConfig.centroid_match_eps must be in (0, 1], "
+                f"got {self.centroid_match_eps!r}"
             )
 
 
@@ -2563,6 +2656,7 @@ class AppConfig:
     execution_profiles: ExecutionProfileConfig = field(default_factory=ExecutionProfileConfig)
     regime_detection: RegimeDetectionConfig = field(default_factory=RegimeDetectionConfig)
     risk_management: RiskManagementConfig = field(default_factory=RiskManagementConfig)
+    behavior_discovery: BehaviorDiscoveryConfig = field(default_factory=BehaviorDiscoveryConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)
