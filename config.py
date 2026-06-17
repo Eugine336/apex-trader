@@ -1971,7 +1971,7 @@ class InteractionConfig:
     """
 
     # Master switch: compute + cache the leave-K-out interaction analysis.
-    interaction_discovery_enabled: bool = False
+    interaction_discovery_enabled: bool = True
     # How many recent closed trades each analysis pass replays.
     interaction_lookback: int = 500
     # Recompute the interaction matrix every N closed trades.
@@ -2027,7 +2027,7 @@ class ParameterEvolutionConfig:
     """
 
     # Master switch: explore + shadow-validate parameter candidates.
-    param_evolution_enabled: bool = False
+    param_evolution_enabled: bool = True
     # How many candidate values to generate per parameter each tournament.
     candidates_per_param: int = 10
     # How many recent closed trades each replay tournament analyses.
@@ -2091,7 +2091,7 @@ class SignalDiscoveryConfig:
     """
 
     # Master switch: mine + OOS-validate candidate signal rules.
-    signal_discovery_enabled: bool = False
+    signal_discovery_enabled: bool = True
     # How many recent closed trades each mining pass uses.
     discovery_lookback: int = 1000
     # Recompute every N closed trades.
@@ -2130,7 +2130,7 @@ class SignalDiscoveryConfig:
     # degrade. Defaults OFF — discovery stays purely advisory until flipped on.
     # NOTE: ``signal_discovery_enabled`` is the kill switch on top of this — when
     # it is off, every virtual module is forced to weight 0.0 regardless.
-    virtual_promotion_enabled: bool = False
+    virtual_promotion_enabled: bool = True
     # Trades a module must spend in SHADOW (since registration) before it is
     # eligible for promotion.
     shadow_trades_required: int = 50

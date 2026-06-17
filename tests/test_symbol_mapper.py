@@ -140,3 +140,37 @@ class TestSymbolMapperUnknownBroker:
     def test_unknown_broker_reverse_passthrough(self):
         mapper = SymbolMapper("nonexistent_broker")
         assert mapper.to_canonical("frxEURUSD") == "frxEURUSD"
+
+
+class TestMetaquotesIndexOverrides:
+    """Regression for the live FRA40 → CACC.NAS mismatch.
+
+    Auto-discovery had written corrupt overrides mapping index symbols to
+    unrelated instruments (a France-40 index to a NASDAQ single stock, the
+    Dow to a forex pair, etc.), so a FRA40 order was sized/sent against
+    CACC.NAS. Those overrides are removed; an index must never resolve to a
+    forex pair or a single-equity ticker. With no override the mapper falls
+    through to passthrough, and the MT5 connector's alias scan / safe-skip
+    takes over.
+    """
+
+    @pytest.fixture
+    def mapper(self):
+        return SymbolMapper("metaquotes_ltd")
+
+    def test_fra40_not_mapped_to_nasdaq_stock(self, mapper):
+        assert mapper.to_broker("FRA40") != "CACC.NAS"
+
+    def test_us30_not_mapped_to_forex_pair(self, mapper):
+        assert mapper.to_broker("US30") != "AUDJPY"
+
+    def test_corrupt_index_overrides_removed(self, mapper):
+        for canonical, corrupt in (
+            ("FRA40", "CACC.NAS"),
+            ("US30", "AUDJPY"),
+            ("SWI20", "US Mid Cap 400"),
+            ("HK50", "HSIC.OQ"),
+            ("SGP30", "SSTI.NAS"),
+        ):
+            assert mapper.to_broker(canonical) != corrupt
+
