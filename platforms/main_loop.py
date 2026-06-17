@@ -333,7 +333,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             correlation=self.correlation,
         )
         self.risk_reporter = RiskReporter()
-        self.ml = MLAdapter()
+        self.ml = MLAdapter(config=self.config)
         # Wire the live PairLearner into the scanner so the opportunity ranker's
         # adaptive win-rate provider (learning layer #1) can read observed
         # per-pair win rates. Inert unless the ranker flag is on.
@@ -341,6 +341,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self.scanner.set_pair_learner(self.ml.pair_learner)
         except Exception as exc:
             logger.warning("[main] could not wire PairLearner into scanner: {}", exc)
+        # Wire the post-close MFE/MAE tracker into the PairLearner so per-pair
+        # learning can split entry quality from management quality (read-only;
+        # only blends into sizing when the continuous split flag is on).
+        try:
+            if self._post_close_tracker is not None and hasattr(
+                self.ml.pair_learner, "set_post_close_tracker"
+            ):
+                self.ml.pair_learner.set_post_close_tracker(self._post_close_tracker)
+        except Exception as exc:
+            logger.warning("[main] could not wire PostCloseTracker into PairLearner: {}", exc)
         self.re_entry = ReEntryManager()
         self.density_tracker = OpportunityDensityTracker(window_minutes=60)
         self.vol_monitor = SystemVolatilityMonitor()

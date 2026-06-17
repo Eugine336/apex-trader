@@ -73,11 +73,11 @@ class AdaptiveOptimizer(TuningGuardMixin):
     LOSING_PATTERN_MIN_SAMPLES = 20
     LOSING_PATTERN_MAX_WIN_RATE = 0.35
 
-    def __init__(self) -> None:
+    def __init__(self, config=None) -> None:
         self.analyzer = TradeAnalyzer()
         self.optimizer = ScoreOptimizer()
         self.regime_learner = RegimeLearner()
-        self.pair_learner = PairLearner()
+        self.pair_learner = PairLearner(config=getattr(config, "pair_learner", None))
         self.session_learner = SessionLearner()
 
         # Tunable per instance (kept as attributes so ops can adjust/disable).
