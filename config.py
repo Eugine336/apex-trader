@@ -233,6 +233,20 @@ class ScoringConfig:
     # ``pattern_confluence_max_bonus``. Default OFF — behaviour unchanged.
     pattern_confluence_bonus: bool = True
     pattern_confluence_max_bonus: int = 2
+    # ── Per-class scoring weights (learning layer) ───────────────────────
+    # A single global weight set averages forex + synthetic + crypto into a
+    # mediocre middle. When ``per_class_optimizer`` is on the ScoreOptimizer
+    # keeps a separate weight profile per asset class (forex/synthetic/crypto/
+    # commodity/index) plus a shared ``default`` used for cold-start, unknown
+    # symbols, and as the Bayesian-shrinkage prior for thin classes. Default
+    # OFF — single-profile behaviour is preserved byte-for-byte until enabled.
+    per_class_optimizer: bool = False
+    # Minimum trades a class needs before it gets an independent profile;
+    # below this it resolves to the shared default weights.
+    min_trades_per_class: int = 30
+    # Bayesian shrinkage strength — how strongly a class profile is pulled
+    # toward the global default (higher = more shrinkage for thin classes).
+    class_shrinkage_strength: float = 0.3
 
 
 # ---------------------------------------------------------------------------
@@ -1565,14 +1579,13 @@ class PairLearnerConfig:
     sigmoid replacement plus an optional entry-vs-management split (so a pair
     with good signals but poor trade management is not over-penalised).
 
-    ``continuous_pair_multiplier`` defaults OFF so existing behaviour is
-    byte-for-byte preserved until explicitly enabled (the codebase convention:
-    new behaviour ships behind a flag defaulting to legacy). When False every
-    field below is ignored and the 4-bucket logic runs as before.
+    ``continuous_pair_multiplier`` defaults ON (the smooth sigmoid is the live
+    behaviour). Set it to False to fall back to the legacy 4-bucket multiplier,
+    in which case every field below is ignored.
     """
 
     # Master switch for the smooth multiplier. False = legacy 4-bucket.
-    continuous_pair_multiplier: bool = False
+    continuous_pair_multiplier: bool = True
     # Sigmoid shape: midpoint is the win rate that maps near the curve centre,
     # steepness controls how sharply it ramps, floor/ceiling bound the output.
     continuous_midpoint: float = 0.50

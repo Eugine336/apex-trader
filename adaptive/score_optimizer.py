@@ -44,10 +44,34 @@ FACTOR_KEYS = [
 
 ADAPTIVE_WEIGHT_ENVELOPE_PCT = 0.25
 
+# Per-class weight profiles (collapse fix: a single global weight set averages
+# forex + synthetic + crypto into a mediocre middle that is optimal for nothing).
+# When ``per_class`` mode is on, ScoreOptimizer keeps a separate ScoringWeights
+# profile per asset class plus this shared fallback used for cold-start /
+# unknown symbols and as the Bayesian-shrinkage prior for thin classes.
+DEFAULT_CLASS = "default"
+
 _OLD_TO_NEW_KEY_MAP = {
     "order_block_weight": ("ob_h1_weight", "ob_m5_weight"),
     "m1_trigger_weight": None,
 }
+
+
+def classify_asset_class(symbol: str) -> str:
+    """Return the asset-class key for a symbol.
+
+    Reuses the central ``InstrumentCategory`` registry (forex / commodity /
+    index / synthetic / crypto). Unknown or empty symbols fall back to
+    ``DEFAULT_CLASS`` so per-class lookups always resolve to a real profile.
+    """
+    if not symbol:
+        return DEFAULT_CLASS
+    try:
+        from config import get_instrument
+
+        return get_instrument(symbol).category.value
+    except Exception:
+        return DEFAULT_CLASS
 
 
 @dataclass
@@ -151,11 +175,32 @@ class ScoreOptimizer:
     VALIDATION_RATIO = 0.30
     MIN_VALIDATION = 15
 
-    def __init__(self) -> None:
+    # Per-class defaults (overridable via ScoringConfig).
+    PER_CLASS_DEFAULT = False
+    MIN_TRADES_PER_CLASS = 30
+    CLASS_SHRINKAGE_STRENGTH = 0.3
+
+    def __init__(self, config=None) -> None:
+        # Per-class mode is driven by ScoringConfig. When off, behaviour is
+        # byte-for-byte identical to the legacy single-profile optimizer.
+        self.per_class = bool(getattr(config, "per_class_optimizer", self.PER_CLASS_DEFAULT))
+        self.min_trades_per_class = int(
+            getattr(config, "min_trades_per_class", self.MIN_TRADES_PER_CLASS)
+        )
+        self.class_shrinkage_strength = float(
+            getattr(config, "class_shrinkage_strength", self.CLASS_SHRINKAGE_STRENGTH)
+        )
+        # The shared / global profile (also the cold-start + shrinkage prior).
         self.current_weights = ScoringWeights()
+        # Per-asset-class profiles. Empty / missing entries resolve to the
+        # global ``current_weights`` so lookups never fail.
+        self.class_weights: dict[str, ScoringWeights] = {}
         self.load_weights()
 
     def optimize(self, trades: list[dict], min_trades: int = 50) -> ScoringWeights:
+        if self.per_class:
+            return self._optimize_per_class(trades, min_trades)
+
         if len(trades) < min_trades:
             logger.info(f"Only {len(trades)} trades — need {min_trades} before optimising")
             return self.current_weights
@@ -204,15 +249,23 @@ class ScoreOptimizer:
         )
         return self.current_weights
 
-    def _fit_weights(self, trades: list[dict]) -> Optional[ScoringWeights]:
-        """Fit candidate weights from the given trades. Returns None if insufficient lift data."""
+    def _fit_weights(
+        self, trades: list[dict], base: Optional["ScoringWeights"] = None
+    ) -> Optional[ScoringWeights]:
+        """Fit candidate weights from the given trades. Returns None if insufficient lift data.
+
+        ``base`` is the incumbent the per-factor shifts are applied to; defaults
+        to ``self.current_weights`` (the legacy/global profile) so existing
+        callers are unaffected. Per-class fits pass the class incumbent instead.
+        """
+        base_weights = base if base is not None else self.current_weights
         effectiveness = self.get_factor_effectiveness(trades)
         lifts = {k: v["lift"] for k, v in effectiveness.items() if v["sample_present"] >= 10}
 
         if not lifts:
             return None
 
-        current = self.current_weights.as_dict()
+        current = base_weights.as_dict()
         raw_new: dict[str, float] = {}
         for key in FACTOR_KEYS:
             lift = lifts.get(key, 0.0)
@@ -255,6 +308,154 @@ class ScoreOptimizer:
         self.save_weights()
         logger.info(f"Weights optimised (no OOS gate) — total={clamped.total} (pre-clamp={candidate.total})")
         return clamped
+
+    # ------------------------------------------------------------------
+    # Per-class optimisation
+    # ------------------------------------------------------------------
+
+    def _optimize_per_class(
+        self, trades: list[dict], min_trades: int
+    ) -> ScoringWeights:
+        """Fit a separate weight profile per asset class.
+
+        The shared/global profile (``current_weights``) is fitted on ALL trades
+        and is used as the cold-start fallback and the Bayesian-shrinkage prior.
+        Each class with at least ``min_trades_per_class`` trades is fitted
+        independently on only its own trades, then shrunk toward the global
+        profile by sample confidence. Classes below the floor keep no separate
+        profile and resolve to the global one at lookup time.
+
+        Returns the global profile (mirrors the legacy return contract).
+        """
+        # 1. Global profile from the full history (incumbent = current global).
+        global_weights = self._fit_profile(trades, self.current_weights, min_trades)
+        self.current_weights = global_weights
+
+        # 2. Per-class profiles from the class-split history.
+        by_class = self._split_by_class(trades)
+        new_class_weights: dict[str, ScoringWeights] = {}
+        for cls, cls_trades in by_class.items():
+            if cls == DEFAULT_CLASS:
+                continue
+            n = len(cls_trades)
+            if n < self.min_trades_per_class:
+                # Thin class — no independent profile; resolves to global.
+                continue
+            incumbent = self.class_weights.get(cls, global_weights)
+            fitted = self._fit_profile(
+                cls_trades,
+                incumbent,
+                min_trades=min(min_trades, self.min_trades_per_class),
+            )
+            blended = self._shrink_toward_global(fitted, global_weights, n)
+            new_class_weights[cls] = blended
+
+        self.class_weights = new_class_weights
+        self.save_weights()
+        logger.info(
+            "Per-class weights optimised — global total={} | classes={}".format(
+                global_weights.total,
+                ", ".join(
+                    f"{cls}(n={len(by_class.get(cls, []))})"
+                    for cls in sorted(new_class_weights)
+                )
+                or "none above floor",
+            )
+        )
+        return global_weights
+
+    def _fit_profile(
+        self, trades: list[dict], incumbent: ScoringWeights, min_trades: int
+    ) -> ScoringWeights:
+        """Pure OOS-gated fit for ONE profile — no disk write, no global mutation.
+
+        Returns the adopted (envelope-clamped) weights, or the incumbent
+        unchanged when there is insufficient data or the candidate fails the
+        out-of-sample separation gate.
+        """
+        if len(trades) < min_trades:
+            return incumbent
+
+        sorted_trades = self._sort_by_time(trades)
+        split_idx = int(len(sorted_trades) * (1 - self.VALIDATION_RATIO))
+        train = sorted_trades[:split_idx]
+        validation = sorted_trades[split_idx:]
+
+        baseline = ScoringWeights()
+
+        if len(validation) < self.MIN_VALIDATION:
+            candidate = self._fit_weights(sorted_trades, base=incumbent)
+            if candidate is None:
+                return incumbent
+            return candidate.clamped_to_envelope(baseline)
+
+        candidate = self._fit_weights(train, base=incumbent)
+        if candidate is None:
+            return incumbent
+
+        candidate_metric = self._compute_validation_metric(candidate, validation)
+        incumbent_metric = self._compute_validation_metric(incumbent, validation)
+        if candidate_metric >= incumbent_metric:
+            return candidate.clamped_to_envelope(baseline)
+        return incumbent
+
+    def _shrink_toward_global(
+        self, fitted: ScoringWeights, global_weights: ScoringWeights, n: int
+    ) -> ScoringWeights:
+        """Bayesian shrinkage: blend the class fit toward the global profile.
+
+        ``lam = n / (n + k)`` where the pseudo-count ``k`` scales with
+        ``class_shrinkage_strength`` and ``min_trades_per_class``. More class
+        trades → trust the class fit more; thin classes lean on the global
+        prior. The result is clamped to the same ±envelope as every other
+        profile so per-class divergence stays bounded.
+        """
+        k = max(0.0, self.class_shrinkage_strength) * float(self.min_trades_per_class)
+        denom = n + k
+        lam = (n / denom) if denom > 0 else 1.0
+        fit_d = fitted.as_dict()
+        glob_d = global_weights.as_dict()
+        blended = {
+            key: max(
+                self.MIN_WEIGHT,
+                round(lam * fit_d[key] + (1.0 - lam) * glob_d[key]),
+            )
+            for key in FACTOR_KEYS
+        }
+        weights = ScoringWeights(
+            structure_weight=blended["structure"],
+            ob_h1_weight=blended["ob_h1"],
+            ob_m5_weight=blended["ob_m5"],
+            fvg_weight=blended["fvg"],
+            mtf_confluence_weight=blended["mtf_confluence"],
+            session_weight=blended["session"],
+            news_weight=blended["news"],
+            currency_strength_weight=blended["currency_strength"],
+            liquidity_sweep_weight=blended["liquidity_sweep"],
+            volume_weight=blended["volume"],
+            inducement_weight=blended["inducement"],
+            wyckoff_weight=blended["wyckoff"],
+        )
+        return weights.clamped_to_envelope(ScoringWeights())
+
+    @staticmethod
+    def _split_by_class(trades: list[dict]) -> dict[str, list[dict]]:
+        """Group trades by their symbol's asset class (``t['pair']``)."""
+        grouped: dict[str, list[dict]] = {}
+        for t in trades:
+            cls = classify_asset_class(str(t.get("pair", "")))
+            grouped.setdefault(cls, []).append(t)
+        return grouped
+
+    def weights_for_class(self, asset_class: str) -> ScoringWeights:
+        """Return the weight profile for an asset class, falling back to global."""
+        if not self.per_class:
+            return self.current_weights
+        return self.class_weights.get(asset_class, self.current_weights)
+
+    def weights_for_symbol(self, symbol: str) -> ScoringWeights:
+        """Return the weight profile that applies to ``symbol``."""
+        return self.weights_for_class(classify_asset_class(symbol))
 
     @staticmethod
     def _compute_validation_metric(weights: ScoringWeights, trades: list[dict]) -> float:
@@ -321,17 +522,46 @@ class ScoreOptimizer:
         filepath: Optional[str] = None,
     ) -> None:
         filepath = filepath or self.DEFAULT_PATH
-        weights = weights or self.current_weights
         p = Path(filepath)
         p.parent.mkdir(parents=True, exist_ok=True)
+
+        if self.per_class:
+            default_w = weights or self.current_weights
+            payload: dict = {DEFAULT_CLASS: asdict(default_w)}
+            for cls, w in self.class_weights.items():
+                payload[cls] = asdict(w)
+        else:
+            payload = asdict(weights or self.current_weights)
+
+        text = json.dumps(payload, indent=2)
         try:
             from persistence.atomic_write import atomic_write_text
 
-            atomic_write_text(p, json.dumps(asdict(weights), indent=2))
+            atomic_write_text(p, text)
         except Exception:
             # Defensive fallback only if the atomic helper is unavailable.
-            p.write_text(json.dumps(asdict(weights), indent=2))
+            p.write_text(text)
         logger.info(f"Weights saved to {filepath}")
+
+    @staticmethod
+    def _weights_from_dict(data: dict) -> ScoringWeights:
+        """Build ScoringWeights from a (possibly old-schema) flat dict."""
+        migrated = _migrate_old_weights(data)
+        valid = {k: v for k, v in migrated.items() if k in ScoringWeights.__dataclass_fields__}
+        return ScoringWeights(**valid)
+
+    @staticmethod
+    def _is_nested(data: dict) -> bool:
+        """True when the persisted file holds per-class profiles.
+
+        Flat files carry weight keys (e.g. ``structure_weight``) at the top
+        level. Nested files map asset-class names to weight dicts.
+        """
+        if not isinstance(data, dict) or not data:
+            return False
+        if any(k in ScoringWeights.__dataclass_fields__ for k in data):
+            return False
+        return any(isinstance(v, dict) for v in data.values())
 
     def load_weights(self, filepath: Optional[str] = None) -> ScoringWeights:
         filepath = filepath or self.DEFAULT_PATH
@@ -344,10 +574,26 @@ class ScoreOptimizer:
         except Exception as exc:
             logger.warning("Could not parse weights file {}: {}", filepath, exc)
             return ScoringWeights()
-        migrated = _migrate_old_weights(data)
-        valid = {k: v for k, v in migrated.items() if k in ScoringWeights.__dataclass_fields__}
-        weights = ScoringWeights(**valid)
+
+        if self._is_nested(data):
+            default_data = data.get(DEFAULT_CLASS, {})
+            self.current_weights = self._weights_from_dict(default_data)
+            self.class_weights = {
+                cls: self._weights_from_dict(d)
+                for cls, d in data.items()
+                if cls != DEFAULT_CLASS and isinstance(d, dict)
+            }
+            logger.info(
+                "Per-class weights loaded from {} — global total={} | classes=[{}]",
+                filepath,
+                self.current_weights.total,
+                ", ".join(sorted(self.class_weights)),
+            )
+            return self.current_weights
+
+        weights = self._weights_from_dict(data)
         self.current_weights = weights
+        self.class_weights = {}
         logger.info(f"Weights loaded from {filepath} — total={weights.total}")
         return weights
 
@@ -387,7 +633,12 @@ def _migrate_old_weights(data: dict) -> dict:
 def load_saved_weights(filepath: str = "data/scoring_weights.json") -> ScoringWeights:
     """Load OOS-validated weights from disk, migrating old schemas if needed.
     Falls back to canonical defaults if absent or corrupt.
-    Shared by the backtest orchestrator and the live scanner."""
+    Shared by the backtest orchestrator and the live scanner.
+
+    When the file holds per-class profiles (nested), the shared ``default``
+    profile is returned — single-profile consumers stay correct without
+    needing to know about per-class mode.
+    """
     p = Path(filepath)
     if not p.exists():
         return ScoringWeights()
@@ -396,6 +647,8 @@ def load_saved_weights(filepath: str = "data/scoring_weights.json") -> ScoringWe
     except Exception as exc:
         logger.warning("Could not parse weights file {}: {} — using defaults", filepath, exc)
         return ScoringWeights()
+    if ScoreOptimizer._is_nested(data):
+        data = data.get(DEFAULT_CLASS, {})
     migrated = _migrate_old_weights(data)
     valid = {k: v for k, v in migrated.items() if k in ScoringWeights.__dataclass_fields__}
     return ScoringWeights(**valid)

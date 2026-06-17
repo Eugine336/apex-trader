@@ -438,6 +438,25 @@ class PairScanner:
     # Quality failure tracking
     # ------------------------------------------------------------------
 
+    def _weights_for(self, pair: str) -> Optional[dict[str, int]]:
+        """Resolve the confluence weight dict that applies to ``pair``.
+
+        ``_adaptive_weights`` is either a flat ``{factor: weight}`` dict (legacy
+        single-profile) or a per-class payload ``{class: {factor: weight}, ...}``
+        with a ``default`` fallback (per-class optimiser mode). Returns ``None``
+        when adaptive weighting is off so callers fall back to static config.
+        """
+        w = self._adaptive_weights
+        if not w:
+            return None
+        # Per-class payload: values are themselves weight dicts.
+        if any(isinstance(v, dict) for v in w.values()):
+            from adaptive.score_optimizer import classify_asset_class, DEFAULT_CLASS
+
+            cls = classify_asset_class(pair)
+            return w.get(cls) or w.get(DEFAULT_CLASS) or None
+        return w
+
     def get_quality_failure_stats(self) -> tuple[int, int]:
         """Return (failures, total_scans) since last reset."""
         return self._quality_failures, self._quality_scans
@@ -771,7 +790,7 @@ class PairScanner:
         score = 0
         confluences: list[str] = []
         scoring = self.config.scoring
-        _w = self._adaptive_weights
+        _w = self._weights_for(pair)
 
         if decision is not None:
             confluences.append(decision.summary)
