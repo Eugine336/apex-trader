@@ -944,6 +944,124 @@ function SignalDiscovery({ d }) {
   );
 }
 
+function modeBadge(mode) {
+  if (mode === 'ACTIVE') return <span className="badge badge-green">active</span>;
+  if (mode === 'SHADOW') return <span className="badge badge-blue">shadow</span>;
+  return <span className="badge badge-muted">disabled</span>;
+}
+
+function VirtualModules({ d }) {
+  const modules = d?.modules || [];
+  const transitions = d?.transitions || [];
+  const counts = d?.counts || {};
+  const lastEval = d?.last_evaluation || null;
+  return (
+    <div className="card mb-20">
+      <div className="card-header">
+        <span className="card-title">Virtual Voting Modules (L5c)</span>
+        <StatusPill on={d?.enabled} />
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '0 12px 10px' }}>
+        Discovered rules promoted to <b>synthetic voting modules</b> that vote like a
+        real module — but earn their way out of SHADOW first. Promotion gated:
+        ≥{d?.shadow_trades_required || 0} shadow trades, accuracy ≥{pct(d?.min_shadow_accuracy)},
+        active cap {d?.max_active || 0}. Kill switch:{' '}
+        {d?.kill_switch ? 'on' : 'OFF (all weights 0)'}; promotion:{' '}
+        {d?.promotion_enabled ? 'on' : 'off'}.
+        {d?.restart_pending ? ` ${d.restart_pending} module(s) in restart-shadow.` : ''}
+      </div>
+      <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
+        <div className="stat-card">
+          <div className="stat-label">Active</div>
+          <div className="stat-value" style={{ color: 'var(--green-bright)' }}>{counts.ACTIVE || 0}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Shadow</div>
+          <div className="stat-value">{counts.SHADOW || 0}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Disabled</div>
+          <div className="stat-value" style={{ color: 'var(--text-muted)' }}>{counts.DISABLED || 0}</div>
+        </div>
+      </div>
+      {lastEval && (lastEval.promoted?.length || lastEval.retired?.length || lastEval.registered?.length) ? (
+        <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '0 12px 8px' }}>
+          Last pass — registered: {(lastEval.registered || []).length},
+          promoted: {(lastEval.promoted || []).length},
+          retired: {(lastEval.retired || []).length}.
+        </div>
+      ) : null}
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Module</th>
+              <th>Dir</th>
+              <th>Mode</th>
+              <th className="right">Weight</th>
+              <th className="right">Live wt</th>
+              <th className="right">Win%</th>
+              <th className="right">Edge</th>
+              <th>Source rule</th>
+            </tr>
+          </thead>
+          <tbody>
+            {modules.length === 0 && (
+              <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
+                {d?.enabled
+                  ? 'No virtual modules yet — discovered rules register here as shadow candidates.'
+                  : 'Virtual modules off (discovery engine not live).'}
+              </td></tr>
+            )}
+            {modules.map((m, i) => (
+              <tr key={`${m.name}-${i}`}>
+                <td style={{ fontWeight: 600, fontSize: 11 }}>{m.name}</td>
+                <td>{m.vote_direction}</td>
+                <td>{modeBadge(m.mode)}{m.restart_shadow ? <span className="badge badge-muted" style={{ marginLeft: 4 }}>restart</span> : null}</td>
+                <td className="right">{(Number(m.weight) || 0).toFixed(2)}</td>
+                <td className="right" style={{ color: m.effective_weight > 0 ? 'var(--green-bright)' : 'var(--text-muted)' }}>
+                  {(Number(m.effective_weight) || 0).toFixed(2)}
+                </td>
+                <td className="right" style={{ color: accColor(m.win_rate) }}>{pct(m.win_rate)}</td>
+                <td className="right">{(Number(m.edge) || 0).toFixed(2)}R</td>
+                <td style={{ fontSize: 10, color: 'var(--text-muted)' }}>{m.source_label}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {transitions.length > 0 && (
+        <div className="table-wrap" style={{ marginTop: 8 }}>
+          <table>
+            <thead>
+              <tr>
+                <th>Module</th>
+                <th>Transition</th>
+                <th className="right">Weight</th>
+                <th className="right">Acc</th>
+                <th className="right">Marg R</th>
+                <th>Reason</th>
+              </tr>
+            </thead>
+            <tbody>
+              {transitions.map((t, i) => (
+                <tr key={`${t.name}-${t.timestamp}-${i}`}>
+                  <td style={{ fontSize: 11 }}>{t.name}</td>
+                  <td>{t.old_mode} → {t.new_mode}</td>
+                  <td className="right">{(Number(t.weight) || 0).toFixed(2)}</td>
+                  <td className="right">{pct(t.accuracy)}</td>
+                  <td className="right">{(Number(t.marginal_r) || 0).toFixed(3)}</td>
+                  <td style={{ fontSize: 10, color: 'var(--text-muted)' }}>{t.reason}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function Learning() {
   const { data, loading } = useApi('/api/learning', 8000);
 
@@ -972,6 +1090,7 @@ export default function Learning() {
       <ModuleInteractions d={data?.interactions} />
       <ParameterEvolution d={data?.param_evolution} />
       <SignalDiscovery d={data?.signal_discovery} />
+      <VirtualModules d={data?.virtual_modules} />
       <TunerAgent d={data?.tuner_agent} />
     </div>
   );

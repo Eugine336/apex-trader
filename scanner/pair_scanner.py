@@ -241,7 +241,15 @@ class PairScanResult:
     # Raw per-module directional votes (Vote objects) that fed both the scalar
     # consensus AND the ranker this cycle. Kept so the dashboard can show what
     # each of the 9 modules actually saw per pair × horizon. Never mutated.
+    # When virtual (synthetic) voting modules are ACTIVE, their votes are part of
+    # this list too — they joined the live consensus panel exactly like a fixed
+    # module.
     votes: list = field(default_factory=list)
+    # Virtual (synthetic) module votes that fired this cycle but were SHADOW /
+    # kill-switched / restart-shadowed — recorded + graded by the SignalLedger
+    # but NEVER part of the live consensus (weight 0.0). Kept separate from
+    # ``votes`` precisely so they cannot influence the decision or its replay.
+    shadow_votes: list = field(default_factory=list)
     # Horizon ("SCALP"/"SWING") of the ranker opportunity the executor selected
     # to drive ``direction`` live. Empty when the scalar consensus path stands
     # (no ranker pick) — downstream HTF demotion is then inert (full authority).
@@ -415,6 +423,11 @@ class PairScanner:
         # case ``_vote_weight`` forces a shadowed/disabled module's weight to 0.0
         # so it cannot influence the consensus while still being measured.
         self._module_governor = None
+        # Virtual module registry (L5c — synthetic voting modules). Injected by
+        # the main loop via ``set_virtual_registry``; inert when None or empty.
+        # ACTIVE virtual modules join the live consensus panel; SHADOW ones are
+        # graded only (weight 0.0). Never influences the decision when empty.
+        self._virtual_registry = None
         self.news = NewsGuard()
         self.volume = VolumeAnalyzer()
         self.last_report: Optional[ScanReport] = None
@@ -500,6 +513,17 @@ class PairScanner:
         DISABLED module to 0.0 so it does not influence the consensus while it
         keeps being graded. Pass ``None`` to clear."""
         self._module_governor = governor
+
+    def set_virtual_registry(self, registry) -> None:
+        """Inject the VirtualModuleRegistry (L5c synthetic voting modules).
+
+        When wired, ``scan_pair`` computes each registered virtual module's vote
+        from the real module votes: ACTIVE modules join the live consensus panel
+        (real weight), SHADOW / kill-switched ones are recorded + graded only
+        (weight 0.0). Inert when ``None`` or the registry is empty — the live
+        decision panel is then byte-for-byte the nine real votes. Pass ``None``
+        to clear."""
+        self._virtual_registry = registry
 
     def _vote_weight(self, cc, module: str, default: float) -> float:
         """Resolve a module's consensus vote weight, applying the VoteCalibrator
@@ -603,6 +627,9 @@ class PairScanner:
         cc = self.config.consensus
         candidates: list = []
         dir_votes: list[Vote] = []
+        # Virtual (synthetic) module votes that fired but are SHADOW / suppressed
+        # — recorded + graded downstream, never part of the live decision.
+        shadow_virtual_votes: list[Vote] = []
         if cc.enabled:
 
             def _ev(result) -> dict:
@@ -725,6 +752,27 @@ class PairScanner:
                 dir_votes.append(Vote("vwap", vwap_res[0], vwap_res[1], self._vote_weight(cc, "vwap", 1.0), evidence=_ev(vwap_res)))
             except Exception as exc:
                 logger.warning("[consensus] vwap vote failed, abstaining: {}", exc)
+
+            # ── Virtual (synthetic) module votes (L5c) ───────────────────
+            # Compute each registered virtual module's vote from the NINE real
+            # votes only (no cascade). ACTIVE modules join the live consensus
+            # panel exactly like a fixed module; SHADOW / kill-switched ones are
+            # held aside (weight 0.0) for recording + grading only, so an empty
+            # registry or an all-shadow set is byte-for-byte the legacy panel.
+            reg = self._virtual_registry
+            if reg is not None:
+                try:
+                    active_virtual, shadow_virtual_votes = reg.compute_votes(dir_votes)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[virtual] {} compute_votes failed: {}", pair, exc)
+                    active_virtual, shadow_virtual_votes = [], []
+                if active_virtual:
+                    dir_votes = dir_votes + active_virtual
+                    logger.info(
+                        "[virtual] {} — {} active synthetic vote(s) joined panel: {}",
+                        pair, len(active_virtual),
+                        ", ".join(v.module for v in active_virtual),
+                    )
 
             decision = decide(
                 dir_votes,
@@ -1176,6 +1224,7 @@ class PairScanner:
                         entry_quality=0.0,
                         candidates=candidates,
                         votes=dir_votes,
+                        shadow_votes=shadow_virtual_votes,
                     )
 
                 score        = int(rl_result.final_score)
@@ -1418,6 +1467,7 @@ class PairScanner:
             rejection=rejection,
             candidates=candidates,
             votes=dir_votes,
+            shadow_votes=shadow_virtual_votes,
             gate_quality_multiplier=gate_quality_multiplier,
         )
 

@@ -513,6 +513,15 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 self.scanner.set_module_governor(self._module_governor)
         except Exception as exc:
             logger.warning("[main] could not wire ModuleGovernor into scanner: {}", exc)
+        # Wire the VirtualModuleRegistry into the scanner so ACTIVE synthetic
+        # voting modules join the live consensus panel and SHADOW ones are
+        # recorded/graded only. Inert when None or empty — the live panel is
+        # then byte-for-byte the nine real votes.
+        try:
+            if self._virtual_registry is not None:
+                self.scanner.set_virtual_registry(self._virtual_registry)
+        except Exception as exc:
+            logger.warning("[main] could not wire VirtualModuleRegistry into scanner: {}", exc)
         # Wire the post-close MFE/MAE tracker into the PairLearner so per-pair
         # learning can split entry quality from management quality (read-only;
         # only blends into sizing when the continuous split flag is on).
@@ -851,6 +860,12 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         leaves the attribute None so the guarded tuner hooks simply no-op."""
         self._param_evolver = None
         self._signal_discovery = None
+        # L5c virtual voting modules — registry (vote authority) + lifecycle
+        # manager (shadow → promote → retire policy). Both stay None unless the
+        # discovery engine is live; even then they are inert until
+        # ``virtual_promotion_enabled`` flips on.
+        self._virtual_registry = None
+        self._virtual_signal_manager = None
         if self._counterfactual is None:
             return  # they have nothing to read without the snapshot store
 
@@ -905,6 +920,42 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[signal-discovery] init failed, disabled: {}", exc)
                 self._signal_discovery = None
+
+        # ── Virtual voting modules (L5c shadow → promote → retire) ───────────
+        # The registry stores synthetic voting modules + computes their votes;
+        # the manager owns the lifecycle policy. The registry's ``enabled`` flag
+        # is the KILL SWITCH (tied to signal_discovery_enabled): when off, every
+        # virtual module is forced to weight 0.0. The manager is additionally
+        # gated by ``virtual_promotion_enabled`` (no registrations/promotions
+        # until on). Built only when the discovery engine is live; any failure
+        # leaves both None so the scanner/tuner hooks simply no-op.
+        if self._signal_discovery is not None and sd_cfg is not None:
+            try:
+                from adaptive.virtual_modules import VirtualModuleRegistry
+                from adaptive.virtual_promotion import VirtualSignalManager
+
+                self._virtual_registry = VirtualModuleRegistry(
+                    enabled=bool(getattr(sd_cfg, "signal_discovery_enabled", False)),
+                    max_active=int(getattr(sd_cfg, "max_active_signals", 5)),
+                    restart_shadow_trades=int(getattr(sd_cfg, "restart_shadow_trades", 10)),
+                )
+                self._virtual_signal_manager = VirtualSignalManager(
+                    self._virtual_registry,
+                    sd_cfg,
+                    signal_discovery=self._signal_discovery,
+                    emitter_feedback=self._emitter_feedback,
+                    counterfactual=self._counterfactual,
+                )
+                logger.info(
+                    "[virtual] registry + lifecycle manager enabled "
+                    "(kill_switch={}, promotion={})",
+                    bool(getattr(sd_cfg, "signal_discovery_enabled", False)),
+                    bool(getattr(sd_cfg, "virtual_promotion_enabled", False)),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[virtual] init failed, disabled: {}", exc)
+                self._virtual_registry = None
+                self._virtual_signal_manager = None
 
     def _param_evolution_current_values(self) -> dict:
         """Live values of the evolvable consensus / ranker thresholds, so the
@@ -968,6 +1019,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             InteractionAnalyzerTunable,
             ParameterEvolverTunable,
             SignalDiscoveryTunable,
+            VirtualSignalManagerTunable,
             ConsumerTunable,
         )
 
@@ -1085,6 +1137,19 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     )
                 ),
             ))
+        # L5c — virtual module shadow → promote → retire lifecycle (trade-close
+        # batch; runs after discovery + counterfactual + ledger so it evaluates
+        # against freshly-refreshed candidates, attribution and graded accuracy).
+        if self._virtual_signal_manager is not None:
+            agent.register(VirtualSignalManagerTunable(
+                self._virtual_signal_manager,
+                min_trades=int(
+                    getattr(
+                        getattr(self.config, "signal_discovery", None),
+                        "retirement_check_interval", 50,
+                    )
+                ),
+            ))
 
         # ── Make the agent the single place the WHOLE system reports to ──────
         # Hard enforcement: the components that can self-tune get a reference so
@@ -1093,6 +1158,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         for _component in (
             self.ml, self._gate_tuner, self._calibrator, self._signal_ledger,
             self._vote_calibrator, self._module_governor,
+            self._virtual_signal_manager,
         ):
             if _component is not None and hasattr(_component, "set_tuner_agent"):
                 _component.set_tuner_agent(agent)
@@ -1176,6 +1242,17 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 "wired": self._module_governor is not None,
             }, note="consumer — module governor disabled (no shadowing)")
 
+        # Virtual signal manager (L5c). Registered as an ACTIVE tunable above
+        # when the discovery engine is live; here we register it read-only when
+        # it is absent so the agent still surfaces it in status / validation.
+        if getattr(self, "_virtual_signal_manager", None) is None:
+            sd_cfg = getattr(self.config, "signal_discovery", None)
+            _reg("virtual_signal_manager", lambda: {
+                "enabled": False,
+                "wired": False,
+                "promotion": bool(getattr(sd_cfg, "virtual_promotion_enabled", False)),
+            }, note="consumer — virtual modules off (discovery engine not live)")
+
         # 14 — RiskEngine.
         re = getattr(self, "risk_engine", None)
         if re is not None:
@@ -1241,6 +1318,24 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self._module_governor.evaluate_transitions()
         except Exception as exc:  # noqa: BLE001
             logger.debug("[module-governor] evaluate failed: {}", exc)
+
+    def _virtual_lifecycle_evaluate(self) -> None:
+        """Run the virtual-module shadow → promote → retire lifecycle.
+
+        When the Tuner Agent is active it drives this through the registered
+        VirtualSignalManagerTunable (trade-close batch), so this only runs
+        directly when the agent is off — keeping a single source of truth.
+        Always calls ``evaluate`` (which advances the restart-shadow window even
+        when promotion is disabled). Fully guarded; never blocks the loop.
+        """
+        mgr = getattr(self, "_virtual_signal_manager", None)
+        if mgr is None or self._tuner_agent_active():
+            return
+        try:
+            total_trades = len(getattr(self.scanner, "_trade_history", []) or [])
+            mgr.evaluate(total_trades)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[virtual] lifecycle evaluate failed: {}", exc)
 
     def tuner_system_status(self) -> dict:
         """Whole-system tuning state for ops / the dashboard: every registered
@@ -6523,6 +6618,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             # Agent off: drive the module governor's transition evaluation
             # directly (the agent's periodic tunable handles it when on).
             self._module_governor_evaluate()
+            # Agent off: drive the virtual-module lifecycle directly too.
+            self._virtual_lifecycle_evaluate()
         try:
             trade_summary = {
                 "pair": pos.symbol,
@@ -7209,6 +7306,24 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                             "net": float(getattr(result, "consensus_net", 0.0) or 0.0),
                             "score": int(getattr(result, "score", 0) or 0),
                         },
+                        timestamp=ts,
+                    ))
+                # Virtual (synthetic) module SHADOW votes: recorded + graded so a
+                # shadow signal accrues a track record to earn promotion — but it
+                # never influenced this decision (weight 0.0). ACTIVE virtual
+                # votes are already in ``result.votes`` above.
+                for vote in getattr(result, "shadow_votes", []) or []:
+                    direction = getattr(vote, "direction", "NEUTRAL")
+                    if direction not in ("LONG", "SHORT"):
+                        continue
+                    module = getattr(vote, "module", "unknown")
+                    self._signal_ledger.record_signal(SignalRecord(
+                        pair=pair,
+                        emitter=module,
+                        direction=direction,
+                        strength=float(getattr(vote, "confidence", 0.0) or 0.0),
+                        price_at_signal=price,
+                        context={"virtual": True, "shadow": True, "weight": 0.0},
                         timestamp=ts,
                     ))
         except Exception as exc:  # noqa: BLE001
