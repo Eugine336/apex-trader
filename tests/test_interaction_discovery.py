@@ -83,9 +83,9 @@ def _analyzer(trades, tmp_path, **kw) -> InteractionAnalyzer:
 # ── Config ───────────────────────────────────────────────────────────────
 
 
-def test_config_defaults_off_and_values():
+def test_config_defaults_on_and_values():
     cfg = InteractionConfig()
-    assert cfg.interaction_discovery_enabled is False
+    assert cfg.interaction_discovery_enabled is True
     assert cfg.interaction_lookback == 500
     assert cfg.interaction_interval == 500
     assert cfg.toxic_threshold == -0.05

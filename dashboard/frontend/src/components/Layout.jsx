@@ -22,6 +22,7 @@ const NAV = [
   { to: '/orchestrator', icon: '🎛', label: 'Orchestrator' },
   { to: '/feedback', icon: '🔁', label: 'Outcome Feedback' },
   { to: '/learning', icon: '🧪', label: 'Learning Layer' },
+  { to: '/evolution', icon: '🌱', label: 'Evolution (L5)' },
   { to: '/position-health', icon: '🩺', label: 'Position Health' },
   { to: '/activity', icon: '🔔', label: 'Activity' },
   { to: '/shadow', icon: '👻', label: 'Shadow Outcomes' },

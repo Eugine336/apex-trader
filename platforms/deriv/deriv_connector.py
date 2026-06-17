@@ -536,12 +536,39 @@ class DerivConnector(BaseConnector):
     async def _send(self, payload: dict) -> dict:
         async with self._lock:
             self._req_id += 1
-            payload["req_id"] = self._req_id
+            req_id = self._req_id
+            payload["req_id"] = req_id
             for attempt in range(2):  # one retry after reconnect
                 try:
                     await self._ws.send(json.dumps(payload))
-                    raw = await asyncio.wait_for(self._ws.recv(), timeout=_REQUEST_TIMEOUT)
-                    return json.loads(raw)
+                    # Correlate the response to THIS request by req_id. Deriv
+                    # multiplexes subscription/stream frames (e.g. the buy
+                    # ``subscribe`` stream, tick updates) onto the same socket,
+                    # so a blind ``recv()`` can read a stale or out-of-band frame
+                    # — e.g. a previous failed buy's error — and mis-attribute it
+                    # to this request. That is what made a documented-correct
+                    # ``proposal`` (with ``symbol``) appear to fail with the
+                    # buy's 'Properties not allowed: symbol'. Discard uncorrelated
+                    # frames until the matching req_id arrives, bounded by the
+                    # request timeout so a missing reply still fails fast.
+                    deadline = _time.monotonic() + _REQUEST_TIMEOUT
+                    while True:
+                        remaining = deadline - _time.monotonic()
+                        if remaining <= 0:
+                            raise asyncio.TimeoutError(
+                                f"No Deriv response for req_id={req_id}"
+                            )
+                        raw = await asyncio.wait_for(
+                            self._ws.recv(), timeout=remaining
+                        )
+                        msg = json.loads(raw)
+                        if msg.get("req_id") == req_id:
+                            return msg
+                        logger.debug(
+                            "Deriv discarding uncorrelated frame req_id={} "
+                            "(awaiting {})",
+                            msg.get("req_id"), req_id,
+                        )
                 except Exception as exc:
                     if attempt == 0:
                         logger.warning("Deriv send error ({}), reconnecting…", exc)
@@ -1014,7 +1041,6 @@ class DerivConnector(BaseConnector):
         def build_order_payload(amount: float, multiplier: int, limit_order_enabled: bool) -> dict:
             payload = {
                 "buy": 1,
-                "subscribe": 1,
                 "price": amount,
                 "parameters": {
                     "contract_type": contract_type,

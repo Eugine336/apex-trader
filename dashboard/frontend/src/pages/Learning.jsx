@@ -621,7 +621,7 @@ function relColor(rel) {
   return 'var(--text-muted)';
 }
 
-function ModuleInteractions({ d }) {
+export function ModuleInteractions({ d }) {
   const opt = d?.optimal_subset || {};
   const toxic = d?.toxic_pairs || [];
   const synergy = d?.synergy_pairs || [];
@@ -757,7 +757,7 @@ function ModuleInteractions({ d }) {
   );
 }
 
-function ParameterEvolution({ d }) {
+export function ParameterEvolution({ d }) {
   const shadows = d?.active_shadows || [];
   const proms = d?.recent_promotions || [];
   return (
@@ -858,7 +858,7 @@ function ParameterEvolution({ d }) {
   );
 }
 
-function SignalDiscovery({ d }) {
+export function SignalDiscovery({ d }) {
   const rules = d?.rules || [];
   return (
     <div className="card mb-20">
@@ -950,7 +950,7 @@ function modeBadge(mode) {
   return <span className="badge badge-muted">disabled</span>;
 }
 
-function VirtualModules({ d }) {
+export function VirtualModules({ d }) {
   const modules = d?.modules || [];
   const transitions = d?.transitions || [];
   const counts = d?.counts || {};

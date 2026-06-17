@@ -73,7 +73,12 @@ def test_init_skips_when_no_counterfactual():
 
 
 def test_init_none_when_flags_off(cf_engine):
-    loop = _fake_loop(AppConfig(), cf_engine)  # all L5 flags default False
+    cfg = AppConfig()
+    # Explicitly disable the L5 flags (defaults are live/on) to verify the
+    # gated construction still skips engine creation when turned off.
+    cfg.param_evolution.param_evolution_enabled = False
+    cfg.signal_discovery.signal_discovery_enabled = False
+    loop = _fake_loop(cfg, cf_engine)
     MainLoop._init_evolution_engines(loop)
     assert loop._param_evolver is None
     assert loop._signal_discovery is None
