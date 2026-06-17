@@ -410,6 +410,11 @@ class PairScanner:
         # main loop via ``set_vote_calibrator``; inert unless its config flag is
         # on, in which case ``_vote_weight`` scales the static consensus weight.
         self._vote_calibrator = None
+        # Module governor (L3 — shadow mode). Injected by the main loop via
+        # ``set_module_governor``; inert unless its config flag is on, in which
+        # case ``_vote_weight`` forces a shadowed/disabled module's weight to 0.0
+        # so it cannot influence the consensus while still being measured.
+        self._module_governor = None
         self.news = NewsGuard()
         self.volume = VolumeAnalyzer()
         self.last_report: Optional[ScanReport] = None
@@ -489,12 +494,31 @@ class PairScanner:
         its calibrated multiplier in ``_vote_weight``. Pass ``None`` to clear."""
         self._vote_calibrator = calibrator
 
+    def set_module_governor(self, governor) -> None:
+        """Inject the ModuleGovernor (L3 — shadow mode). When wired and its
+        config flag is on, ``_vote_weight`` forces the weight of a SHADOW or
+        DISABLED module to 0.0 so it does not influence the consensus while it
+        keeps being graded. Pass ``None`` to clear."""
+        self._module_governor = governor
+
     def _vote_weight(self, cc, module: str, default: float) -> float:
         """Resolve a module's consensus vote weight, applying the VoteCalibrator
         multiplier when one is wired and enabled. Falls back to the static
         ``ConsensusConfig`` weight on any failure — calibration never breaks a
-        scan and is a pure no-op when disabled."""
+        scan and is a pure no-op when disabled.
+
+        A module in SHADOW or DISABLED mode (per the ModuleGovernor) is forced
+        to weight 0.0 so it cannot influence the decision — checked first so a
+        suppressed module never contributes regardless of its calibrated weight.
+        """
         base = cc.weights.get(module, default)
+        gov = self._module_governor
+        if gov is not None:
+            try:
+                if gov.is_suppressed(module):
+                    return 0.0
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[consensus] governor check failed for {}: {}", module, exc)
         vc = self._vote_calibrator
         if vc is None:
             return base

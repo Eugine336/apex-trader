@@ -6,6 +6,7 @@ import ActiveTrades from './pages/ActiveTrades';
 import TradeHistory from './pages/TradeHistory';
 import Scanner from './pages/Scanner';
 import ModuleVotes from './pages/ModuleVotes';
+import ModuleGovernor from './pages/ModuleGovernor';
 import Ranker from './pages/Ranker';
 import Performance from './pages/Performance';
 import RiskMonitor from './pages/RiskMonitor';
@@ -32,6 +33,7 @@ export default function App() {
           <Route path="history" element={<TradeHistory />} />
           <Route path="scanner" element={<Scanner />} />
           <Route path="module-votes" element={<ModuleVotes />} />
+          <Route path="module-governor" element={<ModuleGovernor />} />
           <Route path="ranker" element={<Ranker />} />
           <Route path="performance" element={<Performance />} />
           <Route path="risk" element={<RiskMonitor />} />

@@ -891,6 +891,70 @@ class VoteCalibratorTunable(_BaseTunable):
         )
 
 
+# ───────────────────────── Module governor ─────────────────────────────
+
+
+class ModuleGovernorTunable(_BaseTunable):
+    """Wraps ``ModuleGovernor.evaluate_transitions`` — L3 shadow mode.
+
+    Periodic: re-evaluates every governed module against its graded accuracy
+    (read via EmitterFeedback) and moves it between ACTIVE / SHADOW / DISABLED.
+    Depends on ``signal_ledger`` so transitions are decided from freshly-graded
+    signals. The agent snapshots the published mode map and rolls it back if a
+    pass produces an unknown mode value.
+    """
+
+    def __init__(self, governor, *, min_interval: float = 3600.0) -> None:
+        super().__init__(
+            name="module_governor",
+            frequency=TuneFrequency.PERIODIC,
+            dependencies=["signal_ledger"],
+            min_trades=0,
+            min_interval=float(min_interval),
+        )
+        self._governor = governor
+
+    def _read_params(self) -> dict:
+        try:
+            return self._governor.get_state()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[module_governor] get_state failed: {}", exc)
+            return {}
+
+    def _apply_params(self, params: dict) -> None:
+        self._governor.restore_modes((params or {}).get("modes", {}))
+
+    def validate_params(self, params: dict) -> tuple[bool, str]:
+        modes = (params or {}).get("modes", {})
+        if not isinstance(modes, dict):
+            return False, "modes not a dict"
+        valid = {"ACTIVE", "SHADOW", "DISABLED"}
+        for module, mode in modes.items():
+            if str(mode).upper() not in valid:
+                return False, f"invalid mode for {module}: {mode!r}"
+        return True, "ok"
+
+    def tune(self, ctx: TuneContext) -> TuneResult:
+        before = self._begin()
+        transitions = self._governor.evaluate_transitions() or []
+        after = self._read_params()
+        changed = bool(transitions) or after.get("modes") != before.get("modes")
+        self._mark_tuned(ctx)
+        if not transitions:
+            return TuneResult(
+                tunable_name=self._name, success=True, skipped=True,
+                params_before=before, params_after=after,
+                reason="no module transitions",
+            )
+        return TuneResult(
+            tunable_name=self._name, success=True, changed=changed,
+            params_before=before, params_after=after,
+            reason="; ".join(
+                f"{t.module} {t.old_mode}->{t.new_mode}" for t in transitions
+            ),
+        )
+
+
 # ───────────────────────── Consumers / observers ───────────────────────
 
 
@@ -984,5 +1048,6 @@ __all__ = [
     "SignalLedgerTunable",
     "PostCloseTrackerTunable",
     "VoteCalibratorTunable",
+    "ModuleGovernorTunable",
     "ConsumerTunable",
 ]
