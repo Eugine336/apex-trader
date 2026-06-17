@@ -134,9 +134,52 @@ class Tunable(Protocol):
         ...
 
 
+class TuningGuardMixin:
+    """Lets a self-tuning component defer to a central ``TunerAgent``.
+
+    Once an agent is attached (``set_tuner_agent``) and that agent declares
+    itself the sole authority, any *direct* call to the component's own
+    tune / calibrate / retrain entry point is blocked and logged as a bypass
+    attempt — UNLESS the agent is the one currently driving the tune (it
+    authorises its own delegated calls). When no agent is attached the
+    component behaves exactly as before, so this is backward-compatible.
+
+    The mixin only duck-types against the agent (``is_sole_authority``,
+    ``is_authorizing``, ``log_bypass_attempt``) so it never imports the agent
+    module — keeping this a leaf with no learning-layer dependency.
+    """
+
+    _tuner_agent = None  # class default; set per-instance via set_tuner_agent
+
+    def set_tuner_agent(self, agent) -> None:
+        """Attach (or clear, with ``None``) the central tuner agent."""
+        self._tuner_agent = agent
+
+    def _tuning_blocked(self, method: str) -> bool:
+        """Whether a direct call to ``method`` should be blocked right now.
+
+        Returns ``True`` (and records a bypass attempt) only when an agent is
+        attached, it is the sole authority, and it is NOT currently authorising
+        this call. Never raises — a faulty agent must not break the component.
+        """
+        agent = getattr(self, "_tuner_agent", None)
+        if agent is None:
+            return False
+        try:
+            if not getattr(agent, "is_sole_authority", False):
+                return False
+            if agent.is_authorizing():
+                return False
+            agent.log_bypass_attempt(type(self).__name__, method)
+            return True
+        except Exception:  # noqa: BLE001 — never let agent faults break tuning
+            return False
+
+
 __all__ = [
     "TuneFrequency",
     "TuneContext",
     "TuneResult",
     "Tunable",
+    "TuningGuardMixin",
 ]

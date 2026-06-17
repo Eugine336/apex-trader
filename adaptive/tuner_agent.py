@@ -39,6 +39,33 @@ from loguru import logger
 from adaptive.tunable import TuneContext, TuneFrequency, TuneResult, Tunable
 
 
+# Canonical names of every component that should be visible to the agent when
+# it owns tuning — the 19 from the learning-layer audit. Used by
+# get_system_tuning_status() to flag any expected component that did not
+# register (e.g. because its own config flag is off, or wiring is missing).
+EXPECTED_TUNABLES: tuple[str, ...] = (
+    "adaptive_optimizer",   # 1  — coordinator (run_optimization guarded)
+    "score_optimizer",      # 2  — confluence scoring weights
+    "regime_learner",       # 3  — per-regime TP/SL/threshold
+    "pair_learner",         # 4  — per-pair sizing
+    "session_learner",      # 5  — per-session aggression
+    "trade_analyzer",       # 6  — losing-pattern block list
+    "ev_estimator",         # 7  — EV gate history
+    "gate_tuner",           # 8  — quality-gate offsets
+    "win_rate_provider",    # 9  — ranker win-probability source
+    "signal_ledger",        # 10 — universal signal grading
+    "emitter_feedback",     # 11 — per-emitter accuracy (read-side)
+    "post_close_tracker",   # 12 — MFE/MAE post-close checks
+    "planner_calibrator",   # 13 — PlannerConfig calibration
+    "risk_engine",          # 14 — sizing chain (consumer)
+    "position_sizer",       # 15 — risk% -> lots (consumer)
+    "orchestrator",         # 16 — bounded size multiplier (consumer)
+    "portfolio_governor",   # 17 — exposure limits (consumer)
+    "trade_manager",        # 18 — SL/TP/partial/trail (consumer)
+    "rl_stack",             # 19 — RL augmentation/veto (dormant)
+)
+
+
 _CREATE_AUDIT = """
 CREATE TABLE IF NOT EXISTS tuner_audit (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -99,6 +126,16 @@ class TunerAgent:
         self._state: dict[str, _TunableState] = {}
         self._lock = threading.RLock()
 
+        # Sole-authority enforcement. When enabled, the agent is the only place
+        # tuning may happen; a component's own tune entry point checks
+        # ``is_authorizing`` (set only while the agent is driving that very
+        # tune) and otherwise records a bypass attempt. Thread-local so a
+        # concurrent caller on another thread can never see the agent's own
+        # authorisation window.
+        self._authorizing = threading.local()
+        self._bypass_log: list[dict] = []
+        self._max_bypass_log = 200
+
         self._db_path = Path(audit_db_path)
         self._conn: Optional[sqlite3.Connection] = None
         self._init_db()
@@ -136,6 +173,56 @@ class TunerAgent:
             st.disabled = False
         logger.info("[tuner-agent] '{}' failure count reset — re-enabled", name)
         return True
+
+    # ── Sole-authority enforcement ──────────────────────────────────────
+
+    @property
+    def is_sole_authority(self) -> bool:
+        """True when the agent owns ALL tuning — direct self-tune is blocked."""
+        return self.enabled
+
+    def is_authorizing(self) -> bool:
+        """True only while the agent is itself driving a tune on this thread.
+
+        A guarded component calls this to tell an agent-driven delegated tune
+        (allowed) apart from a rogue direct call (blocked).
+        """
+        return getattr(self._authorizing, "depth", 0) > 0
+
+    def _enter_authorization(self) -> None:
+        self._authorizing.depth = getattr(self._authorizing, "depth", 0) + 1
+
+    def _exit_authorization(self) -> None:
+        self._authorizing.depth = max(0, getattr(self._authorizing, "depth", 0) - 1)
+
+    def log_bypass_attempt(self, component: str, caller: str) -> None:
+        """Record (and loudly log) a component trying to self-tune behind the
+        agent's back. Called by ``TuningGuardMixin`` when it blocks a call."""
+        entry = {
+            "timestamp": time.time(),
+            "component": str(component),
+            "caller": str(caller),
+        }
+        with self._lock:
+            self._bypass_log.append(entry)
+            if len(self._bypass_log) > self._max_bypass_log:
+                self._bypass_log = self._bypass_log[-self._max_bypass_log:]
+        logger.warning(
+            "[tuner-agent] TUNING BYPASS BLOCKED — {}.{}() called directly while "
+            "the agent is sole authority; ignored. Route tuning through the agent.",
+            component, caller,
+        )
+        # Persist as an audit row so bypasses show up in the trail too.
+        self._write_audit(TuneResult(
+            tunable_name=str(component),
+            success=False,
+            reason=f"bypass blocked: direct {component}.{caller}()",
+            error="tuning_bypass_attempt",
+        ))
+
+    def get_bypass_attempts(self, limit: int = 50) -> list[dict]:
+        with self._lock:
+            return list(self._bypass_log[-int(limit):])
 
     # ── Dependency resolution (topological sort) ────────────────────────
 
@@ -321,7 +408,13 @@ class TunerAgent:
         start = time.monotonic()
         result: TuneResult
         try:
-            result = tunable.tune(ctx)
+            # Open the authorisation window so the component's own guard lets
+            # this agent-driven (delegated) call through, then close it again.
+            self._enter_authorization()
+            try:
+                result = tunable.tune(ctx)
+            finally:
+                self._exit_authorization()
             if not isinstance(result, TuneResult):
                 # A tunable that returns the wrong type is treated as a fault.
                 raise TypeError(
@@ -545,6 +638,59 @@ class TunerAgent:
             }
         return out
 
+    def get_system_tuning_status(self) -> dict:
+        """Complete system tuning state — every registered tunable plus the
+        expected components that did NOT register, recent bypass attempts, and
+        the agent's authority flags. This is the one place ops / the dashboard
+        can see who is under the agent and who is missing."""
+        registered = self.get_tuner_status()
+        expected = list(EXPECTED_TUNABLES)
+        missing = [n for n in expected if n not in registered]
+        return {
+            "agent_enabled": bool(self.enabled),
+            "is_sole_authority": bool(self.is_sole_authority),
+            "expected_count": len(expected),
+            "registered_count": len(registered),
+            "registered_tunables": registered,
+            "unregistered_expected": missing,
+            "bypass_attempts": self.get_bypass_attempts(50),
+        }
+
+    def validate_registry(self) -> dict:
+        """Startup check: warn about any expected component that is missing and
+        about any registered tunable whose current params fail their own
+        validator. Returns a summary dict (also logged). Never raises."""
+        with self._lock:
+            items = list(self._tunables.items())
+        registered_names = {n for n, _ in items}
+        missing = [n for n in EXPECTED_TUNABLES if n not in registered_names]
+        invalid: list[str] = []
+        for name, tunable in items:
+            params = self._safe_params(tunable)
+            ok, why = self._safe_validate(tunable, params)
+            if not ok:
+                invalid.append(f"{name}: {why}")
+        if missing:
+            logger.warning(
+                "[tuner-agent] {} expected tunable(s) NOT registered: {}",
+                len(missing), ", ".join(missing),
+            )
+        if invalid:
+            logger.warning(
+                "[tuner-agent] {} tunable(s) report invalid params at startup: {}",
+                len(invalid), "; ".join(invalid),
+            )
+        logger.info(
+            "[tuner-agent] registry validated — {}/{} expected components under "
+            "the agent",
+            len(registered_names), len(EXPECTED_TUNABLES),
+        )
+        return {
+            "registered": sorted(registered_names),
+            "missing": missing,
+            "invalid": invalid,
+        }
+
     def close(self) -> None:
         with self._lock:
             if self._conn is not None:
@@ -567,4 +713,4 @@ def _loads(raw) -> dict:
         return {}
 
 
-__all__ = ["TunerAgent"]
+__all__ = ["TunerAgent", "EXPECTED_TUNABLES"]

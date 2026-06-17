@@ -21,6 +21,7 @@ from adaptive.score_optimizer import ScoreOptimizer, ScoringWeights
 from adaptive.regime_learner import RegimeLearner, RegimeStrategy
 from adaptive.pair_learner import PairLearner, PairProfile
 from adaptive.session_learner import SessionLearner, SessionProfile
+from adaptive.tunable import TuningGuardMixin
 
 
 @dataclass
@@ -46,7 +47,7 @@ class OptimizationReport:
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
-class AdaptiveOptimizer:
+class AdaptiveOptimizer(TuningGuardMixin):
     """
     APEX TRADER — Adaptive Optimizer
     Coordinates all learning modules, runs optimisation cycles,
@@ -94,6 +95,11 @@ class AdaptiveOptimizer:
         self._last_recommendations: list[str] = []
 
     def run_optimization(self, trades: list[dict]) -> OptimizationReport:
+        # When the Tuner Agent is sole authority it drives the sub-learners
+        # individually; a direct run_optimization() is a bypass — return an
+        # inert report instead of re-tuning behind the agent's back.
+        if self._tuning_blocked("run_optimization"):
+            return OptimizationReport(trades_analyzed=len(trades))
         n = len(trades)
         logger.info(f"Adaptive optimisation cycle — {n} trades")
 
