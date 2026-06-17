@@ -2123,6 +2123,44 @@ class SignalDiscoveryConfig:
     # Hard cap on how many discovered rules are flagged ACTIVE at once.
     max_active_signals: int = 5
 
+    # ── Virtual voting modules (L5c shadow → promote → retire lifecycle) ──
+    # Master switch for the LIVE promotion pipeline: when on, qualifying
+    # discovered rules are registered as virtual voting modules (always in
+    # SHADOW first), promoted to ACTIVE once they earn it, and retired when they
+    # degrade. Defaults OFF — discovery stays purely advisory until flipped on.
+    # NOTE: ``signal_discovery_enabled`` is the kill switch on top of this — when
+    # it is off, every virtual module is forced to weight 0.0 regardless.
+    virtual_promotion_enabled: bool = False
+    # Trades a module must spend in SHADOW (since registration) before it is
+    # eligible for promotion.
+    shadow_trades_required: int = 50
+    # Minimum graded accuracy (direction-correct rate) to promote a shadow.
+    min_shadow_accuracy: float = 0.52
+    # Minimum marginal R per attributed trade to promote (non-binding at 0.0 —
+    # a shadow module typically has no attribution yet).
+    min_shadow_marginal_r: float = 0.0
+    # Minimum graded signals before a shadow module's accuracy is trusted.
+    promotion_min_signals: int = 20
+    # Hard rate limit on promotions per lifecycle evaluation.
+    max_promotions_per_cycle: int = 1
+    # Initial vote weight assigned on promotion (grows/shrinks via lifecycle).
+    promotion_initial_weight: float = 1.0
+    # On restart, ACTIVE modules re-enter a supervised shadow window for this
+    # many trades before resuming live weight (stale-signal safety).
+    restart_shadow_trades: int = 10
+    # Retirement: an ACTIVE module is DISABLED when its accuracy falls below this
+    # over at least ``retirement_min_signals`` graded signals.
+    retirement_accuracy_threshold: float = 0.48
+    retirement_min_signals: int = 30
+    # How often (closed-trade cadence) the lifecycle evaluation runs.
+    retirement_check_interval: int = 50
+    # Retirement by marginal R: harmful (better-off-without) below threshold,
+    # trusted only once this many attributed trades exist.
+    retirement_marginal_r_min_trades: int = 50
+    retirement_marginal_r_threshold: float = -0.05
+    # Lookback (graded signals) used when reading a virtual module's accuracy.
+    feedback_lookback: int = 500
+
     def __post_init__(self) -> None:
         if int(self.discovery_lookback) < 1:
             raise ValueError(
@@ -2163,6 +2201,36 @@ class SignalDiscoveryConfig:
             raise ValueError(
                 "SignalDiscoveryConfig.max_active_signals must be >= 0, "
                 f"got {self.max_active_signals!r}"
+            )
+        if not (0.0 <= float(self.min_shadow_accuracy) <= 1.0):
+            raise ValueError(
+                "SignalDiscoveryConfig.min_shadow_accuracy must be in [0, 1], "
+                f"got {self.min_shadow_accuracy!r}"
+            )
+        if not (0.0 <= float(self.retirement_accuracy_threshold) <= 1.0):
+            raise ValueError(
+                "SignalDiscoveryConfig.retirement_accuracy_threshold must be in "
+                f"[0, 1], got {self.retirement_accuracy_threshold!r}"
+            )
+        if int(self.shadow_trades_required) < 0:
+            raise ValueError(
+                "SignalDiscoveryConfig.shadow_trades_required must be >= 0, "
+                f"got {self.shadow_trades_required!r}"
+            )
+        if int(self.max_promotions_per_cycle) < 0:
+            raise ValueError(
+                "SignalDiscoveryConfig.max_promotions_per_cycle must be >= 0, "
+                f"got {self.max_promotions_per_cycle!r}"
+            )
+        if float(self.promotion_initial_weight) < 0:
+            raise ValueError(
+                "SignalDiscoveryConfig.promotion_initial_weight must be >= 0, "
+                f"got {self.promotion_initial_weight!r}"
+            )
+        if int(self.restart_shadow_trades) < 0:
+            raise ValueError(
+                "SignalDiscoveryConfig.restart_shadow_trades must be >= 0, "
+                f"got {self.restart_shadow_trades!r}"
             )
 
 

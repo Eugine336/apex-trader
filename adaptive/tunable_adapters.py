@@ -1261,6 +1261,73 @@ class SignalDiscoveryTunable(_AnalysisRecomputeTunable):
         return f"{rules} rule(s), {qual} qualifying over {analyzed} trades"
 
 
+class VirtualSignalManagerTunable(_BaseTunable):
+    """Wraps ``VirtualSignalManager.evaluate`` — the L5c shadow → promote →
+    retire lifecycle for synthetic voting modules.
+
+    Runs on the trade-close batch cadence and depends on ``signal_discovery``
+    (the candidate source), ``counterfactual`` (marginal R attribution) and
+    ``signal_ledger`` (graded accuracy via EmitterFeedback) so it always
+    evaluates against freshly-refreshed inputs. Every promotion/retirement flows
+    through here, so a direct ``evaluate`` call is blocked while the agent is
+    sole authority. Nothing to validate or roll back at the param level — the
+    registry persists each transition and keeps its own audit trail.
+    """
+
+    def __init__(self, manager, *, min_trades: int = 50, min_interval: float = 0.0) -> None:
+        super().__init__(
+            name="virtual_signal_manager",
+            frequency=TuneFrequency.ON_TRADE_BATCH,
+            dependencies=["signal_discovery", "counterfactual", "signal_ledger"],
+            min_trades=int(min_trades),
+            min_interval=float(min_interval),
+        )
+        self._manager = manager
+
+    def _read_params(self) -> dict:
+        try:
+            status = self._manager.get_status()
+            return {
+                "enabled": bool(status.get("enabled", False)),
+                "promotion_enabled": bool(status.get("promotion_enabled", False)),
+                "counts": dict(status.get("counts", {})),
+                "module_count": int(status.get("module_count", 0)),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[virtual_signal_manager] read params failed: {}", exc)
+            return {}
+
+    def _apply_params(self, params: dict) -> None:
+        return None
+
+    def rollback(self) -> bool:
+        return True
+
+    def tune(self, ctx: TuneContext) -> TuneResult:
+        before = self._begin()
+        # Always call evaluate: even when promotion is disabled it advances the
+        # restart-shadow window for restored ACTIVE modules and is a safe no-op
+        # otherwise.
+        res = self._manager.evaluate(ctx.total_trades)
+        self._mark_tuned(ctx)
+        after = self._read_params()
+        if not getattr(res, "changed", False):
+            return TuneResult(
+                tunable_name=self._name, success=True, skipped=True,
+                params_before=before, params_after=after,
+                reason=getattr(res, "reason", "") or "no lifecycle change",
+            )
+        return TuneResult(
+            tunable_name=self._name, success=True, changed=True,
+            params_before=before, params_after=after,
+            reason=(
+                f"registered={getattr(res, 'registered', [])} "
+                f"promoted={getattr(res, 'promoted', [])} "
+                f"retired={getattr(res, 'retired', [])}"
+            ),
+        )
+
+
 # ───────────────────────── Consumers / observers ───────────────────────
 
 
@@ -1359,5 +1426,6 @@ __all__ = [
     "InteractionAnalyzerTunable",
     "ParameterEvolverTunable",
     "SignalDiscoveryTunable",
+    "VirtualSignalManagerTunable",
     "ConsumerTunable",
 ]

@@ -83,6 +83,12 @@ class LearningMixin:
     def _signal_discovery_obj(self) -> Any:
         return getattr(self._loop(), "_signal_discovery", None)
 
+    def _virtual_manager_obj(self) -> Any:
+        return getattr(self._loop(), "_virtual_signal_manager", None)
+
+    def _virtual_registry_obj(self) -> Any:
+        return getattr(self._loop(), "_virtual_registry", None)
+
     # ── Aggregate ────────────────────────────────────────────────────────────
     def get_learning(self) -> dict:
         """Every learning-layer producer's output for the Learning panel."""
@@ -98,6 +104,7 @@ class LearningMixin:
             "interactions": self._safe(self._learning_interactions),
             "param_evolution": self._safe(self._learning_param_evolution),
             "signal_discovery": self._safe(self._learning_signal_discovery),
+            "virtual_modules": self._safe(self._learning_virtual_modules),
         }
 
     @staticmethod
@@ -550,5 +557,84 @@ class LearningMixin:
                 state.get("walk_forward_ratio_threshold", 0.0), 4
             ),
             "rules": rules[:40],
+            **meta,
+        }
+
+    # ── Virtual Voting Modules (L5c shadow → promote → retire) ────────────────
+    def _learning_virtual_modules(self) -> dict:
+        manager = self._virtual_manager_obj()
+        registry = self._virtual_registry_obj()
+        cfg = getattr(self._config(), "signal_discovery", None)
+        meta = {
+            "promotion_flag": bool(getattr(cfg, "virtual_promotion_enabled", False)),
+            "kill_switch": bool(getattr(cfg, "signal_discovery_enabled", False)),
+            "shadow_trades_required": int(getattr(cfg, "shadow_trades_required", 0) or 0),
+            "min_shadow_accuracy": _round(getattr(cfg, "min_shadow_accuracy", 0.0), 3),
+            "max_active": int(getattr(cfg, "max_active_signals", 0) or 0),
+        }
+        # Prefer the manager (adds lifecycle summary); fall back to the registry.
+        status = None
+        last_eval = None
+        promotion_enabled = meta["promotion_flag"]
+        if manager is not None:
+            try:
+                status = manager.get_status() or {}
+                last_eval = status.get("last_evaluation")
+                promotion_enabled = bool(status.get("promotion_enabled", promotion_enabled))
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[state_learning] virtual manager status failed: {}", exc)
+                status = None
+        if status is None and registry is not None:
+            status = registry.get_status() or {}
+        if status is None:
+            return _idle(meta)
+
+        modules = []
+        for m in status.get("modules", []) or []:
+            definition = m.get("definition", {}) or {}
+            modules.append({
+                "name": str(m.get("name", "")),
+                "mode": str(m.get("mode", "")),
+                "weight": _round(m.get("weight", 0.0), 4),
+                "effective_weight": _round(m.get("effective_weight", 0.0), 4),
+                "restart_shadow": bool(m.get("restart_shadow", False)),
+                "vote_direction": str(definition.get("vote_direction", "")),
+                "base_confidence": _round(definition.get("base_confidence", 0.0), 3),
+                "win_rate": _round(definition.get("win_rate", 0.0), 4),
+                "edge": _round(definition.get("edge", 0.0), 4),
+                "source_label": str(definition.get("source_label", "")),
+                "seconds_in_mode": _round(m.get("seconds_in_mode", 0.0), 1),
+                "reason": str(m.get("reason", "")),
+            })
+        # Active first, then by weight.
+        modules.sort(key=lambda r: (r["mode"] != "ACTIVE", -r["weight"]))
+
+        transitions = []
+        if registry is not None:
+            try:
+                for t in (registry.get_transitions(limit=30) or []):
+                    transitions.append({
+                        "timestamp": t.get("timestamp"),
+                        "name": str(t.get("name", "")),
+                        "old_mode": str(t.get("old_mode", "")),
+                        "new_mode": str(t.get("new_mode", "")),
+                        "weight": _round(t.get("weight", 0.0), 4),
+                        "accuracy": _round(t.get("accuracy", 0.0), 4),
+                        "marginal_r": _round(t.get("marginal_r", 0.0), 4),
+                        "reason": str(t.get("reason", "")),
+                    })
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[state_learning] virtual transitions failed: {}", exc)
+
+        return {
+            "enabled": bool(status.get("enabled", False)),
+            "source": "live",
+            "promotion_enabled": promotion_enabled,
+            "counts": status.get("counts", {}) or {},
+            "module_count": int(status.get("module_count", 0) or 0),
+            "restart_pending": int(status.get("restart_pending", 0) or 0),
+            "last_evaluation": last_eval,
+            "modules": modules,
+            "transitions": transitions,
             **meta,
         }
