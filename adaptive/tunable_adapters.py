@@ -1059,6 +1059,25 @@ class InteractionAnalyzerTunable(_BaseTunable):
         super().__init__(
             name="interaction_analyzer",
             frequency=TuneFrequency.ON_TRADE_BATCH,
+# ───────────────────── L5 — evolution / discovery ──────────────────────
+
+
+class ParameterEvolverTunable(_BaseTunable):
+    """Wraps ``ParameterEvolver.run_cycle`` — L5a parameter evolution.
+
+    Periodic: advances any shadow candidates with newly-closed trades, resolves
+    those with enough evidence (promote / reject / extend), and — cooldown and
+    concurrency permitting — runs a fresh replay tournament to seed new
+    candidates.  The evolver only *recommends*; an injected callback (wired by
+    the caller) is what actually applies an approved value, so there is nothing
+    here to validate or roll back.  Depends on ``counterfactual`` so it explores
+    over the freshest closed-trade snapshots.
+    """
+
+    def __init__(self, evolver, *, min_trades: int = 50, min_interval: float = 0.0) -> None:
+        super().__init__(
+            name="parameter_evolver",
+            frequency=TuneFrequency.PERIODIC,
             dependencies=["counterfactual"],
             min_trades=int(min_trades),
             min_interval=float(min_interval),
@@ -1101,6 +1120,95 @@ class InteractionAnalyzerTunable(_BaseTunable):
                 reason="analyzer disabled",
             )
         payload = self._analyzer.maybe_recompute(ctx.total_trades)
+        self._evolver = evolver
+
+    def _read_params(self) -> dict:
+        try:
+            st = self._evolver.get_state()
+            return {
+                "enabled": bool(st.get("enabled", False)),
+                "active_shadows": int(st.get("active_shadow_count", 0) or 0),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[parameter_evolver] read params failed: {}", exc)
+            return {}
+
+    def _apply_params(self, params: dict) -> None:  # nothing to apply / roll back
+        return None
+
+    def rollback(self) -> bool:
+        return True
+
+    def tune(self, ctx: TuneContext) -> TuneResult:
+        before = self._begin()
+        if not getattr(self._evolver, "enabled", False):
+            return TuneResult(
+                tunable_name=self._name, success=True, skipped=True,
+                params_before=before, params_after=before, reason="evolver disabled",
+            )
+        summary = self._evolver.run_cycle()
+        self._mark_tuned(ctx)
+        decisions = summary.get("decisions", []) if isinstance(summary, dict) else []
+        after = self._read_params()
+        changed = bool(decisions)
+        if not decisions and not summary.get("ran_tournament"):
+            return TuneResult(
+                tunable_name=self._name, success=True, skipped=True,
+                params_before=before, params_after=after, reason="no shadow progress",
+            )
+        promoted = [d for d in decisions if d.get("decision") in ("promoted", "recommended")]
+        reason = (
+            f"{len(promoted)} promotion(s), {len(decisions)} decision(s); "
+            f"{summary.get('active_shadows', 0)} active shadow(s)"
+        )
+        return TuneResult(
+            tunable_name=self._name, success=True, changed=changed,
+            params_before=before, params_after=after, reason=reason,
+        )
+
+
+class _AnalysisRecomputeTunable(_BaseTunable):
+    """Shared base for the pure-analysis L5 engines (interaction / discovery).
+
+    Each wraps a component exposing ``maybe_recompute(total_trades) -> dict|None``
+    plus an ``enabled`` flag.  Nothing to validate or roll back — they only read
+    closed-trade snapshots and cache a ranked table for the dashboard.
+    """
+
+    def __init__(self, engine, *, name: str, min_trades: int) -> None:
+        super().__init__(
+            name=name,
+            frequency=TuneFrequency.ON_TRADE_BATCH,
+            dependencies=[],
+            min_trades=int(min_trades),
+            min_interval=0.0,
+        )
+        self._engine = engine
+
+    def _read_params(self) -> dict:
+        return {
+            "enabled": bool(getattr(self._engine, "enabled", False)),
+            "lookback": int(getattr(self._engine, "lookback", 0) or 0),
+            "interval": int(getattr(self._engine, "interval", 0) or 0),
+        }
+
+    def _apply_params(self, params: dict) -> None:
+        return None
+
+    def rollback(self) -> bool:
+        return True
+
+    def _result_summary(self, payload: dict) -> str:
+        raise NotImplementedError
+
+    def tune(self, ctx: TuneContext) -> TuneResult:
+        before = self._begin()
+        if not getattr(self._engine, "enabled", False):
+            return TuneResult(
+                tunable_name=self._name, success=True, skipped=True,
+                params_before=before, params_after=before, reason="engine disabled",
+            )
+        payload = self._engine.maybe_recompute(ctx.total_trades)
         self._mark_tuned(ctx)
         if not payload:
             return TuneResult(
@@ -1120,6 +1228,39 @@ class InteractionAnalyzerTunable(_BaseTunable):
                 f"{toxic} toxic, {synergy} synergistic pair(s)"
             ),
         )
+
+
+        return TuneResult(
+            tunable_name=self._name, success=True, changed=True,
+            params_before=before, params_after=self._read_params(),
+            reason=self._result_summary(payload),
+        )
+
+
+class ModuleInteractionTunable(_AnalysisRecomputeTunable):
+    """Wraps ``ModuleInteractionEngine.maybe_recompute`` — L5b leave-K-out."""
+
+    def __init__(self, engine, *, min_trades: int = 50) -> None:
+        super().__init__(engine, name="module_interaction", min_trades=min_trades)
+
+    def _result_summary(self, payload: dict) -> str:
+        pairs = payload.get("pairs", []) or []
+        analyzed = int(payload.get("trades_analyzed", 0) or 0)
+        toxic = sum(1 for p in pairs if p.get("classification") == "TOXIC")
+        return f"{len(pairs)} pair(s) ({toxic} toxic) over {analyzed} trades"
+
+
+class SignalDiscoveryTunable(_AnalysisRecomputeTunable):
+    """Wraps ``SignalDiscoveryEngine.maybe_recompute`` — L5c rule mining."""
+
+    def __init__(self, engine, *, min_trades: int = 100) -> None:
+        super().__init__(engine, name="signal_discovery", min_trades=min_trades)
+
+    def _result_summary(self, payload: dict) -> str:
+        analyzed = int(payload.get("trades_analyzed", 0) or 0)
+        rules = int(payload.get("rule_count", 0) or 0)
+        qual = int(payload.get("qualifying_count", 0) or 0)
+        return f"{rules} rule(s), {qual} qualifying over {analyzed} trades"
 
 
 # ───────────────────────── Consumers / observers ───────────────────────
@@ -1218,5 +1359,8 @@ __all__ = [
     "CounterfactualTunable",
     "ModuleGovernorTunable",
     "InteractionAnalyzerTunable",
+    "ParameterEvolverTunable",
+    "ModuleInteractionTunable",
+    "SignalDiscoveryTunable",
     "ConsumerTunable",
 ]

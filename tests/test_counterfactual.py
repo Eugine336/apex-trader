@@ -306,9 +306,9 @@ def test_std_and_votes_rebuild():
 
 # ── Config ──────────────────────────────────────────────────────────────────
 
-def test_config_defaults_off_and_validates():
+def test_config_defaults_on_and_validates():
     cfg = CounterfactualConfig()
-    assert cfg.counterfactual_enabled is False
+    assert cfg.counterfactual_enabled is True
     assert cfg.attribution_lookback == 500
     assert cfg.attribution_interval == 100
     with pytest.raises(ValueError):

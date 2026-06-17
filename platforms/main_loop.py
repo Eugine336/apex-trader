@@ -422,6 +422,34 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         except Exception as exc:  # noqa: BLE001
             logger.warning("[interaction] init failed, disabled: {}", exc)
             self._interaction_analyzer = None
+        # L5 — self-evolution / discovery engines (all read the counterfactual
+        # closed-trade snapshots).  Each is gated by its own flag and left None
+        # on any build failure so the guarded hooks simply no-op.
+        self._init_evolution_engines()
+        # ── Close the loop: counterfactual → governor + vote calibrator ──
+        # Give the governor and the vote calibrator a read-only handle to the
+        # counterfactual engine so each module's MARGINAL contribution (marginal
+        # R per attributed trade) becomes a second governance/weighting signal
+        # alongside graded accuracy. Both consume the cached attribution table
+        # only — they never trigger a recompute. Inert when the engine is None
+        # or its per-component flag is off (accuracy-only behaviour preserved).
+        try:
+            if self._counterfactual is not None:
+                if self._module_governor is not None and hasattr(
+                    self._module_governor, "set_counterfactual"
+                ):
+                    self._module_governor.set_counterfactual(self._counterfactual)
+                if self._vote_calibrator is not None and hasattr(
+                    self._vote_calibrator, "set_counterfactual"
+                ):
+                    self._vote_calibrator.set_counterfactual(self._counterfactual)
+                logger.info(
+                    "[counterfactual] wired into governor={} + vote_calibrator={}",
+                    self._module_governor is not None,
+                    self._vote_calibrator is not None,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[counterfactual] loop-close wiring failed: {}", exc)
         self.scheduler = ScanScheduler(config=self.config)
         risk_cfg = self.config.risk
         self.entry_engine = EntryEngine(
@@ -817,6 +845,124 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
     # ── Tuner Agent wiring ────────────────────────────────────────────────
 
+    def _init_evolution_engines(self) -> None:
+        """Instantiate the L5 evolution / discovery engines (all gated, all
+        reading the counterfactual closed-trade snapshots).  Any build failure
+        leaves the attribute None so the guarded tuner hooks simply no-op."""
+        self._param_evolver = None
+        self._module_interaction = None
+        self._signal_discovery = None
+        if self._counterfactual is None:
+            return  # they have nothing to read without the snapshot store
+
+        pe_cfg = getattr(self.config, "param_evolution", None)
+        if pe_cfg is not None and getattr(pe_cfg, "param_evolution_enabled", False):
+            try:
+                from adaptive.param_evolution import ParameterEvolver
+
+                self._param_evolver = ParameterEvolver(
+                    self._counterfactual,
+                    enabled=True,
+                    db_path=pe_cfg.param_evolution_db_path,
+                    current_values_provider=self._param_evolution_current_values,
+                    promote_callback=self._param_evolution_apply,
+                    candidates_per_param=pe_cfg.candidates_per_param,
+                    replay_lookback=pe_cfg.replay_lookback,
+                    shadow_validation_trades=pe_cfg.shadow_validation_trades,
+                    significance_threshold=pe_cfg.significance_threshold,
+                    walk_forward_split=pe_cfg.walk_forward_split,
+                    evolution_cooldown_hours=pe_cfg.evolution_cooldown_hours,
+                    max_concurrent_shadows=pe_cfg.max_concurrent_shadows,
+                    rollback_window=pe_cfg.rollback_window,
+                    min_replay_trades=pe_cfg.min_replay_trades,
+                )
+                logger.info("[param-evolution] engine enabled (L5a)")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[param-evolution] init failed, disabled: {}", exc)
+                self._param_evolver = None
+
+        mi_cfg = getattr(self.config, "module_interaction", None)
+        if mi_cfg is not None and getattr(mi_cfg, "module_interaction_enabled", False):
+            try:
+                from adaptive.module_interaction import ModuleInteractionEngine
+
+                self._module_interaction = ModuleInteractionEngine(
+                    self._counterfactual,
+                    enabled=True,
+                    db_path=mi_cfg.module_interaction_db_path,
+                    lookback=mi_cfg.interaction_lookback,
+                    interval=mi_cfg.interaction_interval,
+                    min_trades=mi_cfg.min_trades_for_interaction,
+                    significance_r=mi_cfg.interaction_significance_r,
+                    max_modules=mi_cfg.max_modules,
+                )
+                logger.info("[module-interaction] engine enabled (L5b)")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[module-interaction] init failed, disabled: {}", exc)
+                self._module_interaction = None
+
+        sd_cfg = getattr(self.config, "signal_discovery", None)
+        if sd_cfg is not None and getattr(sd_cfg, "signal_discovery_enabled", False):
+            try:
+                from adaptive.signal_discovery import SignalDiscoveryEngine
+
+                self._signal_discovery = SignalDiscoveryEngine(
+                    self._counterfactual,
+                    enabled=True,
+                    db_path=sd_cfg.signal_discovery_db_path,
+                    lookback=sd_cfg.discovery_lookback,
+                    interval=sd_cfg.discovery_interval,
+                    min_trades=sd_cfg.min_trades_for_discovery,
+                    min_support=sd_cfg.min_rule_support,
+                    max_conditions=sd_cfg.max_rule_conditions,
+                    min_edge_r=sd_cfg.min_edge_r,
+                    walk_forward_split=sd_cfg.discovery_walk_forward_split,
+                )
+                logger.info("[signal-discovery] engine enabled (L5c)")
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[signal-discovery] init failed, disabled: {}", exc)
+                self._signal_discovery = None
+
+    def _param_evolution_current_values(self) -> dict:
+        """Live values of the evolvable consensus / ranker thresholds, so the
+        evolver explores around where the system actually sits today."""
+        cons = getattr(self.config, "consensus", None)
+        rank = getattr(self.config, "opportunity_ranker", None)
+        out: dict = {}
+        if cons is not None:
+            out["min_net_score"] = float(getattr(cons, "min_net_score", 1.5))
+            out["min_agreement"] = float(getattr(cons, "min_agreement", 0.55))
+            out["min_contributors"] = int(getattr(cons, "min_contributors", 2))
+        if rank is not None:
+            out["min_expected_value"] = float(getattr(rank, "min_expected_value", 0.0))
+            out["min_cluster_confidence"] = float(getattr(rank, "min_cluster_confidence", 0.0))
+            out["min_cluster_contributors"] = int(getattr(rank, "min_cluster_contributors", 1))
+        return out
+
+    def _param_evolution_apply(self, name: str, location: str, value: float) -> bool:
+        """Apply a promoted parameter value to live config.  Gated by the
+        evolver's own validation/shadow proof; returns True on success.  Int
+        params are rounded; everything is exception-safe."""
+        from adaptive.param_evolution import LOC_THRESHOLD
+
+        try:
+            target_cfg = self.config.consensus if location == LOC_THRESHOLD else self.config.opportunity_ranker
+            if not hasattr(target_cfg, name):
+                logger.warning("[param-evolution] unknown param '{}' — not applied", name)
+                return False
+            int_params = {"min_contributors", "min_cluster_contributors"}
+            new_value = int(round(value)) if name in int_params else float(value)
+            old_value = getattr(target_cfg, name)
+            setattr(target_cfg, name, new_value)
+            logger.info(
+                "[param-evolution] APPLIED {}.{}: {} -> {}",
+                type(target_cfg).__name__, name, old_value, new_value,
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[param-evolution] apply '{}' failed: {}", name, exc)
+            return False
+
     def _setup_tuner_agent(self) -> None:
         """Instantiate the TunerAgent and register every tunable (gated)."""
         tcfg = getattr(self.config, "tuner_agent", None)
@@ -837,6 +983,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             CounterfactualTunable,
             ModuleGovernorTunable,
             InteractionAnalyzerTunable,
+            ParameterEvolverTunable,
+            ModuleInteractionTunable,
+            SignalDiscoveryTunable,
             ConsumerTunable,
         )
 
@@ -929,6 +1078,36 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     getattr(
                         getattr(self.config, "counterfactual", None),
                         "min_trades_for_attribution", 50,
+        # L5a — parameter evolution (periodic; depends on counterfactual).
+        if self._param_evolver is not None:
+            agent.register(ParameterEvolverTunable(
+                self._param_evolver,
+                min_trades=int(
+                    getattr(
+                        getattr(self.config, "param_evolution", None),
+                        "min_replay_trades", 50,
+                    )
+                ),
+            ))
+        # L5b — module interaction discovery (trade-close batch).
+        if self._module_interaction is not None:
+            agent.register(ModuleInteractionTunable(
+                self._module_interaction,
+                min_trades=int(
+                    getattr(
+                        getattr(self.config, "module_interaction", None),
+                        "min_trades_for_interaction", 50,
+                    )
+                ),
+            ))
+        # L5c — synthetic signal discovery (trade-close batch).
+        if self._signal_discovery is not None:
+            agent.register(SignalDiscoveryTunable(
+                self._signal_discovery,
+                min_trades=int(
+                    getattr(
+                        getattr(self.config, "signal_discovery", None),
+                        "min_trades_for_discovery", 100,
                     )
                 ),
             ))

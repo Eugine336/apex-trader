@@ -643,6 +643,130 @@ function ModuleInteractions({ d }) {
         <div className="stat-card">
           <div className="stat-label">Modules Analyzed</div>
           <div className="stat-value">{d?.module_count || 0}</div>
+function ParameterEvolution({ d }) {
+  const shadows = d?.active_shadows || [];
+  const proms = d?.recent_promotions || [];
+  return (
+    <div className="card mb-20">
+      <div className="card-header">
+        <span className="card-title">Parameter Evolution (L5a)</span>
+        <StatusPill on={d?.enabled} />
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '0 12px 10px' }}>
+        Explores consensus / ranker thresholds by replaying recent closed trades,
+        walk-forward validates winners, then proves them over live closes (shadow)
+        before <b>recommending</b> a promotion. It only proposes — applying a value
+        is gated.
+      </div>
+      <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
+        <div className="stat-card">
+          <div className="stat-label">Active Shadows</div>
+          <div className="stat-value">{d?.active_shadow_count || 0}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Replay Lookback</div>
+          <div className="stat-value">{d?.replay_lookback || 0}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Shadow Trades</div>
+          <div className="stat-value">{d?.shadow_validation_trades || 0}</div>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Parameter</th>
+              <th>State</th>
+              <th className="right">Current</th>
+              <th className="right">Proposed</th>
+              <th className="right">Shadow Trades</th>
+              <th className="right">Improvement /trade</th>
+            </tr>
+          </thead>
+          <tbody>
+            {shadows.length === 0 && (
+              <tr><td colSpan={6} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
+                {d?.enabled ? 'No candidates in shadow validation yet.' : 'Parameter evolution disabled.'}
+              </td></tr>
+            )}
+            {shadows.map((s, i) => (
+              <tr key={`${s.param_name}-${i}`}>
+                <td style={{ fontWeight: 600 }}>{s.param_name}</td>
+                <td><span className="badge badge-blue">{s.state}</span></td>
+                <td className="right">{Number(s.current_value).toFixed(3)}</td>
+                <td className="right">{Number(s.proposed_value).toFixed(3)}</td>
+                <td className="right">{s.shadow_trades}</td>
+                <td className="right" style={{ color: multColor(1 + (Number(s.improvement_per_trade) || 0)) }}>
+                  {(Number(s.improvement_per_trade) || 0).toFixed(3)}R
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {proms.length > 0 && (
+        <>
+          <div className="card-header" style={{ marginTop: 8 }}>
+            <span className="card-title">Recent decisions</span>
+          </div>
+          <div className="table-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>Parameter</th>
+                  <th>Decision</th>
+                  <th className="right">Old</th>
+                  <th className="right">New</th>
+                  <th>When</th>
+                </tr>
+              </thead>
+              <tbody>
+                {proms.map((p, i) => (
+                  <tr key={`${p.param_name}-${i}`}>
+                    <td>{p.param_name}</td>
+                    <td>
+                      <span className={`badge ${p.decision === 'rejected' ? 'badge-red' : 'badge-green'}`}>
+                        {p.decision}
+                      </span>
+                    </td>
+                    <td className="right">{Number(p.old_value).toFixed(3)}</td>
+                    <td className="right">{Number(p.new_value).toFixed(3)}</td>
+                    <td style={{ color: 'var(--text-muted)' }}>{tsAgo(p.decided_at)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ModuleInteraction({ d }) {
+  const pairs = d?.pairs || [];
+  const sub = d?.optimal_subset || {};
+  const interColor = (cls) => (
+    cls === 'TOXIC' ? 'badge-red'
+      : cls === 'SYNERGISTIC' ? 'badge-green'
+        : cls === 'REDUNDANT' ? 'badge-orange' : 'badge-muted'
+  );
+  return (
+    <div className="card mb-20">
+      <div className="card-header">
+        <span className="card-title">Module Interaction (L5b)</span>
+        <StatusPill on={d?.enabled} />
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '0 12px 10px' }}>
+        Leave-K-out replay — module effects are non-linear. <b>Toxic</b> pairs keep
+        opening losers together; <b>synergistic</b> pairs need each other. The greedy
+        optimal subset is the set the data says to keep.
+      </div>
+      <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
+        <div className="stat-card">
+          <div className="stat-label">Baseline R</div>
+          <div className="stat-value">{(Number(d?.baseline_total_r) || 0).toFixed(1)}R</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Trades Analyzed</div>
@@ -716,6 +840,17 @@ function ModuleInteractions({ d }) {
       )}
 
       {/* Pairwise interaction matrix */}
+          <div className="stat-label">Subset Gain</div>
+          <div className="stat-value" style={{ color: multColor(1 + (Number(sub.improvement_r) || 0)) }}>
+            {(Number(sub.improvement_r) || 0).toFixed(1)}R
+          </div>
+        </div>
+      </div>
+      {sub.kept_modules && (
+        <div style={{ fontSize: 12, padding: '0 12px 10px' }}>
+          <b>Optimal kept:</b> {(sub.kept_modules || []).join(', ') || '—'}
+        </div>
+      )}
       <div className="table-wrap">
         <table>
           <thead>
@@ -727,6 +862,10 @@ function ModuleInteractions({ d }) {
               <th className="right">Δ remove A+B</th>
               <th className="right">Interaction</th>
               <th>Relationship</th>
+              <th>Pair</th>
+              <th>Classification</th>
+              <th className="right">Interaction</th>
+              <th className="right">Joint effect</th>
             </tr>
           </thead>
           <tbody>
@@ -748,6 +887,90 @@ function ModuleInteractions({ d }) {
                   {(Number(p.interaction_effect) || 0).toFixed(2)}R
                 </td>
                 <td style={{ color: relColor(p.relationship) }}>{p.relationship}</td>
+              <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
+                {d?.enabled
+                  ? `No interactions computed yet — runs every ${d?.interval || 0} trades.`
+                  : 'Module interaction disabled.'}
+              </td></tr>
+            )}
+            {pairs.map((p, i) => (
+              <tr key={`${p.module_a}-${p.module_b}-${i}`}>
+                <td style={{ fontWeight: 600 }}>{p.module_a} + {p.module_b}</td>
+                <td><span className={`badge ${interColor(p.classification)}`}>{p.classification}</span></td>
+                <td className="right">{(Number(p.interaction) || 0).toFixed(2)}R</td>
+                <td className="right">{(Number(p.effect_joint) || 0).toFixed(2)}R</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function SignalDiscovery({ d }) {
+  const rules = d?.rules || [];
+  return (
+    <div className="card mb-20">
+      <div className="card-header">
+        <span className="card-title">Signal Discovery (L5c)</span>
+        <StatusPill on={d?.enabled} />
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '0 12px 10px' }}>
+        Mines module-condition <b>combinations</b> whose edge persists out-of-sample
+        — rules nobody wrote, found in the data. Recommends candidates only; never
+        auto-creates a live signal.
+      </div>
+      <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
+        <div className="stat-card">
+          <div className="stat-label">Rules</div>
+          <div className="stat-value">{d?.rule_count || 0}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Qualifying (OOS)</div>
+          <div className="stat-value" style={{ color: 'var(--green-bright)' }}>{d?.qualifying_count || 0}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Baseline Exp.</div>
+          <div className="stat-value">{(Number(d?.baseline_expectancy) || 0).toFixed(2)}R</div>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Rule</th>
+              <th className="right">Support</th>
+              <th className="right">Win%</th>
+              <th className="right">Edge</th>
+              <th className="right">Train edge</th>
+              <th className="right">Test edge</th>
+              <th>OOS</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rules.length === 0 && (
+              <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
+                {d?.enabled
+                  ? 'No rules discovered yet — needs more closed trades.'
+                  : 'Signal discovery disabled.'}
+              </td></tr>
+            )}
+            {rules.map((r, i) => (
+              <tr key={`${r.label}-${i}`}>
+                <td style={{ fontWeight: 600 }}>{r.label}</td>
+                <td className="right">{r.support}</td>
+                <td className="right" style={{ color: accColor(r.win_rate) }}>{pct(r.win_rate)}</td>
+                <td className="right" style={{ color: multColor(1 + (Number(r.edge) || 0)) }}>
+                  {(Number(r.edge) || 0).toFixed(2)}R
+                </td>
+                <td className="right">{(Number(r.train_edge) || 0).toFixed(2)}R</td>
+                <td className="right">{(Number(r.test_edge) || 0).toFixed(2)}R</td>
+                <td>
+                  {r.qualifies
+                    ? <span className="badge badge-green">validated</span>
+                    : <span className="badge badge-muted">candidate</span>}
+                </td>
               </tr>
             ))}
           </tbody>
@@ -783,6 +1006,9 @@ export default function Learning() {
       <PairLearner d={data?.pair_learner} />
       <CounterfactualAttribution d={data?.counterfactual} />
       <ModuleInteractions d={data?.interactions} />
+      <ParameterEvolution d={data?.param_evolution} />
+      <ModuleInteraction d={data?.module_interaction} />
+      <SignalDiscovery d={data?.signal_discovery} />
       <TunerAgent d={data?.tuner_agent} />
     </div>
   );
