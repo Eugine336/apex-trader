@@ -1261,6 +1261,27 @@ class SignalDiscoveryTunable(_AnalysisRecomputeTunable):
         return f"{rules} rule(s), {qual} qualifying over {analyzed} trades"
 
 
+class BehaviorDiscoveryTunable(_AnalysisRecomputeTunable):
+    """Wraps ``BehaviorDiscoveryEngine.maybe_recompute`` — L6 behaviour mining.
+
+    Records execution-feature vectors on every close (data ingestion, always
+    allowed); the clustering + scoring + SHADOW→ACTIVE→RETIRED lifecycle pass is
+    routed here so it runs on the agent's coordinated trade-close cadence.
+    Nothing to validate or roll back — it only reads recorded trades and caches
+    a behaviour table for the dashboard.
+    """
+
+    def __init__(self, engine, *, min_trades: int = 100) -> None:
+        super().__init__(engine, name="behavior_discovery", min_trades=min_trades)
+
+    def _result_summary(self, payload: dict) -> str:
+        analyzed = int(payload.get("trades_analyzed", 0) or 0)
+        clusters = int(payload.get("cluster_count", 0) or 0)
+        counts = payload.get("counts", {}) or {}
+        active = int(counts.get("ACTIVE", 0) or 0)
+        return f"{clusters} cluster(s), {active} active behaviour(s) over {analyzed} trades"
+
+
 class VirtualSignalManagerTunable(_BaseTunable):
     """Wraps ``VirtualSignalManager.evaluate`` — the L5c shadow → promote →
     retire lifecycle for synthetic voting modules.
@@ -1557,5 +1578,6 @@ __all__ = [
     "VirtualSignalManagerTunable",
     "CapitalAllocatorTunable",
     "ExecutionProfileTunable",
+    "BehaviorDiscoveryTunable",
     "ConsumerTunable",
 ]

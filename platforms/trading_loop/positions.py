@@ -51,6 +51,7 @@ class ManagedPosition:
         "plan_scale_in_allowed",
         "strategy_fingerprint",
         "execution_profile_name",
+        "behavior_features",
     )
 
     def __init__(
@@ -113,6 +114,10 @@ class ManagedPosition:
         # this trade, recorded so the close path can credit its realised R to
         # the profile's per-style expectancy. "" = no profile (config defaults).
         self.execution_profile_name: str = ""
+        # Behaviour Discovery (L6) — the trade's entry-time execution feature
+        # vector, stamped at entry so the close path can record it (with the
+        # realised R) for emergent-behaviour clustering. {} = nothing recorded.
+        self.behavior_features: dict = {}
 
 
 class _LockedPositions:
