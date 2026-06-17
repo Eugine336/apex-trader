@@ -92,6 +92,9 @@ class LearningMixin:
     def _capital_allocator_obj(self) -> Any:
         return getattr(self._loop(), "_capital_allocator", None)
 
+    def _execution_profiles_obj(self) -> Any:
+        return getattr(self._loop(), "_execution_profiles", None)
+
     # ── Aggregate ────────────────────────────────────────────────────────────
     def get_learning(self) -> dict:
         """Every learning-layer producer's output for the Learning panel."""
@@ -109,6 +112,7 @@ class LearningMixin:
             "signal_discovery": self._safe(self._learning_signal_discovery),
             "virtual_modules": self._safe(self._learning_virtual_modules),
             "capital_allocation": self._safe(self._learning_capital_allocation),
+            "execution_profiles": self._safe(self._learning_execution_profiles),
         }
 
     @staticmethod
@@ -688,5 +692,55 @@ class LearningMixin:
             "fingerprint_count": int(state.get("fingerprint_count", 0) or 0),
             "fingerprints": fingerprints,
             "rebalance_history": rebalances,
+            **meta,
+        }
+
+    # ── Execution Style Profiles (L5.5b) ──────────────────────────────────────
+    def _learning_execution_profiles(self) -> dict:
+        manager = self._execution_profiles_obj()
+        cfg = getattr(self._config(), "execution_profiles", None)
+        meta = {
+            "config_flag": bool(getattr(cfg, "enabled", False)),
+            "default_profile": str(getattr(cfg, "default_profile", "") or ""),
+            "allow_profile_creation": bool(getattr(cfg, "allow_profile_creation", False)),
+            "max_active_profiles": int(getattr(cfg, "max_active_profiles", 0) or 0),
+        }
+        if manager is None:
+            return _idle(meta)
+        state = manager.get_state() or {}
+        profiles = []
+        for p in state.get("profiles", []) or []:
+            profiles.append({
+                "name": str(p.get("name", "")),
+                "active": bool(p.get("active", False)),
+                "builtin": bool(p.get("builtin", False)),
+                "sl_atr_multiplier": _round(p.get("sl_atr_multiplier", 0.0), 3),
+                "tp_rr_ratio": _round(p.get("tp_rr_ratio", 0.0), 3),
+                "tp2_rr_ratio": _round(p.get("tp2_rr_ratio", 0.0), 3),
+                "max_hold_bars": int(p.get("max_hold_bars", 0) or 0),
+                "trailing_method": str(p.get("trailing_method", "")),
+                "trailing_activation_r": _round(p.get("trailing_activation_r", 0.0), 3),
+                "partial_exit_enabled": bool(p.get("partial_exit_enabled", False)),
+                "partial_exit_pct": _round(p.get("partial_exit_pct", 0.0), 3),
+                "min_score_override": _round(p.get("min_score_override", 0.0), 3),
+                "conviction_floor": _round(p.get("conviction_floor", 0.0), 3),
+                "trades": int(p.get("trades", 0) or 0),
+                "selections": int(p.get("selections", 0) or 0),
+                "expectancy": _round(p.get("expectancy", 0.0), 4),
+                "scored": bool(p.get("scored", False)),
+            })
+        return {
+            "enabled": bool(state.get("enabled", False)),
+            "source": "live",
+            "default_profile": str(state.get("default_profile", "") or ""),
+            "allow_profile_creation": bool(state.get("allow_profile_creation", False)),
+            "max_active_profiles": int(state.get("max_active_profiles", 0) or 0),
+            "min_trades_for_scoring": int(state.get("min_trades_for_scoring", 0) or 0),
+            "active_count": int(state.get("active_count", 0) or 0),
+            "profile_count": int(state.get("profile_count", 0) or 0),
+            "total_trades": int(state.get("total_trades", 0) or 0),
+            "strong_consensus_threshold": _round(state.get("strong_consensus_threshold", 0.0), 3),
+            "weak_consensus_threshold": _round(state.get("weak_consensus_threshold", 0.0), 3),
+            "profiles": profiles,
             **meta,
         }

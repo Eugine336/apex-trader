@@ -2318,6 +2318,78 @@ class CapitalAllocationConfig:
 
 
 @dataclass
+class ExecutionProfileConfig:
+    """Settings for the Execution Style Profiles engine (L5.5b).
+
+    L5.5a allocates capital across execution-style *fingerprints*. This layer
+    supplies the execution style itself: instead of one fixed parameter set for
+    every trade, the system selects a named **Execution Profile** — a complete
+    parameter vector (SL distance, TP R:R, trailing method/activation, partial
+    rules, min-score) — per trade based on market context (the ranker horizon,
+    the regime, and consensus strength).
+
+    Profiles are NOT hard-coded strategies. They are parameter vectors persisted
+    in SQLite that the evolution layer can tune, create, retire, score (via the
+    capital allocator's per-profile fingerprint) and shadow/disable (governor).
+    With profiles disabled — or when no profile matches — the pipeline falls
+    back to the existing config-level defaults, so behaviour is identical to the
+    pre-profile system (true no-op).
+
+    Selection is purely additive: a profile only ever overrides SL/TP/min-score
+    in the entry engine and BE/trailing/partial in the trade manager via the
+    SAME per-trade override hooks the planner already uses — it never changes
+    direction, never forces a trade, never bypasses a hard risk veto. A trade
+    Planner override always takes precedence over a profile default.
+    """
+
+    # Master switch — ACTIVE by default. When off, no profile is selected and
+    # the entry engine / trade manager use their config-level defaults.
+    enabled: bool = True
+    # Fallback profile when no profile matches the trade context (must be one of
+    # the seeded built-ins or a created profile).
+    default_profile: str = "standard_swing"
+    # Let Parameter Evolution create new profiles (new parameter vectors). When
+    # off, only the seeded built-ins and the tunable scalar knobs are mutable.
+    allow_profile_creation: bool = True
+    # Hard cap on simultaneously active profiles (guards profile-creation churn).
+    max_active_profiles: int = 10
+    # Minimum closed trades carrying a profile before it can be scored / shown
+    # as "evaluated" on the dashboard.
+    min_trades_for_scoring: int = 30
+    # Consensus-strength band (result.score / 100) used by selection refinement.
+    # A weak panel biases toward tighter profiles; a strong one toward wider.
+    strong_consensus_threshold: float = 0.75
+    weak_consensus_threshold: float = 0.45
+    # SQLite path (under data/, gitignored).
+    execution_profiles_db_path: str = "data/execution_profiles.db"
+
+    def __post_init__(self) -> None:
+        if int(self.max_active_profiles) < 1:
+            raise ValueError(
+                "ExecutionProfileConfig.max_active_profiles must be >= 1, "
+                f"got {self.max_active_profiles!r}"
+            )
+        if int(self.min_trades_for_scoring) < 1:
+            raise ValueError(
+                "ExecutionProfileConfig.min_trades_for_scoring must be >= 1, "
+                f"got {self.min_trades_for_scoring!r}"
+            )
+        for name in ("strong_consensus_threshold", "weak_consensus_threshold"):
+            v = float(getattr(self, name))
+            if not (0.0 <= v <= 1.0):
+                raise ValueError(
+                    f"ExecutionProfileConfig.{name} must be in [0, 1], got {v!r}"
+                )
+        if float(self.weak_consensus_threshold) > float(self.strong_consensus_threshold):
+            raise ValueError(
+                "ExecutionProfileConfig.weak_consensus_threshold must be <= "
+                "strong_consensus_threshold"
+            )
+        if not str(self.default_profile).strip():
+            raise ValueError("ExecutionProfileConfig.default_profile must be non-empty")
+
+
+@dataclass
 class AppConfig:
     # All 4 categories enabled — forex, commodity, index, synthetic
     enabled_categories: list[str] = field(
@@ -2348,6 +2420,7 @@ class AppConfig:
     param_evolution: ParameterEvolutionConfig = field(default_factory=ParameterEvolutionConfig)
     signal_discovery: SignalDiscoveryConfig = field(default_factory=SignalDiscoveryConfig)
     capital_allocation: CapitalAllocationConfig = field(default_factory=CapitalAllocationConfig)
+    execution_profiles: ExecutionProfileConfig = field(default_factory=ExecutionProfileConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)

@@ -1165,9 +1165,82 @@ export function CapitalAllocation({ d }) {
   );
 }
 
+export function ExecutionProfiles({ d }) {
+  const profiles = d?.profiles || [];
+  return (
+    <div className="card mb-20">
+      <div className="card-header">
+        <span className="card-title">Execution Profiles (L5.5b)</span>
+        <StatusPill on={d?.enabled} />
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '0 12px 10px' }}>
+        Per-trade execution-style parameter vectors (SL ATR ×, TP R:R, trailing,
+        partial, min-score) selected from trade context (horizon × regime ×
+        consensus). Profiles are hypotheses, not identities — tuned, scored (via
+        the allocator fingerprint), and shadow/retired like any other component.
+        Disabled or no-match → config defaults (no-op).
+      </div>
+      <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
+        <div className="stat-card">
+          <div className="stat-label">Active Profiles</div>
+          <div className="stat-value">{`${d?.active_count || 0}/${d?.max_active_profiles || 0}`}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Default</div>
+          <div className="stat-value" style={{ fontSize: 14, fontFamily: "'JetBrains Mono', monospace" }}>
+            {d?.default_profile || '—'}
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Trades Scored</div>
+          <div className="stat-value">{d?.total_trades || 0}</div>
+        </div>
+      </div>
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Profile</th>
+              <th className="right">SL ATR×</th>
+              <th className="right">TP1/TP2 R:R</th>
+              <th>Trailing</th>
+              <th className="right">Partial</th>
+              <th className="right">Selections</th>
+              <th className="right">Trades</th>
+              <th className="right">Expectancy</th>
+            </tr>
+          </thead>
+          <tbody>
+            {profiles.length === 0 && (
+              <tr><td colSpan={8} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
+                {d?.enabled ? 'No execution profiles yet.' : 'Execution profiles disabled.'}
+              </td></tr>
+            )}
+            {profiles.map((p, i) => (
+              <tr key={`${p.name}-${i}`} style={{ opacity: p.active ? 1 : 0.45 }}>
+                <td style={{ fontWeight: 600, fontFamily: "'JetBrains Mono', monospace" }}>
+                  {p.name}{p.builtin ? '' : ' *'}{p.active ? '' : ' (retired)'}
+                </td>
+                <td className="right">{Number(p.sl_atr_multiplier).toFixed(2)}</td>
+                <td className="right">{`${Number(p.tp_rr_ratio).toFixed(1)}/${Number(p.tp2_rr_ratio).toFixed(1)}`}</td>
+                <td>{p.trailing_method}{` @${Number(p.trailing_activation_r).toFixed(1)}R`}</td>
+                <td className="right">{p.partial_exit_enabled ? `${pct(p.partial_exit_pct)}` : '—'}</td>
+                <td className="right">{p.selections}</td>
+                <td className="right">{p.trades}</td>
+                <td className="right" style={{ color: multColor(1 + (Number(p.expectancy) || 0)) }}>
+                  {p.scored ? `${(Number(p.expectancy) || 0).toFixed(2)}R` : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 export default function Learning() {
   const { data, loading } = useApi('/api/learning', 8000);
-
   if (loading && !data) {
     return (
       <div>
@@ -1195,6 +1268,7 @@ export default function Learning() {
       <SignalDiscovery d={data?.signal_discovery} />
       <VirtualModules d={data?.virtual_modules} />
       <CapitalAllocation d={data?.capital_allocation} />
+      <ExecutionProfiles d={data?.execution_profiles} />
       <TunerAgent d={data?.tuner_agent} />
     </div>
   );

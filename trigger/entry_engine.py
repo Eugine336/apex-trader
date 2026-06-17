@@ -180,12 +180,31 @@ class EntryEngine:
         h4_df: Optional[pd.DataFrame] = None,
         m15_df: Optional[pd.DataFrame] = None,
         d1_df: Optional[pd.DataFrame] = None,
+        execution_profile: Optional[object] = None,
     ) -> Union[EntrySignal, EntryRejection]:
         if scan_result is None:
             raise ValueError("calculate_entry requires a scan_result; refusing to fabricate a score")
         now = datetime.now(timezone.utc)
         score = scan_result.score
         confluences = list(scan_result.confluences)
+        # ── Execution Profile (L5.5b) — per-trade parameter overrides ────────
+        # When the profile manager selected a profile for this trade, its
+        # scalar overrides (SL ATR multiple, TP1/TP2 R:R, entry-score floor)
+        # replace the engine/config defaults for THIS call only. ``None`` (no
+        # profile / disabled) leaves every default in place — a true no-op.
+        _ep_atr_mult: Optional[float] = None
+        _ep_tp1_rr: float = 1.5
+        _ep_tp2_rr: float = 3.0
+        _ep_min_score: float = 0.0
+        if execution_profile is not None:
+            try:
+                _v = float(getattr(execution_profile, "sl_atr_multiplier", 0.0) or 0.0)
+                _ep_atr_mult = _v if _v > 0.0 else None
+                _ep_tp1_rr = float(getattr(execution_profile, "tp_rr_ratio", 1.5) or 1.5)
+                _ep_tp2_rr = float(getattr(execution_profile, "tp2_rr_ratio", 3.0) or 3.0)
+                _ep_min_score = float(getattr(execution_profile, "min_score_override", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                _ep_atr_mult, _ep_tp1_rr, _ep_tp2_rr, _ep_min_score = None, 1.5, 3.0, 0.0
         # Phase 9: bounded quality multiplier when the entry-score floor is
         # softened into a dimmer (orchestrator live). Stays 1.0 unless the final
         # score lands below the floor but above the hard safety floor.
@@ -309,6 +328,9 @@ class EntryEngine:
         # score, and the outer max() keeps it at/above the drawdown-mode floor —
         # so a noisy tuner can never open the door to genuinely weak setups.
         base_min = self.config.scoring.min_entry_score
+        # L5.5b: a profile may raise the entry-score floor for its style.
+        if _ep_min_score > 0.0:
+            base_min = max(base_min, int(round(_ep_min_score)))
         if self.gate_tuner is not None:
             try:
                 base_min = max(
@@ -501,6 +523,7 @@ class EntryEngine:
                 entry_price=target_entry_price,
                 pair=pair,
                 m5_df=m5_df,
+                atr_mult_override=_ep_atr_mult,
             )
             risk_distance_local = abs(target_entry_price - stop_loss_local)
 
@@ -521,7 +544,8 @@ class EntryEngine:
             )
 
             tp1_local, tp2_local = self.calculate_targets(
-                pair, direction, target_entry_price, stop_loss_local, h1_df, pip_size
+                pair, direction, target_entry_price, stop_loss_local, h1_df, pip_size,
+                tp1_rr=_ep_tp1_rr, tp2_rr=_ep_tp2_rr,
             )
 
             # Percentage-based SL floor already applied above — skip duplicate block.
@@ -1090,6 +1114,7 @@ class EntryEngine:
         entry_price: Optional[float] = None,
         pair: str = "",
         m5_df: Optional[pd.DataFrame] = None,
+        atr_mult_override: Optional[float] = None,
     ) -> float:
         structure_sl = self._calculate_structure_stop_loss(
             direction,
@@ -1109,6 +1134,7 @@ class EntryEngine:
             m5_df=m5_df,
             pair=pair,
             pip_size=pip_size,
+            atr_mult_override=atr_mult_override,
         )
 
     def _calculate_structure_stop_loss(
@@ -1132,6 +1158,7 @@ class EntryEngine:
         m5_df: pd.DataFrame,
         pair: str,
         pip_size: float,
+        atr_mult_override: Optional[float] = None,
     ) -> float:
         from brain.volatility_stop import latest_atr
 
@@ -1159,6 +1186,11 @@ class EntryEngine:
             return structure_sl
 
         atr_distance = float(atr_value) * self._atr_stop_mult
+        # L5.5b: a profile may override the ATR stop multiple for its style
+        # (e.g. a tight scalp at 1.0× vs a wide position at 3.0×). The clamp,
+        # max-risk guard and structure fallback below are unchanged.
+        if atr_mult_override is not None and atr_mult_override > 0.0:
+            atr_distance = float(atr_value) * float(atr_mult_override)
         if not math.isfinite(atr_distance) or atr_distance <= 0:
             return structure_sl
 
@@ -1264,17 +1296,32 @@ class EntryEngine:
         stop_loss: float,
         h1_df: pd.DataFrame,
         pip_size: float,
+        *,
+        tp1_rr: float = 1.5,
+        tp2_rr: float = 3.0,
     ) -> tuple[float, float]:
         risk = abs(entry_price - stop_loss)
+        # L5.5b: profile-supplied reward:risk targets (default 1.5 / 3.0 — the
+        # pre-profile constants, so a None/disabled profile is identical). The
+        # structure-target gate (>= 2.5R candidate) and TP1-floor logic below
+        # are unchanged; only the fallback R multiples are parameterised.
+        try:
+            tp1_rr = float(tp1_rr) if float(tp1_rr) > 0 else 1.5
+        except (TypeError, ValueError):
+            tp1_rr = 1.5
+        try:
+            tp2_rr = float(tp2_rr) if float(tp2_rr) > 0 else 3.0
+        except (TypeError, ValueError):
+            tp2_rr = 3.0
 
         liq = LiquidityMapper()
         liq_map = liq.map(h1_df, pip_size)
 
         if direction == "LONG":
             tp1_liq = liq_map.nearest_buy_liq
-            tp1 = tp1_liq.price if tp1_liq else entry_price + risk * 1.5
+            tp1 = tp1_liq.price if tp1_liq else entry_price + risk * tp1_rr
             if tp1 - entry_price < risk:
-                tp1 = entry_price + risk * 1.5
+                tp1 = entry_price + risk * tp1_rr
 
             # Use correct pip_size so min_swing_size filters out noise swings.
             # Default pip_size=0.0001 on synthetics/indices gives near-zero threshold
@@ -1290,21 +1337,21 @@ class EntryEngine:
             ):  # must give at least 2.5R
                 tp2 = tp2_candidate
             else:
-                tp2 = max(entry_price + risk * 3.0, tp1 + risk * 1.5)
+                tp2 = max(entry_price + risk * tp2_rr, tp1 + risk * 1.5)
 
             # Final sanity: if tp1 or tp2 ended up on wrong side, force correct direction
             if tp1 <= entry_price:
-                tp1 = entry_price + risk * 1.5
+                tp1 = entry_price + risk * tp1_rr
                 logger.warning("TP1 sanity fix on LONG {} — was below entry, reset to 1.5R", pair)
             if tp2 <= tp1:
-                tp2 = max(entry_price + risk * 3.0, tp1 + risk * 1.5)
+                tp2 = max(entry_price + risk * tp2_rr, tp1 + risk * 1.5)
                 logger.warning("TP2 sanity fix on LONG {} — was below TP1, reset beyond TP1", pair)
 
         else:  # SHORT
             tp1_liq = liq_map.nearest_sell_liq
-            tp1 = tp1_liq.price if tp1_liq else entry_price - risk * 1.5
+            tp1 = tp1_liq.price if tp1_liq else entry_price - risk * tp1_rr
             if entry_price - tp1 < risk:
-                tp1 = entry_price - risk * 1.5
+                tp1 = entry_price - risk * tp1_rr
 
             structure = StructureEngine(pip_size=pip_size)
             h1_analysis = structure.analyze(h1_df)
@@ -1317,14 +1364,14 @@ class EntryEngine:
             ):  # must give at least 2.5R
                 tp2 = tp2_candidate
             else:
-                tp2 = min(entry_price - risk * 3.0, tp1 - risk * 1.5)
+                tp2 = min(entry_price - risk * tp2_rr, tp1 - risk * 1.5)
 
             # Final sanity: if tp1 or tp2 ended up on wrong side, force correct direction
             if tp1 >= entry_price:
-                tp1 = entry_price - risk * 1.5
+                tp1 = entry_price - risk * tp1_rr
                 logger.warning("TP1 sanity fix on SHORT {} — was above entry, reset to 1.5R", pair)
             if tp2 >= tp1:
-                tp2 = min(entry_price - risk * 3.0, tp1 - risk * 1.5)
+                tp2 = min(entry_price - risk * tp2_rr, tp1 - risk * 1.5)
                 logger.warning("TP2 sanity fix on SHORT {} — was above TP1, reset beyond TP1", pair)
 
         return tp1, tp2
