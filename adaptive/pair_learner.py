@@ -64,6 +64,14 @@ class PairLearner:
             return 0.7
         return 1.0
 
+    def get_profile(self, pair: str) -> Optional[PairProfile]:
+        """Read-only accessor for a learned pair profile (``None`` if unseen).
+
+        Lets consumers read the observed per-pair win rate / sample size
+        without reaching into private state. Does not mutate or recompute.
+        """
+        return self._profiles.get(pair)
+
     def get_recommended_pairs(self) -> list[str]:
         return sorted(
             [p for p, prof in self._profiles.items() if prof.recommendation == "TRADE"],

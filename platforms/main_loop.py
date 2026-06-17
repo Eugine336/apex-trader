@@ -49,6 +49,7 @@ from brain.orchestrator import (
     gate_quality_multiplier as _gate_quality_multiplier,
 )
 from brain.outcome_feedback import OutcomeFeedback
+from adaptive.post_close_tracker import PostCloseTracker
 from brain.decision_trace import (
     DecisionTraceRecorder,
     STAGE_RANKER,
@@ -314,6 +315,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         )
         self.risk_reporter = RiskReporter()
         self.ml = MLAdapter()
+        # Wire the live PairLearner into the scanner so the opportunity ranker's
+        # adaptive win-rate provider (learning layer #1) can read observed
+        # per-pair win rates. Inert unless the ranker flag is on.
+        try:
+            self.scanner.set_pair_learner(self.ml.pair_learner)
+        except Exception as exc:
+            logger.warning("[main] could not wire PairLearner into scanner: {}", exc)
         self.re_entry = ReEntryManager()
         self.density_tracker = OpportunityDensityTracker(window_minutes=60)
         self.vol_monitor = SystemVolatilityMonitor()
@@ -831,6 +839,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         self.watchdog.record_cycle()
         self._check_and_reconnect()
+
+        # ── Post-close forward price checks ──────────────────────────────
+        # Sample MFE/MAE for recently-closed trades when each check interval
+        # comes due. Lightweight, fail-safe, and must never stall the cycle.
+        try:
+            tracker = getattr(self, "_post_close_tracker", None)
+            if tracker is not None and tracker.pending_count:
+                tracker.process_pending_checks(self.platforms)
+        except Exception as exc:
+            logger.debug("[post_close] pending check pass failed: {}", exc)
 
         self._log_periodic_management_status()
 
@@ -5751,6 +5769,40 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self._record_trade_outcome(pos, pnl_pips, pnl_dollars, _fb_pnl_r, outcome, cause_value)
         except Exception as exc:
             logger.debug("[outcome_feedback] close hook failed for {}: {}", pos.symbol, exc)
+
+        # ── Post-close price tracking — schedule forward MFE/MAE checks ──────
+        # Separates entry-signal quality from management quality. Keyed by the
+        # broker order id so checks survive a restart. Observational only.
+        try:
+            tracker = getattr(self, "_post_close_tracker", None)
+            if tracker is not None and tracker.enabled:
+                # R basis = original entry risk. pos.sl may have moved to BE /
+                # trailed, so prefer the plan's entry SL distance when present.
+                _plan_sl_pips = float(getattr(pos, "plan_sl_pips", 0.0) or 0.0)
+                if _plan_sl_pips > 0:
+                    _entry_sl = (
+                        pos.entry_price - _plan_sl_pips * pip_size
+                        if is_buy
+                        else pos.entry_price + _plan_sl_pips * pip_size
+                    )
+                else:
+                    _entry_sl = float(getattr(pos, "sl", 0.0) or 0.0)
+                tracker.record_close(
+                    trade_id=str(getattr(pos, "order_id", "") or ""),
+                    pair=pos.symbol,
+                    direction=pos.direction,
+                    entry_price=pos.entry_price,
+                    exit_price=close_price,
+                    exit_cause=cause_value,
+                    sl_price=_entry_sl,
+                    tp_price=float(getattr(pos, "tp1", 0.0) or 0.0),
+                    entry_timestamp=pos.open_time,
+                    exit_timestamp=datetime.now(timezone.utc),
+                    entry_score=int(getattr(pos, "score", 0) or 0),
+                    entry_confluences=list(getattr(pos, "confluences", []) or []),
+                )
+        except Exception as exc:
+            logger.debug("[post_close] schedule failed for {}: {}", pos.symbol, exc)
 
         if exit_reason_discrepancy:
             logger.warning(

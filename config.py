@@ -416,6 +416,29 @@ class OpportunityRankerConfig:
     swing_htf_penalty_scale: float = 1.0
     mixed_htf_penalty_scale: float = 0.5
 
+    # ── Adaptive win-rate provider (learning layer #1) ───────────────────
+    # The ranker's win probability defaults to a modelled formula built on the
+    # constant ``base_win_rate`` above, so the orchestrator sizes every trade on
+    # a hardcoded 0.40 even though PairLearner / EVEstimator already hold real
+    # per-pair / regime / session win rates. When this is on, a per-pair
+    # provider supplies an OBSERVED win rate (PairLearner → EVEstimator →
+    # cold-start prior) to the ranker hook so its EV — and the sizing that
+    # consumes it — runs on real history. False = legacy (no provider supplied,
+    # behaviour unchanged).
+    adaptive_win_rate_provider_enabled: bool = False
+    # Bayesian shrinkage toward the prior so a thin sample never yields an
+    # extreme rate: blended = (n*observed + prior_strength*prior)/(n+prior_strength).
+    # Below ``adaptive_win_rate_min_trades`` the observed rate is blended; at or
+    # above it the rate is used directly (still clamped). The prior matches the
+    # ranker constant so cold start is unchanged.
+    adaptive_win_rate_prior: float = 0.40
+    adaptive_win_rate_prior_strength: int = 10
+    adaptive_win_rate_min_trades: int = 10
+    # Clamp the final win probability so a degenerate sample can never drive an
+    # extreme position size.
+    adaptive_win_rate_clamp_low: float = 0.15
+    adaptive_win_rate_clamp_high: float = 0.85
+
     def __post_init__(self) -> None:
         if not isinstance(self.min_cluster_contributors, int) or self.min_cluster_contributors < 1:
             raise ValueError(
@@ -460,6 +483,31 @@ class OpportunityRankerConfig:
                 raise ValueError(
                     f"OpportunityRankerConfig.{label} must be in [0, 1], got {val!r}"
                 )
+        for label, val in [
+            ("adaptive_win_rate_prior", self.adaptive_win_rate_prior),
+            ("adaptive_win_rate_clamp_low", self.adaptive_win_rate_clamp_low),
+            ("adaptive_win_rate_clamp_high", self.adaptive_win_rate_clamp_high),
+        ]:
+            if not isinstance(val, (int, float)) or not (0.0 <= val <= 1.0):
+                raise ValueError(
+                    f"OpportunityRankerConfig.{label} must be in [0, 1], got {val!r}"
+                )
+        if self.adaptive_win_rate_clamp_low > self.adaptive_win_rate_clamp_high:
+            raise ValueError(
+                "OpportunityRankerConfig.adaptive_win_rate_clamp_low must be <= "
+                f"adaptive_win_rate_clamp_high, got "
+                f"{self.adaptive_win_rate_clamp_low} > {self.adaptive_win_rate_clamp_high}"
+            )
+        if not isinstance(self.adaptive_win_rate_prior_strength, int) or self.adaptive_win_rate_prior_strength < 0:
+            raise ValueError(
+                "OpportunityRankerConfig.adaptive_win_rate_prior_strength must be an int >= 0, "
+                f"got {self.adaptive_win_rate_prior_strength!r}"
+            )
+        if not isinstance(self.adaptive_win_rate_min_trades, int) or self.adaptive_win_rate_min_trades < 1:
+            raise ValueError(
+                "OpportunityRankerConfig.adaptive_win_rate_min_trades must be an int >= 1, "
+                f"got {self.adaptive_win_rate_min_trades!r}"
+            )
 
 
 # ---------------------------------------------------------------------------
