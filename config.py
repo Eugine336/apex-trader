@@ -1951,6 +1951,176 @@ class CounterfactualConfig:
 
 
 @dataclass
+class ParameterEvolutionConfig:
+    """Settings for the Parameter Evolution engine (L5a).
+
+    The TunerAgent follows gradients on existing parameters; this engine
+    *explores* — it generates candidate values for the consensus / ranker
+    thresholds, replays them over recent closed-trade snapshots (the same
+    decision-replay the Counterfactual engine uses), walk-forward validates the
+    winners, then proves them over live closes (shadow validation) before
+    *recommending* a promotion. It never mutates live config directly — an
+    injected callback (gated by the wiring layer) applies an approved value, so
+    the TunerAgent stays the sole tuning authority.
+
+    Defaults OFF so it stays dormant until enabled. When on it gracefully waits
+    for ``min_replay_trades`` closed snapshots before doing anything.
+    """
+
+    # Master switch: explore + shadow-validate parameter candidates.
+    param_evolution_enabled: bool = False
+    # How many candidate values to generate per parameter each tournament.
+    candidates_per_param: int = 10
+    # How many recent closed trades each replay tournament analyses.
+    replay_lookback: int = 500
+    # Live closes a candidate must prove itself over before a promotion.
+    shadow_validation_trades: int = 50
+    # Minimum R improvement per trade for a candidate to qualify / promote.
+    significance_threshold: float = 0.05
+    # Train/test split for the walk-forward overfitting guard (0.5–0.95).
+    walk_forward_split: float = 0.7
+    # Minimum hours between successive promotions (rate limiting).
+    evolution_cooldown_hours: float = 48.0
+    # Maximum candidates in shadow validation at once.
+    max_concurrent_shadows: int = 3
+    # Trades to watch a promoted change before a rollback recommendation.
+    rollback_window: int = 100
+    # Minimum closed snapshots before any tournament runs.
+    min_replay_trades: int = 50
+    # SQLite path (under data/, gitignored).
+    param_evolution_db_path: str = "data/param_evolution.db"
+
+    def __post_init__(self) -> None:
+        if int(self.candidates_per_param) < 2:
+            raise ValueError(
+                "ParameterEvolutionConfig.candidates_per_param must be >= 2, "
+                f"got {self.candidates_per_param!r}"
+            )
+        if int(self.shadow_validation_trades) < 1:
+            raise ValueError(
+                "ParameterEvolutionConfig.shadow_validation_trades must be >= 1, "
+                f"got {self.shadow_validation_trades!r}"
+            )
+        if not (0.5 <= float(self.walk_forward_split) <= 0.95):
+            raise ValueError(
+                "ParameterEvolutionConfig.walk_forward_split must be in [0.5, 0.95], "
+                f"got {self.walk_forward_split!r}"
+            )
+        if float(self.significance_threshold) < 0:
+            raise ValueError(
+                "ParameterEvolutionConfig.significance_threshold must be >= 0, "
+                f"got {self.significance_threshold!r}"
+            )
+        if int(self.max_concurrent_shadows) < 1:
+            raise ValueError(
+                "ParameterEvolutionConfig.max_concurrent_shadows must be >= 1, "
+                f"got {self.max_concurrent_shadows!r}"
+            )
+
+
+@dataclass
+class ModuleInteractionConfig:
+    """Settings for the Module Interaction Discovery engine (L5b).
+
+    Leave-one-out (L4) measures each module alone. Module interactions are
+    non-linear: two modules can be individually fine yet jointly toxic (they
+    reinforce each other's bad trades) or jointly synergistic. This engine runs
+    leave-K-out combinatorial replay over the closed-trade snapshots to surface
+    toxic / synergistic module pairs and a greedily-optimal active subset.
+
+    Purely analytical — it only measures and recommends; it never changes a
+    weight, mode, or decision. Defaults OFF.
+    """
+
+    # Master switch: compute pairwise interactions + optimal-subset search.
+    module_interaction_enabled: bool = False
+    # How many recent closed trades each analysis pass uses.
+    interaction_lookback: int = 500
+    # Recompute every N closed trades.
+    interaction_interval: int = 100
+    # Minimum closed trades before any analysis runs.
+    min_trades_for_interaction: int = 50
+    # |joint − (a+b)| above this (in total R) flags a synergy/toxicity pair.
+    interaction_significance_r: float = 1.0
+    # Cap modules considered for the pairwise grid (k*(k-1)/2 pairs) to bound cost.
+    max_modules: int = 12
+    # SQLite path (under data/, gitignored).
+    module_interaction_db_path: str = "data/module_interaction.db"
+
+    def __post_init__(self) -> None:
+        if int(self.interaction_lookback) < 1:
+            raise ValueError(
+                "ModuleInteractionConfig.interaction_lookback must be >= 1, "
+                f"got {self.interaction_lookback!r}"
+            )
+        if int(self.interaction_interval) < 1:
+            raise ValueError(
+                "ModuleInteractionConfig.interaction_interval must be >= 1, "
+                f"got {self.interaction_interval!r}"
+            )
+        if int(self.max_modules) < 2:
+            raise ValueError(
+                "ModuleInteractionConfig.max_modules must be >= 2, "
+                f"got {self.max_modules!r}"
+            )
+
+
+@dataclass
+class SignalDiscoveryConfig:
+    """Settings for the Synthetic Signal Discovery engine (L5c).
+
+    The system combines module votes via fixed consensus logic. This engine
+    mines the recorded vote panels + realised outcomes for *combinations* of
+    module-direction conditions (e.g. "structure LONG AND liquidity LONG AND
+    momentum absent") whose win-rate / expectancy edge persists out-of-sample —
+    rules nobody wrote, found in the data. It guards against overfitting with a
+    train/test split and a minimum-support floor, and only *recommends*
+    candidate rules. It never auto-creates a live signal. Defaults OFF.
+    """
+
+    # Master switch: mine + OOS-validate candidate signal rules.
+    signal_discovery_enabled: bool = False
+    # How many recent closed trades each mining pass uses.
+    discovery_lookback: int = 1000
+    # Recompute every N closed trades.
+    discovery_interval: int = 200
+    # Minimum closed trades before mining runs.
+    min_trades_for_discovery: int = 100
+    # Minimum trades a rule must fire on (support) to be considered.
+    min_rule_support: int = 15
+    # Maximum module-conditions in a discovered rule (combinatorial guard).
+    max_rule_conditions: int = 3
+    # Minimum expectancy edge (R/trade) over baseline for a rule to qualify.
+    min_edge_r: float = 0.10
+    # Train/test split for out-of-sample validation (0.5–0.95).
+    discovery_walk_forward_split: float = 0.7
+    # SQLite path (under data/, gitignored).
+    signal_discovery_db_path: str = "data/signal_discovery.db"
+
+    def __post_init__(self) -> None:
+        if int(self.discovery_lookback) < 1:
+            raise ValueError(
+                "SignalDiscoveryConfig.discovery_lookback must be >= 1, "
+                f"got {self.discovery_lookback!r}"
+            )
+        if int(self.min_rule_support) < 1:
+            raise ValueError(
+                "SignalDiscoveryConfig.min_rule_support must be >= 1, "
+                f"got {self.min_rule_support!r}"
+            )
+        if not (1 <= int(self.max_rule_conditions) <= 5):
+            raise ValueError(
+                "SignalDiscoveryConfig.max_rule_conditions must be in [1, 5], "
+                f"got {self.max_rule_conditions!r}"
+            )
+        if not (0.5 <= float(self.discovery_walk_forward_split) <= 0.95):
+            raise ValueError(
+                "SignalDiscoveryConfig.discovery_walk_forward_split must be in "
+                f"[0.5, 0.95], got {self.discovery_walk_forward_split!r}"
+            )
+
+
+@dataclass
 class AppConfig:
     # All 4 categories enabled — forex, commodity, index, synthetic
     enabled_categories: list[str] = field(
@@ -1977,6 +2147,9 @@ class AppConfig:
     module_governor: ModuleGovernorConfig = field(default_factory=ModuleGovernorConfig)
     tuner_agent: TunerAgentConfig = field(default_factory=TunerAgentConfig)
     counterfactual: CounterfactualConfig = field(default_factory=CounterfactualConfig)
+    param_evolution: ParameterEvolutionConfig = field(default_factory=ParameterEvolutionConfig)
+    module_interaction: ModuleInteractionConfig = field(default_factory=ModuleInteractionConfig)
+    signal_discovery: SignalDiscoveryConfig = field(default_factory=SignalDiscoveryConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)
