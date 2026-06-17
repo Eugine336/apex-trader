@@ -678,6 +678,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             GateTunerTunable,
             PlannerCalibratorTunable,
             SignalLedgerTunable,
+            PostCloseTrackerTunable,
+            ConsumerTunable,
         )
 
         agent = TunerAgent(
@@ -721,17 +723,139 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             agent.register(SignalLedgerTunable(
                 self._signal_ledger, prices_provider=None,
             ))
+        # Post-close MFE/MAE sampling (per-scan). Data source = live platforms.
+        if self._post_close_tracker is not None:
+            agent.register(PostCloseTrackerTunable(
+                self._post_close_tracker,
+                data_source_provider=lambda: self.platforms,
+            ))
+
+        # ── Make the agent the single place the WHOLE system reports to ──────
+        # Hard enforcement: the components that can self-tune get a reference so
+        # any direct retrain/calibrate/grade call is blocked while the agent is
+        # sole authority (it authorises only its own delegated calls).
+        for _component in (
+            self.ml, self._gate_tuner, self._calibrator, self._signal_ledger,
+        ):
+            if _component is not None and hasattr(_component, "set_tuner_agent"):
+                _component.set_tuner_agent(agent)
+
+        # Consumers / observers (components 14-19): they don't self-tune — they
+        # read tuned params or are dormant — but they register read-only so the
+        # agent sees the whole system in get_system_tuning_status / validation.
+        self._register_tuner_consumers(agent, ConsumerTunable)
 
         self._tuner_agent = agent
         logger.info(
             "🎛️ Tuner Agent ENABLED — coordinating {} tunables: {}",
             len(agent.registered_names), ", ".join(agent.registered_names),
         )
+        # Startup validation: warn about any expected component that did not
+        # register (flag off / wiring missing) and any invalid current params.
+        try:
+            agent.validate_registry()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[tuner-agent] registry validation failed: {}", exc)
+
+    def _register_tuner_consumers(self, agent, ConsumerTunable) -> None:
+        """Register the read-only consumer/observer components (14-19) plus the
+        coordinator-level reporters so every one of the 19 audited components is
+        visible to the agent. Each entry exposes a current-config snapshot and
+        is never auto-tuned. Fully guarded — a missing component is simply
+        skipped, never fatal."""
+        ml = getattr(self, "ml", None)
+
+        def _reg(name, provider, *, dormant=False, note=""):
+            try:
+                agent.register(ConsumerTunable(name, provider, dormant=dormant, note=note))
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[tuner-agent] consumer '{}' register skipped: {}", name, exc)
+
+        # 1 — AdaptiveOptimizer (coordinator; sub-learners tuned individually).
+        if ml is not None:
+            _reg("adaptive_optimizer", lambda: {
+                "recency_window_days": int(getattr(ml, "recency_window_days", 0) or 0),
+                "recency_min_trades": int(getattr(ml, "recency_min_trades", 0) or 0),
+                "losing_pattern_min_samples": int(getattr(ml, "losing_pattern_min_samples", 0) or 0),
+                "losing_pattern_max_win_rate": float(getattr(ml, "losing_pattern_max_win_rate", 0.0) or 0.0),
+            }, note="coordinator — sub-learners tuned individually")
+            # 6 — TradeAnalyzer (losing-pattern source).
+            analyzer = getattr(ml, "analyzer", None)
+            if analyzer is not None:
+                _reg("trade_analyzer", lambda: {
+                    "cached_losing_patterns": len(getattr(ml, "_losing_patterns", []) or []),
+                })
+
+        # 9 — Win-rate provider (lives on the scanner; flag-gated).
+        rc = getattr(self.config, "opportunity_ranker", None)
+        _reg("win_rate_provider", lambda: {
+            "enabled": bool(getattr(rc, "adaptive_win_rate_provider_enabled", False)),
+            "built": getattr(self.scanner, "_win_rate_adapter", None) is not None,
+        })
+
+        # 11 — Emitter feedback (read-side service over the signal ledger).
+        _reg("emitter_feedback", lambda: {
+            "enabled": self._emitter_feedback is not None,
+        })
+
+        # 14 — RiskEngine.
+        re = getattr(self, "risk_engine", None)
+        if re is not None:
+            _reg("risk_engine", lambda: {
+                "mode": str(getattr(getattr(re, "drawdown_guard", None), "mode", "")),
+                "balance": float(getattr(re, "balance", 0.0) or 0.0),
+            })
+            # 15 — PositionSizer (lives on the risk engine).
+            ps = getattr(re, "position_sizer", None)
+            if ps is not None:
+                _reg("position_sizer", lambda: {
+                    "max_risk_pct_per_trade": float(getattr(ps, "max_risk_pct_per_trade", 0.0) or 0.0),
+                })
+
+        # 16 — Orchestrator.
+        orch = getattr(self, "_orchestrator", None)
+        if orch is not None:
+            _reg("orchestrator", lambda: {
+                "enabled": bool(getattr(getattr(orch, "config", None), "enabled", False)),
+                "apply_sizing": bool(getattr(getattr(orch, "config", None), "apply_sizing", False)),
+            })
+
+        # 17 — PortfolioGovernor.
+        gov = getattr(self, "_governor", None)
+        _reg("portfolio_governor", lambda: {
+            "enabled": gov is not None,
+        })
+
+        # 18 — TradeManager.
+        tm = getattr(self, "trade_manager", None)
+        if tm is not None:
+            _reg("trade_manager", lambda: {
+                "open_trades": len(getattr(tm, "_trades", {}) or {}),
+            })
+
+        # 19 — RL stack (dormant until a trained checkpoint exists).
+        _reg("rl_stack", lambda: {
+            "bridge_present": getattr(self.scanner, "_rl", None) is not None,
+        }, dormant=True, note="dormant — no trained checkpoint")
 
     def _tuner_agent_active(self) -> bool:
         return self._tuner_agent is not None and getattr(
             self.config.tuner_agent, "enabled", False
         )
+
+    def tuner_system_status(self) -> dict:
+        """Whole-system tuning state for ops / the dashboard: every registered
+        tunable, the expected components that did NOT register, and recent
+        bypass attempts. Returns a disabled marker when the agent is off."""
+        if self._tuner_agent is None:
+            return {"agent_enabled": False, "is_sole_authority": False,
+                    "registered_tunables": {}, "unregistered_expected": [],
+                    "bypass_attempts": []}
+        try:
+            return self._tuner_agent.get_system_tuning_status()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[tuner-agent] system status failed: {}", exc)
+            return {"agent_enabled": self._tuner_agent_active(), "error": str(exc)}
 
     def _tuner_fetch_ml_trades(self) -> dict:
         """Fetch + tag-parse the journal once per agent run, cached by run gen.
@@ -6055,6 +6179,22 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         except Exception as exc:
             logger.debug("[post_close] schedule failed for {}: {}", pos.symbol, exc)
 
+        # ── Link the realised outcome back to the signals that drove it ──────
+        # Pushes PnL / R / exit cause onto every ledger signal tied to this
+        # trade so EmitterFeedback can grade taken signals on real results.
+        # No-op when the signal ledger is disabled.
+        self._ledger_attach_trade_outcome(
+            str(getattr(pos, "order_id", "") or ""),
+            {
+                "pair": pos.symbol,
+                "direction": pos.direction,
+                "outcome": outcome,
+                "exit_cause": cause_value,
+                "pnl_dollars": pnl_dollars,
+                "pnl_pips": round(pnl_pips, 2),
+            },
+        )
+
         if exit_reason_discrepancy:
             logger.warning(
                 "⚠️ EXIT ATTRIBUTION DISCREPANCY — {} {}: broker={} but manager intended '{}'",
@@ -6658,6 +6798,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self._signal_ledger.record_trade_opened_for_pair(pair, str(trade_id), direction)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[signal-ledger] trade-open hook failed: {}", exc)
+
+    def _ledger_attach_trade_outcome(self, trade_id: str, outcome: dict) -> None:
+        """Merge a closed trade's realised result onto its ledger signals so the
+        emitter-feedback layer can grade taken signals on real PnL (guarded)."""
+        if not self._signal_ledger_active() or not trade_id:
+            return
+        try:
+            self._signal_ledger.attach_trade_outcome(str(trade_id), outcome or {})
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[signal-ledger] attach-outcome hook failed: {}", exc)
 
     def _log_rejection(self, pair: str, direction: str, score: int, reason: str,
                        entry_context: dict | None = None) -> None:

@@ -39,6 +39,8 @@ from typing import Callable, Dict, List, Optional
 
 from loguru import logger
 
+from adaptive.tunable import TuningGuardMixin
+
 # ── Defaults ─────────────────────────────────────────────────────────────────
 
 _DB_DIR = Path(__file__).parent.parent / "data"
@@ -144,7 +146,7 @@ def _signed_move_pct(direction: str, price_at_signal: float, current: float) -> 
     return raw if direction == "LONG" else -raw
 
 
-class SignalLedger:
+class SignalLedger(TuningGuardMixin):
     """SQLite-backed universal signal recorder + grader. WAL-mode, thread-safe."""
 
     def __init__(
@@ -393,6 +395,10 @@ class SignalLedger:
         Call this once per scan cycle with a {pair: price} map. Returns a small
         summary {"observed": n, "graded": n} for logging/telemetry.
         """
+        # Blocked (no grading performed) when the Tuner Agent is sole authority
+        # and this is a direct call rather than an agent-driven one.
+        if self._tuning_blocked("run_grading_cycle"):
+            return {"observed": 0, "graded": 0}
         if self._conn is None:
             return {"observed": 0, "graded": 0}
         with self._lock:
