@@ -1239,6 +1239,169 @@ export function ExecutionProfiles({ d }) {
   );
 }
 
+// ── Regime Detection (L7) ─────────────────────────────────────────────────────
+function RegimeDetection({ d }) {
+  const pairs = d?.pairs || [];
+  const transitions = d?.transitions || [];
+  const dist = d?.regime_distribution || {};
+  return (
+    <div className="card mb-20">
+      <div className="card-header">
+        <span className="card-title">Regime Detection (L7)</span>
+        <StatusPill on={d?.enabled} />
+      </div>
+      <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
+        <div className="stat-card">
+          <div className="stat-label">Pairs Classified</div>
+          <div className="stat-value">{d?.pair_count || 0}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Hysteresis Bars</div>
+          <div className="stat-value">{d?.hysteresis_bars || 0}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Lookback Bars</div>
+          <div className="stat-value">{d?.lookback_bars || 0}</div>
+        </div>
+      </div>
+      <div style={{ padding: '0 12px', marginBottom: 12 }}>
+        {Object.keys(dist).length === 0
+          ? <span className="text-muted">No regimes classified yet.</span>
+          : Object.entries(dist).map(([reg, n]) => (
+              <span key={reg} className="badge badge-muted" style={{ marginRight: 6 }}>
+                {reg}: {n}
+              </span>
+            ))}
+      </div>
+      {pairs.length > 0 && (
+        <table className="data-table">
+          <thead>
+            <tr>
+              <th>Pair</th><th>Regime</th>
+              <th className="right">Confidence</th>
+              <th className="right">Dir.Str</th>
+              <th className="right">Vol</th>
+              <th className="right">MeanRev</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pairs.slice(0, 30).map((p) => (
+              <tr key={p.pair}>
+                <td>{p.pair}</td>
+                <td>{p.regime}</td>
+                <td className="right">{pct(p.confidence)}</td>
+                <td className="right">{p.directional_strength}</td>
+                <td className="right">{p.volatility_ratio}</td>
+                <td className="right">{p.mean_reversion}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {transitions.length > 0 && (
+        <table className="data-table" style={{ marginTop: 12 }}>
+          <thead>
+            <tr><th>Pair</th><th>Transition</th><th className="right">Conf</th><th className="right">When</th></tr>
+          </thead>
+          <tbody>
+            {transitions.slice(0, 15).map((t, i) => (
+              <tr key={i}>
+                <td>{t.pair}</td>
+                <td>{t.old_regime} → {t.new_regime}</td>
+                <td className="right">{pct(t.confidence)}</td>
+                <td className="right">{tsAgo(t.ts)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+// ── Risk Management (L8) ──────────────────────────────────────────────────────
+function RiskManagement({ d }) {
+  const events = d?.risk_events || [];
+  const correlations = d?.correlations || [];
+  const state = d?.state || 'NORMAL';
+  const stateOk = state === 'NORMAL';
+  return (
+    <div className="card mb-20">
+      <div className="card-header">
+        <span className="card-title">Risk Management (L8)</span>
+        <StatusPill on={d?.enabled} />
+      </div>
+      <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
+        <div className="stat-card">
+          <div className="stat-label">Breaker State</div>
+          <div className="stat-value" style={{ color: stateOk ? 'var(--green-bright)' : 'var(--red-bright)' }}>
+            {state}
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Rolling Drawdown</div>
+          <div className="stat-value">{d?.rolling_drawdown_pct || 0}%</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Sizing Factor</div>
+          <div className="stat-value" style={{ color: multColor(d?.sizing_factor) }}>
+            {d?.sizing_factor != null ? d.sizing_factor : 1}
+          </div>
+        </div>
+      </div>
+      <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
+        <div className="stat-card">
+          <div className="stat-label">Daily Drawdown</div>
+          <div className="stat-value">{d?.daily_drawdown_pct || 0}%</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Peak Equity</div>
+          <div className="stat-value">{d?.peak_equity || 0}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Flatten?</div>
+          <div className="stat-value" style={{ color: d?.should_flatten ? 'var(--red-bright)' : 'var(--text-primary)' }}>
+            {d?.should_flatten ? 'YES' : 'no'}
+          </div>
+        </div>
+      </div>
+      {events.length > 0 && (
+        <table className="data-table">
+          <thead>
+            <tr><th>Pair</th><th>Rule</th><th>Reason</th><th className="right">When</th></tr>
+          </thead>
+          <tbody>
+            {events.slice(0, 20).map((e, i) => (
+              <tr key={i}>
+                <td>{e.pair}</td>
+                <td>{e.rule}</td>
+                <td>{e.reason}</td>
+                <td className="right">{tsAgo(e.ts)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+      {correlations.length > 0 && (
+        <table className="data-table" style={{ marginTop: 12 }}>
+          <thead>
+            <tr><th>Pair A</th><th>Pair B</th><th className="right">Correlation</th></tr>
+          </thead>
+          <tbody>
+            {correlations.slice(0, 15).map((c, i) => (
+              <tr key={i}>
+                <td>{c.pair_a}</td>
+                <td>{c.pair_b}</td>
+                <td className="right">{c.correlation}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
 export default function Learning() {
   const { data, loading } = useApi('/api/learning', 8000);
   if (loading && !data) {
@@ -1269,6 +1432,8 @@ export default function Learning() {
       <VirtualModules d={data?.virtual_modules} />
       <CapitalAllocation d={data?.capital_allocation} />
       <ExecutionProfiles d={data?.execution_profiles} />
+      <RegimeDetection d={data?.regime_detection} />
+      <RiskManagement d={data?.risk_management} />
       <TunerAgent d={data?.tuner_agent} />
     </div>
   );
