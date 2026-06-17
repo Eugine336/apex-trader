@@ -22,7 +22,10 @@ from brain.orchestrator import (
 
 @pytest.fixture
 def orch():
-    return Orchestrator(OrchestratorConfig())
+    # The health→action mapping tests below exercise the one-way de-risk path
+    # (HOLD/TIGHTEN/SCALE_DOWN/EXIT). SCALE_UP is now on by default, so disable
+    # it here to isolate the de-risk mapping; SCALE_UP has its own tests below.
+    return Orchestrator(OrchestratorConfig(allow_scale_up=False))
 
 
 def _healthy(**over) -> PositionEvidence:
@@ -69,7 +72,7 @@ class TestHealthToAction:
         assert r.action == ManagementAction.EXIT_FULL
 
     def test_action_thresholds_are_configurable(self):
-        cfg = OrchestratorConfig()
+        cfg = OrchestratorConfig(allow_scale_up=False)
         cfg.health_thresholds = {"hold": 0.99, "tighten": 0.0, "scale_down": 0.0, "exit_partial": 0.0}
         r = Orchestrator(cfg).evaluate_open_position(_healthy())
         # Same healthy evidence now falls below the raised HOLD bar → TIGHTEN.
@@ -183,7 +186,8 @@ class TestScaleUpGating:
             entry_health=0.55, entry_structure_integrity=0.6,
         )
 
-    def test_scale_up_blocked_by_default(self, orch):
+    def test_scale_up_blocked_when_disabled(self):
+        orch = Orchestrator(OrchestratorConfig(allow_scale_up=False))
         r = orch.evaluate_open_position(self._improving())
         assert r.action != ManagementAction.SCALE_UP
 

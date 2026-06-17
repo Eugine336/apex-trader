@@ -30,6 +30,23 @@ atexit.register(shutdown_event_store)
 from config import AppConfig, get_instruments_by_category, INSTRUMENT_REGISTRY
 
 
+def _apply_log_level(level: str) -> None:
+    """Apply the configured console log level.
+
+    The console (stderr) sink is re-added at ``config.log_level`` while the
+    event-store sink is preserved at DEBUG so the dashboard/persistence keep
+    full fidelity regardless of the console verbosity. The stdlib intercept is
+    independent of the loguru sinks and does not need re-installing.
+    """
+    lvl = str(level or "INFO").upper()
+    try:
+        logger.remove()
+    except Exception:  # noqa: BLE001
+        pass
+    logger.add(sys.stderr, level=lvl)
+    logger.add(event_store_sink, level="DEBUG")
+
+
 def _start_trading_loop(trading_loop) -> None:
     """Run the TradingLoop cycle in a background thread.
 
@@ -59,6 +76,7 @@ def main() -> None:
     logger.info("=" * 60)
 
     config = AppConfig()
+    _apply_log_level(config.log_level)
 
     logger.info(f"Instrument registry loaded — {len(INSTRUMENT_REGISTRY)} instruments")
     for cat in config.enabled_categories:

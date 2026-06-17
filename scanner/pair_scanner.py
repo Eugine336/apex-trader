@@ -791,7 +791,8 @@ class PairScanner:
                     _h1_max = _w["ob_h1"]
                     h1_ob_pts = _h1_max if entry_ob.strength == "STRONG" else (round(_h1_max * 0.7) if entry_ob.strength == "MODERATE" else round(_h1_max * 0.4))
                 else:
-                    h1_ob_pts = 10 if entry_ob.strength == "STRONG" else (7 if entry_ob.strength == "MODERATE" else 4)
+                    _ob_base = scoring.order_block_points / 2
+                    h1_ob_pts = round(_ob_base) if entry_ob.strength == "STRONG" else (round(_ob_base * 0.7) if entry_ob.strength == "MODERATE" else round(_ob_base * 0.4))
                 score += h1_ob_pts
                 confluences.append(f"H1 OB bias ({entry_ob.strength}, +{h1_ob_pts})")
 
@@ -806,7 +807,8 @@ class PairScanner:
                     _m5_max = _w["ob_m5"]
                     m5_ob_pts = _m5_max if m5_entry_ob.strength == "STRONG" else (round(_m5_max * 0.7) if m5_entry_ob.strength == "MODERATE" else round(_m5_max * 0.4))
                 else:
-                    m5_ob_pts = 10 if m5_entry_ob.strength == "STRONG" else (7 if m5_entry_ob.strength == "MODERATE" else 4)
+                    _ob_base = scoring.order_block_points / 2
+                    m5_ob_pts = round(_ob_base) if m5_entry_ob.strength == "STRONG" else (round(_ob_base * 0.7) if m5_entry_ob.strength == "MODERATE" else round(_ob_base * 0.4))
                 score += m5_ob_pts
                 confluences.append(f"M5 OB entry zone ({m5_entry_ob.strength}, +{m5_ob_pts})")
 
@@ -1021,6 +1023,8 @@ class PairScanner:
         regime = bias["h4_trend"]
         if regime == "RANGING":
             score = min(score, scoring.ranging_score_cap)
+        elif regime == "VOLATILE":
+            score = min(score, scoring.volatile_score_cap)
         if not session_active and score > 0 and is_session_gated(pair):
             score = max(score - 10, 0)
 

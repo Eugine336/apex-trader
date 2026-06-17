@@ -103,6 +103,7 @@ class DecisionEngine:
         conviction_size_min: float = 0.5,
         conviction_size_max: float = 1.5,
         market_mode_threshold: float = 0.40,
+        adopted_observation_minutes: float = 10.0,
     ) -> None:
         self.weights = weights or DecisionWeights()
         # Roadmap D — regime-dependent weighting.
@@ -191,6 +192,9 @@ class DecisionEngine:
         # market score are now smooth ramps (no 0.3/0.5/80 cliffs); this is the
         # final preference threshold on the already-continuous score.
         self.market_mode_threshold = max(0.0, min(1.0, float(market_mode_threshold)))
+        # Adopted/orphan trades get a protective observation window (config-driven,
+        # was a hardcoded 10-minute literal at the decide_management gate).
+        self.adopted_observation_minutes = max(0.0, float(adopted_observation_minutes))
 
     @staticmethod
     def _tf_conflict_opposition(sa: SituationAssessment) -> float:
@@ -429,7 +433,7 @@ class DecisionEngine:
         ctx: TradeContext,
         sa: SituationAssessment,
     ) -> ManagementDecision:
-        if ctx.is_adopted and ctx.hold_minutes < 10:
+        if ctx.is_adopted and ctx.hold_minutes < self.adopted_observation_minutes:
             return self._decide_adopted_observation(ctx, sa)
 
         scores: dict[Action, float] = {}

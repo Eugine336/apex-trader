@@ -223,7 +223,7 @@ class ScoringConfig:
     news_points: int = 10
     currency_strength_points: int = 10
     ranging_score_cap: int = 85  # Must exceed DrawdownGuard score floors (65/70/75) to allow ranging trades
-    volatile_score_cap: int = 100  # FIX: was 0 — killed all volatile-regime trades
+    volatile_score_cap: int = 100  # Cap applied to confluence score in a VOLATILE regime (100 = effectively uncapped)
     use_adaptive_scoring_weights: bool = True
     # ── M1 pattern confluence (collapse #21) ─────────────────────────────
     # ``get_best_pattern`` keeps only the single strongest M1 confirmation;
@@ -424,8 +424,8 @@ class OpportunityRankerConfig:
     # provider supplies an OBSERVED win rate (PairLearner → EVEstimator →
     # cold-start prior) to the ranker hook so its EV — and the sizing that
     # consumes it — runs on real history. False = legacy (no provider supplied,
-    # behaviour unchanged).
-    adaptive_win_rate_provider_enabled: bool = False
+    # behaviour unchanged). LIVE: the ranker sizes on observed per-pair history.
+    adaptive_win_rate_provider_enabled: bool = True
     # Bayesian shrinkage toward the prior so a thin sample never yields an
     # extreme rate: blended = (n*observed + prior_strength*prior)/(n+prior_strength).
     # Below ``adaptive_win_rate_min_trades`` the observed rate is blended; at or
@@ -628,7 +628,7 @@ class RiskConfig:
     pending_orders_enabled: bool = True
     pending_max_wait_minutes: int = 30
     max_cluster_same_direction: int = 2
-    allow_intentional_hedge: bool = False
+    allow_intentional_hedge: bool = True
     margin_guardian_enabled: bool = True
     margin_warn_pct: float = 200.0
     margin_block_entry_pct: float = 150.0
@@ -665,9 +665,9 @@ class RiskConfig:
 
     # ── Min-lot inflation guard ──────────────────────────────────────────
     # When True, reject an order if the broker's volume_min floors the
-    # risk-engine-sized lot upward (e.g. 0.01 → 0.5).  Default OFF so
-    # a WARNING is logged but the order still proceeds as today.
-    reject_on_minlot_inflation: bool = False
+    # risk-engine-sized lot upward (e.g. 0.01 → 0.5).  LIVE: an inflated
+    # min-lot order is rejected rather than silently proceeding oversized.
+    reject_on_minlot_inflation: bool = True
 
     # ── Continuous in-trade analysis ─────────────────────────────────────
     # Re-score open instruments every cycle and exit if thesis invalidates
@@ -890,9 +890,9 @@ class RiskConfig:
     # strategic tf_alignment it already records. When enabled, a fresh strategic
     # tf_alignment that still strongly supports the trade direction (|·| ≥
     # structure_exit_tf_alignment_defer, signed toward the trade) defers that
-    # mechanical exit — the HTF trend treats the M5 break as noise. Off by
-    # default → legacy binary structure exit.
-    structure_exit_tf_alignment_enabled: bool = False
+    # mechanical exit — the HTF trend treats the M5 break as noise. LIVE: a
+    # strongly-supportive HTF alignment defers the binary structure exit.
+    structure_exit_tf_alignment_enabled: bool = True
     structure_exit_tf_alignment_defer: float = 0.5
     # All R-gated breakeven logic (TP1 partial, breakeven_min_profit_r) needs
     # a known original risk to compute an R-multiple. Adopted/orphan trades
@@ -1053,9 +1053,9 @@ class DecisionConfig:
     # so a +0.21 momentum reads identical to +0.95 and two strong signals lose
     # to three weak ones. When enabled, each signal contributes a continuous
     # strength and the gate compares the summed strength to
-    # reversal_required_strength (default 2.0 ≈ two full signals). Off by
-    # default → legacy integer-count behaviour.
-    reversal_weighted_evidence: bool = False
+    # reversal_required_strength (default 2.0 ≈ two full signals). LIVE: each
+    # signal contributes a continuous strength rather than an integer count.
+    reversal_weighted_evidence: bool = True
     reversal_required_strength: float = 2.0
     reversal_momentum_full: float = 0.6      # momentum reaching this counts as full strength
     # ── HTF = bounded context (Scenario A) ────────────────────────────────
@@ -1308,8 +1308,10 @@ class OrchestratorConfig:
     # in [de_gate_quality_floor, 1.0] by the decision engine).
     # How much an opposing HTF dims a SCALP (vs a SWING which feels it fully).
     scalp_htf_opposition_scale: float = 0.3
-    # Max concurrent trades the orchestrator may dispatch per scan cycle.
-    max_concurrent_trades: int = 1
+    # NOTE: per-cycle dispatch capacity is owned by OpportunityRankerConfig
+    # (``dispatch_top_n`` / ``slot_aware_dispatch`` / ``max_concurrent``), which
+    # is the single authority the main loop consumes. A separate orchestrator
+    # ``max_concurrent_trades`` was never read — removed to avoid a dead knob.
 
     # ── Upstream gate softening (Phase 9: kill-switch → bounded dimmer) ────
     # When the orchestrator is the live sizer it grades every surviving setup
@@ -1351,7 +1353,7 @@ class OrchestratorConfig:
     # bounded management action — replacing the old argmax management collapse.
     # It is a one-way de-risk (hold/tighten/trim/exit); SCALE_UP is opt-in.
     manage_open_positions: bool = True
-    allow_scale_up: bool = False
+    allow_scale_up: bool = True
     # Per-dimension lower bound for the HEALTH product. Unlike entry sizing
     # (dimension_floor), an open position is protecting capital already at risk,
     # so a destroyed dimension is allowed to drive an exit → floor defaults to 0.
@@ -1421,11 +1423,6 @@ class OrchestratorConfig:
                 raise ValueError(
                     f"OrchestratorConfig.{label} must be finite > 0, got {val!r}"
                 )
-        if not isinstance(self.max_concurrent_trades, int) or self.max_concurrent_trades < 1:
-            raise ValueError(
-                "OrchestratorConfig.max_concurrent_trades must be an int >= 1, "
-                f"got {self.max_concurrent_trades!r}"
-            )
         for label, val in [
             ("min_cycles_before_management", self.min_cycles_before_management),
             ("management_cooldown_cycles", self.management_cooldown_cycles),
@@ -1474,14 +1471,15 @@ class SignalLedgerConfig:
     layer (only taken trades were ever graded) and lets each emitter ask how it
     is doing and whether a gate is over-filtering its correct signals.
 
-    Purely observational — nothing here changes a live decision. All switches
-    default OFF so the layer is dormant until explicitly enabled.
+    Purely observational — nothing here changes a live decision. The recorder
+    and grader are LIVE by default so the learning layer accumulates unbiased
+    per-emitter accuracy from the start.
     """
 
     # Master switch: record signals at emission time.
-    signal_ledger_enabled: bool = False
+    signal_ledger_enabled: bool = True
     # Run the background grading cycle (price sampling + finalisation).
-    signal_grading_enabled: bool = False
+    signal_grading_enabled: bool = True
     # Elapsed time before a signal is finalised (direction_correct decided).
     signal_grading_delay_minutes: int = 30
     # Minutes at which intermediate price observations are stamped.
@@ -1491,7 +1489,7 @@ class SignalLedgerConfig:
     # Minimum signed move (%) in the predicted direction to count as correct.
     signal_min_move_pct: float = 0.1
     # Enable the read-side EmitterFeedback service.
-    emitter_feedback_enabled: bool = False
+    emitter_feedback_enabled: bool = True
     # SQLite path (under data/, gitignored).
     signal_ledger_db_path: str = "data/signal_ledger.db"
     # Rolling window of most-recent graded signals for accuracy aggregation.
@@ -1568,12 +1566,13 @@ class TunerAgentConfig:
     the component's own safety bounds, rolls back on failure, and writes every
     action to a persistent audit log.
 
-    Defaults OFF: when disabled the existing scattered tuning triggers run
-    exactly as before — this is purely additive until explicitly enabled.
+    Defaults ON: the agent is the sole tuning authority — every tunable
+    registers with it, it resolves order/cadence and validates each result,
+    and the legacy scattered tuning triggers are blocked while it runs.
     """
 
     # Master switch. When False, the legacy scattered tuning calls run as-is.
-    enabled: bool = False
+    enabled: bool = True
     # Soft per-tunable duration budget; an overrun is logged loudly (a running
     # sync tune cannot be safely hard-killed mid-flight without risking a
     # half-written DB).
@@ -1627,7 +1626,9 @@ class AppConfig:
     planner: PlannerConfig = field(default_factory=PlannerConfig)
     governor: GovernorConfig = field(default_factory=GovernorConfig)
     performance: PerformanceConfig = field(default_factory=PerformanceConfig)
-    scan_interval_seconds: int = 10
+    # NOTE: scan cadence is owned by PerformanceConfig.scan_interval_active /
+    # scan_interval_with_positions (consumed by ScanScheduler). The old
+    # AppConfig.scan_interval_seconds was superseded and never read — removed.
     max_consecutive_cycle_failures: int = 5
     log_level: str = "INFO"
 

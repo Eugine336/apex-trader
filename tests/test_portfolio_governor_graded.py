@@ -37,6 +37,7 @@ def test_correlated_indices_now_blocked_legacy():
     # legs), now caught by the correlated-positions limit.
     gov = PortfolioGovernor(
         GovernorConfig(
+            graded_exposure=False,  # legacy first-breach hard block
             max_correlated_positions=1, max_currency_exposure=99, max_sector_exposure=99,
         )
     )

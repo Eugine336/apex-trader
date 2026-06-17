@@ -264,6 +264,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     grading_delay_minutes=sl_cfg.signal_grading_delay_minutes,
                     check_intervals=list(sl_cfg.signal_grading_check_intervals),
                     min_move_pct=sl_cfg.signal_min_move_pct,
+                    accuracy_lookback=getattr(sl_cfg, "accuracy_lookback", 100),
                 )
                 if getattr(sl_cfg, "emitter_feedback_enabled", False):
                     self._emitter_feedback = EmitterFeedbackService(self._signal_ledger)
@@ -275,22 +276,21 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             logger.warning("[signal-ledger] init failed, disabled: {}", exc)
             self._signal_ledger = None
             self._emitter_feedback = None
-        # ── Post-close MFE/MAE tracker (observational) ────────────────────────
-        # Schedules forward price checks after each close to separate signal
-        # quality from management quality. The record_close / process_pending
-        # hooks already exist below; this is the missing instantiation. Dormant
-        # unless PostCloseTrackerConfig.enabled is set; never changes a decision.
+        # ── Post-close price tracker (MFE/MAE attribution) ───────────────
+        # Schedules forward price checks after every close to separate
+        # entry-signal quality from management quality. Observational only —
+        # the close/scan hooks below already call record_close /
+        # process_pending_checks; it just needs to be instantiated. Fail-safe:
+        # a construction error leaves it None and the guarded hooks no-op.
         self._post_close_tracker = None
         try:
-            pc_cfg = getattr(self.config, "post_close_tracker", None)
-            if pc_cfg is not None and getattr(pc_cfg, "enabled", False):
-                self._post_close_tracker = PostCloseTracker(
-                    config=pc_cfg, db_path=pc_cfg.db_path,
-                )
-                logger.info(
-                    "[post_close] tracker enabled (intervals={}, db={})",
-                    pc_cfg.check_intervals_minutes, pc_cfg.db_path,
-                )
+            self._post_close_tracker = PostCloseTracker(
+                db_path="data/post_close_tracker.db",
+            )
+            logger.info(
+                "[post_close] tracker enabled (pending={})",
+                self._post_close_tracker.pending_count,
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[post_close] init failed, disabled: {}", exc)
             self._post_close_tracker = None
@@ -490,7 +490,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # ── Decision Intelligence System ────────────────────────────────
         dcfg = self.config.decision
         self._decision_enabled = dcfg.enabled
-        self._situation_engine = SituationEngine()
+        self._situation_engine = SituationEngine(
+            adopted_observation_minutes=getattr(dcfg, "adopted_observation_minutes", 10.0),
+        )
         self._decision_engine = DecisionEngine(
             DecisionWeights(
                 conviction_htf=dcfg.conviction_htf_weight,
@@ -557,6 +559,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             conviction_size_min=float(getattr(dcfg, "conviction_size_min", 0.5)),
             conviction_size_max=float(getattr(dcfg, "conviction_size_max", 1.5)),
             market_mode_threshold=float(getattr(dcfg, "market_mode_threshold", 0.40)),
+            adopted_observation_minutes=float(getattr(dcfg, "adopted_observation_minutes", 10.0)),
         )
         # #24 — when the orchestrator round table is the live sizer, the risk
         # governor's entry review stops hard-vetoing on the first analytical
