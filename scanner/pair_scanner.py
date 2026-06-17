@@ -35,6 +35,7 @@ from brain.directional_consensus import (
 from brain.session_engine import SessionEngine, NewsGuard
 from brain.orchestrator import gate_quality_multiplier as _gate_quality_multiplier
 from adaptive.ev_estimator import EVEstimator
+from adaptive.win_rate_provider import AdaptiveWinRateProvider
 from brain.volume_analyzer import VolumeAnalyzer
 from brain.inducement_detector import InducementDetector
 from brain.wyckoff_engine import WyckoffEngine
@@ -397,6 +398,13 @@ class PairScanner:
         self.session = SessionEngine()
         self._ev_estimator = EVEstimator()
         self._trade_history: list[dict] = []
+        # Adaptive win-rate provider (learning layer #1) — built lazily and
+        # cached. Reads the optional PairLearner (injected by the main loop via
+        # ``set_pair_learner``) and the scanner's own EVEstimator/trade history
+        # to supply the opportunity ranker with an OBSERVED per-pair win rate
+        # instead of the constant 0.40. Inert unless the config flag is on.
+        self._pair_learner = None
+        self._win_rate_adapter: Optional[AdaptiveWinRateProvider] = None
         self.news = NewsGuard()
         self.volume = VolumeAnalyzer()
         self.last_report: Optional[ScanReport] = None
@@ -438,6 +446,35 @@ class PairScanner:
         """Reset quality failure counters (called by main loop after each scan cycle)."""
         self._quality_failures = 0
         self._quality_scans = 0
+
+    # ------------------------------------------------------------------
+    # Adaptive win-rate provider (learning layer #1)
+    # ------------------------------------------------------------------
+
+    def set_pair_learner(self, pair_learner) -> None:
+        """Inject the live PairLearner so the win-rate provider can read its
+        observed per-pair rates. Wired by the main loop after both the scanner
+        and the AdaptiveOptimizer exist. Resets the cached adapter so the new
+        learner is picked up."""
+        self._pair_learner = pair_learner
+        self._win_rate_adapter = None
+
+    def _get_win_rate_adapter(self, rc) -> AdaptiveWinRateProvider:
+        """Build (once) and cache the AdaptiveWinRateProvider from config + the
+        scanner's learned components."""
+        if self._win_rate_adapter is None:
+            self._win_rate_adapter = AdaptiveWinRateProvider(
+                pair_learner=self._pair_learner,
+                ev_estimator=self._ev_estimator,
+                prior=getattr(rc, "adaptive_win_rate_prior", 0.40),
+                prior_strength=getattr(rc, "adaptive_win_rate_prior_strength", 10),
+                min_trades=getattr(rc, "adaptive_win_rate_min_trades", 10),
+                clamp=(
+                    getattr(rc, "adaptive_win_rate_clamp_low", 0.15),
+                    getattr(rc, "adaptive_win_rate_clamp_high", 0.85),
+                ),
+            )
+        return self._win_rate_adapter
 
     # ------------------------------------------------------------------
     # Single-pair scan
@@ -638,6 +675,28 @@ class PairScanner:
             # the scalar trade_dir above is unchanged either way.
             rc = getattr(self.config, "opportunity_ranker", None)
             if rc is not None and getattr(rc, "enabled", False):
+                # Adaptive win-rate provider (learning layer #1): when enabled,
+                # supply the ranker an OBSERVED per-pair win rate so its EV runs
+                # on real history instead of the constant base_win_rate. Built
+                # per-pair (the ranker hook only gets direction/timeframe). Inert
+                # when the flag is off — no provider is passed (legacy path).
+                win_rate_provider = None
+                win_rate_result = None
+                if getattr(rc, "adaptive_win_rate_provider_enabled", False):
+                    try:
+                        adapter = self._get_win_rate_adapter(rc)
+                        wr_regime = bias.get("h4_trend", "") if isinstance(bias, dict) else ""
+                        wr_session = getattr(session_status, "current_session", "") or ""
+                        win_rate_provider, win_rate_result = adapter.for_pair(
+                            pair,
+                            regime=wr_regime,
+                            session=wr_session,
+                            trade_history=self._trade_history,
+                        )
+                    except Exception as exc:
+                        logger.warning("[ranker] {} win-rate provider failed: {}", pair, exc)
+                        win_rate_provider = None
+                        win_rate_result = None
                 try:
                     candidates = decide_opportunities(
                         dir_votes,
@@ -650,10 +709,20 @@ class PairScanner:
                         min_expected_value=rc.min_expected_value,
                         min_cluster_confidence=rc.min_cluster_confidence,
                         min_cluster_contributors=rc.min_cluster_contributors,
+                        win_rate_provider=win_rate_provider,
                     )
                 except Exception as exc:
                     logger.warning("[ranker] {} candidate build failed: {}", pair, exc)
                     candidates = []
+
+                # Stamp win-rate provenance onto each calibrated opportunity so
+                # the source/sample size is auditable in the decision journal.
+                if win_rate_result is not None and candidates:
+                    for opp in candidates:
+                        comps = getattr(opp, "win_prob_components", None)
+                        if isinstance(comps, dict) and comps.get("calibrated"):
+                            comps["win_rate_source"] = win_rate_result.source
+                            comps["win_rate_sample_size"] = win_rate_result.sample_size
 
             # ── Ranker rescue of a NEUTRAL consensus ─────────────────────
             # When the executor is live, promote a NEUTRAL scalar consensus to

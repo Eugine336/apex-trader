@@ -284,6 +284,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         )
         self.risk_reporter = RiskReporter()
         self.ml = MLAdapter()
+        # Wire the live PairLearner into the scanner so the opportunity ranker's
+        # adaptive win-rate provider (learning layer #1) can read observed
+        # per-pair win rates. Inert unless the ranker flag is on.
+        try:
+            self.scanner.set_pair_learner(self.ml.pair_learner)
+        except Exception as exc:
+            logger.warning("[main] could not wire PairLearner into scanner: {}", exc)
         self.re_entry = ReEntryManager()
         self.density_tracker = OpportunityDensityTracker(window_minutes=60)
         self.vol_monitor = SystemVolatilityMonitor()
