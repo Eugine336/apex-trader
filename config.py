@@ -2078,58 +2078,6 @@ class ParameterEvolutionConfig:
 
 
 @dataclass
-class ModuleInteractionConfig:
-    """Settings for the Module Interaction Discovery engine (L5b).
-
-    Leave-one-out (L4) measures each module alone. Module interactions are
-    non-linear: two modules can be individually fine yet jointly toxic (they
-    reinforce each other's bad trades) or jointly synergistic. This engine runs
-    leave-K-out combinatorial replay over the closed-trade snapshots to surface
-    toxic / synergistic module pairs and a greedily-optimal active subset.
-
-    Purely analytical — it only measures and recommends; it never changes a
-    weight, mode, or decision. Defaults OFF.
-    """
-
-    # Master switch: compute pairwise interactions + optimal-subset search.
-    module_interaction_enabled: bool = False
-    # How many recent closed trades each analysis pass uses.
-    interaction_lookback: int = 500
-    # Recompute every N closed trades.
-    interaction_interval: int = 100
-    # Minimum closed trades before any analysis runs.
-    min_trades_for_interaction: int = 50
-    # |joint − (a+b)| above this (in total R) flags a synergy/toxicity pair.
-    interaction_significance_r: float = 1.0
-    # Cap modules considered for the pairwise grid (k*(k-1)/2 pairs) to bound cost.
-    max_modules: int = 12
-    # SQLite path (under data/, gitignored).
-    module_interaction_db_path: str = "data/module_interaction.db"
-
-    def __post_init__(self) -> None:
-        if int(self.interaction_lookback) < 1:
-            raise ValueError(
-                "ModuleInteractionConfig.interaction_lookback must be >= 1, "
-                f"got {self.interaction_lookback!r}"
-            )
-        if int(self.interaction_interval) < 1:
-            raise ValueError(
-                "ModuleInteractionConfig.interaction_interval must be >= 1, "
-                f"got {self.interaction_interval!r}"
-            )
-        if int(self.min_trades_for_interaction) < 1:
-            raise ValueError(
-                "ModuleInteractionConfig.min_trades_for_interaction must be >= 1, "
-                f"got {self.min_trades_for_interaction!r}"
-            )
-        if int(self.max_modules) < 2:
-            raise ValueError(
-                "ModuleInteractionConfig.max_modules must be >= 2, "
-                f"got {self.max_modules!r}"
-            )
-
-
-@dataclass
 class SignalDiscoveryConfig:
     """Settings for the Synthetic Signal Discovery engine (L5c).
 
@@ -2161,6 +2109,20 @@ class SignalDiscoveryConfig:
     # SQLite path (under data/, gitignored).
     signal_discovery_db_path: str = "data/signal_discovery.db"
 
+    # ── Overfitting protection (L5c hardening) ──
+    # Family-wise significance: a rule qualifies only when its fire-vs-rest edge
+    # clears a Bonferroni-adjusted level (alpha / number of candidates tested),
+    # so mining many combinations does not surface chance "edges".
+    bonferroni_alpha: float = 0.05
+    # Out-of-sample hurdle: the test-half edge must retain at least this fraction
+    # of the train-half edge (guards against in-sample-only flukes).
+    walk_forward_ratio_threshold: float = 0.6
+    # Per-recompute multiplicative score decay; a rule that stops re-confirming
+    # fades out instead of lingering as an active candidate.
+    score_decay_rate: float = 0.05
+    # Hard cap on how many discovered rules are flagged ACTIVE at once.
+    max_active_signals: int = 5
+
     def __post_init__(self) -> None:
         if int(self.discovery_lookback) < 1:
             raise ValueError(
@@ -2181,6 +2143,26 @@ class SignalDiscoveryConfig:
             raise ValueError(
                 "SignalDiscoveryConfig.discovery_walk_forward_split must be in "
                 f"[0.5, 0.95], got {self.discovery_walk_forward_split!r}"
+            )
+        if not (0.0 < float(self.bonferroni_alpha) <= 1.0):
+            raise ValueError(
+                "SignalDiscoveryConfig.bonferroni_alpha must be in (0, 1], "
+                f"got {self.bonferroni_alpha!r}"
+            )
+        if not (0.0 <= float(self.walk_forward_ratio_threshold) <= 1.0):
+            raise ValueError(
+                "SignalDiscoveryConfig.walk_forward_ratio_threshold must be in "
+                f"[0, 1], got {self.walk_forward_ratio_threshold!r}"
+            )
+        if not (0.0 <= float(self.score_decay_rate) <= 1.0):
+            raise ValueError(
+                "SignalDiscoveryConfig.score_decay_rate must be in [0, 1], "
+                f"got {self.score_decay_rate!r}"
+            )
+        if int(self.max_active_signals) < 0:
+            raise ValueError(
+                "SignalDiscoveryConfig.max_active_signals must be >= 0, "
+                f"got {self.max_active_signals!r}"
             )
 
 
@@ -2213,7 +2195,6 @@ class AppConfig:
     counterfactual: CounterfactualConfig = field(default_factory=CounterfactualConfig)
     interaction: InteractionConfig = field(default_factory=InteractionConfig)
     param_evolution: ParameterEvolutionConfig = field(default_factory=ParameterEvolutionConfig)
-    module_interaction: ModuleInteractionConfig = field(default_factory=ModuleInteractionConfig)
     signal_discovery: SignalDiscoveryConfig = field(default_factory=SignalDiscoveryConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)

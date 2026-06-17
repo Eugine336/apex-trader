@@ -31,6 +31,7 @@ counterfactual store already captured).  Exception-safe throughout.
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 import threading
 import time
@@ -76,6 +77,12 @@ class DiscoveredRule:
     train_edge: float = 0.0
     test_edge: float = 0.0
     qualifies: bool = False
+    # ── Overfitting-protection fields ──
+    p_value: float = 1.0             # fire-vs-rest significance (two-sided)
+    wf_ratio: float = 0.0            # test_edge / train_edge (out-of-sample retention)
+    score: float = 0.0              # cross-pass persistence score (decays if unconfirmed)
+    confirmations: int = 0          # how many recompute passes re-confirmed this rule
+    active: bool = False            # within the max_active_signals cap this pass
 
     @property
     def label(self) -> str:
@@ -95,6 +102,11 @@ class DiscoveredRule:
             "train_edge": round(self.train_edge, 4),
             "test_edge": round(self.test_edge, 4),
             "qualifies": bool(self.qualifies),
+            "p_value": round(self.p_value, 6),
+            "wf_ratio": round(self.wf_ratio, 4),
+            "score": round(self.score, 4),
+            "confirmations": int(self.confirmations),
+            "active": bool(self.active),
         }
 
 
@@ -133,6 +145,29 @@ def _win_rate(rs: list[float]) -> float:
     return (sum(1 for r in rs if r > 0) / len(rs)) if rs else 0.0
 
 
+def _welch_p(a: list[float], b: list[float]) -> float:
+    """Two-sided significance that two samples have different means.
+
+    Welch's statistic with a normal-approximation p-value (``math.erfc`` — exact
+    for the normal, stdlib only). The minimum-support floor keeps each group at
+    a usable size, and a normal approximation is conservative enough for the
+    Bonferroni gate. Returns 1.0 (no evidence) when either group is too small to
+    assess, and 0.0 (perfectly separated) when both groups have zero variance
+    but different means.
+    """
+    na, nb = len(a), len(b)
+    if na < 2 or nb < 2:
+        return 1.0
+    ma, mb = _expectancy(a), _expectancy(b)
+    va = sum((x - ma) ** 2 for x in a) / (na - 1)
+    vb = sum((x - mb) ** 2 for x in b) / (nb - 1)
+    se = math.sqrt(va / na + vb / nb)
+    if se <= 0.0:
+        return 0.0 if not math.isclose(ma, mb, abs_tol=1e-12) else 1.0
+    z = abs(ma - mb) / se
+    return math.erfc(z / math.sqrt(2.0))
+
+
 class SignalDiscoveryEngine:
     """Mines OOS-validated module-combination rules from closed-trade panels.
 
@@ -154,6 +189,10 @@ class SignalDiscoveryEngine:
         max_conditions: int = 3,
         min_edge_r: float = 0.10,
         walk_forward_split: float = 0.7,
+        bonferroni_alpha: float = 0.05,
+        walk_forward_ratio_threshold: float = 0.6,
+        score_decay_rate: float = 0.05,
+        max_active_signals: int = 5,
     ) -> None:
         self.enabled = bool(enabled)
         self._engine = counterfactual_engine
@@ -164,6 +203,14 @@ class SignalDiscoveryEngine:
         self._max_conditions = max(1, min(5, int(max_conditions)))
         self._min_edge_r = float(min_edge_r)
         self._split = min(0.95, max(0.5, float(walk_forward_split)))
+        # ── Overfitting protection ──
+        self._bonferroni_alpha = min(1.0, max(1e-9, float(bonferroni_alpha)))
+        self._wf_ratio_threshold = min(1.0, max(0.0, float(walk_forward_ratio_threshold)))
+        self._score_decay_rate = min(1.0, max(0.0, float(score_decay_rate)))
+        self._max_active_signals = max(0, int(max_active_signals))
+        # Cross-pass persistence scores (in-memory: advisory engine, resets on
+        # restart). label -> {"score", "confirmations", "last_seen"}.
+        self._rule_scores: dict[str, dict] = {}
         self._last_computed_trades = 0
         self._lock = threading.RLock()
         self._db_path = Path(db_path) if db_path is not None else _DB_PATH
@@ -247,8 +294,12 @@ class SignalDiscoveryEngine:
         base_test = _expectancy([r for _, r in test])
 
         discovered: list[DiscoveredRule] = []
+        n_candidates = max(1, len(rules))
         for conds in rules:
-            rule = self._evaluate_rule(conds, rl, baseline, train, test, base_train, base_test)
+            rule = self._evaluate_rule(
+                conds, rl, baseline, train, test, base_train, base_test,
+                n_candidates=n_candidates,
+            )
             if rule is not None:
                 discovered.append(rule)
 
@@ -257,6 +308,11 @@ class SignalDiscoveryEngine:
             reverse=True,
         )
         qualifying = [r for r in discovered if r.qualifies]
+        # Hard cap on active synthetic signals: only the strongest qualifying
+        # rules (by min(train,test) edge, already the sort order) are flagged
+        # ACTIVE this pass — the rest stay observed-only.
+        for i, r in enumerate(qualifying):
+            r.active = i < self._max_active_signals
         payload = {
             "computed_at": time.time(),
             "lookback": self._lookback,
@@ -264,6 +320,11 @@ class SignalDiscoveryEngine:
             "baseline_expectancy": round(baseline, 4),
             "rule_count": len(discovered),
             "qualifying_count": len(qualifying),
+            "active_count": sum(1 for r in qualifying if r.active),
+            "max_active_signals": self._max_active_signals,
+            "bonferroni_alpha": self._bonferroni_alpha,
+            "candidates_tested": n_candidates,
+            "walk_forward_ratio_threshold": self._wf_ratio_threshold,
             "rules": [r.to_dict() for r in discovered[:100]],
         }
         return payload
@@ -324,6 +385,8 @@ class SignalDiscoveryEngine:
         test: list[tuple[set[Condition], float]],
         base_train: float,
         base_test: float,
+        *,
+        n_candidates: int = 1,
     ) -> Optional[DiscoveredRule]:
         key = frozenset(conds)
         full_r = [r for c, r in rl if key <= c]
@@ -342,12 +405,26 @@ class SignalDiscoveryEngine:
             train_edge=(_expectancy(train_r) - base_train) if train_r else 0.0,
             test_edge=(_expectancy(test_r) - base_test) if test_r else 0.0,
         )
-        # Qualify only when the edge persists out-of-sample with real support.
+        # Significance of the rule's edge: fire-group R vs the rest of the book.
+        rest_r = [r for c, r in rl if not (key <= c)]
+        rule.p_value = _welch_p(full_r, rest_r)
+        # Out-of-sample retention: how much of the train edge survives in test.
+        rule.wf_ratio = (
+            (rule.test_edge / rule.train_edge)
+            if rule.train_edge > 0 else 0.0
+        )
+        # Bonferroni-adjusted family-wise significance level (alpha / candidates).
+        adj_alpha = self._bonferroni_alpha / max(1, int(n_candidates))
+        # Qualify only when the edge persists out-of-sample with real support,
+        # clears the out-of-sample retention hurdle, AND is statistically
+        # significant after correcting for the many combinations tested.
         rule.qualifies = (
             rule.train_support >= self._min_support
             and rule.test_support >= max(3, self._min_support // 3)
             and rule.train_edge >= self._min_edge_r
             and rule.test_edge >= self._min_edge_r
+            and rule.wf_ratio >= self._wf_ratio_threshold
+            and rule.p_value <= adj_alpha
         )
         return rule
 
@@ -355,8 +432,60 @@ class SignalDiscoveryEngine:
 
     def compute_and_cache(self) -> dict:
         payload = self.mine()
+        self._apply_persistence(payload)
         self._write_cache(payload)
         return payload
+
+    def _apply_persistence(self, payload: dict) -> None:
+        """Decay every tracked rule's score, re-confirm rules that qualified
+        this pass, and re-flag ACTIVE by persistence score within the cap.
+
+        A rule that stops re-confirming fades (geometric decay by
+        ``score_decay_rate``) until it drops below the activation floor, so
+        one-off flukes do not linger as active candidates. In-memory only:
+        advisory state that safely resets on restart. Exception-safe — a fault
+        here must not break the cached payload the dashboard reads.
+        """
+        try:
+            now = time.time()
+            keep = 1.0 - self._score_decay_rate
+            with self._lock:
+                # Decay all known scores; prune the negligible ones.
+                for lbl in list(self._rule_scores.keys()):
+                    rec = self._rule_scores[lbl]
+                    rec["score"] = float(rec.get("score", 0.0)) * keep
+                    if rec["score"] < 1e-3:
+                        del self._rule_scores[lbl]
+                # Confirm rules that qualified this pass.
+                for rd in payload.get("rules", []) or []:
+                    lbl = str(rd.get("label", ""))
+                    if not lbl:
+                        continue
+                    if rd.get("qualifies"):
+                        rec = self._rule_scores.setdefault(
+                            lbl, {"score": 0.0, "confirmations": 0, "last_seen": now}
+                        )
+                        rec["score"] = float(rec.get("score", 0.0)) + 1.0
+                        rec["confirmations"] = int(rec.get("confirmations", 0)) + 1
+                        rec["last_seen"] = now
+                # Annotate every rule dict with its persisted score / confirmations.
+                for rd in payload.get("rules", []) or []:
+                    rec = self._rule_scores.get(str(rd.get("label", "")))
+                    rd["score"] = round(float(rec["score"]), 4) if rec else 0.0
+                    rd["confirmations"] = int(rec["confirmations"]) if rec else 0
+                # Re-flag ACTIVE by persistence score (within the cap), so the
+                # cached/dashboard view reflects sustained edge, not a single pass.
+                quals = [rd for rd in payload.get("rules", []) or [] if rd.get("qualifies")]
+                quals.sort(key=lambda rd: rd.get("score", 0.0), reverse=True)
+                for i, rd in enumerate(payload.get("rules", []) or []):
+                    rd["active"] = False
+                for i, rd in enumerate(quals):
+                    rd["active"] = i < self._max_active_signals
+                payload["active_count"] = sum(
+                    1 for rd in payload.get("rules", []) or [] if rd.get("active")
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[signal-discovery] persistence update failed: {}", exc)
 
     def maybe_recompute(self, total_trades: int) -> Optional[dict]:
         tt = int(total_trades or 0)
@@ -375,6 +504,10 @@ class SignalDiscoveryEngine:
             "baseline_expectancy": 0.0,
             "rule_count": 0,
             "qualifying_count": 0,
+            "active_count": 0,
+            "max_active_signals": self._max_active_signals,
+            "bonferroni_alpha": self._bonferroni_alpha,
+            "walk_forward_ratio_threshold": self._wf_ratio_threshold,
             "rules": [],
         }
 
@@ -433,6 +566,10 @@ class SignalDiscoveryEngine:
             "min_support": self._min_support,
             "max_conditions": self._max_conditions,
             "min_edge_r": self._min_edge_r,
+            "bonferroni_alpha": self._bonferroni_alpha,
+            "walk_forward_ratio_threshold": self._wf_ratio_threshold,
+            "score_decay_rate": self._score_decay_rate,
+            "max_active_signals": self._max_active_signals,
             **cached,
         }
 

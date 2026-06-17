@@ -643,6 +643,120 @@ function ModuleInteractions({ d }) {
         <div className="stat-card">
           <div className="stat-label">Modules Analyzed</div>
           <div className="stat-value">{d?.module_count || 0}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Trades Analyzed</div>
+          <div className="stat-value">{d?.trades_analyzed || 0}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Last Computed</div>
+          <div className="stat-value">{tsAgo(d?.computed_at)}</div>
+        </div>
+      </div>
+
+      {/* Optimal active subset recommendation */}
+      <div style={{ padding: '0 12px 12px' }}>
+        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
+          Optimal Active Subset
+          {opt.search ? <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> ({opt.search})</span> : null}
+        </div>
+        {(opt.active_modules || []).length === 0 ? (
+          <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>
+            {d?.enabled
+              ? `No analysis computed yet — runs every ${d?.interval || 0} trades.`
+              : 'Interaction discovery disabled.'}
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center' }}>
+            <div>
+              {(opt.active_modules || []).map((m) => (
+                <span key={m} className="badge badge-green" style={{ marginRight: 4 }}>{m}</span>
+              ))}
+              {(opt.shadow_modules || []).map((m) => (
+                <span key={m} className="badge badge-red" style={{ marginRight: 4 }}>shadow: {m}</span>
+              ))}
+            </div>
+            <div style={{ fontSize: 12 }}>
+              Expected improvement:{' '}
+              <b style={{ color: improvement > 0 ? 'var(--green-bright)' : 'var(--text-muted)' }}>
+                {improvement > 0 ? '+' : ''}{improvement.toFixed(2)}R
+              </b>
+              <span style={{ color: 'var(--text-muted)' }}>
+                {' '}(book {(Number(opt.total_r) || 0).toFixed(2)}R vs baseline {(Number(opt.baseline_r) || 0).toFixed(2)}R, {opt.trades_taken || 0} trades)
+              </span>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Toxic / synergy summary */}
+      {(toxic.length > 0 || synergy.length > 0) && (
+        <div style={{ padding: '0 12px 12px', fontSize: 12 }}>
+          {toxic.length > 0 && (
+            <div style={{ marginBottom: 4 }}>
+              <span className="badge badge-red">toxic</span>{' '}
+              {toxic.map((p) => (
+                <span key={`${p.module_a}-${p.module_b}`} style={{ marginRight: 10 }}>
+                  {p.module_a}+{p.module_b} ({(Number(p.interaction_effect) || 0).toFixed(2)}R)
+                </span>
+              ))}
+            </div>
+          )}
+          {synergy.length > 0 && (
+            <div>
+              <span className="badge badge-green">synergy</span>{' '}
+              {synergy.map((p) => (
+                <span key={`${p.module_a}-${p.module_b}`} style={{ marginRight: 10 }}>
+                  {p.module_a}+{p.module_b} (+{(Number(p.interaction_effect) || 0).toFixed(2)}R)
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* Pairwise interaction matrix */}
+      <div className="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>Module A</th>
+              <th>Module B</th>
+              <th className="right">Δ remove A</th>
+              <th className="right">Δ remove B</th>
+              <th className="right">Δ remove A+B</th>
+              <th className="right">Interaction</th>
+              <th>Relationship</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pairs.length === 0 && (
+              <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
+                {d?.enabled
+                  ? 'No interaction matrix yet — needs at least 2 voting modules over recent trades.'
+                  : 'Interaction discovery disabled.'}
+              </td></tr>
+            )}
+            {pairs.map((p) => (
+              <tr key={`${p.module_a}-${p.module_b}`}>
+                <td style={{ fontWeight: 600 }}>{p.module_a}</td>
+                <td style={{ fontWeight: 600 }}>{p.module_b}</td>
+                <td className="right" style={{ color: 'var(--text-muted)' }}>{(Number(p.removal_delta_a) || 0).toFixed(2)}R</td>
+                <td className="right" style={{ color: 'var(--text-muted)' }}>{(Number(p.removal_delta_b) || 0).toFixed(2)}R</td>
+                <td className="right" style={{ color: 'var(--text-muted)' }}>{(Number(p.removal_delta_ab) || 0).toFixed(2)}R</td>
+                <td className="right" style={{ color: relColor(p.relationship), fontWeight: 600 }}>
+                  {(Number(p.interaction_effect) || 0).toFixed(2)}R
+                </td>
+                <td style={{ color: relColor(p.relationship) }}>{p.relationship}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 function ParameterEvolution({ d }) {
   const shadows = d?.active_shadows || [];
   const proms = d?.recent_promotions || [];
@@ -744,170 +858,6 @@ function ParameterEvolution({ d }) {
   );
 }
 
-function ModuleInteraction({ d }) {
-  const pairs = d?.pairs || [];
-  const sub = d?.optimal_subset || {};
-  const interColor = (cls) => (
-    cls === 'TOXIC' ? 'badge-red'
-      : cls === 'SYNERGISTIC' ? 'badge-green'
-        : cls === 'REDUNDANT' ? 'badge-orange' : 'badge-muted'
-  );
-  return (
-    <div className="card mb-20">
-      <div className="card-header">
-        <span className="card-title">Module Interaction (L5b)</span>
-        <StatusPill on={d?.enabled} />
-      </div>
-      <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '0 12px 10px' }}>
-        Leave-K-out replay — module effects are non-linear. <b>Toxic</b> pairs keep
-        opening losers together; <b>synergistic</b> pairs need each other. The greedy
-        optimal subset is the set the data says to keep.
-      </div>
-      <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
-        <div className="stat-card">
-          <div className="stat-label">Baseline R</div>
-          <div className="stat-value">{(Number(d?.baseline_total_r) || 0).toFixed(1)}R</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Trades Analyzed</div>
-          <div className="stat-value">{d?.trades_analyzed || 0}</div>
-        </div>
-        <div className="stat-card">
-          <div className="stat-label">Last Computed</div>
-          <div className="stat-value">{tsAgo(d?.computed_at)}</div>
-        </div>
-      </div>
-
-      {/* Optimal subset recommendation */}
-      <div style={{ padding: '0 12px 12px' }}>
-        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 6 }}>
-          Optimal Active Subset
-          {opt.search ? <span style={{ color: 'var(--text-muted)', fontWeight: 400 }}> ({opt.search})</span> : null}
-        </div>
-        {(opt.active_modules || []).length === 0 ? (
-          <div style={{ color: 'var(--text-muted)', fontSize: 12 }}>
-            {d?.enabled
-              ? `No analysis computed yet — runs every ${d?.interval || 0} trades.`
-              : 'Interaction discovery disabled.'}
-          </div>
-        ) : (
-          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 16, alignItems: 'center' }}>
-            <div>
-              {(opt.active_modules || []).map((m) => (
-                <span key={m} className="badge badge-green" style={{ marginRight: 4 }}>{m}</span>
-              ))}
-              {(opt.shadow_modules || []).map((m) => (
-                <span key={m} className="badge badge-red" style={{ marginRight: 4 }}>shadow: {m}</span>
-              ))}
-            </div>
-            <div style={{ fontSize: 12 }}>
-              Expected improvement:{' '}
-              <b style={{ color: improvement > 0 ? 'var(--green-bright)' : 'var(--text-muted)' }}>
-                {improvement > 0 ? '+' : ''}{improvement.toFixed(2)}R
-              </b>
-              <span style={{ color: 'var(--text-muted)' }}>
-                {' '}(book {(Number(opt.total_r) || 0).toFixed(2)}R vs baseline {(Number(opt.baseline_r) || 0).toFixed(2)}R, {opt.trades_taken || 0} trades)
-              </span>
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Toxic / synergy summary */}
-      {(toxic.length > 0 || synergy.length > 0) && (
-        <div style={{ padding: '0 12px 12px', fontSize: 12 }}>
-          {toxic.length > 0 && (
-            <div style={{ marginBottom: 4 }}>
-              <span className="badge badge-red">toxic</span>{' '}
-              {toxic.map((p) => (
-                <span key={`${p.module_a}-${p.module_b}`} style={{ marginRight: 10 }}>
-                  {p.module_a}+{p.module_b} ({(Number(p.interaction_effect) || 0).toFixed(2)}R)
-                </span>
-              ))}
-            </div>
-          )}
-          {synergy.length > 0 && (
-            <div>
-              <span className="badge badge-green">synergy</span>{' '}
-              {synergy.map((p) => (
-                <span key={`${p.module_a}-${p.module_b}`} style={{ marginRight: 10 }}>
-                  {p.module_a}+{p.module_b} (+{(Number(p.interaction_effect) || 0).toFixed(2)}R)
-                </span>
-              ))}
-            </div>
-          )}
-        </div>
-      )}
-
-      {/* Pairwise interaction matrix */}
-          <div className="stat-label">Subset Gain</div>
-          <div className="stat-value" style={{ color: multColor(1 + (Number(sub.improvement_r) || 0)) }}>
-            {(Number(sub.improvement_r) || 0).toFixed(1)}R
-          </div>
-        </div>
-      </div>
-      {sub.kept_modules && (
-        <div style={{ fontSize: 12, padding: '0 12px 10px' }}>
-          <b>Optimal kept:</b> {(sub.kept_modules || []).join(', ') || '—'}
-        </div>
-      )}
-      <div className="table-wrap">
-        <table>
-          <thead>
-            <tr>
-              <th>Module A</th>
-              <th>Module B</th>
-              <th className="right">Δ remove A</th>
-              <th className="right">Δ remove B</th>
-              <th className="right">Δ remove A+B</th>
-              <th className="right">Interaction</th>
-              <th>Relationship</th>
-              <th>Pair</th>
-              <th>Classification</th>
-              <th className="right">Interaction</th>
-              <th className="right">Joint effect</th>
-            </tr>
-          </thead>
-          <tbody>
-            {pairs.length === 0 && (
-              <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
-                {d?.enabled
-                  ? `No interaction matrix yet — needs at least 2 voting modules over recent trades.`
-                  : 'Interaction discovery disabled.'}
-              </td></tr>
-            )}
-            {pairs.map((p) => (
-              <tr key={`${p.module_a}-${p.module_b}`}>
-                <td style={{ fontWeight: 600 }}>{p.module_a}</td>
-                <td style={{ fontWeight: 600 }}>{p.module_b}</td>
-                <td className="right" style={{ color: 'var(--text-muted)' }}>{(Number(p.removal_delta_a) || 0).toFixed(2)}R</td>
-                <td className="right" style={{ color: 'var(--text-muted)' }}>{(Number(p.removal_delta_b) || 0).toFixed(2)}R</td>
-                <td className="right" style={{ color: 'var(--text-muted)' }}>{(Number(p.removal_delta_ab) || 0).toFixed(2)}R</td>
-                <td className="right" style={{ color: relColor(p.relationship), fontWeight: 600 }}>
-                  {(Number(p.interaction_effect) || 0).toFixed(2)}R
-                </td>
-                <td style={{ color: relColor(p.relationship) }}>{p.relationship}</td>
-              <tr><td colSpan={4} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
-                {d?.enabled
-                  ? `No interactions computed yet — runs every ${d?.interval || 0} trades.`
-                  : 'Module interaction disabled.'}
-              </td></tr>
-            )}
-            {pairs.map((p, i) => (
-              <tr key={`${p.module_a}-${p.module_b}-${i}`}>
-                <td style={{ fontWeight: 600 }}>{p.module_a} + {p.module_b}</td>
-                <td><span className={`badge ${interColor(p.classification)}`}>{p.classification}</span></td>
-                <td className="right">{(Number(p.interaction) || 0).toFixed(2)}R</td>
-                <td className="right">{(Number(p.effect_joint) || 0).toFixed(2)}R</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  );
-}
-
 function SignalDiscovery({ d }) {
   const rules = d?.rules || [];
   return (
@@ -919,7 +869,9 @@ function SignalDiscovery({ d }) {
       <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '0 12px 10px' }}>
         Mines module-condition <b>combinations</b> whose edge persists out-of-sample
         — rules nobody wrote, found in the data. Recommends candidates only; never
-        auto-creates a live signal.
+        auto-creates a live signal. Overfitting guards: Bonferroni α={(Number(d?.bonferroni_alpha) || 0).toFixed(3)},
+        OOS retention ≥{Math.round((Number(d?.walk_forward_ratio_threshold) || 0) * 100)}%,
+        active cap {d?.max_active_signals || 0}.
       </div>
       <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
         <div className="stat-card">
@@ -931,8 +883,8 @@ function SignalDiscovery({ d }) {
           <div className="stat-value" style={{ color: 'var(--green-bright)' }}>{d?.qualifying_count || 0}</div>
         </div>
         <div className="stat-card">
-          <div className="stat-label">Baseline Exp.</div>
-          <div className="stat-value">{(Number(d?.baseline_expectancy) || 0).toFixed(2)}R</div>
+          <div className="stat-label">Active / Cap</div>
+          <div className="stat-value">{(d?.active_count || 0)} / {(d?.max_active_signals || 0)}</div>
         </div>
       </div>
       <div className="table-wrap">
@@ -945,12 +897,15 @@ function SignalDiscovery({ d }) {
               <th className="right">Edge</th>
               <th className="right">Train edge</th>
               <th className="right">Test edge</th>
-              <th>OOS</th>
+              <th className="right">OOS ret.</th>
+              <th className="right">p</th>
+              <th className="right">Score</th>
+              <th>Status</th>
             </tr>
           </thead>
           <tbody>
             {rules.length === 0 && (
-              <tr><td colSpan={7} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
+              <tr><td colSpan={10} style={{ textAlign: 'center', color: 'var(--text-muted)', padding: 24 }}>
                 {d?.enabled
                   ? 'No rules discovered yet — needs more closed trades.'
                   : 'Signal discovery disabled.'}
@@ -966,10 +921,19 @@ function SignalDiscovery({ d }) {
                 </td>
                 <td className="right">{(Number(r.train_edge) || 0).toFixed(2)}R</td>
                 <td className="right">{(Number(r.test_edge) || 0).toFixed(2)}R</td>
+                <td className="right" style={{ color: 'var(--text-muted)' }}>
+                  {Math.round((Number(r.wf_ratio) || 0) * 100)}%
+                </td>
+                <td className="right" style={{ color: 'var(--text-muted)' }}>
+                  {(Number(r.p_value) || 0).toFixed(3)}
+                </td>
+                <td className="right">{(Number(r.score) || 0).toFixed(2)}</td>
                 <td>
-                  {r.qualifies
-                    ? <span className="badge badge-green">validated</span>
-                    : <span className="badge badge-muted">candidate</span>}
+                  {r.active
+                    ? <span className="badge badge-green">active</span>
+                    : r.qualifies
+                      ? <span className="badge badge-blue">validated</span>
+                      : <span className="badge badge-muted">candidate</span>}
                 </td>
               </tr>
             ))}
@@ -1007,7 +971,6 @@ export default function Learning() {
       <CounterfactualAttribution d={data?.counterfactual} />
       <ModuleInteractions d={data?.interactions} />
       <ParameterEvolution d={data?.param_evolution} />
-      <ModuleInteraction d={data?.module_interaction} />
       <SignalDiscovery d={data?.signal_discovery} />
       <TunerAgent d={data?.tuner_agent} />
     </div>

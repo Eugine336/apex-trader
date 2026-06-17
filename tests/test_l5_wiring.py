@@ -32,8 +32,6 @@ def _config_with_l5(tmp):
     cfg = AppConfig()
     cfg.param_evolution.param_evolution_enabled = True
     cfg.param_evolution.param_evolution_db_path = os.path.join(tmp, "pe.db")
-    cfg.module_interaction.module_interaction_enabled = True
-    cfg.module_interaction.module_interaction_db_path = os.path.join(tmp, "mi.db")
     cfg.signal_discovery.signal_discovery_enabled = True
     cfg.signal_discovery.signal_discovery_db_path = os.path.join(tmp, "sd.db")
     return cfg
@@ -57,12 +55,11 @@ def _fake_loop(cfg, cf_engine):
 
 # ── _init_evolution_engines ──────────────────────────────────────────────────
 
-def test_init_builds_all_three_when_enabled(cf_engine):
+def test_init_builds_engines_when_enabled(cf_engine):
     tmp = tempfile.mkdtemp()
     loop = _fake_loop(_config_with_l5(tmp), cf_engine)
     MainLoop._init_evolution_engines(loop)
     assert loop._param_evolver is not None
-    assert loop._module_interaction is not None
     assert loop._signal_discovery is not None
     assert loop._param_evolver.enabled is True
 
@@ -72,7 +69,6 @@ def test_init_skips_when_no_counterfactual():
     loop = types.SimpleNamespace(config=_config_with_l5(tmp), _counterfactual=None)
     MainLoop._init_evolution_engines(loop)
     assert loop._param_evolver is None
-    assert loop._module_interaction is None
     assert loop._signal_discovery is None
 
 
@@ -80,7 +76,6 @@ def test_init_none_when_flags_off(cf_engine):
     loop = _fake_loop(AppConfig(), cf_engine)  # all L5 flags default False
     MainLoop._init_evolution_engines(loop)
     assert loop._param_evolver is None
-    assert loop._module_interaction is None
     assert loop._signal_discovery is None
 
 
@@ -135,17 +130,22 @@ def test_dashboard_exposes_l5_panels(cf_engine):
     MainLoop._init_evolution_engines(loop)
     dash = _DashStub(loop)
     learning = dash.get_learning()
-    for key in ("param_evolution", "module_interaction", "signal_discovery"):
+    for key in ("param_evolution", "signal_discovery"):
         assert key in learning
         assert learning[key]["enabled"] is True
+    # The keeper L5b interaction panel is always aggregated (idle here since
+    # the analyzer is built in a separate init path, not _init_evolution_engines).
+    assert "interactions" in learning
 
 
 def test_dashboard_graceful_when_engines_absent():
     loop = types.SimpleNamespace(config=AppConfig(), _param_evolver=None,
-                                 _module_interaction=None, _signal_discovery=None)
+                                 _signal_discovery=None)
     dash = _DashStub(loop)
     learning = dash.get_learning()
     # Idle (disabled) shape, never an exception.
     assert learning["param_evolution"]["enabled"] is False
-    assert learning["module_interaction"]["enabled"] is False
     assert learning["signal_discovery"]["enabled"] is False
+    assert learning["interactions"]["enabled"] is False
+    # The retired module's panel key must be gone.
+    assert "module_interaction" not in learning
