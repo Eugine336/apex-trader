@@ -17,6 +17,18 @@ from adaptive.emitter_feedback import (
     EmitterFeedbackRequest,
     EmitterFeedbackResponse,
 )
+from adaptive.tunable import Tunable, TuneContext, TuneResult, TuneFrequency
+from adaptive.tuner_agent import TunerAgent
+from adaptive.tunable_adapters import (
+    ScoreOptimizerTunable,
+    RegimeLearnerTunable,
+    PairLearnerTunable,
+    SessionLearnerTunable,
+    EVEstimatorTunable,
+    GateTunerTunable,
+    PlannerCalibratorTunable,
+    SignalLedgerTunable,
+)
 
 __all__ = [
     "TradeAnalyzer", "PerformanceProfile",
@@ -28,4 +40,9 @@ __all__ = [
     "EVEstimator", "EVEstimate",
     "SignalLedger", "SignalRecord", "SignalOutcome",
     "EmitterFeedbackService", "EmitterFeedbackRequest", "EmitterFeedbackResponse",
+    "Tunable", "TuneContext", "TuneResult", "TuneFrequency",
+    "TunerAgent",
+    "ScoreOptimizerTunable", "RegimeLearnerTunable", "PairLearnerTunable",
+    "SessionLearnerTunable", "EVEstimatorTunable", "GateTunerTunable",
+    "PlannerCalibratorTunable", "SignalLedgerTunable",
 ]

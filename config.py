@@ -1524,6 +1524,47 @@ class SignalLedgerConfig:
 
 
 @dataclass
+class TunerAgentConfig:
+    """Central coordinator for ALL auto-tuning (the "Tuner Agent").
+
+    Every tunable component (ScoreOptimizer, RegimeLearner, PairLearner,
+    SessionLearner, EVEstimator, GateTuner, planner Calibrator, SignalLedger
+    grading) registers with one agent. The agent resolves dependency order,
+    decides who is due, executes them in order, validates each result against
+    the component's own safety bounds, rolls back on failure, and writes every
+    action to a persistent audit log.
+
+    Defaults OFF: when disabled the existing scattered tuning triggers run
+    exactly as before — this is purely additive until explicitly enabled.
+    """
+
+    # Master switch. When False, the legacy scattered tuning calls run as-is.
+    enabled: bool = False
+    # Soft per-tunable duration budget; an overrun is logged loudly (a running
+    # sync tune cannot be safely hard-killed mid-flight without risking a
+    # half-written DB).
+    max_tune_duration_seconds: float = 30.0
+    # Disable a tunable after this many consecutive failures (loud warning).
+    max_consecutive_failures: int = 3
+    # SQLite audit DB (under data/, gitignored).
+    audit_db_path: str = "data/tuner_audit.db"
+    # Verbose: also audit/log when should_tune returns False (debugging only).
+    log_all_skips: bool = False
+
+    def __post_init__(self) -> None:
+        if float(self.max_tune_duration_seconds) <= 0:
+            raise ValueError(
+                "TunerAgentConfig.max_tune_duration_seconds must be > 0, "
+                f"got {self.max_tune_duration_seconds!r}"
+            )
+        if int(self.max_consecutive_failures) < 1:
+            raise ValueError(
+                "TunerAgentConfig.max_consecutive_failures must be >= 1, "
+                f"got {self.max_consecutive_failures!r}"
+            )
+
+
+@dataclass
 class AppConfig:
     # All 4 categories enabled — forex, commodity, index, synthetic
     enabled_categories: list[str] = field(
@@ -1544,6 +1585,7 @@ class AppConfig:
     orchestrator: OrchestratorConfig = field(default_factory=OrchestratorConfig)
     outcome_feedback: OutcomeFeedbackConfig = field(default_factory=OutcomeFeedbackConfig)
     signal_ledger: SignalLedgerConfig = field(default_factory=SignalLedgerConfig)
+    tuner_agent: TunerAgentConfig = field(default_factory=TunerAgentConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)
