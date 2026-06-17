@@ -1248,19 +1248,6 @@ class _AnalysisRecomputeTunable(_BaseTunable):
         )
 
 
-class ModuleInteractionTunable(_AnalysisRecomputeTunable):
-    """Wraps ``ModuleInteractionEngine.maybe_recompute`` — L5b leave-K-out."""
-
-    def __init__(self, engine, *, min_trades: int = 50) -> None:
-        super().__init__(engine, name="module_interaction", min_trades=min_trades)
-
-    def _result_summary(self, payload: dict) -> str:
-        pairs = payload.get("pairs", []) or []
-        analyzed = int(payload.get("trades_analyzed", 0) or 0)
-        toxic = sum(1 for p in pairs if p.get("classification") == "TOXIC")
-        return f"{len(pairs)} pair(s) ({toxic} toxic) over {analyzed} trades"
-
-
 class SignalDiscoveryTunable(_AnalysisRecomputeTunable):
     """Wraps ``SignalDiscoveryEngine.maybe_recompute`` — L5c rule mining."""
 
@@ -1371,7 +1358,6 @@ __all__ = [
     "ModuleGovernorTunable",
     "InteractionAnalyzerTunable",
     "ParameterEvolverTunable",
-    "ModuleInteractionTunable",
     "SignalDiscoveryTunable",
     "ConsumerTunable",
 ]

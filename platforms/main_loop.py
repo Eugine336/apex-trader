@@ -850,7 +850,6 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         reading the counterfactual closed-trade snapshots).  Any build failure
         leaves the attribute None so the guarded tuner hooks simply no-op."""
         self._param_evolver = None
-        self._module_interaction = None
         self._signal_discovery = None
         if self._counterfactual is None:
             return  # they have nothing to read without the snapshot store
@@ -881,26 +880,6 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 logger.warning("[param-evolution] init failed, disabled: {}", exc)
                 self._param_evolver = None
 
-        mi_cfg = getattr(self.config, "module_interaction", None)
-        if mi_cfg is not None and getattr(mi_cfg, "module_interaction_enabled", False):
-            try:
-                from adaptive.module_interaction import ModuleInteractionEngine
-
-                self._module_interaction = ModuleInteractionEngine(
-                    self._counterfactual,
-                    enabled=True,
-                    db_path=mi_cfg.module_interaction_db_path,
-                    lookback=mi_cfg.interaction_lookback,
-                    interval=mi_cfg.interaction_interval,
-                    min_trades=mi_cfg.min_trades_for_interaction,
-                    significance_r=mi_cfg.interaction_significance_r,
-                    max_modules=mi_cfg.max_modules,
-                )
-                logger.info("[module-interaction] engine enabled (L5b)")
-            except Exception as exc:  # noqa: BLE001
-                logger.warning("[module-interaction] init failed, disabled: {}", exc)
-                self._module_interaction = None
-
         sd_cfg = getattr(self.config, "signal_discovery", None)
         if sd_cfg is not None and getattr(sd_cfg, "signal_discovery_enabled", False):
             try:
@@ -917,6 +896,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     max_conditions=sd_cfg.max_rule_conditions,
                     min_edge_r=sd_cfg.min_edge_r,
                     walk_forward_split=sd_cfg.discovery_walk_forward_split,
+                    bonferroni_alpha=sd_cfg.bonferroni_alpha,
+                    walk_forward_ratio_threshold=sd_cfg.walk_forward_ratio_threshold,
+                    score_decay_rate=sd_cfg.score_decay_rate,
+                    max_active_signals=sd_cfg.max_active_signals,
                 )
                 logger.info("[signal-discovery] engine enabled (L5c)")
             except Exception as exc:  # noqa: BLE001
@@ -984,7 +967,6 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             ModuleGovernorTunable,
             InteractionAnalyzerTunable,
             ParameterEvolverTunable,
-            ModuleInteractionTunable,
             SignalDiscoveryTunable,
             ConsumerTunable,
         )
@@ -1068,9 +1050,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 ),
             ))
 
-        # Module interaction discovery (trade-close batch) — periodic leave-K-out
-        # interaction matrix + optimal-subset search. Pure analysis; depends on
-        # the counterfactual snapshots and recomputes on its own cadence.
+        # L5b — module interaction discovery (trade-close batch) — periodic
+        # leave-K-out interaction matrix + optimal-subset search. Pure analysis;
+        # depends on the counterfactual snapshots and recomputes on its own cadence.
         if self._interaction_analyzer is not None:
             agent.register(InteractionAnalyzerTunable(
                 self._interaction_analyzer,
@@ -1089,17 +1071,6 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     getattr(
                         getattr(self.config, "param_evolution", None),
                         "min_replay_trades", 50,
-                    )
-                ),
-            ))
-        # L5b — module interaction discovery (trade-close batch).
-        if self._module_interaction is not None:
-            agent.register(ModuleInteractionTunable(
-                self._module_interaction,
-                min_trades=int(
-                    getattr(
-                        getattr(self.config, "module_interaction", None),
-                        "min_trades_for_interaction", 50,
                     )
                 ),
             ))

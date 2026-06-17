@@ -80,9 +80,6 @@ class LearningMixin:
     def _param_evolution_obj(self) -> Any:
         return getattr(self._loop(), "_param_evolver", None)
 
-    def _module_interaction_obj(self) -> Any:
-        return getattr(self._loop(), "_module_interaction", None)
-
     def _signal_discovery_obj(self) -> Any:
         return getattr(self._loop(), "_signal_discovery", None)
 
@@ -100,7 +97,6 @@ class LearningMixin:
             "counterfactual": self._safe(self._learning_counterfactual),
             "interactions": self._safe(self._learning_interactions),
             "param_evolution": self._safe(self._learning_param_evolution),
-            "module_interaction": self._safe(self._learning_module_interaction),
             "signal_discovery": self._safe(self._learning_signal_discovery),
         }
 
@@ -510,38 +506,6 @@ class LearningMixin:
             **meta,
         }
 
-    # ── Module Interaction Discovery (L5b) ────────────────────────────────────
-    def _learning_module_interaction(self) -> dict:
-        engine = self._module_interaction_obj()
-        cfg = getattr(self._config(), "module_interaction", None)
-        meta = {
-            "lookback": int(getattr(cfg, "interaction_lookback", 0) or 0),
-            "interval": int(getattr(cfg, "interaction_interval", 0) or 0),
-        }
-        if engine is None:
-            return _idle(meta)
-        state = engine.get_state() or {}
-        pairs = []
-        for p in state.get("pairs", []) or []:
-            pairs.append({
-                "module_a": str(p.get("module_a", "")),
-                "module_b": str(p.get("module_b", "")),
-                "interaction": _round(p.get("interaction", 0.0), 3),
-                "effect_joint": _round(p.get("effect_joint", 0.0), 3),
-                "classification": str(p.get("classification", "")),
-            })
-        return {
-            "enabled": bool(state.get("enabled", False)),
-            "source": "live",
-            "computed_at": state.get("computed_at"),
-            "trades_analyzed": int(state.get("trades_analyzed", 0) or 0),
-            "baseline_total_r": _round(state.get("baseline_total_r", 0.0), 3),
-            "module_effects": state.get("module_effects", {}) or {},
-            "optimal_subset": state.get("optimal_subset", {}) or {},
-            "pairs": pairs[:30],
-            **meta,
-        }
-
     # ── Synthetic Signal Discovery (L5c) ──────────────────────────────────────
     def _learning_signal_discovery(self) -> dict:
         engine = self._signal_discovery_obj()
@@ -565,6 +529,11 @@ class LearningMixin:
                 "train_edge": _round(r.get("train_edge", 0.0), 4),
                 "test_edge": _round(r.get("test_edge", 0.0), 4),
                 "qualifies": bool(r.get("qualifies", False)),
+                "active": bool(r.get("active", False)),
+                "p_value": _round(r.get("p_value", 1.0), 6),
+                "wf_ratio": _round(r.get("wf_ratio", 0.0), 4),
+                "score": _round(r.get("score", 0.0), 4),
+                "confirmations": int(r.get("confirmations", 0) or 0),
             })
         return {
             "enabled": bool(state.get("enabled", False)),
@@ -574,6 +543,12 @@ class LearningMixin:
             "baseline_expectancy": _round(state.get("baseline_expectancy", 0.0), 4),
             "rule_count": int(state.get("rule_count", 0) or 0),
             "qualifying_count": int(state.get("qualifying_count", 0) or 0),
+            "active_count": int(state.get("active_count", 0) or 0),
+            "max_active_signals": int(state.get("max_active_signals", 0) or 0),
+            "bonferroni_alpha": _round(state.get("bonferroni_alpha", 0.0), 6),
+            "walk_forward_ratio_threshold": _round(
+                state.get("walk_forward_ratio_threshold", 0.0), 4
+            ),
             "rules": rules[:40],
             **meta,
         }
