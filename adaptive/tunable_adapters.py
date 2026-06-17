@@ -969,6 +969,9 @@ class CounterfactualTunable(_BaseTunable):
             tunable_name=self._name, success=True, changed=True,
             params_before=before, params_after=after,
             reason=f"attributed {modules} module(s) over {analyzed} trades",
+        )
+
+
 # ───────────────────────── Module governor ─────────────────────────────
 
 

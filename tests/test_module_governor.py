@@ -315,8 +315,8 @@ class TestScannerEnforcement:
 
 
 class TestConfig:
-    def test_defaults_off(self):
-        assert ModuleGovernorConfig().module_governor_enabled is False
+    def test_defaults_on(self):
+        assert ModuleGovernorConfig().module_governor_enabled is True
 
     def test_threshold_bounds(self):
         with pytest.raises(ValueError):

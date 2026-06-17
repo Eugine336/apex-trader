@@ -57,6 +57,7 @@ class ModuleGovernorMixin:
             }
         return {
             "enabled": bool(status.get("enabled", False)),
+            "counterfactual_signal": bool(status.get("counterfactual_signal", False)),
             "wired": True,
             "modules": status.get("modules", []),
             "counts": status.get("counts", {}),
