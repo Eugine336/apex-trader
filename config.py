@@ -1465,6 +1465,23 @@ class OutcomeFeedbackConfig:
 
 
 @dataclass
+class PostCloseTrackerConfig:
+    """Settings for the Post-Close Price Tracker (Learning Layer).
+
+    After a trade closes, price is sampled at fixed offsets from ENTRY to
+    measure Maximum Favorable / Adverse Excursion, separating *entry signal*
+    quality from *trade management* quality. Pure data collection — it never
+    changes a live decision; future sessions consume the accessors.
+    """
+
+    enabled: bool = True
+    # Offsets (minutes from ENTRY) at which to sample forward price.
+    check_intervals_minutes: list[int] = field(default_factory=lambda: [5, 15, 30, 60])
+    # Retries before a check is marked incomplete (e.g. pair offline).
+    max_retries: int = 3
+
+
+@dataclass
 class AppConfig:
     # All 4 categories enabled — forex, commodity, index, synthetic
     enabled_categories: list[str] = field(
@@ -1484,6 +1501,7 @@ class AppConfig:
     decision_trace: DecisionTraceConfig = field(default_factory=DecisionTraceConfig)
     orchestrator: OrchestratorConfig = field(default_factory=OrchestratorConfig)
     outcome_feedback: OutcomeFeedbackConfig = field(default_factory=OutcomeFeedbackConfig)
+    post_close_tracker: PostCloseTrackerConfig = field(default_factory=PostCloseTrackerConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
     data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)
