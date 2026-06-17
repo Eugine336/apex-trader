@@ -245,12 +245,36 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # R back to the modules / opportunity that drove it, for per-module
         # accuracy. Observational only; never changes a live decision.
         self._outcome_feedback = OutcomeFeedback(self.config.outcome_feedback)
-        # Post-close price tracker — after a trade closes, samples forward price
-        # (MFE/MAE) to separate entry-signal quality from management quality.
-        # Pure data collection; never changes a live decision.
-        self._post_close_tracker = PostCloseTracker(
-            getattr(self.config, "post_close_tracker", None)
-        )
+        # ── Universal signal ledger + emitter feedback (observational) ────────
+        # Records EVERY module's directional read each cycle (before any gate),
+        # grades whether price actually moved the predicted way, and lets each
+        # emitter ask how it is doing — traded vs blocked — so a later phase can
+        # re-weight votes and detect over-filtering gates. Dormant unless the
+        # SignalLedgerConfig flags are turned on; never changes a live decision.
+        self._signal_ledger = None
+        self._emitter_feedback = None
+        try:
+            sl_cfg = self.config.signal_ledger
+            if getattr(sl_cfg, "signal_ledger_enabled", False):
+                from adaptive.signal_ledger import SignalLedger
+                from adaptive.emitter_feedback import EmitterFeedbackService
+
+                self._signal_ledger = SignalLedger(
+                    db_path=sl_cfg.signal_ledger_db_path,
+                    grading_delay_minutes=sl_cfg.signal_grading_delay_minutes,
+                    check_intervals=list(sl_cfg.signal_grading_check_intervals),
+                    min_move_pct=sl_cfg.signal_min_move_pct,
+                )
+                if getattr(sl_cfg, "emitter_feedback_enabled", False):
+                    self._emitter_feedback = EmitterFeedbackService(self._signal_ledger)
+                logger.info(
+                    "[signal-ledger] enabled (grading={}, db={})",
+                    bool(sl_cfg.signal_grading_enabled), sl_cfg.signal_ledger_db_path,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[signal-ledger] init failed, disabled: {}", exc)
+            self._signal_ledger = None
+            self._emitter_feedback = None
         self.scheduler = ScanScheduler(config=self.config)
         risk_cfg = self.config.risk
         self.entry_engine = EntryEngine(
@@ -1108,6 +1132,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         ready = self.scanner.get_ready_setups(report)
         self._emit_setup_skipped(report)
         self._persist_scanner_rejections(report)
+        # Record every module's directional read this cycle (before gates) and
+        # grade prior signals against current prices. Observational — no-op
+        # unless the signal ledger is enabled.
+        self._record_scan_signals(report, market_data)
+        self._run_signal_grading(market_data)
 
         qf, qt = self.scanner.get_quality_failure_stats()
         if qf > 0:
@@ -2938,6 +2967,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self.managed_positions[order.order_id] = managed
         self._save_position_checked(managed)
         self._daily_trades += 1
+
+        # Link this pair's matching-direction signals to the opened trade so the
+        # ledger can later join realised outcomes to the modules that called it.
+        # No-op when the signal ledger is off.
+        self._ledger_record_trade_opened(pair, direction, order.order_id)
 
         # Advance the RL live-trade counter so its authority-progression gate
         # (stages 6/7 require min_live_trades) reflects reality instead of
@@ -6265,9 +6299,122 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         except Exception as exc:
             logger.debug("[outcome_feedback] outcome record failed: {}", exc)
 
+    def _signal_ledger_active(self) -> bool:
+        return self._signal_ledger is not None and getattr(
+            self.config.signal_ledger, "signal_ledger_enabled", False
+        )
+
+    @staticmethod
+    def _current_price_for(pair: str, market_data: dict) -> Optional[float]:
+        """Latest close for a pair from the freshest intraday frame available."""
+        frames = (market_data or {}).get(pair)
+        if not frames:
+            return None
+        for tf in ("M1", "M5", "M15", "H1"):
+            df = frames.get(tf)
+            try:
+                if df is not None and len(df) > 0:
+                    return float(df["close"].iloc[-1])
+            except Exception:  # noqa: BLE001
+                continue
+        return None
+
+    def _record_scan_signals(self, report, market_data: dict) -> None:
+        """Record every module's directional read this cycle, before any gate.
+
+        Each result carries the raw per-module ``votes`` plus the scalar
+        ``consensus_direction`` that fed both the consensus and the ranker. We
+        log every non-NEUTRAL vote (emitter = module name) and the consensus
+        verdict (emitter = "consensus") with the price at emission, so blocked
+        signals are graded too — removing the learning layer's selection bias.
+        Fully guarded: any failure is swallowed and never blocks the scan.
+        """
+        if not self._signal_ledger_active():
+            return
+        try:
+            from adaptive.signal_ledger import SignalRecord
+
+            results = getattr(report, "results", None) or []
+            ts = _time.time()
+            for result in results:
+                pair = getattr(result, "pair", None)
+                if not pair:
+                    continue
+                price = self._current_price_for(pair, market_data)
+                if not price:
+                    continue
+                for vote in getattr(result, "votes", []) or []:
+                    direction = getattr(vote, "direction", "NEUTRAL")
+                    if direction not in ("LONG", "SHORT"):
+                        continue
+                    self._signal_ledger.record_signal(SignalRecord(
+                        pair=pair,
+                        emitter=getattr(vote, "module", "unknown"),
+                        direction=direction,
+                        strength=float(getattr(vote, "confidence", 0.0) or 0.0),
+                        price_at_signal=price,
+                        context={"weight": float(getattr(vote, "weight", 0.0) or 0.0)},
+                        timestamp=ts,
+                    ))
+                consensus_dir = getattr(result, "consensus_direction", "") or getattr(result, "direction", "")
+                if consensus_dir in ("LONG", "SHORT"):
+                    self._signal_ledger.record_signal(SignalRecord(
+                        pair=pair,
+                        emitter="consensus",
+                        direction=consensus_dir,
+                        strength=float(getattr(result, "consensus_agreement", 0.0) or 0.0),
+                        price_at_signal=price,
+                        context={
+                            "net": float(getattr(result, "consensus_net", 0.0) or 0.0),
+                            "score": int(getattr(result, "score", 0) or 0),
+                        },
+                        timestamp=ts,
+                    ))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[signal-ledger] record_scan_signals failed: {}", exc)
+
+    def _run_signal_grading(self, market_data: dict) -> None:
+        """Grade outstanding signals against this cycle's prices (guarded)."""
+        if not self._signal_ledger_active():
+            return
+        if not getattr(self.config.signal_ledger, "signal_grading_enabled", False):
+            return
+        try:
+            prices: dict = {}
+            for pair, frames in (market_data or {}).items():
+                px = self._current_price_for(pair, {pair: frames})
+                if px:
+                    prices[pair] = px
+            if prices:
+                self._signal_ledger.run_grading_cycle(prices)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[signal-ledger] grading cycle failed: {}", exc)
+
+    def _ledger_record_gate_block(self, pair: str, reason: str) -> None:
+        """Attribute a gate rejection to this pair's emitted signals (guarded)."""
+        if not self._signal_ledger_active() or not pair:
+            return
+        try:
+            self._signal_ledger.record_gate_block_for_pair(pair, reason)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[signal-ledger] gate-block hook failed: {}", exc)
+
+    def _ledger_record_trade_opened(self, pair: str, direction: str, trade_id: str) -> None:
+        """Link a pair's matching-direction signals to the opened trade (guarded)."""
+        if not self._signal_ledger_active() or not pair or not trade_id:
+            return
+        try:
+            self._signal_ledger.record_trade_opened_for_pair(pair, str(trade_id), direction)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[signal-ledger] trade-open hook failed: {}", exc)
+
     def _log_rejection(self, pair: str, direction: str, score: int, reason: str,
                        entry_context: dict | None = None) -> None:
         logger.debug("❌ REJECTED {} {} (score {}) — {}", direction, pair, score, reason)
+        # Attribute this rejection to the pair's emitted signals so blocked
+        # signals are graded and gate over-filtering is measurable. No-op when
+        # the ledger is off.
+        self._ledger_record_gate_block(pair, reason)
         # Close out the awareness trace for this setup (if one is open) so the
         # rejection is attributed to the gate that blocked it. No-op when
         # tracing is off or no trace is active.

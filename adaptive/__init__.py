@@ -11,7 +11,12 @@ from adaptive.pair_learner import PairLearner, PairProfile
 from adaptive.session_learner import SessionLearner, SessionProfile
 from adaptive.optimizer import AdaptiveOptimizer, MLAdapter, OptimizationReport, TradeAdjustments
 from adaptive.ev_estimator import EVEstimator, EVEstimate
-from adaptive.win_rate_provider import AdaptiveWinRateProvider, WinRateResult
+from adaptive.signal_ledger import SignalLedger, SignalRecord, SignalOutcome
+from adaptive.emitter_feedback import (
+    EmitterFeedbackService,
+    EmitterFeedbackRequest,
+    EmitterFeedbackResponse,
+)
 
 __all__ = [
     "TradeAnalyzer", "PerformanceProfile",
@@ -21,5 +26,6 @@ __all__ = [
     "SessionLearner", "SessionProfile",
     "AdaptiveOptimizer", "MLAdapter", "OptimizationReport", "TradeAdjustments",
     "EVEstimator", "EVEstimate",
-    "AdaptiveWinRateProvider", "WinRateResult",
+    "SignalLedger", "SignalRecord", "SignalOutcome",
+    "EmitterFeedbackService", "EmitterFeedbackRequest", "EmitterFeedbackResponse",
 ]
