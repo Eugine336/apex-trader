@@ -467,6 +467,8 @@ class LearningMixin:
             "toxic_pairs": toxic,
             "synergy_pairs": synergy,
             "optimal_subset": optimal,
+        }
+
     # ── Parameter Evolution (L5a) ─────────────────────────────────────────────
     def _learning_param_evolution(self) -> dict:
         evolver = self._param_evolution_obj()

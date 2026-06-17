@@ -1985,6 +1985,31 @@ class InteractionConfig:
     exhaustive_search_max_modules: int = 12
     # SQLite path (under data/, gitignored).
     interaction_db_path: str = "data/interaction_discovery.db"
+
+    def __post_init__(self) -> None:
+        if int(self.interaction_lookback) < 1:
+            raise ValueError(
+                "InteractionConfig.interaction_lookback must be >= 1, "
+                f"got {self.interaction_lookback!r}"
+            )
+        if int(self.interaction_interval) < 1:
+            raise ValueError(
+                "InteractionConfig.interaction_interval must be >= 1, "
+                f"got {self.interaction_interval!r}"
+            )
+        if int(self.exhaustive_search_max_modules) < 1:
+            raise ValueError(
+                "InteractionConfig.exhaustive_search_max_modules must be >= 1, "
+                f"got {self.exhaustive_search_max_modules!r}"
+            )
+        if float(self.toxic_threshold) > float(self.synergy_threshold):
+            raise ValueError(
+                "InteractionConfig.toxic_threshold must be <= synergy_threshold, "
+                f"got toxic={self.toxic_threshold!r} synergy={self.synergy_threshold!r}"
+            )
+
+
+@dataclass
 class ParameterEvolutionConfig:
     """Settings for the Parameter Evolution engine (L5a).
 
@@ -2084,26 +2109,18 @@ class ModuleInteractionConfig:
     def __post_init__(self) -> None:
         if int(self.interaction_lookback) < 1:
             raise ValueError(
-                "InteractionConfig.interaction_lookback must be >= 1, "
                 "ModuleInteractionConfig.interaction_lookback must be >= 1, "
                 f"got {self.interaction_lookback!r}"
             )
         if int(self.interaction_interval) < 1:
             raise ValueError(
-                "InteractionConfig.interaction_interval must be >= 1, "
-                f"got {self.interaction_interval!r}"
-            )
-        if int(self.exhaustive_search_max_modules) < 1:
-            raise ValueError(
-                "InteractionConfig.exhaustive_search_max_modules must be >= 1, "
-                f"got {self.exhaustive_search_max_modules!r}"
-            )
-        if float(self.toxic_threshold) > float(self.synergy_threshold):
-            raise ValueError(
-                "InteractionConfig.toxic_threshold must be <= synergy_threshold, "
-                f"got toxic={self.toxic_threshold!r} synergy={self.synergy_threshold!r}"
                 "ModuleInteractionConfig.interaction_interval must be >= 1, "
                 f"got {self.interaction_interval!r}"
+            )
+        if int(self.min_trades_for_interaction) < 1:
+            raise ValueError(
+                "ModuleInteractionConfig.min_trades_for_interaction must be >= 1, "
+                f"got {self.min_trades_for_interaction!r}"
             )
         if int(self.max_modules) < 2:
             raise ValueError(

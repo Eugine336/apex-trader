@@ -1059,25 +1059,6 @@ class InteractionAnalyzerTunable(_BaseTunable):
         super().__init__(
             name="interaction_analyzer",
             frequency=TuneFrequency.ON_TRADE_BATCH,
-# ───────────────────── L5 — evolution / discovery ──────────────────────
-
-
-class ParameterEvolverTunable(_BaseTunable):
-    """Wraps ``ParameterEvolver.run_cycle`` — L5a parameter evolution.
-
-    Periodic: advances any shadow candidates with newly-closed trades, resolves
-    those with enough evidence (promote / reject / extend), and — cooldown and
-    concurrency permitting — runs a fresh replay tournament to seed new
-    candidates.  The evolver only *recommends*; an injected callback (wired by
-    the caller) is what actually applies an approved value, so there is nothing
-    here to validate or roll back.  Depends on ``counterfactual`` so it explores
-    over the freshest closed-trade snapshots.
-    """
-
-    def __init__(self, evolver, *, min_trades: int = 50, min_interval: float = 0.0) -> None:
-        super().__init__(
-            name="parameter_evolver",
-            frequency=TuneFrequency.PERIODIC,
             dependencies=["counterfactual"],
             min_trades=int(min_trades),
             min_interval=float(min_interval),
@@ -1120,6 +1101,50 @@ class ParameterEvolverTunable(_BaseTunable):
                 reason="analyzer disabled",
             )
         payload = self._analyzer.maybe_recompute(ctx.total_trades)
+        self._mark_tuned(ctx)
+        if not payload:
+            return TuneResult(
+                tunable_name=self._name, success=True, skipped=True,
+                params_before=before, params_after=before,
+                reason="not due / insufficient trades",
+            )
+        after = self._read_params()
+        analyzed = int(payload.get("trades_analyzed", 0) or 0)
+        toxic = len(payload.get("toxic_pairs", []) or [])
+        synergy = len(payload.get("synergy_pairs", []) or [])
+        return TuneResult(
+            tunable_name=self._name, success=True, changed=True,
+            params_before=before, params_after=after,
+            reason=(
+                f"interactions over {analyzed} trades — "
+                f"{toxic} toxic, {synergy} synergistic pair(s)"
+            ),
+        )
+
+
+# ───────────────────── L5 — evolution / discovery ──────────────────────
+
+
+class ParameterEvolverTunable(_BaseTunable):
+    """Wraps ``ParameterEvolver.run_cycle`` — L5a parameter evolution.
+
+    Periodic: advances any shadow candidates with newly-closed trades, resolves
+    those with enough evidence (promote / reject / extend), and — cooldown and
+    concurrency permitting — runs a fresh replay tournament to seed new
+    candidates.  The evolver only *recommends*; an injected callback (wired by
+    the caller) is what actually applies an approved value, so there is nothing
+    here to validate or roll back.  Depends on ``counterfactual`` so it explores
+    over the freshest closed-trade snapshots.
+    """
+
+    def __init__(self, evolver, *, min_trades: int = 50, min_interval: float = 0.0) -> None:
+        super().__init__(
+            name="parameter_evolver",
+            frequency=TuneFrequency.PERIODIC,
+            dependencies=["counterfactual"],
+            min_trades=int(min_trades),
+            min_interval=float(min_interval),
+        )
         self._evolver = evolver
 
     def _read_params(self) -> dict:
@@ -1216,20 +1241,6 @@ class _AnalysisRecomputeTunable(_BaseTunable):
                 params_before=before, params_after=before,
                 reason="not due / insufficient trades",
             )
-        after = self._read_params()
-        analyzed = int(payload.get("trades_analyzed", 0) or 0)
-        toxic = len(payload.get("toxic_pairs", []) or [])
-        synergy = len(payload.get("synergy_pairs", []) or [])
-        return TuneResult(
-            tunable_name=self._name, success=True, changed=True,
-            params_before=before, params_after=after,
-            reason=(
-                f"interactions over {analyzed} trades — "
-                f"{toxic} toxic, {synergy} synergistic pair(s)"
-            ),
-        )
-
-
         return TuneResult(
             tunable_name=self._name, success=True, changed=True,
             params_before=before, params_after=self._read_params(),
