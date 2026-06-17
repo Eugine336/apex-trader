@@ -1556,6 +1556,88 @@ class PostCloseTrackerConfig:
 
 
 @dataclass
+class PairLearnerConfig:
+    """Settings for the PairLearner's per-pair size multiplier (learning layer).
+
+    The legacy multiplier collapsed a continuous observed win rate into four
+    discrete buckets ({0.0 AVOID, 0.7 REDUCE, 0.8 insufficient, 1.0 TRADE}), so
+    a 56%% pair and a 75%% pair both mapped to 1.0. This config drives a smooth
+    sigmoid replacement plus an optional entry-vs-management split (so a pair
+    with good signals but poor trade management is not over-penalised).
+
+    ``continuous_pair_multiplier`` defaults OFF so existing behaviour is
+    byte-for-byte preserved until explicitly enabled (the codebase convention:
+    new behaviour ships behind a flag defaulting to legacy). When False every
+    field below is ignored and the 4-bucket logic runs as before.
+    """
+
+    # Master switch for the smooth multiplier. False = legacy 4-bucket.
+    continuous_pair_multiplier: bool = False
+    # Sigmoid shape: midpoint is the win rate that maps near the curve centre,
+    # steepness controls how sharply it ramps, floor/ceiling bound the output.
+    continuous_midpoint: float = 0.50
+    continuous_steepness: float = 10.0
+    continuous_floor: float = 0.3
+    continuous_ceiling: float = 1.2
+    # Bayesian shrinkage: thin samples are blended toward this prior; a sample
+    # at/above ``shrinkage_full_weight`` trades uses the raw curve directly.
+    continuous_prior: float = 0.8
+    shrinkage_full_weight: int = 30
+    # Hard lower bound so a degenerate value can never divide-by-zero downstream.
+    continuous_absolute_floor: float = 0.1
+    # Multiplier for pairs with too little history to size on (cold start) and
+    # the trade count below which a pair is treated as cold start.
+    cold_start_multiplier: float = 0.8
+    cold_start_min_trades: int = 5
+
+    # Entry-vs-management split (consumes PostCloseTracker signal accuracy).
+    # When enabled the effective win rate the sigmoid sees is blended toward the
+    # pair's entry (signal) accuracy, so a pair that reads the market well but is
+    # managed poorly is not avoided for a problem the entry signal didn't cause.
+    entry_management_split_enabled: bool = False
+    entry_accuracy_blend_weight: float = 0.3
+    # Record/log the per-pair management-quality breakdown during learning.
+    management_quality_log_enabled: bool = True
+
+    def __post_init__(self) -> None:
+        if not (0.0 <= float(self.continuous_midpoint) <= 1.0):
+            raise ValueError(
+                "PairLearnerConfig.continuous_midpoint must be in [0, 1], "
+                f"got {self.continuous_midpoint!r}"
+            )
+        if float(self.continuous_steepness) <= 0:
+            raise ValueError(
+                "PairLearnerConfig.continuous_steepness must be > 0, "
+                f"got {self.continuous_steepness!r}"
+            )
+        if float(self.continuous_floor) > float(self.continuous_ceiling):
+            raise ValueError(
+                "PairLearnerConfig.continuous_floor must be <= continuous_ceiling, "
+                f"got {self.continuous_floor} > {self.continuous_ceiling}"
+            )
+        if int(self.shrinkage_full_weight) <= 0:
+            raise ValueError(
+                "PairLearnerConfig.shrinkage_full_weight must be > 0, "
+                f"got {self.shrinkage_full_weight!r}"
+            )
+        if float(self.continuous_absolute_floor) < 0:
+            raise ValueError(
+                "PairLearnerConfig.continuous_absolute_floor must be >= 0, "
+                f"got {self.continuous_absolute_floor!r}"
+            )
+        if not (0.0 <= float(self.entry_accuracy_blend_weight) <= 1.0):
+            raise ValueError(
+                "PairLearnerConfig.entry_accuracy_blend_weight must be in [0, 1], "
+                f"got {self.entry_accuracy_blend_weight!r}"
+            )
+        if int(self.cold_start_min_trades) < 0:
+            raise ValueError(
+                "PairLearnerConfig.cold_start_min_trades must be >= 0, "
+                f"got {self.cold_start_min_trades!r}"
+            )
+
+
+@dataclass
 class TunerAgentConfig:
     """Central coordinator for ALL auto-tuning (the "Tuner Agent").
 
@@ -1619,6 +1701,7 @@ class AppConfig:
     outcome_feedback: OutcomeFeedbackConfig = field(default_factory=OutcomeFeedbackConfig)
     signal_ledger: SignalLedgerConfig = field(default_factory=SignalLedgerConfig)
     post_close_tracker: PostCloseTrackerConfig = field(default_factory=PostCloseTrackerConfig)
+    pair_learner: PairLearnerConfig = field(default_factory=PairLearnerConfig)
     tuner_agent: TunerAgentConfig = field(default_factory=TunerAgentConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)

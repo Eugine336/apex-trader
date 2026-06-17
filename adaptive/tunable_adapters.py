@@ -332,6 +332,9 @@ class PairLearnerTunable(_LearnerTunable):
     """Wraps ``PairLearner.learn`` — per-pair size multiplier + win rate."""
 
     _VALID_RECS = {"INSUFFICIENT_DATA", "AVOID", "REDUCE_SIZE", "TRADE"}
+    # Reserved key under which the continuous-multiplier (sigmoid) params are
+    # surfaced. Namespaced so it can never collide with a real pair symbol.
+    _SIGMOID_KEY = "__sigmoid_config__"
 
     def __init__(self, learner, trades_provider, *, min_trades=10, min_interval=4 * 3600):
         from adaptive.pair_learner import PairProfile
@@ -343,8 +346,49 @@ class PairLearnerTunable(_LearnerTunable):
             record_cls_provider=lambda: PairProfile,
         )
 
+    def _sigmoid_params(self) -> dict:
+        """Current continuous-multiplier shape params (informational + rollback
+        symmetry). Static during ``learn`` — present in both before/after so the
+        agent's change-detection still keys off the per-pair profiles only."""
+        learner = self._learner
+        return {
+            "continuous_pair_multiplier": bool(getattr(learner, "continuous_enabled", False)),
+            "midpoint": float(getattr(learner, "continuous_midpoint", 0.5)),
+            "steepness": float(getattr(learner, "continuous_steepness", 10.0)),
+            "floor": float(getattr(learner, "continuous_floor", 0.3)),
+            "ceiling": float(getattr(learner, "continuous_ceiling", 1.2)),
+            "prior": float(getattr(learner, "continuous_prior", 0.8)),
+            "shrinkage_full_weight": int(getattr(learner, "shrinkage_full_weight", 30)),
+            "absolute_floor": float(getattr(learner, "continuous_absolute_floor", 0.1)),
+            "cold_start_multiplier": float(getattr(learner, "cold_start_multiplier", 0.8)),
+            "entry_management_split_enabled": bool(
+                getattr(learner, "entry_management_split_enabled", False)
+            ),
+            "entry_accuracy_blend_weight": float(
+                getattr(learner, "entry_accuracy_blend_weight", 0.3)
+            ),
+        }
+
+    def _read_params(self) -> dict:
+        out = super()._read_params()
+        out[self._SIGMOID_KEY] = self._sigmoid_params()
+        return out
+
+    def _apply_params(self, params: dict) -> None:
+        # The sigmoid params live on config (not mutated by learn) — strip the
+        # reserved key so rollback only rebuilds the per-pair profiles.
+        clean = {k: v for k, v in (params or {}).items() if k != self._SIGMOID_KEY}
+        super()._apply_params(clean)
+
     def validate_params(self, params: dict) -> tuple[bool, str]:
+        sig = (params or {}).get(self._SIGMOID_KEY)
+        if sig is not None:
+            ok, why = self._validate_sigmoid(sig)
+            if not ok:
+                return False, why
         for pair, v in (params or {}).items():
+            if pair == self._SIGMOID_KEY:
+                continue
             wr = float(v.get("win_rate", 0.0))
             n = int(v.get("total_trades", 0))
             rec = str(v.get("recommendation", "INSUFFICIENT_DATA"))
@@ -354,6 +398,26 @@ class PairLearnerTunable(_LearnerTunable):
                 return False, f"{pair} total_trades {n} < 0"
             if rec not in self._VALID_RECS:
                 return False, f"{pair} unknown recommendation '{rec}'"
+        return True, "ok"
+
+    @staticmethod
+    def _validate_sigmoid(sig: dict) -> tuple[bool, str]:
+        floor = float(sig.get("floor", 0.3))
+        ceiling = float(sig.get("ceiling", 1.2))
+        steepness = float(sig.get("steepness", 10.0))
+        midpoint = float(sig.get("midpoint", 0.5))
+        blend = float(sig.get("entry_accuracy_blend_weight", 0.3))
+        sfw = int(sig.get("shrinkage_full_weight", 30))
+        if floor > ceiling:
+            return False, f"sigmoid floor {floor} > ceiling {ceiling}"
+        if steepness <= 0:
+            return False, f"sigmoid steepness {steepness} <= 0"
+        if not (0.0 <= midpoint <= 1.0):
+            return False, f"sigmoid midpoint {midpoint} out of [0,1]"
+        if not (0.0 <= blend <= 1.0):
+            return False, f"entry_accuracy_blend_weight {blend} out of [0,1]"
+        if sfw <= 0:
+            return False, f"shrinkage_full_weight {sfw} <= 0"
         return True, "ok"
 
 
