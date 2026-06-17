@@ -1478,6 +1478,66 @@ class CapitalAllocatorTunable(_BaseTunable):
         )
 
 
+class ExecutionProfileTunable(_BaseTunable):
+    """Wraps the ``ExecutionProfileManager`` — the L5.5b execution-style library.
+
+    Unlike the learners, the profile manager has no autonomous recompute: its
+    per-profile scalar knobs (SL ATR multiple, TP1/TP2 R:R, trailing activation,
+    partial fraction, min-score, conviction floor) are reshaped by Parameter
+    Evolution or set directly through the agent. So ``tune`` is a no-op skip —
+    its real value here is making the agent the single authority that snapshots,
+    validates, and (on a bad push) rolls back the whole profile library, and
+    surfaces it in the system tuning status. Frequency ON_DEMAND so the agent's
+    trade-close / scan triggers never pick it up; only ``force_tune_all`` reaches
+    it, and even then it skips.
+    """
+
+    def __init__(self, manager) -> None:
+        super().__init__(
+            name="execution_profiles",
+            frequency=TuneFrequency.ON_DEMAND,
+            dependencies=[],
+            min_trades=0,
+            min_interval=0.0,
+        )
+        self._manager = manager
+
+    def _read_params(self) -> dict:
+        return dict(self._manager.get_current_params())
+
+    def _apply_params(self, params: dict) -> None:
+        self._manager.apply_params(params)
+
+    def validate_params(self, params: dict) -> tuple[bool, str]:
+        try:
+            from adaptive.execution_profiles import _FIELD_BOUNDS
+
+            for key, val in (params or {}).items():
+                if "." not in str(key):
+                    continue
+                _name, _, fld = str(key).partition(".")
+                bounds = _FIELD_BOUNDS.get(fld)
+                if bounds is None:
+                    continue
+                v = float(val)
+                if not math.isfinite(v):
+                    return False, f"{key}={val} not finite"
+                lo, hi = bounds
+                if not (lo <= v <= hi):
+                    return False, f"{key}={v} outside [{lo}, {hi}]"
+        except (TypeError, ValueError) as exc:
+            return False, f"invalid params: {exc}"
+        return True, "ok"
+
+    def tune(self, ctx: TuneContext) -> TuneResult:
+        params = self.get_current_params()
+        return TuneResult(
+            tunable_name=self._name, success=True, skipped=True,
+            params_before=params, params_after=params,
+            reason="execution profiles — no autonomous recompute (snapshot/rollback only)",
+        )
+
+
 __all__ = [
     "ScoreOptimizerTunable",
     "RegimeLearnerTunable",
@@ -1496,5 +1556,6 @@ __all__ = [
     "SignalDiscoveryTunable",
     "VirtualSignalManagerTunable",
     "CapitalAllocatorTunable",
+    "ExecutionProfileTunable",
     "ConsumerTunable",
 ]

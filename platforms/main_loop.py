@@ -896,6 +896,38 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             logger.warning("[capital-allocation] init failed, disabled: {}", exc)
             self._capital_allocator = None
 
+        # ── Execution Profiles (L5.5b) ──────────────────────────────────────
+        # Per-trade execution-style parameter vectors (SL/TP/trailing/partial/
+        # min-score). Selected from trade context (horizon × regime × consensus)
+        # and applied additively via the entry engine + the existing per-trade
+        # management override hooks. Disabled / no-match → config-level defaults
+        # (a true no-op). A build failure leaves it None and every hook no-ops.
+        self._execution_profiles = None
+        try:
+            ep_cfg = getattr(self.config, "execution_profiles", None)
+            if ep_cfg is not None and getattr(ep_cfg, "enabled", False):
+                from adaptive.execution_profiles import ExecutionProfileManager
+
+                self._execution_profiles = ExecutionProfileManager(
+                    db_path=ep_cfg.execution_profiles_db_path,
+                    enabled=True,
+                    default_profile=ep_cfg.default_profile,
+                    allow_profile_creation=ep_cfg.allow_profile_creation,
+                    max_active_profiles=ep_cfg.max_active_profiles,
+                    min_trades_for_scoring=ep_cfg.min_trades_for_scoring,
+                    strong_consensus_threshold=ep_cfg.strong_consensus_threshold,
+                    weak_consensus_threshold=ep_cfg.weak_consensus_threshold,
+                )
+                logger.info(
+                    "[execution-profiles] engine enabled (L5.5b) — {} active "
+                    "profile(s), default '{}'",
+                    len(self._execution_profiles.active_profiles()),
+                    ep_cfg.default_profile,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[execution-profiles] init failed, disabled: {}", exc)
+            self._execution_profiles = None
+
         self._param_evolver = None
         self._signal_discovery = None
         # L5c virtual voting modules — registry (vote authority) + lifecycle
@@ -1059,6 +1091,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             SignalDiscoveryTunable,
             VirtualSignalManagerTunable,
             CapitalAllocatorTunable,
+            ExecutionProfileTunable,
             ConsumerTunable,
         )
 
@@ -1204,6 +1237,12 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 ),
             ))
 
+        # L5.5b — execution profile library. Registered so the agent is the
+        # sole authority that snapshots / validates / rolls back the profile
+        # scalar knobs (no autonomous recompute — ON_DEMAND, skips on force).
+        if self._execution_profiles is not None:
+            agent.register(ExecutionProfileTunable(self._execution_profiles))
+
         # ── Make the agent the single place the WHOLE system reports to ──────
         # Hard enforcement: the components that can self-tune get a reference so
         # any direct retrain/calibrate/grade call is blocked while the agent is
@@ -1212,6 +1251,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self.ml, self._gate_tuner, self._calibrator, self._signal_ledger,
             self._vote_calibrator, self._module_governor,
             self._virtual_signal_manager, self._capital_allocator,
+            self._execution_profiles,
         ):
             if _component is not None and hasattr(_component, "set_tuner_agent"):
                 _component.set_tuner_agent(agent)
@@ -2849,6 +2889,26 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             typical_spreads=self.platforms.get_typical_spreads(pair),
         )
 
+        # ── Execution Profile selection (L5.5b) ─────────────────────────────
+        # Choose the execution-style parameter vector for this trade from its
+        # context (ranker horizon × regime × consensus strength). None when the
+        # manager is disabled / has no match → the entry engine + trade manager
+        # use their config-level defaults (a true no-op). Selected once here and
+        # reused for entry pricing, the allocator fingerprint, and management.
+        execution_profile = None
+        try:
+            epm = getattr(self, "_execution_profiles", None)
+            if epm is not None:
+                _consensus_strength = max(0.0, min(1.0, float(getattr(result, "score", 0) or 0) / 100.0))
+                execution_profile = epm.select_profile(
+                    horizon=getattr(result, "selected_horizon", "") or "",
+                    regime=getattr(result, "regime", "") or "",
+                    consensus_strength=_consensus_strength,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[execution-profiles] selection failed for {}: {}", pair, exc)
+            execution_profile = None
+
         signal = self.entry_engine.calculate_entry(
             pair=pair,
             direction=direction,
@@ -2860,6 +2920,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             h4_df=data.get("H4"),
             m15_df=data.get("M15"),
             d1_df=data.get("D1"),
+            execution_profile=execution_profile,
         )
 
         if isinstance(signal, EntryRejection):
@@ -3318,6 +3379,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 strategy_fingerprint = compute_fingerprint(
                     getattr(signal, "entry_mode", "") or "",
                     getattr(result, "selected_horizon", "") or "",
+                    extra=(getattr(execution_profile, "name", "") or ""),
                 )
                 strategy_allocation = float(
                     allocator.get_sizing_multiplier(strategy_fingerprint)
@@ -3848,6 +3910,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # L5.5a: stamp the capital-allocation fingerprint so the close path can
         # credit this trade's realised R to its execution-style bucket.
         managed.strategy_fingerprint = strategy_fingerprint
+        # L5.5b: stamp the execution profile so the close path can credit its
+        # realised R to the profile's per-style expectancy.
+        managed.execution_profile_name = (
+            getattr(execution_profile, "name", "") or ""
+        )
 
         info_risk = INSTRUMENT_REGISTRY.get(pair.upper())
         pip_sz = info_risk.pip_size if info_risk else 0.0001
@@ -3888,6 +3955,26 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     plan_partial_ratio = max(0.1, min(1.0, 1.0 - runner))
             except Exception as exc:
                 logger.debug("[Planner] management-param derive failed for {}: {}", pair, exc)
+
+        # ── Execution Profile management defaults (L5.5b) ────────────────────
+        # When the planner did NOT supply a management override (no plan, or a
+        # field left unset), fall back to the selected profile's management
+        # vector — routed through the SAME per-trade hooks the planner uses.
+        # The planner always wins (only None fields are filled). No profile /
+        # disabled → fields stay None → the trade manager's global defaults
+        # apply (a true no-op).
+        if execution_profile is not None:
+            try:
+                if plan_trail_strategy is None:
+                    plan_trail_strategy = execution_profile.plan_trail_strategy()
+                if plan_trail_activation_r is None:
+                    plan_trail_activation_r = float(execution_profile.trailing_activation_r)
+                if plan_be_trigger_r is None:
+                    plan_be_trigger_r = float(execution_profile.trailing_activation_r)
+                if plan_partial_ratio is None:
+                    plan_partial_ratio = execution_profile.plan_partial_ratio()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[execution-profiles] management-param derive failed for {}: {}", pair, exc)
 
         tm_signal = TMEntrySignal(
             pair=pair,
@@ -6782,6 +6869,23 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     allocator.maybe_rebalance()
         except Exception as exc:
             logger.debug("[capital-allocation] close hook failed for {}: {}", pos.symbol, exc)
+
+        # ── Execution Profiles (L5.5b) — credit realised R to the profile ────
+        # Records this trade's R against the execution profile it used so the
+        # per-style expectancy is visible on the dashboard (the allocator scores
+        # the same outcome via the enriched fingerprint). Pure data ingestion.
+        try:
+            epm = getattr(self, "_execution_profiles", None)
+            _ep_name = str(getattr(pos, "execution_profile_name", "") or "")
+            if epm is not None and _ep_name:
+                _ep_plan_sl = float(getattr(pos, "plan_sl_pips", 0.0) or 0.0)
+                _ep_pnl_r = (
+                    (pnl_pips / _ep_plan_sl) if _ep_plan_sl > 1e-8
+                    else (1.0 if pnl_dollars > 0 else -1.0)
+                )
+                epm.record_outcome(_ep_name, _ep_pnl_r)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[execution-profiles] close hook failed for {}: {}", pos.symbol, exc)
 
         # ── Post-close price tracking — schedule forward MFE/MAE checks ──────
         # Separates entry-signal quality from management quality. Keyed by the

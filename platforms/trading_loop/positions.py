@@ -50,6 +50,7 @@ class ManagedPosition:
         "plan_sl_pips",
         "plan_scale_in_allowed",
         "strategy_fingerprint",
+        "execution_profile_name",
     )
 
     def __init__(
@@ -108,6 +109,10 @@ class ManagedPosition:
         # set at entry so the close path can credit its realised R to the
         # right allocation bucket.
         self.strategy_fingerprint: str = ""
+        # Execution Profiles (L5.5b) — the execution-style profile selected for
+        # this trade, recorded so the close path can credit its realised R to
+        # the profile's per-style expectancy. "" = no profile (config defaults).
+        self.execution_profile_name: str = ""
 
 
 class _LockedPositions:
