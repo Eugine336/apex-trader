@@ -17,6 +17,7 @@ yields a harmless skipped result, never an error.
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import asdict, replace
 from typing import Callable, Optional
@@ -817,6 +818,79 @@ class PostCloseTrackerTunable(_BaseTunable):
         )
 
 
+# ───────────────────────── Vote calibration ────────────────────────────
+
+
+class VoteCalibratorTunable(_BaseTunable):
+    """Wraps ``VoteCalibrator.recalibrate`` — per-module consensus vote weights.
+
+    Periodic: recomputes each module's weight multiplier from its graded
+    accuracy (read via EmitterFeedback). Depends on ``signal_ledger`` so the
+    multipliers are built from freshly-graded signals. The agent snapshots the
+    published multiplier map and rolls it back if a recompute produces values
+    outside the configured [floor, ceiling] band.
+    """
+
+    def __init__(self, calibrator, *, min_interval: float = 3600.0) -> None:
+        super().__init__(
+            name="vote_calibrator",
+            frequency=TuneFrequency.PERIODIC,
+            dependencies=["signal_ledger"],
+            min_trades=0,
+            min_interval=float(min_interval),
+        )
+        self._calibrator = calibrator
+
+    def _read_params(self) -> dict:
+        try:
+            return self._calibrator.get_state()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[vote_calibrator] get_state failed: {}", exc)
+            return {}
+
+    def _apply_params(self, params: dict) -> None:
+        self._calibrator.restore_multipliers((params or {}).get("multipliers", {}))
+
+    def validate_params(self, params: dict) -> tuple[bool, str]:
+        mults = (params or {}).get("multipliers", {})
+        if not isinstance(mults, dict):
+            return False, "multipliers not a dict"
+        floor = float(params.get("floor", 0.0)) if isinstance(params, dict) else 0.0
+        ceiling = float(params.get("ceiling", float("inf"))) if isinstance(params, dict) else float("inf")
+        for module, w in mults.items():
+            try:
+                wv = float(w)
+            except (TypeError, ValueError):
+                return False, f"multiplier for {module} not numeric: {w!r}"
+            if not math.isfinite(wv):
+                return False, f"multiplier for {module} not finite: {wv}"
+            # Allow a small epsilon past the band for floating-point safety.
+            if wv < floor - 1e-9 or wv > ceiling + 1e-9:
+                return False, f"multiplier for {module} ({wv}) outside [{floor}, {ceiling}]"
+        return True, "ok"
+
+    def tune(self, ctx: TuneContext) -> TuneResult:
+        before = self._begin()
+        cal = self._calibrator.recalibrate()
+        after = self._read_params()
+        if getattr(cal, "skipped", False):
+            return TuneResult(
+                tunable_name=self._name, success=True, skipped=True,
+                params_before=before, params_after=after,
+                reason=getattr(cal, "reason", "skipped"),
+            )
+        changed = after.get("multipliers") != before.get("multipliers")
+        self._mark_tuned(ctx)
+        return TuneResult(
+            tunable_name=self._name, success=True, changed=changed,
+            params_before=before, params_after=after,
+            reason=(
+                f"recalibrated {getattr(cal, 'qualifying_modules', 0)} module(s)"
+                + ("" if changed else " (no change)")
+            ),
+        )
+
+
 # ───────────────────────── Consumers / observers ───────────────────────
 
 
@@ -909,5 +983,6 @@ __all__ = [
     "PlannerCalibratorTunable",
     "SignalLedgerTunable",
     "PostCloseTrackerTunable",
+    "VoteCalibratorTunable",
     "ConsumerTunable",
 ]

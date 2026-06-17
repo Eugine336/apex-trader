@@ -1536,6 +1536,89 @@ class SignalLedgerConfig:
 
 
 @dataclass
+class VoteCalibratorConfig:
+    """Settings for the Vote Calibrator (learning layer #6).
+
+    The consensus math weights each module's vote by a STATIC
+    ``ConsensusConfig.weights`` entry — a module that is 80%% accurate carries
+    the same weight as one that is 40%% accurate. The SignalLedger already
+    grades every signal (traded or blocked); this calibrator reads each
+    module's track record (via the read-only EmitterFeedback service) and turns
+    it into a weight multiplier centred on 1.0 — accurate modules vote louder,
+    noisy ones softer.
+
+    Safety: the multiplier is centred on 1.0 (an average-accuracy panel changes
+    nothing), thin samples are shrunk toward the mean, and every multiplier is
+    clamped to [floor, ceiling] so no module is silenced or allowed to dominate.
+    Defaults OFF so it stays dormant until enabled.
+    """
+
+    # Master switch — replace static consensus weights with calibrated weights.
+    vote_calibration_enabled: bool = False
+    # How accuracy maps to a multiplier: "softmax" (exp of accuracy / temp),
+    # "proportional" (accuracy / mean), or "log_odds" (exp of centred logit).
+    vote_weight_method: str = "softmax"
+    # Softmax / log-odds sharpness — lower = more aggressive differentiation.
+    vote_weight_temperature: float = 1.0
+    # Multiplier band: no module's weight multiplier drops below the floor or
+    # exceeds the ceiling (base weights default to 1.0, so these bound the
+    # effective weight too).
+    vote_weight_floor: float = 0.1
+    vote_weight_ceiling: float = 3.0
+    # Minimum graded signals before a module is calibrated (else stays at 1.0).
+    vote_calibration_min_signals: int = 20
+    # Bayesian shrinkage toward the panel mean (0 = none, higher = pull thin
+    # samples harder). Scaled by min_signals into pseudo-observations.
+    vote_calibration_shrinkage: float = 0.5
+    # Rolling window of most-recent graded signals used to read accuracy.
+    vote_calibration_lookback: int = 100
+    # Minimum seconds between recalibration passes (the TunerAgent drives it).
+    vote_calibration_min_interval_seconds: float = 3600.0
+
+    def __post_init__(self) -> None:
+        if self.vote_weight_method not in ("softmax", "proportional", "log_odds"):
+            raise ValueError(
+                "VoteCalibratorConfig.vote_weight_method must be one of "
+                f"'softmax', 'proportional', 'log_odds', got {self.vote_weight_method!r}"
+            )
+        if not (float(self.vote_weight_temperature) > 0):
+            raise ValueError(
+                "VoteCalibratorConfig.vote_weight_temperature must be > 0, "
+                f"got {self.vote_weight_temperature!r}"
+            )
+        if float(self.vote_weight_floor) < 0:
+            raise ValueError(
+                "VoteCalibratorConfig.vote_weight_floor must be >= 0, "
+                f"got {self.vote_weight_floor!r}"
+            )
+        if float(self.vote_weight_ceiling) < float(self.vote_weight_floor):
+            raise ValueError(
+                "VoteCalibratorConfig.vote_weight_ceiling must be >= floor, "
+                f"got ceiling={self.vote_weight_ceiling!r} floor={self.vote_weight_floor!r}"
+            )
+        if int(self.vote_calibration_min_signals) < 1:
+            raise ValueError(
+                "VoteCalibratorConfig.vote_calibration_min_signals must be >= 1, "
+                f"got {self.vote_calibration_min_signals!r}"
+            )
+        if float(self.vote_calibration_shrinkage) < 0:
+            raise ValueError(
+                "VoteCalibratorConfig.vote_calibration_shrinkage must be >= 0, "
+                f"got {self.vote_calibration_shrinkage!r}"
+            )
+        if int(self.vote_calibration_lookback) <= 0:
+            raise ValueError(
+                "VoteCalibratorConfig.vote_calibration_lookback must be > 0, "
+                f"got {self.vote_calibration_lookback!r}"
+            )
+        if float(self.vote_calibration_min_interval_seconds) < 0:
+            raise ValueError(
+                "VoteCalibratorConfig.vote_calibration_min_interval_seconds must be >= 0, "
+                f"got {self.vote_calibration_min_interval_seconds!r}"
+            )
+
+
+@dataclass
 class PostCloseTrackerConfig:
     """Settings for the post-close MFE/MAE tracker (learning layer).
 
@@ -1715,6 +1798,7 @@ class AppConfig:
     signal_ledger: SignalLedgerConfig = field(default_factory=SignalLedgerConfig)
     post_close_tracker: PostCloseTrackerConfig = field(default_factory=PostCloseTrackerConfig)
     pair_learner: PairLearnerConfig = field(default_factory=PairLearnerConfig)
+    vote_calibrator: VoteCalibratorConfig = field(default_factory=VoteCalibratorConfig)
     tuner_agent: TunerAgentConfig = field(default_factory=TunerAgentConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
