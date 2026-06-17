@@ -307,6 +307,32 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         except Exception as exc:  # noqa: BLE001
             logger.warning("[vote-calibrator] init failed, disabled: {}", exc)
             self._vote_calibrator = None
+        # ── Module governor (L3 — shadow mode) ───────────────────────────
+        # Watches each module's graded accuracy (via the read-only
+        # EmitterFeedback service) and moves a struggling module into SHADOW —
+        # it still runs and is still graded, but its vote weight is forced to
+        # 0.0 so it cannot influence a live decision. Recovers → ACTIVE; stays
+        # poor → DISABLED. Wired into the scanner so suppression is enforced in
+        # the consensus path. Inert unless ModuleGovernorConfig.module_governor_
+        # enabled is on; a build failure leaves it None (no shadowing).
+        self._module_governor = None
+        try:
+            mg_cfg = getattr(self.config, "module_governor", None)
+            if mg_cfg is not None and getattr(mg_cfg, "module_governor_enabled", False):
+                from adaptive.module_governor import ModuleGovernor
+
+                self._module_governor = ModuleGovernor(
+                    mg_cfg,
+                    emitter_feedback=self._emitter_feedback,
+                    db_path=getattr(mg_cfg, "db_path", None),
+                )
+                logger.info(
+                    "[module-governor] enabled (feedback={})",
+                    self._emitter_feedback is not None,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[module-governor] init failed, disabled: {}", exc)
+            self._module_governor = None
         # ── Post-close price tracker (MFE/MAE attribution) ───────────────
         # Schedules forward price checks after every close to separate
         # entry-signal quality from management quality. Observational only —
@@ -407,6 +433,14 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 self.scanner.set_vote_calibrator(self._vote_calibrator)
         except Exception as exc:
             logger.warning("[main] could not wire VoteCalibrator into scanner: {}", exc)
+        # Wire the ModuleGovernor into the scanner so a shadowed/disabled
+        # module's vote is suppressed (weight 0.0) in the consensus path.
+        # Inert unless the module_governor flag is on.
+        try:
+            if self._module_governor is not None:
+                self.scanner.set_module_governor(self._module_governor)
+        except Exception as exc:
+            logger.warning("[main] could not wire ModuleGovernor into scanner: {}", exc)
         # Wire the post-close MFE/MAE tracker into the PairLearner so per-pair
         # learning can split entry quality from management quality (read-only;
         # only blends into sizing when the continuous split flag is on).
@@ -757,6 +791,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             PostCloseTrackerTunable,
             VoteCalibratorTunable,
             CounterfactualTunable,
+            ModuleGovernorTunable,
             ConsumerTunable,
         )
 
@@ -819,6 +854,12 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     getattr(vc_cfg, "vote_calibration_min_interval_seconds", 3600.0)
                 ),
             ))
+        # Module governor (periodic) — shadow/reactivate/disable from graded
+        # accuracy. Registered as an active tunable only when its flag is on.
+        mg_cfg = getattr(self.config, "module_governor", None)
+        mg_enabled = bool(getattr(mg_cfg, "module_governor_enabled", False))
+        if self._module_governor is not None and mg_enabled:
+            agent.register(ModuleGovernorTunable(self._module_governor))
 
         # Counterfactual attribution (trade-close batch) — periodic leave-one-out
         # module attribution. Pure analysis; recomputes on its own cadence.
@@ -839,7 +880,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # sole authority (it authorises only its own delegated calls).
         for _component in (
             self.ml, self._gate_tuner, self._calibrator, self._signal_ledger,
-            self._vote_calibrator,
+            self._vote_calibrator, self._module_governor,
         ):
             if _component is not None and hasattr(_component, "set_tuner_agent"):
                 _component.set_tuner_agent(agent)
@@ -913,6 +954,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 "method": str(getattr(vc_cfg, "vote_weight_method", "")),
             }, note="consumer — calibration disabled (static consensus weights)")
 
+        # Module governor (L3 — shadow mode). Registered as an ACTIVE tunable
+        # above when its flag is on; here we register it read-only when it is
+        # off (or unwired) so the agent still sees it in the status / validation.
+        mg_cfg = getattr(self.config, "module_governor", None)
+        if not bool(getattr(mg_cfg, "module_governor_enabled", False)):
+            _reg("module_governor", lambda: {
+                "enabled": False,
+                "wired": self._module_governor is not None,
+            }, note="consumer — module governor disabled (no shadowing)")
+
         # 14 — RiskEngine.
         re = getattr(self, "risk_engine", None)
         if re is not None:
@@ -957,6 +1008,27 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         return self._tuner_agent is not None and getattr(
             self.config.tuner_agent, "enabled", False
         )
+
+    def _module_governor_active(self) -> bool:
+        return self._module_governor is not None and getattr(
+            getattr(self.config, "module_governor", None),
+            "module_governor_enabled", False,
+        )
+
+    def _module_governor_evaluate(self) -> None:
+        """Re-evaluate module shadow/reactivate/disable transitions.
+
+        When the Tuner Agent is active it drives this through the registered
+        ModuleGovernorTunable (periodic), so this only runs the governor
+        directly when the agent is off — keeping a single source of truth and
+        avoiding a double evaluation. Fully guarded; never blocks the loop.
+        """
+        if not self._module_governor_active() or self._tuner_agent_active():
+            return
+        try:
+            self._module_governor.evaluate_transitions()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[module-governor] evaluate failed: {}", exc)
 
     def tuner_system_status(self) -> dict:
         """Whole-system tuning state for ops / the dashboard: every registered
@@ -6235,6 +6307,10 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # the agent is disabled (legacy daily-reset tuning runs instead).
         if self._tuner_agent_active():
             self._tuner_run_trade_close()
+        else:
+            # Agent off: drive the module governor's transition evaluation
+            # directly (the agent's periodic tunable handles it when on).
+            self._module_governor_evaluate()
         try:
             trade_summary = {
                 "pair": pos.symbol,
@@ -6887,13 +6963,26 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     direction = getattr(vote, "direction", "NEUTRAL")
                     if direction not in ("LONG", "SHORT"):
                         continue
+                    module = getattr(vote, "module", "unknown")
+                    ctx = {"weight": float(getattr(vote, "weight", 0.0) or 0.0)}
+                    # Tag signals from a shadowed/disabled module so they are
+                    # distinguishable in the ledger (still graded, but the vote
+                    # was suppressed in the live decision).
+                    gov = self._module_governor
+                    if gov is not None:
+                        try:
+                            if gov.is_suppressed(module):
+                                ctx["shadow"] = True
+                                ctx["module_mode"] = gov.mode_for(module).value
+                        except Exception as exc:  # noqa: BLE001
+                            logger.debug("[module-governor] tag failed for {}: {}", module, exc)
                     self._signal_ledger.record_signal(SignalRecord(
                         pair=pair,
-                        emitter=getattr(vote, "module", "unknown"),
+                        emitter=module,
                         direction=direction,
                         strength=float(getattr(vote, "confidence", 0.0) or 0.0),
                         price_at_signal=price,
-                        context={"weight": float(getattr(vote, "weight", 0.0) or 0.0)},
+                        context=ctx,
                         timestamp=ts,
                     ))
                 consensus_dir = getattr(result, "consensus_direction", "") or getattr(result, "direction", "")

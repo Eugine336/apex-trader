@@ -1619,6 +1619,75 @@ class VoteCalibratorConfig:
 
 
 @dataclass
+class ModuleGovernorConfig:
+    """Settings for the Module Governor (L3 — shadow mode + auto-reactivation).
+
+    A voting module used to be either fully ON (influencing every decision) or,
+    once disabled, fully OFF. This governor adds a SHADOW middle ground: a
+    module whose graded accuracy drops keeps running and keeps being measured,
+    but its vote weight is forced to 0.0 so it cannot influence a live decision.
+    If its accuracy recovers it returns to ACTIVE; if it stays poor it is fully
+    DISABLED. All transitions are driven by accuracy READ FROM the read-only
+    EmitterFeedback service — the governor never grades signals itself.
+
+    Defaults OFF so it stays dormant until enabled; when off, no module is ever
+    shadowed and the consensus path is byte-for-byte unchanged.
+    """
+
+    # Master switch. When False, no module is shadowed/disabled (legacy path).
+    module_governor_enabled: bool = False
+    # ACTIVE → SHADOW: demote when trailing accuracy over ``shadow_lookback``
+    # graded signals drops below this threshold.
+    shadow_threshold: float = 0.35
+    shadow_lookback: int = 50
+    # SHADOW → ACTIVE: reactivate when shadow-period accuracy recovers above
+    # this threshold over at least ``reactivation_min_signals`` shadow signals.
+    reactivation_threshold: float = 0.50
+    reactivation_min_signals: int = 30
+    # SHADOW → DISABLED: fully disable when shadow-period accuracy stays below
+    # this threshold over at least ``disable_min_signals`` shadow signals.
+    disable_threshold: float = 0.25
+    disable_min_signals: int = 50
+    # DISABLED → SHADOW: if > 0, a disabled module auto-re-enters SHADOW after
+    # this many days for another supervised chance. 0 = manual reactivation only.
+    auto_retry_days: int = 0
+    # Rolling window of most-recent graded signals read from EmitterFeedback to
+    # evaluate accuracy / sample size (kept generous so shadow-period sample
+    # deltas remain meaningful for active modules).
+    feedback_lookback: int = 500
+    # SQLite state + transition audit DB (under data/, gitignored).
+    db_path: str = "data/module_governor.db"
+
+    def __post_init__(self) -> None:
+        for name in ("shadow_threshold", "reactivation_threshold", "disable_threshold"):
+            v = float(getattr(self, name))
+            if not (0.0 <= v <= 1.0):
+                raise ValueError(
+                    f"ModuleGovernorConfig.{name} must be in [0, 1], got {v!r}"
+                )
+        if float(self.disable_threshold) > float(self.shadow_threshold):
+            raise ValueError(
+                "ModuleGovernorConfig.disable_threshold must be <= shadow_threshold, "
+                f"got disable={self.disable_threshold} shadow={self.shadow_threshold}"
+            )
+        for name in ("shadow_lookback", "reactivation_min_signals", "disable_min_signals"):
+            if int(getattr(self, name)) < 1:
+                raise ValueError(
+                    f"ModuleGovernorConfig.{name} must be >= 1, got {getattr(self, name)!r}"
+                )
+        if int(self.auto_retry_days) < 0:
+            raise ValueError(
+                "ModuleGovernorConfig.auto_retry_days must be >= 0, "
+                f"got {self.auto_retry_days!r}"
+            )
+        if int(self.feedback_lookback) <= 0:
+            raise ValueError(
+                "ModuleGovernorConfig.feedback_lookback must be > 0, "
+                f"got {self.feedback_lookback!r}"
+            )
+
+
+@dataclass
 class PostCloseTrackerConfig:
     """Settings for the post-close MFE/MAE tracker (learning layer).
 
@@ -1846,6 +1915,7 @@ class AppConfig:
     post_close_tracker: PostCloseTrackerConfig = field(default_factory=PostCloseTrackerConfig)
     pair_learner: PairLearnerConfig = field(default_factory=PairLearnerConfig)
     vote_calibrator: VoteCalibratorConfig = field(default_factory=VoteCalibratorConfig)
+    module_governor: ModuleGovernorConfig = field(default_factory=ModuleGovernorConfig)
     tuner_agent: TunerAgentConfig = field(default_factory=TunerAgentConfig)
     counterfactual: CounterfactualConfig = field(default_factory=CounterfactualConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)

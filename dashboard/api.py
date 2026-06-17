@@ -295,6 +295,10 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
         """Live-management round table — open-position health scores, per-dimension breakdown + action log."""
         return _state.get_position_health(limit=min(limit, 1000), symbol=symbol)
 
+    @app.get("/api/module-governor")
+    def module_governor(limit: int = 100):
+        """Module shadow-mode governor — per-module ACTIVE/SHADOW/DISABLED state + transition history."""
+        return _state.get_module_governor(limit=min(limit, 500))
     @app.get("/api/learning")
     def learning():
         """Adaptive learning layer — signal ledger, emitter feedback, vote calibration, per-class weights, pair learner, tuner agent."""
