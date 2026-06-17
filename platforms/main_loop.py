@@ -283,6 +283,30 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             logger.warning("[signal-ledger] init failed, disabled: {}", exc)
             self._signal_ledger = None
             self._emitter_feedback = None
+        # ── Vote calibrator (learning layer #6) ──────────────────────────
+        # Reads each module's graded accuracy (via the read-only EmitterFeedback
+        # service) and turns it into a consensus-vote weight multiplier centred
+        # on 1.0 — accurate modules vote louder, noisy ones softer. Wired into
+        # the scanner so it scales the static ConsensusConfig weights. Inert
+        # unless VoteCalibratorConfig.vote_calibration_enabled is on; a build
+        # failure leaves it None and the scanner uses the static weights.
+        self._vote_calibrator = None
+        try:
+            from adaptive.vote_calibrator import VoteCalibrator
+
+            self._vote_calibrator = VoteCalibrator(
+                self.config.vote_calibrator,
+                emitter_feedback=self._emitter_feedback,
+            )
+            if getattr(self.config.vote_calibrator, "vote_calibration_enabled", False):
+                logger.info(
+                    "[vote-calibrator] enabled (method={}, feedback={})",
+                    self.config.vote_calibrator.vote_weight_method,
+                    self._emitter_feedback is not None,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[vote-calibrator] init failed, disabled: {}", exc)
+            self._vote_calibrator = None
         # ── Post-close price tracker (MFE/MAE attribution) ───────────────
         # Schedules forward price checks after every close to separate
         # entry-signal quality from management quality. Observational only —
@@ -348,6 +372,14 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self.scanner.set_pair_learner(self.ml.pair_learner)
         except Exception as exc:
             logger.warning("[main] could not wire PairLearner into scanner: {}", exc)
+        # Wire the VoteCalibrator into the scanner so module votes are weighted
+        # by their graded accuracy (learning layer #6). Inert unless the
+        # vote_calibration flag is on; the scanner falls back to static weights.
+        try:
+            if self._vote_calibrator is not None:
+                self.scanner.set_vote_calibrator(self._vote_calibrator)
+        except Exception as exc:
+            logger.warning("[main] could not wire VoteCalibrator into scanner: {}", exc)
         # Wire the post-close MFE/MAE tracker into the PairLearner so per-pair
         # learning can split entry quality from management quality (read-only;
         # only blends into sizing when the continuous split flag is on).
@@ -696,6 +728,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             PlannerCalibratorTunable,
             SignalLedgerTunable,
             PostCloseTrackerTunable,
+            VoteCalibratorTunable,
             ConsumerTunable,
         )
 
@@ -746,6 +779,18 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 self._post_close_tracker,
                 data_source_provider=lambda: self.platforms,
             ))
+        # Vote calibrator (periodic) — consensus weights from graded accuracy.
+        # Registered as an active tunable only when its flag is on; otherwise it
+        # registers read-only below so the agent still sees it.
+        vc_cfg = getattr(self.config, "vote_calibrator", None)
+        vc_enabled = bool(getattr(vc_cfg, "vote_calibration_enabled", False))
+        if self._vote_calibrator is not None and vc_enabled:
+            agent.register(VoteCalibratorTunable(
+                self._vote_calibrator,
+                min_interval=float(
+                    getattr(vc_cfg, "vote_calibration_min_interval_seconds", 3600.0)
+                ),
+            ))
 
         # ── Make the agent the single place the WHOLE system reports to ──────
         # Hard enforcement: the components that can self-tune get a reference so
@@ -753,6 +798,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # sole authority (it authorises only its own delegated calls).
         for _component in (
             self.ml, self._gate_tuner, self._calibrator, self._signal_ledger,
+            self._vote_calibrator,
         ):
             if _component is not None and hasattr(_component, "set_tuner_agent"):
                 _component.set_tuner_agent(agent)
@@ -814,6 +860,17 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         _reg("emitter_feedback", lambda: {
             "enabled": self._emitter_feedback is not None,
         })
+
+        # 13b — Vote calibrator. Registered as an ACTIVE tunable above when its
+        # flag is on; here we register it read-only when it is off (or unwired)
+        # so the agent still sees it in get_system_tuning_status / validation.
+        vc_cfg = getattr(self.config, "vote_calibrator", None)
+        if not bool(getattr(vc_cfg, "vote_calibration_enabled", False)):
+            _reg("vote_calibrator", lambda: {
+                "enabled": False,
+                "wired": self._vote_calibrator is not None,
+                "method": str(getattr(vc_cfg, "vote_weight_method", "")),
+            }, note="consumer — calibration disabled (static consensus weights)")
 
         # 14 — RiskEngine.
         re = getattr(self, "risk_engine", None)

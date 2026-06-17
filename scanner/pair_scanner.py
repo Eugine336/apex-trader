@@ -405,6 +405,11 @@ class PairScanner:
         # instead of the constant 0.40. Inert unless the config flag is on.
         self._pair_learner = None
         self._win_rate_adapter: Optional[AdaptiveWinRateProvider] = None
+        # Vote calibrator (learning layer #6) — re-weights each module's vote by
+        # its graded track record (accurate modules vote louder). Injected by the
+        # main loop via ``set_vote_calibrator``; inert unless its config flag is
+        # on, in which case ``_vote_weight`` scales the static consensus weight.
+        self._vote_calibrator = None
         self.news = NewsGuard()
         self.volume = VolumeAnalyzer()
         self.last_report: Optional[ScanReport] = None
@@ -477,6 +482,27 @@ class PairScanner:
         learner is picked up."""
         self._pair_learner = pair_learner
         self._win_rate_adapter = None
+
+    def set_vote_calibrator(self, calibrator) -> None:
+        """Inject the VoteCalibrator (learning layer #6). When wired and its
+        config flag is on, each module's static consensus weight is scaled by
+        its calibrated multiplier in ``_vote_weight``. Pass ``None`` to clear."""
+        self._vote_calibrator = calibrator
+
+    def _vote_weight(self, cc, module: str, default: float) -> float:
+        """Resolve a module's consensus vote weight, applying the VoteCalibrator
+        multiplier when one is wired and enabled. Falls back to the static
+        ``ConsensusConfig`` weight on any failure — calibration never breaks a
+        scan and is a pure no-op when disabled."""
+        base = cc.weights.get(module, default)
+        vc = self._vote_calibrator
+        if vc is None:
+            return base
+        try:
+            return vc.calibrated_weight(module, base)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[consensus] vote calibration failed for {}: {}", module, exc)
+            return base
 
     def _get_win_rate_adapter(self, rc) -> AdaptiveWinRateProvider:
         """Build (once) and cache the AdaptiveWinRateProvider from config + the
@@ -564,7 +590,7 @@ class PairScanner:
             # Structure vote
             try:
                 s_res = vote_from_structure(bias)
-                dir_votes.append(Vote("structure", s_res[0], s_res[1], cc.weights.get("structure", 3.0), evidence=_ev(s_res)))
+                dir_votes.append(Vote("structure", s_res[0], s_res[1], self._vote_weight(cc, "structure", 3.0), evidence=_ev(s_res)))
             except Exception as exc:
                 logger.warning("[consensus] structure vote failed, abstaining: {}", exc)
                 dir_votes.append(Vote("structure", "NEUTRAL", 0.0, 0.0))
@@ -574,7 +600,7 @@ class PairScanner:
                 if currency_data and pair in CURRENCY_PAIRS:
                     strength = self.strength_meter.calculate(currency_data)
                     cs_res = vote_from_currency_strength(pair, strength, CURRENCY_PAIRS)
-                    dir_votes.append(Vote("currency_strength", cs_res[0], cs_res[1], cc.weights.get("currency_strength", 2.0), evidence=_ev(cs_res)))
+                    dir_votes.append(Vote("currency_strength", cs_res[0], cs_res[1], self._vote_weight(cc, "currency_strength", 2.0), evidence=_ev(cs_res)))
                 else:
                     strength = None
             except Exception as exc:
@@ -586,7 +612,7 @@ class PairScanner:
             try:
                 vol_analysis = self.volume.analyze(m5_df)
                 v_res = vote_from_volume(vol_analysis)
-                dir_votes.append(Vote("volume", v_res[0], v_res[1], cc.weights.get("volume", 1.0), evidence=_ev(v_res)))
+                dir_votes.append(Vote("volume", v_res[0], v_res[1], self._vote_weight(cc, "volume", 1.0), evidence=_ev(v_res)))
             except Exception as exc:
                 logger.warning("[consensus] volume vote failed, abstaining: {}", exc)
 
@@ -597,7 +623,7 @@ class PairScanner:
                     wyck = WyckoffEngine(pip_size=pip_size)
                     wyckoff_analysis = wyck.analyze(h1_df)
                     w_res = vote_from_wyckoff(wyckoff_analysis)
-                    dir_votes.append(Vote("wyckoff", w_res[0], w_res[1], cc.weights.get("wyckoff", 1.5), evidence=_ev(w_res)))
+                    dir_votes.append(Vote("wyckoff", w_res[0], w_res[1], self._vote_weight(cc, "wyckoff", 1.5), evidence=_ev(w_res)))
             except Exception as exc:
                 logger.warning("[consensus] wyckoff vote failed, abstaining: {}", exc)
 
@@ -617,7 +643,7 @@ class PairScanner:
                     confluence_bonus=cc.zone_confluence_bonus,
                     confluence_step=cc.zone_confluence_step,
                 )
-                dir_votes.append(Vote("order_block", ob_res[0], ob_res[1], cc.weights.get("order_block", 1.0), evidence=_ev(ob_res)))
+                dir_votes.append(Vote("order_block", ob_res[0], ob_res[1], self._vote_weight(cc, "order_block", 1.0), evidence=_ev(ob_res)))
             except Exception as exc:
                 logger.warning("[consensus] order_block vote failed, abstaining: {}", exc)
                 current_price = float(m5_df["close"].iloc[-1])
@@ -636,7 +662,7 @@ class PairScanner:
                     confluence_bonus=cc.zone_confluence_bonus,
                     confluence_step=cc.zone_confluence_step,
                 )
-                dir_votes.append(Vote("fvg", f_res[0], f_res[1], cc.weights.get("fvg", 1.0), evidence=_ev(f_res)))
+                dir_votes.append(Vote("fvg", f_res[0], f_res[1], self._vote_weight(cc, "fvg", 1.0), evidence=_ev(f_res)))
             except Exception as exc:
                 logger.warning("[consensus] fvg vote failed, abstaining: {}", exc)
 
@@ -644,7 +670,7 @@ class PairScanner:
             liq_map = self.liquidity.map(h1_df, pip_size)
             try:
                 l_res = vote_from_liquidity(self.liquidity, m5_df, pip_size)
-                dir_votes.append(Vote("liquidity", l_res[0], l_res[1], cc.weights.get("liquidity", 1.0), evidence=_ev(l_res)))
+                dir_votes.append(Vote("liquidity", l_res[0], l_res[1], self._vote_weight(cc, "liquidity", 1.0), evidence=_ev(l_res)))
             except Exception as exc:
                 logger.warning("[consensus] liquidity vote failed, abstaining: {}", exc)
 
@@ -659,7 +685,7 @@ class PairScanner:
                     macd_signal=cp_cfg.macd_signal,
                     continuous_confidence=cc.momentum_continuous_confidence,
                 )
-                dir_votes.append(Vote("momentum", mom_res[0], mom_res[1], cc.weights.get("momentum", 1.0), evidence=_ev(mom_res)))
+                dir_votes.append(Vote("momentum", mom_res[0], mom_res[1], self._vote_weight(cc, "momentum", 1.0), evidence=_ev(mom_res)))
             except Exception as exc:
                 logger.warning("[consensus] momentum vote failed, abstaining: {}", exc)
 
@@ -672,7 +698,7 @@ class PairScanner:
                     current_price,
                     min_session_minutes=cp_cfg.vwap_min_session_minutes,
                 )
-                dir_votes.append(Vote("vwap", vwap_res[0], vwap_res[1], cc.weights.get("vwap", 1.0), evidence=_ev(vwap_res)))
+                dir_votes.append(Vote("vwap", vwap_res[0], vwap_res[1], self._vote_weight(cc, "vwap", 1.0), evidence=_ev(vwap_res)))
             except Exception as exc:
                 logger.warning("[consensus] vwap vote failed, abstaining: {}", exc)
 

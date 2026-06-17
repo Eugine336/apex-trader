@@ -17,6 +17,11 @@ from adaptive.emitter_feedback import (
     EmitterFeedbackRequest,
     EmitterFeedbackResponse,
 )
+from adaptive.vote_calibrator import (
+    VoteCalibrator,
+    VoteCalibration,
+    DEFAULT_VOTE_MODULES,
+)
 from adaptive.tunable import Tunable, TuneContext, TuneResult, TuneFrequency
 from adaptive.tuner_agent import TunerAgent
 from adaptive.tunable_adapters import (
@@ -28,6 +33,7 @@ from adaptive.tunable_adapters import (
     GateTunerTunable,
     PlannerCalibratorTunable,
     SignalLedgerTunable,
+    VoteCalibratorTunable,
 )
 
 __all__ = [
@@ -40,9 +46,11 @@ __all__ = [
     "EVEstimator", "EVEstimate",
     "SignalLedger", "SignalRecord", "SignalOutcome",
     "EmitterFeedbackService", "EmitterFeedbackRequest", "EmitterFeedbackResponse",
+    "VoteCalibrator", "VoteCalibration", "DEFAULT_VOTE_MODULES",
     "Tunable", "TuneContext", "TuneResult", "TuneFrequency",
     "TunerAgent",
     "ScoreOptimizerTunable", "RegimeLearnerTunable", "PairLearnerTunable",
     "SessionLearnerTunable", "EVEstimatorTunable", "GateTunerTunable",
     "PlannerCalibratorTunable", "SignalLedgerTunable",
+    "VoteCalibratorTunable",
 ]
