@@ -811,6 +811,25 @@ class DerivConnector(BaseConnector):
             parts.append(str(details))
         return " | ".join(parts) if parts else "Unknown error"
 
+    @staticmethod
+    def _is_symbol_property_error(err: str) -> bool:
+        """True when Deriv rejected ``symbol`` inside the buy ``parameters``.
+
+        Deriv's buy-by-parameters schema rejects ``symbol`` on this endpoint with
+        'Input validation failed: parameters | Properties not allowed: symbol'.
+        The buy-by-parameters form cannot satisfy it; the order must instead go
+        through the proposal→buy flow where ``symbol`` lives in the proposal
+        (contract definition) and the buy references the returned proposal id.
+        """
+        if not err:
+            return False
+        e = err.lower()
+        return "symbol" in e and (
+            "properties not allowed" in e
+            or "property not allowed" in e
+            or "additional propert" in e
+        )
+
     def _get_multiplier(self, mapped_symbol: str) -> int:
         """Look up the correct multiplier for a Deriv symbol.
         Prefers runtime-discovered values over static JSON config.
@@ -1030,9 +1049,20 @@ class DerivConnector(BaseConnector):
         MAX_RETRIES = 5
         _MIN_STAKE = 1.0
         err: Optional[str] = self._error_text(resp["error"]) if resp.get("error") else None
+        use_proposal_fallback = False
 
         for _attempt in range(MAX_RETRIES):
             if err is None:
+                break
+
+            # ── 0. Symbol property rejection ───────────────────────────────
+            # Deriv rejects ``symbol`` inside the buy ``parameters`` on this
+            # endpoint ('Properties not allowed: symbol'). The buy-by-parameters
+            # form cannot satisfy it, so break out and recover via the canonical
+            # proposal→buy flow below. Detecting it first stops the generic
+            # limit_order strip from misattributing the cause to SL/TP.
+            if self._is_symbol_property_error(err):
+                use_proposal_fallback = True
                 break
 
             changed = False
@@ -1127,6 +1157,30 @@ class DerivConnector(BaseConnector):
             resp = self._sync_send(retry_payload)
             err = self._error_text(resp["error"]) if resp.get("error") else None
 
+            if self._is_symbol_property_error(err):
+                use_proposal_fallback = True
+                break
+
+        if use_proposal_fallback:
+            # Deriv rejected ``symbol`` in the buy ``parameters``. Recover via the
+            # canonical proposal→buy flow. Pass the (already multiplier-fitted)
+            # amount/multiplier so the proposal starts from the corrected values.
+            return self._buy_via_proposal(
+                mapped=mapped,
+                contract_type=contract_type,
+                amount=amount,
+                multiplier=multiplier,
+                sl_pct=sl_pct,
+                tp_pct=tp_pct,
+                passthrough=passthrough,
+                entry_price=price,
+                lots=lots,
+                symbol=symbol,
+                direction=direction,
+                sl=sl,
+                tp=tp,
+                idempotency_key=idempotency_key,
+            )
 
         if err:
             logger.error("Deriv order failed — {} {} {}: {}", direction, mapped, lots, err)
@@ -1173,6 +1227,219 @@ class DerivConnector(BaseConnector):
             order_id=contract_id,
             fill_price=price,
             requested_price=price,
+            slippage_pips=0.0,
+            lots=lots,
+            symbol=symbol,
+            direction=direction.upper(),
+            sl=sl,
+            tp=tp,
+            platform="deriv",
+        )
+
+    def _buy_via_proposal(
+        self,
+        *,
+        mapped: str,
+        contract_type: str,
+        amount: float,
+        multiplier: int,
+        sl_pct: float,
+        tp_pct: float,
+        passthrough: dict,
+        entry_price: float,
+        lots: float,
+        symbol: str,
+        direction: str,
+        sl: float,
+        tp: float,
+        idempotency_key: str = "",
+    ) -> OrderResult:
+        """Buy a multiplier contract via the proposal→buy flow.
+
+        Used when Deriv rejects ``symbol`` inside the buy ``parameters``
+        ('Properties not allowed: symbol'). Here ``symbol`` lives in the
+        ``proposal`` request (the contract definition) — where Deriv accepts
+        it — and the ``buy`` references the returned proposal id, so no
+        ``symbol`` property is ever sent on the buy request itself.
+
+        The proposal request carries the same multiplier-fit / stake-cap /
+        limit_order self-correction the buy-by-parameters path uses, so a
+        rejected multiplier or oversized stop still converges.
+        """
+        import re as _re
+        import math as _math
+
+        MAX_RETRIES = 5
+        _MIN_STAKE = 1.0
+        send_limit_order = True
+
+        def build_proposal_payload(amount: float, multiplier: int, limit_order_enabled: bool) -> dict:
+            params: dict[str, Any] = {
+                "proposal": 1,
+                "amount": amount,
+                "basis": "stake",
+                "contract_type": contract_type,
+                "currency": "USD",
+                "symbol": mapped,
+                "multiplier": multiplier,
+            }
+            if limit_order_enabled:
+                sl_dollar, tp_dollar = self._limit_order_dollars(
+                    sl_pct, tp_pct, amount, multiplier,
+                )
+                params["limit_order"] = {
+                    "stop_loss": sl_dollar,
+                    "take_profit": tp_dollar,
+                }
+            return params
+
+        t0 = _time.monotonic()
+        resp = self._sync_send(build_proposal_payload(amount, multiplier, send_limit_order))
+        err: Optional[str] = self._error_text(resp["error"]) if resp.get("error") else None
+
+        for _attempt in range(MAX_RETRIES):
+            if err is None:
+                break
+
+            changed = False
+
+            # ── 1. Multiplier correction ───────────────────────────────────
+            _mult_match = _re.search(
+                r"Multiplier is not in acceptable range.*?Accepts\s+([\d,\s]+)", err
+            )
+            if _mult_match:
+                valid = sorted(int(x.strip()) for x in _mult_match.group(1).split(",") if x.strip().isdigit())
+                if valid:
+                    self._discovered_multipliers[mapped] = valid
+                    nearest = min(valid, key=lambda x: abs(x - multiplier))
+                    corrected = self._fit_multiplier_for_sl(nearest, sl_pct, valid)
+                    logger.warning(
+                        "Deriv multiplier {} rejected for {} (proposal) — retrying with {} (valid: {}).",
+                        multiplier, mapped, corrected, valid,
+                    )
+                    if corrected > 0:
+                        amount = round(max(_MIN_STAKE, amount * multiplier / corrected), 2)
+                    multiplier = corrected
+                    changed = True
+
+            # ── 2. Stake cap ───────────────────────────────────────────────
+            _cap_match = _re.search(r"equal to or lower than ([\d]+(?:\.[\d]+)?)", err)
+            if _cap_match:
+                max_stake = float(_cap_match.group(1))
+                capped = max(_MIN_STAKE, float(_math.floor(max_stake * 100 - 1)) / 100)
+                if capped >= amount:
+                    capped = max(_MIN_STAKE, amount - 0.50)
+                if capped < _MIN_STAKE:
+                    logger.warning(
+                        "Deriv cap ${:.2f} below minimum ${:.2f} (proposal) — skipping {} {}",
+                        max_stake, _MIN_STAKE, direction, symbol,
+                    )
+                    break
+                if capped < amount:
+                    amount = capped
+                    changed = True
+
+            # ── 3. limit_order strip — only when SL/TP is the real culprit ──
+            _err_low = err.lower()
+            references_sltp = any(
+                k in _err_low
+                for k in ("stop_loss", "take_profit", "stop loss", "take profit",
+                          "limit_order", "limit order")
+            )
+            if send_limit_order and (
+                references_sltp
+                or (not changed and "Input validation failed: parameters" in err)
+            ):
+                logger.warning(
+                    "Deriv rejected limit_order (SL/TP) params for {} (proposal) — retrying without limit_order.",
+                    mapped,
+                )
+                send_limit_order = False
+                changed = True
+
+            if not changed:
+                break
+
+            resp = self._sync_send(build_proposal_payload(amount, multiplier, send_limit_order))
+            err = self._error_text(resp["error"]) if resp.get("error") else None
+
+        if err:
+            logger.error(
+                "Deriv proposal failed — {} {} {}: {}", direction, mapped, lots, err,
+            )
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0,
+                requested_price=entry_price, slippage_pips=0.0, lots=lots,
+                symbol=symbol, direction=direction.upper(), sl=sl, tp=tp,
+                platform="deriv", error=err,
+            )
+
+        proposal = resp.get("proposal", {})
+        proposal_id = str(proposal.get("id", "")).strip()
+        try:
+            ask_price = float(proposal.get("ask_price", amount) or amount)
+        except (TypeError, ValueError):
+            ask_price = amount
+        if not proposal_id:
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0,
+                requested_price=entry_price, slippage_pips=0.0, lots=lots,
+                symbol=symbol, direction=direction.upper(), sl=sl, tp=tp,
+                platform="deriv",
+                error="No proposal id in Deriv response — order not confirmed",
+            )
+
+        # Buy by proposal id — no ``symbol``/``parameters`` on the buy request.
+        buy_payload: dict[str, Any] = {"buy": proposal_id, "price": ask_price}
+        if passthrough:
+            buy_payload["passthrough"] = passthrough
+
+        resp = self._sync_send(buy_payload)
+        latency = (_time.monotonic() - t0) * 1000
+        if resp.get("error"):
+            err = self._error_text(resp["error"])
+            logger.error(
+                "Deriv buy (proposal id) failed — {} {} {}: {}",
+                direction, mapped, lots, err,
+            )
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0,
+                requested_price=entry_price, slippage_pips=0.0, lots=lots,
+                symbol=symbol, direction=direction.upper(), sl=sl, tp=tp,
+                platform="deriv", error=err,
+            )
+
+        buy_resp = resp.get("buy", {})
+        contract_id = str(buy_resp.get("contract_id", "")).strip()
+        if not contract_id or contract_id == "0":
+            logger.error(
+                "Deriv proposal buy response missing contract_id — treating as "
+                "FAILED. buy_resp={}", buy_resp,
+            )
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0,
+                requested_price=entry_price, slippage_pips=0.0, lots=lots,
+                symbol=symbol, direction=direction.upper(), sl=sl, tp=tp,
+                platform="deriv",
+                error="No contract_id in Deriv response — order not confirmed",
+            )
+
+        self._positions[contract_id] = {
+            "symbol": symbol, "direction": direction.upper(),
+            "lots": lots, "sl": sl, "tp": tp, "open_price": entry_price,
+            "stake": amount, "multiplier": multiplier,
+            "idem_key": idempotency_key,
+        }
+
+        logger.info(
+            "Deriv order filled (proposal) — {} {} {} lots @ {} contract={} ({:.0f}ms)",
+            direction, mapped, lots, amount, contract_id, latency,
+        )
+        return OrderResult(
+            success=True,
+            order_id=contract_id,
+            fill_price=entry_price,
+            requested_price=entry_price,
             slippage_pips=0.0,
             lots=lots,
             symbol=symbol,
