@@ -79,6 +79,10 @@ class VoteCalibration:
     computed_at: float = 0.0
     skipped: bool = False
     reason: str = ""
+    # Whether the marginal-R (counterfactual) signal was blended into the
+    # multipliers this pass, and the per-module marginal R per trade used.
+    counterfactual_used: bool = False
+    marginal_r: Dict[str, float] = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -91,6 +95,8 @@ class VoteCalibration:
             "computed_at": self.computed_at,
             "skipped": self.skipped,
             "reason": self.reason,
+            "counterfactual_used": bool(self.counterfactual_used),
+            "marginal_r": dict(self.marginal_r),
         }
 
 
@@ -117,6 +123,10 @@ class VoteCalibrator(TuningGuardMixin):
     ) -> None:
         self._config = config
         self._emitter_feedback = emitter_feedback
+        # Optional read-only CounterfactualEngine — supplies each module's
+        # marginal R (per attributed trade) so a module that is accurate yet
+        # harmful by marginal R can be damped. Read-only: never recomputes.
+        self._counterfactual = None
         self._modules = tuple(modules) if modules else DEFAULT_VOTE_MODULES
         # Published, immutable multiplier map (never mutated in place — swapped
         # atomically on recalibrate so concurrent scanner reads are safe).
@@ -130,6 +140,15 @@ class VoteCalibrator(TuningGuardMixin):
     def set_emitter_feedback(self, emitter_feedback) -> None:
         """Inject (or replace) the read-only feedback source."""
         self._emitter_feedback = emitter_feedback
+
+    def set_counterfactual(self, counterfactual) -> None:
+        """Inject (or replace, with ``None``) the read-only counterfactual engine.
+
+        Supplies the marginal-R signal blended into the weight when
+        ``use_counterfactual_weight`` is on. Read-only: only the cached
+        attribution table is consulted; the engine is never recomputed here.
+        """
+        self._counterfactual = counterfactual
 
     @property
     def enabled(self) -> bool:
@@ -183,6 +202,12 @@ class VoteCalibrator(TuningGuardMixin):
             "ceiling": float(getattr(cfg, "vote_weight_ceiling", 3.0)),
             "shrinkage": float(getattr(cfg, "vote_calibration_shrinkage", 0.5)),
             "min_signals": int(getattr(cfg, "vote_calibration_min_signals", 20)),
+            "use_counterfactual_weight": bool(
+                getattr(cfg, "use_counterfactual_weight", False)
+            ) and self._counterfactual is not None,
+            "counterfactual_weight_blend": float(
+                getattr(cfg, "counterfactual_weight_blend", 0.3)
+            ),
         }
 
     def restore_multipliers(self, multipliers: Optional[dict]) -> None:
@@ -253,7 +278,7 @@ class VoteCalibrator(TuningGuardMixin):
                 "n": int(getattr(resp, "total_signals", 0) or 0),
             }
 
-        cal = self._compute_calibration(accuracy_data)
+        cal = self._compute_calibration(accuracy_data, self._cf_marginal_r_map())
         with self._lock:
             self._multipliers = dict(cal.multipliers)
             self._last_calibration = cal
@@ -267,9 +292,42 @@ class VoteCalibrator(TuningGuardMixin):
             )
         return cal
 
+    # ── Counterfactual signal (read-only) ─────────────────────────────────
+
+    def _cf_marginal_r_map(self) -> Dict[str, dict]:
+        """Per-module marginal R per attributed trade from the counterfactual
+        cache. Empty when disabled / unwired / no data. Never raises."""
+        if not bool(getattr(self._config, "use_counterfactual_weight", False)):
+            return {}
+        cf = self._counterfactual
+        if cf is None:
+            return {}
+        try:
+            cached = cf.get_cached_attributions() or {}
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[vote-calibrator] cf cache read failed: {}", exc)
+            return {}
+        out: Dict[str, dict] = {}
+        for m in cached.get("modules", []) or []:
+            try:
+                module = str(m.get("module") or "")
+                if not module:
+                    continue
+                trades = int(m.get("trades_involved", 0) or 0)
+                marginal_r = float(m.get("marginal_r", 0.0) or 0.0)
+                out[module] = {
+                    "mr_per_trade": marginal_r / trades if trades > 0 else 0.0,
+                    "trades": trades,
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[vote-calibrator] cf row parse failed: {}", exc)
+        return out
+
     # ── Core math (pure, deterministic) ───────────────────────────────────
 
-    def _compute_calibration(self, accuracy_data: Dict[str, dict]) -> VoteCalibration:
+    def _compute_calibration(
+        self, accuracy_data: Dict[str, dict], cf_data: Optional[Dict[str, dict]] = None,
+    ) -> VoteCalibration:
         """Turn per-module accuracy + sample size into bounded, mean-1.0
         multipliers. Pure function of the inputs and the current config.
 
@@ -348,6 +406,9 @@ class VoteCalibrator(TuningGuardMixin):
                     # Below the sample floor — stay neutral.
                     mults[m] = 1.0
 
+        # ── Blend the marginal-R (counterfactual) signal, if available ────────
+        cf_used, cf_map = self._blend_counterfactual(mults, cf_data, floor, ceiling)
+
         return VoteCalibration(
             multipliers=mults,
             accuracies=shrunk,
@@ -357,8 +418,67 @@ class VoteCalibrator(TuningGuardMixin):
             qualifying_modules=len(qualifying),
             computed_at=now,
             skipped=False,
-            reason="ok",
+            reason="ok" if not cf_used else "ok (counterfactual blended)",
+            counterfactual_used=cf_used,
+            marginal_r=cf_map,
         )
+
+    def _blend_counterfactual(
+        self,
+        mults: Dict[str, float],
+        cf_data: Optional[Dict[str, dict]],
+        floor: float,
+        ceiling: float,
+    ) -> tuple[bool, Dict[str, float]]:
+        """Blend marginal R per trade into ``mults`` in place (mutates ``mults``).
+
+        The continuous complement to the Module Governor's discrete shadow: a
+        module that is accurate yet harmful by marginal R is damped below 1.0.
+        Combined as a weighted geometric mean and re-centred on 1.0. No-op (and
+        ``mults`` unchanged) when the flag is off, there is no engine wired, or
+        fewer than two modules clear the trust floor. Returns
+        ``(blended?, {module: marginal_r_per_trade})``.
+        """
+        cfg = self._config
+        if not bool(getattr(cfg, "use_counterfactual_weight", False)) or not cf_data:
+            return False, {}
+        blend = float(getattr(cfg, "counterfactual_weight_blend", 0.3))
+        if blend <= 0:
+            return False, {}
+        min_trades = int(getattr(cfg, "counterfactual_weight_min_trades", 100))
+        temperature = float(getattr(cfg, "vote_weight_temperature", 1.0))
+        if temperature <= 0:
+            temperature = 1.0
+
+        # Only modules in the panel with a trusted (enough-trades) marginal R.
+        trusted = {
+            m: float(d.get("mr_per_trade", 0.0))
+            for m, d in cf_data.items()
+            if m in mults and int(d.get("trades", 0)) >= min_trades
+        }
+        if len(trusted) < 2:
+            return False, {m: float(d.get("mr_per_trade", 0.0)) for m, d in cf_data.items()}
+
+        # Centre marginal R on the trusted-panel mean, then map to a mean-1.0
+        # multiplier (better-than-peers → louder, worse → softer).
+        mean_mr = sum(trusted.values()) / len(trusted)
+        cf_raw = {m: math.exp((mr - mean_mr) / temperature) for m, mr in trusted.items()}
+        mean_cf = sum(cf_raw.values()) / len(cf_raw)
+        if mean_cf <= 0:
+            return False, {m: mr for m, mr in trusted.items()}
+        cf_mult = {m: v / mean_cf for m, v in cf_raw.items()}
+
+        # Weighted geometric blend (only trusted modules move).
+        for m, cfm in cf_mult.items():
+            base = max(mults.get(m, 1.0), _EPS)
+            mults[m] = base ** (1.0 - blend) * max(cfm, _EPS) ** blend
+
+        # Re-centre the whole panel on mean 1.0 and re-clamp.
+        mean_final = sum(mults.values()) / len(mults) if mults else 1.0
+        if mean_final > 0:
+            for m in mults:
+                mults[m] = float(min(max(mults[m] / mean_final, floor), ceiling))
+        return True, {m: mr for m, mr in trusted.items()}
 
 
 __all__ = ["VoteCalibrator", "VoteCalibration", "DEFAULT_VOTE_MODULES"]

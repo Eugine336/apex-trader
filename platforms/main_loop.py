@@ -382,6 +382,30 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # closed-trade snapshots).  Each is gated by its own flag and left None
         # on any build failure so the guarded hooks simply no-op.
         self._init_evolution_engines()
+        # ── Close the loop: counterfactual → governor + vote calibrator ──
+        # Give the governor and the vote calibrator a read-only handle to the
+        # counterfactual engine so each module's MARGINAL contribution (marginal
+        # R per attributed trade) becomes a second governance/weighting signal
+        # alongside graded accuracy. Both consume the cached attribution table
+        # only — they never trigger a recompute. Inert when the engine is None
+        # or its per-component flag is off (accuracy-only behaviour preserved).
+        try:
+            if self._counterfactual is not None:
+                if self._module_governor is not None and hasattr(
+                    self._module_governor, "set_counterfactual"
+                ):
+                    self._module_governor.set_counterfactual(self._counterfactual)
+                if self._vote_calibrator is not None and hasattr(
+                    self._vote_calibrator, "set_counterfactual"
+                ):
+                    self._vote_calibrator.set_counterfactual(self._counterfactual)
+                logger.info(
+                    "[counterfactual] wired into governor={} + vote_calibrator={}",
+                    self._module_governor is not None,
+                    self._vote_calibrator is not None,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[counterfactual] loop-close wiring failed: {}", exc)
         self.scheduler = ScanScheduler(config=self.config)
         risk_cfg = self.config.risk
         self.entry_engine = EntryEngine(

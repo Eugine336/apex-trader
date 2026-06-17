@@ -1575,6 +1575,22 @@ class VoteCalibratorConfig:
     # Minimum seconds between recalibration passes (the TunerAgent drives it).
     vote_calibration_min_interval_seconds: float = 3600.0
 
+    # ── Counterfactual blend (L4 integration) ────────────────────────────
+    # Blend each module's MARGINAL contribution (marginal R per attributed
+    # trade, read from the read-only CounterfactualEngine cache) into the weight
+    # signal — the continuous complement to the Module Governor's discrete
+    # shadow decision. A module that is accurate yet harmful by marginal R is
+    # damped below 1.0. When off, or when no engine is wired / data is thin, the
+    # calibrator uses graded accuracy alone (unchanged behaviour).
+    use_counterfactual_weight: bool = True
+    # Blend weight: 0 = accuracy only, 1 = marginal-R only. The accuracy and
+    # marginal-R multipliers are combined as a weighted geometric mean and the
+    # result is re-centred on 1.0 and re-clamped to [floor, ceiling].
+    counterfactual_weight_blend: float = 0.3
+    # Minimum attributed trades before a module's marginal-R signal is trusted
+    # (else that module keeps its accuracy-only multiplier).
+    counterfactual_weight_min_trades: int = 100
+
     def __post_init__(self) -> None:
         if self.vote_weight_method not in ("softmax", "proportional", "log_odds"):
             raise ValueError(
@@ -1616,6 +1632,16 @@ class VoteCalibratorConfig:
                 "VoteCalibratorConfig.vote_calibration_min_interval_seconds must be >= 0, "
                 f"got {self.vote_calibration_min_interval_seconds!r}"
             )
+        if not (0.0 <= float(self.counterfactual_weight_blend) <= 1.0):
+            raise ValueError(
+                "VoteCalibratorConfig.counterfactual_weight_blend must be in [0, 1], "
+                f"got {self.counterfactual_weight_blend!r}"
+            )
+        if int(self.counterfactual_weight_min_trades) < 1:
+            raise ValueError(
+                "VoteCalibratorConfig.counterfactual_weight_min_trades must be >= 1, "
+                f"got {self.counterfactual_weight_min_trades!r}"
+            )
 
 
 @dataclass
@@ -1635,7 +1661,7 @@ class ModuleGovernorConfig:
     """
 
     # Master switch. When False, no module is shadowed/disabled (legacy path).
-    module_governor_enabled: bool = False
+    module_governor_enabled: bool = True
     # ACTIVE → SHADOW: demote when trailing accuracy over ``shadow_lookback``
     # graded signals drops below this threshold.
     shadow_threshold: float = 0.35
@@ -1657,6 +1683,25 @@ class ModuleGovernorConfig:
     feedback_lookback: int = 500
     # SQLite state + transition audit DB (under data/, gitignored).
     db_path: str = "data/module_governor.db"
+
+    # ── Counterfactual signal (L4 integration) ───────────────────────────
+    # The governor can consider each module's MARGINAL contribution (marginal R
+    # per attributed trade, read from the read-only CounterfactualEngine cache)
+    # IN ADDITION TO its graded accuracy. A module can be accurate yet harmful
+    # by marginal R, so either signal alone can SHADOW it (OR'd); reactivation
+    # from SHADOW needs BOTH signals to be acceptable (AND'd). When off, or when
+    # no counterfactual engine is wired, the governor behaves exactly as before
+    # (accuracy only).
+    use_counterfactual_signal: bool = True
+    # ACTIVE → SHADOW: marginal R per attributed trade below this (with the
+    # engine's ``better_off_without`` flag set) triggers shadow on the
+    # attribution signal alone.
+    marginal_r_shadow_threshold: float = -0.05
+    # SHADOW → ACTIVE: marginal R per attributed trade must be at/above this for
+    # the counterfactual half of the reactivation AND-gate to pass.
+    marginal_r_reactivation_threshold: float = 0.0
+    # Minimum attributed trades before the counterfactual signal is trusted.
+    marginal_r_min_trades: int = 100
 
     def __post_init__(self) -> None:
         for name in ("shadow_threshold", "reactivation_threshold", "disable_threshold"):
@@ -1684,6 +1729,20 @@ class ModuleGovernorConfig:
             raise ValueError(
                 "ModuleGovernorConfig.feedback_lookback must be > 0, "
                 f"got {self.feedback_lookback!r}"
+            )
+        if int(self.marginal_r_min_trades) < 1:
+            raise ValueError(
+                "ModuleGovernorConfig.marginal_r_min_trades must be >= 1, "
+                f"got {self.marginal_r_min_trades!r}"
+            )
+        if float(self.marginal_r_reactivation_threshold) < float(
+            self.marginal_r_shadow_threshold
+        ):
+            raise ValueError(
+                "ModuleGovernorConfig.marginal_r_reactivation_threshold must be "
+                ">= marginal_r_shadow_threshold, got "
+                f"reactivation={self.marginal_r_reactivation_threshold} "
+                f"shadow={self.marginal_r_shadow_threshold}"
             )
 
 
@@ -1863,7 +1922,7 @@ class CounterfactualConfig:
     """
 
     # Master switch: capture per-trade decision snapshots + run attribution.
-    counterfactual_enabled: bool = False
+    counterfactual_enabled: bool = True
     # How many recent closed trades each attribution pass analyses.
     attribution_lookback: int = 500
     # Recompute the attribution table every N closed trades.

@@ -106,9 +106,19 @@ CREATE TABLE IF NOT EXISTS module_governor_transitions (
     new_mode      TEXT NOT NULL,
     reason        TEXT,
     accuracy      REAL NOT NULL DEFAULT 0.0,
-    sample_size   INTEGER NOT NULL DEFAULT 0
+    sample_size   INTEGER NOT NULL DEFAULT 0,
+    trigger       TEXT NOT NULL DEFAULT 'accuracy',
+    marginal_r    REAL NOT NULL DEFAULT 0.0
 )
 """
+
+# Columns added after the table's first release — applied idempotently on
+# connect so an existing audit DB (from before the counterfactual integration)
+# gains them without losing history.
+_MIGRATE_TRANS_COLS = (
+    ("trigger", "TEXT NOT NULL DEFAULT 'accuracy'"),
+    ("marginal_r", "REAL NOT NULL DEFAULT 0.0"),
+)
 
 _CREATE_TRANS_IDX = (
     "CREATE INDEX IF NOT EXISTS idx_mg_trans_ts "
@@ -152,6 +162,12 @@ class GovernorTransition:
     reason: str = ""
     accuracy: float = 0.0
     sample_size: int = 0
+    # Which signal drove the move: "accuracy", "counterfactual", or "both"
+    # (also "manual" / "rollback" / "auto-retry" for non-policy moves).
+    trigger: str = "accuracy"
+    # Marginal R per attributed trade at the move (from the counterfactual
+    # cache) when the attribution signal was involved; 0.0 otherwise.
+    marginal_r: float = 0.0
     timestamp: float = field(default_factory=time.time)
 
     def to_dict(self) -> dict:
@@ -162,6 +178,8 @@ class GovernorTransition:
             "reason": self.reason,
             "accuracy": round(float(self.accuracy), 4),
             "sample_size": int(self.sample_size),
+            "trigger": self.trigger,
+            "marginal_r": round(float(self.marginal_r), 4),
             "timestamp": self.timestamp,
         }
 
@@ -180,11 +198,17 @@ class ModuleGovernor(TuningGuardMixin):
         config,
         emitter_feedback=None,
         *,
+        counterfactual=None,
         db_path: Optional[Path | str] = None,
         modules: Optional[tuple[str, ...] | list[str]] = None,
     ) -> None:
         self._config = config
         self._emitter_feedback = emitter_feedback
+        # Optional read-only CounterfactualEngine — supplies each module's
+        # marginal R (per attributed trade) as a second governance signal. The
+        # governor only READS its cached attribution table; it never triggers a
+        # recompute or mutates it.
+        self._counterfactual = counterfactual
         self._modules = tuple(modules) if modules else DEFAULT_GOVERNED_MODULES
         # Atomically-published mode cache for lock-free hot reads.
         self._modes: Dict[str, str] = {m: ModuleMode.ACTIVE.value for m in self._modules}
@@ -212,10 +236,36 @@ class ModuleGovernor(TuningGuardMixin):
             self._conn.execute(_CREATE_STATE)
             self._conn.execute(_CREATE_TRANSITIONS)
             self._conn.execute(_CREATE_TRANS_IDX)
+            self._migrate_transitions()
             self._conn.commit()
         except Exception as exc:  # noqa: BLE001
             logger.warning("[module-governor] DB connect/init failed ({}): {}", self._db_path, exc)
             self._conn = None
+
+    def _migrate_transitions(self) -> None:
+        """Add post-release columns to the transitions table if missing.
+
+        Idempotent and exception-safe: a fresh DB already has the columns (from
+        ``_CREATE_TRANSITIONS``); an older DB gains them via ALTER TABLE without
+        losing rows. Caller holds the connection; commit is done by the caller.
+        """
+        if self._conn is None:
+            return
+        try:
+            cur = self._conn.execute("PRAGMA table_info(module_governor_transitions)")
+            existing = {str(r[1]) for r in cur.fetchall()}
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[module-governor] table_info failed: {}", exc)
+            return
+        for col, decl in _MIGRATE_TRANS_COLS:
+            if col in existing:
+                continue
+            try:
+                self._conn.execute(
+                    f"ALTER TABLE module_governor_transitions ADD COLUMN {col} {decl}"
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[module-governor] add column {} failed: {}", col, exc)
 
     def _load_state(self) -> None:
         """Hydrate in-memory state + the published mode cache from SQLite."""
@@ -278,12 +328,14 @@ class ModuleGovernor(TuningGuardMixin):
         try:
             self._conn.execute(
                 """INSERT INTO module_governor_transitions
-                   (timestamp, module, old_mode, new_mode, reason, accuracy, sample_size)
-                   VALUES (?,?,?,?,?,?,?)""",
+                   (timestamp, module, old_mode, new_mode, reason, accuracy,
+                    sample_size, trigger, marginal_r)
+                   VALUES (?,?,?,?,?,?,?,?,?)""",
                 (
                     float(t.timestamp),
                     t.module, t.old_mode, t.new_mode, t.reason or "",
                     float(t.accuracy), int(t.sample_size),
+                    str(t.trigger or "accuracy"), float(t.marginal_r or 0.0),
                 ),
             )
             self._conn.commit()
@@ -304,6 +356,15 @@ class ModuleGovernor(TuningGuardMixin):
     def set_emitter_feedback(self, emitter_feedback) -> None:
         """Inject (or replace, with ``None``) the read-only feedback source."""
         self._emitter_feedback = emitter_feedback
+
+    def set_counterfactual(self, counterfactual) -> None:
+        """Inject (or replace, with ``None``) the read-only counterfactual engine.
+
+        The governor only reads its cached attribution table — it never triggers
+        a recompute. When ``None`` (or no data yet), governance falls back to the
+        graded-accuracy signal alone.
+        """
+        self._counterfactual = counterfactual
 
     @property
     def enabled(self) -> bool:
@@ -353,7 +414,7 @@ class ModuleGovernor(TuningGuardMixin):
             if old == target:
                 return True
             self._apply_mode(rec, target, reason=reason, accuracy=rec.accuracy_at_transition,
-                             sample_size=0, baseline_signals=0)
+                             sample_size=0, baseline_signals=0, trigger="manual")
         return True
 
     # ── Core operation: evaluate transitions (guarded) ─────────────────────
@@ -376,6 +437,7 @@ class ModuleGovernor(TuningGuardMixin):
             return []
         if self._emitter_feedback is None:
             return []
+        cf_map = self._cf_signal_map()
         transitions: List[GovernorTransition] = []
         for module in self._modules:
             try:
@@ -383,21 +445,74 @@ class ModuleGovernor(TuningGuardMixin):
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[module-governor] accuracy fetch failed for {}: {}", module, exc)
                 continue
-            t = self._evaluate_one(module, acc, n)
+            t = self._evaluate_one(module, acc, n, cf_map.get(module))
             if t is not None:
                 transitions.append(t)
         if transitions:
             logger.info(
                 "[module-governor] {} transition(s): {}",
                 len(transitions),
-                ", ".join(f"{t.module} {t.old_mode}->{t.new_mode}" for t in transitions),
+                ", ".join(
+                    f"{t.module} {t.old_mode}->{t.new_mode} ({t.trigger})"
+                    for t in transitions
+                ),
             )
         return transitions
 
+    def _cf_signal_map(self) -> Dict[str, dict]:
+        """Per-module marginal-R signal from the counterfactual cache (read-only).
+
+        Returns ``{module: {"mr_per_trade", "trades", "better_off_without",
+        "marginal_r"}}``. Empty when the feature is off, no engine is wired, or
+        nothing has been attributed yet — in which case the governor uses the
+        graded-accuracy signal alone. Never raises.
+        """
+        if not bool(getattr(self._config, "use_counterfactual_signal", False)):
+            return {}
+        cf = self._counterfactual
+        if cf is None:
+            return {}
+        try:
+            cached = cf.get_cached_attributions() or {}
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[module-governor] cf cache read failed: {}", exc)
+            return {}
+        out: Dict[str, dict] = {}
+        for m in cached.get("modules", []) or []:
+            try:
+                module = str(m.get("module") or "")
+                if not module:
+                    continue
+                trades = int(m.get("trades_involved", 0) or 0)
+                marginal_r = float(m.get("marginal_r", 0.0) or 0.0)
+                out[module] = {
+                    "mr_per_trade": marginal_r / trades if trades > 0 else 0.0,
+                    "trades": trades,
+                    "better_off_without": bool(m.get("better_off_without", False)),
+                    "marginal_r": marginal_r,
+                }
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[module-governor] cf row parse failed: {}", exc)
+        return out
+
     def _evaluate_one(
         self, module: str, accuracy: float, sample_size: int,
+        cf: Optional[dict] = None,
     ) -> Optional[GovernorTransition]:
-        """Apply the transition policy for a single module (caller-safe)."""
+        """Apply the transition policy for a single module (caller-safe).
+
+        Two governance signals are combined:
+
+        * **Accuracy** — graded accuracy over a trailing window (EmitterFeedback).
+        * **Counterfactual** — marginal R per attributed trade (CounterfactualEngine
+          cache), trusted only once ``marginal_r_min_trades`` trades exist.
+
+        ACTIVE→SHADOW fires when *either* signal says harmful (OR). SHADOW→ACTIVE
+        requires *both* signals acceptable (AND) — missing/insufficient
+        counterfactual data is non-blocking so accuracy-only behaviour is
+        preserved. SHADOW→DISABLED fires when *either* signal confirms harmful
+        with high confidence (OR).
+        """
         cfg = self._config
         shadow_threshold = float(getattr(cfg, "shadow_threshold", 0.35))
         shadow_lookback = int(getattr(cfg, "shadow_lookback", 50))
@@ -407,6 +522,18 @@ class ModuleGovernor(TuningGuardMixin):
         disable_min = int(getattr(cfg, "disable_min_signals", 50))
         auto_retry_days = int(getattr(cfg, "auto_retry_days", 0))
 
+        # ── Resolve the counterfactual signal (trusted only with enough data) ──
+        cf_min_trades = int(getattr(cfg, "marginal_r_min_trades", 100))
+        cf_shadow_thr = float(getattr(cfg, "marginal_r_shadow_threshold", -0.05))
+        cf_react_thr = float(getattr(cfg, "marginal_r_reactivation_threshold", 0.0))
+        cf_trusted = bool(cf) and int(cf.get("trades", 0)) >= cf_min_trades
+        cf_mr = float(cf.get("mr_per_trade", 0.0)) if cf else 0.0
+        cf_better_off_without = bool(cf.get("better_off_without", False)) if cf else False
+        # Harmful by attribution: net-negative AND the engine says we'd be
+        # better off without it AND there is enough data to trust the signal.
+        cf_harmful = cf_trusted and cf_better_off_without and cf_mr < cf_shadow_thr
+        cf_ok = (not cf_trusted) or cf_mr >= cf_react_thr
+
         with self._lock:
             rec = self._state.get(module)
             if rec is None:
@@ -415,40 +542,54 @@ class ModuleGovernor(TuningGuardMixin):
             mode = rec.mode
 
             if mode == ModuleMode.ACTIVE:
-                # Demote to SHADOW once a full trailing window is poor.
-                if sample_size >= shadow_lookback and accuracy < shadow_threshold:
-                    reason = (
-                        f"accuracy {accuracy:.2f} < {shadow_threshold:.2f} "
-                        f"over {sample_size} signals"
-                    )
-                    return self._apply_mode(
-                        rec, ModuleMode.SHADOW, reason=reason, accuracy=accuracy,
-                        sample_size=sample_size, baseline_signals=sample_size,
-                    )
-                return None
+                acc_poor = sample_size >= shadow_lookback and accuracy < shadow_threshold
+                if not (acc_poor or cf_harmful):
+                    return None
+                trigger = _trigger_label(acc_poor, cf_harmful)
+                reason = _shadow_reason(
+                    acc_poor, cf_harmful, accuracy, shadow_threshold, sample_size,
+                    cf_mr, cf.get("trades", 0) if cf else 0, cf_shadow_thr,
+                )
+                return self._apply_mode(
+                    rec, ModuleMode.SHADOW, reason=reason, accuracy=accuracy,
+                    sample_size=sample_size, baseline_signals=sample_size,
+                    trigger=trigger, marginal_r=(cf_mr if cf_harmful else 0.0),
+                )
 
             if mode == ModuleMode.SHADOW:
                 # Only count signals accrued DURING the shadow period.
                 shadow_n = max(0, sample_size - int(rec.shadow_baseline_signals))
-                # Recovered → reactivate.
-                if shadow_n >= reactivation_min and accuracy >= reactivation_threshold:
+                # Recovered → reactivate (BOTH signals must be acceptable).
+                acc_recovered = (
+                    shadow_n >= reactivation_min and accuracy >= reactivation_threshold
+                )
+                if acc_recovered and cf_ok:
+                    trigger = "both" if cf_trusted else "accuracy"
                     reason = (
                         f"recovered to {accuracy:.2f} >= {reactivation_threshold:.2f} "
                         f"over {shadow_n} shadow signals"
                     )
+                    if cf_trusted:
+                        reason += (
+                            f"; marginal_R={cf_mr:+.3f}R/trade >= {cf_react_thr:+.3f}"
+                        )
                     return self._apply_mode(
                         rec, ModuleMode.ACTIVE, reason=reason, accuracy=accuracy,
                         sample_size=shadow_n, baseline_signals=0,
+                        trigger=trigger, marginal_r=(cf_mr if cf_trusted else 0.0),
                     )
-                # Still harmful after enough shadow signals → disable.
-                if shadow_n >= disable_min and accuracy < disable_threshold:
-                    reason = (
-                        f"stayed at {accuracy:.2f} < {disable_threshold:.2f} "
-                        f"over {shadow_n} shadow signals"
+                # Still harmful → disable (EITHER signal confirms, high confidence).
+                acc_disable = shadow_n >= disable_min and accuracy < disable_threshold
+                if acc_disable or cf_harmful:
+                    trigger = _trigger_label(acc_disable, cf_harmful)
+                    reason = _disable_reason(
+                        acc_disable, cf_harmful, accuracy, disable_threshold, shadow_n,
+                        cf_mr, cf.get("trades", 0) if cf else 0, cf_shadow_thr,
                     )
                     return self._apply_mode(
                         rec, ModuleMode.DISABLED, reason=reason, accuracy=accuracy,
                         sample_size=shadow_n, baseline_signals=0,
+                        trigger=trigger, marginal_r=(cf_mr if cf_harmful else 0.0),
                     )
                 return None
 
@@ -462,6 +603,7 @@ class ModuleGovernor(TuningGuardMixin):
                         return self._apply_mode(
                             rec, ModuleMode.SHADOW, reason=reason, accuracy=accuracy,
                             sample_size=sample_size, baseline_signals=sample_size,
+                            trigger="auto-retry", marginal_r=0.0,
                         )
                 return None
         return None
@@ -475,6 +617,8 @@ class ModuleGovernor(TuningGuardMixin):
         accuracy: float,
         sample_size: int,
         baseline_signals: int,
+        trigger: str = "accuracy",
+        marginal_r: float = 0.0,
     ) -> GovernorTransition:
         """Mutate + persist a module's mode and record the transition.
 
@@ -510,6 +654,8 @@ class ModuleGovernor(TuningGuardMixin):
             reason=reason,
             accuracy=float(accuracy),
             sample_size=int(sample_size),
+            trigger=str(trigger or "accuracy"),
+            marginal_r=float(marginal_r or 0.0),
             timestamp=now,
         )
         self._record_transition(t)
@@ -573,15 +719,30 @@ class ModuleGovernor(TuningGuardMixin):
         with self._lock:
             records = [rec.to_dict() for rec in self._state.values()]
         now = time.time()
+        # Surface each module's latest marginal-R signal (read-only) so the
+        # dashboard can show WHY a module is governed, alongside its accuracy.
+        cf_map = self._cf_signal_map()
         for r in records:
             ts = float(r.get("last_transition_time") or 0.0)
             r["seconds_in_mode"] = round(max(0.0, now - ts), 1) if ts else 0.0
+            sig = cf_map.get(r.get("module", ""))
+            if sig is not None:
+                r["marginal_r"] = round(float(sig.get("mr_per_trade", 0.0)), 4)
+                r["marginal_r_trades"] = int(sig.get("trades", 0))
+                r["better_off_without"] = bool(sig.get("better_off_without", False))
+            else:
+                r["marginal_r"] = None
+                r["marginal_r_trades"] = 0
+                r["better_off_without"] = False
         records.sort(key=lambda r: (r["mode"] != ModuleMode.ACTIVE.value, r["module"]))
         counts = {m.value: 0 for m in ModuleMode}
         for r in records:
             counts[r["mode"]] = counts.get(r["mode"], 0) + 1
         return {
             "enabled": self.enabled,
+            "counterfactual_signal": bool(
+                getattr(self._config, "use_counterfactual_signal", False)
+            ) and self._counterfactual is not None,
             "modules": records,
             "counts": counts,
             "module_count": len(records),
@@ -595,7 +756,7 @@ class ModuleGovernor(TuningGuardMixin):
             try:
                 cur = self._conn.execute(
                     "SELECT timestamp, module, old_mode, new_mode, reason, accuracy, "
-                    "sample_size FROM module_governor_transitions "
+                    "sample_size, trigger, marginal_r FROM module_governor_transitions "
                     "ORDER BY id DESC LIMIT ?",
                     (int(limit),),
                 )
@@ -607,6 +768,52 @@ class ModuleGovernor(TuningGuardMixin):
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
+
+def _trigger_label(accuracy_fired: bool, counterfactual_fired: bool) -> str:
+    """Name the signal(s) that drove a transition for the audit trail."""
+    if accuracy_fired and counterfactual_fired:
+        return "both"
+    if counterfactual_fired:
+        return "counterfactual"
+    return "accuracy"
+
+
+def _shadow_reason(
+    acc_poor: bool, cf_harmful: bool, accuracy: float, shadow_threshold: float,
+    sample_size: int, cf_mr: float, cf_trades: int, cf_shadow_thr: float,
+) -> str:
+    """Human-readable ACTIVE→SHADOW reason citing whichever signal(s) fired."""
+    parts: list[str] = []
+    if acc_poor:
+        parts.append(
+            f"accuracy {accuracy:.2f} < {shadow_threshold:.2f} over {sample_size} signals"
+        )
+    if cf_harmful:
+        parts.append(
+            f"counterfactual: marginal_R={cf_mr:+.3f}R/trade < {cf_shadow_thr:+.3f} "
+            f"over {cf_trades} trades, better_off_without=True"
+        )
+    return "; ".join(parts)
+
+
+def _disable_reason(
+    acc_disable: bool, cf_harmful: bool, accuracy: float, disable_threshold: float,
+    shadow_n: int, cf_mr: float, cf_trades: int, cf_shadow_thr: float,
+) -> str:
+    """Human-readable SHADOW→DISABLED reason citing whichever signal(s) fired."""
+    parts: list[str] = []
+    if acc_disable:
+        parts.append(
+            f"stayed at {accuracy:.2f} < {disable_threshold:.2f} "
+            f"over {shadow_n} shadow signals"
+        )
+    if cf_harmful:
+        parts.append(
+            f"counterfactual: marginal_R={cf_mr:+.3f}R/trade < {cf_shadow_thr:+.3f} "
+            f"over {cf_trades} trades, better_off_without=True"
+        )
+    return "; ".join(parts)
+
 
 def _coerce_mode(value) -> ModuleMode:
     if isinstance(value, ModuleMode):
