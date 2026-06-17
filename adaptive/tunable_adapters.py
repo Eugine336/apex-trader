@@ -891,6 +891,87 @@ class VoteCalibratorTunable(_BaseTunable):
         )
 
 
+# ─────────────────────── Counterfactual attribution ────────────────────
+
+
+class CounterfactualTunable(_BaseTunable):
+    """Wraps ``CounterfactualEngine.maybe_recompute`` — periodic leave-one-out
+    module attribution.
+
+    Pure analysis: the engine only reads closed-trade snapshots and caches a
+    ranked module table, so there is nothing to validate or roll back. Runs on
+    the trade-close batch cadence (every ``attribution_interval`` trades, gated
+    by ``min_trades_for_attribution``); a cycle that does not recompute records
+    a harmless skip. ``attribution_lookback`` and ``attribution_interval`` are
+    exposed as the tunable knobs.
+    """
+
+    def __init__(
+        self, engine, *, min_trades: int = 50, min_interval: float = 0.0,
+    ) -> None:
+        super().__init__(
+            name="counterfactual",
+            frequency=TuneFrequency.ON_TRADE_BATCH,
+            dependencies=[],
+            min_trades=int(min_trades),
+            min_interval=float(min_interval),
+        )
+        self._engine = engine
+
+    def _read_params(self) -> dict:
+        return {
+            "enabled": bool(getattr(self._engine, "enabled", False)),
+            "lookback": int(getattr(self._engine, "lookback", 0) or 0),
+            "interval": int(getattr(self._engine, "interval", 0) or 0),
+            "min_trades_for_attribution": int(
+                getattr(self._engine, "min_trades_for_attribution", 0) or 0
+            ),
+        }
+
+    def _apply_params(self, params: dict) -> None:
+        if not params:
+            return
+        self._engine.set_params(
+            attribution_lookback=params.get("lookback"),
+            attribution_interval=params.get("interval"),
+        )
+
+    def rollback(self) -> bool:
+        if self._snapshot is None:
+            return True
+        try:
+            self._apply_params(self._snapshot)
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[counterfactual] rollback failed: {}", exc)
+            return False
+
+    def tune(self, ctx: TuneContext) -> TuneResult:
+        before = self._begin()
+        if not getattr(self._engine, "enabled", False):
+            return TuneResult(
+                tunable_name=self._name, success=True, skipped=True,
+                params_before=before, params_after=before,
+                reason="engine disabled",
+            )
+        payload = self._engine.maybe_recompute(ctx.total_trades)
+        self._mark_tuned(ctx)
+        if not payload:
+            return TuneResult(
+                tunable_name=self._name, success=True, skipped=True,
+                params_before=before, params_after=before,
+                reason="not due / insufficient trades",
+            )
+        after = self._read_params()
+        analyzed = int(payload.get("trades_analyzed", 0) or 0)
+        modules = int(payload.get("module_count", 0) or 0)
+        return TuneResult(
+            tunable_name=self._name, success=True, changed=True,
+            params_before=before, params_after=after,
+            reason=f"attributed {modules} module(s) over {analyzed} trades",
+        )
+
+
 # ───────────────────────── Consumers / observers ───────────────────────
 
 
@@ -984,5 +1065,6 @@ __all__ = [
     "SignalLedgerTunable",
     "PostCloseTrackerTunable",
     "VoteCalibratorTunable",
+    "CounterfactualTunable",
     "ConsumerTunable",
 ]

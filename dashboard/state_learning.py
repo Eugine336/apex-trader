@@ -10,6 +10,7 @@ the dashboard.  This mixin surfaces it, read-only, in one place:
   * **Per-class Score Optimizer** — confluence weight profiles per asset class.
   * **Pair Learner** — continuous per-pair size multipliers + entry/mgmt split.
   * **Tuner Agent** — central tuning authority status + recent tune audit.
+  * **Counterfactual** — leave-one-out per-module marginal attribution (L4).
 
 Everything here only *reads* from the live components (or returns a graceful
 empty/disabled shape when a component is off, idle, or has no data yet).  It
@@ -71,6 +72,9 @@ class LearningMixin:
     def _tuner_agent_obj(self) -> Any:
         return getattr(self._loop(), "_tuner_agent", None)
 
+    def _counterfactual_obj(self) -> Any:
+        return getattr(self._loop(), "_counterfactual", None)
+
     # ── Aggregate ────────────────────────────────────────────────────────────
     def get_learning(self) -> dict:
         """Every learning-layer producer's output for the Learning panel."""
@@ -82,6 +86,7 @@ class LearningMixin:
             "score_optimizer": self._safe(self._learning_score_optimizer),
             "pair_learner": self._safe(self._learning_pair_learner),
             "tuner_agent": self._safe(self._learning_tuner_agent),
+            "counterfactual": self._safe(self._learning_counterfactual),
         }
 
     @staticmethod
@@ -351,4 +356,44 @@ class LearningMixin:
             "bypass_attempts": list(status.get("bypass_attempts", []) or []),
             "tunables": tunables,
             "audit": audit,
+        }
+
+    # ── Counterfactual Attribution (L4) ──────────────────────────────────────
+    def _learning_counterfactual(self) -> dict:
+        engine = self._counterfactual_obj()
+        cfg = getattr(self._config(), "counterfactual", None)
+        meta = {
+            "lookback": int(getattr(cfg, "attribution_lookback", 0) or 0),
+            "interval": int(getattr(cfg, "attribution_interval", 0) or 0),
+            "min_trades": int(getattr(cfg, "min_trades_for_attribution", 0) or 0),
+        }
+        if engine is None:
+            return _idle(meta)
+
+        cached = engine.get_cached_attributions() or {}
+        modules = []
+        for m in cached.get("modules", []) or []:
+            modules.append({
+                "module": str(m.get("module", "")),
+                "trades_involved": int(m.get("trades_involved", 0) or 0),
+                "decisive_trades": int(m.get("decisive_trades", 0) or 0),
+                "decisive_r": _round(m.get("decisive_r", 0.0), 3),
+                "supporting_trades": int(m.get("supporting_trades", 0) or 0),
+                "opposing_trades": int(m.get("opposing_trades", 0) or 0),
+                "marginal_r": _round(m.get("marginal_r", 0.0), 3),
+                "expectancy_when_decisive": _round(m.get("expectancy_when_decisive", 0.0), 3),
+                "sharpe_contribution": _round(m.get("sharpe_contribution", 0.0), 3),
+                "drawdown_contribution": _round(m.get("drawdown_contribution", 0.0), 3),
+                "better_off_without": bool(m.get("better_off_without", False)),
+                "r_difference": _round(m.get("r_difference", 0.0), 3),
+            })
+        # Already ranked best→worst by the engine; keep that order.
+        return {
+            "enabled": bool(getattr(engine, "enabled", False)),
+            "source": "live",
+            "computed_at": cached.get("computed_at"),
+            "trades_analyzed": int(cached.get("trades_analyzed", 0) or 0),
+            "module_count": int(cached.get("module_count", 0) or 0),
+            "modules": modules,
+            **meta,
         }
