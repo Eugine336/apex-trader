@@ -224,3 +224,260 @@ class TestConservativeFallback:
         # The fallback path records the symbol so the WARNING fires once.
         assert "UNKNOWN_SYNTH_XYZ" in conn._warned_fallback_symbols
 
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# Symbol-property rejection → proposal→buy fallback
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_SYMBOL_PROP_ERROR = {
+    "error": {
+        "message": "Input validation failed: parameters",
+        "details": {"parameters": "Properties not allowed: symbol"},
+    }
+}
+
+
+class TestSymbolPropertyDetection:
+    """Regression for the live BOOM1000/V50_1S failure: Deriv rejects ``symbol``
+    inside the buy ``parameters`` with 'Properties not allowed: symbol'. The
+    detector must fire on that error and NOT on unrelated errors that merely
+    mention the word symbol (e.g. an unsupported-symbol value error)."""
+
+    def test_detects_properties_not_allowed_symbol(self):
+        err = DerivConnector._error_text(_SYMBOL_PROP_ERROR["error"])
+        assert "Properties not allowed: symbol" in err
+        assert DerivConnector._is_symbol_property_error(err) is True
+
+    def test_detects_additional_properties_phrasing(self):
+        assert DerivConnector._is_symbol_property_error(
+            "Input validation failed | Additional properties are not allowed: symbol"
+        ) is True
+
+    def test_ignores_generic_validation_error(self):
+        assert DerivConnector._is_symbol_property_error(
+            "Input validation failed: parameters"
+        ) is False
+
+    def test_ignores_multiplier_error(self):
+        assert DerivConnector._is_symbol_property_error(
+            "Multiplier is not in acceptable range. Accepts 100,200,300,400,500."
+        ) is False
+
+    def test_ignores_unsupported_symbol_value_error(self):
+        # A value/permission error that names the symbol must NOT route to the
+        # proposal fallback (which would not help and only waste a round-trip).
+        assert DerivConnector._is_symbol_property_error(
+            "Symbol R_100 is not offered for this account"
+        ) is False
+
+    def test_empty_is_false(self):
+        assert DerivConnector._is_symbol_property_error("") is False
+        assert DerivConnector._is_symbol_property_error(None) is False
+
+
+class TestSymbolErrorProposalFallback:
+    """The full live failure scenario: a multiplier-fitted multiplier contract
+    whose buy-by-parameters request is rejected with 'Properties not allowed:
+    symbol'. place_order must recover via proposal→buy where symbol lives in the
+    proposal and the buy references the returned proposal id."""
+
+    def test_symbol_error_recovers_via_proposal(self):
+        conn = _make_connector()
+        seen = []
+
+        def fake_send(payload):
+            seen.append(payload)
+            if payload.get("proposal") == 1:
+                return {"proposal": {"id": "PID-1", "ask_price": payload["amount"]}}
+            if payload.get("buy") == 1:
+                # buy-by-parameters → Deriv rejects the symbol property
+                return dict(_SYMBOL_PROP_ERROR)
+            # buy by proposal id
+            return {"buy": {"contract_id": "C-123"}}
+
+        conn._sync_send = fake_send
+
+        result = conn.place_order(
+            symbol="STPIDX", direction="SHORT", lots=0.01,
+            sl=7980.67, tp=7920.99, stake_usd=27.99, multiplier=200,
+        )
+
+        assert result.success is True
+        assert result.order_id == "C-123"
+
+        proposals = [p for p in seen if p.get("proposal") == 1]
+        buys_by_id = [p for p in seen if isinstance(p.get("buy"), str)]
+        assert proposals, "a proposal request must be sent"
+        assert buys_by_id, "a buy-by-id request must follow the proposal"
+
+        # symbol lives in the proposal (contract definition) where Deriv accepts it
+        assert proposals[0]["symbol"] == "STPIDX"
+        # the buy-by-id request must NOT carry symbol or a parameters object
+        assert "symbol" not in buys_by_id[0]
+        assert "parameters" not in buys_by_id[0]
+        assert buys_by_id[0]["buy"] == "PID-1"
+        assert "price" in buys_by_id[0]
+
+    def test_symbol_error_on_retry_path_recovers(self):
+        # First buy-by-parameters fails with a generic validation error (triggers
+        # the limit_order strip); the retry — still carrying symbol in parameters —
+        # fails with the symbol-property error, which must route to the proposal
+        # fallback rather than failing the order.
+        conn = _make_connector()
+        seen = []
+        state = {"buy_params_calls": 0}
+
+        def fake_send(payload):
+            seen.append(payload)
+            if payload.get("proposal") == 1:
+                return {"proposal": {"id": "PID-2", "ask_price": payload["amount"]}}
+            if payload.get("buy") == 1:
+                state["buy_params_calls"] += 1
+                if state["buy_params_calls"] == 1:
+                    return {"error": {"message": "Input validation failed: parameters"}}
+                return dict(_SYMBOL_PROP_ERROR)
+            return {"buy": {"contract_id": "C-456"}}
+
+        conn._sync_send = fake_send
+
+        result = conn.place_order(
+            symbol="STPIDX", direction="SHORT", lots=0.01,
+            sl=7980.67, tp=7920.99, stake_usd=27.99, multiplier=200,
+        )
+
+        assert result.success is True
+        assert result.order_id == "C-456"
+        assert any(p.get("proposal") == 1 for p in seen)
+
+    def test_proposal_carries_protective_limit_order(self):
+        # Even when the buy-by-parameters retry already stripped limit_order, the
+        # proposal fallback must re-attempt WITH the protective SL/TP so we never
+        # open a naked Deriv position.
+        conn = _make_connector()
+        seen = []
+
+        def fake_send(payload):
+            seen.append(payload)
+            if payload.get("proposal") == 1:
+                return {"proposal": {"id": "PID-3", "ask_price": payload["amount"]}}
+            if payload.get("buy") == 1:
+                return dict(_SYMBOL_PROP_ERROR)
+            return {"buy": {"contract_id": "C-789"}}
+
+        conn._sync_send = fake_send
+
+        result = conn.place_order(
+            symbol="STPIDX", direction="SHORT", lots=0.01,
+            sl=7980.67, tp=7920.99, stake_usd=27.99, multiplier=200,
+        )
+
+        assert result.success is True
+        proposals = [p for p in seen if p.get("proposal") == 1]
+        assert "limit_order" in proposals[0]
+        assert proposals[0]["limit_order"]["stop_loss"] > 0
+        assert proposals[0]["limit_order"]["take_profit"] > 0
+
+
+class TestBuyViaProposal:
+    """Direct unit tests of the proposal→buy helper, isolated from place_order's
+    pre-fit so the self-correction branches can be exercised deterministically."""
+
+    def _kwargs(self, **over):
+        base = dict(
+            mapped="STPIDX", contract_type="MULTDOWN", amount=27.99,
+            multiplier=200, sl_pct=0.003, tp_pct=0.005, passthrough={},
+            entry_price=7956.9, lots=0.01, symbol="STPIDX",
+            direction="SHORT", sl=7980.67, tp=7920.99,
+        )
+        base.update(over)
+        return base
+
+    def test_happy_path_buys_by_id_without_symbol(self):
+        conn = _make_connector()
+        seen = []
+
+        def fake_send(payload):
+            seen.append(payload)
+            if payload.get("proposal") == 1:
+                return {"proposal": {"id": "PID", "ask_price": 27.99}}
+            return {"buy": {"contract_id": "OK-1"}}
+
+        conn._sync_send = fake_send
+        result = conn._buy_via_proposal(**self._kwargs())
+
+        assert result.success is True
+        assert result.order_id == "OK-1"
+        # Position is tracked for later modify/close.
+        assert "OK-1" in conn._positions
+        # The buy request references the proposal id and omits symbol/parameters.
+        buy = [p for p in seen if isinstance(p.get("buy"), str)][0]
+        assert "symbol" not in buy and "parameters" not in buy
+
+    def test_multiplier_self_correction_in_proposal(self):
+        conn = _make_connector()
+        seen = []
+
+        def fake_send(payload):
+            seen.append(payload)
+            if payload.get("proposal") == 1:
+                if payload["multiplier"] not in (100, 200, 300, 400, 500):
+                    return {"error": {
+                        "message": "Input validation failed: parameters",
+                        "details": {
+                            "multiplier": "Multiplier is not in acceptable range. Accepts 100,200,300,400,500.",
+                        },
+                    }}
+                return {"proposal": {"id": "PID", "ask_price": payload["amount"]}}
+            return {"buy": {"contract_id": "OK-2"}}
+
+        conn._sync_send = fake_send
+        result = conn._buy_via_proposal(**self._kwargs(multiplier=1000))
+
+        assert result.success is True
+        assert result.order_id == "OK-2"
+        # Deriv's accepted list was learned from error.details.
+        assert conn._discovered_multipliers["STPIDX"] == [100, 200, 300, 400, 500]
+        final_proposal = [p for p in seen if p.get("proposal") == 1][-1]
+        assert final_proposal["multiplier"] in (100, 200, 300, 400, 500)
+
+    def test_proposal_failure_is_surfaced(self):
+        conn = _make_connector()
+
+        def fake_send(payload):
+            return {"error": {"message": "Market is closed"}}
+
+        conn._sync_send = fake_send
+        result = conn._buy_via_proposal(**self._kwargs())
+
+        assert result.success is False
+        assert "Market is closed" in (result.error or "")
+
+    def test_missing_proposal_id_fails_closed(self):
+        conn = _make_connector()
+
+        def fake_send(payload):
+            if payload.get("proposal") == 1:
+                return {"proposal": {"ask_price": 27.99}}  # no id
+            return {"buy": {"contract_id": "SHOULD-NOT-HAPPEN"}}
+
+        conn._sync_send = fake_send
+        result = conn._buy_via_proposal(**self._kwargs())
+
+        assert result.success is False
+        assert "proposal id" in (result.error or "")
+
+    def test_missing_contract_id_fails_closed(self):
+        conn = _make_connector()
+
+        def fake_send(payload):
+            if payload.get("proposal") == 1:
+                return {"proposal": {"id": "PID", "ask_price": 27.99}}
+            return {"buy": {}}  # no contract_id
+
+        conn._sync_send = fake_send
+        result = conn._buy_via_proposal(**self._kwargs())
+
+        assert result.success is False
+        assert "contract_id" in (result.error or "")
+
+
