@@ -211,12 +211,19 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         if self.config.scoring.use_adaptive_scoring_weights:
             from adaptive.score_optimizer import (
                 load_saved_weights as _load_weights,
+                ScoreOptimizer as _SO,
                 ScoringWeights as _SW,
                 ADAPTIVE_WEIGHT_ENVELOPE_PCT as _ENV_PCT,
             )
-            _adaptive_weights = _load_weights()
-            _clamped = _adaptive_weights.clamped_to_envelope(_SW(), _ENV_PCT)
-            _scanner_weights_dict = _clamped.as_dict()
+            if self.config.scoring.per_class_optimizer:
+                # Per-class mode: load every persisted profile and hand the
+                # scanner a {class: weights} payload it resolves per symbol.
+                _so = _SO(config=self.config.scoring)
+                _scanner_weights_dict = self._scanner_weight_payload(_so)
+            else:
+                _adaptive_weights = _load_weights()
+                _clamped = _adaptive_weights.clamped_to_envelope(_SW(), _ENV_PCT)
+                _scanner_weights_dict = _clamped.as_dict()
         self.scanner = PairScanner(self.config, scoring_weights=_scanner_weights_dict)
         self.ranker = PairRanker()
         # Opportunity executor — selects the live direction from the ranked
@@ -924,19 +931,37 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             logger.debug("[tuner-agent] EV history refresh failed: {}", exc)
             return 0
 
+    def _scanner_weight_payload(self, optimizer):
+        """Build the scanner's weight payload from a ScoreOptimizer instance.
+
+        Returns a per-class ``{class: weights_dict}`` payload (with a shared
+        ``default``) when per-class mode is on, otherwise the legacy flat
+        ``{factor: weight}`` dict. Every profile is envelope-clamped first.
+        """
+        from adaptive.score_optimizer import (
+            ScoringWeights as _SW,
+            ADAPTIVE_WEIGHT_ENVELOPE_PCT as _ENV_PCT,
+            DEFAULT_CLASS as _DEF_CLS,
+        )
+        _base = _SW()
+        if getattr(optimizer, "per_class", False):
+            payload = {
+                _DEF_CLS: optimizer.current_weights.clamped_to_envelope(_base, _ENV_PCT).as_dict()
+            }
+            for _cls, _w in (getattr(optimizer, "class_weights", {}) or {}).items():
+                payload[_cls] = _w.clamped_to_envelope(_base, _ENV_PCT).as_dict()
+            return payload
+        return optimizer.current_weights.clamped_to_envelope(_base, _ENV_PCT).as_dict()
+
     def _tuner_apply_scoring_weights(self, weights) -> None:
         """Reload freshly optimised scoring weights into the live scanner —
         the same side effect the legacy _run_ml_optimization performed."""
         try:
             if not self.config.scoring.use_adaptive_scoring_weights:
                 return
-            from adaptive.score_optimizer import (
-                ScoringWeights as _SW,
-                ADAPTIVE_WEIGHT_ENVELOPE_PCT as _ENV_PCT,
-            )
-            self.scanner._adaptive_weights = weights.clamped_to_envelope(
-                _SW(), _ENV_PCT
-            ).as_dict()
+            # Rebuild from the optimizer instance so per-class profiles (not
+            # just the global ``weights`` argument) propagate to the scanner.
+            self.scanner._adaptive_weights = self._scanner_weight_payload(self.ml.optimizer)
             logger.info("[tuner-agent] live scanner scoring weights reloaded")
         except Exception as exc:  # noqa: BLE001
             logger.debug("[tuner-agent] scanner weight reload failed: {}", exc)
@@ -7128,13 +7153,9 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             # restart (otherwise re-optimized weights sit stale on disk).
             try:
                 if self.config.scoring.use_adaptive_scoring_weights:
-                    from adaptive.score_optimizer import (
-                        load_saved_weights as _load_weights,
-                        ScoringWeights as _SW,
-                        ADAPTIVE_WEIGHT_ENVELOPE_PCT as _ENV_PCT,
+                    self.scanner._adaptive_weights = self._scanner_weight_payload(
+                        self.ml.optimizer
                     )
-                    _fresh = _load_weights().clamped_to_envelope(_SW(), _ENV_PCT)
-                    self.scanner._adaptive_weights = _fresh.as_dict()
                     logger.info("[retrain] live scanner scoring weights reloaded")
             except Exception as exc:
                 logger.debug("[retrain] scanner weight reload failed: {}", exc)

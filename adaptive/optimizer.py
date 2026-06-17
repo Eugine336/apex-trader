@@ -75,7 +75,7 @@ class AdaptiveOptimizer(TuningGuardMixin):
 
     def __init__(self, config=None) -> None:
         self.analyzer = TradeAnalyzer()
-        self.optimizer = ScoreOptimizer()
+        self.optimizer = ScoreOptimizer(config=getattr(config, "scoring", None))
         self.regime_learner = RegimeLearner()
         self.pair_learner = PairLearner(config=getattr(config, "pair_learner", None))
         self.session_learner = SessionLearner()

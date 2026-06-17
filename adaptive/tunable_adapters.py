@@ -168,17 +168,36 @@ class ScoreOptimizerTunable(_BaseTunable):
         self._on_update = on_update
 
     def _read_params(self) -> dict:
-        return dict(self._optimizer.current_weights.as_dict())
+        base = dict(self._optimizer.current_weights.as_dict())
+        # In per-class mode, expose each class profile under a reserved key so
+        # snapshot/rollback restores them too. Validation ignores this key.
+        if getattr(self._optimizer, "per_class", False):
+            base["classes"] = {
+                cls: dict(w.as_dict())
+                for cls, w in (getattr(self._optimizer, "class_weights", {}) or {}).items()
+            }
+        return base
 
     def _apply_params(self, params: dict) -> None:
         from adaptive.score_optimizer import ScoringWeights
 
-        kwargs = {f"{k}_weight": int(v) for k, v in params.items()}
+        classes = params.get("classes")
+        flat = {k: v for k, v in params.items() if k != "classes"}
+        kwargs = {f"{k}_weight": int(v) for k, v in flat.items()}
         weights = ScoringWeights(**{
             k: v for k, v in kwargs.items()
             if k in ScoringWeights.__dataclass_fields__
         })
         self._optimizer.current_weights = weights
+        if classes is not None and getattr(self._optimizer, "per_class", False):
+            restored: dict = {}
+            for cls, d in classes.items():
+                ckw = {f"{k}_weight": int(v) for k, v in d.items()}
+                restored[cls] = ScoringWeights(**{
+                    k: v for k, v in ckw.items()
+                    if k in ScoringWeights.__dataclass_fields__
+                })
+            self._optimizer.class_weights = restored
         self._optimizer.save_weights()
 
     def validate_params(self, params: dict) -> tuple[bool, str]:
