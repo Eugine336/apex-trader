@@ -19,6 +19,7 @@ from dataclasses import replace
 
 from loguru import logger
 
+from adaptive.tunable import TuningGuardMixin
 from planning.trade_planner import PlannerConfig
 
 
@@ -43,7 +44,7 @@ def _expectancy(group: list[dict]) -> float:
     return sum(_r(t["outcome"]) for t in group) / len(group)
 
 
-class Calibrator:
+class Calibrator(TuningGuardMixin):
     """Evidence-based auto-tuning of `PlannerConfig`."""
 
     # Minimum trades in each side of a split before we trust a comparison.
@@ -66,6 +67,10 @@ class Calibrator:
 
     def calibrate(self, completed_trades: list[dict]) -> PlannerConfig:
         """Analyse outcomes and return an updated config (clamped per cycle)."""
+        # Blocked (returns the unchanged config) when the Tuner Agent is sole
+        # authority and this is a direct call rather than an agent-driven one.
+        if self._tuning_blocked("calibrate"):
+            return self.config
         cfg = self.config
         if not completed_trades:
             return cfg

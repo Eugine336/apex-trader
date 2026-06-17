@@ -666,6 +666,156 @@ class SignalLedgerTunable(_BaseTunable):
         )
 
 
+# ───────────────────────── Post-close MFE/MAE ──────────────────────────
+
+
+class PostCloseTrackerTunable(_BaseTunable):
+    """Wraps ``PostCloseTracker.process_pending_checks`` — per-scan forward
+    MFE/MAE sampling on recently-closed trades.
+
+    Pure observation (append-only price checks); nothing to validate or roll
+    back. Returns a skipped result on cycles with no pending checks so the
+    audit log only records real work. The data source (live platform manager)
+    is supplied by an injected provider so this adapter stays decoupled.
+    """
+
+    def __init__(self, tracker, data_source_provider: Optional[Callable[[], object]] = None) -> None:
+        super().__init__(
+            name="post_close_tracker",
+            frequency=TuneFrequency.PER_SCAN_CYCLE,
+            dependencies=[],
+            min_trades=0,
+            min_interval=0.0,
+        )
+        self._tracker = tracker
+        self._data_source_provider = data_source_provider
+
+    def _read_params(self) -> dict:
+        return {
+            "enabled": bool(getattr(self._tracker, "enabled", False)),
+            "pending_count": int(getattr(self._tracker, "pending_count", 0) or 0),
+        }
+
+    def _apply_params(self, params: dict) -> None:
+        return None
+
+    def rollback(self) -> bool:
+        return True
+
+    def tune(self, ctx: TuneContext) -> TuneResult:
+        if not getattr(self._tracker, "enabled", False):
+            return TuneResult(
+                tunable_name=self._name, success=True, skipped=True,
+                reason="tracker disabled",
+            )
+        pending = int(getattr(self._tracker, "pending_count", 0) or 0)
+        if not pending:
+            return TuneResult(
+                tunable_name=self._name, success=True, skipped=True,
+                reason="no pending checks",
+            )
+        data_source = None
+        if self._data_source_provider is not None:
+            try:
+                data_source = self._data_source_provider()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[post_close_tracker] data source provider failed: {}", exc)
+                data_source = None
+        if data_source is None:
+            return TuneResult(
+                tunable_name=self._name, success=True, skipped=True,
+                reason="no data source this cycle",
+            )
+        self._tracker.process_pending_checks(data_source)
+        remaining = int(getattr(self._tracker, "pending_count", 0) or 0)
+        return TuneResult(
+            tunable_name=self._name, success=True, changed=(remaining != pending),
+            reason=f"processed checks (pending {pending} -> {remaining})",
+        )
+
+
+# ───────────────────────── Consumers / observers ───────────────────────
+
+
+class ConsumerTunable:
+    """Read-only registry entry for a component that CONSUMES tuned params or
+    only reports state — it is never auto-tuned by the agent.
+
+    Components like the RiskEngine, PositionSizer, Orchestrator, Governor and
+    TradeManager don't learn; they read parameters other tunables produce. The
+    RL stack is dormant until a checkpoint exists. Registering them here makes
+    the agent the single place that sees the WHOLE system: their current config
+    shows up in ``get_system_tuning_status`` and the startup validation, and a
+    forced run records a harmless skip rather than mutating anything.
+
+    Frequency is ON_DEMAND so the agent's trade-close / scan-cycle / periodic
+    triggers never pick it up — only ``force_tune_all`` reaches it, and even
+    then it skips.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        params_provider: Optional[Callable[[], dict]] = None,
+        *,
+        dormant: bool = False,
+        note: str = "",
+    ) -> None:
+        self._name = name
+        self._params_provider = params_provider
+        self._dormant = bool(dormant)
+        self._note = note or ("dormant — not active" if dormant else "consumer — not auto-tuned")
+
+    @property
+    def tunable_name(self) -> str:
+        return self._name
+
+    @property
+    def frequency(self) -> TuneFrequency:
+        return TuneFrequency.ON_DEMAND
+
+    @property
+    def dependencies(self) -> list[str]:
+        return []
+
+    @property
+    def min_trades_required(self) -> int:
+        return 0
+
+    @property
+    def min_interval_seconds(self) -> float:
+        return 0.0
+
+    def should_tune(self, ctx: TuneContext) -> bool:
+        return False
+
+    def get_current_params(self) -> dict:
+        base = {"role": "dormant" if self._dormant else "consumer", "note": self._note}
+        if self._params_provider is None:
+            return base
+        try:
+            params = self._params_provider() or {}
+            if isinstance(params, dict):
+                base.update(params)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[{}] params provider failed: {}", self._name, exc)
+        return base
+
+    def tune(self, ctx: TuneContext) -> TuneResult:
+        return TuneResult(
+            tunable_name=self._name, success=True, skipped=True,
+            params_before=self.get_current_params(),
+            params_after=self.get_current_params(),
+            reason=self._note,
+        )
+
+    def validate_params(self, params: dict) -> tuple[bool, str]:
+        return True, "ok"
+
+    def rollback(self) -> bool:
+        return True
+
+
 __all__ = [
     "ScoreOptimizerTunable",
     "RegimeLearnerTunable",
@@ -675,4 +825,6 @@ __all__ = [
     "GateTunerTunable",
     "PlannerCalibratorTunable",
     "SignalLedgerTunable",
+    "PostCloseTrackerTunable",
+    "ConsumerTunable",
 ]

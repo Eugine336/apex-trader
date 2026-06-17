@@ -22,8 +22,10 @@ from pathlib import Path
 
 from loguru import logger
 
+from adaptive.tunable import TuningGuardMixin
 
-class GateTuner:
+
+class GateTuner(TuningGuardMixin):
     """Learns bounded threshold offsets for quality gates from shadow outcomes."""
 
     # family -> (min_offset, max_offset, step, loosen_sign)
@@ -114,6 +116,10 @@ class GateTuner:
         {rejecting_gate, outcome, cnt, avg_r}. Returns the list of changes
         (family, old, new, win_rate, samples).
         """
+        # Blocked (returns no changes) when the Tuner Agent is sole authority
+        # and this is a direct call rather than an agent-driven one.
+        if self._tuning_blocked("calibrate"):
+            return []
         agg: dict[str, dict[str, int]] = {}
         for row in outcomes_by_gate or []:
             family = str(row.get("rejecting_gate", "")).split(":", 1)[0]

@@ -1524,6 +1524,40 @@ class SignalLedgerConfig:
 
 
 @dataclass
+class PostCloseTrackerConfig:
+    """Settings for the post-close MFE/MAE tracker (learning layer).
+
+    After a trade closes it schedules forward price checks (T+5m, T+15m, …)
+    from ENTRY and measures Maximum Favorable / Adverse Excursion, deriving
+    signal-quality vs management-quality so the learning layer can tell a bad
+    read apart from a stop placed too tight. Purely observational — it never
+    changes a live decision. Defaults OFF so it stays dormant until enabled.
+    """
+
+    enabled: bool = False
+    db_path: str = "data/trade_journal.db"
+    check_intervals_minutes: list[int] = field(
+        default_factory=lambda: [5, 15, 30, 60]
+    )
+    max_retries: int = 3
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.check_intervals_minutes, list) or not all(
+            isinstance(x, (int, float)) and x >= 0
+            for x in self.check_intervals_minutes
+        ):
+            raise ValueError(
+                "PostCloseTrackerConfig.check_intervals_minutes must be a list "
+                f"of non-negative numbers, got {self.check_intervals_minutes!r}"
+            )
+        if int(self.max_retries) < 0:
+            raise ValueError(
+                "PostCloseTrackerConfig.max_retries must be >= 0, "
+                f"got {self.max_retries!r}"
+            )
+
+
+@dataclass
 class TunerAgentConfig:
     """Central coordinator for ALL auto-tuning (the "Tuner Agent").
 
@@ -1585,6 +1619,7 @@ class AppConfig:
     orchestrator: OrchestratorConfig = field(default_factory=OrchestratorConfig)
     outcome_feedback: OutcomeFeedbackConfig = field(default_factory=OutcomeFeedbackConfig)
     signal_ledger: SignalLedgerConfig = field(default_factory=SignalLedgerConfig)
+    post_close_tracker: PostCloseTrackerConfig = field(default_factory=PostCloseTrackerConfig)
     tuner_agent: TunerAgentConfig = field(default_factory=TunerAgentConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
