@@ -95,6 +95,11 @@ class LearningMixin:
     def _execution_profiles_obj(self) -> Any:
         return getattr(self._loop(), "_execution_profiles", None)
 
+    def _regime_detector_obj(self) -> Any:
+        return getattr(self._loop(), "_regime_detector", None)
+
+    def _risk_manager_obj(self) -> Any:
+        return getattr(self._loop(), "_risk_manager", None)
     def _behavior_discovery_obj(self) -> Any:
         return getattr(self._loop(), "_behavior_discovery", None)
 
@@ -116,6 +121,8 @@ class LearningMixin:
             "virtual_modules": self._safe(self._learning_virtual_modules),
             "capital_allocation": self._safe(self._learning_capital_allocation),
             "execution_profiles": self._safe(self._learning_execution_profiles),
+            "regime_detection": self._safe(self._learning_regime_detection),
+            "risk_management": self._safe(self._learning_risk_management),
             "behavior_discovery": self._safe(self._learning_behavior_discovery),
         }
 
@@ -749,6 +756,86 @@ class LearningMixin:
             **meta,
         }
 
+    # ── Regime Detection (L7) ──────────────────────────────────────────────────
+    def _learning_regime_detection(self) -> dict:
+        detector = self._regime_detector_obj()
+        cfg = getattr(self._config(), "regime_detection", None)
+        meta = {
+            "config_flag": bool(getattr(cfg, "enabled", False)),
+            "lookback_bars": int(getattr(cfg, "lookback_bars", 0) or 0),
+            "hysteresis_bars": int(getattr(cfg, "hysteresis_bars", 0) or 0),
+        }
+        if detector is None:
+            return _idle(meta)
+        state = detector.get_state() or {}
+        pairs = []
+        for p in state.get("pairs", []) or []:
+            sig = p.get("signals", {}) or {}
+            pairs.append({
+                "pair": str(p.get("pair", "")),
+                "regime": str(p.get("regime", "")),
+                "confidence": _round(p.get("confidence", 0.0), 4),
+                "duration_sec": _round(p.get("duration_sec", 0.0), 1),
+                "directional_strength": _round(sig.get("directional_strength", 0.0), 3),
+                "volatility_ratio": _round(sig.get("volatility_ratio", 0.0), 3),
+                "mean_reversion": _round(sig.get("mean_reversion", 0.0), 3),
+                "range_compression": _round(sig.get("range_compression", 0.0), 3),
+            })
+        transitions = []
+        for t in state.get("transitions", []) or []:
+            transitions.append({
+                "pair": str(t.get("pair", "")),
+                "old_regime": str(t.get("old_regime", "")),
+                "new_regime": str(t.get("new_regime", "")),
+                "confidence": _round(t.get("confidence", 0.0), 4),
+                "ts": t.get("ts"),
+            })
+        return {
+            "enabled": bool(state.get("enabled", False)),
+            "source": "live",
+            "pair_count": int(state.get("pair_count", 0) or 0),
+            "regime_distribution": state.get("regime_distribution", {}) or {},
+            "thresholds": state.get("thresholds", {}) or {},
+            "pairs": pairs,
+            "transitions": transitions,
+            "performance": state.get("performance", []) or [],
+            **meta,
+        }
+
+    # ── Risk Management (L8) ────────────────────────────────────────────────────
+    def _learning_risk_management(self) -> dict:
+        manager = self._risk_manager_obj()
+        cfg = getattr(self._config(), "risk_management", None)
+        meta = {
+            "config_flag": bool(getattr(cfg, "enabled", False)),
+            "daily_drawdown_limit_pct": _round(getattr(cfg, "daily_drawdown_limit_pct", 0.0), 3),
+            "rolling_drawdown_limit_pct": _round(getattr(cfg, "rolling_drawdown_limit_pct", 0.0), 3),
+            "hard_stop_drawdown_pct": _round(getattr(cfg, "hard_stop_drawdown_pct", 0.0), 3),
+        }
+        if manager is None:
+            return _idle(meta)
+        state = manager.get_state() or {}
+        events = []
+        for e in state.get("risk_events", []) or []:
+            events.append({
+                "pair": str(e.get("pair", "")),
+                "rule": str(e.get("rule", "")),
+                "reason": str(e.get("reason", "")),
+                "ts": e.get("ts"),
+            })
+        curve = []
+        for pt in state.get("equity_curve", []) or []:
+            curve.append({
+                "equity": _round(pt.get("equity", 0.0), 2),
+                "pnl": _round(pt.get("pnl", 0.0), 2),
+                "ts": pt.get("ts"),
+            })
+        correlations = []
+        for c in state.get("correlations", []) or []:
+            correlations.append({
+                "pair_a": str(c.get("pair_a", "")),
+                "pair_b": str(c.get("pair_b", "")),
+                "correlation": _round(c.get("correlation", 0.0), 4),
     # ── Behaviour Discovery (L6) ──────────────────────────────────────────────
     def _learning_behavior_discovery(self) -> dict:
         engine = self._behavior_discovery_obj()
@@ -779,6 +866,21 @@ class LearningMixin:
         return {
             "enabled": bool(state.get("enabled", False)),
             "source": "live",
+            "state": str(state.get("state", "")),
+            "rolling_drawdown_pct": _round(state.get("rolling_drawdown_pct", 0.0), 3),
+            "daily_drawdown_pct": _round(state.get("daily_drawdown_pct", 0.0), 3),
+            "peak_equity": _round(state.get("peak_equity", 0.0), 2),
+            "current_equity": _round(state.get("current_equity", 0.0), 2),
+            "sizing_factor": _round(state.get("sizing_factor", 1.0), 4),
+            "should_flatten": bool(state.get("should_flatten", False)),
+            "cooldown_until": state.get("cooldown_until"),
+            "limits": state.get("limits", {}) or {},
+            "risk_events": events,
+            "equity_curve": curve,
+            "correlations": correlations,
+            **meta,
+        }
+
             "lookback": int(state.get("lookback", 0) or 0),
             "interval": int(state.get("interval", 0) or 0),
             "cluster_eps": _round(state.get("cluster_eps", 0.0), 3),

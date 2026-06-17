@@ -1559,6 +1559,128 @@ class ExecutionProfileTunable(_BaseTunable):
         )
 
 
+class RegimeDetectorTunable(_BaseTunable):
+    """Wraps the ``RegimeDetector`` (L7) — per-pair market-regime classifier.
+
+    The detector classifies continuously on every scan (pure observation, never
+    a tuning op), so it has no autonomous recompute step. Its value to the agent
+    is the same as the execution-profile manager: a single authority that
+    snapshots, validates, and rolls back the classifier's threshold knobs
+    (lookback, hysteresis, trending/volatile/quiet thresholds) and surfaces them
+    in the system tuning status. ``tune`` is an ON_DEMAND skip.
+    """
+
+    def __init__(self, detector) -> None:
+        super().__init__(
+            name="regime_detector",
+            frequency=TuneFrequency.ON_DEMAND,
+            dependencies=[],
+            min_trades=0,
+            min_interval=0.0,
+        )
+        self._detector = detector
+
+    def _read_params(self) -> dict:
+        return dict(self._detector.get_current_params())
+
+    def _apply_params(self, params: dict) -> None:
+        self._detector.apply_params(params)
+
+    def validate_params(self, params: dict) -> tuple[bool, str]:
+        try:
+            for key in ("lookback_bars", "hysteresis_bars", "volatility_short_window",
+                        "volatility_long_window", "adx_period", "autocorrelation_lag"):
+                if key in (params or {}) and int(params[key]) < 1:
+                    return False, f"{key} must be >= 1"
+            if (
+                "volatility_long_window" in (params or {})
+                and "volatility_short_window" in (params or {})
+                and int(params["volatility_long_window"]) <= int(params["volatility_short_window"])
+            ):
+                return False, "volatility_long_window must be > volatility_short_window"
+            for key in ("trending_threshold", "volatile_threshold", "quiet_threshold"):
+                if key in (params or {}):
+                    v = float(params[key])
+                    if not math.isfinite(v) or not (0.0 <= v <= 1.0):
+                        return False, f"{key}={params[key]} outside [0, 1]"
+        except (TypeError, ValueError) as exc:
+            return False, f"invalid params: {exc}"
+        return True, "ok"
+
+    def tune(self, ctx: TuneContext) -> TuneResult:
+        params = self.get_current_params()
+        return TuneResult(
+            tunable_name=self._name, success=True, skipped=True,
+            params_before=params, params_after=params,
+            reason="regime detector — classifies live (snapshot/rollback only)",
+        )
+
+
+class RiskManagerTunable(_BaseTunable):
+    """Wraps the ``RiskManager`` (L8) — drawdown / correlation / exposure breaker.
+
+    The manager updates its equity curve and breaker state on every close (pure
+    ingestion, never a tuning op). The agent owns snapshot / validate / rollback
+    of its risk-limit knobs (drawdown thresholds, cooldown, exposure caps,
+    correlation threshold) so a bad push can never loosen limits unaudited.
+    ``tune`` is an ON_DEMAND skip — limits change only via an explicit push.
+    """
+
+    def __init__(self, manager) -> None:
+        super().__init__(
+            name="risk_manager",
+            frequency=TuneFrequency.ON_DEMAND,
+            dependencies=[],
+            min_trades=0,
+            min_interval=0.0,
+        )
+        self._manager = manager
+
+    def _read_params(self) -> dict:
+        return dict(self._manager.get_current_params())
+
+    def _apply_params(self, params: dict) -> None:
+        self._manager.apply_params(params)
+
+    def validate_params(self, params: dict) -> tuple[bool, str]:
+        p = params or {}
+        try:
+            for key in ("daily_drawdown_limit_pct", "rolling_drawdown_limit_pct",
+                        "hard_stop_drawdown_pct"):
+                if key in p and float(p[key]) <= 0.0:
+                    return False, f"{key} must be > 0"
+            # Preserve ordering daily <= rolling <= hard when all present.
+            d = float(p.get("daily_drawdown_limit_pct", 0.0))
+            r = float(p.get("rolling_drawdown_limit_pct", 0.0))
+            h = float(p.get("hard_stop_drawdown_pct", 0.0))
+            if d and r and d > r:
+                return False, "daily_drawdown_limit_pct must be <= rolling"
+            if r and h and r > h:
+                return False, "rolling_drawdown_limit_pct must be <= hard_stop"
+            if "cooldown_sizing_factor" in p:
+                v = float(p["cooldown_sizing_factor"])
+                if not (0.0 < v <= 1.0):
+                    return False, f"cooldown_sizing_factor={v} outside (0, 1]"
+            if "correlation_threshold" in p:
+                v = float(p["correlation_threshold"])
+                if not (0.0 <= v <= 1.0):
+                    return False, f"correlation_threshold={v} outside [0, 1]"
+            for key in ("max_simultaneous_positions", "max_per_pair_positions"):
+                if key in p and int(p[key]) < 1:
+                    return False, f"{key} must be >= 1"
+        except (TypeError, ValueError) as exc:
+            return False, f"invalid params: {exc}"
+        return True, "ok"
+
+    def tune(self, ctx: TuneContext) -> TuneResult:
+        params = self.get_current_params()
+        return TuneResult(
+            tunable_name=self._name, success=True, skipped=True,
+            params_before=params, params_after=params,
+            reason="risk manager — limits change only via explicit push (snapshot/rollback only)",
+        )
+
+
 __all__ = [
     "ScoreOptimizerTunable",
     "RegimeLearnerTunable",
@@ -1578,6 +1700,8 @@ __all__ = [
     "VirtualSignalManagerTunable",
     "CapitalAllocatorTunable",
     "ExecutionProfileTunable",
+    "RegimeDetectorTunable",
+    "RiskManagerTunable",
     "BehaviorDiscoveryTunable",
     "ConsumerTunable",
 ]

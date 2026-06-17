@@ -2390,6 +2390,142 @@ class ExecutionProfileConfig:
 
 
 @dataclass
+class RegimeDetectionConfig:
+    """Settings for the Regime Detection Engine (L7).
+
+    Names the current market regime per pair — TRENDING_UP / TRENDING_DOWN /
+    RANGING / VOLATILE / QUIET / UNKNOWN — from rule-based, pure-Python price
+    signals (directional strength, volatility ratio, mean-reversion, range
+    compression). The regime is *context* every other adaptive layer can read
+    (execution profiles, capital allocator, vote calibrator, behaviour
+    discovery, governor); it never directs or blocks a trade. With no history a
+    pair resolves to UNKNOWN at zero confidence, so behaviour is identical to
+    the pre-L7 system until evidence exists.
+
+    ``hysteresis_bars`` consecutive agreeing observations are required before the
+    committed regime flips, so a single spike never re-labels the market.
+    """
+
+    # Master switch — ACTIVE by default. When off the detector is a pure no-op.
+    enabled: bool = True
+
+    # Bars of close history used per classification.
+    lookback_bars: int = 50
+    # Consecutive agreeing observations required to commit a regime flip.
+    hysteresis_bars: int = 5
+    # Volatility-ratio windows (short stdev / long stdev).
+    volatility_short_window: int = 10
+    volatility_long_window: int = 50
+    # ADX-like directional-strength smoothing period and autocorrelation lag.
+    adx_period: int = 14
+    autocorrelation_lag: int = 1
+    # Classification thresholds (all in [0, 1]).
+    trending_threshold: float = 0.6
+    volatile_threshold: float = 0.7
+    quiet_threshold: float = 0.3
+    # SQLite path (under data/, gitignored).
+    regime_detection_db_path: str = "data/regime_detection.db"
+
+    def __post_init__(self) -> None:
+        for name in (
+            "lookback_bars",
+            "hysteresis_bars",
+            "volatility_short_window",
+            "volatility_long_window",
+            "adx_period",
+            "autocorrelation_lag",
+        ):
+            if int(getattr(self, name)) < 1:
+                raise ValueError(
+                    f"RegimeDetectionConfig.{name} must be >= 1, "
+                    f"got {getattr(self, name)!r}"
+                )
+        if int(self.volatility_long_window) <= int(self.volatility_short_window):
+            raise ValueError(
+                "RegimeDetectionConfig.volatility_long_window must be > "
+                "volatility_short_window"
+            )
+        for name in ("trending_threshold", "volatile_threshold", "quiet_threshold"):
+            v = float(getattr(self, name))
+            if not (0.0 <= v <= 1.0):
+                raise ValueError(
+                    f"RegimeDetectionConfig.{name} must be in [0, 1], got {v!r}"
+                )
+
+
+@dataclass
+class RiskManagementConfig:
+    """Settings for the Risk Management Layer (L8).
+
+    The circuit-breaker layer: drawdown limits, correlated-exposure caps, and
+    overconcentration limits behind a single gate. It is the only adaptive
+    component that can *block* a trade, and only ever on a hard risk limit
+    (never on signal quality); every block is logged and persisted. With no
+    history / disabled it passes everything and the sizing factor is 1.0, so the
+    system behaves identically to the pre-L8 pipeline.
+    """
+
+    # Master switch — ACTIVE by default. When off the gate passes everything.
+    enabled: bool = True
+
+    # Drawdown limits (positive percentages).
+    daily_drawdown_limit_pct: float = 3.0      # halt new trades for the day
+    rolling_drawdown_limit_pct: float = 8.0    # enter sizing cooldown
+    hard_stop_drawdown_pct: float = 15.0       # halt everything + flatten signal
+    cooldown_hours: float = 4.0                # cooldown duration after rolling breach
+    cooldown_sizing_factor: float = 0.5        # sizing multiplier while in cooldown
+
+    # Exposure caps.
+    max_simultaneous_positions: int = 10
+    max_per_pair_positions: int = 2
+    max_directional_exposure_pct: float = 60.0
+    max_per_regime_pct: float = 40.0
+
+    # Correlation risk.
+    correlation_threshold: float = 0.7
+    max_correlated_exposure_factor: float = 1.5
+    correlation_lookback_bars: int = 100
+    correlation_update_interval: int = 50
+
+    # SQLite path (under data/, gitignored).
+    risk_management_db_path: str = "data/risk_management.db"
+
+    def __post_init__(self) -> None:
+        for name in (
+            "daily_drawdown_limit_pct",
+            "rolling_drawdown_limit_pct",
+            "hard_stop_drawdown_pct",
+        ):
+            if float(getattr(self, name)) <= 0.0:
+                raise ValueError(
+                    f"RiskManagementConfig.{name} must be > 0, "
+                    f"got {getattr(self, name)!r}"
+                )
+        if not (
+            self.daily_drawdown_limit_pct
+            <= self.rolling_drawdown_limit_pct
+            <= self.hard_stop_drawdown_pct
+        ):
+            raise ValueError(
+                "RiskManagementConfig drawdown limits must satisfy "
+                "daily <= rolling <= hard_stop"
+            )
+        if not (0.0 < float(self.cooldown_sizing_factor) <= 1.0):
+            raise ValueError(
+                "RiskManagementConfig.cooldown_sizing_factor must be in (0, 1], "
+                f"got {self.cooldown_sizing_factor!r}"
+            )
+        for name in ("max_simultaneous_positions", "max_per_pair_positions",
+                     "correlation_lookback_bars", "correlation_update_interval"):
+            if int(getattr(self, name)) < 1:
+                raise ValueError(
+                    f"RiskManagementConfig.{name} must be >= 1, "
+                    f"got {getattr(self, name)!r}"
+                )
+        if not (0.0 <= float(self.correlation_threshold) <= 1.0):
+            raise ValueError(
+                "RiskManagementConfig.correlation_threshold must be in [0, 1], "
+                f"got {self.correlation_threshold!r}"
 class BehaviorDiscoveryConfig:
     """Settings for the Behaviour Discovery engine (L6).
 
@@ -2518,6 +2654,8 @@ class AppConfig:
     signal_discovery: SignalDiscoveryConfig = field(default_factory=SignalDiscoveryConfig)
     capital_allocation: CapitalAllocationConfig = field(default_factory=CapitalAllocationConfig)
     execution_profiles: ExecutionProfileConfig = field(default_factory=ExecutionProfileConfig)
+    regime_detection: RegimeDetectionConfig = field(default_factory=RegimeDetectionConfig)
+    risk_management: RiskManagementConfig = field(default_factory=RiskManagementConfig)
     behavior_discovery: BehaviorDiscoveryConfig = field(default_factory=BehaviorDiscoveryConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)

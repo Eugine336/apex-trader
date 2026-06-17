@@ -928,6 +928,81 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             logger.warning("[execution-profiles] init failed, disabled: {}", exc)
             self._execution_profiles = None
 
+        # ── Regime Detection (L7) ────────────────────────────────────────────
+        # Per-pair market-regime classifier (TRENDING/RANGING/VOLATILE/QUIET).
+        # Pure context for every other layer — never directs or blocks a trade.
+        # Built up-front and unconditionally (independent of the counterfactual
+        # store). UNKNOWN at zero confidence until enough candle history, so it
+        # is a no-op until evidence exists; a build failure leaves it None and
+        # every guarded hook no-ops.
+        self._regime_detector = None
+        try:
+            rg_cfg = getattr(self.config, "regime_detection", None)
+            if rg_cfg is not None and getattr(rg_cfg, "enabled", False):
+                from adaptive.regime_detector import RegimeDetector
+
+                self._regime_detector = RegimeDetector(
+                    db_path=rg_cfg.regime_detection_db_path,
+                    enabled=True,
+                    lookback_bars=rg_cfg.lookback_bars,
+                    hysteresis_bars=rg_cfg.hysteresis_bars,
+                    volatility_short_window=rg_cfg.volatility_short_window,
+                    volatility_long_window=rg_cfg.volatility_long_window,
+                    adx_period=rg_cfg.adx_period,
+                    autocorrelation_lag=rg_cfg.autocorrelation_lag,
+                    trending_threshold=rg_cfg.trending_threshold,
+                    volatile_threshold=rg_cfg.volatile_threshold,
+                    quiet_threshold=rg_cfg.quiet_threshold,
+                )
+                logger.info(
+                    "[regime-detection] engine enabled (L7) — lookback {} bars, "
+                    "hysteresis {} bars",
+                    rg_cfg.lookback_bars, rg_cfg.hysteresis_bars,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[regime-detection] init failed, disabled: {}", exc)
+            self._regime_detector = None
+
+        # ── Risk Management (L8) ─────────────────────────────────────────────
+        # Circuit-breaker layer: drawdown limits, correlated-exposure caps, and
+        # overconcentration limits behind one gate. The only adaptive component
+        # that can block a trade — and only on a hard risk limit, never on
+        # signal quality. Every block is logged + persisted. Disabled / cold →
+        # passes everything, sizing factor 1.0 (identical to pre-L8). A build
+        # failure leaves it None and every guarded hook no-ops.
+        self._risk_manager = None
+        try:
+            rm_cfg = getattr(self.config, "risk_management", None)
+            if rm_cfg is not None and getattr(rm_cfg, "enabled", False):
+                from adaptive.risk_manager import RiskManager
+
+                self._risk_manager = RiskManager(
+                    db_path=rm_cfg.risk_management_db_path,
+                    enabled=True,
+                    daily_drawdown_limit_pct=rm_cfg.daily_drawdown_limit_pct,
+                    rolling_drawdown_limit_pct=rm_cfg.rolling_drawdown_limit_pct,
+                    hard_stop_drawdown_pct=rm_cfg.hard_stop_drawdown_pct,
+                    cooldown_hours=rm_cfg.cooldown_hours,
+                    cooldown_sizing_factor=rm_cfg.cooldown_sizing_factor,
+                    max_simultaneous_positions=rm_cfg.max_simultaneous_positions,
+                    max_per_pair_positions=rm_cfg.max_per_pair_positions,
+                    max_directional_exposure_pct=rm_cfg.max_directional_exposure_pct,
+                    correlation_threshold=rm_cfg.correlation_threshold,
+                    max_correlated_exposure_factor=rm_cfg.max_correlated_exposure_factor,
+                    correlation_lookback_bars=rm_cfg.correlation_lookback_bars,
+                    correlation_update_interval=rm_cfg.correlation_update_interval,
+                    max_per_regime_pct=rm_cfg.max_per_regime_pct,
+                )
+                logger.info(
+                    "[risk-management] engine enabled (L8) — daily DD {:.1f}%, "
+                    "rolling DD {:.1f}%, hard stop {:.1f}%",
+                    rm_cfg.daily_drawdown_limit_pct,
+                    rm_cfg.rolling_drawdown_limit_pct,
+                    rm_cfg.hard_stop_drawdown_pct,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[risk-management] init failed, disabled: {}", exc)
+            self._risk_manager = None
         # ── Behaviour Discovery (L6) ─────────────────────────────────────────
         # Records each closed trade's execution feature vector + realised R and
         # periodically clusters them into emergent "behaviours" (execution
@@ -1131,6 +1206,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             VirtualSignalManagerTunable,
             CapitalAllocatorTunable,
             ExecutionProfileTunable,
+            RegimeDetectorTunable,
+            RiskManagerTunable,
             BehaviorDiscoveryTunable,
             ConsumerTunable,
         )
@@ -1283,6 +1360,16 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         if self._execution_profiles is not None:
             agent.register(ExecutionProfileTunable(self._execution_profiles))
 
+        # L7 — regime detector. Classifies live; registered so the agent owns
+        # snapshot / validate / rollback of its threshold knobs (ON_DEMAND skip).
+        if self._regime_detector is not None:
+            agent.register(RegimeDetectorTunable(self._regime_detector))
+
+        # L8 — risk manager. Ingests equity on close; registered so the agent is
+        # the sole authority over its risk-limit knobs (a bad push can never
+        # loosen limits unaudited; ON_DEMAND skip).
+        if self._risk_manager is not None:
+            agent.register(RiskManagerTunable(self._risk_manager))
         # L6 — behaviour discovery (trade-close batch). Records execution feature
         # vectors on every close; the clustering + scoring + SHADOW→ACTIVE→RETIRED
         # lifecycle pass is routed here so it runs on the agent's coordinated
@@ -1306,7 +1393,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self.ml, self._gate_tuner, self._calibrator, self._signal_ledger,
             self._vote_calibrator, self._module_governor,
             self._virtual_signal_manager, self._capital_allocator,
-            self._execution_profiles,
+            self._execution_profiles, self._regime_detector, self._risk_manager,
         ):
             if _component is not None and hasattr(_component, "set_tuner_agent"):
                 _component.set_tuner_agent(agent)
@@ -1647,6 +1734,49 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self._tuner_agent.on_scan_cycle(ctx)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[tuner-agent] scan-cycle run failed: {}", exc)
+
+    def _update_regime_and_risk(self, market_data: dict) -> None:
+        """Feed scan frames into the L7 regime detector + L8 correlation matrix.
+
+        Per pair, picks the freshest mid-timeframe close series and (a) re-runs
+        regime classification (hysteresis-committed) and (b) collects closes for
+        the risk manager's periodic correlation recompute. Fully guarded — any
+        failure is swallowed and never blocks the scan; a no-op when both
+        engines are absent.
+        """
+        regime_det = getattr(self, "_regime_detector", None)
+        risk_mgr = getattr(self, "_risk_manager", None)
+        if regime_det is None and risk_mgr is None:
+            return
+        try:
+            closes_by_pair: dict = {}
+            for pair, frames in (market_data or {}).items():
+                if not frames:
+                    continue
+                closes = None
+                for tf in ("H1", "M15", "M5", "M1"):
+                    df = frames.get(tf)
+                    try:
+                        if df is not None and len(df) > 0:
+                            closes = [float(x) for x in df["close"].tolist()]
+                            break
+                    except Exception:  # noqa: BLE001
+                        continue
+                if not closes:
+                    continue
+                if regime_det is not None:
+                    try:
+                        regime_det.update(pair, closes)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("[regime-detection] update failed for {}: {}", pair, exc)
+                closes_by_pair[pair] = closes
+            if risk_mgr is not None and closes_by_pair:
+                try:
+                    risk_mgr.update_correlations(closes_by_pair)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[risk-management] correlation update failed: {}", exc)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[regime/risk] scan-cycle update failed: {}", exc)
 
     def _account_key(self, symbol: str) -> str:
         """Resolve the risk-silo key (broker + account login) for a symbol.
@@ -2166,6 +2296,11 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self._tuner_run_scan_cycle(market_data)
         else:
             self._run_signal_grading(market_data)
+
+        # L7/L8: refresh per-pair regime classification + the risk manager's
+        # correlation matrix from the same scan frames (both fully guarded /
+        # no-op when their engines are absent).
+        self._update_regime_and_risk(market_data)
 
         qf, qt = self.scanner.get_quality_failure_stats()
         if qf > 0:
@@ -3443,6 +3578,41 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 logger.debug("[capital-allocation] sizing multiplier failed for {}: {}", pair, exc)
                 strategy_fingerprint = ""
                 strategy_allocation = 1.0
+
+        # ── Risk Management Gate (L8) — hard risk limits before sizing ───────
+        # The one place a trade can be blocked on RISK (never signal quality):
+        # drawdown breaker, correlated / directional / per-pair / per-regime
+        # exposure. Disabled / cold → allowed (true no-op). A denial is logged +
+        # persisted inside the manager; here we just stop the entry. The
+        # breaker's sizing factor (1.0 normal, reduced in cooldown) folds into
+        # the capital-allocation multiplier so a degraded book sizes down too.
+        risk_mgr = getattr(self, "_risk_manager", None)
+        if risk_mgr is not None:
+            try:
+                _rg_regime = getattr(result, "regime", "") or ""
+                _open = [
+                    {"pair": p.symbol, "direction": p.direction,
+                     "regime": getattr(p, "regime", "") or ""}
+                    for p in self.managed_positions.values()
+                ]
+                _decision = risk_mgr.can_open_position(
+                    pair, direction,
+                    open_positions=_open,
+                    account_balance=balance,
+                    regime=_rg_regime,
+                )
+                if not _decision.allowed:
+                    self._log_rejection(
+                        pair, direction, signal.score,
+                        f"RiskManager[{_decision.rule}]: {_decision.reason}",
+                    )
+                    self._persist_shadow_contract(
+                        signal, rejecting_gate=f"risk_manager:{_decision.rule}",
+                    )
+                    return False
+                strategy_allocation = float(strategy_allocation) * float(risk_mgr.sizing_factor())
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[risk-management] gate check failed for {}: {}", pair, exc)
 
         assessment = self.risk_engine.assess(
             pair=pair,
@@ -6965,6 +7135,38 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         except Exception as exc:  # noqa: BLE001
             logger.debug("[execution-profiles] close hook failed for {}: {}", pos.symbol, exc)
 
+        # ── Regime Detection (L7) — credit realised R to the pair's regime ────
+        # Pure observation so the dashboard can show which regimes the book
+        # makes money in. Never blocked by the TunerAgent.
+        try:
+            regime_det = getattr(self, "_regime_detector", None)
+            if regime_det is not None:
+                _rg_plan_sl = float(getattr(pos, "plan_sl_pips", 0.0) or 0.0)
+                _rg_pnl_r = (
+                    (pnl_pips / _rg_plan_sl) if _rg_plan_sl > 1e-8
+                    else (1.0 if pnl_dollars > 0 else -1.0)
+                )
+                regime_det.record_performance(pos.symbol, _rg_pnl_r)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[regime-detection] close hook failed for {}: {}", pos.symbol, exc)
+
+        # ── Risk Management (L8) — update equity curve + drawdown breaker ─────
+        # Pure ingestion of the realised P&L against the post-close balance so
+        # the circuit breaker can trip on drawdown. Never blocked by the agent.
+        try:
+            risk_mgr = getattr(self, "_risk_manager", None)
+            if risk_mgr is not None:
+                _rm_balance = 0.0
+                try:
+                    pm = getattr(self, "platform_manager", None)
+                    if pm is not None and hasattr(pm, "get_platform_balance"):
+                        _rm_balance = float(pm.get_platform_balance(pos.symbol) or 0.0)
+                except Exception:  # noqa: BLE001
+                    _rm_balance = 0.0
+                if _rm_balance > 0:
+                    risk_mgr.on_trade_closed(float(pnl_dollars), _rm_balance)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[risk-management] close hook failed for {}: {}", pos.symbol, exc)
         # ── Behaviour Discovery (L6) — record the execution feature vector ───
         # Stores this trade's entry-time execution features + realised R so the
         # engine can cluster emergent behaviours. Pure data ingestion; the
