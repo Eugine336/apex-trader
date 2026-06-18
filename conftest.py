@@ -25,7 +25,8 @@ def _ensure_mt5_stub():
     mt5.last_error = lambda: (0, "OK")
     mt5.account_info = lambda: None
     mt5.terminal_info = lambda: None
-    mt5.symbol_info = lambda s: None
+    _si = types.SimpleNamespace(trade_mode=4, visible=True, spread=10)
+    mt5.symbol_info = lambda s: _si
     mt5.symbol_info_tick = lambda s: None
     mt5.symbol_select = lambda s, e=True: True
     mt5.copy_rates_from_pos = lambda *a, **kw: None

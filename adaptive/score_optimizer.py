@@ -136,6 +136,10 @@ class ScoringWeights:
             lo = round(b * (1.0 - pct))
             hi = round(b * (1.0 + pct))
             clamped[key] = max(lo, min(hi, self_d[key]))
+        remainder = baseline.total - sum(clamped.values())
+        if remainder != 0:
+            best_key = max(clamped, key=lambda k: clamped[k])
+            clamped[best_key] += remainder
         return ScoringWeights(
             structure_weight=clamped["structure"],
             ob_h1_weight=clamped["ob_h1"],

@@ -395,6 +395,21 @@ class PairScanner:
     stack, and surfaces only the setups worth pulling the trigger on.
     """
 
+    _pair_learner = None
+    _win_rate_adapter: Optional["AdaptiveWinRateProvider"] = None
+    _vote_calibrator = None
+    _module_governor = None
+    _virtual_registry = None
+    _adaptive_weights = None
+    _rl = None
+    _obs_builders = None
+    _mtf_builders = None
+    _quality_scans: int = 0
+    _quality_failures: int = 0
+    _trade_history = None
+    _mt5_connector = None
+    last_report = None
+
     def __init__(self, config: Optional[AppConfig] = None, mt5_connector=None,
                  scoring_weights: Optional[dict[str, int]] = None,
                  rl_checkpoint: Optional[str] = None):

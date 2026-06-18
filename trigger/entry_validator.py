@@ -45,7 +45,7 @@ class ValidationResult:
 # Checks that are genuine physics/safety vetoes (a soft path makes no sense):
 # the market is closed, the signal expired, or its prices are corrupt.
 _HARD_CHECKS: frozenset[str] = frozenset(
-    {"market_open", "expiry", "price_finiteness"}
+    {"market_open", "expiry", "price_finiteness", "max_trades"}
 )
 
 
@@ -115,6 +115,9 @@ class EntryValidator:
 
         ok, msg = self.check_price_finiteness(signal)
         _record("price_finiteness", ok, msg)
+
+        ok, msg = self.check_max_trades(open_trades)
+        _record("max_trades", ok, msg)
 
         is_valid = len(failed) == 0
 
