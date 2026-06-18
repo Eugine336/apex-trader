@@ -63,23 +63,36 @@ class FVGDetector:
         df = df.copy().reset_index(drop=True)
         fvgs = []
 
-        for i in range(1, len(df) - 1):
-            c1 = df.iloc[i - 1]  # First candle
-            c2 = df.iloc[i]      # Middle candle (the impulse)
-            c3 = df.iloc[i + 1]  # Third candle
+        # Cache columns as numpy arrays — scalar numpy indexing in the scan
+        # loop is far cheaper than df.iloc[] row access per candle, and the
+        # detection logic below is byte-for-byte identical.
+        highs = df["high"].values
+        lows = df["low"].values
+        opens = df["open"].values
+        closes = df["close"].values
+        has_time = "time" in df.columns
+        times = df["time"].values if has_time else None
 
-            ts = c2["time"] if "time" in df.columns else pd.Timestamp.now()
+        for i in range(1, len(df) - 1):
+            c1_high = highs[i - 1]
+            c1_low = lows[i - 1]
+            c3_high = highs[i + 1]
+            c3_low = lows[i + 1]
+
+            ts = times[i] if has_time else pd.Timestamp.now()
 
             # Bullish FVG: C3 low > C1 high (gap above C1, below C3)
-            if c3["low"] > c1["high"]:
-                gap_size = c3["low"] - c1["high"]
+            if c3_low > c1_high:
+                gap_size = c3_low - c1_high
                 if gap_size >= self.min_size:
-                    midpoint = (c3["low"] + c1["high"]) / 2
-                    strength = self._rate_strength(gap_size, c2)
+                    midpoint = (c3_low + c1_high) / 2
+                    strength = self._rate_strength_values(
+                        gap_size, opens[i], closes[i]
+                    )
                     fvgs.append(FairValueGap(
                         kind="BULLISH",
-                        top=c3["low"],
-                        bottom=c1["high"],
+                        top=c3_low,
+                        bottom=c1_high,
                         midpoint=midpoint,
                         size_pips=round(gap_size / self.pip_size, 1),
                         strength=strength,
@@ -90,15 +103,17 @@ class FVGDetector:
                     ))
 
             # Bearish FVG: C3 high < C1 low (gap below C1, above C3)
-            elif c3["high"] < c1["low"]:
-                gap_size = c1["low"] - c3["high"]
+            elif c3_high < c1_low:
+                gap_size = c1_low - c3_high
                 if gap_size >= self.min_size:
-                    midpoint = (c1["low"] + c3["high"]) / 2
-                    strength = self._rate_strength(gap_size, c2)
+                    midpoint = (c1_low + c3_high) / 2
+                    strength = self._rate_strength_values(
+                        gap_size, opens[i], closes[i]
+                    )
                     fvgs.append(FairValueGap(
                         kind="BEARISH",
-                        top=c1["low"],
-                        bottom=c3["high"],
+                        top=c1_low,
+                        bottom=c3_high,
                         midpoint=midpoint,
                         size_pips=round(gap_size / self.pip_size, 1),
                         strength=strength,
@@ -122,7 +137,13 @@ class FVGDetector:
         Rate FVG strength based on gap size and impulse candle body.
         Strong FVG = large gap + strong impulse candle body.
         """
-        body_size = abs(impulse_candle["close"] - impulse_candle["open"])
+        return self._rate_strength_values(
+            gap_size, impulse_candle["open"], impulse_candle["close"]
+        )
+
+    def _rate_strength_values(self, gap_size: float, c_open: float, c_close: float) -> str:
+        """Value-based core of :meth:`_rate_strength` (avoids pd.Series access)."""
+        body_size = abs(c_close - c_open)
         gap_pips = gap_size / self.pip_size
 
         if gap_pips >= 10 and body_size >= gap_size * 2:
@@ -133,31 +154,49 @@ class FVGDetector:
             return "WEAK"
 
     def _update_statuses(self, fvgs: list[FairValueGap], df: pd.DataFrame) -> list[FairValueGap]:
-        """Update each FVG's fill status based on subsequent price action."""
+        """Update each FVG's fill status based on subsequent price action.
+
+        Vectorized equivalent of the original per-candle loop: for each FVG we
+        evaluate every subsequent candle at once with numpy. Semantics are
+        preserved exactly —
+          * the first candle that fully fills the gap wins (status FILLED);
+          * otherwise the LAST candle that touched the gap decides the status
+            (MITIGATED if it reached the midpoint, else PARTIALLY);
+          * a gap never touched stays OPEN.
+        """
+        lows = df["low"].values
+        highs = df["high"].values
+
         for fvg in fvgs:
-            # Check candles AFTER the FVG formed
-            subsequent = df.iloc[fvg.candle_index + 2:]
-            if subsequent.empty:
+            start = fvg.candle_index + 2
+            if start >= len(df):
                 continue
 
-            for _, candle in subsequent.iterrows():
-                if fvg.kind == "BULLISH":
-                    if candle["low"] <= fvg.bottom:
-                        fvg.status = FVGStatus.FILLED
-                        break
-                    elif candle["low"] <= fvg.midpoint:
-                        fvg.status = FVGStatus.MITIGATED
-                    elif candle["low"] <= fvg.top:
-                        fvg.status = FVGStatus.PARTIALLY
+            if fvg.kind == "BULLISH":
+                sub_lows = lows[start:]
+                if (sub_lows <= fvg.bottom).any():
+                    fvg.status = FVGStatus.FILLED
+                    continue
+                touched = sub_lows <= fvg.top
+                if touched.any():
+                    last = sub_lows[touched][-1]
+                    fvg.status = (
+                        FVGStatus.MITIGATED if last <= fvg.midpoint
+                        else FVGStatus.PARTIALLY
+                    )
 
-                elif fvg.kind == "BEARISH":
-                    if candle["high"] >= fvg.top:
-                        fvg.status = FVGStatus.FILLED
-                        break
-                    elif candle["high"] >= fvg.midpoint:
-                        fvg.status = FVGStatus.MITIGATED
-                    elif candle["high"] >= fvg.bottom:
-                        fvg.status = FVGStatus.PARTIALLY
+            elif fvg.kind == "BEARISH":
+                sub_highs = highs[start:]
+                if (sub_highs >= fvg.top).any():
+                    fvg.status = FVGStatus.FILLED
+                    continue
+                touched = sub_highs >= fvg.bottom
+                if touched.any():
+                    last = sub_highs[touched][-1]
+                    fvg.status = (
+                        FVGStatus.MITIGATED if last >= fvg.midpoint
+                        else FVGStatus.PARTIALLY
+                    )
 
         return fvgs
 
