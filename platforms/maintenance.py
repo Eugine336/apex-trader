@@ -5,6 +5,7 @@ Runs once per day: backs up the database, rotates old logs, cleans stale files.
 """
 
 import shutil
+import sqlite3
 import time as _time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -58,7 +59,20 @@ class DailyMaintenance:
         backup_path = backup_dir / f"positions_{today}.db"
 
         try:
-            shutil.copy2(str(db_path), str(backup_path))
+            # Use SQLite's online backup API instead of a raw file copy: it
+            # takes a consistent snapshot even while the DB is being written
+            # (WAL mode), avoiding the torn/corrupt copy a shutil.copy2 can
+            # produce mid-write.
+            src = sqlite3.connect(str(db_path), timeout=30)
+            try:
+                dst = sqlite3.connect(str(backup_path), timeout=30)
+                try:
+                    with dst:
+                        src.backup(dst)
+                finally:
+                    dst.close()
+            finally:
+                src.close()
         except Exception as exc:
             logger.warning("Database backup failed: {}", exc)
             return f"error: {exc}"

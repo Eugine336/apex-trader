@@ -7,6 +7,7 @@ We don't trade in wide spreads. Period.
 from collections import deque
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from threading import Lock
 
 from loguru import logger
 
@@ -32,6 +33,8 @@ class SpreadMonitor:
     def __init__(self, max_multiplier: float = 3.0):
         self.max_multiplier = max_multiplier
         self._history: dict[str, deque[SpreadReading]] = {}
+        # Scan threads append while the entry/heat paths read — serialise both.
+        self._lock = Lock()
 
     def record_spread(
         self,
@@ -41,9 +44,10 @@ class SpreadMonitor:
     ) -> None:
         pair = pair.upper()
         timestamp = timestamp or datetime.now(timezone.utc)
-        if pair not in self._history:
-            self._history[pair] = deque(maxlen=HISTORY_SIZE)
-        self._history[pair].append(SpreadReading(spread_pips=spread_pips, timestamp=timestamp))
+        with self._lock:
+            if pair not in self._history:
+                self._history[pair] = deque(maxlen=HISTORY_SIZE)
+            self._history[pair].append(SpreadReading(spread_pips=spread_pips, timestamp=timestamp))
 
     def is_spread_safe(
         self,
@@ -70,9 +74,10 @@ class SpreadMonitor:
 
     def get_average_spread(self, pair: str) -> float:
         pair = pair.upper()
-        readings = self._history.get(pair)
-        if readings and len(readings) > 0:
-            return sum(r.spread_pips for r in readings) / len(readings)
+        with self._lock:
+            readings = self._history.get(pair)
+            if readings and len(readings) > 0:
+                return sum(r.spread_pips for r in readings) / len(readings)
 
         info = INSTRUMENT_REGISTRY.get(pair)
         if info is not None:

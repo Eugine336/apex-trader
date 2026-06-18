@@ -1403,7 +1403,14 @@ class EntryEngine:
         risk_amount = account_balance * risk_pct
         risk_pips = abs(entry_price - stop_loss) / pip_size
         if risk_pips <= 0:
-            return 0.01
+            # A zero/negative stop distance is invalid — refuse to size rather
+            # than silently defaulting to the minimum lot (which would place a
+            # real trade with an undefined risk). 0.0 signals "no valid size".
+            logger.warning(
+                "[entry_engine] {} risk_pips ≤ 0 (entry={}, sl={}) — refusing to size",
+                pair or "trade", entry_price, stop_loss,
+            )
+            return 0.0
 
         pip_value = self._pip_value(pair, pip_size)
         lots = risk_amount / (risk_pips * pip_value)

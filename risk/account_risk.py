@@ -41,7 +41,9 @@ class AccountRiskManager:
     # ── Balance ──────────────────────────────────────────────────────────
 
     def update_balance(self, account: str, balance: float) -> None:
-        if account and balance and balance > 0:
+        # A balance of exactly 0.0 is a VALID, important state (e.g. after a
+        # margin call) — not "missing data". Only reject None / negatives.
+        if account and balance is not None and balance >= 0:
             self._balance[account] = float(balance)
 
     def balance(self, account: str) -> float:

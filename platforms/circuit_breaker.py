@@ -9,6 +9,7 @@ HALF_OPEN → testing recovery with limited attempts.
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from enum import Enum
+from threading import Lock
 from typing import Optional
 
 
@@ -46,48 +47,55 @@ class CircuitBreaker:
         self._last_failure_time: Optional[datetime] = None
         self._last_success_time: Optional[datetime] = None
         self._half_open_failures = 0
+        # Trading loop and health-check threads can hit this concurrently;
+        # serialise all state reads/mutations so counters never tear.
+        self._lock = Lock()
 
     def can_execute(self) -> bool:
-        if self._state == CircuitState.CLOSED:
-            return True
-        if self._state == CircuitState.OPEN:
-            if self._cooldown_expired():
-                self._state = CircuitState.HALF_OPEN
-                self._half_open_failures = 0
+        with self._lock:
+            if self._state == CircuitState.CLOSED:
                 return True
-            return False
-        return True
+            if self._state == CircuitState.OPEN:
+                if self._cooldown_expired():
+                    self._state = CircuitState.HALF_OPEN
+                    self._half_open_failures = 0
+                    return True
+                return False
+            return True
 
     def record_success(self) -> None:
-        self._failure_count = 0
-        self._half_open_failures = 0
-        self._state = CircuitState.CLOSED
-        self._last_success_time = datetime.now(timezone.utc)
+        with self._lock:
+            self._failure_count = 0
+            self._half_open_failures = 0
+            self._state = CircuitState.CLOSED
+            self._last_success_time = datetime.now(timezone.utc)
 
     def record_failure(self) -> None:
-        self._failure_count += 1
-        self._last_failure_time = datetime.now(timezone.utc)
-        if self._state == CircuitState.HALF_OPEN:
-            self._half_open_failures += 1
-            if self._half_open_failures >= self._half_open_max_failures:
+        with self._lock:
+            self._failure_count += 1
+            self._last_failure_time = datetime.now(timezone.utc)
+            if self._state == CircuitState.HALF_OPEN:
+                self._half_open_failures += 1
+                if self._half_open_failures >= self._half_open_max_failures:
+                    self._state = CircuitState.OPEN
+            elif self._failure_count >= self._failure_threshold:
                 self._state = CircuitState.OPEN
-        elif self._failure_count >= self._failure_threshold:
-            self._state = CircuitState.OPEN
 
     def get_status(self) -> CircuitStatus:
-        cooldown = 0.0
-        if self._state == CircuitState.OPEN and self._last_failure_time:
-            elapsed = (
-                datetime.now(timezone.utc) - self._last_failure_time
-            ).total_seconds()
-            cooldown = max(0.0, self._cooldown_seconds - elapsed)
-        return CircuitStatus(
-            state=self._state,
-            failure_count=self._failure_count,
-            last_failure_time=self._last_failure_time,
-            cooldown_remaining_seconds=cooldown,
-            last_success_time=self._last_success_time,
-        )
+        with self._lock:
+            cooldown = 0.0
+            if self._state == CircuitState.OPEN and self._last_failure_time:
+                elapsed = (
+                    datetime.now(timezone.utc) - self._last_failure_time
+                ).total_seconds()
+                cooldown = max(0.0, self._cooldown_seconds - elapsed)
+            return CircuitStatus(
+                state=self._state,
+                failure_count=self._failure_count,
+                last_failure_time=self._last_failure_time,
+                cooldown_remaining_seconds=cooldown,
+                last_success_time=self._last_success_time,
+            )
 
     def _cooldown_expired(self) -> bool:
         if not self._last_failure_time:

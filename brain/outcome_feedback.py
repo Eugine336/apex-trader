@@ -25,6 +25,8 @@ Leaf module — standard library + loguru only.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -39,6 +41,11 @@ class OutcomeFeedback:
         self._enabled = bool(getattr(config, "enabled", True)) if config is not None else True
         path = getattr(config, "journal_path", "data/outcome_feedback.jsonl") if config is not None else "data/outcome_feedback.jsonl"
         self._lookback = int(getattr(config, "accuracy_lookback", 300)) if config is not None else 300
+        # Cap the append-only journal so it can't grow without bound over
+        # months of operation (it is fully re-read on every aggregation).
+        self._max_records = int(getattr(config, "max_records", 20000)) if config is not None else 20000
+        self._rotate_every = 500
+        self._append_count = 0
         self._path = Path(path)
         try:
             self._path.parent.mkdir(parents=True, exist_ok=True)
@@ -84,6 +91,48 @@ class OutcomeFeedback:
                 fh.write(json.dumps(record, default=str) + "\n")
         except Exception as exc:
             logger.warning("[OutcomeFeedback] write failed: {}", exc)
+            return
+        self._append_count += 1
+        if self._append_count % self._rotate_every == 0:
+            self._maybe_rotate()
+
+    def _maybe_rotate(self) -> None:
+        """Trim the journal to the most recent ``_max_records`` lines.
+
+        Rewrites atomically (temp file + os.replace) so a crash mid-rotation
+        never corrupts the journal.
+        """
+        if self._max_records <= 0:
+            return
+        try:
+            if not self._path.exists():
+                return
+            with self._path.open("r", encoding="utf-8") as fh:
+                lines = fh.readlines()
+            if len(lines) <= self._max_records:
+                return
+            keep = lines[-self._max_records:]
+            fd, tmp_name = tempfile.mkstemp(
+                dir=str(self._path.parent), prefix=self._path.name, suffix=".tmp",
+            )
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as tmp:
+                    tmp.writelines(keep)
+                    tmp.flush()
+                    os.fsync(tmp.fileno())
+                os.replace(tmp_name, self._path)
+            finally:
+                if os.path.exists(tmp_name):
+                    try:
+                        os.unlink(tmp_name)
+                    except OSError:
+                        pass
+            logger.info(
+                "[OutcomeFeedback] journal rotated — kept last {} of {} records",
+                self._max_records, len(lines),
+            )
+        except Exception as exc:
+            logger.warning("[OutcomeFeedback] journal rotation failed: {}", exc)
 
     # ── Reading / aggregation ──────────────────────────────────────────────
 

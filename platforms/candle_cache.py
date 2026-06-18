@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import threading
 import time as _time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import Optional
 
@@ -90,13 +91,17 @@ class CandleCache:
         ttl_by_tf: Optional[dict[str, float]] = None,
         default_ttl: float = 5.0,
         enabled: bool = True,
+        max_size: int = 500,
     ) -> None:
         self.enabled = enabled
         self._ttl_by_tf = dict(_DEFAULT_TTL)
         if ttl_by_tf:
             self._ttl_by_tf.update(ttl_by_tf)
         self._default_ttl = float(default_ttl)
-        self._store: dict[tuple[str, str, int], _Entry] = {}
+        # Bounded LRU: without an eviction cap the store grows without limit
+        # across many symbols × timeframes × counts over a long session.
+        self._max_size = max(1, int(max_size))
+        self._store: "OrderedDict[tuple[str, str, int], _Entry]" = OrderedDict()
         self._lock = threading.Lock()
         self._stats = CandleCacheStats()
 
@@ -128,6 +133,8 @@ class CandleCache:
                 return None
             self._stats.hits += 1
             self._stats.per_tf_hits[timeframe] = self._stats.per_tf_hits.get(timeframe, 0) + 1
+            # Mark as most-recently-used for LRU eviction.
+            self._store.move_to_end(key)
             df = entry.df
         logger.debug("[candle-cache] HIT {} {} (count={}, age={:.1f}s)", symbol, timeframe, count, age)
         return df
@@ -142,7 +149,13 @@ class CandleCache:
         key = (symbol, timeframe, count)
         with self._lock:
             self._store[key] = _Entry(df=df, count=count, stored_monotonic=_time.monotonic())
+            self._store.move_to_end(key)
             self._stats.stores += 1
+            # Evict least-recently-used entries past the size cap.
+            while len(self._store) > self._max_size:
+                evicted_key, _ = self._store.popitem(last=False)
+                self._stats.expired += 1
+                logger.debug("[candle-cache] LRU evict {}", evicted_key)
         logger.debug("[candle-cache] MISS→store {} {} (count={}, rows={})", symbol, timeframe, count, len(df))
 
     def invalidate(self, symbol: Optional[str] = None, timeframe: Optional[str] = None) -> None:

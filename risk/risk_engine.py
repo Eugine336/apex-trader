@@ -140,8 +140,10 @@ class RiskEngine:
         strategy_allocation: float = 1.0,
     ) -> RiskAssessment:
         now = datetime.now(timezone.utc)
-        balance = account_balance or self.balance
-        if not balance or balance <= 0:
+        # A passed balance of exactly 0.0 is a real state (margin call) and must
+        # NOT silently fall back to the stale internal balance — only None does.
+        balance = account_balance if account_balance is not None else self.balance
+        if balance is None or balance <= 0:
             logger.warning(
                 f"[RiskEngine] REJECTED {pair}: account balance unavailable "
                 f"or non-positive ({balance!r}) — refusing to size"
@@ -504,7 +506,7 @@ class RiskEngine:
         account_balance: float | None = None,
     ) -> AccountSnapshot:
         now = datetime.now(timezone.utc)
-        balance = account_balance or self.balance
+        balance = account_balance if account_balance is not None else self.balance
         trades = open_trades or []
 
         pnl_snap = self.pnl_tracker.get_snapshot(account_balance=balance, timestamp=now)
@@ -551,11 +553,13 @@ class RiskEngine:
         logger.info("[RiskEngine] NEW WEEK: Weekly P&L reset")
 
     def to_state(self) -> dict:
-        """Serialise daily risk state (balance + drawdown guard) so a mid-day
-        restart doesn't reset the loss budget / FROZEN mode to fresh."""
+        """Serialise daily risk state (balance + drawdown guard + P&L tallies)
+        so a mid-day restart doesn't reset the loss budget / FROZEN mode / daily
+        loss tracking to fresh."""
         return {
             "balance": self.balance,
             "drawdown_guard": self.drawdown_guard.to_state(),
+            "pnl_tracker": self.pnl_tracker.to_state(),
         }
 
     def restore_state(self, state: dict) -> None:
@@ -575,6 +579,37 @@ class RiskEngine:
                 self.drawdown_guard.restore_state(dg)
             except Exception as exc:
                 logger.debug("[RiskEngine] drawdown guard restore failed: {}", exc)
+        pnl_state = state.get("pnl_tracker")
+        if pnl_state:
+            try:
+                self.pnl_tracker.restore_state(pnl_state)
+            except Exception as exc:
+                logger.debug("[RiskEngine] pnl tracker restore failed: {}", exc)
+
+    def reconcile_balance(
+        self, broker_balance: float | None, divergence_warn_pct: float = 1.0,
+    ) -> None:
+        """Sync the internal balance to broker truth.
+
+        ``self.balance`` is advanced by record_trade_result() between cycles and
+        can drift from the broker (commissions, swaps, slippage, manual trades).
+        This pulls it back to the authoritative broker balance each call and
+        logs a warning when the pre-sync divergence exceeds the threshold so a
+        persistent desync is visible. A broker balance of exactly 0.0 is a valid
+        state and is applied; only None/negative is ignored.
+        """
+        if broker_balance is None or broker_balance < 0:
+            return
+        prev = self.balance
+        if prev and prev > 0:
+            divergence_pct = abs(prev - broker_balance) / broker_balance * 100.0 if broker_balance > 0 else 100.0
+            if divergence_pct >= divergence_warn_pct:
+                logger.warning(
+                    "[RiskEngine] balance desync {:.2f}% — internal ${:,.2f} vs "
+                    "broker ${:,.2f}; syncing to broker truth",
+                    divergence_pct, prev, broker_balance,
+                )
+        self.balance = float(broker_balance)
 
     # Hard ceiling on per-trade risk regardless of any scaling factor.
     _RISK_PCT_CAP = 0.025

@@ -11,13 +11,14 @@ import threading
 import time as _time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import pandas as pd
 from loguru import logger
 
 from brain.symbol_mapper import SymbolMapper
 from config import get_pip_size
+from persistence.deriv_position_store import DerivPositionStore
 from platforms.base_connector import (
     AccountInfo,
     BaseConnector,
@@ -61,6 +62,14 @@ _REST_TIMEOUT = 20
 # Refresh/expiry warning window: warn when the access token is within this many
 # seconds of expiry, since a reconnect after expiry cannot self-recover.
 _TOKEN_EXPIRY_WARN_SECONDS = 300
+
+# Proactively refresh the access token once this fraction of its TTL has
+# elapsed (i.e. while there is still ~20% of life left), so a refresh failure
+# is surfaced before the token actually dies and a reconnect becomes impossible.
+_TOKEN_REFRESH_FRACTION = 0.8
+
+# Background token-monitor poll interval (seconds).
+_TOKEN_MONITOR_INTERVAL = 30.0
 
 _GRANULARITY_MAP: dict[str, int] = {
     "M1": 60,
@@ -111,6 +120,8 @@ class DerivConnector(BaseConnector):
         token_expires_in: float = 3600.0,
         app_id: str = "",
         max_tick_age_seconds: float = 120.0,
+        token_refresh_callback: Optional[Callable[[], tuple[str, float]]] = None,
+        position_store: Optional[DerivPositionStore] = None,
     ):
         # New API: OAuth2 access token + REST OTP flow.
         # client_id     — OAuth2 client id (from the Deriv Developer Dashboard)
@@ -123,10 +134,22 @@ class DerivConnector(BaseConnector):
         self._app_id = app_id
         # Track token expiry so we can warn before a reconnect would fail.
         try:
-            self._token_expires_at: float = _time.time() + float(token_expires_in)
+            self._token_ttl: float = float(token_expires_in)
         except (TypeError, ValueError):
-            self._token_expires_at = _time.time() + 3600.0
+            self._token_ttl = 3600.0
+        if self._token_ttl <= 0:
+            self._token_ttl = 3600.0
+        self._token_issued_at: float = _time.time()
+        self._token_expires_at: float = self._token_issued_at + self._token_ttl
         self._token_expiry_warned = False
+        # Optional callable returning (new_access_token, expires_in_seconds).
+        # Deriv's OAuth2 access tokens are short-lived and this flow has no
+        # built-in refresh-token grant, so rotation is delegated to the host
+        # (e.g. a credential broker). When absent we can only warn + wind down.
+        self._token_refresh_callback = token_refresh_callback
+        self._token_lock = threading.Lock()
+        self._token_monitor_stop = threading.Event()
+        self._token_monitor_thread: Optional[threading.Thread] = None
 
         self._max_tick_age_seconds = float(
             os.getenv("MAX_TICK_AGE_SECONDS", str(max_tick_age_seconds))
@@ -138,6 +161,21 @@ class DerivConnector(BaseConnector):
         self._account_id: str = ""
         self._req_id = 0
         self._positions: dict[str, dict] = {}
+        # Crash-safe persistence: Deriv's broker portfolio does not echo back our
+        # internal SL/TP/idem-key, so without this the metadata is lost on
+        # restart. Load any persisted contracts so they are managed immediately.
+        try:
+            self._store: Optional[DerivPositionStore] = position_store or DerivPositionStore()
+            persisted = self._store.load_all_positions()
+            if persisted:
+                self._positions.update(persisted)
+                logger.info(
+                    "DerivConnector restored {} persisted position(s) from store",
+                    len(persisted),
+                )
+        except Exception as exc:
+            logger.error("DerivPositionStore init failed — running without Deriv persistence: {}", exc)
+            self._store = None
         self._mapper = SymbolMapper("deriv")
 
         self._discovered_multipliers: dict[str, list[int]] = {}
@@ -226,6 +264,7 @@ class DerivConnector(BaseConnector):
         )
 
         await self._discover_multipliers()
+        self._start_token_monitor()
         return True
 
     # ── REST auth helpers (new API) ──────────────────────────────────────
@@ -258,6 +297,104 @@ class DerivConnector(BaseConnector):
         else:
             self._token_expiry_warned = False
         return True
+
+    # ── Token rotation / proactive refresh ───────────────────────────────
+
+    def set_access_token(self, token: str, expires_in: float = 3600.0) -> None:
+        """Rotate the access token (e.g. after an out-of-band refresh).
+
+        Resets the issued/expiry clock so the proactive-refresh and warning
+        windows track the new token.
+        """
+        if not token:
+            return
+        with self._token_lock:
+            self._access_token = token
+            try:
+                self._token_ttl = float(expires_in)
+            except (TypeError, ValueError):
+                self._token_ttl = 3600.0
+            if self._token_ttl <= 0:
+                self._token_ttl = 3600.0
+            self._token_issued_at = _time.time()
+            self._token_expires_at = self._token_issued_at + self._token_ttl
+            self._token_expiry_warned = False
+        logger.info("Deriv access_token rotated — valid for ~{}s", int(self._token_ttl))
+
+    def token_expired(self) -> bool:
+        """True once the access token has expired (reconnect impossible)."""
+        return (self._token_expires_at - _time.time()) <= 0
+
+    def _maybe_refresh_token(self) -> bool:
+        """Proactively refresh the token once ~80% of its TTL has elapsed.
+
+        Returns True if a refresh was attempted and succeeded. When no refresh
+        callback is configured this is a no-op (the caller still warns/winds
+        down via _check_token_valid / the monitor loop).
+        """
+        if self._token_refresh_callback is None:
+            return False
+        elapsed = _time.time() - self._token_issued_at
+        if elapsed < self._token_ttl * _TOKEN_REFRESH_FRACTION:
+            return False
+        try:
+            new_token, expires_in = self._token_refresh_callback()
+        except Exception as exc:
+            logger.critical(
+                "Deriv token refresh callback FAILED ({}s of {}s TTL elapsed) — "
+                "connection will halt at expiry unless DERIV_ACCESS_TOKEN is rotated: {}",
+                int(elapsed), int(self._token_ttl), exc,
+            )
+            return False
+        if not new_token:
+            logger.critical("Deriv token refresh returned an empty token — keeping current token")
+            return False
+        self.set_access_token(new_token, expires_in)
+        return True
+
+    def _token_monitor_loop(self) -> None:
+        """Background watchdog: refresh before expiry, escalate on expiry.
+
+        Refreshes proactively when a callback is available; otherwise logs a
+        CRITICAL once the token has expired while contracts are still open so
+        the operator knows those positions must be wound down manually.
+        """
+        winddown_warned = False
+        while not self._token_monitor_stop.wait(_TOKEN_MONITOR_INTERVAL):
+            try:
+                if self._maybe_refresh_token():
+                    winddown_warned = False
+                    continue
+                if self.token_expired():
+                    open_count = len(self._positions)
+                    if open_count and not winddown_warned:
+                        logger.critical(
+                            "🚨 Deriv access_token EXPIRED with {} open contract(s) — "
+                            "cannot manage them until DERIV_ACCESS_TOKEN is refreshed. "
+                            "Wind down Deriv exposure immediately.",
+                            open_count,
+                        )
+                        winddown_warned = True
+                else:
+                    # Re-run the warn-window check so operators get an early heads-up.
+                    self._check_token_valid()
+                    winddown_warned = False
+            except Exception as exc:
+                logger.debug("[deriv] token monitor iteration failed: {}", exc)
+
+    def _start_token_monitor(self) -> None:
+        if self._token_monitor_thread is not None and self._token_monitor_thread.is_alive():
+            return
+        self._token_monitor_stop.clear()
+        self._token_monitor_thread = threading.Thread(
+            target=self._token_monitor_loop,
+            daemon=True,
+            name="deriv-token-monitor",
+        )
+        self._token_monitor_thread.start()
+
+    def _stop_token_monitor(self) -> None:
+        self._token_monitor_stop.set()
 
     def _rest_headers(self) -> dict[str, str]:
         headers = {
@@ -475,6 +612,7 @@ class DerivConnector(BaseConnector):
                 logger.debug("Multiplier discovery failed for {}: {}", sym, exc)
 
     def disconnect(self) -> None:
+        self._stop_token_monitor()
         if self._ws is not None:
             try:
                 future = asyncio.run_coroutine_threadsafe(self._ws.close(), self._loop)
@@ -1243,6 +1381,7 @@ class DerivConnector(BaseConnector):
             "stake": amount, "multiplier": multiplier,
             "idem_key": idempotency_key,
         }
+        self._persist_position(contract_id)
 
         logger.info(
             "Deriv order filled — {} {} {} lots @ {} contract={} ({:.0f}ms)",
@@ -1456,6 +1595,7 @@ class DerivConnector(BaseConnector):
             "stake": amount, "multiplier": multiplier,
             "idem_key": idempotency_key,
         }
+        self._persist_position(contract_id)
 
         logger.info(
             "Deriv order filled (proposal) — {} {} {} lots @ {} contract={} ({:.0f}ms)",
@@ -1513,6 +1653,7 @@ class DerivConnector(BaseConnector):
             self._positions[order_id]["sl"] = new_sl
         if new_tp is not None and order_id in self._positions:
             self._positions[order_id]["tp"] = new_tp
+        self._persist_position(order_id)
         logger.info("Deriv modified {} — SL={} TP={}", order_id, new_sl, new_tp)
         return True
 
@@ -1532,6 +1673,7 @@ class DerivConnector(BaseConnector):
         sell_resp = resp.get("sell", {})
         pnl = float(sell_resp.get("sold_for", 0)) - float(sell_resp.get("buy_price", 0))
         pos = self._positions.pop(order_id, {})
+        self._unpersist_position(order_id)
 
         logger.info("Deriv closed {} — PnL {:.2f}", order_id, pnl)
         return CloseResult(
@@ -1669,6 +1811,29 @@ class DerivConnector(BaseConnector):
             raise ConnectionError("Deriv is reconnecting — request blocked")
         if not self._connected or self._ws is None:
             raise ConnectionError("Deriv is not connected")
+
+    def _persist_position(self, contract_id: str) -> None:
+        """Mirror an in-memory contract to the crash-safe store (best effort)."""
+        store = getattr(self, "_store", None)
+        if store is None or not contract_id:
+            return
+        data = self._positions.get(contract_id)
+        if data is None:
+            return
+        try:
+            store.save_position(contract_id, data)
+        except Exception as exc:
+            logger.debug("[deriv] persist position {} failed: {}", contract_id, exc)
+
+    def _unpersist_position(self, contract_id: str) -> None:
+        """Remove a closed contract from the crash-safe store (best effort)."""
+        store = getattr(self, "_store", None)
+        if store is None or not contract_id:
+            return
+        try:
+            store.remove_position(contract_id)
+        except Exception as exc:
+            logger.debug("[deriv] unpersist position {} failed: {}", contract_id, exc)
 
     def _find_contract_by_idem_key(self, idem_key: str) -> str:
         """Query the Deriv portfolio for a contract matching *idem_key*.
