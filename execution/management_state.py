@@ -2,17 +2,23 @@
 
 Without a TradingLoop/TradeManager, position management state (breakeven,
 trailing, partial close status, price extremes) is lost between evaluation
-cycles.  This store persists that state in-memory keyed by position ticket.
+cycles.  This store persists that state in-memory keyed by position ticket,
+with optional SQLite persistence for crash recovery.
 
 Thread-safe: all mutations are guarded by an RLock.
 """
 
 from __future__ import annotations
 
+import json
+import sqlite3
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
+
+from loguru import logger
 
 
 @dataclass
@@ -51,12 +57,137 @@ class ManagementState:
     last_eval_time: Optional[datetime] = None
 
 
-class ManagementStateStore:
-    """Thread-safe store for position management state."""
+_DB_DIR = Path(__file__).resolve().parent.parent / "data"
 
-    def __init__(self) -> None:
+_CREATE_TABLE = """
+CREATE TABLE IF NOT EXISTS management_state (
+    ticket              TEXT PRIMARY KEY,
+    original_stop_loss  REAL NOT NULL DEFAULT 0.0,
+    original_tp2        REAL NOT NULL DEFAULT 0.0,
+    stop_loss           REAL NOT NULL DEFAULT 0.0,
+    tp1                 REAL NOT NULL DEFAULT 0.0,
+    tp2                 REAL NOT NULL DEFAULT 0.0,
+    remaining_size_lots REAL NOT NULL DEFAULT 0.0,
+    pip_size            REAL NOT NULL DEFAULT 0.0001,
+    highest_price       REAL NOT NULL DEFAULT 0.0,
+    lowest_price        REAL NOT NULL DEFAULT 1e18,
+    tp1_hit             INTEGER NOT NULL DEFAULT 0,
+    at_breakeven        INTEGER NOT NULL DEFAULT 0,
+    trailing            INTEGER NOT NULL DEFAULT 0,
+    partial_closed      INTEGER NOT NULL DEFAULT 0,
+    status              TEXT NOT NULL DEFAULT 'OPEN',
+    last_update         TEXT NOT NULL
+)
+"""
+
+_UPSERT = """
+INSERT INTO management_state (
+    ticket, original_stop_loss, original_tp2, stop_loss, tp1, tp2,
+    remaining_size_lots, pip_size, highest_price, lowest_price,
+    tp1_hit, at_breakeven, trailing, partial_closed, status, last_update
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(ticket) DO UPDATE SET
+    stop_loss=excluded.stop_loss,
+    tp1=excluded.tp1,
+    tp2=excluded.tp2,
+    remaining_size_lots=excluded.remaining_size_lots,
+    highest_price=excluded.highest_price,
+    lowest_price=excluded.lowest_price,
+    tp1_hit=excluded.tp1_hit,
+    at_breakeven=excluded.at_breakeven,
+    trailing=excluded.trailing,
+    partial_closed=excluded.partial_closed,
+    status=excluded.status,
+    last_update=excluded.last_update
+"""
+
+
+class ManagementStateStore:
+    """Thread-safe store for position management state with optional SQLite persistence."""
+
+    def __init__(self, db_path: Optional[str] = None) -> None:
         self._states: dict[str, ManagementState] = {}
         self._lock = threading.RLock()
+        self._db_path = db_path
+        self._conn: Optional[sqlite3.Connection] = None
+        if db_path:
+            self._init_db(db_path)
+
+    def _init_db(self, db_path: str) -> None:
+        try:
+            path = Path(db_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            self._conn = sqlite3.connect(str(path), check_same_thread=False)
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute(_CREATE_TABLE)
+            self._conn.commit()
+            self._load_from_db()
+            logger.info(
+                "[mgmt-state] SQLite persistence enabled — loaded {} states from {}",
+                len(self._states), db_path,
+            )
+        except Exception as exc:
+            logger.warning("[mgmt-state] SQLite init failed (in-memory only): {}", exc)
+            self._conn = None
+
+    def _load_from_db(self) -> None:
+        if self._conn is None:
+            return
+        try:
+            rows = self._conn.execute(
+                "SELECT ticket, original_stop_loss, original_tp2, stop_loss, "
+                "tp1, tp2, remaining_size_lots, pip_size, highest_price, "
+                "lowest_price, tp1_hit, at_breakeven, trailing, partial_closed, "
+                "status FROM management_state"
+            ).fetchall()
+            for row in rows:
+                state = ManagementState(
+                    ticket=row[0],
+                    original_stop_loss=row[1],
+                    original_tp2=row[2],
+                    stop_loss=row[3],
+                    tp1=row[4],
+                    tp2=row[5],
+                    remaining_size_lots=row[6],
+                    pip_size=row[7],
+                    highest_price_since_entry=row[8],
+                    lowest_price_since_entry=row[9],
+                    tp1_hit=bool(row[10]),
+                    at_breakeven=bool(row[11]),
+                    trailing=bool(row[12]),
+                    partial_closed=bool(row[13]),
+                    status=row[14],
+                )
+                self._states[state.ticket] = state
+        except Exception as exc:
+            logger.warning("[mgmt-state] DB load failed: {}", exc)
+
+    def _persist(self, state: ManagementState) -> None:
+        if self._conn is None:
+            return
+        try:
+            now_str = datetime.now(timezone.utc).isoformat()
+            self._conn.execute(_UPSERT, (
+                state.ticket,
+                state.original_stop_loss,
+                state.original_tp2,
+                state.stop_loss,
+                state.tp1,
+                state.tp2,
+                state.remaining_size_lots,
+                state.pip_size,
+                state.highest_price_since_entry,
+                state.lowest_price_since_entry,
+                int(state.tp1_hit),
+                int(state.at_breakeven),
+                int(state.trailing),
+                int(state.partial_closed),
+                state.status,
+                now_str,
+            ))
+            self._conn.commit()
+        except Exception as exc:
+            logger.debug("[mgmt-state] persist failed for {}: {}", state.ticket, exc)
 
     def get(self, ticket: str) -> Optional[ManagementState]:
         with self._lock:
@@ -66,6 +197,7 @@ class ManagementStateStore:
         with self._lock:
             if ticket not in self._states:
                 self._states[ticket] = ManagementState(ticket=ticket, **defaults)
+                self._persist(self._states[ticket])
             return self._states[ticket]
 
     def update(self, ticket: str, **updates) -> None:
@@ -75,10 +207,19 @@ class ManagementStateStore:
                 for k, v in updates.items():
                     if hasattr(state, k):
                         setattr(state, k, v)
+                self._persist(state)
 
     def remove(self, ticket: str) -> None:
         with self._lock:
             self._states.pop(ticket, None)
+            if self._conn is not None:
+                try:
+                    self._conn.execute(
+                        "DELETE FROM management_state WHERE ticket = ?", (ticket,),
+                    )
+                    self._conn.commit()
+                except Exception as exc:
+                    logger.debug("[mgmt-state] delete failed for {}: {}", ticket, exc)
 
     def cleanup(self, active_tickets: set[str]) -> int:
         """Remove states for positions no longer open. Returns count removed."""
@@ -86,6 +227,16 @@ class ManagementStateStore:
             stale = [t for t in self._states if t not in active_tickets]
             for t in stale:
                 del self._states[t]
+            if self._conn is not None and stale:
+                try:
+                    placeholders = ",".join("?" for _ in stale)
+                    self._conn.execute(
+                        f"DELETE FROM management_state WHERE ticket IN ({placeholders})",
+                        stale,
+                    )
+                    self._conn.commit()
+                except Exception as exc:
+                    logger.debug("[mgmt-state] cleanup DB failed: {}", exc)
             return len(stale)
 
     def all_tickets(self) -> set[str]:
@@ -95,3 +246,12 @@ class ManagementStateStore:
     def __len__(self) -> int:
         with self._lock:
             return len(self._states)
+
+    def close(self) -> None:
+        """Close the SQLite connection (call on shutdown)."""
+        if self._conn is not None:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
+            self._conn = None
