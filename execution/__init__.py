@@ -1,18 +1,9 @@
-"""APEX TRADER — Execution Plane (Phase 4 + 6).
-
-Position management decoupled from broker execution.
-Workers evaluate positions and emit Intents; the Action Executor
-(Phase 6) serializes broker calls through a risk gate.
-
-Phase 6 components (ActionExecutor, RiskGate) import from
-``execution.action_executor`` and ``execution.risk_gate`` directly
-to avoid pulling in heavy platform dependencies at package level.
-"""APEX TRADER — Execution Plane (Phases 4–5).
+"""APEX TRADER — Execution Plane (Phases 4–6).
 
 Position management decoupled from broker execution.
 Workers evaluate positions and emit Intents; the Intent Aggregator
 (Phase 5) resolves conflicts; the Action Executor (Phase 6) serializes
-broker calls.
+broker calls through a risk gate.
 """
 
 from execution.intent_aggregator import (

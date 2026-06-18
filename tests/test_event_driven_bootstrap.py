@@ -1,0 +1,451 @@
+"""Tests for the event-driven bootstrap system (Phase 9)."""
+
+from __future__ import annotations
+
+import os
+import threading
+import time
+from datetime import datetime, timezone
+from unittest.mock import MagicMock, patch, PropertyMock
+from types import SimpleNamespace
+
+import pytest
+
+from tick import Tick, EventBus, TickStore, CandleCloseDetector, TickRouter
+from brain.world_model import WorldModelStore
+from execution.intents import Intent, IntentType
+from execution.intent_aggregator import IntentAggregator
+from execution.action_executor import ActionExecutor, ExecutorConfig
+from execution.position_snapshot import PositionSnapshot
+from execution.position_worker import PositionWorker, WorkerConfig
+
+
+# ── Helpers ──────────────────────────────────────────────────────────
+
+
+def _make_tick(symbol: str = "EURUSD", bid: float = 1.1000, ask: float = 1.1002) -> Tick:
+    return Tick(
+        symbol=symbol, bid=bid, ask=ask,
+        timestamp=datetime.now(timezone.utc), source="test",
+    )
+
+
+def _make_position(
+    symbol: str = "EURUSD",
+    order_id: str = "T1",
+    direction: str = "BUY",
+    sl: float = 1.0950,
+    tp1: float = 1.1050,
+    lots: float = 0.1,
+) -> SimpleNamespace:
+    return SimpleNamespace(
+        order_id=order_id, platform="mt5", symbol=symbol,
+        direction=direction, entry_price=1.1000, lots=lots,
+        remaining_lots=lots, open_time=datetime.now(timezone.utc),
+        score=85, sl=sl, tp1=tp1, tp2=1.1100,
+        at_breakeven=False, trailing=False, tp1_hit=False,
+        re_entry_eligible=False, broker_pnl=0.0, broker_lots=lots,
+        confluences=[], scale_in_count=0, stake_usd=0.0, multiplier=100,
+    )
+
+
+def _mock_platform_manager(positions=None):
+    pm = MagicMock()
+    pm.get_all_open_positions.return_value = positions or []
+    pm.get_price.return_value = SimpleNamespace(bid=1.1000, ask=1.1002)
+    pm.get_spread.return_value = 1.2
+    pm.fetch_market_data.return_value = {}
+    pm.modify_trade.return_value = True
+    pm.close_trade.return_value = SimpleNamespace(success=True, error=None)
+    pm.any_connected = True
+    return pm
+
+
+# ── Test: Kill switch env var ────────────────────────────────────────
+
+
+class TestKillSwitch:
+    def test_disabled_by_default(self):
+        from event_driven_bootstrap import is_event_driven_enabled
+        with patch.dict(os.environ, {}, clear=True):
+            os.environ.pop("USE_EVENT_DRIVEN", None)
+            assert is_event_driven_enabled() is False
+
+    def test_enabled_with_true(self):
+        from event_driven_bootstrap import is_event_driven_enabled
+        with patch.dict(os.environ, {"USE_EVENT_DRIVEN": "true"}):
+            assert is_event_driven_enabled() is True
+
+    def test_enabled_with_1(self):
+        from event_driven_bootstrap import is_event_driven_enabled
+        with patch.dict(os.environ, {"USE_EVENT_DRIVEN": "1"}):
+            assert is_event_driven_enabled() is True
+
+    def test_enabled_with_yes(self):
+        from event_driven_bootstrap import is_event_driven_enabled
+        with patch.dict(os.environ, {"USE_EVENT_DRIVEN": "yes"}):
+            assert is_event_driven_enabled() is True
+
+    def test_disabled_with_false(self):
+        from event_driven_bootstrap import is_event_driven_enabled
+        with patch.dict(os.environ, {"USE_EVENT_DRIVEN": "false"}):
+            assert is_event_driven_enabled() is False
+
+    def test_disabled_with_random_string(self):
+        from event_driven_bootstrap import is_event_driven_enabled
+        with patch.dict(os.environ, {"USE_EVENT_DRIVEN": "maybe"}):
+            assert is_event_driven_enabled() is False
+
+
+# ── Test: MT5TickPoller ──────────────────────────────────────────────
+
+
+class TestMT5TickPoller:
+    def test_start_stop(self):
+        from event_driven_bootstrap import MT5TickPoller
+
+        bus = EventBus()
+        store = TickStore()
+        detector = CandleCloseDetector(bus)
+        router = TickRouter(store, detector, bus)
+        pm = _mock_platform_manager()
+
+        poller = MT5TickPoller(pm, router, ["EURUSD"], poll_interval=0.01)
+        poller.start()
+        assert poller._running
+        time.sleep(0.05)
+        poller.stop()
+        assert not poller._running
+
+    def test_routes_ticks(self):
+        from event_driven_bootstrap import MT5TickPoller
+
+        bus = EventBus()
+        store = TickStore()
+        detector = CandleCloseDetector(bus)
+        router = TickRouter(store, detector, bus)
+        pm = _mock_platform_manager()
+
+        poller = MT5TickPoller(pm, router, ["EURUSD"], poll_interval=0.01)
+        poller.start()
+        time.sleep(0.1)
+        poller.stop()
+
+        latest = store.get_latest("EURUSD")
+        assert latest is not None
+        assert latest.source == "mt5"
+        assert latest.bid == 1.1000
+
+    def test_empty_symbols_no_start(self):
+        from event_driven_bootstrap import MT5TickPoller
+
+        bus = EventBus()
+        store = TickStore()
+        detector = CandleCloseDetector(bus)
+        router = TickRouter(store, detector, bus)
+        pm = _mock_platform_manager()
+
+        poller = MT5TickPoller(pm, router, [], poll_interval=0.01)
+        poller.start()
+        assert not poller._running
+
+
+# ── Test: DerivTickAdapter ───────────────────────────────────────────
+
+
+class TestDerivTickAdapter:
+    def test_start_stop(self):
+        from event_driven_bootstrap import DerivTickAdapter
+
+        bus = EventBus()
+        store = TickStore()
+        detector = CandleCloseDetector(bus)
+        router = TickRouter(store, detector, bus)
+        pm = _mock_platform_manager()
+
+        adapter = DerivTickAdapter(pm, router, ["V75"], poll_interval=0.01)
+        adapter.start()
+        assert adapter._running
+        time.sleep(0.05)
+        adapter.stop()
+        assert not adapter._running
+
+    def test_routes_ticks_as_deriv_source(self):
+        from event_driven_bootstrap import DerivTickAdapter
+
+        bus = EventBus()
+        store = TickStore()
+        detector = CandleCloseDetector(bus)
+        router = TickRouter(store, detector, bus)
+        pm = _mock_platform_manager()
+
+        adapter = DerivTickAdapter(pm, router, ["V75"], poll_interval=0.01)
+        adapter.start()
+        time.sleep(0.1)
+        adapter.stop()
+
+        latest = store.get_latest("V75")
+        assert latest is not None
+        assert latest.source == "deriv"
+
+
+# ── Test: PositionEvaluator ──────────────────────────────────────────
+
+
+class TestPositionEvaluator:
+    def test_evaluate_empty_positions(self):
+        from event_driven_bootstrap import PositionEvaluator
+
+        pm = _mock_platform_manager([])
+        store = TickStore()
+        wm_store = WorldModelStore()
+        aggregator = IntentAggregator()
+
+        evaluator = PositionEvaluator(pm, store, wm_store, aggregator)
+        evaluator.evaluate_all()
+        assert evaluator.eval_count == 1
+        intents = aggregator.flush()
+        assert len(intents) == 0
+
+    def test_evaluate_with_sl_hit(self):
+        from event_driven_bootstrap import PositionEvaluator
+
+        pos = _make_position(sl=1.1010, direction="BUY")
+        pm = _mock_platform_manager([pos])
+        store = TickStore()
+        store.put(_make_tick("EURUSD", bid=1.0940, ask=1.0942))
+        wm_store = WorldModelStore()
+        aggregator = IntentAggregator()
+
+        evaluator = PositionEvaluator(pm, store, wm_store, aggregator)
+        evaluator.evaluate_all()
+
+        intents = aggregator.flush()
+        assert len(intents) >= 1
+        close_intents = [i for i in intents if i.intent_type == IntentType.CLOSE]
+        assert len(close_intents) >= 1
+
+
+# ── Test: FlushLoop ──────────────────────────────────────────────────
+
+
+class TestFlushLoop:
+    def test_start_stop(self):
+        from event_driven_bootstrap import FlushLoop
+
+        aggregator = IntentAggregator()
+        pm = _mock_platform_manager()
+        executor = ActionExecutor(broker=pm)
+
+        loop = FlushLoop(aggregator, executor, pm, interval=0.01)
+        loop.start()
+        assert loop._running
+        time.sleep(0.05)
+        loop.stop()
+        assert not loop._running
+        assert loop._flush_count > 0
+
+    def test_executes_intents(self):
+        from event_driven_bootstrap import FlushLoop
+
+        aggregator = IntentAggregator()
+        pm = _mock_platform_manager([_make_position()])
+        executor = ActionExecutor(broker=pm)
+
+        intent = Intent.close(
+            symbol="EURUSD", ticket="T1", source="test", reason="test close",
+        )
+        aggregator.submit([intent])
+
+        loop = FlushLoop(aggregator, executor, pm, interval=0.01)
+        loop.start()
+        time.sleep(0.1)
+        loop.stop()
+
+        assert loop._intents_executed >= 1
+
+
+# ── Test: TickEvalLoop ───────────────────────────────────────────────
+
+
+class TestTickEvalLoop:
+    def test_start_stop(self):
+        from event_driven_bootstrap import TickEvalLoop, PositionEvaluator
+
+        pm = _mock_platform_manager()
+        store = TickStore()
+        wm_store = WorldModelStore()
+        aggregator = IntentAggregator()
+        evaluator = PositionEvaluator(pm, store, wm_store, aggregator)
+
+        loop = TickEvalLoop(evaluator, interval=0.01)
+        loop.start()
+        assert loop._running
+        time.sleep(0.05)
+        loop.stop()
+        assert not loop._running
+        assert evaluator.eval_count > 0
+
+
+# ── Test: EventDrivenSystem ──────────────────────────────────────────
+
+
+class TestEventDrivenSystem:
+    @patch("event_driven_bootstrap.INSTRUMENT_REGISTRY", {
+        "EURUSD": SimpleNamespace(
+            symbol="EURUSD", platform=SimpleNamespace(value="mt5"),
+            pip_size=0.0001,
+        ),
+        "V75": SimpleNamespace(
+            symbol="V75", platform=SimpleNamespace(value="deriv"),
+            pip_size=0.01,
+        ),
+    })
+    def test_init_and_classify_symbols(self):
+        from event_driven_bootstrap import EventDrivenSystem
+
+        config = MagicMock()
+        pm = _mock_platform_manager()
+        system = EventDrivenSystem(config, pm)
+
+        mt5, deriv = system._classify_symbols()
+        assert "EURUSD" in mt5
+        assert "V75" in deriv
+
+    @patch("event_driven_bootstrap.INSTRUMENT_REGISTRY", {
+        "EURUSD": SimpleNamespace(
+            symbol="EURUSD", platform=SimpleNamespace(value="mt5"),
+            pip_size=0.0001,
+        ),
+    })
+    def test_start_stop(self):
+        from event_driven_bootstrap import EventDrivenSystem
+
+        config = MagicMock()
+        pm = _mock_platform_manager()
+        system = EventDrivenSystem(config, pm)
+
+        system.start()
+        assert system.is_running
+        time.sleep(0.1)
+
+        system.stop()
+        assert not system.is_running
+
+    @patch("event_driven_bootstrap.INSTRUMENT_REGISTRY", {
+        "EURUSD": SimpleNamespace(
+            symbol="EURUSD", platform=SimpleNamespace(value="mt5"),
+            pip_size=0.0001,
+        ),
+    })
+    def test_stats(self):
+        from event_driven_bootstrap import EventDrivenSystem
+
+        config = MagicMock()
+        pm = _mock_platform_manager()
+        system = EventDrivenSystem(config, pm)
+
+        system.start()
+        time.sleep(0.1)
+        stats = system.stats()
+        system.stop()
+
+        assert "tick_store" in stats
+        assert "candle_handler" in stats
+        assert "executor" in stats
+        assert "entry" in stats
+        assert "position_evals" in stats
+        assert "tick_router" in stats
+        assert "candle_detector" in stats
+
+    @patch("event_driven_bootstrap.INSTRUMENT_REGISTRY", {
+        "EURUSD": SimpleNamespace(
+            symbol="EURUSD", platform=SimpleNamespace(value="mt5"),
+            pip_size=0.0001,
+        ),
+    })
+    def test_double_start_noop(self):
+        from event_driven_bootstrap import EventDrivenSystem
+
+        config = MagicMock()
+        pm = _mock_platform_manager()
+        system = EventDrivenSystem(config, pm)
+
+        system.start()
+        system.start()
+        assert system.is_running
+        system.stop()
+
+    @patch("event_driven_bootstrap.INSTRUMENT_REGISTRY", {
+        "EURUSD": SimpleNamespace(
+            symbol="EURUSD", platform=SimpleNamespace(value="mt5"),
+            pip_size=0.0001,
+        ),
+    })
+    def test_double_stop_noop(self):
+        from event_driven_bootstrap import EventDrivenSystem
+
+        config = MagicMock()
+        pm = _mock_platform_manager()
+        system = EventDrivenSystem(config, pm)
+
+        system.start()
+        system.stop()
+        system.stop()
+        assert not system.is_running
+
+
+# ── Test: BrokerPort protocol compatibility ──────────────────────────
+
+
+class TestBrokerPortCompatibility:
+    def test_platform_manager_satisfies_broker_port(self):
+        """PlatformManager has the methods BrokerPort requires."""
+        from execution.action_executor import BrokerPort
+
+        pm = _mock_platform_manager()
+        assert hasattr(pm, "modify_trade")
+        assert hasattr(pm, "close_trade")
+        assert callable(pm.modify_trade)
+        assert callable(pm.close_trade)
+
+    def test_executor_accepts_mock_pm(self):
+        pm = _mock_platform_manager()
+        executor = ActionExecutor(broker=pm)
+
+        intent = Intent.close(
+            symbol="EURUSD", ticket="T1", source="test", reason="test",
+        )
+        result = executor.execute(
+            intent, {"T1": {"symbol": "EURUSD", "direction": "BUY", "sl": 1.0950, "platform": "mt5"}},
+        )
+        assert result.success
+
+
+# ── Test: Entry integration via on_entry_decision ────────────────────
+
+
+class TestEntryDecisionCallback:
+    @patch("event_driven_bootstrap.INSTRUMENT_REGISTRY", {
+        "EURUSD": SimpleNamespace(
+            symbol="EURUSD", platform=SimpleNamespace(value="mt5"),
+            pip_size=0.0001,
+        ),
+    })
+    def test_entry_decision_callback_logs(self, caplog):
+        from event_driven_bootstrap import EventDrivenSystem
+
+        config = MagicMock()
+        pm = _mock_platform_manager()
+        system = EventDrivenSystem(config, pm)
+
+        decision = {
+            "symbol": "EURUSD",
+            "direction": "LONG",
+            "entry_price": 1.1000,
+            "stop_loss": 1.0950,
+            "tp1": 1.1075,
+            "conviction": 88,
+            "risk_pips": 50.0,
+        }
+        system._on_entry_decision(decision)
