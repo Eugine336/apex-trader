@@ -123,6 +123,7 @@ class MT5Connector(BaseConnector):
         self._mapper: Optional[SymbolMapper] = (
             None if broker_name == "auto" else SymbolMapper(broker_name)
         )
+        self._stale_warn_last: dict[str, float] = {}
 
     # ── Connection ───────────────────────────────────────────────────────
 
@@ -310,10 +311,13 @@ class MT5Connector(BaseConnector):
             )
         age = (datetime.now(timezone.utc) - tick_time).total_seconds()
         if age > self._max_tick_age_seconds:
-            logger.warning(
-                "Stale tick for {}: {:.1f}s old (limit {}s)",
-                mapped, age, self._max_tick_age_seconds,
-            )
+            now_mono = _time.monotonic()
+            if now_mono - self._stale_warn_last.get(mapped, 0.0) > 60.0:
+                logger.warning(
+                    "Stale tick for {}: {:.1f}s old (limit {}s)",
+                    mapped, age, self._max_tick_age_seconds,
+                )
+                self._stale_warn_last[mapped] = now_mono
             raise RuntimeError(
                 f"Stale tick for {mapped}: {age:.1f}s old (limit {self._max_tick_age_seconds}s)"
             )
