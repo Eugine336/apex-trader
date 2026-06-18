@@ -28,6 +28,7 @@ from ops.lifecycle import (  # noqa: F401
     StartupRecovery,
 )
 from ops.watchdog import ProcessWatchdog  # noqa: F401
+from ops.tick_profiler import TickProfiler  # noqa: F401
 from ops.logging_config import configure_structured_logging  # noqa: F401
 
 __all__ = [
@@ -35,5 +36,6 @@ __all__ = [
     "ShutdownManager",
     "StartupRecovery",
     "ProcessWatchdog",
+    "TickProfiler",
     "configure_structured_logging",
 ]

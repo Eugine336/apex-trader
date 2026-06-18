@@ -2699,6 +2699,13 @@ class OpsConfig:
     # A completed tick must arrive within this budget or a stall is flagged.
     max_tick_duration_seconds: float = 60.0
 
+    # ── Tick-cycle profiling (P4) ─────────────────────────────────────────
+    # Per-component latency attribution within the trading tick. Zero-cost when
+    # off; bounded memory (last ``profiling_window_size`` ticks/components).
+    tick_profiling_enabled: bool = True
+    slow_tick_threshold_ms: float = 100.0
+    profiling_window_size: int = 1000
+
     # ── Structured logging ────────────────────────────────────────────────
     log_format: str = "json"          # "json" or "text"
     log_level: str = "INFO"
@@ -2718,12 +2725,13 @@ class OpsConfig:
             "heartbeat_interval_seconds",
             "max_tick_duration_seconds",
             "reconnect_base_delay_seconds",
+            "slow_tick_threshold_ms",
         ):
             if float(getattr(self, name)) <= 0:
                 raise ValueError(
                     f"OpsConfig.{name} must be > 0, got {getattr(self, name)!r}"
                 )
-        for name in ("log_max_size_mb", "log_max_files", "reconnect_max_retries"):
+        for name in ("log_max_size_mb", "log_max_files", "reconnect_max_retries", "profiling_window_size"):
             if int(getattr(self, name)) < 1:
                 raise ValueError(
                     f"OpsConfig.{name} must be >= 1, got {getattr(self, name)!r}"

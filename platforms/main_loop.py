@@ -10,6 +10,7 @@ import math
 import signal
 import threading
 import time as _time
+from contextlib import nullcontext
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Optional, Any
@@ -96,6 +97,7 @@ from platforms.trading_loop.exit_checks_mixin import ExitChecksMixin
 from platforms.trading_loop.shadow_live_mixin import ShadowLiveMixin
 from ops.lifecycle import ShutdownManager, StartupRecovery, HealthCheck
 from ops.watchdog import ProcessWatchdog
+from ops.tick_profiler import TickProfiler
 
 from persistence.event_store import get_event_store, new_cycle_id, new_setup_id
 from persistence.domain_events import (
@@ -869,6 +871,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._ops_recovery = None
         self._ops_health = None
         self._ops_watchdog = None
+        self._tick_profiler = None
         try:
             ops_cfg = getattr(self.config, "ops", None)
             if ops_cfg is not None and getattr(ops_cfg, "enabled", False):
@@ -876,10 +879,17 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 self._ops_recovery = StartupRecovery(ops_cfg)
                 self._ops_health = HealthCheck(self, ops_cfg)
                 self._ops_watchdog = ProcessWatchdog(ops_cfg)
+                if getattr(ops_cfg, "tick_profiling_enabled", False):
+                    self._tick_profiler = TickProfiler(
+                        enabled=True,
+                        slow_tick_threshold_ms=getattr(ops_cfg, "slow_tick_threshold_ms", 100.0),
+                        window_size=getattr(ops_cfg, "profiling_window_size", 1000),
+                    )
                 logger.info(
                     "[ops] production hardening enabled — shutdown flush, crash "
-                    "marker, heartbeat ({}s) + health snapshot active",
+                    "marker, heartbeat ({}s) + health snapshot active{}",
                     getattr(ops_cfg, "heartbeat_interval_seconds", 10),
+                    " + tick profiler" if self._tick_profiler is not None else "",
                 )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[ops] init failed, disabled: {}", exc)
@@ -887,6 +897,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             self._ops_recovery = None
             self._ops_health = None
             self._ops_watchdog = None
+            self._tick_profiler = None
 
     # ── Tuner Agent wiring ────────────────────────────────────────────────
 
@@ -2059,7 +2070,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         try:
             tracker = getattr(self, "_post_close_tracker", None)
             if tracker is not None and tracker.pending_count:
-                tracker.process_pending_checks(self.platforms)
+                with self._profile("post_close_tracker"):
+                    tracker.process_pending_checks(self.platforms)
         except Exception as exc:
             logger.debug("[post_close] pending check pass failed: {}", exc)
 
@@ -2121,7 +2133,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     if self._scan_breaker.can_execute():
                         cycle["scanned"] = True
                         try:
-                            self._scan_and_enter(session_status, news_status, now, cycle)
+                            with self._profile("scan_and_enter"):
+                                self._scan_and_enter(session_status, news_status, now, cycle)
                             self._scan_breaker.record_success()
                             self.watchdog.record_scan_success()
                         except Exception as exc:
@@ -2139,21 +2152,22 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             try:
                 self._check_pending_orders()
                 self._check_weekend_protection()
-                closed_count = self._update_positions()
-                self._check_scale_in()
-                # ── In-trade active management (new capabilities) ──────────
-                if self.managed_positions:
-                    self._check_news_exit(now)
-                    self._check_session_close(now)
-                    self._check_portfolio_heat()
-                    self._check_spread_deterioration()
-                    open_trade_data = self._fetch_open_trade_market_data(now)
-                    if open_trade_data:
-                        self._analyse_open_trades(open_trade_data, now)
-                    else:
-                        logger.warning(
-                            "[management] open-trade strategic analysis skipped — fresh full-timeframe data unavailable",
-                        )
+                with self._profile("position_management"):
+                    closed_count = self._update_positions()
+                    self._check_scale_in()
+                    # ── In-trade active management (new capabilities) ──────────
+                    if self.managed_positions:
+                        self._check_news_exit(now)
+                        self._check_session_close(now)
+                        self._check_portfolio_heat()
+                        self._check_spread_deterioration()
+                        open_trade_data = self._fetch_open_trade_market_data(now)
+                        if open_trade_data:
+                            self._analyse_open_trades(open_trade_data, now)
+                        else:
+                            logger.warning(
+                                "[management] open-trade strategic analysis skipped — fresh full-timeframe data unavailable",
+                            )
                 self.watchdog.record_trade_check_success()
             except Exception as exc:
                 logger.error("Position update error: {}", exc)
@@ -2180,7 +2194,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             # managed by the real engines (never historical CSVs). Fully
             # isolated + fail-safe: cannot affect real trading.
             try:
-                self._advance_shadows(now)
+                with self._profile("shadow_resolution"):
+                    self._advance_shadows(now)
             except Exception as exc:
                 logger.debug("[shadow-live] advance cycle failed: {}", exc)
 
@@ -2207,6 +2222,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 self._ops_watchdog.record_tick()
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[ops] record_tick failed: {}", exc)
+        # Ops: attribute this tick's total duration to the profiler (per-component
+        # timings were recorded via profiler.measure() during the cycle).
+        if self._tick_profiler is not None:
+            try:
+                self._tick_profiler.record_tick(cycle["duration_ms"])
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[ops] tick profile record failed: {}", exc)
         return cycle
 
     def _record_cycle_timing(self, duration_ms: float) -> None:
@@ -2300,6 +2322,27 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             logger.debug("[ops] health snapshot failed: {}", exc)
             return {"status": "error", "ops_enabled": True, "error": str(exc)}
 
+    def _profile(self, component_name: str):
+        """Return a context manager that times ``component_name`` within the tick.
+
+        A no-op context manager when the profiler is disabled, so call sites stay
+        clean and pay nothing when profiling is off. Never raises.
+        """
+        profiler = self._tick_profiler
+        if profiler is None:
+            return nullcontext()
+        return profiler.measure(component_name)
+
+    def get_tick_profile(self) -> dict:
+        """Per-component tick-latency profile for the dashboard. Never raises."""
+        if self._tick_profiler is None:
+            return {"enabled": False, "tick": {}, "components": [], "slow_ticks": [], "recommendations": []}
+        try:
+            return self._tick_profiler.get_dashboard_data()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[ops] tick profile read failed: {}", exc)
+            return {"enabled": True, "tick": {}, "components": [], "slow_ticks": [], "recommendations": []}
+
 
     # ── Scan → Entry pipeline ────────────────────────────────────────────
 
@@ -2338,7 +2381,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         d1_data = self._get_d1_cached(self.config.enabled_pairs)
 
         try:
-            market_data = self.platforms.fetch_all_market_data(now_utc=now)
+            with self._profile("market_data_fetch"):
+                market_data = self.platforms.fetch_all_market_data(now_utc=now)
         except Exception as exc:
             logger.error("Market data fetch failed: {}", exc)
             return
@@ -2377,24 +2421,29 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # Build currency_data for the strength meter — H1 data keyed by symbol
         currency_data = {pair: frames["H1"] for pair, frames in market_data.items() if "H1" in frames}
 
-        report = self.scanner.scan_all(market_data, currency_data=currency_data, utc_now=now)
-        ready = self.scanner.get_ready_setups(report)
+        with self._profile("scanner"):
+            report = self.scanner.scan_all(market_data, currency_data=currency_data, utc_now=now)
+            ready = self.scanner.get_ready_setups(report)
         self._emit_setup_skipped(report)
         self._persist_scanner_rejections(report)
         # Record every module's directional read this cycle (before gates) and
         # grade prior signals against current prices. Observational — no-op
         # unless the signal ledger is enabled.
-        self._record_scan_signals(report, market_data)
+        with self._profile("signal_ledger_record"):
+            self._record_scan_signals(report, market_data)
         if self._tuner_agent_active():
             # Signal grading is coordinated by the Tuner Agent (PER_SCAN_CYCLE).
-            self._tuner_run_scan_cycle(market_data)
+            with self._profile("tuner_scan_cycle"):
+                self._tuner_run_scan_cycle(market_data)
         else:
-            self._run_signal_grading(market_data)
+            with self._profile("signal_grading"):
+                self._run_signal_grading(market_data)
 
         # L7/L8: refresh per-pair regime classification + the risk manager's
         # correlation matrix from the same scan frames (both fully guarded /
         # no-op when their engines are absent).
-        self._update_regime_and_risk(market_data)
+        with self._profile("regime_and_risk"):
+            self._update_regime_and_risk(market_data)
 
         qf, qt = self.scanner.get_quality_failure_stats()
         if qf > 0:

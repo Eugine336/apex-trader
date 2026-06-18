@@ -37,7 +37,8 @@ _np.mean = lambda x: sum(x) / len(x) if x else 0.0
 _np.std = lambda x, **kw: 0.0
 _np.nan = float("nan")
 _np.isnan = lambda x: x != x
-sys.modules["numpy"] = _np
+if "numpy" not in sys.modules:
+    sys.modules["numpy"] = _np
 
 _pd = ModuleType("pandas")
 
@@ -54,7 +55,8 @@ class _FakeTS:
 _pd.Timestamp = _FakeTS
 _pd.Series = MagicMock
 _pd.DataFrame = MagicMock
-sys.modules["pandas"] = _pd
+if "pandas" not in sys.modules:
+    sys.modules["pandas"] = _pd
 
 import pytest
 
