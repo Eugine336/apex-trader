@@ -3,10 +3,11 @@
 Shared subsystem container that provides the event-driven system with access
 to the same risk, decision, and lifecycle subsystems that TradingLoop uses.
 
-Phase 1 scope: risk layer only (DrawdownGuard, PortfolioRiskStateMachine,
+Phase 1: risk layer (DrawdownGuard, PortfolioRiskStateMachine,
 PortfolioGovernor, AccountRiskManager, CorrelationEngine, RiskEngine,
-RiskReporter).  Later phases will add decision intelligence, adaptive
-learning, and ops subsystems.
+RiskReporter).
+Phase 2: decision intelligence (DecisionEngine, SituationEngine,
+RiskGovernor, DecisionJournal, SessionEngine, NewsGuard).
 
 Usage::
 
@@ -24,7 +25,12 @@ from loguru import logger
 if TYPE_CHECKING:
     from brain.correlation_engine import CorrelationEngine
     from brain.drawdown_guard import DrawdownGuard
+    from brain.session_engine import NewsGuard, SessionEngine
     from config import AppConfig
+    from decision.engine import DecisionEngine
+    from decision.governor import RiskGovernor
+    from decision.journal import DecisionJournal
+    from decision.situation import SituationEngine
     from governor.portfolio_governor import PortfolioGovernor
     from platforms.platform_manager import PlatformManager
     from risk.account_risk import AccountRiskManager
@@ -49,6 +55,14 @@ class SystemContext:
     account_risk: Optional[AccountRiskManager] = None
     portfolio_governor: Optional[PortfolioGovernor] = None
     risk_reporter: Optional[RiskReporter] = None
+
+    # ── Decision intelligence ────────────────────────────────────────
+    decision_engine: Optional[DecisionEngine] = None
+    situation_engine: Optional[SituationEngine] = None
+    risk_governor: Optional[RiskGovernor] = None
+    decision_journal: Optional[DecisionJournal] = None
+    session_engine: Optional[SessionEngine] = None
+    news_guard: Optional[NewsGuard] = None
 
     # ── Account key cache (symbol → broker:account_id) ───────────────
     _account_key_cache: dict[str, str] = field(default_factory=dict)
@@ -150,6 +164,67 @@ class SystemContext:
             ctx.portfolio_governor is not None,
             ctx.account_risk is not None,
             ctx.risk_reporter is not None,
+        )
+
+        # ── Decision Intelligence (Phase 2) ──────────────────────────
+
+        # ── SessionEngine ───────────────────────────────────────────
+        try:
+            from brain.session_engine import SessionEngine as _SessionEngine
+            ctx.session_engine = _SessionEngine()
+        except Exception as exc:
+            logger.warning("[SystemContext] SessionEngine init failed: {}", exc)
+
+        # ── NewsGuard ───────────────────────────────────────────────
+        try:
+            from brain.session_engine import NewsGuard as _NewsGuard
+            ctx.news_guard = _NewsGuard()
+        except Exception as exc:
+            logger.warning("[SystemContext] NewsGuard init failed: {}", exc)
+
+        # ── SituationEngine ─────────────────────────────────────────
+        try:
+            from decision.situation import SituationEngine as _SituationEngine
+            ctx.situation_engine = _SituationEngine()
+        except Exception as exc:
+            logger.warning("[SystemContext] SituationEngine init failed: {}", exc)
+
+        # ── DecisionEngine ──────────────────────────────────────────
+        try:
+            from decision.engine import DecisionEngine as _DecisionEngine
+            de_cfg = getattr(config, "decision", None)
+            if de_cfg is not None:
+                ctx.decision_engine = _DecisionEngine(
+                    soften_gate=getattr(de_cfg, "soften_gate", True),
+                )
+            else:
+                ctx.decision_engine = _DecisionEngine(soften_gate=True)
+        except Exception as exc:
+            logger.warning("[SystemContext] DecisionEngine init failed: {}", exc)
+
+        # ── RiskGovernor ────────────────────────────────────────────
+        try:
+            from decision.governor import RiskGovernor as _RiskGovernor
+            ctx.risk_governor = _RiskGovernor(graded_risk=True)
+        except Exception as exc:
+            logger.warning("[SystemContext] RiskGovernor init failed: {}", exc)
+
+        # ── DecisionJournal ─────────────────────────────────────────
+        try:
+            from decision.journal import DecisionJournal as _DecisionJournal
+            ctx.decision_journal = _DecisionJournal()
+        except Exception as exc:
+            logger.warning("[SystemContext] DecisionJournal init failed: {}", exc)
+
+        logger.info(
+            "[SystemContext] decision layer initialized — session={} news={} "
+            "situation={} decision={} governor={} journal={}",
+            ctx.session_engine is not None,
+            ctx.news_guard is not None,
+            ctx.situation_engine is not None,
+            ctx.decision_engine is not None,
+            ctx.risk_governor is not None,
+            ctx.decision_journal is not None,
         )
 
         return ctx
