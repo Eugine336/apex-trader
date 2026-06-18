@@ -143,27 +143,29 @@ class OutcomeFeedback:
         if not self._path.exists():
             return entries, outcomes, order
         try:
-            lines = self._path.read_text(encoding="utf-8").strip().split("\n")
+            # Stream the journal line by line rather than materialising the
+            # whole file (read_text + split) — same result, bounded memory.
+            with self._path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    key = rec.get("trade_key")
+                    if not key:
+                        continue
+                    if rec.get("type") == "entry":
+                        if key not in entries:
+                            order.append(key)
+                        entries[key] = rec
+                    elif rec.get("type") == "outcome":
+                        outcomes[key] = rec
         except Exception as exc:
             logger.warning("[OutcomeFeedback] read failed: {}", exc)
             return entries, outcomes, order
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            key = rec.get("trade_key")
-            if not key:
-                continue
-            if rec.get("type") == "entry":
-                if key not in entries:
-                    order.append(key)
-                entries[key] = rec
-            elif rec.get("type") == "outcome":
-                outcomes[key] = rec
         return entries, outcomes, order
 
     def get_completed(self, lookback: Optional[int] = None) -> list[dict]:

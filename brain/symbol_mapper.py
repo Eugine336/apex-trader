@@ -87,6 +87,25 @@ class SymbolMapper:
 
 _BROKER_CONFIGS = ("deriv", "icmarkets", "metaquotes_ltd")
 
+# Cache of fully-built mappers keyed by broker slug. Broker JSON configs are
+# static at runtime, so the mapper (and its reverse map) only needs to be built
+# once — rebuilding on every resolve call re-read the JSON from disk and walked
+# the entire registry per broker (O(brokers × symbols) + disk I/O each time).
+_RESOLVE_MAPPERS: dict[str, "SymbolMapper"] = {}
+
+
+def _get_resolve_mapper(broker_name: str) -> "SymbolMapper":
+    """Return a cached SymbolMapper with its reverse map fully populated."""
+    mapper = _RESOLVE_MAPPERS.get(broker_name)
+    if mapper is None:
+        mapper = SymbolMapper(broker_name)
+        # Prime the reverse map across the whole registry once, so
+        # to_canonical() can resolve rule-generated broker symbols.
+        for sym in INSTRUMENT_REGISTRY:
+            mapper.to_broker(sym)
+        _RESOLVE_MAPPERS[broker_name] = mapper
+    return mapper
+
 
 def resolve_to_internal(broker_symbol: str) -> str:
     """Resolve a broker-native symbol (e.g. ``1HZ50V``) to the APEX
@@ -107,9 +126,7 @@ def resolve_to_internal(broker_symbol: str) -> str:
     if normalized in INSTRUMENT_REGISTRY:
         return normalized
     for broker_name in _BROKER_CONFIGS:
-        mapper = SymbolMapper(broker_name)
-        for sym in INSTRUMENT_REGISTRY:
-            mapper.to_broker(sym)
+        mapper = _get_resolve_mapper(broker_name)
         canonical = mapper.to_canonical(broker_symbol)
         if canonical != broker_symbol and canonical.upper() in INSTRUMENT_REGISTRY:
             return canonical

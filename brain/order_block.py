@@ -74,23 +74,36 @@ class OrderBlockDetector:
         df = df.copy().reset_index(drop=True)
         obs = []
 
-        # Only look at recent candles
-        start = max(0, len(df) - self.lookback)
+        # Cache columns as numpy arrays — scalar numpy indexing is far cheaper
+        # than df.iloc[] row access. Detection logic is identical.
+        opens = df["open"].values
+        closes = df["close"].values
+        highs = df["high"].values
+        lows = df["low"].values
+        has_time = "time" in df.columns
+        times = df["time"].values if has_time else None
+        n = len(df)
 
-        for i in range(start + 1, len(df) - 1):
-            c = df.iloc[i]
-            ts = c["time"] if "time" in df.columns else pd.Timestamp.now()
+        # Only look at recent candles
+        start = max(0, n - self.lookback)
+
+        for i in range(start + 1, n - 1):
+            c_open = opens[i]
+            c_close = closes[i]
+            ts = times[i] if has_time else pd.Timestamp.now()
 
             # Bullish OB: bearish candle followed by strong bullish move
-            if c["close"] < c["open"]:  # Bearish candle
-                impulse = self._measure_impulse(df, i, direction="up")
+            if c_close < c_open:  # Bearish candle
+                impulse = self._measure_impulse_values(closes, highs, lows, i, "up")
                 if impulse >= self.min_impulse:
-                    strength = self._rate_strength(c, impulse)
+                    strength = self._rate_strength_values(
+                        c_open, c_close, highs[i], lows[i], impulse
+                    )
                     ob = OrderBlock(
                         kind="BULLISH",
-                        top=c["open"],      # Top of bearish candle body
-                        bottom=c["close"],  # Bottom of bearish candle body
-                        midpoint=(c["open"] + c["close"]) / 2,
+                        top=c_open,         # Top of bearish candle body
+                        bottom=c_close,     # Bottom of bearish candle body
+                        midpoint=(c_open + c_close) / 2,
                         origin_index=i,
                         strength=strength,
                         status=OBStatus.FRESH,
@@ -102,15 +115,17 @@ class OrderBlockDetector:
                     obs.append(ob)
 
             # Bearish OB: bullish candle followed by strong bearish move
-            elif c["close"] > c["open"]:  # Bullish candle
-                impulse = self._measure_impulse(df, i, direction="down")
+            elif c_close > c_open:  # Bullish candle
+                impulse = self._measure_impulse_values(closes, highs, lows, i, "down")
                 if impulse >= self.min_impulse:
-                    strength = self._rate_strength(c, impulse)
+                    strength = self._rate_strength_values(
+                        c_open, c_close, highs[i], lows[i], impulse
+                    )
                     ob = OrderBlock(
                         kind="BEARISH",
-                        top=c["close"],     # Top of bullish candle body
-                        bottom=c["open"],   # Bottom of bullish candle body
-                        midpoint=(c["close"] + c["open"]) / 2,
+                        top=c_close,        # Top of bullish candle body
+                        bottom=c_open,      # Bottom of bullish candle body
+                        midpoint=(c_close + c_open) / 2,
                         origin_index=i,
                         strength=strength,
                         status=OBStatus.FRESH,
@@ -139,23 +154,36 @@ class OrderBlockDetector:
         Measure the size of the move caused by this candle.
         Look forward up to 5 candles for the extent of the move.
         """
-        if origin >= len(df) - 1:
+        return self._measure_impulse_values(
+            df["close"].values, df["high"].values, df["low"].values, origin, direction
+        )
+
+    def _measure_impulse_values(self, closes, highs, lows, origin: int, direction: str) -> float:
+        """Value-based core of :meth:`_measure_impulse` (no df.iloc access)."""
+        n = len(closes)
+        if origin >= n - 1:
             return 0.0
 
-        origin_price = df.iloc[origin]["close"]
-        window = df.iloc[origin + 1: min(origin + 6, len(df))]
+        origin_price = closes[origin]
+        end = min(origin + 6, n)
 
         if direction == "up":
-            peak = window["high"].max()
+            peak = highs[origin + 1: end].max()
             return max(peak - origin_price, 0)
         else:
-            trough = window["low"].min()
+            trough = lows[origin + 1: end].min()
             return max(origin_price - trough, 0)
 
     def _rate_strength(self, candle: pd.Series, impulse: float) -> str:
         """Rate order block strength based on candle and impulse."""
-        body = abs(candle["close"] - candle["open"])
-        wick = (candle["high"] - candle["low"]) - body
+        return self._rate_strength_values(
+            candle["open"], candle["close"], candle["high"], candle["low"], impulse
+        )
+
+    def _rate_strength_values(self, c_open, c_close, c_high, c_low, impulse: float) -> str:
+        """Value-based core of :meth:`_rate_strength` (no pd.Series access)."""
+        body = abs(c_close - c_open)
+        wick = (c_high - c_low) - body
         impulse_pips = impulse / self.pip_size
 
         if impulse_pips >= 30 and wick < body:
@@ -166,35 +194,43 @@ class OrderBlockDetector:
             return "WEAK"
 
     def _update_statuses(self, obs: list[OrderBlock], df: pd.DataFrame) -> list[OrderBlock]:
-        """Update each OB status based on subsequent price action."""
+        """Update each OB status based on subsequent price action.
+
+        Vectorized equivalent of the original per-candle loop. Semantics are
+        preserved exactly —
+          * if any subsequent candle closes through the block it is BROKEN;
+          * otherwise the touch count of the zone decides the status:
+            0 touches → FRESH (unchanged), 1 touch → TESTED, 2+ → MITIGATED.
+        """
+        lows = df["low"].values
+        highs = df["high"].values
+
         for ob in obs:
-            subsequent = df.iloc[ob.origin_index + 1:]
-            if subsequent.empty:
+            start = ob.origin_index + 1
+            if start >= len(df):
                 continue
 
-            tested = False
-            for _, candle in subsequent.iterrows():
-                if ob.kind == "BULLISH":
-                    if candle["low"] <= ob.bottom:
-                        ob.status = OBStatus.BROKEN
-                        break
-                    elif candle["low"] <= ob.top:
-                        if not tested:
-                            ob.status = OBStatus.TESTED
-                            tested = True
-                        else:
-                            ob.status = OBStatus.MITIGATED
+            if ob.kind == "BULLISH":
+                sub_lows = lows[start:]
+                if (sub_lows <= ob.bottom).any():
+                    ob.status = OBStatus.BROKEN
+                    continue
+                touches = int((sub_lows <= ob.top).sum())
+                if touches >= 2:
+                    ob.status = OBStatus.MITIGATED
+                elif touches == 1:
+                    ob.status = OBStatus.TESTED
 
-                elif ob.kind == "BEARISH":
-                    if candle["high"] >= ob.top:
-                        ob.status = OBStatus.BROKEN
-                        break
-                    elif candle["high"] >= ob.bottom:
-                        if not tested:
-                            ob.status = OBStatus.TESTED
-                            tested = True
-                        else:
-                            ob.status = OBStatus.MITIGATED
+            elif ob.kind == "BEARISH":
+                sub_highs = highs[start:]
+                if (sub_highs >= ob.top).any():
+                    ob.status = OBStatus.BROKEN
+                    continue
+                touches = int((sub_highs >= ob.bottom).sum())
+                if touches >= 2:
+                    ob.status = OBStatus.MITIGATED
+                elif touches == 1:
+                    ob.status = OBStatus.TESTED
 
         return obs
 

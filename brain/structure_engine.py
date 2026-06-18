@@ -111,37 +111,48 @@ class StructureEngine:
         )
 
     def _find_swings(self, df: pd.DataFrame) -> list:
-        """Find pivot highs and lows using lookback window."""
+        """Find pivot highs and lows using lookback window.
+
+        Identical logic to the original per-candle scan, but the window
+        max/min comparisons run on cached numpy arrays instead of re-slicing
+        the pandas Series on every iteration. A pivot is confirmed only when
+        the centre bar stands at least ``min_swing_size`` beyond its
+        neighbours (the original combined the ``== window.max()`` gate with the
+        prominence filter — equivalent to ``centre >= neighbour_extreme`` plus
+        the prominence threshold).
+        """
         swings = []
         n = len(df)
         lb = self.swing_lookback
+        highs = df["high"].values
+        lows = df["low"].values
+        has_time = "time" in df.columns
 
         for i in range(lb, n - lb):
-            # Swing High: highest point in window
-            window_highs = df["high"].iloc[i - lb: i + lb + 1]
-            if df["high"].iloc[i] == window_highs.max():
-                # Filter by prominence: how far this pivot stands above neighbours
-                nbr = list(window_highs.iloc[:lb]) + list(window_highs.iloc[lb + 1:])
-                prominence = (df["high"].iloc[i] - max(nbr)) if nbr else 0.0
+            # Swing High: highest point in window (centre vs neighbours)
+            h_center = highs[i]
+            nbr_high_max = max(highs[i - lb: i].max(), highs[i + 1: i + lb + 1].max())
+            if h_center >= nbr_high_max:
+                prominence = h_center - nbr_high_max
                 if prominence >= self.min_swing_size:
                     swings.append({
                         "index": i,
                         "price": df["high"].iloc[i],
                         "type": "HIGH",
-                        "timestamp": df["time"].iloc[i] if "time" in df.columns else pd.Timestamp.now()
+                        "timestamp": df["time"].iloc[i] if has_time else pd.Timestamp.now()
                     })
 
             # Swing Low: lowest point in window
-            window_lows = df["low"].iloc[i - lb: i + lb + 1]
-            if df["low"].iloc[i] == window_lows.min():
-                nbr = list(window_lows.iloc[:lb]) + list(window_lows.iloc[lb + 1:])
-                prominence = (min(nbr) - df["low"].iloc[i]) if nbr else 0.0
+            l_center = lows[i]
+            nbr_low_min = min(lows[i - lb: i].min(), lows[i + 1: i + lb + 1].min())
+            if l_center <= nbr_low_min:
+                prominence = nbr_low_min - l_center
                 if prominence >= self.min_swing_size:
                     swings.append({
                         "index": i,
                         "price": df["low"].iloc[i],
                         "type": "LOW",
-                        "timestamp": df["time"].iloc[i] if "time" in df.columns else pd.Timestamp.now()
+                        "timestamp": df["time"].iloc[i] if has_time else pd.Timestamp.now()
                     })
 
         # Sort by index and remove duplicates

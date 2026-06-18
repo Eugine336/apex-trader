@@ -8,6 +8,7 @@ Pip sizes come from the instrument registry — NEVER hardcoded.
 
 import pandas as pd
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1696,6 +1697,8 @@ class PairScanner:
         utc_now = utc_now or datetime.now(timezone.utc)
         session_status = self.session.get_status(utc_now)
 
+        cycle_start = time.perf_counter()
+
         results: list[PairScanResult] = []
         regimes: dict[str, int] = {}
 
@@ -1747,6 +1750,7 @@ class PairScanner:
         # ── Sequential post-processing ──────────────────────────────────
         # Preserve original iteration order for deterministic output, and keep
         # RL price updates (shared, non-thread-safe state) on the main thread.
+        scan_elapsed = time.perf_counter() - cycle_start
         for pair, frames in market_data.items():
             result = scan_results.get(pair)
             if result is None:
@@ -1803,6 +1807,16 @@ class PairScanner:
             rejected_setups=[r.rejection for r in results if r.rejection is not None],
         )
         self.last_report = report
+
+        total_elapsed = time.perf_counter() - cycle_start
+        n_scanned = len(results)
+        avg_ms = (scan_elapsed / n_scanned * 1000.0) if n_scanned else 0.0
+        logger.info(
+            "SCAN CYCLE: total={:.2f}s | scan={:.2f}s | post={:.2f}s | "
+            "pairs={} | avg={:.1f}ms/pair | mode={}",
+            total_elapsed, scan_elapsed, total_elapsed - scan_elapsed,
+            n_scanned, avg_ms, "parallel" if (parallel and len(market_data) > 1) else "serial",
+        )
         return report
 
     # ------------------------------------------------------------------

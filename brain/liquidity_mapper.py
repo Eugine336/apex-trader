@@ -97,27 +97,31 @@ class LiquidityMapper:
         """
         Find equal highs or equal lows within threshold.
         These are the stop clusters institutions hunt.
+
+        The greedy clustering is identical to the original nested loop, but the
+        inner scan over candidate candles is vectorized: for each unused anchor
+        ``i`` we mask every later unused candle within ``thr`` in one numpy op
+        instead of a Python ``for j`` loop.
         """
         thr = threshold if threshold is not None else self.equal_threshold
         values = df[column].values
         timestamps = df["time"].values if "time" in df.columns else [pd.Timestamp.now()] * len(df)
         zones = []
-        used = set()
+        n = len(values)
+        used = np.zeros(n, dtype=bool)
 
-        for i in range(len(values)):
-            if i in used:
+        for i in range(n):
+            if used[i]:
                 continue
 
-            cluster = [i]
-            for j in range(i + 1, len(values)):
-                if j in used:
-                    continue
-                if abs(values[i] - values[j]) <= thr:
-                    cluster.append(j)
-                    used.add(j)
+            # Later, still-unused candles within threshold of the anchor.
+            mask = (~used) & (np.abs(values - values[i]) <= thr)
+            mask[: i + 1] = False
+            js = np.nonzero(mask)[0]
+            cluster = np.concatenate(([i], js)) if js.size else np.array([i])
 
             if len(cluster) >= self.min_touches:
-                avg_price = np.mean([values[k] for k in cluster])
+                avg_price = float(np.mean(values[cluster]))
                 strength = (
                     "STRONG"   if len(cluster) >= 4 else
                     "MODERATE" if len(cluster) == 3 else
@@ -133,7 +137,9 @@ class LiquidityMapper:
                     swept=False,
                     timestamp=pd.Timestamp(timestamps[cluster[-1]])
                 ))
-            used.add(i)
+
+            used[js] = True
+            used[i] = True
 
         return zones
 
@@ -146,13 +152,17 @@ class LiquidityMapper:
         timestamps = df["time"].values if "time" in df.columns else [pd.Timestamp.now()] * len(df)
         zones = []
         lookback = 5
+        # Touch counts reuse the cached numpy column instead of a per-swing
+        # pandas reduction (the original called _count_touches(df, ...) which
+        # rebuilt a Series each time — the dominant cost in liquidity mapping).
+        thr2 = (threshold if threshold is not None else self.equal_threshold) * 2
 
         for i in range(lookback, len(values) - lookback):
             window = values[i - lookback: i + lookback + 1]
 
             if column == "high" and values[i] == max(window):
                 # Significant swing high — buy stops rest above this
-                touches = self._count_touches(df, values[i], column, threshold)
+                touches = int((np.abs(values - values[i]) <= thr2).sum())
                 zones.append(LiquidityZone(
                     price=values[i],
                     kind="BUY_SIDE",
@@ -165,7 +175,7 @@ class LiquidityMapper:
 
             elif column == "low" and values[i] == min(window):
                 # Significant swing low — sell stops rest below this
-                touches = self._count_touches(df, values[i], column, threshold)
+                touches = int((np.abs(values - values[i]) <= thr2).sum())
                 zones.append(LiquidityZone(
                     price=values[i],
                     kind="SELL_SIDE",
