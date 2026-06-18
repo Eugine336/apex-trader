@@ -184,7 +184,8 @@ def main() -> None:
         from platforms.startup_check import StartupCheck
 
         state = LiveState()
-        state.attach(trading_loop, platform_manager, connection_status)
+        state.attach(trading_loop, platform_manager, connection_status,
+                     system_context=sys_ctx)
 
         ed_system = None
         if platform_manager.any_connected:

@@ -28,6 +28,8 @@ from loguru import logger
 from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open, Platform
 from brain.world_model import WorldModelStore, build_world_model
 from core.system_context import SystemContext
+from persistence.event_store import get_event_store
+from persistence import domain_events as DE
 from tick import EventBus, Tick, TickStore, CandleCloseDetector, TickRouter
 from tick.models import CandleClose
 from scanner.candle_close_handler import CandleCloseHandler
@@ -610,6 +612,23 @@ class EventDrivenSystem:
         logger.info("  APEX TRADER — EVENT-DRIVEN MODE")
         logger.info("=" * 60)
 
+        # ── Startup recovery: crash marker detection ─────────────────
+        try:
+            from ops.lifecycle import StartupRecovery
+            ops_cfg = getattr(self._config, "ops", None)
+            if ops_cfg is None:
+                from types import SimpleNamespace
+                ops_cfg = SimpleNamespace(crash_marker_path="data/.crash_marker")
+            recovery = StartupRecovery(ops_cfg)
+            result = recovery.run()
+            if result.get("unclean_previous_exit"):
+                logger.warning(
+                    "[event-driven] previous run exited UNCLEAN — "
+                    "broker reconciliation recommended",
+                )
+        except Exception as exc:
+            logger.debug("[startup] crash recovery check failed: {}", exc)
+
         self._recover_open_positions()
 
         symbols = list(INSTRUMENT_REGISTRY.keys())
@@ -622,6 +641,26 @@ class EventDrivenSystem:
         self._deriv_adapter.start()
         self._flush_loop.start()
         self._tick_eval_loop.start()
+
+        # ── Start ProcessWatchdog heartbeat thread ───────────────────
+        ctx = self._ctx
+        if ctx is not None and ctx.process_watchdog is not None:
+            self._watchdog_running = True
+            self._watchdog_thread = threading.Thread(
+                target=self._watchdog_loop, daemon=True, name="ed-watchdog",
+            )
+            self._watchdog_thread.start()
+            logger.info("[event-driven] process watchdog started")
+
+        # ── Initialize TradeJournal (async) ──────────────────────────
+        if ctx is not None and ctx.trade_journal is not None:
+            try:
+                import asyncio
+                _loop = asyncio.new_event_loop()
+                _loop.run_until_complete(ctx.trade_journal.initialize())
+                _loop.close()
+            except Exception as exc:
+                logger.debug("[startup] TradeJournal init failed: {}", exc)
 
         logger.info("[event-driven] all subsystems started")
         logger.info("-" * 60)
@@ -646,16 +685,46 @@ class EventDrivenSystem:
         self._event_bus.clear()
         self._mgmt_store.close()
 
+        self._watchdog_running = False
+        wt = getattr(self, "_watchdog_thread", None)
+        if wt is not None:
+            wt.join(timeout=2.0)
+
         ctx = self._ctx
         if ctx is not None:
             for name in ("signal_ledger", "counterfactual_engine",
-                         "interaction_analyzer", "module_governor"):
+                         "interaction_analyzer", "module_governor",
+                         "shadow_store", "post_close_tracker",
+                         "gate_tuner"):
                 sub = getattr(ctx, name, None)
                 if sub is not None and hasattr(sub, "close"):
                     try:
                         sub.close()
+                        logger.debug("[shutdown] {} flushed", name)
                     except Exception as exc:
                         logger.debug("[shutdown] {} close failed: {}", name, exc)
+
+            # Flush event store
+            try:
+                es = get_event_store()
+                es.flush(timeout=3.0)
+            except Exception:
+                pass
+
+            # Clear crash marker
+            try:
+                from ops.lifecycle import StartupRecovery
+                ops_cfg = getattr(self._config, "ops", None)
+                if ops_cfg is not None:
+                    StartupRecovery(ops_cfg).clear_crash_marker()
+                else:
+                    from types import SimpleNamespace
+                    StartupRecovery(SimpleNamespace(
+                        crash_marker_path="data/.crash_marker",
+                    )).clear_crash_marker()
+                logger.debug("[shutdown] crash marker cleared")
+            except Exception as exc:
+                logger.debug("[shutdown] crash marker clear failed: {}", exc)
 
         logger.info("[event-driven] shutdown complete")
 
@@ -673,6 +742,26 @@ class EventDrivenSystem:
     @property
     def is_running(self) -> bool:
         return self._running
+
+    @property
+    def world_model_store(self) -> WorldModelStore:
+        return self._wm_store
+
+    @property
+    def tick_store(self) -> TickStore:
+        return self._tick_store
+
+    @property
+    def entry_orchestrator(self) -> EntryOrchestrator:
+        return self._entry_orchestrator
+
+    @property
+    def executor(self) -> ActionExecutor:
+        return self._executor
+
+    @property
+    def evaluator(self) -> PositionEvaluator:
+        return self._evaluator
 
     def stats(self) -> dict[str, Any]:
         """Return operational metrics snapshot."""
@@ -694,6 +783,34 @@ class EventDrivenSystem:
         }
 
     # ── Internal helpers ─────────────────────────────────────────────
+
+    def _watchdog_loop(self) -> None:
+        """Background loop: heartbeat + stall detection + daily maintenance."""
+        _maint_checked_date = None
+        while getattr(self, "_watchdog_running", False):
+            ctx = self._ctx
+            if ctx is not None and ctx.process_watchdog is not None:
+                try:
+                    ctx.process_watchdog.beat()
+                    ctx.process_watchdog.record_tick()
+                    ctx.process_watchdog.check_stall()
+                except Exception:
+                    pass
+
+            if ctx is not None and ctx.daily_maintenance is not None:
+                try:
+                    if ctx.daily_maintenance.should_run():
+                        result = ctx.daily_maintenance.run()
+                        logger.info("[event-driven] daily maintenance — {}", result)
+                        try:
+                            es = get_event_store()
+                            es.prune()
+                        except Exception:
+                            pass
+                except Exception as exc:
+                    logger.debug("[watchdog] daily maintenance check failed: {}", exc)
+
+            _time.sleep(10.0)
 
     def _handle_close_result(self, intent: Intent, result: Any) -> None:
         """Called by FlushLoop when a CLOSE intent succeeds.
@@ -1277,6 +1394,28 @@ class EventDrivenSystem:
 
             # ── Execute order ────────────────────────────────────────
             order_ts = _time.time()
+
+            # Domain event: ORDER_SENT
+            try:
+                es = get_event_store()
+                es.emit(
+                    DE.ORDER_SENT, "INFO",
+                    symbol=symbol,
+                    source_module="event_driven",
+                    payload={
+                        "symbol": symbol,
+                        "direction": direction,
+                        "lots": float(size_result.lots),
+                        "stake_usd": float(size_result.stake_usd),
+                        "entry_price": float(entry_price),
+                        "sl": float(sl),
+                        "tp": float(tp1),
+                        "combined_mult": round(combined_mult, 3),
+                    },
+                )
+            except Exception:
+                pass
+
             result = self._pm.execute_entry(
                 symbol=symbol,
                 direction=direction,
@@ -1431,6 +1570,28 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[post-fill] SignalLedger trade-open failed: {}", exc)
 
+        # ── Domain event: TRADE_OPEN ─────────────────────────────────
+        try:
+            es = get_event_store()
+            fill_price = getattr(result, "fill_price", getattr(result, "entry_price", expected_price)) or expected_price
+            es.emit(
+                DE.TRADE_OPEN, "INFO",
+                symbol=symbol,
+                source_module="event_driven",
+                payload={
+                    "order_id": order_id,
+                    "symbol": symbol,
+                    "direction": direction,
+                    "entry_price": float(fill_price),
+                    "lots": float(getattr(result, "lots", 0.0) or 0.0),
+                    "sl": float(getattr(result, "sl", 0.0) or 0.0),
+                    "tp": float(getattr(result, "tp", 0.0) or 0.0),
+                    "balance": float(balance or 0.0),
+                },
+            )
+        except Exception as exc:
+            logger.debug("[post-fill] TRADE_OPEN event emit failed: {}", exc)
+
     def _on_trade_closed(
         self,
         symbol: str,
@@ -1579,6 +1740,62 @@ class EventDrivenSystem:
                 )
             except Exception as exc:
                 logger.debug("[close-learn] PostCloseTracker failed: {}", exc)
+
+        # ── Domain event: TRADE_CLOSE ────────────────────────────────
+        try:
+            es = get_event_store()
+            es.emit(
+                DE.TRADE_CLOSE, "INFO",
+                symbol=symbol,
+                source_module="event_driven",
+                payload={
+                    "order_id": str(ticket),
+                    "symbol": symbol,
+                    "direction": direction,
+                    "pnl_dollars": round(float(pnl_dollars), 2),
+                    "pnl_pips": round(float(pnl_pips), 2),
+                    "outcome": outcome,
+                    "exit_reason": cause_value,
+                    "balance": float(balance or 0.0),
+                },
+            )
+        except Exception as exc:
+            logger.debug("[close-event] TRADE_CLOSE event emit failed: {}", exc)
+
+        # ── TradeJournal — record closed trade for dashboard history ──
+        if ctx.trade_journal is not None:
+            try:
+                import asyncio
+                from brain.trade_journal import TradeRecord
+                tick = self._tick_store.get_latest(symbol)
+                close_price = tick.mid if tick else 0.0
+                record = TradeRecord(
+                    pair=symbol,
+                    direction=direction,
+                    entry=0.0,
+                    exit=close_price,
+                    pnl=round(float(pnl_pips), 2),
+                    score=0,
+                    confluences="",
+                    regime="",
+                    session="",
+                    spread=0.0,
+                    slippage=0.0,
+                    entry_type="event_driven",
+                    time_to_tp1=0.0,
+                    time_to_exit=0.0,
+                    outcome=outcome,
+                    pnl_dollars=round(float(pnl_dollars), 2),
+                    exit_cause=cause_value,
+                )
+                try:
+                    _loop = asyncio.new_event_loop()
+                    _loop.run_until_complete(ctx.trade_journal.log_trade(record))
+                    _loop.close()
+                except Exception as exc_j:
+                    logger.debug("[close-journal] async log failed: {}", exc_j)
+            except Exception as exc:
+                logger.debug("[close-journal] TradeJournal write failed: {}", exc)
 
         logger.info(
             "EVENT-DRIVEN CLOSE FEEDBACK | {} {} ticket={} pnl=${:.2f} ({:.1f}pip) | risk+learning",

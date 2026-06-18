@@ -114,6 +114,11 @@ class SystemContext:
     tuner_agent: Optional[TunerAgent] = None
     ml_adapter: Optional[AdaptiveOptimizer] = None
 
+    # ── Ops / Dashboard / Persistence (Phase 5) ─────────────────────
+    trade_journal: Optional[Any] = None
+    process_watchdog: Optional[Any] = None
+    daily_maintenance: Optional[Any] = None
+
     # ── Account key cache (symbol → broker:account_id) ───────────────
     _account_key_cache: dict[str, str] = field(default_factory=dict)
 
@@ -486,6 +491,45 @@ class SystemContext:
             ctx.shadow_store is not None,
             ctx.tuner_agent is not None,
             ctx.ml_adapter is not None,
+        )
+
+        # ── Ops / Dashboard / Persistence (Phase 5) ──────────────────
+
+        # ── TradeJournal ────────────────────────────────────────────
+        try:
+            from brain.trade_journal import TradeJournal as _TradeJournal
+            ctx.trade_journal = _TradeJournal()
+        except Exception as exc:
+            logger.warning("[SystemContext] TradeJournal init failed: {}", exc)
+
+        # ── ProcessWatchdog ─────────────────────────────────────────
+        try:
+            from ops.watchdog import ProcessWatchdog as _Watchdog
+            ops_cfg = getattr(config, "ops", None)
+            if ops_cfg is not None:
+                ctx.process_watchdog = _Watchdog(ops_cfg)
+            else:
+                from types import SimpleNamespace
+                ctx.process_watchdog = _Watchdog(SimpleNamespace(
+                    heartbeat_file="data/.heartbeat",
+                    heartbeat_interval_seconds=10,
+                    max_tick_duration_seconds=60,
+                ))
+        except Exception as exc:
+            logger.warning("[SystemContext] ProcessWatchdog init failed: {}", exc)
+
+        # ── DailyMaintenance ────────────────────────────────────────
+        try:
+            from platforms.maintenance import DailyMaintenance as _DailyMaint
+            ctx.daily_maintenance = _DailyMaint()
+        except Exception as exc:
+            logger.warning("[SystemContext] DailyMaintenance init failed: {}", exc)
+
+        logger.info(
+            "[SystemContext] ops layer initialized — journal={} watchdog={} maintenance={}",
+            ctx.trade_journal is not None,
+            ctx.process_watchdog is not None,
+            ctx.daily_maintenance is not None,
         )
 
         return ctx
