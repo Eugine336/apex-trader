@@ -12,6 +12,7 @@ from execution.intent_aggregator import (
     should_skip_sl_update,
 )
 from execution.intents import Intent, IntentType
+from execution.management_state import ManagementState, ManagementStateStore
 from execution.position_snapshot import PositionSnapshot
 from execution.position_worker import PositionWorker
 
@@ -20,6 +21,8 @@ __all__ = [
     "Intent",
     "IntentAggregator",
     "IntentType",
+    "ManagementState",
+    "ManagementStateStore",
     "PositionSnapshot",
     "PositionWorker",
     "should_skip_sl_update",

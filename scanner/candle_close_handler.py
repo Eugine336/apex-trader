@@ -267,6 +267,7 @@ class CandleCloseHandler:
             bias=bias,
         )
         self._store.publish(wm)
+        self._bus.publish("world_model_update", symbol)
         logger.debug(
             "[cc-handler] published WorldModel for {} (tf={}, v={})",
             symbol, tf, wm.version,

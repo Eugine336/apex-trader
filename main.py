@@ -192,6 +192,7 @@ def main() -> None:
                 from event_driven_bootstrap import EventDrivenSystem
                 ed_system = EventDrivenSystem(config, platform_manager)
                 ed_system.start()
+                state.attach_event_driven(ed_system)
                 logger.info("Event-driven system started in dashboard mode")
             else:
                 trading_loop.running = True
