@@ -11,6 +11,10 @@ RiskGovernor, DecisionJournal, SessionEngine, NewsGuard).
 Phase 3: scan pipeline + sizing (PairRanker, OpportunityExecutor,
 Orchestrator, SystemVolatilityMonitor, OpportunityDensityTracker,
 EntryEngine, ExecutionMonitor).
+Phase 4: learning + feedback (OutcomeFeedback, SignalLedger,
+EmitterFeedbackService, VoteCalibrator, ModuleGovernor, PostCloseTracker,
+GateTuner, CounterfactualEngine, InteractionAnalyzer, ShadowStore,
+TunerAgent, AdaptiveOptimizer).
 
 Usage::
 
@@ -31,6 +35,7 @@ if TYPE_CHECKING:
     from brain.execution_monitor import ExecutionMonitor
     from brain.opportunity_density import OpportunityDensityTracker
     from brain.orchestrator import Orchestrator
+    from brain.outcome_feedback import OutcomeFeedback
     from brain.regime_detector import SystemVolatilityMonitor
     from brain.session_engine import NewsGuard, SessionEngine
     from config import AppConfig
@@ -47,6 +52,18 @@ if TYPE_CHECKING:
     from risk.risk_reporter import RiskReporter
     from scanner.pair_ranker import PairRanker
     from trigger.entry_engine import EntryEngine
+
+    from adaptive.counterfactual import CounterfactualEngine
+    from adaptive.emitter_feedback import EmitterFeedbackService
+    from adaptive.gate_tuner import GateTuner
+    from adaptive.interaction_discovery import InteractionAnalyzer
+    from adaptive.module_governor import ModuleGovernor
+    from adaptive.optimizer import AdaptiveOptimizer
+    from adaptive.post_close_tracker import PostCloseTracker
+    from adaptive.signal_ledger import SignalLedger
+    from adaptive.tuner_agent import TunerAgent
+    from adaptive.vote_calibrator import VoteCalibrator
+    from persistence.shadow_store import ShadowStore
 
 
 @dataclass
@@ -82,6 +99,20 @@ class SystemContext:
     opportunity_density_tracker: Optional[OpportunityDensityTracker] = None
     entry_engine: Optional[EntryEngine] = None
     execution_monitor: Optional[ExecutionMonitor] = None
+
+    # ── Learning + feedback (Phase 4) ────────────────────────────────
+    outcome_feedback: Optional[OutcomeFeedback] = None
+    signal_ledger: Optional[SignalLedger] = None
+    emitter_feedback: Optional[EmitterFeedbackService] = None
+    vote_calibrator: Optional[VoteCalibrator] = None
+    module_governor: Optional[ModuleGovernor] = None
+    post_close_tracker: Optional[PostCloseTracker] = None
+    gate_tuner: Optional[GateTuner] = None
+    counterfactual_engine: Optional[CounterfactualEngine] = None
+    interaction_analyzer: Optional[InteractionAnalyzer] = None
+    shadow_store: Optional[ShadowStore] = None
+    tuner_agent: Optional[TunerAgent] = None
+    ml_adapter: Optional[AdaptiveOptimizer] = None
 
     # ── Account key cache (symbol → broker:account_id) ───────────────
     _account_key_cache: dict[str, str] = field(default_factory=dict)
@@ -320,6 +351,141 @@ class SystemContext:
             ctx.opportunity_density_tracker is not None,
             ctx.entry_engine is not None,
             ctx.execution_monitor is not None,
+        )
+
+        # ── Learning + Feedback (Phase 4) ────────────────────────────
+
+        # ── OutcomeFeedback ─────────────────────────────────────────
+        try:
+            from brain.outcome_feedback import OutcomeFeedback as _OutcomeFeedback
+            ctx.outcome_feedback = _OutcomeFeedback(config=config)
+        except Exception as exc:
+            logger.warning("[SystemContext] OutcomeFeedback init failed: {}", exc)
+
+        # ── SignalLedger ────────────────────────────────────────────
+        try:
+            from adaptive.signal_ledger import SignalLedger as _SignalLedger
+            ctx.signal_ledger = _SignalLedger()
+        except Exception as exc:
+            logger.warning("[SystemContext] SignalLedger init failed: {}", exc)
+
+        # ── EmitterFeedbackService ──────────────────────────────────
+        try:
+            from adaptive.emitter_feedback import EmitterFeedbackService as _EmitterFB
+            if ctx.signal_ledger is not None:
+                ctx.emitter_feedback = _EmitterFB(ctx.signal_ledger)
+        except Exception as exc:
+            logger.warning("[SystemContext] EmitterFeedbackService init failed: {}", exc)
+
+        # ── CounterfactualEngine ────────────────────────────────────
+        try:
+            from adaptive.counterfactual import CounterfactualEngine as _Counterfactual
+            cf_cfg = getattr(config, "counterfactual", None)
+            ctx.counterfactual_engine = _Counterfactual(
+                enabled=getattr(cf_cfg, "enabled", True) if cf_cfg else True,
+                attribution_lookback=getattr(cf_cfg, "lookback", 500) if cf_cfg else 500,
+                attribution_interval=getattr(cf_cfg, "interval", 100) if cf_cfg else 100,
+            )
+        except Exception as exc:
+            logger.warning("[SystemContext] CounterfactualEngine init failed: {}", exc)
+
+        # ── VoteCalibrator ──────────────────────────────────────────
+        try:
+            from adaptive.vote_calibrator import VoteCalibrator as _VoteCalib
+            ctx.vote_calibrator = _VoteCalib(
+                config=config,
+                emitter_feedback=ctx.emitter_feedback,
+            )
+            if ctx.counterfactual_engine is not None:
+                ctx.vote_calibrator.set_counterfactual(ctx.counterfactual_engine)
+        except Exception as exc:
+            logger.warning("[SystemContext] VoteCalibrator init failed: {}", exc)
+
+        # ── ModuleGovernor ──────────────────────────────────────────
+        try:
+            from adaptive.module_governor import ModuleGovernor as _ModGov
+            ctx.module_governor = _ModGov(
+                config=config,
+                emitter_feedback=ctx.emitter_feedback,
+                counterfactual=ctx.counterfactual_engine,
+            )
+        except Exception as exc:
+            logger.warning("[SystemContext] ModuleGovernor init failed: {}", exc)
+
+        # ── PostCloseTracker ────────────────────────────────────────
+        try:
+            from adaptive.post_close_tracker import PostCloseTracker as _PostClose
+            ctx.post_close_tracker = _PostClose(config=config)
+        except Exception as exc:
+            logger.warning("[SystemContext] PostCloseTracker init failed: {}", exc)
+
+        # ── GateTuner ───────────────────────────────────────────────
+        try:
+            from adaptive.gate_tuner import GateTuner as _GateTuner
+            ctx.gate_tuner = _GateTuner()
+        except Exception as exc:
+            logger.warning("[SystemContext] GateTuner init failed: {}", exc)
+
+        # ── InteractionAnalyzer ─────────────────────────────────────
+        try:
+            from adaptive.interaction_discovery import InteractionAnalyzer as _Interaction
+            if ctx.counterfactual_engine is not None:
+                ia_cfg = getattr(config, "interaction", None)
+                ctx.interaction_analyzer = _Interaction(
+                    ctx.counterfactual_engine,
+                    enabled=getattr(ia_cfg, "enabled", True) if ia_cfg else True,
+                    lookback=getattr(ia_cfg, "lookback", 500) if ia_cfg else 500,
+                    interval=getattr(ia_cfg, "interval", 500) if ia_cfg else 500,
+                )
+        except Exception as exc:
+            logger.warning("[SystemContext] InteractionAnalyzer init failed: {}", exc)
+
+        # ── ShadowStore ─────────────────────────────────────────────
+        try:
+            from persistence.shadow_store import ShadowStore as _ShadowStore
+            ctx.shadow_store = _ShadowStore()
+        except Exception as exc:
+            logger.warning("[SystemContext] ShadowStore init failed: {}", exc)
+
+        # ── AdaptiveOptimizer (ML adapter) ──────────────────────────
+        try:
+            from adaptive.optimizer import AdaptiveOptimizer as _MLAdapter
+            ctx.ml_adapter = _MLAdapter(config=config)
+            if ctx.post_close_tracker is not None:
+                try:
+                    ctx.ml_adapter.pair_learner.set_post_close_tracker(ctx.post_close_tracker)
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.warning("[SystemContext] AdaptiveOptimizer init failed: {}", exc)
+
+        # ── TunerAgent ──────────────────────────────────────────────
+        try:
+            from adaptive.tuner_agent import TunerAgent as _TunerAgent
+            tuner_cfg = getattr(config, "tuner", None)
+            ctx.tuner_agent = _TunerAgent(
+                enabled=getattr(tuner_cfg, "enabled", True) if tuner_cfg else True,
+            )
+        except Exception as exc:
+            logger.warning("[SystemContext] TunerAgent init failed: {}", exc)
+
+        logger.info(
+            "[SystemContext] learning layer initialized — outcome_fb={} "
+            "ledger={} emitter_fb={} vote_cal={} mod_gov={} post_close={} "
+            "gate_tuner={} counterfactual={} interaction={} shadow={} "
+            "tuner={} ml={}",
+            ctx.outcome_feedback is not None,
+            ctx.signal_ledger is not None,
+            ctx.emitter_feedback is not None,
+            ctx.vote_calibrator is not None,
+            ctx.module_governor is not None,
+            ctx.post_close_tracker is not None,
+            ctx.gate_tuner is not None,
+            ctx.counterfactual_engine is not None,
+            ctx.interaction_analyzer is not None,
+            ctx.shadow_store is not None,
+            ctx.tuner_agent is not None,
+            ctx.ml_adapter is not None,
         )
 
         return ctx
