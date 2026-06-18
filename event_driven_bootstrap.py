@@ -79,10 +79,13 @@ class MT5TickPoller:
         logger.info("[mt5-poller] stopped")
 
     def _poll_loop(self) -> None:
+        skipped: set[str] = set()
         while self._running:
             for sym in self._symbols:
                 if not self._running:
                     break
+                if sym in skipped:
+                    continue
                 try:
                     td = self._pm.get_price(sym)
                     if td is not None and td.bid > 0:
@@ -94,14 +97,23 @@ class MT5TickPoller:
                             source="mt5",
                         )
                         self._router.on_tick(tick)
+                        self._error_counts.pop(sym, None)
                 except Exception as exc:
                     self._error_counts[sym] = self._error_counts.get(sym, 0) + 1
+                    count = self._error_counts[sym]
+                    if count >= 500 and "Invalid arguments" in str(exc):
+                        skipped.add(sym)
+                        logger.warning(
+                            "[mt5-poller] {} removed from poll — {} consecutive failures (symbol not on broker)",
+                            sym, count,
+                        )
+                        continue
                     now = _time.monotonic()
                     last = self._last_error_log.get(sym, 0.0)
                     if now - last > 60.0:
                         logger.warning(
                             "[mt5-poller] {} tick error (count={}): {}",
-                            sym, self._error_counts[sym], exc,
+                            sym, count, exc,
                         )
                         self._last_error_log[sym] = now
             _time.sleep(self._interval)
@@ -693,7 +705,7 @@ class EventDrivenSystem:
     def _on_entry_decision(self, decision: dict[str, Any]) -> None:
         """Handle entry decisions from EntryOrchestrator.
 
-        Sizes the position via PositionSizer and places via PlatformManager.
+        Checks portfolio-level limits, sizes via PositionSizer, places via PlatformManager.
         """
         symbol = decision.get("symbol", "")
         direction = decision.get("direction", "")
@@ -712,6 +724,45 @@ class EventDrivenSystem:
             from risk.position_sizer import PositionSizer
             from config import get_pip_size
 
+            # ── Portfolio-level safety checks ────────────────────────
+            positions = self._pm.get_all_open_positions()
+            risk_cfg = self._config.risk if hasattr(self._config, "risk") else None
+
+            try:
+                max_trades = int(risk_cfg.max_open_trades) if risk_cfg is not None else 5
+                max_corr = int(risk_cfg.max_correlated_trades) if risk_cfg is not None else 2
+            except (TypeError, ValueError, AttributeError):
+                max_trades = 5
+                max_corr = 2
+
+            if len(positions) >= max_trades:
+                logger.warning(
+                    "EVENT-DRIVEN ENTRY SKIPPED | {} — max open trades reached ({}/{})",
+                    symbol, len(positions), max_trades,
+                )
+                return
+
+            for pos in positions:
+                if getattr(pos, "symbol", "") == symbol:
+                    logger.warning(
+                        "EVENT-DRIVEN ENTRY SKIPPED | {} — already have open position",
+                        symbol,
+                    )
+                    return
+
+            currency_counts: dict[str, int] = {}
+            for pos in positions:
+                for cur in _extract_currencies(getattr(pos, "symbol", "")):
+                    currency_counts[cur] = currency_counts.get(cur, 0) + 1
+            for cur in _extract_currencies(symbol):
+                projected = currency_counts.get(cur, 0) + 1
+                if projected > max_corr:
+                    logger.warning(
+                        "EVENT-DRIVEN ENTRY SKIPPED | {} — {} exposure {}/{} (max correlated)",
+                        symbol, cur, projected, max_corr,
+                    )
+                    return
+
             balance = self._pm.get_platform_balance(symbol)
             if balance is None or balance <= 0:
                 logger.warning("EVENT-DRIVEN ENTRY SKIPPED | {} — no balance", symbol)
@@ -719,7 +770,7 @@ class EventDrivenSystem:
 
             pip_size = get_pip_size(symbol)
             sizer = PositionSizer()
-            risk_pct = self._config.risk.risk_per_trade_pct / 100.0 if hasattr(self._config, "risk") else 0.0075
+            risk_pct = self._config.risk.risk_per_trade_pct / 100.0 if risk_cfg is not None else 0.0075
             size_result = sizer.calculate(
                 account_balance=balance,
                 risk_pct=risk_pct,
@@ -753,7 +804,22 @@ class EventDrivenSystem:
             logger.error("EVENT-DRIVEN ORDER ERROR | {} {} | {}", symbol, direction, exc)
 
 
-# ── Module-level helper ──────────────────────────────────────────────
+# ── Module-level helpers ─────────────────────────────────────────────
+
+_KNOWN_CURRENCIES = frozenset(
+    {"USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF",
+     "XAU", "XAG", "XTI", "XBR"}
+)
+
+
+def _extract_currencies(symbol: str) -> list[str]:
+    """Extract currency legs from a forex symbol (e.g. EURJPY → [EUR, JPY])."""
+    sym = str(symbol).upper().strip()
+    if len(sym) == 6:
+        base, quote = sym[:3], sym[3:]
+        if base in _KNOWN_CURRENCIES and quote in _KNOWN_CURRENCIES:
+            return [base, quote]
+    return []
 
 
 def is_event_driven_enabled() -> bool:
