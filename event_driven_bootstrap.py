@@ -592,6 +592,9 @@ class EventDrivenSystem:
         self._event_bus.subscribe(
             "world_model_update", self._entry_orchestrator.on_world_model_update,
         )
+        self._event_bus.subscribe(
+            "world_model_update", self._on_world_model_update,
+        )
 
         logger.info("[event-driven] system initialized")
 
@@ -823,6 +826,24 @@ class EventDrivenSystem:
         except Exception as exc:
             logger.debug("[news-gate] NewsGuard check failed: {}", exc)
             return True
+
+    def _on_world_model_update(self, event: Any) -> None:
+        """Feed density tracker when WorldModel updates after a scan."""
+        ctx = self._ctx
+        if ctx is None:
+            return
+        if ctx.opportunity_density_tracker is not None:
+            try:
+                ready_symbols = []
+                for sym in INSTRUMENT_REGISTRY:
+                    wm = self._wm_store.get(sym)
+                    if wm is not None:
+                        zones = getattr(wm, "entry_zones", [])
+                        if zones:
+                            ready_symbols.append(sym)
+                ctx.opportunity_density_tracker.record_scan(ready_symbols)
+            except Exception as exc:
+                logger.debug("[density] density tracker update failed: {}", exc)
 
     def _on_entry_decision(self, decision: dict[str, Any]) -> None:
         """Handle entry decisions from EntryOrchestrator.
@@ -1075,6 +1096,126 @@ class EventDrivenSystem:
                 except Exception as exc:
                     logger.debug("[entry-decision] DecisionEngine check failed: {}", exc)
 
+            # ── ATR-based SL/TP from EntryEngine ─────────────────────
+            atr_sl = sl
+            atr_tp1 = tp1
+            atr_tp2 = tp2
+            if ctx is not None and ctx.entry_engine is not None:
+                try:
+                    pip_size_ee = self._safe_pip_size(symbol)
+                    norm_dir = "LONG" if direction.upper() in ("BUY", "LONG") else "SHORT"
+                    m5_df = self._fetch_candles(symbol, "M5", 200)
+                    h1_df = self._fetch_candles(symbol, "H1", 200)
+                    if m5_df is not None and len(m5_df) >= 10:
+                        try:
+                            atr_sl_calc = ctx.entry_engine.calculate_stop_loss(
+                                direction=norm_dir,
+                                zone={"entry": entry_price, "top": entry_price, "bottom": entry_price},
+                                pip_size=pip_size_ee,
+                                buffer_pips=getattr(self._config.risk, "sl_buffer_pips", 2.0),
+                                entry_price=entry_price,
+                                pair=symbol,
+                                m5_df=m5_df,
+                            )
+                            if atr_sl_calc and atr_sl_calc > 0:
+                                if norm_dir == "LONG":
+                                    atr_sl = min(sl, atr_sl_calc) if sl > 0 else atr_sl_calc
+                                else:
+                                    atr_sl = max(sl, atr_sl_calc) if sl > 0 else atr_sl_calc
+                        except Exception as exc:
+                            logger.debug("[atr-sl] ATR SL calc failed: {}", exc)
+
+                        if h1_df is not None and len(h1_df) >= 5:
+                            try:
+                                final_sl = atr_sl if atr_sl > 0 else sl
+                                atr_tp1_calc, atr_tp2_calc = ctx.entry_engine.calculate_targets(
+                                    direction=norm_dir,
+                                    entry_price=entry_price,
+                                    stop_loss=final_sl,
+                                    h1_df=h1_df,
+                                    pip_size=pip_size_ee,
+                                    tp1_rr=getattr(self._config.risk, "tp1_rr", 1.5),
+                                    tp2_rr=getattr(self._config.risk, "tp2_rr", 3.0),
+                                    pair=symbol,
+                                )
+                                if atr_tp1_calc and atr_tp1_calc > 0:
+                                    if norm_dir == "LONG":
+                                        atr_tp1 = max(tp1, atr_tp1_calc) if tp1 > 0 else atr_tp1_calc
+                                        atr_tp2 = max(tp2, atr_tp2_calc) if tp2 > 0 else atr_tp2_calc
+                                    else:
+                                        atr_tp1 = min(tp1, atr_tp1_calc) if tp1 > 0 else atr_tp1_calc
+                                        atr_tp2 = min(tp2, atr_tp2_calc) if tp2 > 0 else atr_tp2_calc
+                            except Exception as exc:
+                                logger.debug("[atr-tp] ATR target calc failed: {}", exc)
+
+                    sl_changed = abs(atr_sl - sl) > 1e-8 if sl > 0 else False
+                    tp_changed = abs(atr_tp1 - tp1) > 1e-8 if tp1 > 0 else False
+                    if sl_changed or tp_changed:
+                        logger.info(
+                            "[ATR] {} SL: {:.5f}→{:.5f} TP1: {:.5f}→{:.5f} (tighter wins)",
+                            symbol, sl, atr_sl, tp1, atr_tp1,
+                        )
+                    sl = atr_sl
+                    tp1 = atr_tp1
+                    tp2 = atr_tp2
+                except Exception as exc:
+                    logger.debug("[atr-levels] EntryEngine ATR calc failed: {}", exc)
+
+            # ── Orchestrator round table — graded sizing ─────────────
+            orch_mult = 1.0
+            if ctx is not None and ctx.orchestrator is not None:
+                try:
+                    from brain.orchestrator import TradeProposal
+                    wm = self._wm_store.get(symbol)
+                    structure = getattr(wm, "structure", {}) if wm else {}
+                    h4_s = structure.get("H4", {})
+
+                    proposal = TradeProposal(
+                        pair=symbol,
+                        direction="LONG" if direction.upper() in ("BUY", "LONG") else "SHORT",
+                        scan_score=float(conviction),
+                        de_conviction=de_conviction if de_conviction > 0 else None,
+                        de_margin=None,
+                        tf_alignment=h4_s.get("confidence", None),
+                    )
+                    verdict = ctx.orchestrator.evaluate(proposal)
+                    if verdict.vetoed:
+                        logger.warning(
+                            "EVENT-DRIVEN ENTRY VETOED | {} — Orchestrator: {}",
+                            symbol, verdict.veto_reason,
+                        )
+                        return
+                    orch_mult = verdict.size_multiplier
+                    if orch_mult < 1.0:
+                        logger.info(
+                            "[ORCH] {} size×{:.2f} — {}",
+                            symbol, orch_mult, verdict.summary()[:120],
+                        )
+                except Exception as exc:
+                    logger.debug("[orchestrator] Orchestrator eval failed: {}", exc)
+
+            # ── Volatility + density sizing adjustments ──────────────
+            vol_mult = 1.0
+            density_mult = 1.0
+            if ctx is not None and ctx.system_volatility_monitor is not None:
+                try:
+                    vol_mult = ctx.system_volatility_monitor.get_size_multiplier()
+                except Exception:
+                    pass
+            if ctx is not None and ctx.opportunity_density_tracker is not None:
+                try:
+                    density_mult = ctx.opportunity_density_tracker.get_size_multiplier()
+                except Exception:
+                    pass
+
+            # ── Execution quality multiplier ─────────────────────────
+            exec_mult = 1.0
+            if ctx is not None and ctx.execution_monitor is not None:
+                try:
+                    exec_mult = ctx.execution_monitor.get_size_multiplier(symbol)
+                except Exception:
+                    pass
+
             # ── Position sizing ──────────────────────────────────────
             risk_pct = self._config.risk.risk_per_trade_pct / 100.0
             pip_size = self._safe_pip_size(symbol)
@@ -1095,11 +1236,18 @@ class EventDrivenSystem:
                 symbol=symbol,
             )
 
-            if de_size_mult < 1.0 and de_size_mult > 0:
+            combined_mult = de_size_mult * orch_mult * vol_mult * density_mult * exec_mult
+            combined_mult = max(0.15, min(1.0, combined_mult))
+            if combined_mult < 1.0:
                 if size_result.lots > 0:
-                    size_result.lots = round(max(0.01, size_result.lots * de_size_mult), 2)
+                    size_result.lots = round(max(0.01, size_result.lots * combined_mult), 2)
                 if size_result.stake_usd > 0:
-                    size_result.stake_usd = round(max(0.35, size_result.stake_usd * de_size_mult), 2)
+                    size_result.stake_usd = round(max(0.35, size_result.stake_usd * combined_mult), 2)
+                logger.info(
+                    "[SIZING] {} final×{:.2f} (DE×{:.2f} ORCH×{:.2f} VOL×{:.2f} DEN×{:.2f} EXEC×{:.2f}) → {:.2f} lots / ${:.2f} stake",
+                    symbol, combined_mult, de_size_mult, orch_mult, vol_mult,
+                    density_mult, exec_mult, size_result.lots, size_result.stake_usd,
+                )
 
             if size_result.lots <= 0 and size_result.stake_usd <= 0:
                 logger.warning(
@@ -1109,6 +1257,7 @@ class EventDrivenSystem:
                 return
 
             # ── Execute order ────────────────────────────────────────
+            order_ts = _time.time()
             result = self._pm.execute_entry(
                 symbol=symbol,
                 direction=direction,
@@ -1116,7 +1265,7 @@ class EventDrivenSystem:
                 sl=sl,
                 tp=tp1,
                 stake_usd=size_result.stake_usd if pctx.uses_stake else None,
-                comment=f"ED|{conviction}",
+                comment=f"ED|{conviction}|O{orch_mult:.2f}",
             )
 
             if result.success:
@@ -1124,7 +1273,8 @@ class EventDrivenSystem:
                     "EVENT-DRIVEN ORDER PLACED | {} {} {:.2f} lots ticket={}",
                     symbol, direction, result.lots, result.order_id,
                 )
-                self._on_order_filled(symbol, direction, result, balance)
+                self._on_order_filled(symbol, direction, result, balance,
+                                      entry_price, order_ts)
             else:
                 err = getattr(result, "error", "unknown")
                 logger.warning(
@@ -1143,8 +1293,10 @@ class EventDrivenSystem:
         direction: str,
         result: Any,
         balance: float,
+        expected_price: float = 0.0,
+        order_ts: float = 0.0,
     ) -> None:
-        """Post-fill bookkeeping: update account risk balance."""
+        """Post-fill bookkeeping: update account risk balance + execution quality."""
         ctx = self._ctx
         if ctx is None:
             return
@@ -1154,6 +1306,32 @@ class EventDrivenSystem:
                 ctx.account_risk.update_balance(acct, balance)
         except Exception as exc:
             logger.debug("[post-fill] account risk update failed: {}", exc)
+
+        if ctx.execution_monitor is not None and expected_price > 0:
+            try:
+                fill_price = getattr(result, "fill_price", getattr(result, "entry_price", 0.0)) or 0.0
+                if fill_price <= 0:
+                    fill_price = expected_price
+                now_dt = datetime.now(timezone.utc)
+                from datetime import timedelta
+                latency_s = _time.time() - order_ts if order_ts > 0 else 0.0
+                signal_dt = now_dt - timedelta(seconds=latency_s)
+                spread = self._get_spread_pips(symbol) * self._safe_pip_size(symbol)
+                ctx.execution_monitor.record_execution(
+                    requested_price=expected_price,
+                    filled_price=fill_price,
+                    signal_timestamp=signal_dt,
+                    fill_timestamp=now_dt,
+                    spread=spread,
+                    pip_size=self._safe_pip_size(symbol),
+                    symbol=symbol,
+                )
+                logger.debug(
+                    "[exec-mon] {} fill recorded: expected={:.5f} filled={:.5f} latency={:.1f}s",
+                    symbol, expected_price, fill_price, latency_s,
+                )
+            except Exception as exc:
+                logger.debug("[post-fill] ExecutionMonitor record failed: {}", exc)
 
     def _on_trade_closed(
         self,
