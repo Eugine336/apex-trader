@@ -73,7 +73,11 @@ from adaptive.gate_tuner import GateTuner
 from brain.swap_model import load_swap_rates, estimate_swap
 from platforms.base_connector import OrderResult, CloseResult, PositionInfo
 from platforms.deriv.deriv_connector import DerivConnector
-from platforms.order_idempotency import build_order_comment, generate_idempotency_key
+from platforms.order_idempotency import (
+    build_order_comment,
+    candidate_idempotency_keys,
+    generate_idempotency_key,
+)
 from platforms.platform_manager import PlatformManager
 from platform_context import PlatformContext, build_context_for_symbol
 from risk.portfolio_risk_state import (
@@ -4028,6 +4032,27 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 )
                 return False
 
+        # Boundary-safe dedup: the idem key buckets time in 5-min windows, so a
+        # retry that rolls across a bucket edge would otherwise get a NEW key.
+        # Also probe the previous bucket's key at the broker; if that intent
+        # already filled, skip rather than risk a duplicate order.
+        if self.position_store and self.platforms:
+            try:
+                prev_key = candidate_idempotency_keys(
+                    pair, direction, adjusted_lots, pre_exec_ts,
+                )[1]
+                if prev_key != idem_key:
+                    existing = self.platforms.find_order_by_idem_key(prev_key)
+                    if existing:
+                        logger.warning(
+                            "[entry] previous-bucket idem key {} already filled ({}) "
+                            "for {} {} — skipping to avoid duplicate across bucket boundary",
+                            prev_key, existing, pair, direction,
+                        )
+                        return False
+            except Exception as exc:
+                logger.debug("[entry] previous-bucket idem check skipped: {}", exc)
+
         if self.position_store:
             self.position_store.record_in_flight(idem_key, pair, direction, adjusted_lots)
 
@@ -4590,6 +4615,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # ── STEP 1.5: Margin-level guardian ──────────────────────────────
         if self.config.risk.margin_guardian_enabled and self.managed_positions:
             self._margin_guardian_check()
+            # Deriv has no MT5 margin level — guard committed stake exposure too.
+            self._deriv_exposure_guardian_check()
 
         # ── STEP 2: Detect broker-side closes (confirmed platforms only) ──
         # A managed position is removed ONLY when its own platform

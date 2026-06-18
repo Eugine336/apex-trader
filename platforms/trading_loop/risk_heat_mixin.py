@@ -144,6 +144,16 @@ class RiskHeatMarginMixin:
         live_heat = compute_live_heat_pct(position_risks, equity)
         self._current_portfolio_heat = live_heat
 
+        # Pull the RiskEngine's internal balance back to broker truth each cycle
+        # so sizing/PnL-percent never drift on commissions, swaps, or manual
+        # trades. total_balance() is the pooled portfolio equity across silos.
+        try:
+            total_eq = self._account_risk.total_balance()
+            if total_eq > 0:
+                self.risk_engine.reconcile_balance(total_eq)
+        except Exception as exc:
+            logger.debug("[risk] balance reconcile skipped: {}", exc)
+
         if self._portfolio_risk_sm is None:
             return
 
@@ -702,6 +712,59 @@ class RiskHeatMarginMixin:
                 "⚠️ MARGIN WARNING — margin {:.0f}% < warn level {:.0f}%",
                 ml, risk_cfg.margin_warn_pct,
             )
+
+    def _deriv_exposure_guardian_check(self) -> None:
+        """Margin-style safety for Deriv (which reports no MT5 margin level).
+
+        Deriv multiplier-contract stake IS the max loss, so total committed
+        stake ÷ account balance is a meaningful exposure ratio. Grouped per
+        account silo: warn past the warn threshold, flatten past the flatten
+        threshold (broker-confirmed; a position the broker fails to close is
+        retained for retry by _flatten_account).
+        """
+        try:
+            deriv = [
+                (oid, pos) for oid, pos in self.managed_positions.items()
+                if getattr(pos, "platform", "") == "deriv"
+            ]
+        except Exception:
+            return
+        if not deriv:
+            return
+        risk_cfg = self.config.risk
+        warn_pct = float(getattr(risk_cfg, "deriv_exposure_warn_pct", 60.0))
+        flatten_pct = float(getattr(risk_cfg, "deriv_exposure_flatten_pct", 90.0))
+
+        stake_by_acct: dict[str, float] = {}
+        for _oid, pos in deriv:
+            try:
+                acct = self._account_key(pos.symbol)
+            except Exception:
+                continue
+            stake_by_acct[acct] = stake_by_acct.get(acct, 0.0) + float(
+                getattr(pos, "stake_usd", 0.0) or 0.0
+            )
+
+        for acct, total_stake in stake_by_acct.items():
+            if total_stake <= 0:
+                continue
+            bal = self._account_risk.balance(acct)
+            if bal <= 0:
+                continue
+            exposure_pct = total_stake / bal * 100.0
+            if exposure_pct >= flatten_pct:
+                logger.critical(
+                    "🚨 DERIV EXPOSURE — '{}' committed stake {:.0f}% of balance "
+                    "(${:.2f}/${:.2f}) ≥ flatten {:.0f}% — flattening Deriv positions",
+                    acct, exposure_pct, total_stake, bal, flatten_pct,
+                )
+                self._flatten_account(acct, "DERIV_EXPOSURE_FLATTEN")
+            elif exposure_pct >= warn_pct:
+                logger.warning(
+                    "⚠️ DERIV EXPOSURE — '{}' committed stake {:.0f}% of balance "
+                    "(${:.2f}/${:.2f}) ≥ warn {:.0f}%",
+                    acct, exposure_pct, total_stake, bal, warn_pct,
+                )
 
     def _emergency_flatten_all(self) -> None:
         closed = 0

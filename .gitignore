@@ -6,6 +6,7 @@
 .env.production
 *.key
 secrets.json
+access-token.py
 
 # Python
 __pycache__/

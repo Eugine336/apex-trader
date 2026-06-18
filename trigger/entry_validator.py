@@ -157,6 +157,11 @@ class EntryValidator:
             return True, "24/7 instrument — market always open"
 
         if not _MT5_AVAILABLE or mt5 is None:
+            # If a live MT5 connector is wired we EXPECT MT5 to be available;
+            # its absence means we cannot confirm the market is open → fail
+            # closed. Only skip the check when no connector is wired (tests/dev).
+            if self._mt5_connector is not None:
+                return False, "MT5 unavailable but connector wired — fail-closed"
             return True, "MT5 not available — market hours check skipped"
 
         # Resolve broker symbol name via connector if injected, else use raw pair
@@ -172,9 +177,10 @@ class EntryValidator:
             mt5.symbol_select(mapped, True)
             info = mt5.symbol_info(mapped)
             if info is None:
-                # Symbol not found — don't block, let broker reject it properly
-                logger.warning(f"[{pair}] symbol_info returned None — skipping market hours check")
-                return True, f"Market hours unknown for {pair} — proceeding"
+                # Cannot confirm tradeability — fail closed rather than letting
+                # an order through to a possibly-closed market.
+                logger.warning(f"[{pair}] symbol_info returned None — fail-closed on market hours")
+                return False, f"Market hours unknown for {pair} (symbol_info None) — fail-closed"
 
             mode = info.trade_mode
 
@@ -191,8 +197,8 @@ class EntryValidator:
                 return False, f"Market closed — trading disabled ({pair}, trade_mode={mode})"
 
         except Exception as exc:
-            logger.warning(f"[{pair}] Market hours check error: {exc} — proceeding")
-            return True, f"Market hours check failed ({exc}) — proceeding"
+            logger.warning(f"[{pair}] Market hours check error: {exc} — fail-closed")
+            return False, f"Market hours check failed ({exc}) — fail-closed"
 
     def check_spread(
         self, pair: str, current_spread_pips: float,

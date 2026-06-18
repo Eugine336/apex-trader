@@ -49,6 +49,33 @@ class PositionSizer:
         self.deriv_min_stake_usd = deriv_min_stake_usd
         self.max_risk_pct_per_trade = max_risk_pct_per_trade
 
+    def _sanitize_risk_pct(self, risk_pct: float, label: str = "") -> float:
+        """Validate that ``risk_pct`` is a fraction (0-1), not a percentage.
+
+        Returns a safe fraction, clamped to the hard per-trade cap. A value of
+        0/negative returns 0.0 (skip). A value > 1.0 is almost certainly a
+        percentage passed by mistake (e.g. 2.0 meaning 200%) and is clamped to
+        the cap rather than silently risking the whole account.
+        """
+        cap = self.max_risk_pct_per_trade / 100.0
+        tag = label or "trade"
+        if risk_pct is None or risk_pct <= 0:
+            logger.warning("[PositionSizer] {} risk_pct {!r} ≤ 0 — skipping (invalid)", tag, risk_pct)
+            return 0.0
+        if risk_pct > 1.0:
+            logger.error(
+                "[PositionSizer] {} risk_pct {} > 1.0 — looks like a percentage, "
+                "not a fraction; clamping to cap {:.4f}", tag, risk_pct, cap,
+            )
+            return cap
+        if risk_pct > cap:
+            logger.warning(
+                "[PositionSizer] {} risk_pct {:.4f} exceeds per-trade cap {:.4f} — clamping",
+                tag, risk_pct, cap,
+            )
+            return cap
+        return risk_pct
+
     # ── MT5 lot-based sizing ─────────────────────────────────────────────
 
     def calculate(
@@ -75,6 +102,7 @@ class PositionSizer:
                 stop_loss=stop_loss,
             )
 
+        risk_pct = self._sanitize_risk_pct(risk_pct, symbol)
         risk_amount = account_balance * risk_pct
         if pip_size <= 0 or pip_value_per_lot <= 0:
             logger.warning(
@@ -143,6 +171,7 @@ class PositionSizer:
         On Deriv the stake IS the max loss — stake = risk_amount.
         The multiplier controls leverage (profit potential), not loss size.
         """
+        risk_pct = self._sanitize_risk_pct(risk_pct, "deriv")
         risk_amount = account_balance * risk_pct
         risk_distance = abs(entry_price - stop_loss)
         stake = round(risk_amount, 2)

@@ -48,6 +48,30 @@ def generate_idempotency_key(
     return digest
 
 
+def candidate_idempotency_keys(
+    symbol: str,
+    direction: str,
+    lots: float,
+    signal_time: datetime | None = None,
+) -> list[str]:
+    """Return the keys for the current AND previous time bucket.
+
+    A fixed 5-minute bucket means an intent submitted at 4:59 and retried at
+    5:01 would otherwise hash to different keys, defeating dedup at the bucket
+    boundary. Checking both buckets closes that gap: the order is still placed
+    with the current key, but a retry that rolled over can still find the
+    prior fill. Newest bucket first.
+    """
+    ts = signal_time or datetime.now(timezone.utc)
+    epoch = int(ts.timestamp())
+    bucket = epoch // _KEY_WINDOW_SECONDS
+    keys: list[str] = []
+    for b in (bucket, bucket - 1):
+        raw = f"{symbol}|{direction.upper()}|{lots:.4f}|{b}"
+        keys.append(hashlib.sha256(raw.encode("utf-8")).hexdigest()[:12])
+    return keys
+
+
 def build_order_comment(
     prefix: str,
     idem_key: str,

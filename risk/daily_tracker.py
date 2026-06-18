@@ -180,3 +180,40 @@ class PnLTracker:
             "period": month_key,
             "pnl": round(self._monthly.get(month_key, 0.0), 2),
         }
+
+    # ── Persistence ──────────────────────────────────────────────────────
+
+    def to_state(self) -> dict:
+        """Serialise daily/weekly/monthly tallies so a mid-day restart does NOT
+        reset daily-loss tracking to zero (which would bypass the daily cap)."""
+        return {
+            "daily": dict(self._daily),
+            "weekly": dict(self._weekly),
+            "monthly": dict(self._monthly),
+            "trades_today": dict(self._trades_today),
+            "wins_today": dict(self._wins_today),
+            "losses_today": dict(self._losses_today),
+            "best_today": dict(self._best_today),
+            "worst_today": dict(self._worst_today),
+            "streak": self._streak,
+        }
+
+    def restore_state(self, state: dict) -> None:
+        """Restore tallies from a persisted payload. Keys are date-bucketed, so
+        a genuinely new day naturally reads 0 while a same-day restart resumes
+        the running total."""
+        if not state:
+            return
+        try:
+            self._daily = {str(k): float(v) for k, v in (state.get("daily") or {}).items()}
+            self._weekly = {str(k): float(v) for k, v in (state.get("weekly") or {}).items()}
+            self._monthly = {str(k): float(v) for k, v in (state.get("monthly") or {}).items()}
+            self._trades_today = {str(k): int(v) for k, v in (state.get("trades_today") or {}).items()}
+            self._wins_today = {str(k): int(v) for k, v in (state.get("wins_today") or {}).items()}
+            self._losses_today = {str(k): int(v) for k, v in (state.get("losses_today") or {}).items()}
+            self._best_today = {str(k): float(v) for k, v in (state.get("best_today") or {}).items()}
+            self._worst_today = {str(k): float(v) for k, v in (state.get("worst_today") or {}).items()}
+            self._streak = int(state.get("streak", 0) or 0)
+        except (TypeError, ValueError):
+            # Corrupt payload — keep the fresh in-memory tallies rather than crash.
+            return

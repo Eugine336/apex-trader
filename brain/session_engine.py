@@ -65,6 +65,58 @@ class SessionEngine:
         {"start": time(20, 0), "end": time(23, 59), "reason": "End of NY, low liquidity pre-Asia"},
     ]
 
+    # Canonical session windows in their EXCHANGE-LOCAL time + IANA tz. The
+    # UTC SESSIONS table above is the DST-unaware fallback; when zoneinfo is
+    # available we derive the real UTC boundaries per date so London/NY shift
+    # correctly across DST changes (and Sydney's southern-hemisphere DST too).
+    _SESSION_LOCAL = {
+        "SYDNEY":   {"tz": "Australia/Sydney", "open": time(7, 0),  "close": time(16, 0)},
+        "TOKYO":    {"tz": "Asia/Tokyo",       "open": time(9, 0),  "close": time(18, 0)},
+        "LONDON":   {"tz": "Europe/London",    "open": time(8, 0),  "close": time(17, 0)},
+        "NEW_YORK": {"tz": "America/New_York", "open": time(8, 0),  "close": time(17, 0)},
+    }
+
+    def _resolve_sessions(self, utc_now: datetime) -> tuple[dict, dict]:
+        """Return (sessions, overlaps) with DST-correct UTC boundaries.
+
+        Falls back to the static UTC tables if zoneinfo / tz data is missing,
+        so this never adds a hard dependency or raises in minimal environments.
+        """
+        try:
+            from zoneinfo import ZoneInfo  # noqa: PLC0415 — optional, std-lib 3.9+
+        except Exception:
+            return self.SESSIONS, self.OVERLAP_SESSIONS
+
+        on_date = utc_now.date()
+        sessions: dict = {}
+        for name, base in self.SESSIONS.items():
+            loc = self._SESSION_LOCAL.get(name)
+            if not loc:
+                sessions[name] = base
+                continue
+            try:
+                tz = ZoneInfo(loc["tz"])
+                open_utc = datetime.combine(on_date, loc["open"], tz).astimezone(timezone.utc).time()
+                close_utc = datetime.combine(on_date, loc["close"], tz).astimezone(timezone.utc).time()
+                sessions[name] = {"open": open_utc, "close": close_utc, "pairs": base["pairs"]}
+            except Exception:
+                sessions[name] = base
+
+        # Overlaps derived from the DST-adjusted sessions.
+        overlaps = {
+            "LONDON_TOKYO": {
+                "start": sessions["LONDON"]["open"],
+                "end": sessions["TOKYO"]["close"],
+                "quality": "MEDIUM",
+            },
+            "LONDON_NY": {
+                "start": sessions["NEW_YORK"]["open"],
+                "end": sessions["LONDON"]["close"],
+                "quality": "EXCELLENT",
+            },
+        }
+        return sessions, overlaps
+
     def get_status(self, utc_now: Optional[datetime] = None) -> SessionStatus:
         """Get current session status."""
         if utc_now is None:
@@ -72,6 +124,9 @@ class SessionEngine:
 
         current_time = utc_now.time()
         weekday = utc_now.weekday()  # 0=Monday, 6=Sunday
+
+        # DST-adjusted session/overlap boundaries for this date.
+        sessions, overlaps = self._resolve_sessions(utc_now)
 
         # Weekend check — FX closed Sat 00:00 UTC through Sun 21:59 UTC.
         # Sunday >= 22:00 UTC the market is live — do NOT treat as weekend.
@@ -90,20 +145,20 @@ class SessionEngine:
             )
 
         # Check for overlap first (highest priority)
-        for name, overlap in self.OVERLAP_SESSIONS.items():
+        for name, overlap in overlaps.items():
             if self._time_in_range(current_time, overlap["start"], overlap["end"]):
                 open_mins = self._minutes_since(current_time, overlap["start"])
                 return SessionStatus(
                     current_session=f"OVERLAP_{name}",
                     is_tradeable=True,
                     liquidity="HIGH",
-                    best_pairs=self.SESSIONS["LONDON"]["pairs"] + self.SESSIONS["NEW_YORK"]["pairs"],
+                    best_pairs=sessions["LONDON"]["pairs"] + sessions["NEW_YORK"]["pairs"],
                     minutes_to_next_session=self._minutes_until(current_time, overlap["end"]),
                     session_open_minutes=open_mins,
                 )
 
         # Check individual sessions
-        for name, session in self.SESSIONS.items():
+        for name, session in sessions.items():
             if self._time_in_range(current_time, session["open"], session["close"]):
                 open_mins = self._minutes_since(current_time, session["open"])
                 liquidity = "HIGH" if name in ["LONDON", "NEW_YORK"] else "MEDIUM"

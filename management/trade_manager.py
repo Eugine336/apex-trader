@@ -796,7 +796,16 @@ class TradeManager:
         stall_limit = stall_limits.get(trade.entry_timeframe, 75)
         now = bar_time or datetime.now(timezone.utc)
         stall_minutes = (now - trade.entry_time).total_seconds() / 60
-        if stall_minutes > stall_limit and abs(trade.pnl_pips) < 5.0:
+        # Instrument-aware "flat" threshold: a fixed 5-pip band is meaningless
+        # across instruments (5 pips on Gold ≈ $0.05; on an index it's noise).
+        # Scale it to a fraction of THIS trade's own stop distance so the band
+        # is proportional to the instrument's volatility/pricing.
+        risk_pips = (
+            abs(trade.entry_price - trade.original_stop_loss) / trade.pip_size
+            if trade.pip_size > 0 else 0.0
+        )
+        flat_threshold = 0.15 * risk_pips if risk_pips > 0 else 5.0
+        if stall_minutes > stall_limit and abs(trade.pnl_pips) < flat_threshold:
             self.close_trade(
                 trade,
                 f"Stall exit — {stall_minutes:.0f}min (limit {stall_limit}), {trade.pnl_pips:.1f}pip",
