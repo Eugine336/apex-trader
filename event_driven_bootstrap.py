@@ -561,6 +561,8 @@ class EventDrivenSystem:
             pip_size_lookup=self._safe_pip_size,
             on_entry_decision=self._on_entry_decision,
             is_instrument_known=lambda s: s in INSTRUMENT_REGISTRY,
+            is_session_active=self._check_session_active,
+            is_news_clear=self._check_news_clear,
             get_spread_pips=self._get_spread_pips,
             get_m1_dataframe=self._get_m1_dataframe,
         )
@@ -798,6 +800,30 @@ class EventDrivenSystem:
         except Exception:
             return None
 
+    def _check_session_active(self, symbol: str) -> bool:
+        """SessionEngine callback for EntryOrchestrator gate."""
+        ctx = self._ctx
+        if ctx is None or ctx.session_engine is None:
+            return True
+        try:
+            status = ctx.session_engine.get_status()
+            return status.is_tradeable
+        except Exception as exc:
+            logger.debug("[session-gate] SessionEngine check failed: {}", exc)
+            return True
+
+    def _check_news_clear(self, symbol: str) -> bool:
+        """NewsGuard callback for EntryOrchestrator gate."""
+        ctx = self._ctx
+        if ctx is None or ctx.news_guard is None:
+            return True
+        try:
+            news_status = ctx.news_guard.check([symbol])
+            return news_status.is_clear
+        except Exception as exc:
+            logger.debug("[news-gate] NewsGuard check failed: {}", exc)
+            return True
+
     def _on_entry_decision(self, decision: dict[str, Any]) -> None:
         """Handle entry decisions from EntryOrchestrator.
 
@@ -954,6 +980,101 @@ class EventDrivenSystem:
                         )
                         return
 
+            # ── Gate 6: DecisionEngine — strategic conviction scoring ─
+            de_size_mult = 1.0
+            de_conviction = 0.0
+            if ctx is not None and ctx.decision_engine is not None and ctx.situation_engine is not None:
+                try:
+                    from decision.context import EntryContext as DEContext
+                    wm = self._wm_store.get(symbol)
+                    structure = getattr(wm, "structure", {}) if wm else {}
+                    d1_s = structure.get("D1", {})
+                    h4_s = structure.get("H4", {})
+                    h1_s = structure.get("H1", {})
+
+                    entry_ctx = DEContext(
+                        symbol=symbol,
+                        direction="LONG" if direction.upper() in ("BUY", "LONG") else "SHORT",
+                        scan_score=conviction,
+                        entry_type=decision.get("zone_type", ""),
+                        entry_price=entry_price,
+                        stop_loss=sl,
+                        tp1=tp1,
+                        tp2=tp2,
+                        risk_reward_2=abs(tp2 - entry_price) / max(abs(entry_price - sl), 1e-8) if sl else 0.0,
+                        risk_pips=abs(entry_price - sl) / self._safe_pip_size(symbol) if sl else 0.0,
+                        d1_trend=d1_s.get("trend", "UNKNOWN"),
+                        d1_confidence=d1_s.get("confidence", 0.0),
+                        h4_trend=h4_s.get("trend", "UNKNOWN"),
+                        h4_confidence=h4_s.get("confidence", 0.0),
+                        h1_trend=h1_s.get("trend", "UNKNOWN"),
+                        h1_confidence=h1_s.get("confidence", 0.0),
+                        m1_aligned_count=decision.get("m1_aligned", 3),
+                        m1_event=decision.get("m1_event", ""),
+                        open_trade_count=len(open_positions),
+                        max_open_trades=self._config.risk.max_open_trades,
+                    )
+                    sa = ctx.situation_engine.assess_entry(entry_ctx)
+                    de_result = ctx.decision_engine.decide_entry(entry_ctx, sa)
+
+                    if not de_result.should_enter:
+                        logger.info(
+                            "EVENT-DRIVEN ENTRY SKIPPED | {} — DecisionEngine: {}",
+                            symbol, de_result.reason[:200],
+                        )
+                        if ctx.decision_journal is not None:
+                            try:
+                                ctx.decision_journal.log_entry(entry_ctx, sa, de_result)
+                            except Exception:
+                                pass
+                        return
+
+                    de_size_mult = de_result.size_multiplier
+                    de_conviction = de_result.conviction
+                    logger.info(
+                        "[DE] {} {} ENTER — conviction={:.2f} size×{:.2f} | {}",
+                        symbol, direction, de_conviction, de_size_mult,
+                        de_result.reason[:120],
+                    )
+
+                    # Gate 6b: RiskGovernor — graded review
+                    if ctx.risk_governor is not None:
+                        gov_result = ctx.risk_governor.review_entry(de_result, entry_ctx, sa)
+                        if not gov_result.should_enter:
+                            logger.info(
+                                "EVENT-DRIVEN ENTRY VETOED | {} — RiskGovernor: {}",
+                                symbol, gov_result.reason[:200],
+                            )
+                            if ctx.decision_journal is not None:
+                                try:
+                                    ctx.decision_journal.log_entry(
+                                        entry_ctx, sa, gov_result, governor_changed=True,
+                                    )
+                                except Exception:
+                                    pass
+                            return
+                        if gov_result is not de_result:
+                            de_size_mult = gov_result.size_multiplier
+                            risk_mult = getattr(gov_result, "risk_multiplier", 1.0)
+                            if risk_mult < 1.0:
+                                de_size_mult = round(de_size_mult * risk_mult, 3)
+                            logger.info(
+                                "[GOVERNOR] {} {} — risk×{:.2f} final_size×{:.2f}",
+                                symbol, direction, risk_mult, de_size_mult,
+                            )
+
+                    if ctx.decision_journal is not None:
+                        try:
+                            ctx.decision_journal.log_entry(
+                                entry_ctx, sa, gov_result if ctx.risk_governor else de_result,
+                                governor_changed=(ctx.risk_governor is not None and gov_result is not de_result),
+                            )
+                        except Exception:
+                            pass
+
+                except Exception as exc:
+                    logger.debug("[entry-decision] DecisionEngine check failed: {}", exc)
+
             # ── Position sizing ──────────────────────────────────────
             risk_pct = self._config.risk.risk_per_trade_pct / 100.0
             pip_size = self._safe_pip_size(symbol)
@@ -973,6 +1094,12 @@ class EventDrivenSystem:
                 context=pctx,
                 symbol=symbol,
             )
+
+            if de_size_mult < 1.0 and de_size_mult > 0:
+                if size_result.lots > 0:
+                    size_result.lots = round(max(0.01, size_result.lots * de_size_mult), 2)
+                if size_result.stake_usd > 0:
+                    size_result.stake_usd = round(max(0.35, size_result.stake_usd * de_size_mult), 2)
 
             if size_result.lots <= 0 and size_result.stake_usd <= 0:
                 logger.warning(
