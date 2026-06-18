@@ -86,6 +86,12 @@ _MAX_RECONNECT_ATTEMPTS = 10
 _PING_INTERVAL = 20       # send keepalive ping every 20 s
 _PING_TIMEOUT  = 10       # fail if pong not received within 10 s
 
+# Minimum spacing between ``ticks_history`` requests — Deriv rate-limits candle/
+# tick history to ~3 req/s. The spacing is enforced by reserving a send slot
+# (see _reserve_history_slot) so the wait happens OUTSIDE any lock and unrelated
+# Deriv calls (price, balance, buy) are never serialised behind a history wait.
+_HISTORY_MIN_INTERVAL = 0.5
+
 # Deriv's `balance` endpoint is strictly rate-limited. Coalesce bursts of
 # balance/account-info requests within this TTL into a single API call, and on
 # a rate-limit (or other) error serve the last good value up to the max-stale
@@ -196,6 +202,12 @@ class DerivConnector(BaseConnector):
         ).result(timeout=5)
         self._thread_lock = threading.Lock()
         self._last_history_request: float = 0.0
+        # ticks_history rate-limit gate. ``_next_history_at`` is the monotonic
+        # time the next history send is permitted; threads reserve spaced slots
+        # under ``_history_lock`` then sleep OUTSIDE the lock, so a history wait
+        # never blocks unrelated Deriv calls.
+        self._history_lock = threading.Lock()
+        self._next_history_at: float = 0.0
         # Balance/account-info cache (see _BALANCE_CACHE_TTL). A dedicated lock
         # serialises balance fetches so a burst collapses to one API call.
         self._balance_lock = threading.Lock()
@@ -716,16 +728,35 @@ class DerivConnector(BaseConnector):
                     else:
                         raise
 
+    def _reserve_history_slot(self) -> float:
+        """Reserve the next ``ticks_history`` send slot.
+
+        Returns the number of seconds the caller must wait (sleep) before
+        sending so that consecutive history requests stay at least
+        ``_HISTORY_MIN_INTERVAL`` apart. Thread-safe: concurrent callers each
+        reserve a distinct, monotonically-spaced slot, so the per-second rate
+        limit is preserved even under contention. The lock is held only for the
+        O(1) reservation arithmetic — the actual wait happens in the caller,
+        outside any lock.
+        """
+        with self._history_lock:
+            now = _time.monotonic()
+            earliest = self._next_history_at if self._next_history_at > now else now
+            self._next_history_at = earliest + _HISTORY_MIN_INTERVAL
+            self._last_history_request = earliest
+            return earliest - now
+
     def _sync_send(self, payload: dict) -> dict:
-        with self._thread_lock:
-            if "ticks_history" in payload:
-                elapsed = _time.monotonic() - self._last_history_request
-                # 0.5s between candle/tick requests — Deriv rate limit is ~3 req/s
-                if elapsed < 0.5:
-                    _time.sleep(0.5 - elapsed)
-                self._last_history_request = _time.monotonic()
-            future = asyncio.run_coroutine_threadsafe(self._send(payload), self._loop)
-            return future.result(timeout=_REQUEST_TIMEOUT + 5)
+        # Rate-limit history requests by reserving a spaced slot and sleeping
+        # BEFORE submitting — never while holding a lock — so price/balance/buy
+        # calls are not serialised behind a history wait. The asyncio _send
+        # coroutine still serialises actual WS frame send/recv via self._lock.
+        if "ticks_history" in payload:
+            wait = self._reserve_history_slot()
+            if wait > 0:
+                _time.sleep(wait)
+        future = asyncio.run_coroutine_threadsafe(self._send(payload), self._loop)
+        return future.result(timeout=_REQUEST_TIMEOUT + 5)
 
     # ── Account ──────────────────────────────────────────────────────────
 

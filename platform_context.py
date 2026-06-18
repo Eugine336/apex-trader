@@ -113,6 +113,34 @@ def build_context_for_symbol(
     broker:           Human-readable broker identifier (e.g. "icmarkets")
     typical_spreads:  Override per-symbol spread baselines for this broker
     """
+    # Fast path: the default call form (symbol only) is deterministic for the
+    # process lifetime — the registry and platform mapping never change — and
+    # PlatformContext is frozen/immutable, so a cached instance can be shared
+    # safely. This removes the redundant registry lookup + object construction
+    # on the hot path, where it is called per open position per cycle across
+    # many call sites. Calls that override broker/typical_spreads bypass the
+    # cache and build fresh.
+    use_cache = not broker and not typical_spreads
+    if use_cache:
+        key = symbol.upper()
+        cached = _CONTEXT_CACHE.get(key)
+        if cached is not None:
+            return cached
+
+    ctx = _build_context_for_symbol(symbol, broker, typical_spreads)
+    if use_cache:
+        _CONTEXT_CACHE[symbol.upper()] = ctx
+    return ctx
+
+
+_CONTEXT_CACHE: dict[str, PlatformContext] = {}
+
+
+def _build_context_for_symbol(
+    symbol: str,
+    broker: str = "",
+    typical_spreads: Optional[dict[str, float]] = None,
+) -> PlatformContext:
     from config import INSTRUMENT_REGISTRY, Platform as Plt
 
     info = INSTRUMENT_REGISTRY.get(symbol.upper())

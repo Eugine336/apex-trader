@@ -45,6 +45,18 @@ from adaptive.tunable import TuningGuardMixin
 
 _DB_DIR = Path(__file__).parent.parent / "data"
 _DB_PATH = _DB_DIR / "signal_ledger.db"
+_ARCHIVE_DIR = _DB_DIR / "archive"
+
+# Cap the number of ungraded signals processed in a single grading cycle so the
+# scan loop never stalls on a large backlog. Remaining rows are picked up on
+# subsequent cycles.
+_GRADING_BATCH_LIMIT = 500
+
+# Rolling retention: graded signals older than this are archived to a JSONL file
+# (preserving the full history off the hot DB) and then deleted, keeping the
+# live ledger bounded. Retention runs at most once per _RETENTION_INTERVAL_S.
+_RETENTION_DAYS = 30
+_RETENTION_INTERVAL_S = 3600.0
 
 # Minimum signed move (in %) in the predicted direction for a signal to count as
 # directionally correct at the primary grading check.
@@ -172,6 +184,7 @@ class SignalLedger(TuningGuardMixin):
         self._trade_outcome_provider = trade_outcome_provider
         self._lock = threading.Lock()
         self._conn: Optional[sqlite3.Connection] = None
+        self._last_retention_ts: float = 0.0
         try:
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
         except Exception as exc:  # noqa: BLE001
@@ -266,6 +279,63 @@ class SignalLedger(TuningGuardMixin):
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[SignalLedger] record_signal failed: {}", exc)
                 return None
+
+    def record_signals(self, signals: List[SignalRecord]) -> int:
+        """Batch-record many freshly emitted signals in ONE transaction.
+
+        Equivalent to calling ``record_signal`` per item but issues a single
+        ``executemany`` + ``commit`` instead of two INSERTs and a commit per
+        signal — the per-cycle scan path emits dozens of votes, so this removes
+        the per-signal fsync that was stalling the loop. NEUTRAL/empty signals
+        are skipped. Returns the number of signals written.
+        """
+        if self._conn is None or not signals:
+            return 0
+        valid = [s for s in signals if s is not None and s.direction in ("LONG", "SHORT")]
+        if not valid:
+            return 0
+        ledger_rows = [
+            (
+                s.signal_id,
+                float(s.timestamp),
+                str(s.pair),
+                str(s.emitter),
+                str(s.direction),
+                float(s.strength or 0.0),
+                float(s.price_at_signal or 0.0),
+                json.dumps(s.context or {}, default=str),
+                1 if s.trade_opened else 0,
+                s.gate_blocked_by,
+                s.trade_id,
+            )
+            for s in valid
+        ]
+        now = time.time()
+        outcome_rows = [
+            (s.signal_id, float(s.price_at_signal or 0.0), json.dumps({}), 0, now)
+            for s in valid
+        ]
+        with self._lock:
+            try:
+                self._conn.executemany(
+                    """INSERT OR REPLACE INTO signal_ledger
+                       (signal_id, timestamp, pair, emitter, direction, strength,
+                        price_at_signal, context, trade_opened, gate_blocked_by,
+                        trade_id)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+                    ledger_rows,
+                )
+                self._conn.executemany(
+                    """INSERT OR IGNORE INTO signal_outcomes
+                       (signal_id, price_at_signal, check_delays, graded, updated_at)
+                       VALUES (?,?,?,?,?)""",
+                    outcome_rows,
+                )
+                self._conn.commit()
+                return len(valid)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[SignalLedger] record_signals batch failed: {}", exc)
+                return 0
 
     def record_gate_block(self, signal_id: str, gate_name: str) -> bool:
         """Mark a recorded signal as blocked by a named gate."""
@@ -406,7 +476,10 @@ class SignalLedger(TuningGuardMixin):
                 cur = self._conn.execute(
                     """SELECT s.signal_id FROM signal_ledger s
                        JOIN signal_outcomes o ON o.signal_id = s.signal_id
-                       WHERE o.graded = 0"""
+                       WHERE o.graded = 0
+                       ORDER BY s.timestamp ASC
+                       LIMIT ?""",
+                    (_GRADING_BATCH_LIMIT,),
                 )
                 ids = [r[0] for r in cur.fetchall()]
             except Exception as exc:  # noqa: BLE001
@@ -424,12 +497,96 @@ class SignalLedger(TuningGuardMixin):
                 if price is None:
                     continue
                 observed += 1
-                if self._apply_observation(sig, out, price):
+                # Defer per-row commits — one commit for the whole batch below.
+                if self._apply_observation(sig, out, price, commit=False):
                     graded += 1
-            return {"observed": observed, "graded": graded}
+            if observed:
+                try:
+                    self._conn.commit()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[SignalLedger] run_grading_cycle commit failed: {}", exc)
+        # Retention runs outside the grading transaction (its own lock scope).
+        self._maybe_run_retention()
+        return {"observed": observed, "graded": graded}
 
-    def _apply_observation(self, sig: dict, out: dict, price: Optional[float]) -> bool:
-        """Core grading step (caller holds the lock). Returns True if finalised."""
+    def _maybe_run_retention(self) -> None:
+        """Archive + delete graded signals older than the retention window.
+
+        Throttled to once per _RETENTION_INTERVAL_S. Old graded rows are written
+        to data/archive/signal_ledger_<date>.jsonl (full history preserved) and
+        then removed from the live DB so it stays bounded. Fully guarded.
+        """
+        if self._conn is None:
+            return
+        now = time.time()
+        if now - self._last_retention_ts < _RETENTION_INTERVAL_S:
+            return
+        self._last_retention_ts = now
+        cutoff = now - (_RETENTION_DAYS * 86400.0)
+        with self._lock:
+            try:
+                cur = self._conn.execute(
+                    """SELECT s.signal_id, s.timestamp, s.pair, s.emitter,
+                              s.direction, s.strength, s.price_at_signal,
+                              s.context, s.trade_opened, s.gate_blocked_by,
+                              s.trade_id, o.graded, o.direction_correct,
+                              o.price_at_check, o.max_favorable_move_pct,
+                              o.max_adverse_move_pct, o.graded_at, o.trade_outcome
+                       FROM signal_ledger s
+                       JOIN signal_outcomes o ON o.signal_id = s.signal_id
+                       WHERE o.graded = 1 AND s.timestamp < ?
+                       ORDER BY s.timestamp ASC""",
+                    (cutoff,),
+                )
+                cols = [d[0] for d in cur.description]
+                rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+                if not rows:
+                    return
+                if self._archive_rows(rows):
+                    ids = [(r["signal_id"],) for r in rows]
+                    self._conn.executemany(
+                        "DELETE FROM signal_outcomes WHERE signal_id=?", ids
+                    )
+                    self._conn.executemany(
+                        "DELETE FROM signal_ledger WHERE signal_id=?", ids
+                    )
+                    self._conn.commit()
+                    logger.info(
+                        "[SignalLedger] retention archived+pruned {} graded signals "
+                        "older than {}d", len(rows), _RETENTION_DAYS,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[SignalLedger] retention failed: {}", exc)
+
+    def _archive_rows(self, rows: List[dict]) -> bool:
+        """Append rows to a dated JSONL archive. Returns True on success.
+
+        Deletion only proceeds if archiving succeeded, so retention never loses
+        data on a write failure.
+        """
+        try:
+            _ARCHIVE_DIR.mkdir(parents=True, exist_ok=True)
+            from datetime import datetime, timezone
+
+            stamp = datetime.now(timezone.utc).strftime("%Y%m%d")
+            path = _ARCHIVE_DIR / f"signal_ledger_{stamp}.jsonl"
+            with open(path, "a", encoding="utf-8") as fh:
+                for r in rows:
+                    fh.write(json.dumps(r, default=str) + "\n")
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[SignalLedger] archive write failed, skipping prune: {}", exc)
+            return False
+
+    def _apply_observation(
+        self, sig: dict, out: dict, price: Optional[float], *, commit: bool = True
+    ) -> bool:
+        """Core grading step (caller holds the lock). Returns True if finalised.
+
+        When ``commit`` is False the UPDATE is staged on the connection but not
+        committed — the batch caller (run_grading_cycle) issues a single commit
+        for the whole cycle instead of one fsync per row.
+        """
         if price is None or price <= 0.0:
             return False
         now = time.time()
@@ -486,7 +643,8 @@ class SignalLedger(TuningGuardMixin):
                     sig["signal_id"],
                 ),
             )
-            self._conn.commit()
+            if commit:
+                self._conn.commit()
         except Exception as exc:  # noqa: BLE001
             logger.debug("[SignalLedger] _apply_observation update failed: {}", exc)
             return False

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import threading
 import numpy as np
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
@@ -307,7 +308,22 @@ class ShadowEngine:
         con.commit()
         con.close()
 
-    def _reload_open_trades(self):
+        # Persistent write connection reused across signals/trades. Opening a
+        # fresh sqlite3 connection per emitted signal (on the scan path) was a
+        # measurable hot-path cost; a single shared connection guarded by a lock
+        # removes that per-call connect/close. check_same_thread=False allows
+        # the trading loop and any helper thread to share it safely under the
+        # lock; WAL keeps reads from blocking the writer.
+        self._db_lock = threading.Lock()
+        try:
+            self._conn: Optional[sqlite3.Connection] = sqlite3.connect(
+                self.db_path, timeout=10, check_same_thread=False,
+            )
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            self._conn.commit()
+        except Exception:
+            self._conn = None
         """Recover unclosed shadow trades from DB on restart."""
         import logging
         _logger = logging.getLogger("apex.rl.shadow")
@@ -341,24 +357,39 @@ class ShadowEngine:
             logging.getLogger("apex.rl.shadow").warning(f"[Shadow] Failed to reload open trades: {e}")
 
     def _log_signal(self, s: RLSignal):
-        con = sqlite3.connect(self.db_path)
-        con.execute("""
+        sql = """
             INSERT INTO shadow_signals
             (pair, timestamp, action, action_label, confidence, expected_r, authority)
             VALUES (?,?,?,?,?,?,?)
-        """, (s.pair, s.timestamp, s.action, s.action_label,
-              s.confidence, s.expected_r, s.authority))
+        """
+        params = (s.pair, s.timestamp, s.action, s.action_label,
+                  s.confidence, s.expected_r, s.authority)
+        if self._conn is not None:
+            with self._db_lock:
+                self._conn.execute(sql, params)
+                self._conn.commit()
+            return
+        con = sqlite3.connect(self.db_path)
+        con.execute(sql, params)
         con.commit()
         con.close()
 
     def _save_trade(self, t: ShadowTrade):
-        con = sqlite3.connect(self.db_path)
-        cur = con.execute("""
+        sql = """
             INSERT INTO shadow_trades
             (pair, direction, entry, sl, tp, open_time, expected_r, confidence)
             VALUES (?,?,?,?,?,?,?,?)
-        """, (t.pair, t.direction, t.entry, t.sl, t.tp,
-              t.open_time, t.expected_r, t.confidence))
+        """
+        params = (t.pair, t.direction, t.entry, t.sl, t.tp,
+                  t.open_time, t.expected_r, t.confidence)
+        if self._conn is not None:
+            with self._db_lock:
+                cur = self._conn.execute(sql, params)
+                t.db_id = cur.lastrowid
+                self._conn.commit()
+            return
+        con = sqlite3.connect(self.db_path)
+        cur = con.execute(sql, params)
         t.db_id = cur.lastrowid
         con.commit()
         con.close()
@@ -373,20 +404,28 @@ class ShadowEngine:
         t.actual_r   = round(actual_r, 4)
         t.close_reason = reason
 
-        con = sqlite3.connect(self.db_path)
         if t.db_id is not None:
-            con.execute("""
+            sql = """
                 UPDATE shadow_trades SET
                     closed=1, exit=?, close_time=?, actual_r=?, close_reason=?
                 WHERE id=?
-            """, (exit_price, t.close_time, t.actual_r, reason, t.db_id))
+            """
+            params = (exit_price, t.close_time, t.actual_r, reason, t.db_id)
         else:
-            con.execute("""
+            sql = """
                 UPDATE shadow_trades SET
                     closed=1, exit=?, close_time=?, actual_r=?, close_reason=?
                 WHERE pair=? AND closed=0
                 ORDER BY id DESC LIMIT 1
-            """, (exit_price, t.close_time, t.actual_r, reason, pair))
+            """
+            params = (exit_price, t.close_time, t.actual_r, reason, pair)
+        if self._conn is not None:
+            with self._db_lock:
+                self._conn.execute(sql, params)
+                self._conn.commit()
+            return
+        con = sqlite3.connect(self.db_path)
+        con.execute(sql, params)
         con.commit()
         con.close()
 
