@@ -71,6 +71,7 @@ class LiveState(
     def __init__(self) -> None:
         self._trading_loop: Any = None
         self._platform_manager: Any = None
+        self._event_driven_system: Any = None
         self._start_time = _time.monotonic()
         self._running = False
         self._connection_status: dict[str, bool] = {}
@@ -92,6 +93,9 @@ class LiveState(
         self._connection_status = connection_status
         self._running = True
         logger.info("LiveState attached — dashboard serving real data")
+
+    def set_event_driven_system(self, ed_system: Any) -> None:
+        self._event_driven_system = ed_system
 
     def get_activity(self) -> dict:
         """
@@ -120,4 +124,6 @@ class LiveState(
 
     @property
     def is_live(self) -> bool:
+        if self._event_driven_system is not None:
+            return bool(getattr(self._event_driven_system, "is_running", False))
         return self._trading_loop is not None and bool(getattr(self._trading_loop, "running", False))

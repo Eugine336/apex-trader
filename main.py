@@ -138,8 +138,12 @@ def main() -> None:
     if use_event_driven:
         logger.info("EVENT-DRIVEN MODE ENABLED (USE_EVENT_DRIVEN=true)")
 
-    trading_loop = TradingLoop(config)
-    platform_manager = trading_loop.platforms
+    if use_event_driven:
+        platform_manager = PlatformManager(config)
+        trading_loop = None
+    else:
+        trading_loop = TradingLoop(config)
+        platform_manager = trading_loop.platforms
 
     logger.info("Connecting to platforms…")
     connection_status = platform_manager.connect_all()
@@ -179,6 +183,7 @@ def main() -> None:
         state = LiveState()
         state.attach(trading_loop, platform_manager, connection_status)
 
+        ed_system = None
         if platform_manager.any_connected:
             passed, results = StartupCheck().run_all()
             for r in results:
@@ -192,6 +197,7 @@ def main() -> None:
                 from event_driven_bootstrap import EventDrivenSystem
                 ed_system = EventDrivenSystem(config, platform_manager)
                 ed_system.start()
+                state.set_event_driven_system(ed_system)
                 logger.info("Event-driven system started in dashboard mode")
             else:
                 trading_loop.running = True

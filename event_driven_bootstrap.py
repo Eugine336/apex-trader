@@ -17,6 +17,7 @@ from __future__ import annotations
 import os
 import threading
 import time as _time
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -24,7 +25,7 @@ from typing import Any, Optional
 import pandas as pd
 from loguru import logger
 
-from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open
+from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open, Platform
 from brain.world_model import WorldModelStore, build_world_model
 from tick import EventBus, Tick, TickStore, CandleCloseDetector, TickRouter
 from tick.models import CandleClose
@@ -36,7 +37,9 @@ from execution.risk_gate import GateConfig
 from execution.position_worker import PositionWorker, WorkerConfig, ScanContext, MarketContext
 from execution.position_snapshot import PositionSnapshot, build_position_snapshot
 from entry import EntryOrchestrator, EntryConfig
+from platform_context import build_context_for_symbol
 from platforms.platform_manager import PlatformManager
+from risk.position_sizer import PositionSizer
 
 
 # ── Tick source threads ──────────────────────────────────────────────
@@ -76,8 +79,12 @@ class MT5TickPoller:
         logger.info("[mt5-poller] stopped")
 
     def _poll_loop(self) -> None:
+        error_counts: dict[str, int] = defaultdict(int)
+        last_error_log: dict[str, float] = {}
+        remove_after = 500
+
         while self._running:
-            for sym in self._symbols:
+            for sym in list(self._symbols):
                 if not self._running:
                     break
                 try:
@@ -91,8 +98,25 @@ class MT5TickPoller:
                             source="mt5",
                         )
                         self._router.on_tick(tick)
-                except Exception:
-                    pass
+                        error_counts[sym] = 0
+                    else:
+                        error_counts[sym] += 1
+                except Exception as exc:
+                    error_counts[sym] += 1
+                    now = _time.monotonic()
+                    if now - last_error_log.get(sym, 0) >= 60.0:
+                        last_error_log[sym] = now
+                        logger.warning(
+                            "[mt5-poller] {} tick error (count={}): {}",
+                            sym, error_counts[sym], exc,
+                        )
+
+                if error_counts.get(sym, 0) >= remove_after:
+                    logger.warning(
+                        "[mt5-poller] {} removed from poll — {} consecutive failures (symbol not on broker)",
+                        sym, remove_after,
+                    )
+                    self._symbols.remove(sym)
             _time.sleep(self._interval)
 
 
@@ -130,6 +154,9 @@ class DerivTickAdapter:
         logger.info("[deriv-adapter] stopped")
 
     def _poll_loop(self) -> None:
+        error_counts: dict[str, int] = defaultdict(int)
+        last_error_log: dict[str, float] = {}
+
         while self._running:
             for sym in self._symbols:
                 if not self._running:
@@ -145,8 +172,18 @@ class DerivTickAdapter:
                             source="deriv",
                         )
                         self._router.on_tick(tick)
-                except Exception:
-                    pass
+                        error_counts[sym] = 0
+                    else:
+                        error_counts[sym] += 1
+                except Exception as exc:
+                    error_counts[sym] += 1
+                    now = _time.monotonic()
+                    if now - last_error_log.get(sym, 0) >= 60.0:
+                        last_error_log[sym] = now
+                        logger.warning(
+                            "[deriv-adapter] {} tick error (count={}): {}",
+                            sym, error_counts[sym], exc,
+                        )
             _time.sleep(self._interval)
 
 
@@ -181,6 +218,8 @@ class PositionEvaluator:
         self._lock = threading.Lock()
         self._running = False
         self._eval_count = 0
+        self._suppressed_tickets: dict[str, float] = {}
+        self._suppress_duration = 60.0
 
     def evaluate_all(self) -> None:
         """Snapshot all open positions and evaluate against latest ticks."""
@@ -192,6 +231,12 @@ class PositionEvaluator:
 
         if not positions:
             return
+
+        now_mono = _time.monotonic()
+        self._suppressed_tickets = {
+            t: exp for t, exp in self._suppressed_tickets.items()
+            if exp > now_mono
+        }
 
         now = datetime.now(timezone.utc)
         by_symbol: dict[str, list] = {}
@@ -206,15 +251,19 @@ class PositionEvaluator:
                 continue
             price = tick.mid
             for pos in pos_list:
-                self._evaluate_position(pos, price, now)
+                self._evaluate_position(pos, price, now, now_mono)
 
         self._eval_count += 1
 
     def _evaluate_position(
-        self, pos, price: float, now: datetime,
+        self, pos, price: float, now: datetime, now_mono: float,
     ) -> None:
         try:
             order_id = str(getattr(pos, "order_id", getattr(pos, "ticket", "")))
+
+            if order_id in self._suppressed_tickets:
+                return
+
             direction = getattr(pos, "direction", "")
             sl = getattr(pos, "sl", 0.0) or 0.0
             pip_size = 0.0001
@@ -240,6 +289,10 @@ class PositionEvaluator:
                 getattr(pos, "symbol", "?"), exc,
             )
 
+    def suppress_ticket(self, ticket: str, duration: float = 60.0) -> None:
+        """Suppress evaluation of a ticket for the given duration (seconds)."""
+        self._suppressed_tickets[ticket] = _time.monotonic() + duration
+
     @property
     def eval_count(self) -> int:
         return self._eval_count
@@ -256,11 +309,13 @@ class FlushLoop:
         aggregator: IntentAggregator,
         executor: ActionExecutor,
         platform_manager: PlatformManager,
+        evaluator: Optional[PositionEvaluator] = None,
         interval: float = 0.1,
     ) -> None:
         self._aggregator = aggregator
         self._executor = executor
         self._pm = platform_manager
+        self._evaluator = evaluator
         self._interval = interval
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -295,7 +350,17 @@ class FlushLoop:
                     results = self._executor.execute_batch(
                         intents, open_positions,
                     )
-                    self._intents_executed += sum(1 for r in results if r.success)
+                    for i, r in enumerate(results):
+                        if r.success:
+                            self._intents_executed += 1
+                        elif self._evaluator and not r.success:
+                            err_msg = str(getattr(r, "error", "") or "").lower()
+                            if "market closed" in err_msg or "market is closed" in err_msg:
+                                ticket = intents[i].position_ticket if i < len(intents) else ""
+                                if ticket:
+                                    self._evaluator.suppress_ticket(ticket, 60.0)
+                            elif "no longer open" in err_msg:
+                                pass
                 self._flush_count += 1
             except Exception as exc:
                 logger.warning("[flush-loop] error: {}", exc)
@@ -433,6 +498,7 @@ class EventDrivenSystem:
         # ── Background loops ─────────────────────────────────────────
         self._flush_loop = FlushLoop(
             self._aggregator, self._executor, self._pm,
+            evaluator=self._evaluator,
         )
         self._tick_eval_loop = TickEvalLoop(self._evaluator)
 
@@ -585,19 +651,106 @@ class EventDrivenSystem:
         """Handle entry decisions from EntryOrchestrator.
 
         Converts the decision dict into an order execution via PlatformManager.
+        Handles MT5 lots-based and Deriv stake-based sizing.
         """
         symbol = decision.get("symbol", "")
         direction = decision.get("direction", "")
         entry_price = decision.get("entry_price", 0.0)
         sl = decision.get("stop_loss", 0.0)
         tp1 = decision.get("tp1", 0.0)
+        tp2 = decision.get("tp2", 0.0)
         conviction = decision.get("conviction", 0)
-        risk_pips = decision.get("risk_pips", 0.0)
 
         logger.info(
             "EVENT-DRIVEN ENTRY | {} {} @ {:.5f} SL={:.5f} TP={:.5f} score={}",
             symbol, direction, entry_price, sl, tp1, conviction,
         )
+
+        try:
+            # ── Correlation / exposure check ─────────────────────────
+            max_open = self._config.risk.max_open_trades
+            max_corr = self._config.risk.max_correlated_trades
+            try:
+                open_positions = self._pm.get_all_open_positions()
+            except Exception:
+                open_positions = []
+
+            if len(open_positions) >= max_open:
+                logger.warning(
+                    "EVENT-DRIVEN ENTRY SKIPPED | {} — max open trades {}/{}",
+                    symbol, len(open_positions), max_open,
+                )
+                return
+
+            currency_counts: dict[str, int] = defaultdict(int)
+            for pos in open_positions:
+                psym = getattr(pos, "symbol", "")
+                for ccy in ("USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF"):
+                    if ccy in psym:
+                        currency_counts[ccy] += 1
+
+            for ccy in ("USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF"):
+                if ccy in symbol and currency_counts.get(ccy, 0) >= max_corr:
+                    logger.warning(
+                        "EVENT-DRIVEN ENTRY SKIPPED | {} — {} exposure {}/{} (max correlated)",
+                        symbol, ccy, currency_counts[ccy] + 1, max_corr,
+                    )
+                    return
+
+            # ── Position sizing ──────────────────────────────────────
+            balance = self._pm.get_platform_balance(symbol)
+            risk_pct = self._config.risk.risk_per_trade_pct / 100.0
+            pip_size = self._safe_pip_size(symbol)
+            ctx = build_context_for_symbol(symbol)
+
+            info = INSTRUMENT_REGISTRY.get(symbol)
+            pip_value = info.pip_value_per_lot if info else 10.0
+
+            sizer = PositionSizer()
+            size_result = sizer.calculate(
+                account_balance=balance,
+                risk_pct=risk_pct,
+                entry_price=entry_price,
+                stop_loss=sl,
+                pip_size=pip_size,
+                pip_value_per_lot=pip_value,
+                context=ctx,
+                symbol=symbol,
+            )
+
+            # ── Zero-size guard ──────────────────────────────────────
+            if size_result.lots <= 0 and size_result.stake_usd <= 0:
+                logger.warning(
+                    "EVENT-DRIVEN ENTRY SKIPPED | {} — position size is zero (sizing_mode={})",
+                    symbol, size_result.sizing_mode,
+                )
+                return
+
+            # ── Execute order ────────────────────────────────────────
+            result = self._pm.execute_entry(
+                symbol=symbol,
+                direction=direction,
+                lots=size_result.lots,
+                sl=sl,
+                tp=tp1,
+                stake_usd=size_result.stake_usd if ctx.uses_stake else None,
+                comment=f"ED|{conviction}",
+            )
+
+            if result.success:
+                logger.info(
+                    "EVENT-DRIVEN ORDER PLACED | {} {} {:.2f} lots ticket={}",
+                    symbol, direction, result.lots, result.order_id,
+                )
+            else:
+                err = getattr(result, "error", "unknown")
+                logger.warning(
+                    "EVENT-DRIVEN ORDER FAILED | {} {} | {}", symbol, direction, err,
+                )
+        except Exception as exc:
+            logger.error(
+                "EVENT-DRIVEN ORDER ERROR | {} {} | {}", symbol, direction, exc,
+            )
 
 
 # ── Module-level helper ──────────────────────────────────────────────
