@@ -646,6 +646,17 @@ class EventDrivenSystem:
         self._event_bus.clear()
         self._mgmt_store.close()
 
+        ctx = self._ctx
+        if ctx is not None:
+            for name in ("signal_ledger", "counterfactual_engine",
+                         "interaction_analyzer", "module_governor"):
+                sub = getattr(ctx, name, None)
+                if sub is not None and hasattr(sub, "close"):
+                    try:
+                        sub.close()
+                    except Exception as exc:
+                        logger.debug("[shutdown] {} close failed: {}", name, exc)
+
         logger.info("[event-driven] shutdown complete")
 
     def run_forever(self) -> None:
@@ -1048,6 +1059,10 @@ class EventDrivenSystem:
                                 ctx.decision_journal.log_entry(entry_ctx, sa, de_result)
                             except Exception:
                                 pass
+                        self._record_shadow_rejection(
+                            symbol, direction, entry_price, sl, tp1,
+                            "decision_engine", conviction,
+                        )
                         return
 
                     de_size_mult = de_result.size_multiplier
@@ -1073,6 +1088,10 @@ class EventDrivenSystem:
                                     )
                                 except Exception:
                                     pass
+                            self._record_shadow_rejection(
+                                symbol, direction, entry_price, sl, tp1,
+                                "risk_governor", conviction,
+                            )
                             return
                         if gov_result is not de_result:
                             de_size_mult = gov_result.size_multiplier
@@ -1285,6 +1304,42 @@ class EventDrivenSystem:
                 "EVENT-DRIVEN ORDER ERROR | {} {} | {}", symbol, direction, exc,
             )
 
+    def _record_shadow_rejection(
+        self,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        sl: float,
+        tp: float,
+        rejection_gate: str,
+        conviction: float = 0.0,
+    ) -> None:
+        """Record a rejected setup for counterfactual shadow tracking."""
+        ctx = self._ctx
+        if ctx is None:
+            return
+        if ctx.shadow_store is not None:
+            try:
+                import uuid
+                from persistence.shadow_store import ShadowContract
+                contract = ShadowContract(
+                    contract_id=str(uuid.uuid4()),
+                    symbol=symbol,
+                    direction=direction,
+                    entry_price=entry_price,
+                    stop_loss=sl,
+                    tp1=tp,
+                    tp2=0.0,
+                    pip_size=self._safe_pip_size(symbol),
+                    rejecting_gate=rejection_gate,
+                    ts_utc_ms=int(_time.time() * 1000),
+                    score=int(conviction),
+                    source="event_driven",
+                )
+                ctx.shadow_store.insert_contract(contract)
+            except Exception as exc:
+                logger.debug("[shadow] rejection record failed: {}", exc)
+
     # ── Trade close feedback chain ───────────────────────────────────
 
     def _on_order_filled(
@@ -1296,10 +1351,13 @@ class EventDrivenSystem:
         expected_price: float = 0.0,
         order_ts: float = 0.0,
     ) -> None:
-        """Post-fill bookkeeping: update account risk balance + execution quality."""
+        """Post-fill bookkeeping: risk balance + execution quality + learning attribution."""
         ctx = self._ctx
         if ctx is None:
             return
+
+        order_id = str(getattr(result, "order_id", getattr(result, "ticket", "")) or "")
+
         try:
             if ctx.account_risk is not None and balance and balance > 0:
                 acct = ctx.account_key(symbol, self._pm)
@@ -1333,6 +1391,46 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[post-fill] ExecutionMonitor record failed: {}", exc)
 
+        # ── Entry-time learning attribution (Phase 4) ────────────────
+
+        # OutcomeFeedback — record entry attribution (which modules drove this)
+        if ctx.outcome_feedback is not None and order_id:
+            try:
+                wm = self._wm_store.get(symbol)
+                attribution = {
+                    "pair": symbol,
+                    "direction": direction,
+                    "entry_price": expected_price,
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "world_model_version": getattr(wm, "version", 0) if wm else 0,
+                }
+                ctx.outcome_feedback.record_entry(str(order_id), attribution)
+            except Exception as exc:
+                logger.debug("[post-fill] OutcomeFeedback entry record failed: {}", exc)
+
+        # CounterfactualEngine — snapshot vote panel at open for leave-one-out replay
+        if ctx.counterfactual_engine is not None and order_id:
+            try:
+                from adaptive.counterfactual import TradeAttribution
+                ta = TradeAttribution(
+                    trade_id=str(order_id),
+                    pair=symbol,
+                    direction=direction,
+                    timestamp_open=_time.time(),
+                )
+                ctx.counterfactual_engine.record_open(ta)
+            except Exception as exc:
+                logger.debug("[post-fill] CounterfactualEngine open record failed: {}", exc)
+
+        # SignalLedger — record trade opened for pair
+        if ctx.signal_ledger is not None and order_id:
+            try:
+                ctx.signal_ledger.record_trade_opened_for_pair(
+                    symbol, str(order_id), direction,
+                )
+            except Exception as exc:
+                logger.debug("[post-fill] SignalLedger trade-open failed: {}", exc)
+
     def _on_trade_closed(
         self,
         symbol: str,
@@ -1341,15 +1439,17 @@ class EventDrivenSystem:
         pnl_pips: float,
         ticket: str,
     ) -> None:
-        """Feed closed-trade P&L into all risk subsystems.
+        """Feed closed-trade P&L into all risk + learning subsystems.
 
-        Mirrors the risk-relevant portion of TradingLoop._record_closed_trade.
+        Mirrors TradingLoop._record_closed_trade — risk first, then learning.
         """
         ctx = self._ctx
         if ctx is None:
             return
 
         balance = self._pm.get_platform_balance(symbol)
+
+        # ── RISK LAYER (Phase 1) ────────────────────────────────────
 
         # DrawdownGuard — register P&L as fraction of balance
         if ctx.drawdown_guard is not None:
@@ -1390,8 +1490,98 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[close-risk] AccountRisk update failed: {}", exc)
 
+        # ── LEARNING LAYER (Phase 4) ────────────────────────────────
+
+        pnl_r = 0.0
+        outcome = "WIN" if pnl_dollars > 0 else "LOSS"
+        cause_value = "event_driven_close"
+
+        # OutcomeFeedback — link realised R to entry attribution
+        if ctx.outcome_feedback is not None:
+            try:
+                payload = {
+                    "pair": symbol,
+                    "direction": direction,
+                    "pnl_r": round(pnl_r, 4),
+                    "pnl_pips": round(float(pnl_pips), 2),
+                    "pnl_dollars": round(float(pnl_dollars), 2),
+                    "won": float(pnl_dollars) > 0,
+                    "outcome": outcome,
+                    "exit_cause": cause_value,
+                }
+                ctx.outcome_feedback.record_outcome(str(ticket), payload)
+            except Exception as exc:
+                logger.debug("[close-learn] OutcomeFeedback failed: {}", exc)
+
+        # CounterfactualEngine — complete decision snapshot
+        if ctx.counterfactual_engine is not None:
+            try:
+                ctx.counterfactual_engine.complete(str(ticket), {
+                    "pnl_r": round(pnl_r, 4),
+                    "won": bool(pnl_dollars > 0),
+                    "outcome": outcome,
+                    "exit_cause": cause_value,
+                })
+            except Exception as exc:
+                logger.debug("[close-learn] CounterfactualEngine failed: {}", exc)
+
+        # SignalLedger — attach outcome to driving signals
+        if ctx.signal_ledger is not None:
+            try:
+                ctx.signal_ledger.attach_trade_outcome(str(ticket), {
+                    "pnl_pips": round(float(pnl_pips), 2),
+                    "pnl_dollars": round(float(pnl_dollars), 2),
+                    "won": pnl_dollars > 0,
+                    "outcome": outcome,
+                })
+            except Exception as exc:
+                logger.debug("[close-learn] SignalLedger attach failed: {}", exc)
+
+        # ML Adapter — register new trade
+        if ctx.ml_adapter is not None:
+            try:
+                ctx.ml_adapter.register_new_trade(exit_cause=cause_value)
+            except Exception as exc:
+                logger.debug("[close-learn] MLAdapter register failed: {}", exc)
+
+        # TunerAgent — route trade-close tuning
+        if ctx.tuner_agent is not None:
+            try:
+                from adaptive.tunable import TuneContext
+                tune_ctx = TuneContext(
+                    total_trades=0,
+                    trades_since_last_tune=1,
+                    seconds_since_last_tune=0.0,
+                )
+                ctx.tuner_agent.on_trade_close(tune_ctx)
+            except Exception as exc:
+                logger.debug("[close-learn] TunerAgent failed: {}", exc)
+
+        # PostCloseTracker — schedule forward MFE/MAE checks
+        if ctx.post_close_tracker is not None:
+            try:
+                now_dt = datetime.now(timezone.utc)
+                tick = self._tick_store.get_latest(symbol)
+                close_price = tick.mid if tick else 0.0
+                ctx.post_close_tracker.record_close(
+                    trade_id=str(ticket),
+                    pair=symbol,
+                    direction=direction,
+                    entry_price=0.0,
+                    exit_price=close_price,
+                    exit_cause=cause_value,
+                    sl_price=0.0,
+                    tp_price=0.0,
+                    entry_timestamp=now_dt,
+                    exit_timestamp=now_dt,
+                    entry_score=0,
+                    entry_confluences="",
+                )
+            except Exception as exc:
+                logger.debug("[close-learn] PostCloseTracker failed: {}", exc)
+
         logger.info(
-            "EVENT-DRIVEN CLOSE FEEDBACK | {} {} ticket={} pnl=${:.2f} ({:.1f}pip)",
+            "EVENT-DRIVEN CLOSE FEEDBACK | {} {} ticket={} pnl=${:.2f} ({:.1f}pip) | risk+learning",
             direction, symbol, ticket, pnl_dollars, pnl_pips,
         )
 
