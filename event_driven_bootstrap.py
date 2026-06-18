@@ -719,7 +719,7 @@ class EventDrivenSystem:
 
             pip_size = get_pip_size(symbol)
             sizer = PositionSizer()
-            risk_pct = self._config.risk.base_risk_pct if hasattr(self._config, "risk") else 0.0075
+            risk_pct = self._config.risk.risk_per_trade_pct / 100.0 if hasattr(self._config, "risk") else 0.0075
             size_result = sizer.calculate(
                 account_balance=balance,
                 risk_pct=risk_pct,
