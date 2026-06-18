@@ -21,10 +21,10 @@ from config import (
     ConfirmationPenaltyConfig,
     LayeredDecisionConfig,
 )
-from brain.structure_engine import StructureEngine
+from brain.structure_engine import StructureEngine, StructureAnalysis
 from brain.fvg_detector import FVGDetector
 from brain.order_block import OrderBlockDetector, OBStatus
-from brain.liquidity_mapper import LiquidityMapper
+from brain.liquidity_mapper import LiquidityMapper, LiquidityMap
 from brain.currency_strength import CurrencyStrengthMeter, CURRENCY_PAIRS
 from brain.directional_consensus import (
     Vote, decide, decide_opportunities,
@@ -37,8 +37,8 @@ from brain.session_engine import SessionEngine, NewsGuard
 from brain.orchestrator import gate_quality_multiplier as _gate_quality_multiplier
 from adaptive.ev_estimator import EVEstimator
 from adaptive.win_rate_provider import AdaptiveWinRateProvider
-from brain.volume_analyzer import VolumeAnalyzer
-from brain.inducement_detector import InducementDetector
+from brain.volume_analyzer import VolumeAnalyzer, VolumeAnalysis
+from brain.inducement_detector import InducementDetector, InducementAnalysis
 from brain.wyckoff_engine import WyckoffEngine
 from brain.instrument_profile import get_profile
 from brain.session_vwap import session_vwap_penalty
@@ -48,6 +48,7 @@ from brain.volume_profile import volume_profile_poc_penalty
 from brain.setup_quality import (
     compute_opportunity_quality, compute_entry_quality,
 )
+from brain.world_model import WorldModelStore, build_world_model
 from rl.bridge import RLBridge
 from rl.obs_builder import ObservationBuilder
 from rl.multi_tf_obs_builder import MultiTFObservationBuilder
@@ -412,8 +413,10 @@ class PairScanner:
 
     def __init__(self, config: Optional[AppConfig] = None, mt5_connector=None,
                  scoring_weights: Optional[dict[str, int]] = None,
-                 rl_checkpoint: Optional[str] = None):
+                 rl_checkpoint: Optional[str] = None,
+                 world_model_store: Optional[WorldModelStore] = None):
         self.config = config or AppConfig()
+        self.world_model_store = world_model_store or WorldModelStore()
         self.structure = StructureEngine()
         self.fvg_detector = FVGDetector()
         self.ob_detector = OrderBlockDetector()
@@ -900,6 +903,87 @@ class PairScanner:
             m5_fvgs = fvg_det.detect(m5_df, timeframe="M5")
             m15_fvgs = fvg_det.detect(m15_df, timeframe="M15")
             liq_map = self.liquidity.map(h1_df, pip_size)
+
+        # ── Extended multi-TF analysis + WorldModel build ─────────────
+        # Run additional TF analyses beyond the consensus wiring above,
+        # pack everything into a frozen WorldModel, and publish.
+        wm_fvgs: dict[str, list] = {"M5": list(m5_fvgs), "M15": list(m15_fvgs)}
+        wm_obs: dict[str, list] = {"H1": list(h1_obs), "M5": list(m5_obs)}
+        wm_liq: dict[str, LiquidityMap] = {"H1": liq_map}
+        wm_vol: dict[str, VolumeAnalysis] = {}
+        wm_wyck: dict[str, WyckoffAnalysis] = {}
+        wm_struct: dict[str, StructureAnalysis] = {}
+        wm_ind: dict[str, InducementAnalysis] = {}
+
+        if vol_analysis is not None:
+            wm_vol["M5"] = vol_analysis
+        if wyckoff_analysis is not None:
+            wm_wyck["H1"] = wyckoff_analysis
+
+        # H1 FVGs (new — major institutional imbalances)
+        try:
+            h1_fvgs = fvg_det.detect(h1_df, timeframe="H1")
+            wm_fvgs["H1"] = list(h1_fvgs)
+        except Exception as exc:
+            logger.debug("[multi-tf] H1 FVG detection failed for {}: {}", pair, exc)
+
+        # H4 Order Blocks (new — major institutional zones)
+        try:
+            h4_obs_ext = ob_det.detect(h4_df, timeframe="H4")
+            wm_obs["H4"] = list(h4_obs_ext)
+        except Exception as exc:
+            logger.debug("[multi-tf] H4 OB detection failed for {}: {}", pair, exc)
+
+        # H4 Liquidity (new — bigger liquidity pools)
+        try:
+            h4_liq_map = self.liquidity.map(h4_df, pip_size)
+            wm_liq["H4"] = h4_liq_map
+        except Exception as exc:
+            logger.debug("[multi-tf] H4 liquidity mapping failed for {}: {}", pair, exc)
+
+        # H1 Volume (new — volume context on higher TF)
+        try:
+            h1_vol = self.volume.analyze(h1_df)
+            wm_vol["H1"] = h1_vol
+        except Exception as exc:
+            logger.debug("[multi-tf] H1 volume analysis failed for {}: {}", pair, exc)
+
+        # Per-TF structure analysis (individual analyses, separate from bias)
+        try:
+            wm_struct["H4"] = self.structure.analyze(h4_df)
+            wm_struct["H1"] = self.structure.analyze(h1_df)
+            if d1_df is not None and len(d1_df) >= 5:
+                wm_struct["D1"] = self.structure.analyze(d1_df)
+        except Exception as exc:
+            logger.debug("[multi-tf] structure analysis failed for {}: {}", pair, exc)
+
+        # M5 inducement (pre-computed for WorldModel; scoring reuses the result)
+        _wm_inducement_analysis = None
+        try:
+            _wm_ind_det = InducementDetector(pip_size=pip_size)
+            _wm_inducement_analysis = _wm_ind_det.analyze(m5_df)
+            wm_ind["M5"] = _wm_inducement_analysis
+        except Exception as exc:
+            logger.debug("[multi-tf] M5 inducement analysis failed for {}: {}", pair, exc)
+
+        # Publish WorldModel
+        try:
+            wm = build_world_model(
+                symbol=pair,
+                version=self.world_model_store.next_version(),
+                timestamp=utc_now,
+                fvgs=wm_fvgs,
+                order_blocks=wm_obs,
+                structure=wm_struct,
+                liquidity=wm_liq,
+                volume=wm_vol,
+                wyckoff=wm_wyck,
+                inducement=wm_ind,
+                bias=bias,
+            )
+            self.world_model_store.publish(wm)
+        except Exception as exc:
+            logger.warning("[world-model] failed to build/publish for {}: {}", pair, exc)
 
         score = 0
         confluences: list[str] = []
@@ -1615,6 +1699,7 @@ class PairScanner:
         h4_df: Optional[pd.DataFrame] = None,
         d1_df: Optional[pd.DataFrame] = None,
         utc_now: Optional[datetime] = None,
+        use_world_model: bool = True,
     ) -> tuple[float, float]:
         """Recompute OQ/EQ from fresh candles at entry time (P1).
 
@@ -1624,6 +1709,10 @@ class PairScanner:
         brain analyses OQ/EQ depend on, independent of consensus/currency data
         which is not available on the per-candidate entry path.
 
+        When ``use_world_model`` is True and a recent WorldModel exists for
+        ``pair``, OBs, FVGs, and liquidity are read from the model instead of
+        being recomputed. Falls back to full recomputation on any failure.
+
         Returns ``(oq_score, eq_score)``.
         """
         utc_now = utc_now or datetime.now(timezone.utc)
@@ -1631,28 +1720,70 @@ class PairScanner:
         profile = get_profile(pair)
         current_price = float(m5_df["close"].iloc[-1])
 
-        ob_det = OrderBlockDetector(
-            pip_size=pip_size,
-            min_impulse_pips=profile.ob_min_impulse_pips,
-            buffer_pips=profile.ob_buffer_pips,
-        )
-        h1_obs = ob_det.detect(h1_df, timeframe="H1")
-        m5_obs = ob_det.detect(m5_df, timeframe="M5")
+        wm = self.world_model_store.get(pair) if use_world_model else None
+        wm_used = False
 
-        fvg_det = FVGDetector(
-            pip_size=pip_size,
-            proximity_pips=profile.fvg_proximity_pips,
-            min_size_pips=profile.fvg_min_size_pips,
-        )
-        m5_fvgs = fvg_det.detect(m5_df, timeframe="M5")
-        m15_fvgs = fvg_det.detect(m15_df, timeframe="M15")
+        if wm is not None:
+            try:
+                obs_by_tf = wm.order_blocks_by_tf()
+                h1_obs = list(obs_by_tf.get("H1", ()))
+                m5_obs = list(obs_by_tf.get("M5", ()))
+                ob_det = OrderBlockDetector(
+                    pip_size=pip_size,
+                    min_impulse_pips=profile.ob_min_impulse_pips,
+                    buffer_pips=profile.ob_buffer_pips,
+                )
 
-        liq_map = self.liquidity.map(h1_df, pip_size)
+                fvgs_by_tf = wm.fvgs_by_tf()
+                m5_fvgs = list(fvgs_by_tf.get("M5", ()))
+                m15_fvgs = list(fvgs_by_tf.get("M15", ()))
+                fvg_det = FVGDetector(
+                    pip_size=pip_size,
+                    proximity_pips=profile.fvg_proximity_pips,
+                    min_size_pips=profile.fvg_min_size_pips,
+                )
 
-        try:
-            vol_analysis = self.volume.analyze(m5_df)
-        except Exception:
-            vol_analysis = None
+                liq_by_tf = wm.liquidity_by_tf()
+                liq_map = liq_by_tf.get("H1")
+                if liq_map is None:
+                    liq_map = self.liquidity.map(h1_df, pip_size)
+
+                vol_by_tf = wm.volume_by_tf()
+                vol_analysis = vol_by_tf.get("M5")
+                if vol_analysis is None:
+                    vol_analysis = self.volume.analyze(m5_df)
+
+                wm_used = True
+            except Exception as exc:
+                logger.debug(
+                    "[world-model] entry recompute fallback for {}: {}",
+                    pair, exc,
+                )
+                wm_used = False
+
+        if not wm_used:
+            ob_det = OrderBlockDetector(
+                pip_size=pip_size,
+                min_impulse_pips=profile.ob_min_impulse_pips,
+                buffer_pips=profile.ob_buffer_pips,
+            )
+            h1_obs = ob_det.detect(h1_df, timeframe="H1")
+            m5_obs = ob_det.detect(m5_df, timeframe="M5")
+
+            fvg_det = FVGDetector(
+                pip_size=pip_size,
+                proximity_pips=profile.fvg_proximity_pips,
+                min_size_pips=profile.fvg_min_size_pips,
+            )
+            m5_fvgs = fvg_det.detect(m5_df, timeframe="M5")
+            m15_fvgs = fvg_det.detect(m15_df, timeframe="M15")
+
+            liq_map = self.liquidity.map(h1_df, pip_size)
+
+            try:
+                vol_analysis = self.volume.analyze(m5_df)
+            except Exception:
+                vol_analysis = None
 
         session_status = self.session.get_status(utc_now)
         if is_always_open(pair):
