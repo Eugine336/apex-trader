@@ -2627,6 +2627,50 @@ class BehaviorDiscoveryConfig:
 
 
 @dataclass
+class BacktestConfig:
+    """Settings for the Backtest Harness (P0).
+
+    A historical-replay engine that drives the real pipeline (the
+    SimulatedBroker plus the L7 regime detector and L8 risk gate) against
+    recorded or synthetic candles. It is opt-in tooling — it never runs as part
+    of the live trading loop and never touches a production broker or database.
+    Defaults are ACTIVE so the harness is ready to use out of the box; turning
+    ``enabled`` off is purely a documentation/guard signal for callers.
+    """
+
+    # Master switch — ACTIVE by default (the harness is opt-in tooling anyway).
+    enabled: bool = True
+    # Default simulated execution costs (pips); the CLI/runner can override.
+    default_spread_pips: float = 2.0
+    default_slippage_pips: float = 0.5
+    # Keep adaptive-layer SQLite stores off production paths during a backtest.
+    use_memory_db: bool = True
+    # Print a progress line every N replayed bars (0 = silent).
+    progress_interval: int = 100
+    # Seed for reproducible synthetic data + slippage.
+    synthetic_seed: int = 42
+    # Default starting balance for a simulated account.
+    starting_balance: float = 10_000.0
+
+    def __post_init__(self) -> None:
+        for name in ("default_spread_pips", "default_slippage_pips"):
+            if float(getattr(self, name)) < 0:
+                raise ValueError(
+                    f"BacktestConfig.{name} must be >= 0, got {getattr(self, name)!r}"
+                )
+        if int(self.progress_interval) < 0:
+            raise ValueError(
+                "BacktestConfig.progress_interval must be >= 0, "
+                f"got {self.progress_interval!r}"
+            )
+        if float(self.starting_balance) <= 0:
+            raise ValueError(
+                "BacktestConfig.starting_balance must be > 0, "
+                f"got {self.starting_balance!r}"
+            )
+
+
+@dataclass
 class AppConfig:
     # All 4 categories enabled — forex, commodity, index, synthetic
     enabled_categories: list[str] = field(
@@ -2663,6 +2707,7 @@ class AppConfig:
     behavior_discovery: BehaviorDiscoveryConfig = field(default_factory=BehaviorDiscoveryConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
     decision: DecisionConfig = field(default_factory=DecisionConfig)
+    backtest: BacktestConfig = field(default_factory=BacktestConfig)
     data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)
     planner: PlannerConfig = field(default_factory=PlannerConfig)
     governor: GovernorConfig = field(default_factory=GovernorConfig)

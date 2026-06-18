@@ -203,9 +203,15 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
     Scan → Entry → Manage → Risk → Repeat.
     """
 
-    def __init__(self, config: Optional[AppConfig] = None):
+    def __init__(self, config: Optional[AppConfig] = None,
+                 platform_manager: Optional[PlatformManager] = None):
         self.config = config or AppConfig()
-        self.platforms = PlatformManager(self.config)
+        # Backtest seam (opt-in): allow injecting a (possibly simulated) platform
+        # manager so the full live loop can be replayed against historical data
+        # without touching the production broker path. Defaults to None →
+        # constructs the real PlatformManager exactly as before, so the live
+        # trading path is byte-for-byte unchanged.
+        self.platforms = platform_manager or PlatformManager(self.config)
         _adaptive_weights = None
         _scanner_weights_dict = None
         if self.config.scoring.use_adaptive_scoring_weights:
