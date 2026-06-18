@@ -94,6 +94,8 @@ from platforms.trading_loop.recovery_mixin import RecoveryReconciliationMixin
 from platforms.trading_loop.risk_heat_mixin import RiskHeatMarginMixin
 from platforms.trading_loop.exit_checks_mixin import ExitChecksMixin
 from platforms.trading_loop.shadow_live_mixin import ShadowLiveMixin
+from ops.lifecycle import ShutdownManager, StartupRecovery, HealthCheck
+from ops.watchdog import ProcessWatchdog
 
 from persistence.event_store import get_event_store, new_cycle_id, new_setup_id
 from persistence.domain_events import (
@@ -857,6 +859,34 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         except Exception as exc:  # noqa: BLE001
             logger.warning("[tuner-agent] setup skipped: {}", exc)
             self._tuner_agent = None
+
+        # ── Ops / production-hardening layer (P1) ────────────────────────
+        # Graceful shutdown (flush every adaptive store), crash-marker startup
+        # recovery, process heartbeat / stall watchdog, and the aggregate
+        # /api/health snapshot. Purely additive: when ops is disabled the
+        # attributes stay None and the legacy startup/shutdown path is unchanged.
+        self._ops_shutdown = None
+        self._ops_recovery = None
+        self._ops_health = None
+        self._ops_watchdog = None
+        try:
+            ops_cfg = getattr(self.config, "ops", None)
+            if ops_cfg is not None and getattr(ops_cfg, "enabled", False):
+                self._ops_shutdown = ShutdownManager(self, ops_cfg)
+                self._ops_recovery = StartupRecovery(ops_cfg)
+                self._ops_health = HealthCheck(self, ops_cfg)
+                self._ops_watchdog = ProcessWatchdog(ops_cfg)
+                logger.info(
+                    "[ops] production hardening enabled — shutdown flush, crash "
+                    "marker, heartbeat ({}s) + health snapshot active",
+                    getattr(ops_cfg, "heartbeat_interval_seconds", 10),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[ops] init failed, disabled: {}", exc)
+            self._ops_shutdown = None
+            self._ops_recovery = None
+            self._ops_health = None
+            self._ops_watchdog = None
 
     # ── Tuner Agent wiring ────────────────────────────────────────────────
 
@@ -1884,6 +1914,19 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         self._log_management_configuration()
 
         self._install_signal_handlers()
+        # Ops layer: register SIGHUP-aware handlers and run crash-marker startup
+        # recovery (logs an unclean previous exit, arms a fresh marker). Both
+        # are additive — the legacy handlers above still set running=False.
+        if self._ops_shutdown is not None:
+            try:
+                self._ops_shutdown.register_signal_handlers()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[ops] signal handler registration skipped: {}", exc)
+        if self._ops_recovery is not None:
+            try:
+                self._ops_recovery.run()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[ops] startup recovery skipped: {}", exc)
         self._perform_startup_recovery()
         self._import_broker_history_once()
 
@@ -1999,6 +2042,15 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         }
 
         self.watchdog.record_cycle()
+        # Ops heartbeat — advance the heartbeat file (throttled) and flag a stall
+        # if the previous tick never completed in budget. Detection only; never
+        # blocks the cycle.
+        if self._ops_watchdog is not None:
+            try:
+                self._ops_watchdog.beat()
+                self._ops_watchdog.check_stall()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[ops] heartbeat/stall check failed: {}", exc)
         self._check_and_reconnect()
 
         # ── Post-close forward price checks ──────────────────────────────
@@ -2149,6 +2201,12 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
         cycle["duration_ms"] = round((_time.monotonic() - _cycle_start_mono) * 1000.0, 1)
         self._record_cycle_timing(cycle["duration_ms"])
+        # Ops: mark this tick complete so the watchdog's stall timer resets.
+        if self._ops_watchdog is not None:
+            try:
+                self._ops_watchdog.record_tick()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[ops] record_tick failed: {}", exc)
         return cycle
 
     def _record_cycle_timing(self, duration_ms: float) -> None:
@@ -2194,6 +2252,14 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         except Exception as exc:
             logger.debug("[shutdown] journal loop close failed: {}", exc)
             pass
+        # Ops: flush every adaptive SQLite store (the gap the legacy shutdown
+        # left open) and clear the crash marker to record a clean exit. Runs
+        # last so position persistence above is already done; fail-safe.
+        if self._ops_shutdown is not None:
+            try:
+                self._ops_shutdown.shutdown(reason="stop")
+            except Exception as exc:  # noqa: BLE001
+                logger.error("🔴 [ops] shutdown flush failed: {}", exc)
 
     # ── Startup & recovery ───────────────────────────────────────────────
 
@@ -2211,6 +2277,28 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
             signal.signal(signal.SIGINT, _handle_signal)
         except (OSError, ValueError):
             logger.debug("Signal handlers not installed (not main thread)")
+
+    def get_ops_health(self) -> dict:
+        """Aggregate health snapshot for the dashboard /api/health endpoint.
+
+        Returns a stable shape even when the ops layer is disabled so the API
+        never breaks. Never raises.
+        """
+        if self._ops_health is None:
+            return {
+                "status": "ok",
+                "ops_enabled": False,
+                "running": bool(getattr(self, "running", False)),
+            }
+        try:
+            snap = self._ops_health.get_health()
+            snap["ops_enabled"] = True
+            if self._ops_watchdog is not None:
+                snap["watchdog"] = self._ops_watchdog.get_state()
+            return snap
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[ops] health snapshot failed: {}", exc)
+            return {"status": "error", "ops_enabled": True, "error": str(exc)}
 
 
     # ── Scan → Entry pipeline ────────────────────────────────────────────

@@ -2671,6 +2671,70 @@ class BacktestConfig:
 
 
 @dataclass
+class OpsConfig:
+    """Settings for the Operations & Production-Hardening layer (P1).
+
+    Governs graceful shutdown, crash-marker startup recovery, the process
+    heartbeat / stall watchdog, structured JSON logging, and the aggregate
+    ``/api/health`` snapshot. The layer is purely additive: with ``enabled`` on
+    it flushes adaptive stores on shutdown and arms the crash marker / heartbeat;
+    with ``enabled`` off none of those run and the pre-existing startup/shutdown
+    path is byte-for-byte unchanged.
+    """
+
+    # Master switch — ACTIVE by default.
+    enabled: bool = True
+
+    # ── Graceful shutdown ─────────────────────────────────────────────────
+    # Bound on how long the shutdown sequence may wait for in-flight work.
+    shutdown_timeout_seconds: float = 30.0
+
+    # ── Crash-marker startup recovery ─────────────────────────────────────
+    # Written at boot, cleared on a clean exit; present at boot ⇒ unclean exit.
+    crash_marker_path: str = "data/.crash_marker"
+
+    # ── Process watchdog / heartbeat ──────────────────────────────────────
+    heartbeat_interval_seconds: float = 10.0
+    heartbeat_file: str = "data/.heartbeat"
+    # A completed tick must arrive within this budget or a stall is flagged.
+    max_tick_duration_seconds: float = 60.0
+
+    # ── Structured logging ────────────────────────────────────────────────
+    log_format: str = "json"          # "json" or "text"
+    log_level: str = "INFO"
+    log_max_size_mb: int = 50
+    log_max_files: int = 10
+    main_log: str = "logs/apex.log"
+    trade_audit_log: str = "logs/trade_audit.log"
+    risk_audit_log: str = "logs/risk_audit.log"
+
+    # ── Broker reconnect (advisory bounds for the existing reconnect path) ─
+    reconnect_max_retries: int = 10
+    reconnect_base_delay_seconds: float = 5.0
+
+    def __post_init__(self) -> None:
+        for name in (
+            "shutdown_timeout_seconds",
+            "heartbeat_interval_seconds",
+            "max_tick_duration_seconds",
+            "reconnect_base_delay_seconds",
+        ):
+            if float(getattr(self, name)) <= 0:
+                raise ValueError(
+                    f"OpsConfig.{name} must be > 0, got {getattr(self, name)!r}"
+                )
+        for name in ("log_max_size_mb", "log_max_files", "reconnect_max_retries"):
+            if int(getattr(self, name)) < 1:
+                raise ValueError(
+                    f"OpsConfig.{name} must be >= 1, got {getattr(self, name)!r}"
+                )
+        if str(self.log_format).lower() not in ("json", "text"):
+            raise ValueError(
+                f"OpsConfig.log_format must be 'json' or 'text', got {self.log_format!r}"
+            )
+
+
+@dataclass
 class AppConfig:
     # All 4 categories enabled — forex, commodity, index, synthetic
     enabled_categories: list[str] = field(
@@ -2712,6 +2776,7 @@ class AppConfig:
     planner: PlannerConfig = field(default_factory=PlannerConfig)
     governor: GovernorConfig = field(default_factory=GovernorConfig)
     performance: PerformanceConfig = field(default_factory=PerformanceConfig)
+    ops: OpsConfig = field(default_factory=OpsConfig)
     # NOTE: scan cadence is owned by PerformanceConfig.scan_interval_active /
     # scan_interval_with_positions (consumed by ScanScheduler). The old
     # AppConfig.scan_interval_seconds was superseded and never read — removed.
