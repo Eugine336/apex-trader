@@ -7,6 +7,7 @@ bias gate (when enabled); M15 is accepted but currently unused.
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 import pandas as pd
@@ -101,12 +102,15 @@ class MTFOrchestrator:
         self._atr_stop_max_risk_mult = atr_stop_max_risk_mult
 
     @staticmethod
-    def load_saved_weights() -> ScoringWeights:
+    def load_saved_weights(filepath: str = "data/scoring_weights.json") -> ScoringWeights:
         """Load OOS-validated weights from the adaptive store, falling back
         to canonical defaults if the file is absent or corrupt. Handles
         old 9-factor → new 12-factor schema migration transparently."""
+        p = Path(filepath)
+        if not p.exists():
+            return ScoringWeights()
         from adaptive.score_optimizer import load_saved_weights as _load
-        return _load()
+        return _load(filepath)
 
     def build_setup(
         self,

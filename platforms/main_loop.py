@@ -253,6 +253,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         # not a kill switch): weak dimensions size the trade down, only physics
         # (handled by the existing risk gates) can veto. Records every proposal.
         self._orchestrator = Orchestrator(self.config.orchestrator)
+        self.orchestrator = self._orchestrator
         # Live-management state for the orchestrator round table on OPEN trades:
         #   * entry-health snapshot (the graded evidence baseline captured when a
         #     trade was opened) keyed by broker order id — lets management compare
