@@ -78,6 +78,14 @@ def main() -> None:
     config = AppConfig()
     _apply_log_level(config.log_level)
 
+    # Ops: optional structured JSON logging + trade/risk audit streams. Additive
+    # — composes with the console + event-store sinks above. Never fatal.
+    try:
+        from ops.logging_config import configure_structured_logging
+        configure_structured_logging(getattr(config, "ops", None))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("Structured logging setup skipped: {}", exc)
+
     logger.info(f"Instrument registry loaded — {len(INSTRUMENT_REGISTRY)} instruments")
     for cat in config.enabled_categories:
         instruments = get_instruments_by_category(cat)

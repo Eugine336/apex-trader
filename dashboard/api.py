@@ -157,7 +157,15 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
 
     @app.get("/api/health")
     def health():
-        return {"status": "ok"}
+        """Aggregate system health — broker, adaptive layers, drawdown, tick age.
+
+        Stays unauthenticated (liveness probes hit it) and always returns 200 so
+        a probe can read ``status`` from the body rather than the HTTP code.
+        """
+        try:
+            return _state.get_health()
+        except Exception:  # noqa: BLE001
+            return {"status": "ok", "ops_enabled": False}
 
     @app.get("/api/status")
     def status():
