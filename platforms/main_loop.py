@@ -2157,21 +2157,29 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                 self._check_pending_orders()
                 self._check_weekend_protection()
                 with self._profile("position_management"):
-                    closed_count = self._update_positions()
-                    self._check_scale_in()
-                    # ── In-trade active management (new capabilities) ──────────
-                    if self.managed_positions:
-                        self._check_news_exit(now)
-                        self._check_session_close(now)
-                        self._check_portfolio_heat()
-                        self._check_spread_deterioration()
-                        open_trade_data = self._fetch_open_trade_market_data(now)
-                        if open_trade_data:
-                            self._analyse_open_trades(open_trade_data, now)
-                        else:
-                            logger.warning(
-                                "[management] open-trade strategic analysis skipped — fresh full-timeframe data unavailable",
-                            )
+                    # Open a per-cycle price snapshot so every management pass
+                    # evaluates open positions against one consistent price
+                    # point and each symbol is fetched once (see
+                    # PlatformManager.begin_price_snapshot).
+                    self.platforms.begin_price_snapshot()
+                    try:
+                        closed_count = self._update_positions()
+                        self._check_scale_in()
+                        # ── In-trade active management (new capabilities) ──────────
+                        if self.managed_positions:
+                            self._check_news_exit(now)
+                            self._check_session_close(now)
+                            self._check_portfolio_heat()
+                            self._check_spread_deterioration()
+                            open_trade_data = self._fetch_open_trade_market_data(now)
+                            if open_trade_data:
+                                self._analyse_open_trades(open_trade_data, now)
+                            else:
+                                logger.warning(
+                                    "[management] open-trade strategic analysis skipped — fresh full-timeframe data unavailable",
+                                )
+                    finally:
+                        self.platforms.end_price_snapshot()
                 self.watchdog.record_trade_check_success()
             except Exception as exc:
                 logger.error("Position update error: {}", exc)
@@ -2466,7 +2474,13 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
         try:
             from brain.regime_detector import RegimeDetector
 
-            _regime_det = RegimeDetector()
+            # Reuse one stateless volatility-regime analyzer instead of building
+            # a fresh instance every scan cycle (analyze() is a pure function of
+            # the candle frame, so a single shared instance is safe).
+            _regime_det = getattr(self, "_vol_regime_detector", None)
+            if _regime_det is None:
+                _regime_det = RegimeDetector()
+                self._vol_regime_detector = _regime_det
             _vol_analyses = []
             for pair, frames in market_data.items():
                 vol_df = self._select_vol_timeframe(frames)
@@ -7940,6 +7954,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
 
             results = getattr(report, "results", None) or []
             ts = _time.time()
+            batch: list = []
             for result in results:
                 pair = getattr(result, "pair", None)
                 if not pair:
@@ -7964,7 +7979,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                                 ctx["module_mode"] = gov.mode_for(module).value
                         except Exception as exc:  # noqa: BLE001
                             logger.debug("[module-governor] tag failed for {}: {}", module, exc)
-                    self._signal_ledger.record_signal(SignalRecord(
+                    batch.append(SignalRecord(
                         pair=pair,
                         emitter=module,
                         direction=direction,
@@ -7975,7 +7990,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     ))
                 consensus_dir = getattr(result, "consensus_direction", "") or getattr(result, "direction", "")
                 if consensus_dir in ("LONG", "SHORT"):
-                    self._signal_ledger.record_signal(SignalRecord(
+                    batch.append(SignalRecord(
                         pair=pair,
                         emitter="consensus",
                         direction=consensus_dir,
@@ -7996,7 +8011,7 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                     if direction not in ("LONG", "SHORT"):
                         continue
                     module = getattr(vote, "module", "unknown")
-                    self._signal_ledger.record_signal(SignalRecord(
+                    batch.append(SignalRecord(
                         pair=pair,
                         emitter=module,
                         direction=direction,
@@ -8005,6 +8020,8 @@ class TradingLoop(RecoveryReconciliationMixin, RiskHeatMarginMixin, ExitChecksMi
                         context={"virtual": True, "shadow": True, "weight": 0.0},
                         timestamp=ts,
                     ))
+            if batch:
+                self._signal_ledger.record_signals(batch)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[signal-ledger] record_scan_signals failed: {}", exc)
 

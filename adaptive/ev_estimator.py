@@ -34,6 +34,13 @@ class EVEstimator:
 
     def __init__(self, min_trades_for_gate: int = 10):
         self.min_trades_for_gate = min_trades_for_gate
+        # Memoize estimates within a stable trade_history. EV is a pure function
+        # of the filtered trades, which only change when a trade closes (history
+        # grows). Keying the cache on the history length lets repeated per-cycle
+        # estimates (same history) reuse the result instead of rescanning, and
+        # auto-invalidates the moment a new trade is appended.
+        self._cache: dict[tuple, EVEstimate] = {}
+        self._cache_hist_len: int = -1
 
     def estimate(
         self,
@@ -42,28 +49,47 @@ class EVEstimator:
         session: str,
         trade_history: list[dict],
     ) -> EVEstimate:
-        pair_trades = [t for t in trade_history if t.get("pair") == pair]
+        hist_len = len(trade_history)
+        if hist_len != self._cache_hist_len:
+            self._cache.clear()
+            self._cache_hist_len = hist_len
+        cache_key = (pair, regime, session)
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            return cached
+
+        # Single pass partitions the history into the three candidate buckets
+        # instead of up to three independent full scans.
+        pair_trades: list[dict] = []
+        regime_trades: list[dict] = []
+        session_trades: list[dict] = []
+        for t in trade_history:
+            if t.get("pair") == pair:
+                pair_trades.append(t)
+            if t.get("regime") == regime:
+                regime_trades.append(t)
+            if t.get("session") == session:
+                session_trades.append(t)
+
         if len(pair_trades) >= self.min_trades_for_gate:
-            return self._compute(pair_trades, "pair")
-
-        regime_trades = [t for t in trade_history if t.get("regime") == regime]
-        if len(regime_trades) >= self.min_trades_for_gate:
-            return self._compute(regime_trades, "regime")
-
-        session_trades = [t for t in trade_history if t.get("session") == session]
-        if len(session_trades) >= self.min_trades_for_gate:
-            return self._compute(session_trades, "session")
-
-        return EVEstimate(
-            expected_value=0.0,
-            win_rate=0.0,
-            avg_win=0.0,
-            avg_loss=0.0,
-            sample_size=len(trade_history),
-            confidence="insufficient",
-            source="default",
-            unit="R",
-        )
+            result = self._compute(pair_trades, "pair")
+        elif len(regime_trades) >= self.min_trades_for_gate:
+            result = self._compute(regime_trades, "regime")
+        elif len(session_trades) >= self.min_trades_for_gate:
+            result = self._compute(session_trades, "session")
+        else:
+            result = EVEstimate(
+                expected_value=0.0,
+                win_rate=0.0,
+                avg_win=0.0,
+                avg_loss=0.0,
+                sample_size=hist_len,
+                confidence="insufficient",
+                source="default",
+                unit="R",
+            )
+        self._cache[cache_key] = result
+        return result
 
     def _compute(self, trades: list[dict], source: str) -> EVEstimate:
         r_values: list[float] = []

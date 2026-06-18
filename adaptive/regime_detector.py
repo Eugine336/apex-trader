@@ -440,8 +440,13 @@ class RegimeDetector(TuningGuardMixin):
             committed.confidence = conf
             committed.signals = sig
             committed.duration_sec = max(0.0, now - committed.since_ts)
-            self._persist_state(committed, now)
+            # Persist only when the committed regime actually changes. Confidence
+            # and duration are recomputed from candles on restart, so committing
+            # them every cycle was pure write amplification on the scan path; the
+            # durable fact worth saving is the regime label + its since_ts, which
+            # only move on a flip.
             if flipped:
+                self._persist_state(committed, now)
                 logger.info(
                     "[RegimeDetector] {} regime → {} (conf {:.2f})",
                     pair, committed.regime, conf,

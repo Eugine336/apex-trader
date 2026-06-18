@@ -201,6 +201,21 @@ class TradeManager:
         self.trailing = StructureTrailingStop(swing_lookback=trailing_swing_lookback)
         self.partial_calc = PartialCloseCalculator()
         self._trades: dict[str, ManagedTrade] = {}
+        # Persistent M5 structure analyzer + per-frame memo. _check_structure_exit
+        # and _adjust_tp2 both run StructureEngine(swing_lookback=3).analyze() on
+        # the same M5 frame; reusing one engine and caching the analysis by frame
+        # identity removes the repeated construction + recomputation per update.
+        self._m5_structure_engine = StructureEngine(swing_lookback=3)
+        self._m5_analysis_cache: Optional[tuple] = None
+
+    def _analyze_m5_structure(self, df_m5: pd.DataFrame):
+        """Analyze an M5 frame once, memoized by frame identity within a cycle."""
+        cached = self._m5_analysis_cache
+        if cached is not None and cached[0] is df_m5:
+            return cached[1]
+        analysis = self._m5_structure_engine.analyze(df_m5)
+        self._m5_analysis_cache = (df_m5, analysis)
+        return analysis
 
     @staticmethod
     def _is_long(direction: str) -> bool:
@@ -665,8 +680,7 @@ class TradeManager:
             return False
         if len(df_m5) < 10:
             return False
-        struct = StructureEngine(swing_lookback=3)
-        analysis = struct.analyze(df_m5)
+        analysis = self._analyze_m5_structure(df_m5)
         is_long = self._is_long(trade.direction)
         strat_confirms_break = (
             strat is not None
@@ -764,8 +778,7 @@ class TradeManager:
         if len(df_m5) < 10:
             return
         is_long = self._is_long(trade.direction)
-        struct = StructureEngine(swing_lookback=3)
-        analysis = struct.analyze(df_m5)
+        analysis = self._analyze_m5_structure(df_m5)
         continuation_events = (StructureEvent.BOS_BULLISH,) if is_long else (StructureEvent.BOS_BEARISH,)
         counter_events = (StructureEvent.CHOCH_BEARISH,) if is_long else (StructureEvent.CHOCH_BULLISH,)
         if analysis.last_event in continuation_events:

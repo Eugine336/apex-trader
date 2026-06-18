@@ -97,6 +97,13 @@ class EntryEngine:
     ):
         self.config = config or AppConfig()
         self.structure = StructureEngine()
+        # Reusable liquidity mapper + memo for calculate_targets. The H1 liquidity
+        # map and structure analysis depend only on (h1_df, pip_size) — not the
+        # entry price — so when calculate_targets is invoked more than once per
+        # candidate (e.g. a MARKET entry re-prices at the live tick) the heavy
+        # map()/analyze() pass is computed once and reused.
+        self._targets_liq_mapper = LiquidityMapper()
+        self._targets_struct_cache: Optional[tuple] = None
         self.drawdown = DrawdownGuard()
         self.pattern_detector = EntryPatternDetector()
         self.news_guard = NewsGuard()
@@ -1288,6 +1295,21 @@ class EntryEngine:
         )
         return floored_sl, floor_distance
 
+    def _targets_market_structure(self, h1_df: pd.DataFrame, pip_size: float):
+        """Return (liq_map, h1_analysis) for an H1 frame, memoized per frame.
+
+        Both depend only on (h1_df, pip_size); caching them by frame identity +
+        pip_size avoids rebuilding LiquidityMapper/StructureEngine on repeated
+        calculate_targets calls for the same candidate within a cycle.
+        """
+        cache = self._targets_struct_cache
+        if cache is not None and cache[0] is h1_df and cache[1] == pip_size:
+            return cache[2], cache[3]
+        liq_map = self._targets_liq_mapper.map(h1_df, pip_size)
+        h1_analysis = StructureEngine(pip_size=pip_size).analyze(h1_df)
+        self._targets_struct_cache = (h1_df, pip_size, liq_map, h1_analysis)
+        return liq_map, h1_analysis
+
     def calculate_targets(
         self,
         pair: str,
@@ -1314,8 +1336,7 @@ class EntryEngine:
         except (TypeError, ValueError):
             tp2_rr = 3.0
 
-        liq = LiquidityMapper()
-        liq_map = liq.map(h1_df, pip_size)
+        liq_map, h1_analysis = self._targets_market_structure(h1_df, pip_size)
 
         if direction == "LONG":
             tp1_liq = liq_map.nearest_buy_liq
@@ -1326,8 +1347,6 @@ class EntryEngine:
             # Use correct pip_size so min_swing_size filters out noise swings.
             # Default pip_size=0.0001 on synthetics/indices gives near-zero threshold
             # and returns tiny intracandle highs as "swing highs" → TP2 too close.
-            structure = StructureEngine(pip_size=pip_size)
-            h1_analysis = structure.analyze(h1_df)
             tp2_candidate = h1_analysis.swing_high
             if (
                 tp2_candidate
@@ -1353,8 +1372,6 @@ class EntryEngine:
             if entry_price - tp1 < risk:
                 tp1 = entry_price - risk * tp1_rr
 
-            structure = StructureEngine(pip_size=pip_size)
-            h1_analysis = structure.analyze(h1_df)
             tp2_candidate = h1_analysis.swing_low
             if (
                 tp2_candidate

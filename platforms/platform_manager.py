@@ -13,6 +13,7 @@ Deriv: single connection (WebSocket API is account-scoped).
 
 import json
 import os
+import threading
 import time as _time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -153,6 +154,24 @@ class PlatformManager:
         self._deriv_next_reconnect: float = 0.0
 
         self._deriv_reconnect_warned: bool = False
+
+        # Cache of parsed broker symbol-override sets keyed by broker name. The
+        # broker JSON config is static for the process lifetime, so it is read
+        # and parsed once per broker instead of on every get_connector() call
+        # (which is hit many times per position per cycle). Connectivity is
+        # still checked live against _mt5_connected_flags, so routing stays
+        # correct across disconnects/reconnects.
+        self._broker_overrides_cache: dict[str, Optional[set]] = {}
+
+        # Per-cycle price snapshot (thread-local). When the trading loop opens a
+        # snapshot for its management pass, repeated get_price() calls for the
+        # same symbol within that thread return the SAME tick — every open
+        # position is evaluated against one consistent price point per cycle,
+        # and each unique symbol is fetched from the broker at most once
+        # (collapsing O(positions × passes) round-trips to O(unique symbols)).
+        # Thread-local so the dashboard and other threads always read live
+        # prices and never share the loop's snapshot.
+        self._price_snapshot = threading.local()
 
     # ── Convenience properties ───────────────────────────────────────────
 
@@ -365,6 +384,33 @@ class PlatformManager:
             return self.deriv
         raise ConnectionError(f"No platform connected for {symbol}")
 
+    def _broker_overrides(self, broker_name: str) -> Optional[set]:
+        """Return the set of symbol-override keys for a broker, parsed once.
+
+        Caches the parsed result (including a None sentinel for missing/invalid
+        configs) so the broker JSON is never re-read from disk on the hot path.
+        """
+        if broker_name in self._broker_overrides_cache:
+            return self._broker_overrides_cache[broker_name]
+        from pathlib import Path
+
+        result: Optional[set] = None
+        cfg_path = (
+            Path(__file__).parent.parent / "config" / "brokers" / f"{broker_name}.json"
+        )
+        if cfg_path.exists():
+            try:
+                with open(cfg_path) as f:
+                    cfg = json.load(f)
+                overrides = cfg.get("overrides", {})
+                result = {str(k) for k in overrides}
+                result |= {str(k).upper() for k in overrides}
+            except Exception as exc:
+                logger.warning("[platform_manager] config load for symbol routing failed: {}", exc)
+                result = None
+        self._broker_overrides_cache[broker_name] = result
+        return result
+
     def _route_mt5_symbol(self, symbol: str) -> Optional[MT5Connector]:
         """Return the best connected MT5 connector for a symbol.
 
@@ -372,8 +418,6 @@ class PlatformManager:
         1. A connected broker that has an explicit mapping for the symbol
         2. Any connected broker (first one wins)
         """
-        from pathlib import Path
-
         fallback: Optional[MT5Connector] = None
 
         for i, connector in enumerate(self.mt5_connectors):
@@ -386,20 +430,11 @@ class PlatformManager:
             broker_name = getattr(connector, "_broker_name", "")
             if not broker_name or broker_name == "auto":
                 continue
-            cfg_path = (
-                Path(__file__).parent.parent / "config" / "brokers" / f"{broker_name}.json"
-            )
-            if not cfg_path.exists():
+            overrides = self._broker_overrides(broker_name)
+            if not overrides:
                 continue
-            try:
-                with open(cfg_path) as f:
-                    cfg = json.load(f)
-                overrides = cfg.get("overrides", {})
-                if symbol in overrides or symbol.upper() in overrides:
-                    return connector
-            except Exception as exc:
-                logger.warning("[platform_manager] config load for symbol routing failed: {}", exc)
-                continue
+            if symbol in overrides or symbol.upper() in overrides:
+                return connector
 
         return fallback  # None if no MT5 brokers connected
 
@@ -915,7 +950,29 @@ class PlatformManager:
 
         return all_data
 
+    def begin_price_snapshot(self) -> None:
+        """Open a per-cycle price snapshot for the CURRENT thread.
+
+        Within the snapshot, get_price() fetches each symbol from the broker at
+        most once and serves the cached tick thereafter, so all positions in a
+        management pass see a single consistent price point. Always pair with
+        end_price_snapshot() in a finally block.
+        """
+        self._price_snapshot.cache = {}
+
+    def end_price_snapshot(self) -> None:
+        """Close the current thread's price snapshot (back to live fetches)."""
+        self._price_snapshot.cache = None
+
     def get_price(self, symbol: str) -> TickData:
+        snap = getattr(self._price_snapshot, "cache", None)
+        if snap is not None:
+            key = symbol.upper()
+            tick = snap.get(key)
+            if tick is None:
+                tick = self.get_connector(symbol).get_price(symbol)
+                snap[key] = tick
+            return tick
         return self.get_connector(symbol).get_price(symbol)
 
     def get_spread(self, symbol: str) -> float:

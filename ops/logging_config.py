@@ -160,7 +160,7 @@ def configure_structured_logging(
             retention=retention,
             filter=_make_filter(None),
             format=formatter,
-            enqueue=False,
+            enqueue=True,
             backtrace=False,
             catch=True,
         )
@@ -182,7 +182,7 @@ def configure_structured_logging(
                 retention=retention,
                 filter=_make_filter(tag),
                 format=formatter,
-                enqueue=False,
+                enqueue=True,
                 backtrace=False,
                 catch=True,
             )
