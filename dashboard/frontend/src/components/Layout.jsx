@@ -13,6 +13,7 @@ const NAV = [
   { to: '/module-governor', icon: '🚦', label: 'Module Governor' },
   { to: '/ranker', icon: '🏆', label: 'Ranker' },
   { to: '/performance', icon: '📈', label: 'Performance' },
+  { to: '/operations', icon: '🖥', label: 'Operations' },
   { to: '/risk', icon: '🛡', label: 'Risk Monitor' },
   { to: '/ml', icon: '🧠', label: 'ML Insights' },
   { to: '/decisions', icon: '🎯', label: 'Decisions' },

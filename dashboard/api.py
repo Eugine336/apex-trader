@@ -312,6 +312,11 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
         """Adaptive learning layer — signal ledger, emitter feedback, vote calibration, per-class weights, pair learner, tuner agent."""
         return _state.get_learning()
 
+    @app.get("/api/operations")
+    def operations():
+        """Ops control room — health, drawdown, equity, open positions, risk events, regime map, exposure, layer pulse, governor actions, watchdog, and tick-latency profile."""
+        return _state.get_operations()
+
     @app.post("/api/control")
     async def control(body: dict):
         action = body.get("action", "")
