@@ -27,6 +27,7 @@ from loguru import logger
 
 from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open, Platform
 from brain.world_model import WorldModelStore, build_world_model
+from core.system_context import SystemContext
 from tick import EventBus, Tick, TickStore, CandleCloseDetector, TickRouter
 from tick.models import CandleClose
 from scanner.candle_close_handler import CandleCloseHandler
@@ -85,12 +86,13 @@ class MT5TickPoller:
         error_counts: dict[str, int] = defaultdict(int)
         last_error_log: dict[str, float] = {}
         remove_after = 500
+        removed: set[str] = set()
 
         while self._running:
             for sym in list(self._symbols):
                 if not self._running:
                     break
-                if sym in skipped:
+                if sym in removed:
                     continue
                 try:
                     td = self._pm.get_price(sym)
@@ -122,6 +124,7 @@ class MT5TickPoller:
                         sym, remove_after,
                     )
                     self._symbols.remove(sym)
+                    removed.add(sym)
             _time.sleep(self._interval)
 
 
@@ -361,12 +364,14 @@ class FlushLoop:
         executor: ActionExecutor,
         platform_manager: PlatformManager,
         evaluator: Optional[PositionEvaluator] = None,
+        on_close_callback: Optional[Any] = None,
         interval: float = 0.1,
     ) -> None:
         self._aggregator = aggregator
         self._executor = executor
         self._pm = platform_manager
         self._evaluator = evaluator
+        self._on_close = on_close_callback
         self._interval = interval
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -404,6 +409,16 @@ class FlushLoop:
                     for i, r in enumerate(results):
                         if r.success:
                             self._intents_executed += 1
+                            intent = intents[i] if i < len(intents) else None
+                            if (
+                                self._on_close is not None
+                                and intent is not None
+                                and intent.intent_type == IntentType.CLOSE
+                            ):
+                                try:
+                                    self._on_close(intent, r)
+                                except Exception as exc:
+                                    logger.debug("[flush-loop] close callback error: {}", exc)
                         elif self._evaluator and not r.success:
                             err_msg = str(getattr(r, "error", "") or "").lower()
                             if "market closed" in err_msg or "market is closed" in err_msg:
@@ -501,10 +516,12 @@ class EventDrivenSystem:
         self,
         config: AppConfig,
         platform_manager: PlatformManager,
+        ctx: Optional[SystemContext] = None,
     ) -> None:
         self._config = config
         self._pm = platform_manager
         self._running = False
+        self._ctx = ctx
 
         # ── Core infrastructure ──────────────────────────────────────
         self._event_bus = EventBus()
@@ -528,7 +545,7 @@ class EventDrivenSystem:
             broker=self._pm,  # PlatformManager satisfies BrokerPort
             config=ExecutorConfig(),
         )
-        self._mgmt_store = ManagementStateStore()
+        self._mgmt_store = ManagementStateStore(db_path="data/management_state.db")
         self._evaluator = PositionEvaluator(
             platform_manager=self._pm,
             tick_store=self._tick_store,
@@ -552,6 +569,7 @@ class EventDrivenSystem:
         self._flush_loop = FlushLoop(
             self._aggregator, self._executor, self._pm,
             evaluator=self._evaluator,
+            on_close_callback=self._handle_close_result,
         )
         self._tick_eval_loop = TickEvalLoop(self._evaluator)
 
@@ -621,6 +639,7 @@ class EventDrivenSystem:
         self._tick_router.stop()
         self._candle_handler.shutdown()
         self._event_bus.clear()
+        self._mgmt_store.close()
 
         logger.info("[event-driven] shutdown complete")
 
@@ -659,6 +678,43 @@ class EventDrivenSystem:
         }
 
     # ── Internal helpers ─────────────────────────────────────────────
+
+    def _handle_close_result(self, intent: Intent, result: Any) -> None:
+        """Called by FlushLoop when a CLOSE intent succeeds.
+
+        Extracts P&L from the broker response and feeds it to the
+        risk feedback chain.
+        """
+        symbol = getattr(intent, "symbol", "") or ""
+        direction = getattr(intent, "direction", "")
+        ticket = intent.position_ticket
+
+        pnl_dollars = 0.0
+        pnl_pips = 0.0
+        resp = getattr(result, "broker_response", None)
+        if resp is not None:
+            pnl_dollars = float(getattr(resp, "pnl", 0.0) or 0.0)
+
+        if symbol and direction:
+            try:
+                pip_size = get_pip_size(symbol)
+                entry = getattr(resp, "entry_price", 0.0) or 0.0
+                close_p = getattr(resp, "close_price", 0.0) or 0.0
+                if entry > 0 and close_p > 0 and pip_size > 0:
+                    if direction.upper() in ("BUY", "LONG"):
+                        pnl_pips = (close_p - entry) / pip_size
+                    else:
+                        pnl_pips = (entry - close_p) / pip_size
+            except Exception:
+                pass
+
+        self._on_trade_closed(
+            symbol=symbol,
+            direction=direction,
+            pnl_dollars=pnl_dollars,
+            pnl_pips=pnl_pips,
+            ticket=ticket,
+        )
 
     def _recover_open_positions(self) -> None:
         """Initialize management state for any positions open at startup."""
@@ -745,8 +801,13 @@ class EventDrivenSystem:
     def _on_entry_decision(self, decision: dict[str, Any]) -> None:
         """Handle entry decisions from EntryOrchestrator.
 
-        Converts the decision dict into an order execution via PlatformManager.
-        Handles MT5 lots-based and Deriv stake-based sizing.
+        Checks all risk subsystems before executing an order:
+        1. DrawdownGuard — FROZEN mode blocks all entries
+        2. PortfolioRiskStateMachine — DEFENSIVE+ blocks new entries
+        3. PortfolioGovernor — max positions, daily loss, concentration
+        4. AccountRiskManager — per-account daily loss cap / heat
+        5. CorrelationEngine — cluster exposure (replaces simple currency count)
+        6. PositionSizer — compute lot size / stake
         """
         symbol = decision.get("symbol", "")
         direction = decision.get("direction", "")
@@ -762,41 +823,141 @@ class EventDrivenSystem:
         )
 
         try:
-            # ── Correlation / exposure check ─────────────────────────
-            max_open = self._config.risk.max_open_trades
-            max_corr = self._config.risk.max_correlated_trades
+            ctx = self._ctx
             try:
                 open_positions = self._pm.get_all_open_positions()
             except Exception:
                 open_positions = []
 
-            if len(open_positions) >= max_open:
-                logger.warning(
-                    "EVENT-DRIVEN ENTRY SKIPPED | {} — max open trades {}/{}",
-                    symbol, len(open_positions), max_open,
-                )
-                return
+            balance = self._pm.get_platform_balance(symbol)
 
-            currency_counts: dict[str, int] = defaultdict(int)
-            for pos in open_positions:
-                psym = getattr(pos, "symbol", "")
-                for ccy in ("USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF"):
-                    if ccy in psym:
-                        currency_counts[ccy] += 1
+            # ── Gate 1: DrawdownGuard ────────────────────────────────
+            if ctx is not None and ctx.drawdown_guard is not None:
+                try:
+                    from brain.drawdown_guard import DrawdownMode
+                    dd_status = ctx.drawdown_guard.get_status()
+                    if dd_status.mode == DrawdownMode.FROZEN.value:
+                        logger.warning(
+                            "EVENT-DRIVEN ENTRY BLOCKED | {} — DrawdownGuard FROZEN "
+                            "(daily loss limit hit)", symbol,
+                        )
+                        return
+                    if dd_status.mode == DrawdownMode.RECOVERY.value:
+                        logger.info(
+                            "EVENT-DRIVEN ENTRY NOTE | {} — DrawdownGuard RECOVERY mode", symbol,
+                        )
+                except Exception as exc:
+                    logger.debug("[entry-risk] DrawdownGuard check failed: {}", exc)
 
-            for ccy in ("USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF"):
-                if ccy in symbol and currency_counts.get(ccy, 0) >= max_corr:
+            # ── Gate 2: PortfolioRiskStateMachine ────────────────────
+            if ctx is not None and ctx.portfolio_risk_sm is not None:
+                try:
+                    from risk.portfolio_risk_state import PortfolioRiskState
+                    sm_state = ctx.portfolio_risk_sm.state
+                    if sm_state in (
+                        PortfolioRiskState.DEFENSIVE,
+                        PortfolioRiskState.REDUCING,
+                        PortfolioRiskState.EMERGENCY,
+                    ):
+                        logger.warning(
+                            "EVENT-DRIVEN ENTRY BLOCKED | {} — PortfolioRisk state={} "
+                            "(entries frozen)", symbol, sm_state.name,
+                        )
+                        return
+                except Exception as exc:
+                    logger.debug("[entry-risk] PortfolioRiskSM check failed: {}", exc)
+
+            # ── Gate 3: PortfolioGovernor ────────────────────────────
+            if ctx is not None and ctx.portfolio_governor is not None:
+                try:
+                    verdict = ctx.portfolio_governor.check(
+                        symbol=symbol,
+                        direction=direction,
+                        open_positions=open_positions,
+                        account_balance=balance or 0.0,
+                    )
+                    if not verdict.allowed:
+                        logger.warning(
+                            "EVENT-DRIVEN ENTRY BLOCKED | {} — Governor: {}",
+                            symbol, verdict.reason,
+                        )
+                        return
+                except Exception as exc:
+                    logger.debug("[entry-risk] PortfolioGovernor check failed: {}", exc)
+
+            # ── Gate 4: AccountRiskManager ───────────────────────────
+            if ctx is not None and ctx.account_risk is not None:
+                try:
+                    acct = ctx.account_key(symbol, self._pm)
+                    if balance and balance > 0:
+                        ctx.account_risk.update_balance(acct, balance)
+                    if ctx.account_risk.daily_loss_halted(acct):
+                        logger.warning(
+                            "EVENT-DRIVEN ENTRY BLOCKED | {} — AccountRisk: account {} "
+                            "daily loss cap hit", symbol, acct,
+                        )
+                        return
+                    if ctx.account_risk.heat_blocked(acct):
+                        logger.warning(
+                            "EVENT-DRIVEN ENTRY BLOCKED | {} — AccountRisk: account {} "
+                            "heat blocked", symbol, acct,
+                        )
+                        return
+                except Exception as exc:
+                    logger.debug("[entry-risk] AccountRisk check failed: {}", exc)
+
+            # ── Gate 5: Correlation / exposure ───────────────────────
+            if ctx is not None and ctx.correlation_engine is not None:
+                try:
+                    from brain.correlation_engine import OpenTrade
+                    corr_trades = []
+                    for pos in open_positions:
+                        corr_trades.append(OpenTrade(
+                            pair=getattr(pos, "symbol", ""),
+                            direction=getattr(pos, "direction", "LONG"),
+                            risk_pct=0.02,
+                        ))
+                    approved, reason = ctx.correlation_engine.can_open_trade(
+                        pair=symbol,
+                        direction=direction,
+                        existing_trades=corr_trades,
+                    )
+                    if not approved:
+                        logger.warning(
+                            "EVENT-DRIVEN ENTRY BLOCKED | {} — Correlation: {}",
+                            symbol, reason,
+                        )
+                        return
+                except Exception as exc:
+                    logger.debug("[entry-risk] Correlation check failed: {}", exc)
+            else:
+                # Fallback: simple currency-count check
+                max_open = self._config.risk.max_open_trades
+                max_corr = self._config.risk.max_correlated_trades
+                if len(open_positions) >= max_open:
                     logger.warning(
-                        "EVENT-DRIVEN ENTRY SKIPPED | {} — {} exposure {}/{} (max correlated)",
-                        symbol, ccy, currency_counts[ccy] + 1, max_corr,
+                        "EVENT-DRIVEN ENTRY SKIPPED | {} — max open trades {}/{}",
+                        symbol, len(open_positions), max_open,
                     )
                     return
+                currency_counts: dict[str, int] = defaultdict(int)
+                for pos in open_positions:
+                    psym = getattr(pos, "symbol", "")
+                    for ccy in ("USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF"):
+                        if ccy in psym:
+                            currency_counts[ccy] += 1
+                for ccy in ("USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF"):
+                    if ccy in symbol and currency_counts.get(ccy, 0) >= max_corr:
+                        logger.warning(
+                            "EVENT-DRIVEN ENTRY SKIPPED | {} — {} exposure {}/{} (max correlated)",
+                            symbol, ccy, currency_counts[ccy] + 1, max_corr,
+                        )
+                        return
 
             # ── Position sizing ──────────────────────────────────────
-            balance = self._pm.get_platform_balance(symbol)
             risk_pct = self._config.risk.risk_per_trade_pct / 100.0
             pip_size = self._safe_pip_size(symbol)
-            ctx = build_context_for_symbol(symbol)
+            pctx = build_context_for_symbol(symbol)
 
             info = INSTRUMENT_REGISTRY.get(symbol)
             pip_value = info.pip_value_per_lot if info else 10.0
@@ -809,11 +970,10 @@ class EventDrivenSystem:
                 stop_loss=sl,
                 pip_size=pip_size,
                 pip_value_per_lot=pip_value,
-                context=ctx,
+                context=pctx,
                 symbol=symbol,
             )
 
-            # ── Zero-size guard ──────────────────────────────────────
             if size_result.lots <= 0 and size_result.stake_usd <= 0:
                 logger.warning(
                     "EVENT-DRIVEN ENTRY SKIPPED | {} — position size is zero (sizing_mode={})",
@@ -828,7 +988,7 @@ class EventDrivenSystem:
                 lots=size_result.lots,
                 sl=sl,
                 tp=tp1,
-                stake_usd=size_result.stake_usd if ctx.uses_stake else None,
+                stake_usd=size_result.stake_usd if pctx.uses_stake else None,
                 comment=f"ED|{conviction}",
             )
 
@@ -837,6 +997,7 @@ class EventDrivenSystem:
                     "EVENT-DRIVEN ORDER PLACED | {} {} {:.2f} lots ticket={}",
                     symbol, direction, result.lots, result.order_id,
                 )
+                self._on_order_filled(symbol, direction, result, balance)
             else:
                 err = getattr(result, "error", "unknown")
                 logger.warning(
@@ -846,6 +1007,88 @@ class EventDrivenSystem:
             logger.error(
                 "EVENT-DRIVEN ORDER ERROR | {} {} | {}", symbol, direction, exc,
             )
+
+    # ── Trade close feedback chain ───────────────────────────────────
+
+    def _on_order_filled(
+        self,
+        symbol: str,
+        direction: str,
+        result: Any,
+        balance: float,
+    ) -> None:
+        """Post-fill bookkeeping: update account risk balance."""
+        ctx = self._ctx
+        if ctx is None:
+            return
+        try:
+            if ctx.account_risk is not None and balance and balance > 0:
+                acct = ctx.account_key(symbol, self._pm)
+                ctx.account_risk.update_balance(acct, balance)
+        except Exception as exc:
+            logger.debug("[post-fill] account risk update failed: {}", exc)
+
+    def _on_trade_closed(
+        self,
+        symbol: str,
+        direction: str,
+        pnl_dollars: float,
+        pnl_pips: float,
+        ticket: str,
+    ) -> None:
+        """Feed closed-trade P&L into all risk subsystems.
+
+        Mirrors the risk-relevant portion of TradingLoop._record_closed_trade.
+        """
+        ctx = self._ctx
+        if ctx is None:
+            return
+
+        balance = self._pm.get_platform_balance(symbol)
+
+        # DrawdownGuard — register P&L as fraction of balance
+        if ctx.drawdown_guard is not None:
+            try:
+                pnl_pct = pnl_dollars / balance if balance and balance > 0 else 0.0
+                ctx.drawdown_guard.register_trade_result(pnl_pct)
+            except Exception as exc:
+                logger.debug("[close-risk] DrawdownGuard update failed: {}", exc)
+
+        # RiskEngine — update internal balance + PnL tracker
+        if ctx.risk_engine is not None:
+            try:
+                ctx.risk_engine.record_trade_result(
+                    pnl_dollars=pnl_dollars,
+                    pnl_pips=pnl_pips,
+                    pair=symbol,
+                    direction=direction,
+                )
+            except Exception as exc:
+                logger.debug("[close-risk] RiskEngine update failed: {}", exc)
+
+        # PortfolioGovernor — fold daily P&L
+        if ctx.portfolio_governor is not None:
+            try:
+                if balance and balance > 0:
+                    ctx.portfolio_governor.set_reference_balance(balance)
+                ctx.portfolio_governor.update_daily_pnl(pnl_dollars)
+            except Exception as exc:
+                logger.debug("[close-risk] Governor daily PnL update failed: {}", exc)
+
+        # AccountRiskManager — per-account silo
+        if ctx.account_risk is not None:
+            try:
+                acct = ctx.account_key(symbol, self._pm)
+                if balance and balance > 0:
+                    ctx.account_risk.update_balance(acct, balance)
+                ctx.account_risk.register_realized(acct, pnl_dollars)
+            except Exception as exc:
+                logger.debug("[close-risk] AccountRisk update failed: {}", exc)
+
+        logger.info(
+            "EVENT-DRIVEN CLOSE FEEDBACK | {} {} ticket={} pnl=${:.2f} ({:.1f}pip)",
+            direction, symbol, ticket, pnl_dollars, pnl_pips,
+        )
 
 
 def _extract_currencies(symbol: str) -> list[str]:

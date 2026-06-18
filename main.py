@@ -139,9 +139,12 @@ def main() -> None:
         logger.info("EVENT-DRIVEN MODE ENABLED (USE_EVENT_DRIVEN=true)")
 
     if use_event_driven:
+        from core.system_context import SystemContext
         platform_manager = PlatformManager(config)
+        sys_ctx = SystemContext.create(config, platform_manager)
         trading_loop = None
     else:
+        sys_ctx = None
         trading_loop = TradingLoop(config)
         platform_manager = trading_loop.platforms
 
@@ -195,7 +198,7 @@ def main() -> None:
 
             if use_event_driven:
                 from event_driven_bootstrap import EventDrivenSystem
-                ed_system = EventDrivenSystem(config, platform_manager)
+                ed_system = EventDrivenSystem(config, platform_manager, ctx=sys_ctx)
                 ed_system.start()
                 state.set_event_driven_system(ed_system)
                 logger.info("Event-driven system started in dashboard mode")
@@ -234,7 +237,7 @@ def main() -> None:
             return
         if use_event_driven:
             from event_driven_bootstrap import EventDrivenSystem
-            ed_system = EventDrivenSystem(config, platform_manager)
+            ed_system = EventDrivenSystem(config, platform_manager, ctx=sys_ctx)
             ed_system.run_forever()
         else:
             trading_loop.run()
