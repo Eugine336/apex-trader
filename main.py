@@ -47,6 +47,7 @@ def _apply_log_level(level: str) -> None:
     logger.add(event_store_sink, level="DEBUG")
 
 
+# DEPRECATED: Remove after event-driven validation (Phase 9)
 def _start_trading_loop(trading_loop) -> None:
     """Run the TradingLoop cycle in a background thread.
 
@@ -131,6 +132,12 @@ def main() -> None:
 
     logger.info("Phase 8 — Dashboard available (--dashboard to launch)")
 
+    # ── Event-driven kill switch ────────────────────────────────────
+    from event_driven_bootstrap import is_event_driven_enabled
+    use_event_driven = is_event_driven_enabled()
+    if use_event_driven:
+        logger.info("EVENT-DRIVEN MODE ENABLED (USE_EVENT_DRIVEN=true)")
+
     trading_loop = TradingLoop(config)
     platform_manager = trading_loop.platforms
 
@@ -181,11 +188,17 @@ def main() -> None:
                 logger.error("Startup self-test FAILED — refusing to start dashboard trading to protect capital")
                 return
 
-            trading_loop.running = True
-            trading_loop._perform_startup_recovery()
-            t = threading.Thread(target=_start_trading_loop, args=(trading_loop,), daemon=True)
-            t.start()
-            logger.info("Trading loop started in background thread")
+            if use_event_driven:
+                from event_driven_bootstrap import EventDrivenSystem
+                ed_system = EventDrivenSystem(config, platform_manager)
+                ed_system.start()
+                logger.info("Event-driven system started in dashboard mode")
+            else:
+                trading_loop.running = True
+                trading_loop._perform_startup_recovery()
+                t = threading.Thread(target=_start_trading_loop, args=(trading_loop,), daemon=True)
+                t.start()
+                logger.info("Trading loop started in background thread")
         else:
             logger.warning("No platforms connected — dashboard will show empty data")
 
@@ -205,12 +218,20 @@ def main() -> None:
         try:
             uvicorn.run(app, host=bind_host, port=bind_port, log_level="info")
         finally:
-            trading_loop.running = False
+            if use_event_driven:
+                ed_system.stop()
+            else:
+                trading_loop.running = False
     else:
         if not platform_manager.any_connected:
             logger.error("No platforms connected — cannot trade. Set DERIV_CLIENT_ID and DERIV_ACCESS_TOKEN in .env")
             return
-        trading_loop.run()
+        if use_event_driven:
+            from event_driven_bootstrap import EventDrivenSystem
+            ed_system = EventDrivenSystem(config, platform_manager)
+            ed_system.run_forever()
+        else:
+            trading_loop.run()
 
 
 if __name__ == "__main__":
