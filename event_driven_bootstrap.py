@@ -36,6 +36,7 @@ from execution.action_executor import ActionExecutor, ExecutorConfig
 from execution.risk_gate import GateConfig
 from execution.position_worker import PositionWorker, WorkerConfig, ScanContext, MarketContext
 from execution.position_snapshot import PositionSnapshot, build_position_snapshot
+from execution.management_state import ManagementStateStore
 from entry import EntryOrchestrator, EntryConfig
 from platform_context import build_context_for_symbol
 from platforms.platform_manager import PlatformManager
@@ -61,6 +62,8 @@ class MT5TickPoller:
         self._interval = poll_interval
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._error_counts: dict[str, int] = {}
+        self._last_error_log: dict[str, float] = {}
 
     def start(self) -> None:
         if self._running or not self._symbols:
@@ -87,6 +90,8 @@ class MT5TickPoller:
             for sym in list(self._symbols):
                 if not self._running:
                     break
+                if sym in skipped:
+                    continue
                 try:
                     td = self._pm.get_price(sym)
                     if td is not None and td.bid > 0:
@@ -136,6 +141,8 @@ class DerivTickAdapter:
         self._interval = poll_interval
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._error_counts: dict[str, int] = {}
+        self._last_error_log: dict[str, float] = {}
 
     def start(self) -> None:
         if self._running or not self._symbols:
@@ -204,6 +211,7 @@ class PositionEvaluator:
         tick_store: TickStore,
         world_model_store: WorldModelStore,
         intent_aggregator: IntentAggregator,
+        mgmt_store: Optional[ManagementStateStore] = None,
         worker_config: Optional[WorkerConfig] = None,
         max_workers: int = 4,
     ) -> None:
@@ -211,6 +219,7 @@ class PositionEvaluator:
         self._tick_store = tick_store
         self._wm_store = world_model_store
         self._aggregator = intent_aggregator
+        self._mgmt_store = mgmt_store or ManagementStateStore()
         self._worker = PositionWorker(worker_config or WorkerConfig())
         self._pool = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="pos-eval",
@@ -240,10 +249,16 @@ class PositionEvaluator:
 
         now = datetime.now(timezone.utc)
         by_symbol: dict[str, list] = {}
+        active_tickets: set[str] = set()
         for pos in positions:
             sym = getattr(pos, "symbol", "")
+            ticket = str(getattr(pos, "order_id", getattr(pos, "ticket", "")))
             if sym:
                 by_symbol.setdefault(sym, []).append(pos)
+            if ticket:
+                active_tickets.add(ticket)
+
+        self._mgmt_store.cleanup(active_tickets)
 
         for symbol, pos_list in by_symbol.items():
             tick = self._tick_store.get_latest(symbol)
@@ -272,7 +287,26 @@ class PositionEvaluator:
             except Exception:
                 pass
 
-            snap = build_position_snapshot(pos, current_price=price)
+            mgmt = self._mgmt_store.get_or_create(
+                order_id,
+                original_stop_loss=sl,
+                stop_loss=sl,
+                tp1=getattr(pos, "tp1", 0.0) or 0.0,
+                tp2=getattr(pos, "tp2", 0.0) or 0.0,
+                original_tp2=getattr(pos, "tp2", 0.0) or 0.0,
+                remaining_size_lots=getattr(pos, "lots", 0.0) or 0.0,
+                pip_size=pip_size,
+                highest_price_since_entry=getattr(pos, "entry_price", price),
+                lowest_price_since_entry=getattr(pos, "entry_price", price),
+            )
+
+            if price > mgmt.highest_price_since_entry:
+                mgmt.highest_price_since_entry = price
+            if price < mgmt.lowest_price_since_entry:
+                mgmt.lowest_price_since_entry = price
+            mgmt.last_eval_time = now
+
+            snap = build_position_snapshot(pos, tm_trade=mgmt, current_price=price)
             intents = self._worker.evaluate(snap, now)
 
             if intents:
@@ -283,6 +317,23 @@ class PositionEvaluator:
                     pip_size=pip_size,
                 )
                 self._aggregator.submit(intents)
+
+                for intent in intents:
+                    if intent.intent_type == IntentType.CLOSE:
+                        self._mgmt_store.remove(order_id)
+                    elif intent.intent_type == IntentType.MODIFY_SL and intent.new_sl:
+                        mgmt.stop_loss = intent.new_sl
+                        if not mgmt.at_breakeven:
+                            entry = getattr(pos, "entry_price", 0.0)
+                            if direction.upper() in ("BUY", "LONG"):
+                                if intent.new_sl >= entry:
+                                    mgmt.at_breakeven = True
+                            else:
+                                if intent.new_sl <= entry:
+                                    mgmt.at_breakeven = True
+                    elif intent.intent_type == IntentType.PARTIAL_CLOSE:
+                        mgmt.partial_closed = True
+                        mgmt.tp1_hit = True
         except Exception as exc:
             logger.debug(
                 "[pos-eval] error evaluating {}: {}",
@@ -477,11 +528,13 @@ class EventDrivenSystem:
             broker=self._pm,  # PlatformManager satisfies BrokerPort
             config=ExecutorConfig(),
         )
+        self._mgmt_store = ManagementStateStore()
         self._evaluator = PositionEvaluator(
             platform_manager=self._pm,
             tick_store=self._tick_store,
             world_model_store=self._wm_store,
             intent_aggregator=self._aggregator,
+            mgmt_store=self._mgmt_store,
         )
 
         # ── Entry plane ──────────────────────────────────────────────
@@ -516,6 +569,9 @@ class EventDrivenSystem:
         self._event_bus.subscribe(
             "candle_close:M1", lambda ev: self._entry_orchestrator.on_m1_close(ev.symbol),
         )
+        self._event_bus.subscribe(
+            "world_model_update", self._entry_orchestrator.on_world_model_update,
+        )
 
         logger.info("[event-driven] system initialized")
 
@@ -530,6 +586,8 @@ class EventDrivenSystem:
         logger.info("=" * 60)
         logger.info("  APEX TRADER — EVENT-DRIVEN MODE")
         logger.info("=" * 60)
+
+        self._recover_open_positions()
 
         symbols = list(INSTRUMENT_REGISTRY.keys())
         for sym in symbols:
@@ -601,6 +659,43 @@ class EventDrivenSystem:
         }
 
     # ── Internal helpers ─────────────────────────────────────────────
+
+    def _recover_open_positions(self) -> None:
+        """Initialize management state for any positions open at startup."""
+        try:
+            positions = self._pm.get_all_open_positions()
+            if not positions:
+                return
+            logger.info("[event-driven] found {} open positions at startup", len(positions))
+            for pos in positions:
+                ticket = str(getattr(pos, "order_id", getattr(pos, "ticket", "")))
+                if not ticket:
+                    continue
+                entry_price = getattr(pos, "entry_price", 0.0)
+                sl = getattr(pos, "sl", 0.0) or 0.0
+                pip_size = 0.0001
+                try:
+                    pip_size = get_pip_size(getattr(pos, "symbol", ""))
+                except Exception:
+                    pass
+                self._mgmt_store.get_or_create(
+                    ticket,
+                    original_stop_loss=sl,
+                    stop_loss=sl,
+                    tp1=getattr(pos, "tp1", 0.0) or 0.0,
+                    tp2=getattr(pos, "tp2", 0.0) or 0.0,
+                    original_tp2=getattr(pos, "tp2", 0.0) or 0.0,
+                    remaining_size_lots=getattr(pos, "lots", 0.0) or 0.0,
+                    pip_size=pip_size,
+                    highest_price_since_entry=entry_price,
+                    lowest_price_since_entry=entry_price,
+                )
+            logger.info(
+                "[event-driven] initialized management state for {} positions",
+                len(self._mgmt_store),
+            )
+        except Exception as exc:
+            logger.warning("[event-driven] startup position recovery failed: {}", exc)
 
     def _classify_symbols(self) -> tuple[list[str], list[str]]:
         """Split registry symbols by platform (MT5 vs Deriv)."""
@@ -753,7 +848,14 @@ class EventDrivenSystem:
             )
 
 
-# ── Module-level helper ──────────────────────────────────────────────
+def _extract_currencies(symbol: str) -> list[str]:
+    """Extract currency legs from a forex symbol (e.g. EURJPY → [EUR, JPY])."""
+    sym = str(symbol).upper().strip()
+    if len(sym) == 6:
+        base, quote = sym[:3], sym[3:]
+        if base in _KNOWN_CURRENCIES and quote in _KNOWN_CURRENCIES:
+            return [base, quote]
+    return []
 
 
 def is_event_driven_enabled() -> bool:
