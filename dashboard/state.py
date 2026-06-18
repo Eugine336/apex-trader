@@ -72,6 +72,7 @@ class LiveState(
         self._trading_loop: Any = None
         self._platform_manager: Any = None
         self._event_driven_system: Any = None
+        self._system_context: Any = None
         self._start_time = _time.monotonic()
         self._running = False
         self._connection_status: dict[str, bool] = {}
@@ -87,10 +88,12 @@ class LiveState(
         trading_loop: Any,
         platform_manager: Any,
         connection_status: dict[str, bool],
+        system_context: Any = None,
     ) -> None:
         self._trading_loop = trading_loop
         self._platform_manager = platform_manager
         self._connection_status = connection_status
+        self._system_context = system_context
         self._running = True
         logger.info("LiveState attached — dashboard serving real data")
 

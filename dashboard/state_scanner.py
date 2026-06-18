@@ -24,6 +24,10 @@ class ScannerMixin(HelpersMixin):
                 "total_count": 0,
             }
 
+        ed = getattr(self, "_event_driven_system", None)
+        if ed is not None:
+            return self._ed_scanner_results()
+
         scanner = getattr(self._trading_loop, "scanner", None)
         report = getattr(scanner, "last_report", None) if scanner else None
 
@@ -113,4 +117,83 @@ class ScannerMixin(HelpersMixin):
             "ready_count": ready_count,
             "watchlist_count": watchlist_count,
             "total_count": total_count,
+        }
+
+    def _ed_scanner_results(self) -> dict:
+        """Scanner results from WorldModelStore in event-driven mode."""
+        ed = self._event_driven_system
+        wm_store = getattr(ed, "world_model_store", None)
+        if wm_store is None:
+            return {"instruments": [], "ready_count": 0, "watchlist_count": 0, "total_count": 0}
+
+        instruments: list[dict[str, Any]] = []
+        ready_count = 0
+        watchlist_count = 0
+
+        for symbol in INSTRUMENT_REGISTRY:
+            wm = wm_store.get(symbol)
+            try:
+                info = get_instrument(symbol)
+                name = info.name
+                category = info.category.value
+            except Exception:
+                name = symbol
+                category = "forex"
+
+            if wm is None:
+                instruments.append({
+                    "symbol": symbol,
+                    "name": name,
+                    "category": category,
+                    "direction": "NEUTRAL",
+                    "score": 0,
+                    "status": "WAITING",
+                    "factors": base_factor_set(),
+                })
+                continue
+
+            zones = getattr(wm, "entry_zones", [])
+            has_zones = bool(zones)
+            direction = "NEUTRAL"
+            score = 0
+
+            if has_zones:
+                best = zones[0]
+                direction = normalize_direction(getattr(best, "direction", "NEUTRAL"))
+                score = int(getattr(best, "score", 0) or 0)
+
+            status = "READY" if has_zones else "WAITING"
+            if has_zones:
+                ready_count += 1
+
+            factors = base_factor_set()
+            structure = getattr(wm, "structure", {})
+            if structure:
+                factors["structure"] = 1
+            fvgs = getattr(wm, "fvgs", {})
+            if fvgs:
+                factors["fvg"] = 1
+            obs = getattr(wm, "order_blocks", {})
+            if obs:
+                factors["ob"] = 1
+            liq = getattr(wm, "liquidity", {})
+            if liq:
+                factors["liquidity"] = 1
+
+            instruments.append({
+                "symbol": symbol,
+                "name": name,
+                "category": category,
+                "direction": direction,
+                "score": score,
+                "status": status,
+                "factors": factors,
+            })
+
+        instruments.sort(key=lambda i: i["score"], reverse=True)
+        return {
+            "instruments": instruments,
+            "ready_count": ready_count,
+            "watchlist_count": watchlist_count,
+            "total_count": len(instruments),
         }
