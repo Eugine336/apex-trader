@@ -8,6 +8,9 @@ PortfolioGovernor, AccountRiskManager, CorrelationEngine, RiskEngine,
 RiskReporter).
 Phase 2: decision intelligence (DecisionEngine, SituationEngine,
 RiskGovernor, DecisionJournal, SessionEngine, NewsGuard).
+Phase 3: scan pipeline + sizing (PairRanker, OpportunityExecutor,
+Orchestrator, SystemVolatilityMonitor, OpportunityDensityTracker,
+EntryEngine, ExecutionMonitor).
 
 Usage::
 
@@ -25,6 +28,10 @@ from loguru import logger
 if TYPE_CHECKING:
     from brain.correlation_engine import CorrelationEngine
     from brain.drawdown_guard import DrawdownGuard
+    from brain.execution_monitor import ExecutionMonitor
+    from brain.opportunity_density import OpportunityDensityTracker
+    from brain.orchestrator import Orchestrator
+    from brain.regime_detector import SystemVolatilityMonitor
     from brain.session_engine import NewsGuard, SessionEngine
     from config import AppConfig
     from decision.engine import DecisionEngine
@@ -32,11 +39,14 @@ if TYPE_CHECKING:
     from decision.journal import DecisionJournal
     from decision.situation import SituationEngine
     from governor.portfolio_governor import PortfolioGovernor
+    from management.opportunity_executor import OpportunityExecutor
     from platforms.platform_manager import PlatformManager
     from risk.account_risk import AccountRiskManager
     from risk.portfolio_risk_state import PortfolioRiskStateMachine
     from risk.risk_engine import RiskEngine
     from risk.risk_reporter import RiskReporter
+    from scanner.pair_ranker import PairRanker
+    from trigger.entry_engine import EntryEngine
 
 
 @dataclass
@@ -63,6 +73,15 @@ class SystemContext:
     decision_journal: Optional[DecisionJournal] = None
     session_engine: Optional[SessionEngine] = None
     news_guard: Optional[NewsGuard] = None
+
+    # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
+    pair_ranker: Optional[PairRanker] = None
+    opportunity_executor: Optional[OpportunityExecutor] = None
+    orchestrator: Optional[Orchestrator] = None
+    system_volatility_monitor: Optional[SystemVolatilityMonitor] = None
+    opportunity_density_tracker: Optional[OpportunityDensityTracker] = None
+    entry_engine: Optional[EntryEngine] = None
+    execution_monitor: Optional[ExecutionMonitor] = None
 
     # ── Account key cache (symbol → broker:account_id) ───────────────
     _account_key_cache: dict[str, str] = field(default_factory=dict)
@@ -225,6 +244,82 @@ class SystemContext:
             ctx.decision_engine is not None,
             ctx.risk_governor is not None,
             ctx.decision_journal is not None,
+        )
+
+        # ── Scan Pipeline + Sizing (Phase 3) ─────────────────────────
+
+        # ── PairRanker ──────────────────────────────────────────────
+        try:
+            from scanner.pair_ranker import PairRanker as _PairRanker
+            ctx.pair_ranker = _PairRanker()
+        except Exception as exc:
+            logger.warning("[SystemContext] PairRanker init failed: {}", exc)
+
+        # ── OpportunityExecutor ─────────────────────────────────────
+        try:
+            from management.opportunity_executor import OpportunityExecutor as _OppExec
+            opp_cfg = getattr(config, "opportunity_ranker", None)
+            ctx.opportunity_executor = _OppExec(opp_cfg)
+        except Exception as exc:
+            logger.warning("[SystemContext] OpportunityExecutor init failed: {}", exc)
+
+        # ── Orchestrator ────────────────────────────────────────────
+        try:
+            from brain.orchestrator import Orchestrator as _Orchestrator
+            orch_cfg = getattr(config, "orchestrator", None)
+            ctx.orchestrator = _Orchestrator(config=orch_cfg)
+        except Exception as exc:
+            logger.warning("[SystemContext] Orchestrator init failed: {}", exc)
+
+        # ── SystemVolatilityMonitor ─────────────────────────────────
+        try:
+            from brain.regime_detector import SystemVolatilityMonitor as _VolMon
+            ctx.system_volatility_monitor = _VolMon()
+        except Exception as exc:
+            logger.warning("[SystemContext] SystemVolatilityMonitor init failed: {}", exc)
+
+        # ── OpportunityDensityTracker ───────────────────────────────
+        try:
+            from brain.opportunity_density import OpportunityDensityTracker as _DensityTracker
+            ctx.opportunity_density_tracker = _DensityTracker(window_minutes=60)
+        except Exception as exc:
+            logger.warning("[SystemContext] OpportunityDensityTracker init failed: {}", exc)
+
+        # ── EntryEngine ─────────────────────────────────────────────
+        try:
+            from trigger.entry_engine import EntryEngine as _EntryEngine
+            ctx.entry_engine = _EntryEngine(
+                config=config,
+                volatility_stop_mode=risk_cfg.volatility_stop_mode,
+                atr_stop_period=risk_cfg.atr_stop_period,
+                atr_stop_mult=risk_cfg.atr_stop_mult,
+                atr_stop_ratio_min=getattr(risk_cfg, "atr_stop_ratio_min", None),
+                atr_stop_ratio_max=getattr(risk_cfg, "atr_stop_ratio_max", None),
+                atr_stop_max_risk_mult=getattr(risk_cfg, "atr_stop_max_risk_mult", None),
+            )
+            if ctx.drawdown_guard is not None:
+                ctx.entry_engine.drawdown = ctx.drawdown_guard
+        except Exception as exc:
+            logger.warning("[SystemContext] EntryEngine init failed: {}", exc)
+
+        # ── ExecutionMonitor ────────────────────────────────────────
+        try:
+            from brain.execution_monitor import ExecutionMonitor as _ExecMon
+            ctx.execution_monitor = _ExecMon()
+        except Exception as exc:
+            logger.warning("[SystemContext] ExecutionMonitor init failed: {}", exc)
+
+        logger.info(
+            "[SystemContext] scan/sizing layer initialized — ranker={} "
+            "opp_exec={} orchestrator={} vol_mon={} density={} "
+            "entry_engine={} exec_mon={}",
+            ctx.pair_ranker is not None,
+            ctx.opportunity_executor is not None,
+            ctx.orchestrator is not None,
+            ctx.system_volatility_monitor is not None,
+            ctx.opportunity_density_tracker is not None,
+            ctx.entry_engine is not None,
+            ctx.execution_monitor is not None,
         )
 
         return ctx
