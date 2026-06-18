@@ -1398,6 +1398,10 @@ function RiskManagement({ d }) {
           </tbody>
         </table>
       )}
+    </div>
+  );
+}
+
 export function BehaviorDiscovery({ d }) {
   const behaviors = d?.behaviors || [];
   const counts = d?.counts || {};
