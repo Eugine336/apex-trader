@@ -2947,54 +2947,76 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[close-evo] Calibrator run failed: {}", exc)
 
-        # ReEntryManager — evaluate re-entry opportunity after close
-        if ctx.re_entry_manager is not None:
-            try:
-                wm = self._wm_store.get(symbol)
-                if wm is not None:
-                    re_entry_signal = ctx.re_entry_manager.evaluate(
-                        symbol=symbol,
-                        direction=direction,
-                        pnl_pips=pnl_pips,
-                        exit_cause=cause_value,
-                    )
-                    if re_entry_signal and getattr(re_entry_signal, "should_reenter", False):
-                        logger.info(
-                            "[re-entry] {} {} re-entry signal after {} (score={})",
-                            symbol, direction, cause_value,
-                            getattr(re_entry_signal, "score", 0),
-                        )
-            except Exception as exc:
-                logger.debug("[close-evo] ReEntryManager eval failed: {}", exc)
-
         logger.info(
             "EVENT-DRIVEN CLOSE FEEDBACK | {} {} ticket={} pnl=${:.2f} ({:.1f}pip) | risk+learning+evolution",
             direction, symbol, ticket, pnl_dollars, pnl_pips,
         )
 
         # ── BE-stop cooldown — prevent chop re-entry ────────────────
-        if abs(pnl_dollars) < 0.01 and abs(pnl_pips) < 2.0:
+        is_breakeven_exit = abs(pnl_dollars) < 0.01 and abs(pnl_pips) < 2.0
+        if is_breakeven_exit:
             self._be_stop_cooldown[symbol] = _time.monotonic() + self._be_cooldown_seconds
             logger.info("[be-cooldown] {} cooldown for {:.0f}s (breakeven exit)", symbol, self._be_cooldown_seconds)
 
         # ── Re-entry evaluation ──────────────────────────────────────
-        if ctx is not None and ctx.re_entry_manager is not None and pnl_dollars > 0:
+        # ReEntryManager only re-arms trades stopped at breakeven whose
+        # structural setup is still valid (see management/re_entry.py).
+        if ctx is not None and ctx.re_entry_manager is not None and is_breakeven_exit:
             try:
                 m5_df = self._fetch_candles(symbol, "M5", 50)
                 if m5_df is not None:
                     from types import SimpleNamespace
                     closed = SimpleNamespace(
-                        symbol=symbol, direction=direction,
+                        pair=symbol,
+                        direction=direction,
                         re_entry_eligible=True,
+                        candles_since_entry=0,
                     )
                     opp = ctx.re_entry_manager.check_re_entry(closed, m5_df)
                     if opp is not None and getattr(opp, "eligible", False):
                         logger.info(
-                            "[re-entry] {} {} opportunity: {}",
-                            symbol, direction, getattr(opp, "reason", ""),
+                            "[re-entry] {} {} opportunity: {} (zone={})",
+                            symbol, direction,
+                            getattr(opp, "reason", ""),
+                            getattr(opp, "new_entry_zone", None),
                         )
+                        self._arm_re_entry_zone(symbol, direction, opp)
             except Exception as exc:
                 logger.debug("[re-entry] evaluation failed: {}", exc)
+
+    def _arm_re_entry_zone(self, symbol: str, direction: str, opp: Any) -> None:
+        """Re-arm the event-driven entry path after a confirmed re-entry.
+
+        ReEntryManager has confirmed the structural setup is still valid after a
+        breakeven stop.  Rather than placing an order directly (which would bypass
+        the entry gates), we clear the BE-stop cooldown so the normal
+        WorldModel → zone → tick-detection → M1-confirm → gate flow can re-arm the
+        entry on the next analysis-plane update.
+        """
+        try:
+            self._be_stop_cooldown.pop(symbol, None)
+            logger.info(
+                "[re-entry] {} {} re-armed — BE cooldown cleared, entry path live",
+                symbol, direction,
+            )
+            try:
+                es = get_event_store()
+                es.emit(
+                    DE.RE_ENTRY_ARMED, "INFO",
+                    symbol=symbol,
+                    source_module="re_entry",
+                    payload={
+                        "symbol": symbol,
+                        "direction": direction,
+                        "reason": getattr(opp, "reason", ""),
+                        "zone": getattr(opp, "new_entry_zone", ""),
+                        "kind": "re_entry_rearm",
+                    },
+                )
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.debug("[re-entry] arm failed: {}", exc)
 
 
 def _extract_currencies(symbol: str) -> list[str]:
