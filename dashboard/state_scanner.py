@@ -160,7 +160,7 @@ class ScannerMixin(HelpersMixin):
             if has_zones:
                 best = zones[0]
                 direction = normalize_direction(getattr(best, "direction", "NEUTRAL"))
-                score = int(getattr(best, "score", 0) or 0)
+                score = int(getattr(best, "conviction", 0) or 0)
 
             status = "READY" if has_zones else "WAITING"
             if has_zones:

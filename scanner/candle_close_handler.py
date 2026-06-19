@@ -24,6 +24,7 @@ import hashlib
 import threading
 import time as _time
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
@@ -40,6 +41,8 @@ from brain.volume_analyzer import VolumeAnalyzer, VolumeAnalysis
 from brain.world_model import WorldModel, WorldModelStore, build_world_model
 from brain.wyckoff_engine import WyckoffEngine, WyckoffAnalysis
 from config import get_pip_size
+from entry.models import EntryConfig
+from entry.zone_watcher import extract_entry_zones
 from tick.event_bus import EventBus
 from tick.models import CandleClose
 
@@ -64,6 +67,71 @@ def _bar_hash(df: pd.DataFrame) -> str:
     return hashlib.md5(raw.encode()).hexdigest()
 
 
+def _compute_bias(struct_by_tf: dict[str, StructureAnalysis]) -> dict[str, Any]:
+    """Synthesize a directional bias dict from per-TF StructureAnalysis.
+
+    Direction is decided by H4 + H1 (D1 only weights confidence), mirroring
+    ``StructureEngine.get_bias`` but operating on the already-computed
+    analyses stored in the WorldModel so no extra candle fetch is needed.
+    Returns the schema consumers expect: ``direction`` ("LONG"/"SHORT"/""),
+    ``score`` (0-100), ``opposing_boost``, plus per-TF trends.
+    """
+    def _trend(tf: str) -> tuple[Optional[str], float]:
+        sa = struct_by_tf.get(tf)
+        if sa is None:
+            return None, 0.0
+        trend = sa.trend.value if hasattr(sa.trend, "value") else str(sa.trend)
+        return trend, float(getattr(sa, "confidence", 0.0) or 0.0)
+
+    h4_t, h4_c = _trend("H4")
+    h1_t, h1_c = _trend("H1")
+    d1_t, d1_c = _trend("D1")
+
+    direction_trend: Optional[str] = None
+    strength = "NONE"
+    if h4_t and h4_t != "RANGING" and h4_t == h1_t:
+        direction_trend, strength = h4_t, "STRONG"
+    elif h4_t and h4_t != "RANGING" and (h1_t is None or h1_t == "RANGING"):
+        direction_trend, strength = h4_t, "MODERATE"
+    elif (h4_t is None or h4_t == "RANGING") and h1_t and h1_t != "RANGING":
+        direction_trend, strength = h1_t, "MODERATE"
+    elif h4_t and h1_t and h4_t != h1_t:
+        strength = "CONFLICTED"
+
+    if direction_trend == "BULLISH":
+        direction = "LONG"
+    elif direction_trend == "BEARISH":
+        direction = "SHORT"
+    else:
+        direction = ""
+
+    d1_aligned = bool(
+        direction_trend and d1_t and d1_t != "RANGING" and d1_t == direction_trend
+    )
+    if d1_t and d1_t != "RANGING":
+        if d1_aligned:
+            confidence = round(d1_c * 0.4 + h4_c * 0.35 + h1_c * 0.25, 2)
+        else:
+            confidence = round(((h4_c + h1_c) / 2) * 0.85, 2)
+    else:
+        confidence = round((h4_c + h1_c) / 2, 2)
+
+    score = int(round(confidence * 100)) if direction else 0
+
+    return {
+        "direction": direction,
+        "score": score,
+        "opposing_boost": 0,
+        "strength": strength,
+        "h4_trend": h4_t or "UNKNOWN",
+        "h1_trend": h1_t or "UNKNOWN",
+        "d1_trend": d1_t or "UNKNOWN",
+        "d1_aligned": d1_aligned,
+        "confidence": confidence,
+        "tradeable": strength in ("STRONG", "MODERATE"),
+    }
+
+
 class CandleCloseHandler:
     """Incrementally updates WorldModels on candle-close events.
 
@@ -83,11 +151,13 @@ class CandleCloseHandler:
         candle_fetcher: CandleFetcher,
         max_workers: int = 4,
         candle_count: int = 200,
+        entry_config: Optional[EntryConfig] = None,
     ) -> None:
         self._bus = event_bus
         self._store = world_model_store
         self._fetcher = candle_fetcher
         self._candle_count = candle_count
+        self._entry_config = entry_config or EntryConfig()
         self._pool = ThreadPoolExecutor(
             max_workers=max(1, max_workers),
             thread_name_prefix="cc-handler",
@@ -236,7 +306,6 @@ class CandleCloseHandler:
         vol = dict(existing.volume) if existing else {}
         wyck = dict(existing.wyckoff) if existing else {}
         ind = dict(existing.inducement) if existing else {}
-        bias = dict(existing.bias) if existing else {}
 
         if "fvg" in results:
             fvgs[tf] = list(results["fvg"])
@@ -253,6 +322,9 @@ class CandleCloseHandler:
         if "inducement" in results:
             ind[tf] = results["inducement"]
 
+        # Synthesize the directional bias from the merged HTF structure.
+        bias = _compute_bias(struct)
+
         wm = build_world_model(
             symbol=symbol,
             version=self._store.next_version(),
@@ -266,11 +338,19 @@ class CandleCloseHandler:
             inducement=ind,
             bias=bias,
         )
+
+        # Synthesize the actionable entry layer so the WorldModel is the
+        # single source of truth for the entry plane — consumers read
+        # ``wm.entry_zones`` instead of re-deriving zones.
+        zones = extract_entry_zones(wm, self._entry_config)
+        if zones:
+            wm = replace(wm, entry_zones=tuple(zones))
+
         self._store.publish(wm)
         self._bus.publish("world_model_update", symbol)
         logger.debug(
-            "[cc-handler] published WorldModel for {} (tf={}, v={})",
-            symbol, tf, wm.version,
+            "[cc-handler] published WorldModel for {} (tf={}, v={}, zones={})",
+            symbol, tf, wm.version, len(wm.entry_zones),
         )
 
     # ------------------------------------------------------------------
