@@ -35,9 +35,15 @@ class OperationsMixin:
         return self._trading_loop if self.is_live else None
 
     def _ops_risk_manager(self) -> Any:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None and getattr(ctx, "risk_engine", None) is not None:
+            return ctx.risk_engine
         return getattr(self._ops_loop(), "_risk_manager", None)
 
     def _ops_regime_detector(self) -> Any:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None and getattr(ctx, "regime_detector", None) is not None:
+            return ctx.regime_detector
         return getattr(self._ops_loop(), "_regime_detector", None)
 
     # ── Aggregate ────────────────────────────────────────────────────────────

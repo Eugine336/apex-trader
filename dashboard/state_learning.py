@@ -47,18 +47,36 @@ class LearningMixin:
         return self._trading_loop if self.is_live else None
 
     def _config(self) -> Any:
-        return getattr(self._loop(), "config", None)
+        c = getattr(self._loop(), "config", None)
+        if c is None:
+            ctx = getattr(self, "_system_context", None)
+            ed = getattr(self, "_event_driven_system", None)
+            if ed is not None:
+                c = getattr(ed, "_config", None)
+        return c
 
     def _signal_ledger_obj(self) -> Any:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None and getattr(ctx, "signal_ledger", None) is not None:
+            return ctx.signal_ledger
         return getattr(self._loop(), "_signal_ledger", None)
 
     def _emitter_feedback_obj(self) -> Any:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None and getattr(ctx, "emitter_feedback", None) is not None:
+            return ctx.emitter_feedback
         return getattr(self._loop(), "_emitter_feedback", None)
 
     def _vote_calibrator_obj(self) -> Any:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None and getattr(ctx, "vote_calibrator", None) is not None:
+            return ctx.vote_calibrator
         return getattr(self._loop(), "_vote_calibrator", None)
 
     def _ml_obj(self) -> Any:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None and getattr(ctx, "ml_adapter", None) is not None:
+            return ctx.ml_adapter
         return getattr(self._loop(), "ml", None)
 
     def _score_optimizer_obj(self) -> Any:
@@ -70,37 +88,69 @@ class LearningMixin:
         return getattr(ml, "pair_learner", None) if ml is not None else None
 
     def _tuner_agent_obj(self) -> Any:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None and getattr(ctx, "tuner_agent", None) is not None:
+            return ctx.tuner_agent
         return getattr(self._loop(), "_tuner_agent", None)
 
     def _counterfactual_obj(self) -> Any:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None and getattr(ctx, "counterfactual_engine", None) is not None:
+            return ctx.counterfactual_engine
         return getattr(self._loop(), "_counterfactual", None)
 
     def _interaction_obj(self) -> Any:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None and getattr(ctx, "interaction_analyzer", None) is not None:
+            return ctx.interaction_analyzer
         return getattr(self._loop(), "_interaction_analyzer", None)
+
     def _param_evolution_obj(self) -> Any:
         return getattr(self._loop(), "_param_evolver", None)
 
     def _signal_discovery_obj(self) -> Any:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None and getattr(ctx, "signal_discovery", None) is not None:
+            return ctx.signal_discovery
         return getattr(self._loop(), "_signal_discovery", None)
 
     def _virtual_manager_obj(self) -> Any:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None and getattr(ctx, "virtual_signal_manager", None) is not None:
+            return ctx.virtual_signal_manager
         return getattr(self._loop(), "_virtual_signal_manager", None)
 
     def _virtual_registry_obj(self) -> Any:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None and getattr(ctx, "virtual_module_registry", None) is not None:
+            return ctx.virtual_module_registry
         return getattr(self._loop(), "_virtual_registry", None)
 
     def _capital_allocator_obj(self) -> Any:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None and getattr(ctx, "capital_allocator", None) is not None:
+            return ctx.capital_allocator
         return getattr(self._loop(), "_capital_allocator", None)
 
     def _execution_profiles_obj(self) -> Any:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None and getattr(ctx, "execution_profiles", None) is not None:
+            return ctx.execution_profiles
         return getattr(self._loop(), "_execution_profiles", None)
 
     def _regime_detector_obj(self) -> Any:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None and getattr(ctx, "regime_detector", None) is not None:
+            return ctx.regime_detector
         return getattr(self._loop(), "_regime_detector", None)
 
     def _risk_manager_obj(self) -> Any:
         return getattr(self._loop(), "_risk_manager", None)
+
     def _behavior_discovery_obj(self) -> Any:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None and getattr(ctx, "behavior_discovery", None) is not None:
+            return ctx.behavior_discovery
         return getattr(self._loop(), "_behavior_discovery", None)
 
     # ── Aggregate ────────────────────────────────────────────────────────────

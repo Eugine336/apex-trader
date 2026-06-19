@@ -23,6 +23,11 @@ class ModuleGovernorMixin:
     """get_module_governor() — per-module modes + transition history."""
 
     def _module_governor(self) -> Any:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None:
+            gov = getattr(ctx, "module_governor", None)
+            if gov is not None:
+                return gov
         loop = getattr(self, "_trading_loop", None)
         if loop is None:
             return None

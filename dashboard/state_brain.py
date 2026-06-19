@@ -43,6 +43,22 @@ class BrainMixin:
     # ── Internal helpers ────────────────────────────────────────────────────
     def _scan_results(self) -> list[Any]:
         """The most recent per-pair scan results off the live loop, or []."""
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None:
+            ed_sys = getattr(self, "_event_driven_system", None)
+            if ed_sys is not None:
+                wm_store = getattr(ed_sys, "_wm_store", None)
+                if wm_store is not None:
+                    try:
+                        from config import INSTRUMENT_REGISTRY
+                        results = []
+                        for sym in INSTRUMENT_REGISTRY:
+                            wm = wm_store.get(sym)
+                            if wm is not None:
+                                results.append(wm)
+                        return results
+                    except Exception:
+                        pass
         if not self.is_live:
             return []
         scanner = getattr(self._trading_loop, "scanner", None)
