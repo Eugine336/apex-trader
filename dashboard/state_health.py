@@ -18,6 +18,76 @@ from typing import Any
 from loguru import logger
 
 
+# (health label, SystemContext attribute) — mirrors ops.lifecycle adaptive layers.
+_ED_ADAPTIVE_LAYERS: tuple[tuple[str, str], ...] = (
+    ("signal_ledger", "signal_ledger"),
+    ("post_close_tracker", "post_close_tracker"),
+    ("counterfactual", "counterfactual_engine"),
+    ("interaction_analyzer", "interaction_analyzer"),
+    ("capital_allocator", "capital_allocator"),
+    ("execution_profiles", "execution_profiles"),
+    ("regime_detector", "regime_detector"),
+    ("risk_engine", "risk_engine"),
+    ("behavior_discovery", "behavior_discovery"),
+    ("signal_discovery", "signal_discovery"),
+    ("module_governor", "module_governor"),
+    ("virtual_registry", "virtual_module_registry"),
+    ("tuner_agent", "tuner_agent"),
+    ("vote_calibrator", "vote_calibrator"),
+    ("gate_tuner", "gate_tuner"),
+    ("shadow_store", "shadow_store"),
+    ("ml_adapter", "ml_adapter"),
+)
+
+# (label, config section, db-path key) — mirrors ops.lifecycle store sizes.
+_ED_STORE_PATHS: tuple[tuple[str, str, str], ...] = (
+    ("signal_ledger", "signal_ledger", "signal_ledger_db_path"),
+    ("counterfactual", "counterfactual", "counterfactual_db_path"),
+    ("capital_allocation", "capital_allocation", "capital_allocation_db_path"),
+    ("execution_profiles", "execution_profiles", "execution_profiles_db_path"),
+    ("regime_detection", "regime_detection", "regime_detection_db_path"),
+    ("risk_management", "risk_management", "risk_management_db_path"),
+    ("behavior_discovery", "behavior_discovery", "behavior_discovery_db_path"),
+    ("param_evolution", "param_evolution", "param_evolution_db_path"),
+    ("signal_discovery", "signal_discovery", "signal_discovery_db_path"),
+    ("interaction", "interaction", "interaction_db_path"),
+)
+
+
+def _ed_adaptive_layers(ctx: Any) -> dict:
+    """active/dormant per adaptive component, read from the SystemContext."""
+    layers: dict[str, str] = {}
+    if ctx is None:
+        return layers
+    for label, attr in _ED_ADAPTIVE_LAYERS:
+        layers[label] = "active" if getattr(ctx, attr, None) is not None else "dormant"
+    return layers
+
+
+def _ed_store_sizes_mb(cfg: Any) -> dict:
+    """On-disk size (MB) of each known SQLite store from config paths."""
+    from pathlib import Path
+
+    sizes: dict[str, float] = {}
+    if cfg is None:
+        return sizes
+    for label, section, key in _ED_STORE_PATHS:
+        try:
+            sub = getattr(cfg, section, None)
+            path = getattr(sub, key, None) if sub is not None else None
+            if path and Path(path).exists():
+                sizes[label] = round(Path(path).stat().st_size / (1024.0 * 1024.0), 3)
+        except Exception:  # noqa: BLE001
+            continue
+    try:
+        p = Path("data/post_close_tracker.db")
+        if p.exists():
+            sizes["post_close_tracker"] = round(p.stat().st_size / (1024.0 * 1024.0), 3)
+    except Exception:  # noqa: BLE001
+        pass
+    return sizes
+
+
 class HealthMixin:
     """get_health() — aggregate system health for /api/health."""
 
@@ -94,6 +164,7 @@ class HealthMixin:
 
         status = "ok" if not warnings else "degraded"
         stats = ed.stats() if hasattr(ed, "stats") else {}
+        cfg = getattr(ed, "_config", None)
 
         return {
             "status": status,
@@ -105,6 +176,9 @@ class HealthMixin:
             "drawdown": drawdown,
             "watchdog": watchdog_state,
             "ed_stats": stats,
+            "adaptive_layers": _ed_adaptive_layers(ctx),
+            "store_sizes_mb": _ed_store_sizes_mb(cfg),
+            "last_tick_age_seconds": (watchdog_state or {}).get("seconds_since_tick"),
             "warnings": warnings,
             "attached": True,
             "ops_enabled": True,

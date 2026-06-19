@@ -15,7 +15,7 @@ from __future__ import annotations
 import os
 import threading
 import time as _time
-from collections import defaultdict
+from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Optional
@@ -831,6 +831,10 @@ class TickEvalLoop:
         self._interval = interval
         self._running = False
         self._thread: Optional[threading.Thread] = None
+        self._durations_ms: deque = deque(maxlen=500)
+        self._slow_ticks: deque = deque(maxlen=20)
+        self._lock = threading.Lock()
+        self._slow_threshold_ms = 250.0
 
     def start(self) -> None:
         if self._running:
@@ -850,11 +854,43 @@ class TickEvalLoop:
 
     def _loop(self) -> None:
         while self._running:
+            t0 = _time.perf_counter()
             try:
                 self._evaluator.evaluate_all()
             except Exception as exc:
                 logger.warning("[tick-eval] error: {}", exc)
+            finally:
+                elapsed_ms = (_time.perf_counter() - t0) * 1000.0
+                with self._lock:
+                    self._durations_ms.append(elapsed_ms)
+                    if elapsed_ms >= self._slow_threshold_ms:
+                        self._slow_ticks.append({
+                            "ts": datetime.now(timezone.utc).isoformat(),
+                            "duration_ms": round(elapsed_ms, 2),
+                        })
             _time.sleep(self._interval)
+
+    def get_profile(self) -> dict[str, Any]:
+        """Latency profile of the position-evaluation cycle (milliseconds)."""
+        with self._lock:
+            durations = list(self._durations_ms)
+            slow = list(self._slow_ticks)
+        if not durations:
+            return {
+                "samples": 0, "last_ms": 0.0, "avg_ms": 0.0,
+                "p50_ms": 0.0, "p95_ms": 0.0, "max_ms": 0.0, "slow_ticks": [],
+            }
+        ordered = sorted(durations)
+        n = len(ordered)
+        return {
+            "samples": n,
+            "last_ms": round(durations[-1], 3),
+            "avg_ms": round(sum(ordered) / n, 3),
+            "p50_ms": round(ordered[int(n * 0.50)], 3),
+            "p95_ms": round(ordered[min(n - 1, int(n * 0.95))], 3),
+            "max_ms": round(ordered[-1], 3),
+            "slow_ticks": slow,
+        }
 
 
 # ── Main orchestrator ────────────────────────────────────────────────
@@ -1446,6 +1482,7 @@ class EventDrivenSystem:
             },
             "entry": self._entry_orchestrator.stats,
             "position_evals": self._evaluator.eval_count,
+            "tick_eval": self._tick_eval_loop.get_profile(),
             "tick_router": {
                 "ticks_routed": self._tick_router.ticks_routed,
             },
@@ -1453,6 +1490,36 @@ class EventDrivenSystem:
                 "events_emitted": self._candle_detector.events_emitted,
                 "tracked_pairs": self._candle_detector.tracked_pairs,
             },
+        }
+
+    def get_tick_profile(self) -> dict[str, Any]:
+        """Per-component tick-latency profile for the dashboard ops panel.
+
+        Shaped like the legacy ``TradingLoop.get_tick_profile`` so the
+        operations page renders it identically: the position-eval cycle as
+        the primary ``tick`` block plus per-component throughput rows.
+        """
+        prof = self._tick_eval_loop.get_profile()
+        slow = prof.pop("slow_ticks", [])
+        components = [
+            {"name": "position_eval", "p50_ms": prof.get("p50_ms", 0.0),
+             "p95_ms": prof.get("p95_ms", 0.0), "max_ms": prof.get("max_ms", 0.0),
+             "samples": prof.get("samples", 0)},
+            {"name": "ticks_routed", "count": self._tick_router.ticks_routed},
+            {"name": "candle_events", "count": self._candle_detector.events_emitted},
+        ]
+        recommendations: list[str] = []
+        if prof.get("p95_ms", 0.0) >= self._tick_eval_loop._slow_threshold_ms:
+            recommendations.append(
+                "position-eval p95 latency is high — consider raising the "
+                "tick-eval interval or reducing per-position work",
+            )
+        return {
+            "enabled": prof.get("samples", 0) > 0,
+            "tick": prof,
+            "components": components,
+            "slow_ticks": slow,
+            "recommendations": recommendations,
         }
 
     # ── Internal helpers ─────────────────────────────────────────────

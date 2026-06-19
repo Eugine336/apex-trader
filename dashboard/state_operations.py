@@ -278,4 +278,13 @@ class OperationsMixin:
         getter = getattr(loop, "get_tick_profile", None)
         if callable(getter):
             return getter() or {}
+        # Event-driven mode: read the position-eval latency profile the ED
+        # system now exposes.
+        ed = getattr(self, "_event_driven_system", None)
+        ed_getter = getattr(ed, "get_tick_profile", None) if ed is not None else None
+        if callable(ed_getter):
+            try:
+                return ed_getter() or {}
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[state_operations] ED tick profile read failed: {}", exc)
         return {"enabled": False, "tick": {}, "components": [], "slow_ticks": [], "recommendations": []}

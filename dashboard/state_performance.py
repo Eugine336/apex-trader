@@ -122,13 +122,14 @@ class PerformanceMixin(HelpersMixin):
                     "per_tf_hits": {},
                     "per_tf_misses": {},
                 }
+                te = ed_stats.get("tick_eval", {})
                 out["cycle"] = {
-                    "samples": int(ed_stats.get("position_evals", 0)),
-                    "last_ms": 0.0,
-                    "avg_ms": 0.0,
-                    "p50_ms": 0.0,
-                    "p95_ms": 0.0,
-                    "max_ms": 0.0,
+                    "samples": int(te.get("samples", ed_stats.get("position_evals", 0))),
+                    "last_ms": float(te.get("last_ms", 0.0)),
+                    "avg_ms": float(te.get("avg_ms", 0.0)),
+                    "p50_ms": float(te.get("p50_ms", 0.0)),
+                    "p95_ms": float(te.get("p95_ms", 0.0)),
+                    "max_ms": float(te.get("max_ms", 0.0)),
                 }
                 out["parallel_scan"] = {"enabled": True, "max_workers": 0}
                 return out
