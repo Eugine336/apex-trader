@@ -1588,29 +1588,6 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[periodic] shadow resolution failed: {}", exc)
 
-        if ctx.re_entry_manager is not None:
-            pass
-            # ── Portfolio heat monitoring (every 5s) ─────────────────
-            now = _time.time()
-            if now - _last_heat_check >= 5.0:
-                _last_heat_check = now
-                self._check_portfolio_heat()
-
-            # ── PostCloseTracker forward price checks (every 30s) ────
-            if ctx is not None and ctx.post_close_tracker is not None:
-                try:
-                    if getattr(ctx.post_close_tracker, "enabled", False):
-                        pending = getattr(ctx.post_close_tracker, "pending_count", 0) or 0
-                        if pending > 0:
-                            ctx.post_close_tracker.process_pending_checks(self._pm)
-                except Exception as exc:
-                    logger.debug("[watchdog] PostCloseTracker tick failed: {}", exc)
-
-            # ── Shadow resolution (advance open shadows on latest prices) ──
-            self._resolve_shadows()
-
-            _time.sleep(10.0)
-
     def _check_portfolio_heat(self) -> None:
         """Continuous portfolio heat monitoring — generates intents for open positions."""
         ctx = self._ctx
