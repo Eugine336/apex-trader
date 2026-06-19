@@ -41,6 +41,7 @@ from execution.management_state import ManagementStateStore
 from entry import EntryOrchestrator, EntryConfig
 from platform_context import build_context_for_symbol
 from platforms.platform_manager import PlatformManager
+from platforms.order_idempotency import build_order_comment, generate_idempotency_key
 from risk.position_sizer import PositionSizer
 from adaptive.zone_edge_tracker import ZoneEdgeTracker
 
@@ -2785,6 +2786,9 @@ class EventDrivenSystem:
             except Exception:
                 pass
 
+            idem_key = generate_idempotency_key(
+                symbol, direction, float(size_result.lots),
+            )
             result = self._pm.execute_entry(
                 symbol=symbol,
                 direction=direction,
@@ -2792,7 +2796,8 @@ class EventDrivenSystem:
                 sl=sl,
                 tp=tp1,
                 stake_usd=size_result.stake_usd if pctx.uses_stake else None,
-                comment=f"ED|{conviction}|O{orch_mult:.2f}",
+                comment=build_order_comment("APEX", idem_key, score=conviction),
+                idempotency_key=idem_key,
             )
 
             if result.success:
