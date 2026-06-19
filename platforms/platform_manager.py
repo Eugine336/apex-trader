@@ -173,6 +173,13 @@ class PlatformManager:
         # prices and never share the loop's snapshot.
         self._price_snapshot = threading.local()
 
+        # Single-writer broker mutex: every broker MUTATION (entry, pending,
+        # modify, close) acquires this re-entrant lock so no two threads can
+        # issue concurrent broker calls. The MT5 API is not thread-safe, and
+        # the entry path runs on the tick thread while management runs on the
+        # flush thread — without this they could race on the same connection.
+        self._broker_write_lock = threading.RLock()
+
     # ── Convenience properties ───────────────────────────────────────────
 
     @property
@@ -522,17 +529,18 @@ class PlatformManager:
         platform = "mt5" if isinstance(connector, MT5Connector) else "deriv"
 
         t0 = _time.monotonic()
-        if isinstance(connector, DerivConnector):
-            result = connector.place_order(
-                symbol, direction, lots, sl, tp, comment,
-                idempotency_key=idempotency_key,
-                stake_usd=stake_usd,
-            )
-        else:
-            result = connector.place_order(
-                symbol, direction, lots, sl, tp, comment,
-                idempotency_key=idempotency_key,
-            )
+        with self._broker_write_lock:
+            if isinstance(connector, DerivConnector):
+                result = connector.place_order(
+                    symbol, direction, lots, sl, tp, comment,
+                    idempotency_key=idempotency_key,
+                    stake_usd=stake_usd,
+                )
+            else:
+                result = connector.place_order(
+                    symbol, direction, lots, sl, tp, comment,
+                    idempotency_key=idempotency_key,
+                )
         latency_ms = (_time.monotonic() - t0) * 1000
 
         if result.success:
@@ -561,10 +569,11 @@ class PlatformManager:
     ) -> OrderResult:
         connector = self.get_connector(symbol)
         platform = "mt5" if isinstance(connector, MT5Connector) else "deriv"
-        result = connector.place_pending_order(
-            symbol, order_kind, entry_price, lots, sl, tp, comment,
-            idempotency_key=idempotency_key,
-        )
+        with self._broker_write_lock:
+            result = connector.place_pending_order(
+                symbol, order_kind, entry_price, lots, sl, tp, comment,
+                idempotency_key=idempotency_key,
+            )
         if result.success:
             logger.info(
                 "[{}] PENDING {} {} {:.2f} lots @ {:.5f}",
@@ -586,7 +595,8 @@ class PlatformManager:
     ) -> bool:
         # platform string may be "mt5", "mt5_0", "mt5_1", or "deriv"
         connector = self._connector_by_platform_str(platform)
-        return connector.modify_order(order_id, new_sl, new_tp)
+        with self._broker_write_lock:
+            return connector.modify_order(order_id, new_sl, new_tp)
 
     def close_trade(
         self,
@@ -595,7 +605,8 @@ class PlatformManager:
         lots: Optional[float] = None,
     ) -> CloseResult:
         connector = self._connector_by_platform_str(platform)
-        return connector.close_order(order_id, lots)
+        with self._broker_write_lock:
+            return connector.close_order(order_id, lots)
 
     def get_realized_pnl(self, order_id: str, platform: str) -> Optional[float]:
         connector = self._connector_by_platform_str(platform)
