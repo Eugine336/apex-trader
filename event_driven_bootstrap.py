@@ -1403,63 +1403,6 @@ class EventDrivenSystem:
 
     # ── Internal helpers ─────────────────────────────────────────────
 
-    def _register_tunable_adapters(self) -> None:
-        ctx = self._ctx
-        if ctx is None or ctx.tuner_agent is None:
-            return
-        try:
-            from adaptive.tunable_adapters import (
-                ScoreOptimizerAdapter, RegimeLearnerAdapter,
-                PairLearnerAdapter, SessionLearnerAdapter,
-                EVEstimatorAdapter, GateTunerAdapter,
-                PlannerCalibratorAdapter,
-            )
-            agent = ctx.tuner_agent
-            registry_map = {
-                "score_optimizer": (ScoreOptimizerAdapter, ctx.ml_adapter),
-                "regime_learner": (RegimeLearnerAdapter, ctx.ml_adapter),
-                "pair_learner": (PairLearnerAdapter, ctx.ml_adapter),
-                "session_learner": (SessionLearnerAdapter, ctx.ml_adapter),
-            }
-            count = 0
-            for name, (adapter_cls, subsystem) in registry_map.items():
-                if subsystem is not None:
-                    try:
-                        adapter = adapter_cls(subsystem)
-                        agent.register(name, adapter)
-                        count += 1
-                    except Exception as exc:
-                        logger.debug("[tuner-reg] {} failed: {}", name, exc)
-
-            simple_map = {
-                "signal_ledger": ctx.signal_ledger,
-                "vote_calibrator": ctx.vote_calibrator,
-                "module_governor": ctx.module_governor,
-                "gate_tuner": ctx.gate_tuner,
-                "counterfactual": ctx.counterfactual_engine,
-                "interaction_analyzer": ctx.interaction_analyzer,
-                "post_close_tracker": ctx.post_close_tracker,
-                "signal_discovery": ctx.signal_discovery,
-                "virtual_signal_manager": ctx.virtual_signal_manager,
-                "capital_allocator": ctx.capital_allocator,
-                "execution_profiles": ctx.execution_profiles,
-                "regime_detector": ctx.regime_detector,
-                "behavior_discovery": ctx.behavior_discovery,
-            }
-            for name, subsystem in simple_map.items():
-                if subsystem is not None and hasattr(subsystem, "on_trade_close"):
-                    try:
-                        agent.register(name, subsystem)
-                        count += 1
-                    except Exception as exc:
-                        logger.debug("[tuner-reg] {} failed: {}", name, exc)
-
-            logger.info("[event-driven] registered {} tunable adapters with TunerAgent", count)
-        except ImportError as exc:
-            logger.debug("[tuner-reg] tunable_adapters import failed: {}", exc)
-        except Exception as exc:
-            logger.warning("[tuner-reg] adapter registration failed: {}", exc)
-
     def _watchdog_loop(self) -> None:
         """Background loop: heartbeat + stall detection + daily maintenance + heat monitoring."""
         _last_heat_check = 0.0
@@ -2513,7 +2456,6 @@ class EventDrivenSystem:
 
             combined_mult = de_size_mult * orch_mult * vol_mult * density_mult * exec_mult * cap_mult
             combined_mult = max(0.15, min(2.0, combined_mult))
-            if combined_mult < 1.0:
             if abs(combined_mult - 1.0) > 1e-6:
                 if size_result.lots > 0:
                     size_result.lots = round(max(0.01, size_result.lots * combined_mult), 2)
