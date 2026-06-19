@@ -204,7 +204,7 @@ class TestShadowResolution:
             )
             tick = SimpleNamespace(mid=1.0910)
             ctx = SimpleNamespace(shadow_store=MagicMock())
-            ctx.shadow_store.get_open_contracts.return_value = [shadow]
+            ctx.shadow_store.get_pending.return_value = [shadow]
             sys_obj._ctx = ctx
             sys_obj._tick_store = MagicMock()
             sys_obj._tick_store.get_latest.return_value = tick
@@ -217,7 +217,7 @@ class TestShadowResolution:
         with patch.object(EventDrivenSystem, "__init__", lambda self, *a, **kw: None):
             sys_obj = EventDrivenSystem.__new__(EventDrivenSystem)
             ctx = SimpleNamespace(shadow_store=MagicMock())
-            ctx.shadow_store.get_open_contracts.return_value = []
+            ctx.shadow_store.get_pending.return_value = []
             sys_obj._ctx = ctx
             sys_obj._tick_store = MagicMock()
             sys_obj._resolve_shadows()
