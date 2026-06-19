@@ -67,6 +67,15 @@ class WorldModel:
     # entry plane — consumers read this rather than re-deriving zones.
     entry_zones: tuple["EntryZone", ...] = ()
 
+    # ── Non-ICT concept layer ─────────────────────────────────────────
+    # Outputs of the concept generators (trend, mean-reversion, …) keyed by
+    # timeframe, plus the classified volatility regime per timeframe.  These
+    # broaden the analysis beyond the ICT/SMC modules so the data-driven
+    # combiner can weight multiple schools of thought.  ConceptSignal values
+    # are stored as opaque objects to avoid coupling WorldModel to pandas.
+    concepts: tuple[tuple[str, tuple[Any, ...]], ...] = ()
+    regime: tuple[tuple[str, str], ...] = ()
+
     # ── Helpers ───────────────────────────────────────────────────────
 
     def fvgs_by_tf(self) -> dict[str, tuple[FairValueGap, ...]]:
@@ -96,6 +105,14 @@ class WorldModel:
     def entry_zones_list(self) -> list["EntryZone"]:
         """Actionable entry zones synthesized at publish time."""
         return list(self.entry_zones)
+
+    def concepts_by_tf(self) -> dict[str, tuple[Any, ...]]:
+        """Non-ICT concept signals keyed by timeframe."""
+        return dict(self.concepts)
+
+    def regime_by_tf(self) -> dict[str, str]:
+        """Classified volatility regime keyed by timeframe."""
+        return dict(self.regime)
 
     def all_fvgs(self) -> list[FairValueGap]:
         """Flat list of all FVGs across timeframes (highest TF first)."""
@@ -188,6 +205,8 @@ def build_world_model(
     inducement: Optional[dict[str, InducementAnalysis]] = None,
     bias: Optional[dict[str, Any]] = None,
     entry_zones: Optional[list["EntryZone"]] = None,
+    concepts: Optional[dict[str, list]] = None,
+    regime: Optional[dict[str, str]] = None,
 ) -> WorldModel:
     """Convenience builder: accepts mutable dicts, freezes them into tuples.
 
@@ -223,4 +242,6 @@ def build_world_model(
         inducement=_freeze_scalars(inducement),
         bias=_freeze_scalars(bias),
         entry_zones=tuple(entry_zones) if entry_zones else (),
+        concepts=_freeze_lists(concepts),
+        regime=_freeze_scalars(regime),
     )
