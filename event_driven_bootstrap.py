@@ -596,11 +596,10 @@ class PositionEvaluator:
                     ticket=order_id, direction=direction,
                     current_sl=sl, pip_size=pip_s,
                 )
-                self._aggregator.submit([Intent(
-                    intent_type=IntentType.CLOSE,
-                    position_ticket=order_id,
+                self._aggregator.submit([Intent.close(
                     symbol=symbol,
-                    direction=direction,
+                    ticket=order_id,
+                    source="decision_engine",
                     reason=f"DE: {getattr(de_result, 'reason', '')[:100]}",
                 )])
                 logger.info(
@@ -616,12 +615,11 @@ class PositionEvaluator:
                         ticket=order_id, direction=direction,
                         current_sl=sl, pip_size=pip_s,
                     )
-                    self._aggregator.submit([Intent(
-                        intent_type=IntentType.MODIFY_SL,
-                        position_ticket=order_id,
+                    self._aggregator.submit([Intent.modify_sl(
                         symbol=symbol,
-                        direction=direction,
+                        ticket=order_id,
                         new_sl=new_sl,
+                        source="decision_engine",
                         reason=f"DE: {getattr(de_result, 'reason', '')[:80]}",
                     )])
             elif action_name == Action.SET_PROTECTIVE_STOP.value:
@@ -632,12 +630,11 @@ class PositionEvaluator:
                         ticket=order_id, direction=direction,
                         current_sl=sl, pip_size=pip_s,
                     )
-                    self._aggregator.submit([Intent(
-                        intent_type=IntentType.MODIFY_SL,
-                        position_ticket=order_id,
+                    self._aggregator.submit([Intent.modify_sl(
                         symbol=symbol,
-                        direction=direction,
+                        ticket=order_id,
                         new_sl=new_sl,
+                        source="decision_engine",
                         reason=f"DE protective: {getattr(de_result, 'reason', '')[:60]}",
                     )])
 
@@ -1405,7 +1402,6 @@ class EventDrivenSystem:
 
     def _watchdog_loop(self) -> None:
         """Background loop: heartbeat + stall detection + daily maintenance + heat monitoring."""
-        _last_heat_check = 0.0
         while getattr(self, "_watchdog_running", False):
             ctx = self._ctx
             if ctx is not None and ctx.process_watchdog is not None:
@@ -1440,106 +1436,8 @@ class EventDrivenSystem:
             _time.sleep(10.0)
 
     def _run_portfolio_heat_check(self, ctx: SystemContext) -> None:
-        if ctx.portfolio_risk_sm is None:
-            return
-        try:
-            from risk.portfolio_risk_state import PortfolioRiskState
-            sm_state = ctx.portfolio_risk_sm.state
-            if sm_state == PortfolioRiskState.NORMAL:
-                return
-            positions = self._pm.get_all_open_positions()
-            if not positions:
-                return
-            if sm_state == PortfolioRiskState.EMERGENCY:
-                for pos in positions:
-                    ticket = str(getattr(pos, "order_id", getattr(pos, "ticket", "")))
-                    symbol = getattr(pos, "symbol", "")
-                    direction = getattr(pos, "direction", "")
-                    pip_size = 0.0001
-                    try:
-                        pip_size = get_pip_size(symbol)
-                    except Exception:
-                        pass
-                    self._aggregator.register_position(
-                        ticket=ticket, direction=direction,
-                        current_sl=getattr(pos, "sl", 0.0) or 0.0,
-                        pip_size=pip_size,
-                    )
-                    self._aggregator.submit([Intent(
-                        intent_type=IntentType.CLOSE,
-                        position_ticket=ticket,
-                        symbol=symbol,
-                        direction=direction,
-                        reason="EMERGENCY: portfolio heat critical",
-                    )])
-                logger.warning("[heat-mon] EMERGENCY — closing all {} positions", len(positions))
-            elif sm_state == PortfolioRiskState.REDUCING:
-                worst = None
-                worst_pnl = 0.0
-                for pos in positions:
-                    pnl = getattr(pos, "profit", 0.0) or 0.0
-                    if worst is None or pnl < worst_pnl:
-                        worst = pos
-                        worst_pnl = pnl
-                if worst is not None and worst_pnl < 0:
-                    ticket = str(getattr(worst, "order_id", getattr(worst, "ticket", "")))
-                    symbol = getattr(worst, "symbol", "")
-                    direction = getattr(worst, "direction", "")
-                    pip_size = 0.0001
-                    try:
-                        pip_size = get_pip_size(symbol)
-                    except Exception:
-                        pass
-                    self._aggregator.register_position(
-                        ticket=ticket, direction=direction,
-                        current_sl=getattr(worst, "sl", 0.0) or 0.0,
-                        pip_size=pip_size,
-                    )
-                    self._aggregator.submit([Intent(
-                        intent_type=IntentType.CLOSE,
-                        position_ticket=ticket,
-                        symbol=symbol,
-                        direction=direction,
-                        reason=f"REDUCING: closing weakest ({worst_pnl:.2f})",
-                    )])
-                    logger.warning("[heat-mon] REDUCING — closing {} pnl={:.2f}", symbol, worst_pnl)
-            elif sm_state == PortfolioRiskState.DEFENSIVE:
-                for pos in positions:
-                    entry_price = getattr(pos, "entry_price", 0.0) or 0.0
-                    sl = getattr(pos, "sl", 0.0) or 0.0
-                    direction = getattr(pos, "direction", "")
-                    if not entry_price or not sl:
-                        continue
-                    is_long = direction.upper() in ("BUY", "LONG")
-                    already_be = (is_long and sl >= entry_price) or (not is_long and sl <= entry_price)
-                    if already_be:
-                        continue
-                    pip_size = 0.0001
-                    try:
-                        pip_size = get_pip_size(getattr(pos, "symbol", ""))
-                    except Exception:
-                        pass
-                    be_price = entry_price + (2 * pip_size) if is_long else entry_price - (2 * pip_size)
-                    price = (self._tick_store.get_latest(getattr(pos, "symbol", "")) or type("", (), {"mid": 0.0})()).mid
-                    if price <= 0:
-                        continue
-                    can_be = (is_long and price > be_price) or (not is_long and price < be_price)
-                    if can_be:
-                        ticket = str(getattr(pos, "order_id", getattr(pos, "ticket", "")))
-                        self._aggregator.register_position(
-                            ticket=ticket, direction=direction,
-                            current_sl=sl, pip_size=pip_size,
-                        )
-                        self._aggregator.submit([Intent(
-                            intent_type=IntentType.MODIFY_SL,
-                            position_ticket=ticket,
-                            symbol=getattr(pos, "symbol", ""),
-                            direction=direction,
-                            new_sl=be_price,
-                            reason="DEFENSIVE: moving to breakeven",
-                        )])
-        except Exception as exc:
-            logger.debug("[heat-mon] portfolio heat check failed: {}", exc)
+        # Canonical heat response (DEFENSIVE/REDUCING/EMERGENCY → intents).
+        self._check_portfolio_heat()
 
         # ── Account risk unrealized P&L tracking ─────────────────────
         if ctx.account_risk is not None:
@@ -1568,28 +1466,20 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[periodic] PostCloseTracker tick failed: {}", exc)
 
-        if ctx.shadow_store is not None:
-            try:
-                resolver = getattr(ctx, "_shadow_resolver", None)
-                if resolver is None:
-                    from persistence.shadow_resolver import ShadowResolver
-                    resolver = ShadowResolver(ctx.shadow_store)
-                    ctx._shadow_resolver = resolver
-                contracts = ctx.shadow_store.get_open_contracts()
-                for contract in contracts:
-                    sym = getattr(contract, "symbol", "")
-                    tick = self._tick_store.get_latest(sym)
-                    if tick is None:
-                        continue
-                    try:
-                        resolver.advance(contract, tick.mid)
-                    except Exception:
-                        pass
-            except Exception as exc:
-                logger.debug("[periodic] shadow resolution failed: {}", exc)
+        # Shadow contract resolution — live tick-driven (see _resolve_shadows).
+        self._resolve_shadows()
 
     def _check_portfolio_heat(self) -> None:
-        """Continuous portfolio heat monitoring — generates intents for open positions."""
+        """Continuous portfolio heat monitoring — generates intents for open positions.
+
+        Canonical heat-response path used by the watchdog:
+          EMERGENCY → CLOSE every position
+          REDUCING  → CLOSE the weakest losing position
+          DEFENSIVE → MODIFY_SL to breakeven (only when price has cleared it)
+
+        Intents are always submitted to the IntentAggregator as a list (its
+        ``submit`` contract); the FlushLoop drains and executes them.
+        """
         ctx = self._ctx
         if ctx is None or ctx.portfolio_risk_sm is None:
             return
@@ -1608,13 +1498,12 @@ class EventDrivenSystem:
                     ticket = str(getattr(pos, "order_id", getattr(pos, "ticket", "")))
                     symbol = getattr(pos, "symbol", "")
                     if ticket:
-                        intent = Intent.close(
+                        self._aggregator.submit([Intent.close(
                             symbol=symbol,
                             ticket=ticket,
                             source="heat_monitor",
                             reason="portfolio_heat_emergency",
-                        )
-                        self._aggregator.submit(intent)
+                        )])
                 logger.warning(
                     "[heat-monitor] EMERGENCY — {} CLOSE intents for all positions",
                     len(positions),
@@ -1629,17 +1518,16 @@ class EventDrivenSystem:
                     if pnl < worst_pnl:
                         worst_pnl = pnl
                         worst_pos = pos
-                if worst_pos is not None:
+                if worst_pos is not None and worst_pnl < 0:
                     ticket = str(getattr(worst_pos, "order_id", getattr(worst_pos, "ticket", "")))
                     symbol = getattr(worst_pos, "symbol", "")
                     if ticket:
-                        intent = Intent.close(
+                        self._aggregator.submit([Intent.close(
                             symbol=symbol,
                             ticket=ticket,
                             source="heat_monitor",
                             reason="portfolio_heat_reducing_weakest",
-                        )
-                        self._aggregator.submit(intent)
+                        )])
                         logger.info(
                             "[heat-monitor] REDUCING — closing weakest {} (pnl={:.2f})",
                             symbol, worst_pnl,
@@ -1660,53 +1548,92 @@ class EventDrivenSystem:
                         (current_sl >= entry_price if is_long else current_sl <= entry_price)
                         if current_sl > 0 else False
                     )
-                    if not already_at_be:
-                        pip_size = self._safe_pip_size(symbol)
-                        be_price = entry_price + (2 * pip_size) if is_long else entry_price - (2 * pip_size)
-                        intent = Intent.modify_sl(
-                            symbol=symbol,
-                            ticket=ticket,
-                            new_sl=be_price,
-                            source="heat_monitor",
-                            reason="portfolio_heat_defensive_be",
-                        )
-                        self._aggregator.submit(intent)
+                    if already_at_be:
+                        continue
+                    pip_size = self._safe_pip_size(symbol)
+                    be_price = entry_price + (2 * pip_size) if is_long else entry_price - (2 * pip_size)
+                    # Only move to BE once price has cleared the BE level, else the
+                    # SL would land on the wrong side of market (instant stop-out).
+                    tick = self._tick_store.get_latest(symbol)
+                    price = tick.mid if tick is not None else 0.0
+                    if price <= 0:
+                        continue
+                    can_be = (price > be_price) if is_long else (price < be_price)
+                    if not can_be:
+                        continue
+                    self._aggregator.register_position(
+                        ticket=ticket, direction=direction,
+                        current_sl=current_sl, pip_size=pip_size,
+                    )
+                    self._aggregator.submit([Intent.modify_sl(
+                        symbol=symbol,
+                        ticket=ticket,
+                        new_sl=be_price,
+                        source="heat_monitor",
+                        reason="portfolio_heat_defensive_be",
+                    )])
                 logger.info("[heat-monitor] DEFENSIVE — BE intents submitted")
 
         except Exception as exc:
             logger.debug("[heat-monitor] check failed: {}", exc)
 
     def _resolve_shadows(self) -> None:
-        """Advance open shadow contracts on latest tick prices."""
+        """Resolve pending shadow contracts against the latest tick price.
+
+        Live counterpart to the CSV-replay ``run_resolver``: when a PENDING
+        shadow contract's SL or TP1 is touched by the current tick, it is
+        resolved WIN/LOSS via ``ShadowStore.resolve_contract`` with a proper
+        ``ShadowResolution`` payload.
+        """
         ctx = self._ctx
         if ctx is None or ctx.shadow_store is None:
             return
         try:
-            open_shadows = ctx.shadow_store.get_open_contracts()
-            if not open_shadows:
+            from persistence.shadow_store import ShadowResolution, _now_ms
+            pending = ctx.shadow_store.get_pending(limit=200)
+            if not pending:
                 return
-            for shadow in open_shadows:
+            for shadow in pending:
                 sym = getattr(shadow, "symbol", "")
                 tick = self._tick_store.get_latest(sym)
                 if tick is None:
                     continue
                 price = tick.mid
-                sl = getattr(shadow, "stop_loss", 0.0)
-                tp = getattr(shadow, "tp1", 0.0)
+                sl = getattr(shadow, "stop_loss", 0.0) or 0.0
+                tp = getattr(shadow, "tp1", 0.0) or 0.0
+                entry = getattr(shadow, "entry_price", 0.0) or 0.0
                 direction = getattr(shadow, "direction", "LONG")
                 is_long = str(direction).upper() in ("BUY", "LONG")
                 hit_sl = (price <= sl if is_long else price >= sl) if sl > 0 else False
                 hit_tp = (price >= tp if is_long else price <= tp) if tp > 0 else False
-                if hit_sl or hit_tp:
-                    outcome = "WIN" if hit_tp else "LOSS"
-                    try:
-                        ctx.shadow_store.resolve_contract(
-                            getattr(shadow, "contract_id", ""),
-                            outcome=outcome,
-                            exit_price=price,
+                if not (hit_sl or hit_tp):
+                    continue
+                outcome = "WIN" if hit_tp else "LOSS"
+                exit_price = tp if hit_tp else sl
+                r_multiple = 0.0
+                if entry > 0 and sl > 0:
+                    risk = abs(entry - sl)
+                    if risk > 0:
+                        r_multiple = (
+                            (exit_price - entry) / risk if is_long
+                            else (entry - exit_price) / risk
                         )
-                    except Exception:
-                        pass
+                try:
+                    resolution = ShadowResolution(
+                        outcome=outcome,
+                        r_multiple=round(float(r_multiple), 4),
+                        exit_reason="TP1" if hit_tp else "SL",
+                        exit_price=float(exit_price),
+                        resolution_ts=_now_ms(),
+                        resolution_granularity="LIVE_TICK",
+                        bars_replayed=0,
+                        resolver_meta={"resolver": "live_tick"},
+                    )
+                    ctx.shadow_store.resolve_contract(
+                        getattr(shadow, "contract_id", ""), resolution,
+                    )
+                except Exception:
+                    pass
         except Exception as exc:
             logger.debug("[shadow-resolve] failed: {}", exc)
 
@@ -2045,7 +1972,7 @@ class EventDrivenSystem:
                     approved, reason = ctx.correlation_engine.can_open_trade(
                         pair=symbol,
                         direction=direction,
-                        existing_trades=corr_trades,
+                        open_trades=corr_trades,
                     )
                     if not approved:
                         logger.warning(
@@ -2189,12 +2116,13 @@ class EventDrivenSystem:
                     plan_ctx = TradePlanContext(
                         symbol=symbol,
                         direction="LONG" if direction.upper() in ("BUY", "LONG") else "SHORT",
-                        entry_price=entry_price,
-                        stop_loss=sl,
-                        tp1=tp1,
-                        tp2=tp2,
-                        score=conviction,
-                        conviction=de_conviction if de_conviction > 0 else float(conviction) / 100.0,
+                        current_price=entry_price,
+                        zone_entry_price=entry_price,
+                        proposed_sl_price=sl,
+                        proposed_tp1_price=tp1,
+                        proposed_tp2_price=tp2,
+                        scanner_score=float(conviction),
+                        de_confidence=de_conviction if de_conviction > 0 else float(conviction) / 100.0,
                     )
                     plan = ctx.trade_planner.plan_trade(plan_ctx)
                     if plan is not None and hasattr(plan, "action"):
@@ -2226,7 +2154,7 @@ class EventDrivenSystem:
                         try:
                             atr_sl_calc = ctx.entry_engine.calculate_stop_loss(
                                 direction=norm_dir,
-                                zone={"entry": entry_price, "top": entry_price, "bottom": entry_price},
+                                entry_zone={"entry": entry_price, "top": entry_price, "bottom": entry_price},
                                 pip_size=pip_size_ee,
                                 buffer_pips=getattr(self._config.risk, "sl_buffer_pips", 2.0),
                                 entry_price=entry_price,
@@ -2342,14 +2270,12 @@ class EventDrivenSystem:
                     if ctx.regime_detector is not None:
                         try:
                             rs = ctx.regime_detector.get_regime(symbol)
-                            regime_str = getattr(rs, "label", "")
+                            regime_str = getattr(rs, "regime", "")
                         except Exception:
                             pass
                     fp = compute_fingerprint(
-                        pair=symbol,
-                        direction="LONG" if direction.upper() in ("BUY", "LONG") else "SHORT",
-                        regime=regime_str,
                         horizon="SWING",
+                        extra=regime_str,
                     )
                     cap_mult = ctx.capital_allocator.get_sizing_multiplier(fp)
                 except Exception as exc:
@@ -2363,7 +2289,7 @@ class EventDrivenSystem:
                     if ctx.regime_detector is not None:
                         try:
                             rs = ctx.regime_detector.get_regime(symbol)
-                            regime_str = getattr(rs, "label", "")
+                            regime_str = getattr(rs, "regime", "")
                         except Exception:
                             pass
                     exec_profile = ctx.execution_profiles.select_profile(
@@ -2401,16 +2327,12 @@ class EventDrivenSystem:
             if ctx is not None and ctx.drawdown_guard is not None:
                 try:
                     dd_status = ctx.drawdown_guard.get_status()
-                    risk_map = getattr(ctx.drawdown_guard, "risk_map", None)
-                    if risk_map and dd_status.mode in risk_map:
-                        risk_pct = risk_map[dd_status.mode]
-                    risk_map = getattr(ctx.drawdown_guard, "risk_map", None)
-                    if risk_map:
-                        dd_status = ctx.drawdown_guard.get_status()
-                        mode_key = dd_status.mode if isinstance(dd_status.mode, str) else str(dd_status.mode)
-                        mapped = risk_map.get(mode_key)
-                        if mapped is not None and mapped < risk_pct:
-                            risk_pct = mapped
+                    # current_risk_pct already encodes the per-mode reduction
+                    # (NORMAL/CAUTION/RECOVERY/FROZEN). Use it as a cap so a
+                    # drawdown never lets risk exceed the guard's recommendation.
+                    dd_risk = getattr(dd_status, "current_risk_pct", 0.0) or 0.0
+                    if dd_risk > 0 and dd_risk < risk_pct:
+                        risk_pct = dd_risk
                 except Exception:
                     pass
             pip_size = self._safe_pip_size(symbol)
@@ -2496,19 +2418,29 @@ class EventDrivenSystem:
                 # OutcomeLogger — record the plan at entry time
                 if ctx is not None and ctx.outcome_logger is not None:
                     try:
-                        plan_data = {
-                            "plan_id": str(result.order_id),
-                            "symbol": symbol,
-                            "direction": direction,
-                            "entry_price": entry_price,
-                            "sl": sl,
-                            "tp1": tp1,
-                            "tp2": tp2,
-                            "conviction": conviction,
-                            "combined_mult": round(combined_mult, 3),
-                            "profile": getattr(exec_profile, "name", "default") if exec_profile else "default",
-                        }
-                        ctx.outcome_logger.log_plan(plan_data, plan_data)
+                        from planning.models import TradePlan, TradePlanContext
+                        norm_dir = "LONG" if direction.upper() in ("BUY", "LONG") else "SHORT"
+                        plan_obj = TradePlan(
+                            action="ENTER",
+                            direction=norm_dir,
+                            entry_price=entry_price,
+                            sl_price=sl,
+                            tp1_price=tp1,
+                            tp2_price=tp2,
+                            confidence=float(conviction) / 100.0,
+                            plan_id=str(result.order_id),
+                        )
+                        plan_context = TradePlanContext(
+                            symbol=symbol,
+                            direction=norm_dir,
+                            current_price=entry_price,
+                            zone_entry_price=entry_price,
+                            proposed_sl_price=sl,
+                            proposed_tp1_price=tp1,
+                            proposed_tp2_price=tp2,
+                            scanner_score=float(conviction),
+                        )
+                        ctx.outcome_logger.log_plan(plan_obj, plan_context)
                     except Exception as exc:
                         logger.debug("[post-fill] OutcomeLogger plan failed: {}", exc)
             else:
@@ -2885,14 +2817,12 @@ class EventDrivenSystem:
                 if ctx.regime_detector is not None:
                     try:
                         rs = ctx.regime_detector.get_regime(symbol)
-                        regime_str = getattr(rs, "label", "")
+                        regime_str = getattr(rs, "regime", "")
                     except Exception:
                         pass
                 fp = compute_fingerprint(
-                    pair=symbol,
-                    direction=direction,
-                    regime=regime_str,
                     horizon="SWING",
+                    extra=regime_str,
                 )
                 risk_pips_est = abs(pnl_pips) if pnl_pips != 0 else 1.0
                 r_multiple = pnl_pips / risk_pips_est if risk_pips_est > 0 else 0.0
@@ -2947,61 +2877,73 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[close-evo] Calibrator run failed: {}", exc)
 
-        # ReEntryManager — evaluate re-entry opportunity after close
-        if ctx.re_entry_manager is not None:
-            try:
-                wm = self._wm_store.get(symbol)
-                if wm is not None:
-                    re_entry_signal = ctx.re_entry_manager.evaluate(
-                        symbol=symbol,
-                        direction=direction,
-                        pnl_pips=pnl_pips,
-                        exit_cause=cause_value,
-                    )
-                    if re_entry_signal and getattr(re_entry_signal, "should_reenter", False):
-                        logger.info(
-                            "[re-entry] {} {} re-entry signal after {} (score={})",
-                            symbol, direction, cause_value,
-                            getattr(re_entry_signal, "score", 0),
-                        )
-            except Exception as exc:
-                logger.debug("[close-evo] ReEntryManager eval failed: {}", exc)
-
         logger.info(
             "EVENT-DRIVEN CLOSE FEEDBACK | {} {} ticket={} pnl=${:.2f} ({:.1f}pip) | risk+learning+evolution",
             direction, symbol, ticket, pnl_dollars, pnl_pips,
         )
 
         # ── BE-stop cooldown — prevent chop re-entry ────────────────
-        if abs(pnl_dollars) < 0.01 and abs(pnl_pips) < 2.0:
+        is_breakeven_exit = abs(pnl_dollars) < 0.01 and abs(pnl_pips) < 2.0
+        if is_breakeven_exit:
             self._be_stop_cooldown[symbol] = _time.monotonic() + self._be_cooldown_seconds
             logger.info("[be-cooldown] {} cooldown for {:.0f}s (breakeven exit)", symbol, self._be_cooldown_seconds)
 
         # ── Re-entry evaluation ──────────────────────────────────────
-        if ctx is not None and ctx.re_entry_manager is not None and pnl_dollars > 0:
+        # ReEntryManager only re-arms trades stopped at breakeven whose
+        # structural setup is still valid (see management/re_entry.py).
+        if ctx is not None and ctx.re_entry_manager is not None and is_breakeven_exit:
             try:
                 m5_df = self._fetch_candles(symbol, "M5", 50)
                 if m5_df is not None:
                     from types import SimpleNamespace
                     closed = SimpleNamespace(
-                        symbol=symbol, direction=direction,
+                        pair=symbol,
+                        direction=direction,
                         re_entry_eligible=True,
+                        candles_since_entry=0,
                     )
                     opp = ctx.re_entry_manager.check_re_entry(closed, m5_df)
                     if opp is not None and getattr(opp, "eligible", False):
                         logger.info(
-                            "[re-entry] {} {} opportunity: {}",
-                            symbol, direction, getattr(opp, "reason", ""),
+                            "[re-entry] {} {} opportunity: {} (zone={})",
+                            symbol, direction,
+                            getattr(opp, "reason", ""),
+                            getattr(opp, "new_entry_zone", None),
                         )
+                        self._arm_re_entry_zone(symbol, direction, opp)
             except Exception as exc:
                 logger.debug("[re-entry] evaluation failed: {}", exc)
 
+    def _arm_re_entry_zone(self, symbol: str, direction: str, opp: Any) -> None:
+        """Re-arm the event-driven entry path after a confirmed re-entry.
 
-def _extract_currencies(symbol: str) -> list[str]:
-    """Extract currency legs from a forex symbol (e.g. EURJPY → [EUR, JPY])."""
-    sym = str(symbol).upper().strip()
-    if len(sym) == 6:
-        base, quote = sym[:3], sym[3:]
-        if base in _KNOWN_CURRENCIES and quote in _KNOWN_CURRENCIES:
-            return [base, quote]
-    return []
+        ReEntryManager has confirmed the structural setup is still valid after a
+        breakeven stop.  Rather than placing an order directly (which would bypass
+        the entry gates), we clear the BE-stop cooldown so the normal
+        WorldModel → zone → tick-detection → M1-confirm → gate flow can re-arm the
+        entry on the next analysis-plane update.
+        """
+        try:
+            self._be_stop_cooldown.pop(symbol, None)
+            logger.info(
+                "[re-entry] {} {} re-armed — BE cooldown cleared, entry path live",
+                symbol, direction,
+            )
+            try:
+                es = get_event_store()
+                es.emit(
+                    DE.RE_ENTRY_ARMED, "INFO",
+                    symbol=symbol,
+                    source_module="re_entry",
+                    payload={
+                        "symbol": symbol,
+                        "direction": direction,
+                        "reason": getattr(opp, "reason", ""),
+                        "zone": getattr(opp, "new_entry_zone", ""),
+                        "kind": "re_entry_rearm",
+                    },
+                )
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.debug("[re-entry] arm failed: {}", exc)
