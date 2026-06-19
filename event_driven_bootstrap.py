@@ -410,9 +410,9 @@ class PositionEvaluator:
                             scan_direction = "LONG" if "BULL" in str(trend).upper() else (
                                 "SHORT" if "BEAR" in str(trend).upper() else ""
                             )
-                        conf = float(getattr(sa, "confidence", 0.0) or 0.0)
-                        if conf:
-                            score = int(round(conf * 100))
+                        s = int(round(float(getattr(sa, "confidence", 0.0) or 0.0) * 100))
+                        if s:
+                            score = int(s)
                         break
 
             if score == 0:
