@@ -90,7 +90,10 @@ class LiveState(
         connection_status: dict[str, bool],
         system_context: Any = None,
     ) -> None:
-        self._trading_loop = trading_loop
+        # The legacy ``trading_loop`` is no longer a data source — the
+        # event-driven system (set via ``set_event_driven_system``) is the sole
+        # live backend.  The parameter is accepted for call-site compatibility
+        # but intentionally not stored, so ``_trading_loop`` stays ``None``.
         self._platform_manager = platform_manager
         self._connection_status = connection_status
         self._system_context = system_context
@@ -114,8 +117,6 @@ class LiveState(
             logger.debug("[dashboard] event store read failed, falling back: {}", exc)
 
         events: list[dict] = []
-        loop_warnings = getattr(self._trading_loop, "system_warnings", []) if self._trading_loop else []
-        events.extend(loop_warnings)
         pm_warnings = getattr(self._platform_manager, "system_warnings", []) if self._platform_manager else []
         events.extend(pm_warnings)
         try:
@@ -129,4 +130,4 @@ class LiveState(
     def is_live(self) -> bool:
         if self._event_driven_system is not None:
             return bool(getattr(self._event_driven_system, "is_running", False))
-        return self._trading_loop is not None and bool(getattr(self._trading_loop, "running", False))
+        return False
