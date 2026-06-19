@@ -1,6 +1,6 @@
-"""APEX TRADER — Event-Driven System Bootstrap (Phase 9).
+"""APEX TRADER — Event-Driven System Bootstrap.
 
-Wires all Phase 1-7 components into a running event-driven system:
+Wires all subsystems into a running event-driven system:
 
   Analysis Plane:    CandleClose events → brain modules → WorldModel
   Execution Plane:   Ticks → PositionWorkers → IntentAggregator → ActionExecutor → Broker
@@ -8,8 +8,6 @@ Wires all Phase 1-7 components into a running event-driven system:
 
 Start:  ``system.start()``
 Stop:   ``system.stop()``
-
-Kill switch:  set env ``USE_EVENT_DRIVEN=true`` to activate.
 """
 
 from __future__ import annotations
@@ -695,7 +693,10 @@ class EventDrivenSystem:
             for name in ("signal_ledger", "counterfactual_engine",
                          "interaction_analyzer", "module_governor",
                          "shadow_store", "post_close_tracker",
-                         "gate_tuner"):
+                         "gate_tuner", "capital_allocator",
+                         "execution_profiles", "regime_detector",
+                         "behavior_discovery", "signal_discovery",
+                         "virtual_module_registry"):
                 sub = getattr(ctx, name, None)
                 if sub is not None and hasattr(sub, "close"):
                     try:
@@ -1352,6 +1353,48 @@ class EventDrivenSystem:
                 except Exception:
                     pass
 
+            # ── Capital allocation multiplier (L5.5a) ────────────────
+            cap_mult = 1.0
+            if ctx is not None and ctx.capital_allocator is not None:
+                try:
+                    from adaptive.capital_allocator import compute_fingerprint
+                    wm = self._wm_store.get(symbol)
+                    regime_str = ""
+                    if ctx.regime_detector is not None:
+                        try:
+                            rs = ctx.regime_detector.get_regime(symbol)
+                            regime_str = getattr(rs, "label", "")
+                        except Exception:
+                            pass
+                    fp = compute_fingerprint(
+                        pair=symbol,
+                        direction="LONG" if direction.upper() in ("BUY", "LONG") else "SHORT",
+                        regime=regime_str,
+                        horizon="SWING",
+                    )
+                    cap_mult = ctx.capital_allocator.get_sizing_multiplier(fp)
+                except Exception as exc:
+                    logger.debug("[cap-alloc] sizing multiplier failed: {}", exc)
+
+            # ── Execution profile selection (L5.5b) ──────────────────
+            exec_profile = None
+            if ctx is not None and ctx.execution_profiles is not None:
+                try:
+                    regime_str = ""
+                    if ctx.regime_detector is not None:
+                        try:
+                            rs = ctx.regime_detector.get_regime(symbol)
+                            regime_str = getattr(rs, "label", "")
+                        except Exception:
+                            pass
+                    exec_profile = ctx.execution_profiles.select_profile(
+                        horizon="SWING",
+                        regime=regime_str,
+                        consensus_strength=float(conviction) / 100.0 if conviction else 0.5,
+                    )
+                except Exception as exc:
+                    logger.debug("[exec-prof] profile selection failed: {}", exc)
+
             # ── Position sizing ──────────────────────────────────────
             risk_pct = self._config.risk.risk_per_trade_pct / 100.0
             pip_size = self._safe_pip_size(symbol)
@@ -1372,7 +1415,7 @@ class EventDrivenSystem:
                 symbol=symbol,
             )
 
-            combined_mult = de_size_mult * orch_mult * vol_mult * density_mult * exec_mult
+            combined_mult = de_size_mult * orch_mult * vol_mult * density_mult * exec_mult * cap_mult
             combined_mult = max(0.15, min(1.0, combined_mult))
             if combined_mult < 1.0:
                 if size_result.lots > 0:
@@ -1380,9 +1423,9 @@ class EventDrivenSystem:
                 if size_result.stake_usd > 0:
                     size_result.stake_usd = round(max(0.35, size_result.stake_usd * combined_mult), 2)
                 logger.info(
-                    "[SIZING] {} final×{:.2f} (DE×{:.2f} ORCH×{:.2f} VOL×{:.2f} DEN×{:.2f} EXEC×{:.2f}) → {:.2f} lots / ${:.2f} stake",
+                    "[SIZING] {} final×{:.2f} (DE×{:.2f} ORCH×{:.2f} VOL×{:.2f} DEN×{:.2f} EXEC×{:.2f} CAP×{:.2f}) → {:.2f} lots / ${:.2f} stake",
                     symbol, combined_mult, de_size_mult, orch_mult, vol_mult,
-                    density_mult, exec_mult, size_result.lots, size_result.stake_usd,
+                    density_mult, exec_mult, cap_mult, size_result.lots, size_result.stake_usd,
                 )
 
             if size_result.lots <= 0 and size_result.stake_usd <= 0:
@@ -1433,6 +1476,25 @@ class EventDrivenSystem:
                 )
                 self._on_order_filled(symbol, direction, result, balance,
                                       entry_price, order_ts)
+
+                # OutcomeLogger — record the plan at entry time
+                if ctx is not None and ctx.outcome_logger is not None:
+                    try:
+                        plan_data = {
+                            "plan_id": str(result.order_id),
+                            "symbol": symbol,
+                            "direction": direction,
+                            "entry_price": entry_price,
+                            "sl": sl,
+                            "tp1": tp1,
+                            "tp2": tp2,
+                            "conviction": conviction,
+                            "combined_mult": round(combined_mult, 3),
+                            "profile": getattr(exec_profile, "name", "default") if exec_profile else "default",
+                        }
+                        ctx.outcome_logger.log_plan(plan_data, plan_data)
+                    except Exception as exc:
+                        logger.debug("[post-fill] OutcomeLogger plan failed: {}", exc)
             else:
                 err = getattr(result, "error", "unknown")
                 logger.warning(
@@ -1797,8 +1859,80 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[close-journal] TradeJournal write failed: {}", exc)
 
+        # ── EVOLUTION ENGINES (Phase 6) ──────────────────────────────
+
+        # CapitalAllocator — record outcome for fingerprint-based capital
+        if ctx.capital_allocator is not None:
+            try:
+                from adaptive.capital_allocator import compute_fingerprint
+                regime_str = ""
+                if ctx.regime_detector is not None:
+                    try:
+                        rs = ctx.regime_detector.get_regime(symbol)
+                        regime_str = getattr(rs, "label", "")
+                    except Exception:
+                        pass
+                fp = compute_fingerprint(
+                    pair=symbol,
+                    direction=direction,
+                    regime=regime_str,
+                    horizon="SWING",
+                )
+                risk_pips_est = abs(pnl_pips) if pnl_pips != 0 else 1.0
+                r_multiple = pnl_pips / risk_pips_est if risk_pips_est > 0 else 0.0
+                ctx.capital_allocator.record_outcome(fp, r_multiple)
+            except Exception as exc:
+                logger.debug("[close-evo] CapitalAllocator record failed: {}", exc)
+
+        # ExecutionProfileManager — record outcome for the profile used
+        if ctx.execution_profiles is not None:
+            try:
+                ctx.execution_profiles.record_outcome("standard_swing", pnl_pips / 10.0 if pnl_pips else 0.0)
+            except Exception as exc:
+                logger.debug("[close-evo] ExecutionProfileManager record failed: {}", exc)
+
+        # BehaviorDiscoveryEngine — record trade features for clustering
+        if ctx.behavior_discovery is not None:
+            try:
+                features = {
+                    "pair": symbol,
+                    "direction": direction,
+                    "pnl_pips": float(pnl_pips),
+                    "pnl_dollars": float(pnl_dollars),
+                    "exit_cause": cause_value,
+                }
+                r_est = pnl_pips / 10.0 if pnl_pips else 0.0
+                ctx.behavior_discovery.record_trade(features, r_est, trade_id=str(ticket))
+            except Exception as exc:
+                logger.debug("[close-evo] BehaviorDiscovery record failed: {}", exc)
+
+        # OutcomeLogger — link plan → outcome
+        if ctx.outcome_logger is not None:
+            try:
+                ctx.outcome_logger.log_outcome(str(ticket), {
+                    "pnl_pips": round(float(pnl_pips), 2),
+                    "pnl_dollars": round(float(pnl_dollars), 2),
+                    "outcome": outcome,
+                    "exit_cause": cause_value,
+                })
+            except Exception as exc:
+                logger.debug("[close-evo] OutcomeLogger outcome failed: {}", exc)
+
+        # Calibrator — auto-calibrate planner thresholds
+        if ctx.calibrator is not None and ctx.outcome_logger is not None:
+            try:
+                completed = ctx.outcome_logger.completed_count()
+                if ctx.calibrator.should_calibrate(completed):
+                    trades = ctx.outcome_logger.get_completed_trades()
+                    new_config = ctx.calibrator.calibrate(trades)
+                    if ctx.trade_planner is not None and new_config is not None:
+                        ctx.trade_planner.update_config(new_config)
+                        logger.info("[calibrator] planner config auto-calibrated from {} completed trades", completed)
+            except Exception as exc:
+                logger.debug("[close-evo] Calibrator run failed: {}", exc)
+
         logger.info(
-            "EVENT-DRIVEN CLOSE FEEDBACK | {} {} ticket={} pnl=${:.2f} ({:.1f}pip) | risk+learning",
+            "EVENT-DRIVEN CLOSE FEEDBACK | {} {} ticket={} pnl=${:.2f} ({:.1f}pip) | risk+learning+evolution",
             direction, symbol, ticket, pnl_dollars, pnl_pips,
         )
 
@@ -1811,8 +1945,3 @@ def _extract_currencies(symbol: str) -> list[str]:
         if base in _KNOWN_CURRENCIES and quote in _KNOWN_CURRENCIES:
             return [base, quote]
     return []
-
-
-def is_event_driven_enabled() -> bool:
-    """Check if event-driven mode is enabled via environment variable."""
-    return os.getenv("USE_EVENT_DRIVEN", "false").lower() in ("true", "1", "yes")
