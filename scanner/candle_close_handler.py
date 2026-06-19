@@ -44,17 +44,17 @@ from brain.concept_modules import run_concepts
 from config import get_pip_size
 from entry.models import EntryConfig
 from entry.zone_watcher import extract_entry_zones
+from brain.decision_core import (
+    TF_MODULE_MAP,
+    compute_bias,
+    run_tf_modules,
+    blend_concepts,
+    build_consensus,
+    fvg_proximity,
+)
 from tick.event_bus import EventBus
 from tick.models import CandleClose
 
-
-TF_MODULE_MAP: dict[str, list[str]] = {
-    "M5": ["fvg", "order_block", "volume", "inducement"],
-    "M15": ["fvg"],
-    "H1": ["fvg", "order_block", "liquidity", "volume", "wyckoff", "structure"],
-    "H4": ["order_block", "liquidity", "structure"],
-    "D1": ["structure"],
-}
 
 CandleFetcher = Callable[[str, str, int], Optional[pd.DataFrame]]
 
@@ -66,71 +66,6 @@ def _bar_hash(df: pd.DataFrame) -> str:
     last = df.iloc[-1]
     raw = f"{last.get('open', 0):.6f}|{last.get('high', 0):.6f}|{last.get('low', 0):.6f}|{last.get('close', 0):.6f}|{last.get('volume', 0)}"
     return hashlib.md5(raw.encode()).hexdigest()
-
-
-def _compute_bias(struct_by_tf: dict[str, StructureAnalysis]) -> dict[str, Any]:
-    """Synthesize a directional bias dict from per-TF StructureAnalysis.
-
-    Direction is decided by H4 + H1 (D1 only weights confidence), mirroring
-    ``StructureEngine.get_bias`` but operating on the already-computed
-    analyses stored in the WorldModel so no extra candle fetch is needed.
-    Returns the schema consumers expect: ``direction`` ("LONG"/"SHORT"/""),
-    ``score`` (0-100), ``opposing_boost``, plus per-TF trends.
-    """
-    def _trend(tf: str) -> tuple[Optional[str], float]:
-        sa = struct_by_tf.get(tf)
-        if sa is None:
-            return None, 0.0
-        trend = sa.trend.value if hasattr(sa.trend, "value") else str(sa.trend)
-        return trend, float(getattr(sa, "confidence", 0.0) or 0.0)
-
-    h4_t, h4_c = _trend("H4")
-    h1_t, h1_c = _trend("H1")
-    d1_t, d1_c = _trend("D1")
-
-    direction_trend: Optional[str] = None
-    strength = "NONE"
-    if h4_t and h4_t != "RANGING" and h4_t == h1_t:
-        direction_trend, strength = h4_t, "STRONG"
-    elif h4_t and h4_t != "RANGING" and (h1_t is None or h1_t == "RANGING"):
-        direction_trend, strength = h4_t, "MODERATE"
-    elif (h4_t is None or h4_t == "RANGING") and h1_t and h1_t != "RANGING":
-        direction_trend, strength = h1_t, "MODERATE"
-    elif h4_t and h1_t and h4_t != h1_t:
-        strength = "CONFLICTED"
-
-    if direction_trend == "BULLISH":
-        direction = "LONG"
-    elif direction_trend == "BEARISH":
-        direction = "SHORT"
-    else:
-        direction = ""
-
-    d1_aligned = bool(
-        direction_trend and d1_t and d1_t != "RANGING" and d1_t == direction_trend
-    )
-    if d1_t and d1_t != "RANGING":
-        if d1_aligned:
-            confidence = round(d1_c * 0.4 + h4_c * 0.35 + h1_c * 0.25, 2)
-        else:
-            confidence = round(((h4_c + h1_c) / 2) * 0.85, 2)
-    else:
-        confidence = round((h4_c + h1_c) / 2, 2)
-
-    score = int(round(confidence * 100)) if direction else 0
-
-    return {
-        "direction": direction,
-        "score": score,
-        "opposing_boost": 0,
-        "strength": strength,
-        "h4_trend": h4_t or "UNKNOWN",
-        "h1_trend": h1_t or "UNKNOWN",
-        "d1_trend": d1_t or "UNKNOWN",
-        "d1_aligned": d1_aligned,
-        "confidence": confidence,
-        "tradeable": strength in ("STRONG", "MODERATE"),
-    }
 
 
 class CandleCloseHandler:
@@ -338,64 +273,13 @@ class CandleCloseHandler:
     def _run_modules(
         self, symbol: str, tf: str, df: pd.DataFrame,
     ) -> dict[str, Any]:
-        modules = TF_MODULE_MAP.get(tf, [])
-        if not modules:
-            return {}
-
-        try:
-            pip_size = get_pip_size(symbol)
-        except KeyError:
-            pip_size = 0.0001
-        profile = get_profile(symbol)
-        results: dict[str, Any] = {}
-
-        for mod in modules:
-            try:
-                if mod == "fvg":
-                    det = FVGDetector(
-                        pip_size=pip_size,
-                        proximity_pips=profile.fvg_proximity_pips,
-                        min_size_pips=profile.fvg_min_size_pips,
-                    )
-                    results["fvg"] = det.detect(df, timeframe=tf)
-                elif mod == "order_block":
-                    det = OrderBlockDetector(
-                        pip_size=pip_size,
-                        min_impulse_pips=profile.ob_min_impulse_pips,
-                        buffer_pips=profile.ob_buffer_pips,
-                    )
-                    results["order_block"] = det.detect(df, timeframe=tf)
-                elif mod == "liquidity":
-                    results["liquidity"] = self._liquidity.map(df, pip_size)
-                elif mod == "volume":
-                    results["volume"] = self._volume.analyze(df)
-                elif mod == "wyckoff":
-                    if profile.wyckoff_enabled:
-                        wyck = WyckoffEngine(pip_size=pip_size)
-                        results["wyckoff"] = wyck.analyze(df)
-                elif mod == "inducement":
-                    det = InducementDetector(pip_size=pip_size)
-                    results["inducement"] = det.analyze(df)
-                elif mod == "structure":
-                    results["structure"] = self._structure.analyze(df)
-            except Exception as exc:
-                logger.debug(
-                    "[cc-handler] {} {} module '{}' failed: {}",
-                    symbol, tf, mod, exc,
-                )
-
-        # Non-ICT concept generators (trend / mean-reversion) + regime.
-        # Best-effort: a concept failure must never break the ICT analysis.
-        try:
-            signals, regime = run_concepts(df)
-            results["concepts"] = signals
-            results["regime"] = regime
-        except Exception as exc:
-            logger.debug(
-                "[cc-handler] {} {} concept modules failed: {}", symbol, tf, exc,
-            )
-
-        return results
+        """Delegate to the shared decision core (reusing this handler's engines)."""
+        return run_tf_modules(
+            symbol, tf, df,
+            structure=self._structure,
+            liquidity=self._liquidity,
+            volume=self._volume,
+        )
 
     # ------------------------------------------------------------------
     # WorldModel merge
@@ -443,7 +327,7 @@ class CandleCloseHandler:
         # Synthesize the directional bias from the merged HTF structure, then
         # blend in the non-ICT concepts (weighted by their learned edge) so the
         # bias is a data-driven combination, not pure ICT structure.
-        bias = _compute_bias(struct)
+        bias = compute_bias(struct)
         bias = self._blend_concepts(bias, concepts, regime)
 
         wm = build_world_model(
@@ -500,92 +384,7 @@ class CandleCloseHandler:
         VWAP, currency strength, liquidity sweep) are omitted.  Each extractor
         is guarded so one failure cannot suppress the rest.
         """
-        from brain.directional_consensus import (
-            Vote,
-            vote_from_structure,
-            vote_from_volume,
-            vote_from_wyckoff,
-            vote_from_order_blocks,
-            vote_from_fvg,
-            decide_opportunities,
-        )
-
-        votes: list = []
-
-        # Structure — map the bias direction to the BULLISH/BEARISH schema the
-        # extractor expects.
-        try:
-            b = wm.bias_dict()
-            sdir = {"LONG": "BULLISH", "SHORT": "BEARISH"}.get(
-                str(b.get("direction", "")).upper(), "RANGING",
-            )
-            r = vote_from_structure(
-                {"direction": sdir,
-                 "confidence": float(b.get("confidence", 0.0) or 0.0)}
-            )
-            votes.append(Vote("structure", r[0], r[1], 3.0))
-        except Exception:
-            pass
-
-        # Volume (prefer M5, fall back to H1).
-        try:
-            vbt = wm.volume_by_tf()
-            va = vbt.get("M5") or vbt.get("H1")
-            if va is not None:
-                r = vote_from_volume(va)
-                votes.append(Vote("volume", r[0], r[1], 1.0))
-        except Exception:
-            pass
-
-        # Wyckoff (H1).
-        try:
-            wy = wm.wyckoff_by_tf().get("H1")
-            if wy is not None:
-                r = vote_from_wyckoff(wy)
-                votes.append(Vote("wyckoff", r[0], r[1], 1.5))
-        except Exception:
-            pass
-
-        # Order blocks + FVGs both need the current price.
-        if current_price and current_price > 0:
-            try:
-                obs = wm.all_order_blocks()
-                if obs:
-                    r = vote_from_order_blocks(list(obs), current_price)
-                    votes.append(Vote("order_block", r[0], r[1], 1.0))
-            except Exception:
-                pass
-            try:
-                fvgs = wm.all_fvgs()
-                if fvgs:
-                    r = vote_from_fvg(
-                        list(fvgs), current_price, self._fvg_proximity(symbol),
-                    )
-                    votes.append(Vote("fvg", r[0], r[1], 1.0))
-            except Exception:
-                pass
-
-        candidates: list = []
-        try:
-            if votes:
-                candidates = list(decide_opportunities(votes))
-        except Exception:
-            pass
-
-        return votes, candidates
-
-    def _fvg_proximity(self, symbol: str) -> float:
-        """FVG proximity (price units), matching the detector the ED path uses."""
-        try:
-            pip_size = get_pip_size(symbol)
-        except KeyError:
-            pip_size = 0.0001
-        profile = get_profile(symbol)
-        return FVGDetector(
-            pip_size=pip_size,
-            proximity_pips=profile.fvg_proximity_pips,
-            min_size_pips=profile.fvg_min_size_pips,
-        ).proximity
+        return build_consensus(symbol, wm, current_price)
 
     def _blend_concepts(
         self,
@@ -602,44 +401,7 @@ class CandleCloseHandler:
         ICT plane stays authoritative and the blend is default-neutral when
         concepts are neutral or unproven.
         """
-        try:
-            long_w = 0.0
-            short_w = 0.0
-            for tf, signals in concepts_by_tf.items():
-                rg = regime_by_tf.get(tf)
-                for sig in signals or []:
-                    if not getattr(sig, "is_directional", False):
-                        continue
-                    w = 1.0
-                    if self._concept_weight is not None:
-                        try:
-                            w = float(self._concept_weight(sig.name, rg))
-                        except Exception:  # noqa: BLE001
-                            w = 1.0
-                    contrib = w * float(getattr(sig, "strength", 0.0) or 0.0)
-                    if sig.direction == "LONG":
-                        long_w += contrib
-                    elif sig.direction == "SHORT":
-                        short_w += contrib
-
-            net = long_w - short_w
-            concept_dir = "LONG" if net > 0 else ("SHORT" if net < 0 else "")
-            magnitude = min(15.0, abs(net) * 10.0)
-
-            out = dict(bias)
-            direction = out.get("direction", "")
-            score = float(out.get("score", 0) or 0)
-            if direction and concept_dir:
-                if concept_dir == direction:
-                    score = min(100.0, score + magnitude)
-                else:
-                    score = max(0.0, score - magnitude)
-            out["score"] = int(round(score))
-            out["concept_direction"] = concept_dir
-            out["concept_score"] = round(magnitude, 2)
-            return out
-        except Exception:  # noqa: BLE001 — blending must never break analysis
-            return bias
+        return blend_concepts(bias, concepts_by_tf, regime_by_tf, self._concept_weight)
 
     # ------------------------------------------------------------------
     # Observability
