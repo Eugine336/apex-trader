@@ -69,8 +69,8 @@ from platforms.startup_check import StartupCheck, CheckResult
 # ── helpers ────────────────────────────────────────────────────────────
 
 def _make_scan_result(pair="EURUSD", direction="LONG", score=85):
-    from scanner.pair_scanner import PairScanResult
-    return PairScanResult(
+    from types import SimpleNamespace
+    return SimpleNamespace(
         pair=pair, direction=direction, score=score,
         regime="TRENDING",
         trend_h4="BULLISH" if direction == "LONG" else "BEARISH",
