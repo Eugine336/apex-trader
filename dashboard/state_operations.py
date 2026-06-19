@@ -93,6 +93,15 @@ class OperationsMixin:
         getter = getattr(loop, "get_ops_health", None)
         if callable(getter):
             return getter() or {}
+        # Event-driven mode (loop detached): reuse the ED/ctx-aware health
+        # snapshot so the ops page sources its health from the event-driven
+        # system instead of going dark.
+        health_getter = getattr(self, "get_health", None)
+        if callable(health_getter):
+            try:
+                return health_getter() or {}
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[state_operations] ED health read failed: {}", exc)
         return {"status": "ok", "ops_enabled": False, "attached": True}
 
     # ── Drawdown ───────────────────────────────────────────────────────────────

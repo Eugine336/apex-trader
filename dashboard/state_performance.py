@@ -105,22 +105,35 @@ class PerformanceMixin(HelpersMixin):
         if ed is not None:
             try:
                 ed_stats = ed.stats()
-                tr = ed_stats.get("tick_router", {})
                 ch = ed_stats.get("candle_handler", {})
+                cd = ed_stats.get("candle_detector", {})
+                # CandleCloseHandler.stats() emits received / processed / skipped.
+                received = int(ch.get("received", 0))
+                processed = int(ch.get("processed", 0))
+                skipped = int(ch.get("skipped", 0))
+                out["candle_cache"] = {
+                    "hits": processed,
+                    "misses": skipped,
+                    "expired": 0,
+                    "stores": processed,
+                    "total": received,
+                    "hit_rate": round(processed / received, 4) if received else 0.0,
+                    "entries": int(cd.get("tracked_pairs", 0)),
+                    "per_tf_hits": {},
+                    "per_tf_misses": {},
+                }
                 out["cycle"] = {
-                    "samples": ed_stats.get("position_evals", 0),
+                    "samples": int(ed_stats.get("position_evals", 0)),
                     "last_ms": 0.0,
                     "avg_ms": 0.0,
                     "p50_ms": 0.0,
                     "p95_ms": 0.0,
                     "max_ms": 0.0,
                 }
-                out["candle_cache"]["hits"] = ch.get("candles_fetched", 0)
-                out["candle_cache"]["total"] = ch.get("models_built", 0)
-                out["parallel_scan"]["enabled"] = True
+                out["parallel_scan"] = {"enabled": True, "max_workers": 0}
                 return out
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[dashboard] ED system-performance read failed: {}", exc)
 
         if loop is None:
             return out
@@ -275,6 +288,11 @@ class PerformanceMixin(HelpersMixin):
             for d, v in sorted(date_pnl.items(), key=lambda x: x[0])
         ]
 
+        today_iso = today.isoformat()
+        daily_trades = sum(
+            1 for r in rows if str(r.get("opened_at", ""))[:10] == today_iso
+        )
+
         return {
             "total_trades": total_trades,
             "wins": wins, "losses": losses,
@@ -289,7 +307,7 @@ class PerformanceMixin(HelpersMixin):
             "avg_win_pips": round(avg_win, 1),
             "avg_loss_pips": round(avg_loss, 1),
             "profit_factor": round(pf_calc, 2),
-            "daily_trades": int(getattr(loop, "_daily_trades", 0)) if loop is not None else 0,
+            "daily_trades": daily_trades,
             "equity_curve": equity_curve,
             "pnl_history": pnl_history,
         }
