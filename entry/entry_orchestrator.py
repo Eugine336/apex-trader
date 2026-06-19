@@ -58,10 +58,12 @@ class EntryOrchestrator:
         is_instrument_known: Optional[Callable[[str], bool]] = None,
         get_spread_pips: Optional[Callable[[str], float]] = None,
         get_m1_dataframe: Optional[Callable[[str], Optional[pd.DataFrame]]] = None,
+        on_gate_trace: Optional[Callable[..., None]] = None,
     ) -> None:
         self._config = config or EntryConfig()
         self._pip_size = pip_size_lookup or (lambda _: 0.0001)
         self._on_entry = on_entry_decision
+        self._on_gate_trace = on_gate_trace
 
         self._is_market_open = is_market_open or (lambda _: True)
         self._is_session_active = is_session_active or (lambda _: True)
@@ -222,6 +224,31 @@ class EntryOrchestrator:
             is_news_clear=self._is_news_clear(symbol),
             is_drawdown_ok=self._is_drawdown_ok(),
         )
+
+        # Feed the entry-gate verdict chain to the decision-trace recorder
+        # (best-effort) so the event-driven system populates the dashboard's
+        # decision-trace panel.  Never affects the entry flow.
+        if self._on_gate_trace is not None:
+            try:
+                self._on_gate_trace(
+                    symbol,
+                    direction,
+                    results,
+                    passed,
+                    {
+                        "entry_price": entry_price,
+                        "stop_loss": sl,
+                        "tp1": tp1,
+                        "tp2": tp2,
+                        "conviction": zone.conviction,
+                        "zone_type": zone.zone_type.value,
+                        "timeframe": zone.timeframe,
+                        "risk_pips": round(risk_pips, 2),
+                        "spread_pips": round(spread_pips, 2),
+                    },
+                )
+            except Exception:
+                logger.exception("[entry-orch] gate trace callback failed")
 
         if passed:
             self._stats["gate_passes"] += 1

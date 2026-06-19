@@ -599,6 +599,48 @@ class PositionEvaluator:
                 except Exception:
                     pass
 
+            # Emit POSITION_HEALTH so the dashboard's live-management panel is
+            # fed by the event-driven system (mirrors
+            # TradingLoop._record_position_health).  One event per DE eval
+            # cycle, synthesized from the situation read + decision verdict.
+            try:
+                store = get_event_store()
+                if store is not None:
+                    de_action = getattr(de_result, "action", None)
+                    action_str = (
+                        de_action.value if hasattr(de_action, "value")
+                        else str(de_action or "")
+                    )
+                    tc_risk = float(getattr(trade_ctx, "original_risk_pips", 0.0) or 0.0)
+                    tc_pnl_pips = float(getattr(trade_ctx, "pnl_pips", 0.0) or 0.0)
+                    profit_r = round(tc_pnl_pips / tc_risk, 4) if tc_risk > 0 else 0.0
+                    store.emit(
+                        event_type=DE.POSITION_HEALTH,
+                        severity="INFO",
+                        symbol=symbol,
+                        parent_id=order_id or None,
+                        source_module="decision.engine",
+                        payload={
+                            "order_id": order_id,
+                            "pair": symbol,
+                            "direction": norm_dir.replace("BUY", "LONG").replace("SELL", "SHORT"),
+                            "horizon": "",
+                            "health_score": round(float(getattr(de_result, "confidence", 0.0) or 0.0), 4),
+                            "action": action_str,
+                            "profit_r": profit_r,
+                            "pnl_dollars": round(float(getattr(trade_ctx, "pnl_dollars", 0.0) or 0.0), 4),
+                            "hold_minutes": round(float(getattr(trade_ctx, "hold_minutes", 0.0) or 0.0), 2),
+                            "dimension_scores": {
+                                "tf_alignment": round(float(getattr(sa, "tf_alignment", 0.0) or 0.0), 4),
+                                "momentum": round(float(getattr(sa, "momentum", 0.0) or 0.0), 4),
+                                "structure_integrity": round(float(getattr(sa, "structure_integrity", 0.0) or 0.0), 4),
+                            },
+                            "reason": str(getattr(de_result, "reason", "") or "")[:200],
+                        },
+                    )
+            except Exception as exc:
+                logger.debug("[de-mgmt] POSITION_HEALTH persist failed: {}", exc)
+
             action = getattr(de_result, "action", None)
             if action is None:
                 return
@@ -883,6 +925,7 @@ class EventDrivenSystem:
             is_news_clear=self._check_news_clear,
             get_spread_pips=self._get_spread_pips,
             get_m1_dataframe=self._get_m1_dataframe,
+            on_gate_trace=self._on_gate_trace,
         )
 
         # ── Background loops ─────────────────────────────────────────
@@ -1793,6 +1836,74 @@ class EventDrivenSystem:
         except Exception as exc:
             logger.debug("[news-gate] NewsGuard check failed: {}", exc)
             return True
+
+    def _on_gate_trace(
+        self,
+        symbol: str,
+        direction: str,
+        results: Any,
+        passed: bool,
+        meta: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Persist a DECISION_TRACE for the entry-gate verdict chain.
+
+        Mirrors the legacy TradingLoop trace recorder, but scoped to the
+        event-driven entry plane.  A fresh recorder per call keeps this
+        thread-safe across concurrently-confirming symbols; best-effort so a
+        tracing failure never blocks an entry.
+        """
+        try:
+            from brain.decision_trace import (
+                DecisionTraceRecorder,
+                STAGE_RANKER,
+                STAGE_RISK_STACK,
+            )
+            recorder = DecisionTraceRecorder(getattr(self._config, "decision_trace", None))
+            if not recorder.enabled:
+                return
+            recorder.begin(symbol)
+            evidence = dict(meta or {})
+            evidence["direction"] = direction
+            conviction = evidence.get("conviction", 0)
+            zone_type = evidence.get("zone_type", "zone")
+            timeframe = evidence.get("timeframe", "")
+
+            # Stage 1 — ranker: the zone conviction is the entry plane's
+            # ranking signal (also satisfies trace completeness).
+            recorder.stamp(
+                stage=STAGE_RANKER,
+                owner="entry.zone_watcher",
+                verdict="PASS",
+                justification=f"entry zone {zone_type} conviction {conviction} ({timeframe})",
+                evidence=evidence,
+                confidence=1.0,
+            )
+
+            # Stage 2 — risk stack: the entry-gate validation result.
+            failed = [
+                str(getattr(g, "gate_name", "gate"))
+                for g in (results or []) if not getattr(g, "passed", False)
+            ]
+            gate_just = (
+                "all entry gates passed" if passed
+                else "entry gates failed: " + ", ".join(failed[:6])
+            )
+            recorder.stamp(
+                stage=STAGE_RISK_STACK,
+                owner="entry.gate",
+                verdict="PASS" if passed else "REJECT",
+                justification=gate_just,
+                evidence=evidence,
+                confidence=1.0,
+                blocking=not passed,
+            )
+
+            if passed:
+                recorder.finalize_success()
+            else:
+                recorder.finalize_rejection(reason=gate_just, stage=STAGE_RISK_STACK)
+        except Exception as exc:
+            logger.debug("[decision-trace] entry gate trace failed for {}: {}", symbol, exc)
 
     def _on_world_model_update(self, event: Any) -> None:
         """Feed density tracker when WorldModel updates after a scan."""
