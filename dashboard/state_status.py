@@ -28,7 +28,15 @@ class StatusMixin(HelpersMixin):
         balance = self._get_balance()
         mt5_balance, deriv_balance = self._get_platform_balances()
 
-        dd = loop.drawdown.get_status(datetime.now(timezone.utc))
+        ed = getattr(self, "_event_driven_system", None)
+        ctx = getattr(ed, "_ctx", None) if ed is not None else None
+
+        dd = None
+        if loop is not None:
+            dd = loop.drawdown.get_status(datetime.now(timezone.utc))
+        elif ctx is not None and ctx.drawdown_guard is not None:
+            dd = ctx.drawdown_guard.get_status(datetime.now(timezone.utc))
+
         records = self._build_history_rows(balance)
 
         wins = sum(1 for r in records if r["outcome"] == "WIN")
@@ -49,15 +57,20 @@ class StatusMixin(HelpersMixin):
             except Exception as exc:
                 logger.debug("[dashboard] daily PnL date parse failed, skipping record: {}", exc)
                 pass
-        if not records:
+        if not records and dd is not None:
             daily_frac = pct_to_fraction(getattr(dd, "daily_pnl_pct", 0.0))
             daily_pnl = daily_frac * balance
 
+        is_running = (loop is not None and bool(loop.running)) or (ed is not None and getattr(ed, "is_running", False))
+        open_count = 0
+        if loop is not None:
+            open_count = loop.get_positions_count() if hasattr(loop, "get_positions_count") else len(getattr(loop, "managed_positions", {}))
+
         return {
-            "bot_status": "running" if bool(loop.running) else "stopped",
+            "bot_status": "running" if is_running else "stopped",
             "mode": "live",
             "uptime_seconds": round(uptime, 2),
-            "risk_mode": str(getattr(dd, "mode", "NORMAL")),
+            "risk_mode": str(getattr(dd, "mode", "NORMAL")) if dd is not None else "NORMAL",
             "win_rate": round(win_rate, 1),
             "total_trades": total,
             "win_count": wins,
@@ -70,15 +83,15 @@ class StatusMixin(HelpersMixin):
             "daily_loss_pct": round(abs(min(daily_pnl / balance, 0.0)) * 100, 2) if balance > 0 else 0.0,
             "max_daily_loss_pct": float(
                 getattr(getattr(loop, "config", None), "risk", None).max_daily_drawdown_pct
-                if hasattr(getattr(loop, "config", None), "risk")
+                if loop is not None and hasattr(getattr(loop, "config", None), "risk")
                 else 5.0
             ),
-            "open_trade_count": loop.get_positions_count() if hasattr(loop, "get_positions_count") else len(getattr(loop, "managed_positions", {})),
-            "consecutive_losses": int(getattr(dd, "consecutive_losses", 0)),
-            "consecutive_wins": int(getattr(dd, "consecutive_wins", 0)),
+            "open_trade_count": open_count,
+            "consecutive_losses": int(getattr(dd, "consecutive_losses", 0)) if dd is not None else 0,
+            "consecutive_wins": int(getattr(dd, "consecutive_wins", 0)) if dd is not None else 0,
             "mt5_connected": self._connection_status.get("mt5", False),
             "deriv_connected": self._connection_status.get("deriv", False),
-            "trade_manager_trades": len(getattr(getattr(loop, "trade_manager", None), "_trades", {})),
+            "trade_manager_trades": len(getattr(getattr(loop, "trade_manager", None), "_trades", {})) if loop is not None else 0,
         }
 
     def _ed_status(self, uptime: float) -> dict:
