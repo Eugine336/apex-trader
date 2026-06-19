@@ -98,7 +98,32 @@ class PerformanceMixin(HelpersMixin):
             return empty
 
         loop = self._trading_loop
+        ed = getattr(self, "_event_driven_system", None)
         out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in empty.items()}
+
+        # ── ED system stats ──
+        if ed is not None:
+            try:
+                ed_stats = ed.stats()
+                tr = ed_stats.get("tick_router", {})
+                ch = ed_stats.get("candle_handler", {})
+                out["cycle"] = {
+                    "samples": ed_stats.get("position_evals", 0),
+                    "last_ms": 0.0,
+                    "avg_ms": 0.0,
+                    "p50_ms": 0.0,
+                    "p95_ms": 0.0,
+                    "max_ms": 0.0,
+                }
+                out["candle_cache"]["hits"] = ch.get("candles_fetched", 0)
+                out["candle_cache"]["total"] = ch.get("models_built", 0)
+                out["parallel_scan"]["enabled"] = True
+                return out
+            except Exception:
+                pass
+
+        if loop is None:
+            return out
 
         # ── Candle cache stats ──
         try:
@@ -264,7 +289,7 @@ class PerformanceMixin(HelpersMixin):
             "avg_win_pips": round(avg_win, 1),
             "avg_loss_pips": round(avg_loss, 1),
             "profit_factor": round(pf_calc, 2),
-            "daily_trades": int(getattr(loop, "_daily_trades", 0)),
+            "daily_trades": int(getattr(loop, "_daily_trades", 0)) if loop is not None else 0,
             "equity_curve": equity_curve,
             "pnl_history": pnl_history,
         }

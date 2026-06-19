@@ -36,12 +36,20 @@ class ControlsMixin:
         if self._trading_loop is not None:
             self._trading_loop.running = False
             return {"status": "paused", "message": "Trading paused"}
+        ed = getattr(self, "_event_driven_system", None)
+        if ed is not None:
+            ed._paused = True
+            return {"status": "paused", "message": "Event-driven entries paused (management continues)"}
         return {"status": "no_engine_attached", "message": "No engine attached"}
 
     def resume_trading(self) -> dict:
         if self._trading_loop is not None:
             self._trading_loop.running = True
             return {"status": "resumed", "message": "Trading resumed"}
+        ed = getattr(self, "_event_driven_system", None)
+        if ed is not None:
+            ed._paused = False
+            return {"status": "resumed", "message": "Event-driven entries resumed"}
         return {"status": "no_engine_attached", "message": "No engine attached"}
 
     def set_risk_mode(self, mode: Optional[str]) -> dict:
@@ -68,4 +76,23 @@ class ControlsMixin:
         if self._trading_loop is not None:
             closed = self._trading_loop.emergency_close_all_positions(self._platform_manager)
             return {"status": "emergency_close_complete", "closed": closed, "message": f"Closed {closed} positions"}
+        ed = getattr(self, "_event_driven_system", None)
+        if ed is not None:
+            try:
+                from execution.intents import Intent, IntentType
+                positions = self._platform_manager.get_all_open_positions()
+                for pos in positions:
+                    ticket = str(getattr(pos, "order_id", getattr(pos, "ticket", "")))
+                    symbol = getattr(pos, "symbol", "")
+                    direction = getattr(pos, "direction", "")
+                    ed._aggregator.submit([Intent(
+                        intent_type=IntentType.CLOSE,
+                        position_ticket=ticket,
+                        symbol=symbol,
+                        direction=direction,
+                        reason="EMERGENCY: manual close all",
+                    )])
+                return {"status": "emergency_close_submitted", "closed": len(positions), "message": f"Submitted {len(positions)} close intents"}
+            except Exception as exc:
+                return {"status": "error", "closed": 0, "message": str(exc)}
         return {"status": "no_engine_attached", "closed": 0}

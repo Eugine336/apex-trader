@@ -217,6 +217,7 @@ class PositionEvaluator:
         mgmt_store: Optional[ManagementStateStore] = None,
         worker_config: Optional[WorkerConfig] = None,
         max_workers: int = 4,
+        ctx: Optional[SystemContext] = None,
     ) -> None:
         self._pm = platform_manager
         self._tick_store = tick_store
@@ -232,6 +233,10 @@ class PositionEvaluator:
         self._eval_count = 0
         self._suppressed_tickets: dict[str, float] = {}
         self._suppress_duration = 60.0
+        self._ctx = ctx
+        self._last_de_eval: dict[str, float] = {}
+        self._de_interval = 10.0
+        self._fast_opposition: dict[str, int] = {}
         self._last_h1_close: dict[str, datetime] = {}
 
     def evaluate_all(self) -> None:
@@ -351,6 +356,10 @@ class PositionEvaluator:
                     elif intent.intent_type == IntentType.PARTIAL_CLOSE:
                         mgmt.partial_closed = True
                         mgmt.tp1_hit = True
+
+            self._run_decision_engine_management(
+                pos, price, now, now_mono, mgmt, order_id, snap,
+            )
         except Exception as exc:
             logger.debug(
                 "[pos-eval] error evaluating {}: {}",
@@ -454,6 +463,195 @@ class PositionEvaluator:
     def suppress_ticket(self, ticket: str, duration: float = 60.0) -> None:
         """Suppress evaluation of a ticket for the given duration (seconds)."""
         self._suppressed_tickets[ticket] = _time.monotonic() + duration
+
+    def _run_decision_engine_management(
+        self, pos, price: float, now: datetime, now_mono: float,
+        mgmt, order_id: str, snap: PositionSnapshot,
+    ) -> None:
+        ctx = self._ctx
+        if ctx is None or ctx.decision_engine is None or ctx.situation_engine is None:
+            return
+        if now_mono - self._last_de_eval.get(order_id, 0.0) < self._de_interval:
+            return
+        self._last_de_eval[order_id] = now_mono
+        try:
+            from decision.context import TradeContext
+            from decision.actions import Action
+            symbol = getattr(pos, "symbol", "")
+            direction = getattr(pos, "direction", "")
+            entry_price = getattr(pos, "entry_price", 0.0)
+            norm_dir = "BUY" if direction.upper() in ("BUY", "LONG") else "SELL"
+            pip_size = 0.0001
+            try:
+                pip_size = get_pip_size(symbol)
+            except Exception:
+                pass
+            sl = getattr(pos, "sl", 0.0) or mgmt.stop_loss or 0.0
+            if norm_dir == "BUY":
+                pnl_pips = (price - entry_price) / pip_size if pip_size > 0 else 0.0
+            else:
+                pnl_pips = (entry_price - price) / pip_size if pip_size > 0 else 0.0
+            risk_pips = abs(entry_price - sl) / pip_size if sl and pip_size > 0 else 0.0
+            open_positions = []
+            try:
+                open_positions = self._pm.get_all_open_positions()
+            except Exception:
+                pass
+            wm = self._wm_store.get(symbol)
+            structure = getattr(wm, "structure", {}) if wm else {}
+            d1_s = structure.get("D1", {})
+            h4_s = structure.get("H4", {})
+            h1_s = structure.get("H1", {})
+            score_hist = getattr(mgmt, "score_history", []) or []
+            current_score = 0
+            if wm is not None:
+                zones = getattr(wm, "entry_zones", [])
+                if zones:
+                    for z in zones:
+                        if getattr(z, "direction", "").upper() == norm_dir.replace("BUY", "LONG").replace("SELL", "SHORT"):
+                            current_score = max(current_score, getattr(z, "score", 0))
+            fast_opp = self._fast_opposition.get(order_id, 0)
+            m1_aligned = 0
+            m1_trend = "UNKNOWN"
+            session_name = "UNKNOWN"
+            session_tradeable = True
+            if ctx.session_engine is not None:
+                try:
+                    ss = ctx.session_engine.get_status()
+                    session_name = getattr(ss, "name", "UNKNOWN")
+                    session_tradeable = getattr(ss, "is_tradeable", True)
+                except Exception:
+                    pass
+            news_mins = 999.0
+            if ctx.news_guard is not None:
+                try:
+                    ns = ctx.news_guard.check([symbol])
+                    news_mins = getattr(ns, "minutes_to_next", 999.0)
+                except Exception:
+                    pass
+            hold_mins = 0.0
+            entry_time = getattr(pos, "open_time", None) or getattr(pos, "entry_time", None)
+            if entry_time is not None:
+                try:
+                    if hasattr(entry_time, "timestamp"):
+                        hold_mins = (now - entry_time).total_seconds() / 60.0
+                except Exception:
+                    pass
+
+            trade_ctx = TradeContext(
+                symbol=symbol,
+                order_id=order_id,
+                direction=norm_dir,
+                entry_price=entry_price,
+                current_price=price,
+                current_sl=sl,
+                pnl_pips=pnl_pips,
+                pnl_dollars=getattr(pos, "profit", 0.0) or 0.0,
+                hold_minutes=hold_mins,
+                at_breakeven=mgmt.at_breakeven,
+                tp1_hit=mgmt.tp1_hit,
+                trailing=getattr(mgmt, "trailing", False),
+                partial_closed=mgmt.partial_closed,
+                lots=getattr(pos, "lots", 0.0) or 0.0,
+                original_risk_pips=risk_pips,
+                scan_score=current_score,
+                scan_direction=norm_dir.replace("BUY", "LONG").replace("SELL", "SHORT"),
+                d1_trend=d1_s.get("trend", "UNKNOWN"),
+                d1_confidence=d1_s.get("confidence", 0.0),
+                h4_trend=h4_s.get("trend", "UNKNOWN"),
+                h4_confidence=h4_s.get("confidence", 0.0),
+                h1_trend=h1_s.get("trend", "UNKNOWN"),
+                h1_confidence=h1_s.get("confidence", 0.0),
+                fast_opposition_streak=fast_opp,
+                score_history=list(score_hist[-10:]),
+                open_trade_count=len(open_positions),
+                portfolio_heat_pct=0.0,
+                session_name=session_name,
+                session_tradeable=session_tradeable,
+                minutes_to_high_impact_news=news_mins,
+            )
+            sa = ctx.situation_engine.assess_open_trade(trade_ctx)
+            de_result = ctx.decision_engine.decide_management(trade_ctx, sa)
+
+            if ctx.risk_governor is not None:
+                try:
+                    de_result = ctx.risk_governor.review(de_result, trade_ctx, sa)
+                except Exception:
+                    pass
+
+            if ctx.decision_journal is not None:
+                try:
+                    ctx.decision_journal.log(trade_ctx, sa, de_result)
+                except Exception:
+                    pass
+
+            action = getattr(de_result, "action", None)
+            if action is None:
+                return
+            action_name = action.value if hasattr(action, "value") else str(action)
+
+            if action_name == Action.CLOSE.value:
+                pip_s = pip_size
+                self._aggregator.register_position(
+                    ticket=order_id, direction=direction,
+                    current_sl=sl, pip_size=pip_s,
+                )
+                self._aggregator.submit([Intent(
+                    intent_type=IntentType.CLOSE,
+                    position_ticket=order_id,
+                    symbol=symbol,
+                    direction=direction,
+                    reason=f"DE: {getattr(de_result, 'reason', '')[:100]}",
+                )])
+                logger.info(
+                    "[DE-MGMT] {} {} CLOSE — {} (conf={:.2f})",
+                    symbol, direction, getattr(de_result, "reason", "")[:80],
+                    getattr(de_result, "confidence", 0.0),
+                )
+            elif action_name == Action.TIGHTEN_SL.value:
+                new_sl = getattr(de_result, "new_sl", None)
+                if new_sl and new_sl > 0:
+                    pip_s = pip_size
+                    self._aggregator.register_position(
+                        ticket=order_id, direction=direction,
+                        current_sl=sl, pip_size=pip_s,
+                    )
+                    self._aggregator.submit([Intent(
+                        intent_type=IntentType.MODIFY_SL,
+                        position_ticket=order_id,
+                        symbol=symbol,
+                        direction=direction,
+                        new_sl=new_sl,
+                        reason=f"DE: {getattr(de_result, 'reason', '')[:80]}",
+                    )])
+            elif action_name == Action.SET_PROTECTIVE_STOP.value:
+                new_sl = getattr(de_result, "new_sl", None)
+                if new_sl and new_sl > 0:
+                    pip_s = pip_size
+                    self._aggregator.register_position(
+                        ticket=order_id, direction=direction,
+                        current_sl=sl, pip_size=pip_s,
+                    )
+                    self._aggregator.submit([Intent(
+                        intent_type=IntentType.MODIFY_SL,
+                        position_ticket=order_id,
+                        symbol=symbol,
+                        direction=direction,
+                        new_sl=new_sl,
+                        reason=f"DE protective: {getattr(de_result, 'reason', '')[:60]}",
+                    )])
+
+            tf_align = getattr(sa, "tf_alignment", 0.0)
+            momentum = getattr(sa, "momentum", 0.0)
+            is_long = norm_dir == "BUY"
+            if (is_long and (tf_align < -0.2 or momentum < -0.3)) or \
+               (not is_long and (tf_align > 0.2 or momentum > 0.3)):
+                self._fast_opposition[order_id] = fast_opp + 1
+            else:
+                self._fast_opposition[order_id] = 0
+
+        except Exception as exc:
+            logger.debug("[de-mgmt] DecisionEngine management failed for {}: {}", order_id, exc)
 
     @property
     def eval_count(self) -> int:
@@ -660,6 +858,7 @@ class EventDrivenSystem:
             world_model_store=self._wm_store,
             intent_aggregator=self._aggregator,
             mgmt_store=self._mgmt_store,
+            ctx=ctx,
         )
 
         # ── Entry plane ──────────────────────────────────────────────
@@ -704,6 +903,9 @@ class EventDrivenSystem:
             "world_model_update", self._on_world_model_update,
         )
 
+        self._be_stop_cooldown: dict[str, float] = {}
+        self._be_cooldown_seconds = 300.0
+        self._paused = False
         self._register_tunable_adapters()
 
         logger.info("[event-driven] system initialized")
@@ -1073,6 +1275,9 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[startup] TradeJournal init failed: {}", exc)
 
+        # ── Register tunable adapters with TunerAgent ────────────────
+        self._register_tunable_adapters()
+
         logger.info("[event-driven] all subsystems started")
         logger.info("-" * 60)
         logger.info("  ANALYSIS:  candle-close → brain modules → WorldModel")
@@ -1198,6 +1403,63 @@ class EventDrivenSystem:
 
     # ── Internal helpers ─────────────────────────────────────────────
 
+    def _register_tunable_adapters(self) -> None:
+        ctx = self._ctx
+        if ctx is None or ctx.tuner_agent is None:
+            return
+        try:
+            from adaptive.tunable_adapters import (
+                ScoreOptimizerAdapter, RegimeLearnerAdapter,
+                PairLearnerAdapter, SessionLearnerAdapter,
+                EVEstimatorAdapter, GateTunerAdapter,
+                PlannerCalibratorAdapter,
+            )
+            agent = ctx.tuner_agent
+            registry_map = {
+                "score_optimizer": (ScoreOptimizerAdapter, ctx.ml_adapter),
+                "regime_learner": (RegimeLearnerAdapter, ctx.ml_adapter),
+                "pair_learner": (PairLearnerAdapter, ctx.ml_adapter),
+                "session_learner": (SessionLearnerAdapter, ctx.ml_adapter),
+            }
+            count = 0
+            for name, (adapter_cls, subsystem) in registry_map.items():
+                if subsystem is not None:
+                    try:
+                        adapter = adapter_cls(subsystem)
+                        agent.register(name, adapter)
+                        count += 1
+                    except Exception as exc:
+                        logger.debug("[tuner-reg] {} failed: {}", name, exc)
+
+            simple_map = {
+                "signal_ledger": ctx.signal_ledger,
+                "vote_calibrator": ctx.vote_calibrator,
+                "module_governor": ctx.module_governor,
+                "gate_tuner": ctx.gate_tuner,
+                "counterfactual": ctx.counterfactual_engine,
+                "interaction_analyzer": ctx.interaction_analyzer,
+                "post_close_tracker": ctx.post_close_tracker,
+                "signal_discovery": ctx.signal_discovery,
+                "virtual_signal_manager": ctx.virtual_signal_manager,
+                "capital_allocator": ctx.capital_allocator,
+                "execution_profiles": ctx.execution_profiles,
+                "regime_detector": ctx.regime_detector,
+                "behavior_discovery": ctx.behavior_discovery,
+            }
+            for name, subsystem in simple_map.items():
+                if subsystem is not None and hasattr(subsystem, "on_trade_close"):
+                    try:
+                        agent.register(name, subsystem)
+                        count += 1
+                    except Exception as exc:
+                        logger.debug("[tuner-reg] {} failed: {}", name, exc)
+
+            logger.info("[event-driven] registered {} tunable adapters with TunerAgent", count)
+        except ImportError as exc:
+            logger.debug("[tuner-reg] tunable_adapters import failed: {}", exc)
+        except Exception as exc:
+            logger.warning("[tuner-reg] adapter registration failed: {}", exc)
+
     def _watchdog_loop(self) -> None:
         """Background loop: heartbeat + stall detection + daily maintenance + heat monitoring."""
         _last_heat_check = 0.0
@@ -1224,6 +1486,167 @@ class EventDrivenSystem:
                 except Exception as exc:
                     logger.debug("[watchdog] daily maintenance check failed: {}", exc)
 
+            # ── Portfolio heat monitoring — active position reduction ──
+            if ctx is not None:
+                self._run_portfolio_heat_check(ctx)
+
+            # ── Periodic learning tasks ──────────────────────────────
+            if ctx is not None:
+                self._run_periodic_learning(ctx)
+
+            _time.sleep(10.0)
+
+    def _run_portfolio_heat_check(self, ctx: SystemContext) -> None:
+        if ctx.portfolio_risk_sm is None:
+            return
+        try:
+            from risk.portfolio_risk_state import PortfolioRiskState
+            sm_state = ctx.portfolio_risk_sm.state
+            if sm_state == PortfolioRiskState.NORMAL:
+                return
+            positions = self._pm.get_all_open_positions()
+            if not positions:
+                return
+            if sm_state == PortfolioRiskState.EMERGENCY:
+                for pos in positions:
+                    ticket = str(getattr(pos, "order_id", getattr(pos, "ticket", "")))
+                    symbol = getattr(pos, "symbol", "")
+                    direction = getattr(pos, "direction", "")
+                    pip_size = 0.0001
+                    try:
+                        pip_size = get_pip_size(symbol)
+                    except Exception:
+                        pass
+                    self._aggregator.register_position(
+                        ticket=ticket, direction=direction,
+                        current_sl=getattr(pos, "sl", 0.0) or 0.0,
+                        pip_size=pip_size,
+                    )
+                    self._aggregator.submit([Intent(
+                        intent_type=IntentType.CLOSE,
+                        position_ticket=ticket,
+                        symbol=symbol,
+                        direction=direction,
+                        reason="EMERGENCY: portfolio heat critical",
+                    )])
+                logger.warning("[heat-mon] EMERGENCY — closing all {} positions", len(positions))
+            elif sm_state == PortfolioRiskState.REDUCING:
+                worst = None
+                worst_pnl = 0.0
+                for pos in positions:
+                    pnl = getattr(pos, "profit", 0.0) or 0.0
+                    if worst is None or pnl < worst_pnl:
+                        worst = pos
+                        worst_pnl = pnl
+                if worst is not None and worst_pnl < 0:
+                    ticket = str(getattr(worst, "order_id", getattr(worst, "ticket", "")))
+                    symbol = getattr(worst, "symbol", "")
+                    direction = getattr(worst, "direction", "")
+                    pip_size = 0.0001
+                    try:
+                        pip_size = get_pip_size(symbol)
+                    except Exception:
+                        pass
+                    self._aggregator.register_position(
+                        ticket=ticket, direction=direction,
+                        current_sl=getattr(worst, "sl", 0.0) or 0.0,
+                        pip_size=pip_size,
+                    )
+                    self._aggregator.submit([Intent(
+                        intent_type=IntentType.CLOSE,
+                        position_ticket=ticket,
+                        symbol=symbol,
+                        direction=direction,
+                        reason=f"REDUCING: closing weakest ({worst_pnl:.2f})",
+                    )])
+                    logger.warning("[heat-mon] REDUCING — closing {} pnl={:.2f}", symbol, worst_pnl)
+            elif sm_state == PortfolioRiskState.DEFENSIVE:
+                for pos in positions:
+                    entry_price = getattr(pos, "entry_price", 0.0) or 0.0
+                    sl = getattr(pos, "sl", 0.0) or 0.0
+                    direction = getattr(pos, "direction", "")
+                    if not entry_price or not sl:
+                        continue
+                    is_long = direction.upper() in ("BUY", "LONG")
+                    already_be = (is_long and sl >= entry_price) or (not is_long and sl <= entry_price)
+                    if already_be:
+                        continue
+                    pip_size = 0.0001
+                    try:
+                        pip_size = get_pip_size(getattr(pos, "symbol", ""))
+                    except Exception:
+                        pass
+                    be_price = entry_price + (2 * pip_size) if is_long else entry_price - (2 * pip_size)
+                    price = (self._tick_store.get_latest(getattr(pos, "symbol", "")) or type("", (), {"mid": 0.0})()).mid
+                    if price <= 0:
+                        continue
+                    can_be = (is_long and price > be_price) or (not is_long and price < be_price)
+                    if can_be:
+                        ticket = str(getattr(pos, "order_id", getattr(pos, "ticket", "")))
+                        self._aggregator.register_position(
+                            ticket=ticket, direction=direction,
+                            current_sl=sl, pip_size=pip_size,
+                        )
+                        self._aggregator.submit([Intent(
+                            intent_type=IntentType.MODIFY_SL,
+                            position_ticket=ticket,
+                            symbol=getattr(pos, "symbol", ""),
+                            direction=direction,
+                            new_sl=be_price,
+                            reason="DEFENSIVE: moving to breakeven",
+                        )])
+        except Exception as exc:
+            logger.debug("[heat-mon] portfolio heat check failed: {}", exc)
+
+        # ── Account risk unrealized P&L tracking ─────────────────────
+        if ctx.account_risk is not None:
+            try:
+                positions = self._pm.get_all_open_positions()
+                acct_unrealized: dict[str, float] = defaultdict(float)
+                for pos in positions:
+                    pnl = getattr(pos, "profit", 0.0) or 0.0
+                    sym = getattr(pos, "symbol", "")
+                    acct = ctx.account_key(sym, self._pm)
+                    acct_unrealized[acct] += pnl
+                for acct, unrealized in acct_unrealized.items():
+                    ctx.account_risk.update_unrealized(acct, unrealized)
+            except Exception as exc:
+                logger.debug("[heat-mon] account risk unrealized update failed: {}", exc)
+
+    def _run_periodic_learning(self, ctx: SystemContext) -> None:
+        if ctx.post_close_tracker is not None:
+            try:
+                tick_fn = getattr(ctx.post_close_tracker, "tick", None)
+                if tick_fn is not None:
+                    tick_fn()
+                proc_fn = getattr(ctx.post_close_tracker, "process_pending", None)
+                if proc_fn is not None:
+                    proc_fn()
+            except Exception as exc:
+                logger.debug("[periodic] PostCloseTracker tick failed: {}", exc)
+
+        if ctx.shadow_store is not None:
+            try:
+                resolver = getattr(ctx, "_shadow_resolver", None)
+                if resolver is None:
+                    from persistence.shadow_resolver import ShadowResolver
+                    resolver = ShadowResolver(ctx.shadow_store)
+                    ctx._shadow_resolver = resolver
+                contracts = ctx.shadow_store.get_open_contracts()
+                for contract in contracts:
+                    sym = getattr(contract, "symbol", "")
+                    tick = self._tick_store.get_latest(sym)
+                    if tick is None:
+                        continue
+                    try:
+                        resolver.advance(contract, tick.mid)
+                    except Exception:
+                        pass
+            except Exception as exc:
+                logger.debug("[periodic] shadow resolution failed: {}", exc)
+
+        if ctx.re_entry_manager is not None:
+            pass
             # ── Portfolio heat monitoring (every 5s) ─────────────────
             now = _time.time()
             if now - _last_heat_check >= 5.0:
@@ -1528,6 +1951,43 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[density] density tracker update failed: {}", exc)
 
+        # ── Feed signal_ledger with brain module directional reads ────
+        if ctx.signal_ledger is not None:
+            try:
+                sym = getattr(event, "symbol", "")
+                if sym:
+                    wm = self._wm_store.get(sym)
+                    if wm is not None:
+                        zones = getattr(wm, "entry_zones", [])
+                        direction = ""
+                        score = 0
+                        if zones:
+                            best = max(zones, key=lambda z: getattr(z, "score", 0))
+                            direction = getattr(best, "direction", "")
+                            score = getattr(best, "score", 0)
+                        if direction and score > 0:
+                            ctx.signal_ledger.record_signal(
+                                pair=sym,
+                                direction=direction,
+                                score=score,
+                                source="world_model",
+                            )
+            except Exception as exc:
+                logger.debug("[signal-ledger] feed failed: {}", exc)
+
+        # ── Feed spread_monitor with current spreads ─────────────────
+        if ctx.risk_engine is not None:
+            try:
+                spread_mon = getattr(ctx.risk_engine, "spread_monitor", None)
+                if spread_mon is not None:
+                    sym = getattr(event, "symbol", "")
+                    if sym:
+                        spread = self._get_spread_pips(sym)
+                        if spread > 0:
+                            spread_mon.record_spread(sym, spread)
+            except Exception as exc:
+                logger.debug("[spread-feed] failed: {}", exc)
+
     def _on_entry_decision(self, decision: dict[str, Any]) -> None:
         """Handle entry decisions from EntryOrchestrator.
 
@@ -1560,6 +2020,21 @@ class EventDrivenSystem:
                 open_positions = []
 
             balance = self._pm.get_platform_balance(symbol)
+
+            # ── Gate 0: BE-stop cooldown ─────────────────────────────
+            cooldown_expiry = self._be_stop_cooldown.get(symbol, 0.0)
+            if cooldown_expiry > _time.monotonic():
+                remaining = cooldown_expiry - _time.monotonic()
+                logger.info(
+                    "EVENT-DRIVEN ENTRY SKIPPED | {} — BE-stop cooldown ({:.0f}s remaining)",
+                    symbol, remaining,
+                )
+                return
+
+            # ── Gate 0b: Paused ──────────────────────────────────────
+            if self._paused:
+                logger.info("EVENT-DRIVEN ENTRY SKIPPED | {} — system paused", symbol)
+                return
 
             # ── Gate 1: DrawdownGuard ────────────────────────────────
             if ctx is not None and ctx.drawdown_guard is not None:
@@ -1787,6 +2262,36 @@ class EventDrivenSystem:
                 except Exception as exc:
                     logger.debug("[entry-decision] DecisionEngine check failed: {}", exc)
 
+            # ── Gate 7: TradePlanner — advisory skip/wait/enter ──────
+            if ctx is not None and ctx.trade_planner is not None:
+                try:
+                    from planning.models import TradePlanContext
+                    plan_ctx = TradePlanContext(
+                        symbol=symbol,
+                        direction="LONG" if direction.upper() in ("BUY", "LONG") else "SHORT",
+                        entry_price=entry_price,
+                        stop_loss=sl,
+                        tp1=tp1,
+                        tp2=tp2,
+                        score=conviction,
+                        conviction=de_conviction if de_conviction > 0 else float(conviction) / 100.0,
+                    )
+                    plan = ctx.trade_planner.plan_trade(plan_ctx)
+                    if plan is not None and hasattr(plan, "action"):
+                        plan_action = getattr(plan, "action", "ENTER")
+                        if plan_action in ("SKIP", "WAIT"):
+                            logger.info(
+                                "EVENT-DRIVEN ENTRY SKIPPED | {} — TradePlanner: {} ({})",
+                                symbol, plan_action, getattr(plan, "reason", "")[:80],
+                            )
+                            self._record_shadow_rejection(
+                                symbol, direction, entry_price, sl, tp1,
+                                "trade_planner", conviction,
+                            )
+                            return
+                except Exception as exc:
+                    logger.debug("[entry-planner] TradePlanner check failed: {}", exc)
+
             # ── ATR-based SL/TP from EntryEngine ─────────────────────
             atr_sl = sl
             atr_tp1 = tp1
@@ -1949,10 +2454,36 @@ class EventDrivenSystem:
                 except Exception as exc:
                     logger.debug("[exec-prof] profile selection failed: {}", exc)
 
+            # ── Apply execution profile to SL/TP if available ────────
+            if exec_profile is not None:
+                try:
+                    prof_sl_mult = getattr(exec_profile, "sl_atr_multiplier", 0.0)
+                    prof_tp_rr = getattr(exec_profile, "tp_rr_ratio", 0.0)
+                    prof_tp2_rr = getattr(exec_profile, "tp2_rr_ratio", 0.0)
+                    risk_dist = abs(entry_price - sl) if sl > 0 else 0.0
+                    if prof_tp_rr > 0 and risk_dist > 0:
+                        norm_dir = "LONG" if direction.upper() in ("BUY", "LONG") else "SHORT"
+                        if norm_dir == "LONG":
+                            prof_tp1 = entry_price + risk_dist * prof_tp_rr
+                            prof_tp2 = entry_price + risk_dist * prof_tp2_rr if prof_tp2_rr > 0 else tp2
+                            tp1 = min(tp1, prof_tp1) if tp1 > 0 else prof_tp1
+                            tp2 = min(tp2, prof_tp2) if tp2 > 0 else prof_tp2
+                        else:
+                            prof_tp1 = entry_price - risk_dist * prof_tp_rr
+                            prof_tp2 = entry_price - risk_dist * prof_tp2_rr if prof_tp2_rr > 0 else tp2
+                            tp1 = max(tp1, prof_tp1) if tp1 > 0 else prof_tp1
+                            tp2 = max(tp2, prof_tp2) if tp2 > 0 else prof_tp2
+                except Exception as exc:
+                    logger.debug("[exec-prof] profile application failed: {}", exc)
+
             # ── Position sizing ──────────────────────────────────────
             risk_pct = self._config.risk.risk_per_trade_pct / 100.0
             if ctx is not None and ctx.drawdown_guard is not None:
                 try:
+                    dd_status = ctx.drawdown_guard.get_status()
+                    risk_map = getattr(ctx.drawdown_guard, "risk_map", None)
+                    if risk_map and dd_status.mode in risk_map:
+                        risk_pct = risk_map[dd_status.mode]
                     risk_map = getattr(ctx.drawdown_guard, "risk_map", None)
                     if risk_map:
                         dd_status = ctx.drawdown_guard.get_status()
@@ -1982,6 +2513,7 @@ class EventDrivenSystem:
 
             combined_mult = de_size_mult * orch_mult * vol_mult * density_mult * exec_mult * cap_mult
             combined_mult = max(0.15, min(2.0, combined_mult))
+            if combined_mult < 1.0:
             if abs(combined_mult - 1.0) > 1e-6:
                 if size_result.lots > 0:
                     size_result.lots = round(max(0.01, size_result.lots * combined_mult), 2)
@@ -2520,6 +3052,30 @@ class EventDrivenSystem:
             "EVENT-DRIVEN CLOSE FEEDBACK | {} {} ticket={} pnl=${:.2f} ({:.1f}pip) | risk+learning+evolution",
             direction, symbol, ticket, pnl_dollars, pnl_pips,
         )
+
+        # ── BE-stop cooldown — prevent chop re-entry ────────────────
+        if abs(pnl_dollars) < 0.01 and abs(pnl_pips) < 2.0:
+            self._be_stop_cooldown[symbol] = _time.monotonic() + self._be_cooldown_seconds
+            logger.info("[be-cooldown] {} cooldown for {:.0f}s (breakeven exit)", symbol, self._be_cooldown_seconds)
+
+        # ── Re-entry evaluation ──────────────────────────────────────
+        if ctx is not None and ctx.re_entry_manager is not None and pnl_dollars > 0:
+            try:
+                m5_df = self._fetch_candles(symbol, "M5", 50)
+                if m5_df is not None:
+                    from types import SimpleNamespace
+                    closed = SimpleNamespace(
+                        symbol=symbol, direction=direction,
+                        re_entry_eligible=True,
+                    )
+                    opp = ctx.re_entry_manager.check_re_entry(closed, m5_df)
+                    if opp is not None and getattr(opp, "eligible", False):
+                        logger.info(
+                            "[re-entry] {} {} opportunity: {}",
+                            symbol, direction, getattr(opp, "reason", ""),
+                        )
+            except Exception as exc:
+                logger.debug("[re-entry] evaluation failed: {}", exc)
 
 
 def _extract_currencies(symbol: str) -> list[str]:
