@@ -3088,6 +3088,13 @@ class EventDrivenSystem:
                     "pnl_pips": round(float(pnl_pips), 2),
                     "outcome": outcome,
                     "exit_reason": cause_value,
+                    # Attribution for the reconciliation feed: the ED system
+                    # determined this close internally (no separate broker
+                    # deal-history reason), so source is "event_driven" and
+                    # there is no raw broker reason to diverge from.  This also
+                    # satisfies invariant I2 (every exit_reason has a source).
+                    "exit_reason_source": "event_driven",
+                    "raw_broker_reason": None,
                     "balance": float(balance or 0.0),
                 },
             )
