@@ -2241,6 +2241,25 @@ class EventDrivenSystem:
                         tf_alignment=h4_alignment,
                     )
                     verdict = ctx.orchestrator.evaluate(proposal)
+                    # Emit ORCHESTRATOR_PROPOSAL so the dashboard's orchestrator
+                    # panel is fed by the event-driven system (not just the
+                    # legacy TradingLoop).  Covers both applied and vetoed cases.
+                    try:
+                        store = get_event_store()
+                        if store is not None:
+                            payload = verdict.to_dict() if hasattr(verdict, "to_dict") else {}
+                            payload["applied"] = not bool(getattr(verdict, "vetoed", False))
+                            if hasattr(proposal, "to_dict"):
+                                payload["proposal"] = proposal.to_dict()
+                            store.emit(
+                                event_type=DE.ORCHESTRATOR_PROPOSAL,
+                                severity="INFO",
+                                symbol=symbol,
+                                source_module="brain.orchestrator",
+                                payload=payload,
+                            )
+                    except Exception as exc:
+                        logger.debug("[orchestrator] proposal persist failed: {}", exc)
                     if verdict.vetoed:
                         logger.warning(
                             "EVENT-DRIVEN ENTRY VETOED | {} — Orchestrator: {}",
