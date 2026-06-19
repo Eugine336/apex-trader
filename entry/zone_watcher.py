@@ -49,6 +49,7 @@ def extract_entry_zones(
     model: WorldModel,
     config: Optional[EntryConfig] = None,
     edge_weight: Optional[Callable[..., float]] = None,
+    edge_weight: Optional[Callable[[str, str], float]] = None,
 ) -> list[EntryZone]:
     """Derive actionable entry zones from a WorldModel snapshot.
 
@@ -65,6 +66,9 @@ def extract_entry_zones(
     the base conviction so a zone's score reflects its realized track record.
     It defaults to neutral (no change) and any lookup error is swallowed, so
     the analysis plane can never be broken by the learning layer.
+    ``edge_weight(symbol, direction) -> float`` is an optional learned
+    multiplier that makes the base conviction data-driven (scaled by realized
+    per-market edge).  When omitted, conviction stays at the static base.
     """
     cfg = config or EntryConfig()
     now = datetime.now(timezone.utc)
@@ -88,6 +92,19 @@ def extract_entry_zones(
             return max(1, min(100, int(round(base * w))))
         except Exception:  # noqa: BLE001 — learning must never break analysis
             return base
+    def _conv(base: int, direction: str) -> int:
+        """Scale a base conviction by the learned edge weight (clamped 1-100).
+
+        Identity when no ``edge_weight`` is supplied or it errors, so the
+        static behaviour is preserved until enough outcome data accrues.
+        """
+        if edge_weight is None:
+            return base
+        try:
+            w = float(edge_weight(model.symbol, direction))
+        except Exception:
+            return base
+        return max(1, min(100, int(round(base * w))))
 
     all_fvgs: list[tuple[str, FairValueGap]] = []
     for tf, fvg_list in fvgs_by_tf.items():
@@ -127,6 +144,7 @@ def extract_entry_zones(
                 midpoint=(overlap_top + overlap_bottom) / 2,
                 invalidation_level=inv,
                 conviction=_conv(100, direction, ZoneType.FVG_OB_OVERLAP, ftf),
+                conviction=_conv(100, direction),
                 created_at=now,
                 expires_at=expiry,
                 timeframe=ftf,
@@ -151,6 +169,7 @@ def extract_entry_zones(
             midpoint=fvg.midpoint,
             invalidation_level=inv,
             conviction=_conv(80, direction, ZoneType.FVG_MIDPOINT, ftf),
+            conviction=_conv(80, direction),
             created_at=now,
             expires_at=expiry,
             timeframe=ftf,
@@ -172,6 +191,7 @@ def extract_entry_zones(
             midpoint=ob.midpoint,
             invalidation_level=inv,
             conviction=_conv(70, direction, ZoneType.OB_MIDPOINT, otf),
+            conviction=_conv(70, direction),
             created_at=now,
             expires_at=expiry,
             timeframe=otf,

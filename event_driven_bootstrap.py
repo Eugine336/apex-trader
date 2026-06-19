@@ -965,6 +965,8 @@ class EventDrivenSystem:
         # fill time so the close path can attribute the outcome to the right
         # learned keys.
         self._entry_context: dict[Any, dict[str, Any]] = {}
+        # ── Adaptive analysis: learned per-market conviction edge ─────
+        self._zone_edge = ZoneEdgeTracker()
 
         # ── Analysis plane ───────────────────────────────────────────
         self._candle_handler = CandleCloseHandler(
@@ -973,6 +975,7 @@ class EventDrivenSystem:
             candle_fetcher=self._fetch_candles,
             edge_weight=self._zone_edge.zone_weight,
             concept_weight=self._zone_edge.concept_weight,
+            edge_weight=self._zone_edge.weight,
         )
 
         # ── Execution plane ──────────────────────────────────────────
@@ -2935,6 +2938,16 @@ class EventDrivenSystem:
             )
         except Exception as exc:
             logger.debug("[close-learn] zone-edge record failed: {}", exc)
+        # Feed the realized outcome into the learned conviction edge so the
+        # WorldModel's zone scoring becomes data-driven.  Independent of the
+        # ctx subsystems and best-effort — never affects the close path.
+        try:
+            won = (pnl_dollars or 0.0) > 0.0 or (
+                (pnl_dollars or 0.0) == 0.0 and (pnl_pips or 0.0) > 0.0
+            )
+            self._zone_edge.record(symbol, direction, won)
+        except Exception as exc:
+            logger.debug("[zone-edge] outcome record failed: {}", exc)
 
         ctx = self._ctx
         if ctx is None:
