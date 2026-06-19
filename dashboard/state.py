@@ -63,13 +63,12 @@ class LiveState(
     """
     Central state provider for the dashboard.
 
-    When a TradingLoop is attached (live mode), all data comes from the
-    real engine. When nothing is attached, stable fallback shapes are
-    returned so the frontend never breaks.
+    When the event-driven system is attached (live mode), all data comes
+    from the real engine. When nothing is attached, stable fallback shapes
+    are returned so the frontend never breaks.
     """
 
     def __init__(self) -> None:
-        self._trading_loop: Any = None
         self._platform_manager: Any = None
         self._event_driven_system: Any = None
         self._system_context: Any = None
@@ -93,7 +92,7 @@ class LiveState(
         # The legacy ``trading_loop`` is no longer a data source — the
         # event-driven system (set via ``set_event_driven_system``) is the sole
         # live backend.  The parameter is accepted for call-site compatibility
-        # but intentionally not stored, so ``_trading_loop`` stays ``None``.
+        # but intentionally ignored.
         self._platform_manager = platform_manager
         self._connection_status = connection_status
         self._system_context = system_context

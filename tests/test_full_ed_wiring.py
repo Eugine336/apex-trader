@@ -261,21 +261,3 @@ class TestDashboardMixinFallbacksUnit:
         state.is_live = True
         assert state._module_governor() is gov
 
-    def test_module_governor_fallback_to_loop(self):
-        import importlib.util
-        spec = importlib.util.spec_from_file_location(
-            "state_module_governor", "dashboard/state_module_governor.py",
-        )
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-
-        class FakeState(mod.ModuleGovernorMixin):
-            pass
-
-        state = FakeState()
-        gov = MagicMock()
-        state._system_context = None
-        state._trading_loop = SimpleNamespace(_module_governor=gov)
-        state.is_live = True
-        assert state._module_governor() is gov
-
