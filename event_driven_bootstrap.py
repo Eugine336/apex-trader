@@ -42,6 +42,7 @@ from entry import EntryOrchestrator, EntryConfig
 from platform_context import build_context_for_symbol
 from platforms.platform_manager import PlatformManager
 from risk.position_sizer import PositionSizer
+from adaptive.zone_edge_tracker import ZoneEdgeTracker
 
 
 def _struct_trend_conf(struct_by_tf: dict, tf: str) -> tuple[str, float]:
@@ -955,11 +956,23 @@ class EventDrivenSystem:
         )
         self._wm_store = WorldModelStore()
 
+        # ── Learned analysis edge ────────────────────────────────────
+        # Bounded, default-neutral multipliers that make the analysis
+        # combination data-driven: zone conviction and per-concept bias are
+        # scaled by realized trade outcomes recorded on the close path.
+        self._zone_edge = ZoneEdgeTracker()
+        # Per-ticket entry context (zone_type, regime, concepts) captured at
+        # fill time so the close path can attribute the outcome to the right
+        # learned keys.
+        self._entry_context: dict[Any, dict[str, Any]] = {}
+
         # ── Analysis plane ───────────────────────────────────────────
         self._candle_handler = CandleCloseHandler(
             event_bus=self._event_bus,
             world_model_store=self._wm_store,
             candle_fetcher=self._fetch_candles,
+            edge_weight=self._zone_edge.zone_weight,
+            concept_weight=self._zone_edge.concept_weight,
         )
 
         # ── Execution plane ──────────────────────────────────────────
@@ -1518,6 +1531,7 @@ class EventDrivenSystem:
                 "events_emitted": self._candle_detector.events_emitted,
                 "tracked_pairs": self._candle_detector.tracked_pairs,
             },
+            "zone_edge": self._zone_edge.snapshot(),
         }
 
     def get_tick_profile(self) -> dict[str, Any]:
@@ -2658,6 +2672,28 @@ class EventDrivenSystem:
                 self._on_order_filled(symbol, direction, result, balance,
                                       entry_price, order_ts)
 
+                # Capture the entry's learned-edge context keyed by ticket so
+                # the close path can attribute the realized outcome to the
+                # right zone/concept keys.  Best-effort — never blocks a trade.
+                try:
+                    timeframe = decision.get("timeframe", "")
+                    regime = None
+                    concept_names: list[str] = []
+                    wm = self._wm_store.get(symbol)
+                    if wm is not None:
+                        regime = wm.regime_by_tf().get(timeframe)
+                        for sigs in wm.concepts_by_tf().values():
+                            for sig in sigs or []:
+                                if getattr(sig, "is_directional", False):
+                                    concept_names.append(sig.name)
+                    self._entry_context[result.order_id] = {
+                        "zone_type": decision.get("zone_type", ""),
+                        "regime": regime,
+                        "concepts": sorted(set(concept_names)),
+                    }
+                except Exception as exc:
+                    logger.debug("[entry-ctx] capture failed: {}", exc)
+
                 # OutcomeLogger — record the plan at entry time
                 if ctx is not None and ctx.outcome_logger is not None:
                     try:
@@ -2878,6 +2914,28 @@ class EventDrivenSystem:
 
         Mirrors TradingLoop._record_closed_trade — risk first, then learning.
         """
+        # ── LEARNED ANALYSIS EDGE (data-driven combiner) ────────────
+        # Attribute the realized outcome to the zone/concept keys captured at
+        # entry so future conviction reflects what actually pays off.  Runs
+        # before the ctx guard (no ctx dependency) and is fully best-effort.
+        try:
+            info = self._entry_context.pop(ticket, None) or {}
+            # A flat-dollar close that still gained pips (e.g. commission ate
+            # the dollar P&L) counts as a win for edge attribution.
+            won = (pnl_dollars or 0.0) > 0.0 or (
+                (pnl_dollars or 0.0) == 0.0 and (pnl_pips or 0.0) > 0.0
+            )
+            self._zone_edge.record_trade(
+                symbol,
+                direction,
+                won,
+                zone_type=info.get("zone_type"),
+                regime=info.get("regime"),
+                concepts=info.get("concepts"),
+            )
+        except Exception as exc:
+            logger.debug("[close-learn] zone-edge record failed: {}", exc)
+
         ctx = self._ctx
         if ctx is None:
             return

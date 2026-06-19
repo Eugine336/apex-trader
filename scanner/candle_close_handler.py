@@ -40,6 +40,7 @@ from brain.structure_engine import StructureEngine, StructureAnalysis
 from brain.volume_analyzer import VolumeAnalyzer, VolumeAnalysis
 from brain.world_model import WorldModel, WorldModelStore, build_world_model
 from brain.wyckoff_engine import WyckoffEngine, WyckoffAnalysis
+from brain.concept_modules import run_concepts
 from config import get_pip_size
 from entry.models import EntryConfig
 from entry.zone_watcher import extract_entry_zones
@@ -152,12 +153,20 @@ class CandleCloseHandler:
         max_workers: int = 4,
         candle_count: int = 200,
         entry_config: Optional[EntryConfig] = None,
+        edge_weight: Optional[Callable[..., float]] = None,
+        concept_weight: Optional[Callable[..., float]] = None,
     ) -> None:
         self._bus = event_bus
         self._store = world_model_store
         self._fetcher = candle_fetcher
         self._candle_count = candle_count
         self._entry_config = entry_config or EntryConfig()
+        # Learned, bounded multipliers (default-neutral when None).  They make
+        # the analysis combination data-driven: ``edge_weight`` scales zone
+        # conviction by realized edge; ``concept_weight`` scales each non-ICT
+        # concept's contribution to the bias blend.
+        self._edge_weight = edge_weight
+        self._concept_weight = concept_weight
         self._pool = ThreadPoolExecutor(
             max_workers=max(1, max_workers),
             thread_name_prefix="cc-handler",
@@ -284,6 +293,17 @@ class CandleCloseHandler:
                     symbol, tf, mod, exc,
                 )
 
+        # Non-ICT concept generators (trend / mean-reversion) + regime.
+        # Best-effort: a concept failure must never break the ICT analysis.
+        try:
+            signals, regime = run_concepts(df)
+            results["concepts"] = signals
+            results["regime"] = regime
+        except Exception as exc:
+            logger.debug(
+                "[cc-handler] {} {} concept modules failed: {}", symbol, tf, exc,
+            )
+
         return results
 
     # ------------------------------------------------------------------
@@ -306,6 +326,8 @@ class CandleCloseHandler:
         vol = dict(existing.volume) if existing else {}
         wyck = dict(existing.wyckoff) if existing else {}
         ind = dict(existing.inducement) if existing else {}
+        concepts = dict(existing.concepts) if existing else {}
+        regime = dict(existing.regime) if existing else {}
 
         if "fvg" in results:
             fvgs[tf] = list(results["fvg"])
@@ -321,9 +343,16 @@ class CandleCloseHandler:
             wyck[tf] = results["wyckoff"]
         if "inducement" in results:
             ind[tf] = results["inducement"]
+        if "concepts" in results:
+            concepts[tf] = list(results["concepts"])
+        if "regime" in results:
+            regime[tf] = results["regime"]
 
-        # Synthesize the directional bias from the merged HTF structure.
+        # Synthesize the directional bias from the merged HTF structure, then
+        # blend in the non-ICT concepts (weighted by their learned edge) so the
+        # bias is a data-driven combination, not pure ICT structure.
         bias = _compute_bias(struct)
+        bias = self._blend_concepts(bias, concepts, regime)
 
         wm = build_world_model(
             symbol=symbol,
@@ -337,12 +366,15 @@ class CandleCloseHandler:
             wyckoff=wyck,
             inducement=ind,
             bias=bias,
+            concepts=concepts,
+            regime=regime,
         )
 
         # Synthesize the actionable entry layer so the WorldModel is the
         # single source of truth for the entry plane — consumers read
-        # ``wm.entry_zones`` instead of re-deriving zones.
-        zones = extract_entry_zones(wm, self._entry_config)
+        # ``wm.entry_zones`` instead of re-deriving zones.  The learned
+        # ``edge_weight`` scales each zone's conviction by realized edge.
+        zones = extract_entry_zones(wm, self._entry_config, self._edge_weight)
         if zones:
             wm = replace(wm, entry_zones=tuple(zones))
 
@@ -352,6 +384,60 @@ class CandleCloseHandler:
             "[cc-handler] published WorldModel for {} (tf={}, v={}, zones={})",
             symbol, tf, wm.version, len(wm.entry_zones),
         )
+
+    def _blend_concepts(
+        self,
+        bias: dict[str, Any],
+        concepts_by_tf: dict[str, list],
+        regime_by_tf: dict[str, str],
+    ) -> dict[str, Any]:
+        """Blend non-ICT concept signals into the structural bias.
+
+        Each directional concept votes (LONG/SHORT) weighted by its strength
+        and learned per-concept edge.  The net vote nudges the bias ``score``
+        within a bounded range and is recorded for observability — it never
+        flips the structural ``direction`` or ``tradeable`` decision, so the
+        ICT plane stays authoritative and the blend is default-neutral when
+        concepts are neutral or unproven.
+        """
+        try:
+            long_w = 0.0
+            short_w = 0.0
+            for tf, signals in concepts_by_tf.items():
+                rg = regime_by_tf.get(tf)
+                for sig in signals or []:
+                    if not getattr(sig, "is_directional", False):
+                        continue
+                    w = 1.0
+                    if self._concept_weight is not None:
+                        try:
+                            w = float(self._concept_weight(sig.name, rg))
+                        except Exception:  # noqa: BLE001
+                            w = 1.0
+                    contrib = w * float(getattr(sig, "strength", 0.0) or 0.0)
+                    if sig.direction == "LONG":
+                        long_w += contrib
+                    elif sig.direction == "SHORT":
+                        short_w += contrib
+
+            net = long_w - short_w
+            concept_dir = "LONG" if net > 0 else ("SHORT" if net < 0 else "")
+            magnitude = min(15.0, abs(net) * 10.0)
+
+            out = dict(bias)
+            direction = out.get("direction", "")
+            score = float(out.get("score", 0) or 0)
+            if direction and concept_dir:
+                if concept_dir == direction:
+                    score = min(100.0, score + magnitude)
+                else:
+                    score = max(0.0, score - magnitude)
+            out["score"] = int(round(score))
+            out["concept_direction"] = concept_dir
+            out["concept_score"] = round(magnitude, 2)
+            return out
+        except Exception:  # noqa: BLE001 — blending must never break analysis
+            return bias
 
     # ------------------------------------------------------------------
     # Observability
