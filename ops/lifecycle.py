@@ -5,7 +5,8 @@ Three cooperating, additive primitives that harden the process boundary:
 * :class:`ShutdownManager` — on a shutdown signal, stops new entries, waits a
   bounded time for in-flight work, then flushes EVERY SQLite-backed adaptive
   store (the gap the pre-existing ``stop()`` left open) and clears the crash
-  marker. It complements ``TradingLoop.stop()`` rather than replacing it.
+  marker. It complements the event-driven system's ``stop()`` rather than
+  replacing it.
 * :class:`StartupRecovery` — writes a crash marker at boot and removes it on a
   clean exit; a marker found at startup means the previous run died unclean and
   is reported loudly so the operator (and broker reconciliation) can react.
@@ -14,7 +15,7 @@ Three cooperating, additive primitives that harden the process boundary:
   count, drawdown state, process memory and on-disk store sizes, for the
   dashboard ``/api/health`` endpoint and the watchdog.
 
-All three operate on the live ``TradingLoop`` by duck typing — they read public
+All three operate on the live system by duck typing — they read public
 attributes and call ``.close()`` on stores, never reaching into engine
 internals. Every method is fail-safe: an ops fault must never block a trade or
 crash the loop, but it must always be logged (silent failure is worse).
@@ -32,7 +33,7 @@ from typing import Any, Optional
 
 from loguru import logger
 
-# Adaptive components carried on the TradingLoop that own a SQLite connection
+# Adaptive components that own a SQLite connection
 # (or other releasable resource) and expose ``.close()``. (label, attribute).
 # Order matters only for tidy logging — flushing is independent per store.
 _ADAPTIVE_STORE_ATTRS: tuple[tuple[str, str], ...] = (

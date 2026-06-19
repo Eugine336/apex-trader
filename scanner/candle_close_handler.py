@@ -2,10 +2,8 @@
 
 Subscribes to ``CandleClose`` events from the Phase 2 EventBus and
 incrementally updates WorldModels by running the relevant brain modules
-for the closed timeframe.  Runs ALONGSIDE the timer-based ScanScheduler
-(which remains the safety net until Phase 8 validates this path).
-
-The handler keeps the WorldModel fresh between full scans:
+for the closed timeframe.  This is the sole analysis path that keeps every
+WorldModel fresh as bars close:
   - M5 close  → FVG, OrderBlock, Volume, Inducement
   - M15 close → FVG
   - H1 close  → FVG, OrderBlock, Liquidity, Volume, Wyckoff, Structure
