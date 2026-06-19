@@ -197,7 +197,7 @@ class TestI1_OneObservedClosePerTrade:
             )
             assert cur.fetchone()[0] == 1, f"Expected exactly 1 TRADE_CLOSE for row {row_id}"
 
-        derived_count = conn.execute(
+        _derived_count = conn.execute(
             "SELECT COUNT(*) FROM events WHERE event_type = ?",
             (BACKFILL_DERIVED_TYPE,),
         ).fetchone()[0]

@@ -11,7 +11,7 @@ from brain.structure_engine import StructureEngine
 
 def _make_df(highs: list, lows: list) -> pd.DataFrame:
     """Build a minimal OHLC DataFrame from highs and lows."""
-    n = len(highs)
+    _n = len(highs)
     opens = [(h + l) / 2 for h, l in zip(highs, lows)]
     closes = opens[:]
     return pd.DataFrame({

@@ -104,7 +104,7 @@ class StatusMixin(HelpersMixin):
         consecutive_losses = 0
         consecutive_wins = 0
         daily_pnl = 0.0
-        risk_pct = 0.75
+        _risk_pct = 0.75
         max_daily = 5.0
 
         if ctx is not None:
@@ -120,7 +120,7 @@ class StatusMixin(HelpersMixin):
                     pass
             if ctx.risk_engine is not None:
                 try:
-                    risk_pct = getattr(ctx.risk_engine, "_risk_per_trade_pct", 0.75)
+                    _risk_pct = getattr(ctx.risk_engine, "_risk_per_trade_pct", 0.75)
                 except Exception:
                     pass
 

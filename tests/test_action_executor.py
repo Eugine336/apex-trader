@@ -464,7 +464,7 @@ class TestSerialization:
         execution_order: list[str] = []
         lock = threading.Lock()
 
-        original_close = broker.close_trade
+        _original_close = broker.close_trade
 
         def tracking_close(order_id, platform, lots=None):
             with lock:

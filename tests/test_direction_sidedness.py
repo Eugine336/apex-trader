@@ -202,8 +202,8 @@ class TestMisSidedSignalBlocksEntry:
         loop = self._make_loop()
         signal = self._make_signal(direction="LONG", sl=1.10500)
 
-        result = SimpleNamespace(pair="EURUSD", direction="LONG", score=85)
-        assessment = SimpleNamespace(
+        _result = SimpleNamespace(pair="EURUSD", direction="LONG", score=85)
+        _assessment = SimpleNamespace(
             approved=True, position_size_lots=0.05,
             stake_usd=None, max_loss_dollars=50.0,
             rejections=[],

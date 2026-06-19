@@ -312,7 +312,7 @@ class TestATRPercentile:
 
     def test_dead_regime_penalty(self):
         rng = np.random.default_rng(55)
-        n = 200
+        _n = 200
         closes = np.concatenate([
             1.1 + rng.normal(0, 0.01, 100),
             np.full(100, 1.1) + rng.normal(0, 0.00001, 100),

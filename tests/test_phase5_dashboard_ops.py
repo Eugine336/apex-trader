@@ -149,7 +149,7 @@ class TestLiveStateEDAwareness:
 
 class TestEventDrivenSystemProperties:
     """Verify the new properties on EventDrivenSystem.
-    
+
     Skip if torch is not installed (RL import chain).
     """
 

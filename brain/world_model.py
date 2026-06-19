@@ -216,7 +216,7 @@ def build_world_model(
     ts = timestamp or datetime.now(timezone.utc)
 
     def _freeze_lists(
-        d: Optional[dict[str, list]], 
+        d: Optional[dict[str, list]],
     ) -> tuple[tuple[str, tuple], ...]:
         if not d:
             return ()

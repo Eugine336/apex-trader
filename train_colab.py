@@ -150,7 +150,7 @@ obs = np.random.randn(50, OBS_FEATURES).astype(np.float32)
 ctx = np.zeros(N_CONTEXT_FEATURES, dtype=np.float32)
 action, confidence, expected_r = agent.predict(obs, context_vec=ctx, symbol_id=0)
 
-print(f"\nInference test (MTF):")
+print("\nInference test (MTF):")
 print(f"  Action     : {ACTION_LABELS[action]}")
 print(f"  Confidence : {confidence:.3f}")
 print(f"  Expected R : {expected_r:.3f}")

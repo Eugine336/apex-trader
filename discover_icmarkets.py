@@ -65,7 +65,7 @@ def main():
 
         if match:
             found[canonical] = match
-            note = f" (same)" if match == canonical else f" → broker uses: {match}"
+            note = " (same)" if match == canonical else f" → broker uses: {match}"
             print(f"  ✓ {canonical}{note}")
         else:
             notfound.append(canonical)

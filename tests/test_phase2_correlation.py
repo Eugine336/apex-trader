@@ -221,7 +221,7 @@ class TestSafetyEmit:
         """Emit with all-None optional fields should succeed."""
         store = _make_store(tmp_path)
         try:
-            eid = store.emit(
+            _eid = store.emit(
                 event_type=DECISION_REJECT,
                 severity="INFO",
             )

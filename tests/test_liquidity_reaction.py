@@ -492,7 +492,8 @@ class TestSideAgnosticRR:
 
     @staticmethod
     def _load():
-        import importlib.util, os
+        import importlib.util
+        import os
         path = os.path.join(os.path.dirname(__file__), os.pardir, "scanner", "rr_helper.py")
         spec = importlib.util.spec_from_file_location("scanner.rr_helper", path)
         mod = importlib.util.module_from_spec(spec)

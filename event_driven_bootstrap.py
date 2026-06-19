@@ -526,8 +526,8 @@ class PositionEvaluator:
                     if getattr(z, "direction", "").upper() == want_dir:
                         current_score = max(current_score, getattr(z, "conviction", 0))
             fast_opp = self._fast_opposition.get(order_id, 0)
-            m1_aligned = 0
-            m1_trend = "UNKNOWN"
+            _m1_aligned = 0
+            _m1_trend = "UNKNOWN"
             session_name = "UNKNOWN"
             session_tradeable = True
             if ctx.session_engine is not None:
@@ -2560,7 +2560,7 @@ class EventDrivenSystem:
             # ── Apply execution profile to SL/TP if available ────────
             if exec_profile is not None:
                 try:
-                    prof_sl_mult = getattr(exec_profile, "sl_atr_multiplier", 0.0)
+                    _prof_sl_mult = getattr(exec_profile, "sl_atr_multiplier", 0.0)
                     prof_tp_rr = getattr(exec_profile, "tp_rr_ratio", 0.0)
                     prof_tp2_rr = getattr(exec_profile, "tp2_rr_ratio", 0.0)
                     risk_dist = abs(entry_price - sl) if sl > 0 else 0.0

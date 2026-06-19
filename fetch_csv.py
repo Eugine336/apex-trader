@@ -101,7 +101,7 @@ def load_symbol_map() -> dict[str, str]:
             config_path = jsons[0]
             print(f"  [symbol map] No exact broker match — using {config_path.name}")
         else:
-            print(f"  [symbol map] No broker config found — using canonical names")
+            print("  [symbol map] No broker config found — using canonical names")
             return {}
 
     with open(config_path) as f:
@@ -223,8 +223,8 @@ def main():
     print(f"\n  Instruments : {len(MT5_INSTRUMENTS)}")
     print(f"  Timeframes  : {len(TIMEFRAMES)}")
     print(f"  Target files: {len(MT5_INSTRUMENTS) * len(TIMEFRAMES)}")
-    print(f"  Est. size   : ~1.2-1.5 GB")
-    print(f"  Est. time   : 15-20 minutes\n")
+    print("  Est. size   : ~1.2-1.5 GB")
+    print("  Est. time   : 15-20 minutes\n")
 
     if not mt5.initialize():
         raise SystemExit(f"MT5 init failed: {mt5.last_error()}")
@@ -286,7 +286,7 @@ def main():
     if skipped:
         print(f"  Skipped   : {', '.join(skipped)}")
 
-    print(f"\n  Deriv synthetics (fetch separately via Deriv API):")
+    print("\n  Deriv synthetics (fetch separately via Deriv API):")
     print(f"  {', '.join(DERIV_ONLY)}")
     print("=" * 60)
     print("\n  Data ready. Upload any *_H1.csv to Colab to start training.")

@@ -10,6 +10,8 @@ Covers:
 """
 
 import pytest
+from types import SimpleNamespace
+from unittest.mock import MagicMock
 
 from persistence.position_store import PositionStore, STORE_UNAVAILABLE
 
