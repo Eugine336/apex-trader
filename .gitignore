@@ -68,3 +68,4 @@ data/backups/
 data/backups/
 *.zip
 node_modules/
+MagicMock/
