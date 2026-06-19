@@ -80,9 +80,6 @@ def main() -> None:
     )
     logger.info("Phase 1 — Brain loaded (17 modules)")
 
-    from scanner import PairScanner, PairRanker, ScanScheduler
-    logger.info("Phase 2 — Scanner loaded (pair scanner, ranker, scheduler)")
-
     from trigger import EntryEngine, EntryPatternDetector, EntryValidator
     logger.info("Phase 3 — Trigger loaded (entry engine, patterns, validator)")
 

@@ -1141,7 +1141,6 @@ class EventDrivenSystem:
 
         # EVEstimator
         try:
-            from scanner.pair_scanner import PairScanner
             scanner_inst = getattr(self, "_scanner", None)
             ev_estimator = getattr(scanner_inst, "_ev_estimator", None) if scanner_inst else None
             if ev_estimator is not None:
