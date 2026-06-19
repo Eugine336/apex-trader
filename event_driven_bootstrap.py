@@ -704,7 +704,312 @@ class EventDrivenSystem:
             "world_model_update", self._on_world_model_update,
         )
 
+        self._register_tunable_adapters()
+
         logger.info("[event-driven] system initialized")
+
+    # ── Tunable adapter registration ────────────────────────────────
+
+    def _register_tunable_adapters(self) -> None:
+        """Register all tunable adapters with TunerAgent.
+
+        Mirrors TradingLoop._setup_tuner_agent() — each adapter bridges a
+        SystemContext subsystem to the TunerAgent's coordinated tune cycle.
+        """
+        ctx = self._ctx
+        if ctx is None or ctx.tuner_agent is None:
+            return
+
+        agent = ctx.tuner_agent
+        registered = 0
+
+        try:
+            from adaptive.tunable_adapters import (
+                ScoreOptimizerTunable,
+                RegimeLearnerTunable,
+                PairLearnerTunable,
+                SessionLearnerTunable,
+                EVEstimatorTunable,
+                GateTunerTunable,
+                PlannerCalibratorTunable,
+                SignalLedgerTunable,
+                PostCloseTrackerTunable,
+                VoteCalibratorTunable,
+                ModuleGovernorTunable,
+                CounterfactualTunable,
+                InteractionAnalyzerTunable,
+                SignalDiscoveryTunable,
+                VirtualSignalManagerTunable,
+                CapitalAllocatorTunable,
+                ExecutionProfileTunable,
+                RegimeDetectorTunable,
+                BehaviorDiscoveryTunable,
+                ConsumerTunable,
+            )
+        except ImportError as exc:
+            logger.warning("[tuner] failed to import tunable adapters: {}", exc)
+            return
+
+        def _trades_provider():
+            if ctx.ml_adapter is not None:
+                try:
+                    return ctx.ml_adapter.get_trade_history()
+                except Exception:
+                    pass
+            return []
+
+        def _prices_provider():
+            prices = {}
+            for sym in INSTRUMENT_REGISTRY:
+                tick = self._tick_store.get_latest(sym)
+                if tick is not None:
+                    prices[sym] = tick.mid
+            return prices
+
+        # ScoreOptimizer
+        if ctx.ml_adapter is not None and hasattr(ctx.ml_adapter, "optimizer"):
+            try:
+                agent.register(ScoreOptimizerTunable(
+                    ctx.ml_adapter.optimizer, _trades_provider,
+                ))
+                registered += 1
+            except Exception as exc:
+                logger.debug("[tuner] ScoreOptimizer registration failed: {}", exc)
+
+        # RegimeLearner
+        if ctx.ml_adapter is not None and hasattr(ctx.ml_adapter, "regime_learner"):
+            try:
+                agent.register(RegimeLearnerTunable(
+                    ctx.ml_adapter.regime_learner, _trades_provider,
+                ))
+                registered += 1
+            except Exception as exc:
+                logger.debug("[tuner] RegimeLearner registration failed: {}", exc)
+
+        # PairLearner
+        if ctx.ml_adapter is not None and hasattr(ctx.ml_adapter, "pair_learner"):
+            try:
+                agent.register(PairLearnerTunable(
+                    ctx.ml_adapter.pair_learner, _trades_provider,
+                ))
+                registered += 1
+            except Exception as exc:
+                logger.debug("[tuner] PairLearner registration failed: {}", exc)
+
+        # SessionLearner
+        if ctx.ml_adapter is not None and hasattr(ctx.ml_adapter, "session_learner"):
+            try:
+                agent.register(SessionLearnerTunable(
+                    ctx.ml_adapter.session_learner, _trades_provider,
+                ))
+                registered += 1
+            except Exception as exc:
+                logger.debug("[tuner] SessionLearner registration failed: {}", exc)
+
+        # EVEstimator
+        try:
+            from scanner.pair_scanner import PairScanner
+            scanner_inst = getattr(self, "_scanner", None)
+            ev_estimator = getattr(scanner_inst, "_ev_estimator", None) if scanner_inst else None
+            if ev_estimator is not None:
+                agent.register(EVEstimatorTunable(ev_estimator))
+                registered += 1
+        except Exception as exc:
+            logger.debug("[tuner] EVEstimator registration failed: {}", exc)
+
+        # GateTuner
+        if ctx.gate_tuner is not None:
+            try:
+                outcomes_provider = (
+                    (lambda: ctx.shadow_store.get_outcomes_by_gate())
+                    if ctx.shadow_store is not None else (lambda: [])
+                )
+                agent.register(GateTunerTunable(ctx.gate_tuner, outcomes_provider))
+                registered += 1
+            except Exception as exc:
+                logger.debug("[tuner] GateTuner registration failed: {}", exc)
+
+        # PlannerCalibrator
+        if ctx.calibrator is not None:
+            try:
+                def _completed_plans():
+                    if ctx.outcome_logger is not None:
+                        try:
+                            return ctx.outcome_logger.get_completed_trades()
+                        except Exception:
+                            pass
+                    return []
+
+                agent.register(PlannerCalibratorTunable(
+                    ctx.calibrator, _completed_plans,
+                    planner=ctx.trade_planner,
+                    planner_enabled=ctx.trade_planner is not None,
+                ))
+                registered += 1
+            except Exception as exc:
+                logger.debug("[tuner] PlannerCalibrator registration failed: {}", exc)
+
+        # SignalLedger
+        if ctx.signal_ledger is not None:
+            try:
+                agent.register(SignalLedgerTunable(ctx.signal_ledger, _prices_provider))
+                registered += 1
+            except Exception as exc:
+                logger.debug("[tuner] SignalLedger registration failed: {}", exc)
+
+        # PostCloseTracker
+        if ctx.post_close_tracker is not None:
+            try:
+                agent.register(PostCloseTrackerTunable(
+                    ctx.post_close_tracker,
+                    data_source_provider=lambda: self._pm,
+                ))
+                registered += 1
+            except Exception as exc:
+                logger.debug("[tuner] PostCloseTracker registration failed: {}", exc)
+
+        # VoteCalibrator
+        if ctx.vote_calibrator is not None:
+            try:
+                vc_cfg = getattr(self._config, "vote_calibrator", None)
+                vc_enabled = bool(getattr(vc_cfg, "vote_calibration_enabled", False))
+                if vc_enabled:
+                    agent.register(VoteCalibratorTunable(ctx.vote_calibrator))
+                    registered += 1
+            except Exception as exc:
+                logger.debug("[tuner] VoteCalibrator registration failed: {}", exc)
+
+        # ModuleGovernor
+        if ctx.module_governor is not None:
+            try:
+                mg_cfg = getattr(self._config, "module_governor", None)
+                mg_enabled = bool(getattr(mg_cfg, "module_governor_enabled", False))
+                if mg_enabled:
+                    agent.register(ModuleGovernorTunable(ctx.module_governor))
+                    registered += 1
+            except Exception as exc:
+                logger.debug("[tuner] ModuleGovernor registration failed: {}", exc)
+
+        # CounterfactualEngine
+        if ctx.counterfactual_engine is not None:
+            try:
+                cf_cfg = getattr(self._config, "counterfactual", None)
+                agent.register(CounterfactualTunable(
+                    ctx.counterfactual_engine,
+                    min_trades=int(getattr(cf_cfg, "min_trades_for_attribution", 50) if cf_cfg else 50),
+                ))
+                registered += 1
+            except Exception as exc:
+                logger.debug("[tuner] Counterfactual registration failed: {}", exc)
+
+        # InteractionAnalyzer
+        if ctx.interaction_analyzer is not None:
+            try:
+                cf_cfg = getattr(self._config, "counterfactual", None)
+                agent.register(InteractionAnalyzerTunable(
+                    ctx.interaction_analyzer,
+                    min_trades=int(getattr(cf_cfg, "min_trades_for_attribution", 50) if cf_cfg else 50),
+                ))
+                registered += 1
+            except Exception as exc:
+                logger.debug("[tuner] InteractionAnalyzer registration failed: {}", exc)
+
+        # SignalDiscoveryEngine
+        if ctx.signal_discovery is not None:
+            try:
+                sd_cfg = getattr(self._config, "signal_discovery", None)
+                agent.register(SignalDiscoveryTunable(
+                    ctx.signal_discovery,
+                    min_trades=int(getattr(sd_cfg, "min_trades_for_discovery", 100) if sd_cfg else 100),
+                ))
+                registered += 1
+            except Exception as exc:
+                logger.debug("[tuner] SignalDiscovery registration failed: {}", exc)
+
+        # VirtualSignalManager
+        if ctx.virtual_signal_manager is not None:
+            try:
+                sd_cfg = getattr(self._config, "signal_discovery", None)
+                agent.register(VirtualSignalManagerTunable(
+                    ctx.virtual_signal_manager,
+                    min_trades=int(getattr(sd_cfg, "retirement_check_interval", 50) if sd_cfg else 50),
+                ))
+                registered += 1
+            except Exception as exc:
+                logger.debug("[tuner] VirtualSignalManager registration failed: {}", exc)
+
+        # CapitalAllocator
+        if ctx.capital_allocator is not None:
+            try:
+                ca_cfg = getattr(self._config, "capital_allocation", None)
+                agent.register(CapitalAllocatorTunable(
+                    ctx.capital_allocator,
+                    min_trades=int(getattr(ca_cfg, "rebalance_interval_trades", 25) if ca_cfg else 25),
+                ))
+                registered += 1
+            except Exception as exc:
+                logger.debug("[tuner] CapitalAllocator registration failed: {}", exc)
+
+        # ExecutionProfileManager
+        if ctx.execution_profiles is not None:
+            try:
+                agent.register(ExecutionProfileTunable(ctx.execution_profiles))
+                registered += 1
+            except Exception as exc:
+                logger.debug("[tuner] ExecutionProfiles registration failed: {}", exc)
+
+        # RegimeDetector
+        if ctx.regime_detector is not None:
+            try:
+                agent.register(RegimeDetectorTunable(ctx.regime_detector))
+                registered += 1
+            except Exception as exc:
+                logger.debug("[tuner] RegimeDetector registration failed: {}", exc)
+
+        # BehaviorDiscoveryEngine
+        if ctx.behavior_discovery is not None:
+            try:
+                bd_cfg = getattr(self._config, "behavior_discovery", None)
+                agent.register(BehaviorDiscoveryTunable(
+                    ctx.behavior_discovery,
+                    min_trades=int(getattr(bd_cfg, "min_trades_to_cluster", 100) if bd_cfg else 100),
+                ))
+                registered += 1
+            except Exception as exc:
+                logger.debug("[tuner] BehaviorDiscovery registration failed: {}", exc)
+
+        # Consumer / observer entries — read-only, makes agent see whole system
+        _consumer_entries = [
+            ("risk_engine", ctx.risk_engine),
+            ("position_sizer", None),
+            ("orchestrator", ctx.orchestrator),
+            ("portfolio_governor", ctx.portfolio_governor),
+            ("trade_manager", None),
+        ]
+        for name, comp in _consumer_entries:
+            try:
+                provider = None
+                if comp is not None and hasattr(comp, "get_current_params"):
+                    provider = comp.get_current_params
+                agent.register(ConsumerTunable(name, provider))
+                registered += 1
+            except Exception:
+                pass
+
+        # Wire set_tuner_agent on components that support it
+        for comp in (ctx.ml_adapter, ctx.gate_tuner, ctx.calibrator,
+                     ctx.signal_ledger, ctx.vote_calibrator, ctx.module_governor,
+                     ctx.virtual_signal_manager, ctx.capital_allocator,
+                     ctx.execution_profiles, ctx.regime_detector):
+            if comp is not None and hasattr(comp, "set_tuner_agent"):
+                try:
+                    comp.set_tuner_agent(agent)
+                except Exception:
+                    pass
+
+        logger.info(
+            "[tuner] registered {} tunable adapters with TunerAgent", registered,
+        )
 
     # ── Lifecycle ────────────────────────────────────────────────────
 
@@ -894,8 +1199,8 @@ class EventDrivenSystem:
     # ── Internal helpers ─────────────────────────────────────────────
 
     def _watchdog_loop(self) -> None:
-        """Background loop: heartbeat + stall detection + daily maintenance."""
-        _maint_checked_date = None
+        """Background loop: heartbeat + stall detection + daily maintenance + heat monitoring."""
+        _last_heat_check = 0.0
         while getattr(self, "_watchdog_running", False):
             ctx = self._ctx
             if ctx is not None and ctx.process_watchdog is not None:
@@ -919,7 +1224,148 @@ class EventDrivenSystem:
                 except Exception as exc:
                     logger.debug("[watchdog] daily maintenance check failed: {}", exc)
 
+            # ── Portfolio heat monitoring (every 5s) ─────────────────
+            now = _time.time()
+            if now - _last_heat_check >= 5.0:
+                _last_heat_check = now
+                self._check_portfolio_heat()
+
+            # ── PostCloseTracker forward price checks (every 30s) ────
+            if ctx is not None and ctx.post_close_tracker is not None:
+                try:
+                    if getattr(ctx.post_close_tracker, "enabled", False):
+                        pending = getattr(ctx.post_close_tracker, "pending_count", 0) or 0
+                        if pending > 0:
+                            ctx.post_close_tracker.process_pending_checks(self._pm)
+                except Exception as exc:
+                    logger.debug("[watchdog] PostCloseTracker tick failed: {}", exc)
+
+            # ── Shadow resolution (advance open shadows on latest prices) ──
+            self._resolve_shadows()
+
             _time.sleep(10.0)
+
+    def _check_portfolio_heat(self) -> None:
+        """Continuous portfolio heat monitoring — generates intents for open positions."""
+        ctx = self._ctx
+        if ctx is None or ctx.portfolio_risk_sm is None:
+            return
+        try:
+            from risk.portfolio_risk_state import PortfolioRiskState
+            state = ctx.portfolio_risk_sm.state
+            if state == PortfolioRiskState.NORMAL:
+                return
+
+            positions = self._pm.get_all_open_positions()
+            if not positions:
+                return
+
+            if state == PortfolioRiskState.EMERGENCY:
+                for pos in positions:
+                    ticket = str(getattr(pos, "order_id", getattr(pos, "ticket", "")))
+                    symbol = getattr(pos, "symbol", "")
+                    if ticket:
+                        intent = Intent.close(
+                            symbol=symbol,
+                            ticket=ticket,
+                            source="heat_monitor",
+                            reason="portfolio_heat_emergency",
+                        )
+                        self._aggregator.submit(intent)
+                logger.warning(
+                    "[heat-monitor] EMERGENCY — {} CLOSE intents for all positions",
+                    len(positions),
+                )
+                return
+
+            if state == PortfolioRiskState.REDUCING:
+                worst_pos = None
+                worst_pnl = float("inf")
+                for pos in positions:
+                    pnl = getattr(pos, "profit", getattr(pos, "pnl", 0.0)) or 0.0
+                    if pnl < worst_pnl:
+                        worst_pnl = pnl
+                        worst_pos = pos
+                if worst_pos is not None:
+                    ticket = str(getattr(worst_pos, "order_id", getattr(worst_pos, "ticket", "")))
+                    symbol = getattr(worst_pos, "symbol", "")
+                    if ticket:
+                        intent = Intent.close(
+                            symbol=symbol,
+                            ticket=ticket,
+                            source="heat_monitor",
+                            reason="portfolio_heat_reducing_weakest",
+                        )
+                        self._aggregator.submit(intent)
+                        logger.info(
+                            "[heat-monitor] REDUCING — closing weakest {} (pnl={:.2f})",
+                            symbol, worst_pnl,
+                        )
+                return
+
+            if state == PortfolioRiskState.DEFENSIVE:
+                for pos in positions:
+                    ticket = str(getattr(pos, "order_id", getattr(pos, "ticket", "")))
+                    symbol = getattr(pos, "symbol", "")
+                    entry_price = getattr(pos, "entry_price", 0.0) or 0.0
+                    current_sl = getattr(pos, "sl", 0.0) or 0.0
+                    direction = getattr(pos, "direction", "LONG")
+                    if not ticket or entry_price <= 0:
+                        continue
+                    is_long = str(direction).upper() in ("BUY", "LONG")
+                    already_at_be = (
+                        (current_sl >= entry_price if is_long else current_sl <= entry_price)
+                        if current_sl > 0 else False
+                    )
+                    if not already_at_be:
+                        pip_size = self._safe_pip_size(symbol)
+                        be_price = entry_price + (2 * pip_size) if is_long else entry_price - (2 * pip_size)
+                        intent = Intent.modify_sl(
+                            symbol=symbol,
+                            ticket=ticket,
+                            new_sl=be_price,
+                            source="heat_monitor",
+                            reason="portfolio_heat_defensive_be",
+                        )
+                        self._aggregator.submit(intent)
+                logger.info("[heat-monitor] DEFENSIVE — BE intents submitted")
+
+        except Exception as exc:
+            logger.debug("[heat-monitor] check failed: {}", exc)
+
+    def _resolve_shadows(self) -> None:
+        """Advance open shadow contracts on latest tick prices."""
+        ctx = self._ctx
+        if ctx is None or ctx.shadow_store is None:
+            return
+        try:
+            open_shadows = ctx.shadow_store.get_open_contracts()
+            if not open_shadows:
+                return
+            for shadow in open_shadows:
+                sym = getattr(shadow, "symbol", "")
+                tick = self._tick_store.get_latest(sym)
+                if tick is None:
+                    continue
+                price = tick.mid
+                sl = getattr(shadow, "stop_loss", 0.0)
+                tp = getattr(shadow, "tp1", 0.0)
+                direction = getattr(shadow, "direction", "LONG")
+                is_long = str(direction).upper() in ("BUY", "LONG")
+                hit_sl = (price <= sl if is_long else price >= sl) if sl > 0 else False
+                hit_tp = (price >= tp if is_long else price <= tp) if tp > 0 else False
+                if hit_sl or hit_tp:
+                    outcome = "WIN" if hit_tp else "LOSS"
+                    try:
+                        ctx.shadow_store.resolve_contract(
+                            getattr(shadow, "contract_id", ""),
+                            outcome=outcome,
+                            exit_price=price,
+                        )
+                    except Exception:
+                        pass
+        except Exception as exc:
+            logger.debug("[shadow-resolve] failed: {}", exc)
 
     def _handle_close_result(self, intent: Intent, result: Any) -> None:
         """Called by FlushLoop when a CLOSE intent succeeds.
@@ -1505,11 +1951,15 @@ class EventDrivenSystem:
 
             # ── Position sizing ──────────────────────────────────────
             risk_pct = self._config.risk.risk_per_trade_pct / 100.0
-            if ctx and ctx.drawdown_guard is not None:
+            if ctx is not None and ctx.drawdown_guard is not None:
                 try:
-                    risk_pct = ctx.drawdown_guard.risk_map.get(
-                        ctx.drawdown_guard.mode, risk_pct,
-                    )
+                    risk_map = getattr(ctx.drawdown_guard, "risk_map", None)
+                    if risk_map:
+                        dd_status = ctx.drawdown_guard.get_status()
+                        mode_key = dd_status.mode if isinstance(dd_status.mode, str) else str(dd_status.mode)
+                        mapped = risk_map.get(mode_key)
+                        if mapped is not None and mapped < risk_pct:
+                            risk_pct = mapped
                 except Exception:
                     pass
             pip_size = self._safe_pip_size(symbol)
@@ -1532,7 +1982,7 @@ class EventDrivenSystem:
 
             combined_mult = de_size_mult * orch_mult * vol_mult * density_mult * exec_mult * cap_mult
             combined_mult = max(0.15, min(2.0, combined_mult))
-            if abs(combined_mult - 1.0) > 0.001:
+            if abs(combined_mult - 1.0) > 1e-6:
                 if size_result.lots > 0:
                     size_result.lots = round(max(0.01, size_result.lots * combined_mult), 2)
                 if size_result.stake_usd > 0:
@@ -2045,6 +2495,26 @@ class EventDrivenSystem:
                         logger.info("[calibrator] planner config auto-calibrated from {} completed trades", completed)
             except Exception as exc:
                 logger.debug("[close-evo] Calibrator run failed: {}", exc)
+
+        # ReEntryManager — evaluate re-entry opportunity after close
+        if ctx.re_entry_manager is not None:
+            try:
+                wm = self._wm_store.get(symbol)
+                if wm is not None:
+                    re_entry_signal = ctx.re_entry_manager.evaluate(
+                        symbol=symbol,
+                        direction=direction,
+                        pnl_pips=pnl_pips,
+                        exit_cause=cause_value,
+                    )
+                    if re_entry_signal and getattr(re_entry_signal, "should_reenter", False):
+                        logger.info(
+                            "[re-entry] {} {} re-entry signal after {} (score={})",
+                            symbol, direction, cause_value,
+                            getattr(re_entry_signal, "score", 0),
+                        )
+            except Exception as exc:
+                logger.debug("[close-evo] ReEntryManager eval failed: {}", exc)
 
         logger.info(
             "EVENT-DRIVEN CLOSE FEEDBACK | {} {} ticket={} pnl=${:.2f} ({:.1f}pip) | risk+learning+evolution",

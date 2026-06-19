@@ -8,9 +8,12 @@ class MLInsightsMixin:
 
     def get_ml_insights(self) -> dict:
         empty = {"score_adjustments": {}, "regime_stats": {}, "session_stats": {}, "pair_stats": {}}
-        if not self.is_live:
-            return empty
-        ml = getattr(self._trading_loop, "ml", None)
+        ctx = getattr(self, "_system_context", None)
+        ml = None
+        if ctx is not None and getattr(ctx, "ml_adapter", None) is not None:
+            ml = ctx.ml_adapter
+        elif self.is_live:
+            ml = getattr(self._trading_loop, "ml", None)
         if ml is None:
             return empty
         try:
