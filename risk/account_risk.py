@@ -15,9 +15,35 @@ Leaf module — standard library + loguru only.
 
 from __future__ import annotations
 
+import functools
+import threading
+
 from loguru import logger
 
 
+def _synchronized(method):
+    """Run ``method`` while holding the instance's re-entrant ``_lock``."""
+    @functools.wraps(method)
+    def _wrapper(self, *args, **kwargs):
+        with self._lock:
+            return method(self, *args, **kwargs)
+    return _wrapper
+
+
+def _lock_public_methods(cls):
+    """Wrap every public method so it runs under the instance's ``_lock``.
+
+    Underscore-prefixed methods (including ``__init__``) are skipped: private
+    helpers already run under the lock held by their public caller, and skipping
+    ``__init__`` guarantees ``_lock`` exists before any wrapped call.
+    """
+    for name, attr in list(vars(cls).items()):
+        if callable(attr) and not name.startswith("_"):
+            setattr(cls, name, _synchronized(attr))
+    return cls
+
+
+@_lock_public_methods
 class AccountRiskManager:
     """Tracks balance, daily P&L (loss-cap halt) and heat per account key."""
 
@@ -28,6 +54,7 @@ class AccountRiskManager:
         heat_block_pct: float = 2.0,
         daily_loss_flatten_pct: float = 5.0,
     ) -> None:
+        self._lock = threading.RLock()
         self.daily_loss_cap_pct = daily_loss_cap_pct
         self.daily_loss_recovery_pct = daily_loss_recovery_pct
         self.heat_block_pct = heat_block_pct
