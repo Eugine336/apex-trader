@@ -9,12 +9,12 @@ Two of the system's richest output producers were invisible on the dashboard:
   * the **opportunity ranker** — which clusters those same votes into coherent,
     independently-scored trade ideas (``Opportunity``) by direction × horizon.
 
-Both ride along on every ``PairScanResult`` the scanner produces
-(``result.votes`` and ``result.candidates``).  This mixin reads them straight
-off the attached trading loop's last scan report — exactly the same live source
-the Scanner panel uses — serialises the frozen dataclasses, and adds the
-aggregates the panels need (per-module agreement, horizon / direction / EV
-distributions).  It only reads; it never makes or mutates a decision.
+Both are produced by the event-driven analysis path (per-module ``Vote`` and
+ranked ``Opportunity`` candidates).  This mixin reads them from the event-driven
+system — the same live source the Scanner panel uses — serialises the frozen
+dataclasses, and adds the aggregates the panels need (per-module agreement,
+horizon / direction / EV distributions).  It only reads; it never makes or
+mutates a decision.
 """
 
 from __future__ import annotations

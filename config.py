@@ -1191,7 +1191,7 @@ class PerformanceConfig:
     # ── Scan cadence (M1 scalping) ──
     # Active/overlap sessions and any cycle with open positions scan every 5s so
     # a closed M1 engulfing is acted on within ~5s of bar close instead of the
-    # old 10–15s. Quiet/dead/news cadences are unchanged (see ScanScheduler).
+    # old 10–15s. Quiet/dead/news cadences are unchanged.
     scan_interval_active: int = 5
     scan_interval_with_positions: int = 5
 
@@ -2786,8 +2786,8 @@ class AppConfig:
     performance: PerformanceConfig = field(default_factory=PerformanceConfig)
     ops: OpsConfig = field(default_factory=OpsConfig)
     # NOTE: scan cadence is owned by PerformanceConfig.scan_interval_active /
-    # scan_interval_with_positions (consumed by ScanScheduler). The old
-    # AppConfig.scan_interval_seconds was superseded and never read — removed.
+    # scan_interval_with_positions. The old AppConfig.scan_interval_seconds was
+    # superseded and never read — removed.
     max_consecutive_cycle_failures: int = 5
     log_level: str = "INFO"
 
