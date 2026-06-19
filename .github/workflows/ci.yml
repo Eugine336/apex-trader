@@ -21,11 +21,28 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      - name: Install dependencies
+      - name: Install Python dependencies (non-torch)
         run: |
           python -m pip install --upgrade pip
-          grep -v -E '(MetaTrader5|^#|^$)' requirements.txt | pip install -r /dev/stdin
+          # MetaTrader5 is Windows-only; torch is installed separately below.
+          grep -v -E '(MetaTrader5|^torch|^#|^$)' requirements.txt | pip install -r /dev/stdin
           pip install pytest pytest-asyncio
+
+      - name: Install torch (CPU build)
+        run: |
+          # The default Linux torch wheel pulls large CUDA packages that are slow
+          # and fragile to install in CI; the CPU build is smaller and reliable,
+          # and the RL subsystem only needs CPU torch under test. Isolated as its
+          # own step so a torch install failure is attributable.
+          pip install "torch>=2.0.0" \
+            --index-url https://download.pytorch.org/whl/cpu \
+            --extra-index-url https://pypi.org/simple
+
+      - name: Check for dependency conflicts
+        run: pip check || echo "::warning::pip check reported dependency conflicts"
+
+      - name: Verify test collection
+        run: python -m pytest tests/ --collect-only -q
 
       - name: Run tests
         run: python -m pytest tests/ -v --tb=short
