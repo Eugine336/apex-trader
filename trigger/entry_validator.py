@@ -191,7 +191,7 @@ class EntryValidator:
             # SYMBOL_TRADE_MODE_LONGONLY (1) or SHORTONLY (2) = partially open
             # SYMBOL_TRADE_MODE_CLOSEONLY (3) or DISABLED (0) = closed
             if mode == 4:
-                return True, f"Market open (trade_mode=FULL)"
+                return True, "Market open (trade_mode=FULL)"
             elif mode in (1, 2):
                 return True, f"Market partially open (trade_mode={mode})"
             elif mode == 3:

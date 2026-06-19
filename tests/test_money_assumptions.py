@@ -203,7 +203,7 @@ class TestStartupEnabledPairsValidation:
 
         def _fake_registry_check():
             from config import INSTRUMENT_REGISTRY as reg, AppConfig
-            t0 = 0.0
+            _t0 = 0.0
             unresolved = [
                 s for s in fake_cfg.enabled_pairs
                 if s.upper().replace("/", "") not in reg

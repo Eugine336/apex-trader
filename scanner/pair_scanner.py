@@ -39,7 +39,7 @@ from adaptive.ev_estimator import EVEstimator
 from adaptive.win_rate_provider import AdaptiveWinRateProvider
 from brain.volume_analyzer import VolumeAnalyzer, VolumeAnalysis
 from brain.inducement_detector import InducementDetector, InducementAnalysis
-from brain.wyckoff_engine import WyckoffEngine
+from brain.wyckoff_engine import WyckoffEngine, WyckoffAnalysis
 from brain.instrument_profile import get_profile
 from brain.session_vwap import session_vwap_penalty
 from brain.momentum_divergence import momentum_divergence_penalty
@@ -882,7 +882,7 @@ class PairScanner:
             direction = bias["direction"]
             trade_dir = {"BULLISH": "LONG", "BEARISH": "SHORT"}.get(direction, "NEUTRAL")
             decision = None
-            dir_opportunities = []
+            _dir_opportunities = []
             # Lazy-init analysis objects for the scoring section below
             strength = None
             vol_analysis = None

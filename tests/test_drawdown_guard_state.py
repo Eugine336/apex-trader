@@ -32,7 +32,7 @@ class TestMarginFlattenFreeze:
 
     def test_underscore_mode_does_not_affect_can_trade(self):
         guard = DrawdownGuard()
-        guard._mode = DrawdownMode.FROZEN  # noqa: the bug
+        guard._mode = DrawdownMode.FROZEN  # private _mode set for bug repro
         can, _ = guard.can_trade()
         assert can, "_mode should not influence can_trade — it reads self.mode"
 

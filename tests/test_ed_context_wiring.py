@@ -204,7 +204,7 @@ class TestMarketContextChecks:
             session_close_enabled=True,
             index_close_buffer_minutes=30,
         ))
-        close_h, close_m = 21, 0
+        _close_h, _close_m = 21, 0
         now = datetime(2026, 6, 19, 20, 45, tzinfo=timezone.utc)
         snap = _snap(symbol="US30")
         market = MarketContext()

@@ -221,8 +221,8 @@ def main():
     print(f"\n  Fetchable  : {len(fetchable)} instruments")
     print(f"  Skipped    : {len(skipped)} (indices/unsupported crypto — use MT5)")
     print(f"  Timeframes : {len(TIMEFRAMES)}")
-    print(f"\n  Note: M15 starts 2015, M5 starts 2018, M1 starts 2022")
-    print(f"  Note: H4 and H1 go all the way back to 2008\n")
+    print("\n  Note: M15 starts 2015, M5 starts 2018, M1 starts 2022")
+    print("  Note: H4 and H1 go all the way back to 2008\n")
 
     successful = []
     failed     = []
@@ -260,10 +260,10 @@ def main():
     if failed:
         print(f"\n  Failed    : {', '.join(failed)}")
 
-    print(f"\n  Skipped (use fetch_csv.py for these):")
+    print("\n  Skipped (use fetch_csv.py for these):")
     print(f"  {', '.join(skipped)}")
 
-    print(f"""
+    print("""
   NEXT STEPS:
   1. Run fetch_csv.py to get indices + remaining crypto from MT5
      (those files will be added alongside Dukascopy files)

@@ -358,7 +358,7 @@ def test_reward_shaping_hold_penalty():
     _real_torch()
 
     with tempfile.TemporaryDirectory() as tmp:
-        tmp_path = Path(tmp)
+        _tmp_path = Path(tmp)
 
         with patch("rl.mtf_environment.ApexMultiTFTradingEnv._load_instrument_info"):
             with patch("rl.mtf_environment.ApexMultiTFTradingEnv._load_data"):

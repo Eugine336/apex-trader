@@ -182,14 +182,14 @@ class TestDerivExitReasonSource:
     def test_deriv_platform_gets_deriv_poc_source(self):
         pos = MagicMock()
         pos.platform = "deriv"
-        deal_info = DealCloseInfo(pnl=-10.0, exit_reason="SL", close_price=1.1)
+        _deal_info = DealCloseInfo(pnl=-10.0, exit_reason="SL", close_price=1.1)
         source = "deriv_poc" if pos.platform.startswith("deriv") else "mt5_deal"
         assert source == "deriv_poc"
 
     def test_mt5_platform_gets_mt5_deal_source(self):
         pos = MagicMock()
         pos.platform = "mt5"
-        deal_info = DealCloseInfo(pnl=10.0, exit_reason="TP", close_price=1.12)
+        _deal_info = DealCloseInfo(pnl=10.0, exit_reason="TP", close_price=1.12)
         source = "deriv_poc" if pos.platform.startswith("deriv") else "mt5_deal"
         assert source == "mt5_deal"
 

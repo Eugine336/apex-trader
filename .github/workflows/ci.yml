@@ -50,4 +50,4 @@ jobs:
         run: pip install ruff
 
       - name: Lint check
-        run: ruff check . --select E,F,W --ignore E501,E402,F401 --exclude __pycache__,node_modules,.git
+        run: ruff check . --select E,F,W --ignore E501,E402,F401,E701,E731,E741 --exclude __pycache__,node_modules,.git

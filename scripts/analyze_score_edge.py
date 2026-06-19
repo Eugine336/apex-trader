@@ -81,9 +81,9 @@ async def run(db_path: Path, min_samples: int) -> None:
         print(f"    Monotonicity inversions: {edge['monotonicity_inversions']}")
 
     verdict = edge["verdict"]
-    print(f"\n  ══════════════════════════════════════")
+    print("\n  ══════════════════════════════════════")
     print(f"  VERDICT: {verdict}")
-    print(f"  ══════════════════════════════════════")
+    print("  ══════════════════════════════════════")
 
     if verdict == "INSUFFICIENT_DATA":
         print(

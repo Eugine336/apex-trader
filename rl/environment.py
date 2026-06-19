@@ -184,7 +184,7 @@ class ApexTradingEnv:
         t = self.trade
         high  = float(bar["high"])
         low   = float(bar["low"])
-        close = float(bar["close"])
+        _close = float(bar["close"])
 
         if t.direction == 1:
             if low <= t.sl:

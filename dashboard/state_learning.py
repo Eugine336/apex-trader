@@ -49,7 +49,7 @@ class LearningMixin:
     def _config(self) -> Any:
         c = getattr(self._loop(), "config", None)
         if c is None:
-            ctx = getattr(self, "_system_context", None)
+            _ctx = getattr(self, "_system_context", None)
             ed = getattr(self, "_event_driven_system", None)
             if ed is not None:
                 c = getattr(ed, "_config", None)
