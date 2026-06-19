@@ -24,7 +24,7 @@ class StatusMixin(HelpersMixin):
         return self._sim_status(uptime)
 
     def _live_status(self, uptime: float) -> dict:
-        loop = self._trading_loop
+        loop = None
         balance = self._get_balance()
         mt5_balance, deriv_balance = self._get_platform_balances()
 

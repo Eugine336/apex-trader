@@ -15,7 +15,7 @@ class RiskMixin(HelpersMixin):
             ed = getattr(self, "_event_driven_system", None)
             if ed is not None:
                 return self._ed_risk_status()
-            loop = self._trading_loop
+            loop = None
             ed = getattr(self, "_event_driven_system", None)
             ctx = getattr(ed, "_ctx", None) if ed is not None else None
 

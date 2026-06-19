@@ -96,24 +96,12 @@ class HealthMixin:
         if ed is not None:
             return self._ed_health()
 
-        loop = getattr(self, "_trading_loop", None)
-        if loop is None:
-            return {
-                "status": "ok",
-                "ops_enabled": False,
-                "attached": False,
-                "running": False,
-            }
-        getter = getattr(loop, "get_ops_health", None)
-        if not callable(getter):
-            return {"status": "ok", "ops_enabled": False, "attached": True}
-        try:
-            snap = getter()
-            snap.setdefault("attached", True)
-            return snap
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[state_health] health read failed: {}", exc)
-            return {"status": "error", "ops_enabled": True, "attached": True, "error": str(exc)}
+        return {
+            "status": "ok",
+            "ops_enabled": False,
+            "attached": False,
+            "running": False,
+        }
 
     def _ed_health(self) -> dict:
         """Health snapshot for event-driven mode."""

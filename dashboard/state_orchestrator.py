@@ -100,7 +100,8 @@ class OrchestratorMixin:
         return result
 
     def _orchestrator_config(self) -> dict:
-        cfg = getattr(getattr(self._trading_loop, "config", None), "orchestrator", None) if self.is_live else None
+        ed = getattr(self, "_event_driven_system", None)
+        cfg = getattr(getattr(ed, "_config", None), "orchestrator", None) if ed is not None else None
         return {
             "enabled": bool(getattr(cfg, "enabled", False)),
             "apply_sizing": bool(getattr(cfg, "apply_sizing", False)),
@@ -169,11 +170,11 @@ class OrchestratorMixin:
         return acc
 
     def _outcome_feedback_obj(self):
-        """The live loop's OutcomeFeedback, or a read-only journal view."""
-        if self.is_live:
-            fb = getattr(self._trading_loop, "_outcome_feedback", None)
-            if fb is not None:
-                return fb
+        """The system's OutcomeFeedback, or a read-only journal view."""
+        ctx = getattr(self, "_system_context", None)
+        fb = getattr(ctx, "outcome_feedback", None) if ctx is not None else None
+        if fb is not None:
+            return fb
         # Idle / not attached — read the default journal so the panel still works.
         try:
             from brain.outcome_feedback import OutcomeFeedback

@@ -98,9 +98,10 @@ class PositionHealthMixin:
         return result
 
     def _position_health_config(self) -> dict:
+        ed = getattr(self, "_event_driven_system", None)
         cfg = (
-            getattr(getattr(self._trading_loop, "config", None), "orchestrator", None)
-            if self.is_live else None
+            getattr(getattr(ed, "_config", None), "orchestrator", None)
+            if ed is not None else None
         )
         thresholds = getattr(cfg, "health_thresholds", None)
         return {

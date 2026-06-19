@@ -28,10 +28,7 @@ class ModuleGovernorMixin:
             gov = getattr(ctx, "module_governor", None)
             if gov is not None:
                 return gov
-        loop = getattr(self, "_trading_loop", None)
-        if loop is None:
-            return None
-        return getattr(loop, "_module_governor", None)
+        return None
 
     def get_module_governor(self, limit: int = 100) -> dict:
         """Per-module governance status + recent transitions for the dashboard."""

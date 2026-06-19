@@ -19,9 +19,10 @@ def main():
     )
     print("  ✅ 18 modules loaded")
 
-    print("Phase 2 — Scanner…")
-    from scanner import PairScanner, PairRanker, ScanScheduler
-    print("  ✅ 3 modules loaded")
+    print("Phase 2 — Scanner (event-driven)…")
+    from scanner import CandleCloseHandler
+    from brain.decision_core import analyze_window
+    print("  ✅ event-driven scanner loaded")
 
     print("Phase 3 — Trigger…")
     from trigger import EntryEngine, EntryPatternDetector, EntryValidator
@@ -40,7 +41,8 @@ def main():
     print("  ✅ 6 modules loaded")
 
     print("Phase 7 — Platforms…")
-    from platforms import PlatformManager, TradingLoop
+    from platforms import PlatformManager
+    from event_driven_bootstrap import EventDrivenSystem
     print("  ✅ 2 modules loaded")
 
     print("Phase 8 — Dashboard…")
@@ -48,12 +50,13 @@ def main():
     from dashboard.state import LiveState
     print("  ✅ 2 modules loaded")
 
-    print("\nVerifying EntryEngine is reachable from TradingLoop…")
+    print("\nVerifying EntryEngine is reachable from the event-driven SystemContext…")
     from config import AppConfig
-    loop = TradingLoop(AppConfig())
-    assert hasattr(loop, "entry_engine"), "TradingLoop missing entry_engine"
-    assert isinstance(loop.entry_engine, EntryEngine), "entry_engine is not EntryEngine"
-    print("  ✅ EntryEngine wired into TradingLoop")
+    from core.system_context import SystemContext
+    ctx = SystemContext.create(AppConfig(), None)
+    assert isinstance(ctx.entry_engine, EntryEngine), "entry_engine is not EntryEngine"
+    assert EventDrivenSystem is not None, "EventDrivenSystem unavailable"
+    print("  ✅ EntryEngine wired into the event-driven SystemContext")
 
     print("\n" + "=" * 50)
     print("  ALL SYSTEMS NOMINAL")

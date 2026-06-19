@@ -59,30 +59,19 @@ class BrainMixin:
                         return results
                     except Exception:
                         pass
-        if not self.is_live:
-            return []
-        scanner = getattr(self._trading_loop, "scanner", None)
-        report = getattr(scanner, "last_report", None) if scanner else None
-        if report is None:
-            return []
-        results = getattr(report, "results", None)
-        if results is None and isinstance(report, list):
-            results = report
-        return list(results or [])
+        return []
 
     def _horizon_modules(self) -> tuple[tuple[str, ...], tuple[str, ...]]:
         """Scalp / swing module classification (config override or defaults)."""
-        rc = None
-        if self.is_live:
-            rc = getattr(getattr(self._trading_loop, "config", None), "opportunity_ranker", None)
+        ed = getattr(self, "_event_driven_system", None)
+        rc = getattr(getattr(ed, "_config", None), "opportunity_ranker", None) if ed is not None else None
         scalp = tuple(getattr(rc, "scalp_modules", None) or DEFAULT_SCALP_MODULES)
         swing = tuple(getattr(rc, "swing_modules", None) or DEFAULT_SWING_MODULES)
         return scalp, swing
 
     def _ranker_execute(self) -> bool:
-        if not self.is_live:
-            return False
-        rc = getattr(getattr(self._trading_loop, "config", None), "opportunity_ranker", None)
+        ed = getattr(self, "_event_driven_system", None)
+        rc = getattr(getattr(ed, "_config", None), "opportunity_ranker", None) if ed is not None else None
         return bool(getattr(rc, "execute", False))
 
     # ── Module votes ────────────────────────────────────────────────────────

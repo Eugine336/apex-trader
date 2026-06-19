@@ -91,7 +91,6 @@ def base_factor_set() -> dict[str, int]:
 class HelpersMixin:
     """Methods shared across all dashboard state sub-modules."""
 
-    _trading_loop: Any
     _platform_manager: Any
     _journal_cache: list
     _journal_cache_ts: float
@@ -105,7 +104,7 @@ class HelpersMixin:
         if now - self._journal_cache_ts < self._journal_cache_ttl:
             return self._journal_cache
 
-        journal = getattr(self._trading_loop, "journal", None) if self.is_live else None
+        journal = None
         if journal is None:
             return self._journal_cache
 

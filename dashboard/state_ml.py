@@ -12,8 +12,6 @@ class MLInsightsMixin:
         ml = None
         if ctx is not None and getattr(ctx, "ml_adapter", None) is not None:
             ml = ctx.ml_adapter
-        elif self.is_live:
-            ml = getattr(self._trading_loop, "ml", None)
         if ml is None:
             return empty
         try:

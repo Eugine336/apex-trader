@@ -32,7 +32,7 @@ class OperationsMixin:
 
     # ── Component handles (all optional, all read-only) ──────────────────────
     def _ops_loop(self) -> Any:
-        return self._trading_loop if self.is_live else None
+        return None
 
     def _ops_risk_manager(self) -> Any:
         ctx = getattr(self, "_system_context", None)

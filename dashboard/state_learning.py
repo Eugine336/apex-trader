@@ -44,7 +44,7 @@ class LearningMixin:
 
     # ── Component handles (all optional, all read-only) ──────────────────────
     def _loop(self) -> Any:
-        return self._trading_loop if self.is_live else None
+        return None
 
     def _config(self) -> Any:
         c = getattr(self._loop(), "config", None)
