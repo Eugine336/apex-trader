@@ -13,7 +13,6 @@ import bootstrap.datadog_init  # noqa: F401
 import atexit
 import os
 import sys
-import threading
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -31,13 +30,7 @@ from config import AppConfig, get_instruments_by_category, INSTRUMENT_REGISTRY
 
 
 def _apply_log_level(level: str) -> None:
-    """Apply the configured console log level.
-
-    The console (stderr) sink is re-added at ``config.log_level`` while the
-    event-store sink is preserved at DEBUG so the dashboard/persistence keep
-    full fidelity regardless of the console verbosity. The stdlib intercept is
-    independent of the loguru sinks and does not need re-installing.
-    """
+    """Apply the configured console log level."""
     lvl = str(level or "INFO").upper()
     try:
         logger.remove()
@@ -47,30 +40,9 @@ def _apply_log_level(level: str) -> None:
     logger.add(event_store_sink, level="DEBUG")
 
 
-# DEPRECATED: Remove after event-driven validation (Phase 9)
-def _start_trading_loop(trading_loop) -> None:
-    """Run the TradingLoop cycle in a background thread.
-
-    Uses _run_supervised_cycle() so a single bad cycle cannot kill
-    the thread — the supervisor absorbs per-cycle exceptions and only
-    halts after max_consecutive_cycle_failures back-to-back failures.
-    """
-    import time as _time
-
-    try:
-        while trading_loop.running:
-            trading_loop._run_supervised_cycle()
-            _time.sleep(trading_loop._get_sleep_interval())
-    except KeyboardInterrupt:
-        trading_loop.running = False
-    except Exception as exc:
-        logger.error("Trading loop thread unexpected escape: {}", exc)
-        trading_loop.running = False
-
-
 def main() -> None:
     dashboard_mode   = "--dashboard"   in sys.argv
-    force_rediscover = "--rediscover"  in sys.argv  # force broker symbol re-discovery and overwrite JSONs
+    force_rediscover = "--rediscover"  in sys.argv
 
     logger.info("=" * 60)
     logger.info("  APEX TRADER — Institutional-Grade Trading System")
@@ -79,8 +51,6 @@ def main() -> None:
     config = AppConfig()
     _apply_log_level(config.log_level)
 
-    # Ops: optional structured JSON logging + trade/risk audit streams. Additive
-    # — composes with the console + event-store sinks above. Never fatal.
     try:
         from ops.logging_config import configure_structured_logging
         configure_structured_logging(getattr(config, "ops", None))
@@ -93,7 +63,6 @@ def main() -> None:
         logger.info(f"  {cat.upper()}: {len(instruments)} instruments enabled")
     logger.info(f"Total enabled instruments: {config.total_instruments}")
 
-    # ── Auto-discover broker symbols — runs silently if config is fresh ──
     logger.info("Running broker symbol auto-discovery ...")
     try:
         from brain.broker_autodiscovery import run_autodiscovery
@@ -124,35 +93,21 @@ def main() -> None:
     logger.info("Phase 5 — Risk loaded (risk engine, position sizer, P&L tracker, spread, reporter)")
 
     from adaptive import AdaptiveOptimizer, TradeAnalyzer, ScoreOptimizer, RegimeLearner, PairLearner, SessionLearner
-    MLAdapter = AdaptiveOptimizer
     logger.info("Phase 6 — Adaptive Optimizer loaded (analyzer, optimizers, learners)")
 
-    from platforms import PlatformManager, TradingLoop
-    logger.info("Phase 7 — Platforms loaded (MT5 + Deriv connectors, trading loop)")
+    from platforms import PlatformManager
+    logger.info("Phase 7 — Platforms loaded (MT5 + Deriv connectors)")
 
     logger.info("Phase 8 — Dashboard available (--dashboard to launch)")
 
-    # ── Event-driven kill switch ────────────────────────────────────
-    from event_driven_bootstrap import is_event_driven_enabled
-    use_event_driven = is_event_driven_enabled()
-    if use_event_driven:
-        logger.info("EVENT-DRIVEN MODE ENABLED (USE_EVENT_DRIVEN=true)")
-
-    if use_event_driven:
-        from core.system_context import SystemContext
-        platform_manager = PlatformManager(config)
-        sys_ctx = SystemContext.create(config, platform_manager)
-        trading_loop = None
-    else:
-        sys_ctx = None
-        trading_loop = TradingLoop(config)
-        platform_manager = trading_loop.platforms
+    # ── Build SystemContext (all subsystems) ─────────────────────────
+    from core.system_context import SystemContext
+    platform_manager = PlatformManager(config)
+    sys_ctx = SystemContext.create(config, platform_manager)
 
     logger.info("Connecting to platforms…")
     connection_status = platform_manager.connect_all()
 
-    # Bootstrap real spreads from live brokers — patches INSTRUMENT_REGISTRY
-    # so every symbol uses actual observed spreads, not hardcoded guesses.
     try:
         from risk.spread_bootstrap import bootstrap_spreads
         bootstrap_spreads(
@@ -184,7 +139,7 @@ def main() -> None:
         from platforms.startup_check import StartupCheck
 
         state = LiveState()
-        state.attach(trading_loop, platform_manager, connection_status,
+        state.attach(None, platform_manager, connection_status,
                      system_context=sys_ctx)
 
         ed_system = None
@@ -194,21 +149,14 @@ def main() -> None:
                 lvl = "INFO" if r.passed else "ERROR"
                 logger.log(lvl, "  [{}] {} — {} ({:.0f}ms)", "✅" if r.passed else "❌", r.name, r.message, r.duration_ms)
             if not passed:
-                logger.error("Startup self-test FAILED — refusing to start dashboard trading to protect capital")
+                logger.error("Startup self-test FAILED — refusing to start trading to protect capital")
                 return
 
-            if use_event_driven:
-                from event_driven_bootstrap import EventDrivenSystem
-                ed_system = EventDrivenSystem(config, platform_manager, ctx=sys_ctx)
-                ed_system.start()
-                state.set_event_driven_system(ed_system)
-                logger.info("Event-driven system started in dashboard mode")
-            else:
-                trading_loop.running = True
-                trading_loop._perform_startup_recovery()
-                t = threading.Thread(target=_start_trading_loop, args=(trading_loop,), daemon=True)
-                t.start()
-                logger.info("Trading loop started in background thread")
+            from event_driven_bootstrap import EventDrivenSystem
+            ed_system = EventDrivenSystem(config, platform_manager, ctx=sys_ctx)
+            ed_system.start()
+            state.set_event_driven_system(ed_system)
+            logger.info("Event-driven system started in dashboard mode")
         else:
             logger.warning("No platforms connected — dashboard will show empty data")
 
@@ -228,20 +176,15 @@ def main() -> None:
         try:
             uvicorn.run(app, host=bind_host, port=bind_port, log_level="info")
         finally:
-            if use_event_driven:
+            if ed_system is not None:
                 ed_system.stop()
-            else:
-                trading_loop.running = False
     else:
         if not platform_manager.any_connected:
             logger.error("No platforms connected — cannot trade. Set DERIV_CLIENT_ID and DERIV_ACCESS_TOKEN in .env")
             return
-        if use_event_driven:
-            from event_driven_bootstrap import EventDrivenSystem
-            ed_system = EventDrivenSystem(config, platform_manager, ctx=sys_ctx)
-            ed_system.run_forever()
-        else:
-            trading_loop.run()
+        from event_driven_bootstrap import EventDrivenSystem
+        ed_system = EventDrivenSystem(config, platform_manager, ctx=sys_ctx)
+        ed_system.run_forever()
 
 
 if __name__ == "__main__":

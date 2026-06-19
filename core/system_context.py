@@ -119,6 +119,21 @@ class SystemContext:
     process_watchdog: Optional[Any] = None
     daily_maintenance: Optional[Any] = None
 
+    # ── Evolution engines (Phase 6) ──────────────────────────────────
+    capital_allocator: Optional[Any] = None
+    execution_profiles: Optional[Any] = None
+    regime_detector: Optional[Any] = None
+    behavior_discovery: Optional[Any] = None
+    signal_discovery: Optional[Any] = None
+    virtual_module_registry: Optional[Any] = None
+    virtual_signal_manager: Optional[Any] = None
+
+    # ── Planning + shadow (Phase 6) ──────────────────────────────────
+    trade_planner: Optional[Any] = None
+    outcome_logger: Optional[Any] = None
+    calibrator: Optional[Any] = None
+    re_entry_manager: Optional[Any] = None
+
     # ── Account key cache (symbol → broker:account_id) ───────────────
     _account_key_cache: dict[str, str] = field(default_factory=dict)
 
@@ -530,6 +545,120 @@ class SystemContext:
             ctx.trade_journal is not None,
             ctx.process_watchdog is not None,
             ctx.daily_maintenance is not None,
+        )
+
+        # ── Evolution Engines (Phase 6) ──────────────────────────────
+
+        # ── CapitalAllocator (L5.5a) ───────────────────────────────
+        try:
+            from adaptive.capital_allocator import CapitalAllocator as _CapAlloc
+            ctx.capital_allocator = _CapAlloc()
+        except Exception as exc:
+            logger.warning("[SystemContext] CapitalAllocator init failed: {}", exc)
+
+        # ── ExecutionProfileManager (L5.5b) ────────────────────────
+        try:
+            from adaptive.execution_profiles import ExecutionProfileManager as _ExecProf
+            ctx.execution_profiles = _ExecProf()
+        except Exception as exc:
+            logger.warning("[SystemContext] ExecutionProfileManager init failed: {}", exc)
+
+        # ── RegimeDetector (L7 adaptive) ───────────────────────────
+        try:
+            from adaptive.regime_detector import RegimeDetector as _RegimeDetL7
+            rd_cfg = getattr(config, "regime_detector", None)
+            ctx.regime_detector = _RegimeDetL7(
+                lookback_bars=getattr(rd_cfg, "lookback_bars", 50) if rd_cfg else 50,
+                hysteresis_bars=getattr(rd_cfg, "hysteresis_bars", 5) if rd_cfg else 5,
+            )
+        except Exception as exc:
+            logger.warning("[SystemContext] RegimeDetector init failed: {}", exc)
+
+        # ── BehaviorDiscoveryEngine (L6) ───────────────────────────
+        try:
+            from adaptive.behavior_discovery import BehaviorDiscoveryEngine as _BehavDisc
+            ctx.behavior_discovery = _BehavDisc()
+        except Exception as exc:
+            logger.warning("[SystemContext] BehaviorDiscoveryEngine init failed: {}", exc)
+
+        # ── SignalDiscoveryEngine (L5c) ────────────────────────────
+        try:
+            from adaptive.signal_discovery import SignalDiscoveryEngine as _SigDisc
+            if ctx.counterfactual_engine is not None:
+                ctx.signal_discovery = _SigDisc(ctx.counterfactual_engine)
+        except Exception as exc:
+            logger.warning("[SystemContext] SignalDiscoveryEngine init failed: {}", exc)
+
+        # ── VirtualModuleRegistry (L5c) ────────────────────────────
+        try:
+            from adaptive.virtual_modules import VirtualModuleRegistry as _VMReg
+            virt_cfg = getattr(config, "virtual", None)
+            ctx.virtual_module_registry = _VMReg(
+                enabled=getattr(virt_cfg, "kill_switch", True) if virt_cfg else False,
+            )
+        except Exception as exc:
+            logger.warning("[SystemContext] VirtualModuleRegistry init failed: {}", exc)
+
+        # ── VirtualSignalManager (L5c lifecycle) ───────────────────
+        try:
+            from adaptive.virtual_promotion import VirtualSignalManager as _VSM
+            if ctx.virtual_module_registry is not None:
+                ctx.virtual_signal_manager = _VSM(
+                    registry=ctx.virtual_module_registry,
+                    config=config,
+                    signal_discovery=ctx.signal_discovery,
+                    emitter_feedback=ctx.emitter_feedback,
+                    counterfactual=ctx.counterfactual_engine,
+                )
+        except Exception as exc:
+            logger.warning("[SystemContext] VirtualSignalManager init failed: {}", exc)
+
+        # ── Planning + Shadow (Phase 6) ──────────────────────────────
+
+        # ── TradePlanner ───────────────────────────────────────────
+        try:
+            from planning.trade_planner import TradePlanner as _TradePlanner
+            ctx.trade_planner = _TradePlanner(governor=ctx.portfolio_governor)
+        except Exception as exc:
+            logger.warning("[SystemContext] TradePlanner init failed: {}", exc)
+
+        # ── OutcomeLogger ──────────────────────────────────────────
+        try:
+            from planning.outcome_logger import OutcomeLogger as _OutcomeLogger
+            ctx.outcome_logger = _OutcomeLogger()
+        except Exception as exc:
+            logger.warning("[SystemContext] OutcomeLogger init failed: {}", exc)
+
+        # ── Calibrator ─────────────────────────────────────────────
+        try:
+            from planning.calibrator import Calibrator as _Calibrator
+            ctx.calibrator = _Calibrator()
+        except Exception as exc:
+            logger.warning("[SystemContext] Calibrator init failed: {}", exc)
+
+        # ── ReEntryManager ─────────────────────────────────────────
+        try:
+            from management.re_entry import ReEntryManager as _ReEntry
+            ctx.re_entry_manager = _ReEntry()
+        except Exception as exc:
+            logger.warning("[SystemContext] ReEntryManager init failed: {}", exc)
+
+        logger.info(
+            "[SystemContext] evolution+planning initialized — "
+            "cap_alloc={} exec_prof={} regime={} behavior={} "
+            "sig_disc={} virt_reg={} virt_mgr={} "
+            "planner={} outcome_log={} calibrator={} re_entry={}",
+            ctx.capital_allocator is not None,
+            ctx.execution_profiles is not None,
+            ctx.regime_detector is not None,
+            ctx.behavior_discovery is not None,
+            ctx.signal_discovery is not None,
+            ctx.virtual_module_registry is not None,
+            ctx.virtual_signal_manager is not None,
+            ctx.trade_planner is not None,
+            ctx.outcome_logger is not None,
+            ctx.calibrator is not None,
+            ctx.re_entry_manager is not None,
         )
 
         return ctx
