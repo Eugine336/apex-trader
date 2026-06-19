@@ -28,16 +28,12 @@ __all__ = [
     "MT5Connector",
     "DerivConnector",
     "PlatformManager",
-    "TradingLoop",
-    "ManagedPosition",
 ]
 
 _LAZY_IMPORTS: dict[str, tuple[str, str]] = {
     "MT5Connector": ("platforms.mt5.mt5_connector", "MT5Connector"),
     "DerivConnector": ("platforms.deriv.deriv_connector", "DerivConnector"),
     "PlatformManager": ("platforms.platform_manager", "PlatformManager"),
-    "TradingLoop": ("platforms.main_loop", "TradingLoop"),
-    "ManagedPosition": ("platforms.main_loop", "ManagedPosition"),
 }
 
 
