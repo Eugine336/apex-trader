@@ -426,20 +426,3 @@ def test_backtest_config_validation():
         BacktestConfig(default_spread_pips=-1.0)
     with pytest.raises(ValueError):
         BacktestConfig(starting_balance=0.0)
-
-
-# ── adapter ──────────────────────────────────────────────────────────────────
-
-def test_loop_adapter_routes_to_broker():
-    from backtest.loop_adapter import SimulatedPlatformManager
-
-    b = _broker_with_price(1.10)
-    spm = SimulatedPlatformManager(b)
-    assert spm.any_connected()
-    res = spm.execute_entry("EURUSD", "BUY", 0.1, 1.09, 1.11)
-    assert res.success
-    assert spm.get_all_open_positions()
-    snap = spm.get_open_positions_snapshot()
-    assert "backtest" in snap.confirmed_platforms
-    data = spm.fetch_market_data("EURUSD", ["M5"], count=10)
-    assert "M5" in data

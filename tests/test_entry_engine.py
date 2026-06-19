@@ -8,15 +8,15 @@ import pytest
 from datetime import datetime, timedelta, timezone
 
 from brain.drawdown_guard import DrawdownMode
-from scanner.pair_scanner import PairScanResult
+from types import SimpleNamespace
 from trigger.entry_engine import EntryEngine, EntrySignal, EntryRejection
 from trigger.entry_patterns import EntryPatternDetector
 from trigger.entry_validator import EntryValidator, ValidationResult
 
 
 def _make_scan_result(pair="EURUSD", direction="LONG", score=85):
-    """Minimal real PairScanResult for tests that need to supply scan_result."""
-    return PairScanResult(
+    """Minimal real scan result for tests that need to supply scan_result."""
+    return SimpleNamespace(
         pair=pair,
         direction=direction,
         score=score,

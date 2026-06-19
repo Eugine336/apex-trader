@@ -5,12 +5,11 @@ from types import SimpleNamespace
 from unittest.mock import patch
 from contextlib import contextmanager, ExitStack
 
-from scanner.pair_scanner import PairScanResult
 from trigger.entry_engine import EntryEngine, EntrySignal
 
 
-def _make_scan_result(score: int = 90, direction: str = "LONG") -> PairScanResult:
-    return PairScanResult(
+def _make_scan_result(score: int = 90, direction: str = "LONG") -> SimpleNamespace:
+    return SimpleNamespace(
         pair="EURUSD",
         direction=direction,
         score=score,
