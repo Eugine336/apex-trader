@@ -101,7 +101,7 @@ class WorkerConfig:
 
     # ── Portfolio state ──────────────────────────────────────────────
     portfolio_heat_state: str = "NORMAL"
-    max_open_trades: int = 8
+    max_open_trades: int = 5
 
 
 @dataclass(frozen=True)

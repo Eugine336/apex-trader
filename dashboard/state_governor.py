@@ -16,6 +16,17 @@ class GovernorMixin:
     """get_governor() — portfolio-level risk state for the dashboard."""
 
     def get_governor(self) -> dict:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None and getattr(ctx, "portfolio_governor", None) is not None:
+            try:
+                gov = ctx.portfolio_governor
+                ed_sys = getattr(self, "_event_driven_system", None)
+                pm = getattr(ed_sys, "_pm", None) if ed_sys else None
+                positions = list(pm.get_all_open_positions()) if pm else []
+                return gov.get_state(positions)
+            except Exception as exc:
+                logger.debug("[dashboard] governor ED state read failed: {}", exc)
+
         if self.is_live:
             loop = self._trading_loop
             gov = getattr(loop, "_governor", None)
