@@ -97,7 +97,7 @@ class PerformanceMixin(HelpersMixin):
         if not self.is_live:
             return empty
 
-        loop = self._trading_loop
+        loop = None
         ed = getattr(self, "_event_driven_system", None)
         out = {k: (dict(v) if isinstance(v, dict) else v) for k, v in empty.items()}
 
@@ -195,7 +195,7 @@ class PerformanceMixin(HelpersMixin):
                 "pnl_history": [],
             }
 
-        loop = self._trading_loop
+        loop = None
         balance = self._get_balance()
 
         ed = getattr(self, "_event_driven_system", None)

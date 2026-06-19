@@ -27,17 +27,6 @@ class GovernorMixin:
             except Exception as exc:
                 logger.debug("[dashboard] governor ED state read failed: {}", exc)
 
-        if self.is_live:
-            loop = self._trading_loop
-            gov = getattr(loop, "_governor", None)
-            if gov is not None:
-                try:
-                    snap = getattr(loop, "get_positions_snapshot", None)
-                    positions = list(snap().values()) if snap else list(getattr(loop, "managed_positions", {}).values())
-                    return gov.get_state(positions)
-                except Exception as exc:
-                    logger.debug("[dashboard] governor state read failed: {}", exc)
-
         return {
             "enabled": False,
             "trading_halted": False,

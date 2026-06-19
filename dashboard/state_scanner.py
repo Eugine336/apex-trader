@@ -28,8 +28,7 @@ class ScannerMixin(HelpersMixin):
         if ed is not None:
             return self._ed_scanner_results()
 
-        scanner = getattr(self._trading_loop, "scanner", None)
-        report = getattr(scanner, "last_report", None) if scanner else None
+        report = None
 
         results_raw: list[Any] = []
         ready_count = 0
@@ -85,11 +84,7 @@ class ScannerMixin(HelpersMixin):
         instruments.sort(key=lambda i: i["score"], reverse=True)
 
         if not instruments:
-            enabled_symbols: list[str] = []
-            try:
-                enabled_symbols = list(getattr(self._trading_loop.config, "enabled_pairs", []))
-            except Exception:
-                enabled_symbols = list(INSTRUMENT_REGISTRY.keys())
+            enabled_symbols = list(INSTRUMENT_REGISTRY.keys())
 
             for symbol in enabled_symbols:
                 try:

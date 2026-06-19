@@ -129,7 +129,7 @@ class TradesMixin(HelpersMixin):
 
     def _live_open_trades(self) -> dict:
         trades: list[dict[str, Any]] = []
-        loop = self._trading_loop
+        loop = None
         positions = loop.get_positions_snapshot() if hasattr(loop, "get_positions_snapshot") else getattr(loop, "managed_positions", {})
 
         for oid, pos in positions.items():
