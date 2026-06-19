@@ -152,12 +152,14 @@ class CandleCloseHandler:
         max_workers: int = 4,
         candle_count: int = 200,
         entry_config: Optional[EntryConfig] = None,
+        edge_weight: Optional[Callable[[str, str], float]] = None,
     ) -> None:
         self._bus = event_bus
         self._store = world_model_store
         self._fetcher = candle_fetcher
         self._candle_count = candle_count
         self._entry_config = entry_config or EntryConfig()
+        self._edge_weight = edge_weight
         self._pool = ThreadPoolExecutor(
             max_workers=max(1, max_workers),
             thread_name_prefix="cc-handler",
@@ -341,8 +343,9 @@ class CandleCloseHandler:
 
         # Synthesize the actionable entry layer so the WorldModel is the
         # single source of truth for the entry plane — consumers read
-        # ``wm.entry_zones`` instead of re-deriving zones.
-        zones = extract_entry_zones(wm, self._entry_config)
+        # ``wm.entry_zones`` instead of re-deriving zones.  ``edge_weight``
+        # makes the conviction data-driven (learned per-market edge).
+        zones = extract_entry_zones(wm, self._entry_config, self._edge_weight)
         if zones:
             wm = replace(wm, entry_zones=tuple(zones))
 

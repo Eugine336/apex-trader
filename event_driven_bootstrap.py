@@ -42,6 +42,7 @@ from entry import EntryOrchestrator, EntryConfig
 from platform_context import build_context_for_symbol
 from platforms.platform_manager import PlatformManager
 from risk.position_sizer import PositionSizer
+from adaptive.zone_edge_tracker import ZoneEdgeTracker
 
 
 def _struct_trend_conf(struct_by_tf: dict, tf: str) -> tuple[str, float]:
@@ -955,11 +956,15 @@ class EventDrivenSystem:
         )
         self._wm_store = WorldModelStore()
 
+        # ── Adaptive analysis: learned per-market conviction edge ─────
+        self._zone_edge = ZoneEdgeTracker()
+
         # ── Analysis plane ───────────────────────────────────────────
         self._candle_handler = CandleCloseHandler(
             event_bus=self._event_bus,
             world_model_store=self._wm_store,
             candle_fetcher=self._fetch_candles,
+            edge_weight=self._zone_edge.weight,
         )
 
         # ── Execution plane ──────────────────────────────────────────
@@ -1518,6 +1523,7 @@ class EventDrivenSystem:
                 "events_emitted": self._candle_detector.events_emitted,
                 "tracked_pairs": self._candle_detector.tracked_pairs,
             },
+            "zone_edge": self._zone_edge.snapshot(),
         }
 
     def get_tick_profile(self) -> dict[str, Any]:
@@ -2878,6 +2884,17 @@ class EventDrivenSystem:
 
         Mirrors TradingLoop._record_closed_trade — risk first, then learning.
         """
+        # Feed the realized outcome into the learned conviction edge so the
+        # WorldModel's zone scoring becomes data-driven.  Independent of the
+        # ctx subsystems and best-effort — never affects the close path.
+        try:
+            won = (pnl_dollars or 0.0) > 0.0 or (
+                (pnl_dollars or 0.0) == 0.0 and (pnl_pips or 0.0) > 0.0
+            )
+            self._zone_edge.record(symbol, direction, won)
+        except Exception as exc:
+            logger.debug("[zone-edge] outcome record failed: {}", exc)
+
         ctx = self._ctx
         if ctx is None:
             return
