@@ -117,6 +117,7 @@ class SystemContext:
     trade_journal: Optional[Any] = None
     process_watchdog: Optional[Any] = None
     daily_maintenance: Optional[Any] = None
+    health_watchdog: Optional[Any] = None
 
     # ── Evolution engines (Phase 6) ──────────────────────────────────
     capital_allocator: Optional[Any] = None
@@ -542,6 +543,20 @@ class SystemContext:
             ctx.daily_maintenance = _DailyMaint()
         except Exception as exc:
             logger.warning("[SystemContext] DailyMaintenance init failed: {}", exc)
+
+        # ── HealthWatchdog (carries RL subsystem health) ────────────
+        try:
+            from platforms.health_watchdog import HealthWatchdog as _HealthWatchdog
+            ctx.health_watchdog = _HealthWatchdog()
+            rl = getattr(ctx, "rl_bridge", None)
+            if rl is not None:
+                ctx.health_watchdog.record_rl_status(
+                    enabled=bool(getattr(rl, "enabled", False)),
+                    stage=int(getattr(getattr(rl, "authority", None), "stage", 1) or 1),
+                    checkpoint_loaded=bool(getattr(rl, "checkpoint_exists", False)),
+                )
+        except Exception as exc:
+            logger.warning("[SystemContext] HealthWatchdog init failed: {}", exc)
 
         logger.info(
             "[SystemContext] ops layer initialized — journal={} watchdog={} maintenance={}",

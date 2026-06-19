@@ -142,6 +142,15 @@ class HealthMixin:
             except Exception:
                 pass
 
+        if ctx is not None and getattr(ctx, "health_watchdog", None) is not None:
+            try:
+                hw_report = ctx.health_watchdog.check_health()
+                for w in getattr(hw_report, "warnings", []):
+                    if "RL" in w:
+                        warnings.append(w)
+            except Exception:
+                pass
+
         drawdown = {"source": "none"}
         if ctx is not None and ctx.drawdown_guard is not None:
             try:

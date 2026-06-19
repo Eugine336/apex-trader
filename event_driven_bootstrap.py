@@ -1922,6 +1922,64 @@ class EventDrivenSystem:
         except Exception:
             return 0.0001
 
+    def _rl_augment(self, symbol: str, direction: str, base_score: float):
+        """Run RL ``augment_score`` for an entry candidate.
+
+        Builds the multi-timeframe observation from M5/M15/H1/H4 frames and
+        feeds it to the active RL bridge. Returns the ``AugmentedScore`` or
+        ``None``. Only does work when the bridge is enabled, so the candle
+        fetches never run on a dormant (default) install.
+        """
+        ctx = self._ctx
+        rl = getattr(ctx, "rl_bridge", None) if ctx is not None else None
+        if rl is None or not getattr(rl, "enabled", False):
+            return None
+        try:
+            from rl.multi_tf_obs_builder import MultiTFObservationBuilder
+            from rl.contracts import build_symbol_vocab
+        except Exception:
+            return None
+        builders = getattr(self, "_rl_mtf_builders", None)
+        if builders is None:
+            builders = self._rl_mtf_builders = {}
+        universe = getattr(self, "_rl_symbol_universe", None)
+        if universe is None:
+            try:
+                universe = self._rl_symbol_universe = build_symbol_vocab()
+            except Exception:
+                universe = self._rl_symbol_universe = None
+        frames: dict[str, pd.DataFrame] = {}
+        for tf in ("M5", "M15", "H1", "H4"):
+            df = self._fetch_candles(symbol, tf, 80)
+            if df is None or len(df) == 0:
+                return None
+            frames[tf] = df
+        if symbol not in builders:
+            builders[symbol] = MultiTFObservationBuilder()
+        mtf = builders[symbol].build_from_frames(
+            frames=frames, instrument=symbol, universe=universe,
+        )
+        if mtf is None:
+            return None
+        obs, ctx_vec, sym_id = mtf
+        m5 = frames["M5"]
+        close_now = float(m5["close"].iloc[-1])
+        tr = (m5["high"] - m5["low"]).abs().tail(14)
+        atr_now = float(tr.mean()) if len(tr) > 0 else 0.0
+        d = str(direction).upper()
+        base_dir = 1 if d in ("BUY", "LONG") else (-1 if d in ("SELL", "SHORT") else 0)
+        return rl.augment_score(
+            pair=symbol,
+            base_score=float(base_score),
+            obs=obs,
+            close=close_now,
+            atr=atr_now,
+            pip_size=self._safe_pip_size(symbol),
+            context_vec=ctx_vec,
+            symbol_id=sym_id,
+            base_direction=base_dir,
+        )
+
     def _get_spread_pips(self, symbol: str) -> float:
         try:
             return self._pm.get_spread(symbol)
@@ -2276,6 +2334,42 @@ class EventDrivenSystem:
                             symbol, ccy, currency_counts[ccy] + 1, max_corr,
                         )
                         return
+
+            # ── Gate 5b: RL authority — veto + score augmentation ────
+            rl = getattr(ctx, "rl_bridge", None) if ctx is not None else None
+            if rl is not None and getattr(rl, "enabled", False):
+                try:
+                    aug = self._rl_augment(symbol, direction, conviction)
+                    if aug is not None:
+                        hw = getattr(ctx, "health_watchdog", None)
+                        if hw is not None:
+                            try:
+                                hw.record_rl_signal_success()
+                            except Exception:
+                                pass
+                        if aug.vetoed:
+                            logger.warning(
+                                "EVENT-DRIVEN ENTRY BLOCKED | {} — RL veto "
+                                "(conf={:.2f} stage={})",
+                                symbol, aug.rl_confidence, aug.authority_stage,
+                            )
+                            return
+                        if aug.rl_delta != 0.0:
+                            conviction = int(aug.final_score)
+                            logger.info(
+                                "EVENT-DRIVEN ENTRY | {} — RL Δ{:+.1f} → score={} "
+                                "(action={} conf={:.2f})",
+                                symbol, aug.rl_delta, conviction,
+                                aug.rl_action, aug.rl_confidence,
+                            )
+                except Exception as exc:
+                    hw = getattr(ctx, "health_watchdog", None) if ctx is not None else None
+                    if hw is not None:
+                        try:
+                            hw.record_rl_signal_failure()
+                        except Exception:
+                            pass
+                    logger.debug("[entry-risk] RL augmentation failed: {}", exc)
 
             # ── Gate 6: DecisionEngine — strategic conviction scoring ─
             de_size_mult = 1.0
