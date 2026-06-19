@@ -158,7 +158,16 @@ class PerformanceMixin(HelpersMixin):
 
         loop = self._trading_loop
         balance = self._get_balance()
-        dd = loop.drawdown.get_status(datetime.now(timezone.utc))
+
+        ed = getattr(self, "_event_driven_system", None)
+        ctx = getattr(ed, "_ctx", None) if ed is not None else None
+
+        dd = None
+        if loop is not None:
+            dd = loop.drawdown.get_status(datetime.now(timezone.utc))
+        elif ctx is not None and ctx.drawdown_guard is not None:
+            dd = ctx.drawdown_guard.get_status(datetime.now(timezone.utc))
+
         rows = self._build_history_rows(balance)
 
         wins = sum(1 for r in rows if r["outcome"] == "WIN")
