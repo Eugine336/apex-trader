@@ -229,7 +229,14 @@ class CandleCloseHandler:
 
             results = self._run_modules(symbol, tf, df)
             if results:
-                self._merge_and_publish(symbol, tf, results, event.close_time)
+                current_price = 0.0
+                try:
+                    current_price = float(df["close"].iloc[-1])
+                except Exception:
+                    current_price = 0.0
+                self._merge_and_publish(
+                    symbol, tf, results, event.close_time, current_price,
+                )
 
             with self._lock:
                 self._events_processed += 1
@@ -316,6 +323,7 @@ class CandleCloseHandler:
         tf: str,
         results: dict[str, Any],
         close_time: datetime,
+        current_price: float = 0.0,
     ) -> None:
         existing = self._store.get(symbol)
 
@@ -378,12 +386,122 @@ class CandleCloseHandler:
         if zones:
             wm = replace(wm, entry_zones=tuple(zones))
 
+        # Synthesize per-module directional votes + ranked opportunity
+        # candidates so the dashboard's module-votes and ranker panels read
+        # them straight off the WorldModel.  Best-effort and read-only — a
+        # failure here must never block the publish or the trading path.
+        try:
+            votes, candidates = self._build_consensus(symbol, wm, current_price)
+            if votes or candidates:
+                wm = replace(wm, votes=tuple(votes), candidates=tuple(candidates))
+        except Exception as exc:
+            logger.debug("[cc-handler] {} consensus build failed: {}", symbol, exc)
+
         self._store.publish(wm)
         self._bus.publish("world_model_update", symbol)
         logger.debug(
             "[cc-handler] published WorldModel for {} (tf={}, v={}, zones={})",
             symbol, tf, wm.version, len(wm.entry_zones),
         )
+
+    def _build_consensus(
+        self, symbol: str, wm: WorldModel, current_price: float,
+    ) -> tuple[list, list]:
+        """Derive per-module directional votes + ranked opportunities.
+
+        Reuses the same vote extractors and opportunity ranker the legacy
+        scanner used, but sourced from the WorldModel's already-computed
+        analysis (structure, volume, wyckoff, order blocks, FVGs).  Modules
+        that need raw price series the ED plane does not retain (momentum,
+        VWAP, currency strength, liquidity sweep) are omitted.  Each extractor
+        is guarded so one failure cannot suppress the rest.
+        """
+        from brain.directional_consensus import (
+            Vote,
+            vote_from_structure,
+            vote_from_volume,
+            vote_from_wyckoff,
+            vote_from_order_blocks,
+            vote_from_fvg,
+            decide_opportunities,
+        )
+
+        votes: list = []
+
+        # Structure — map the bias direction to the BULLISH/BEARISH schema the
+        # extractor expects.
+        try:
+            b = wm.bias_dict()
+            sdir = {"LONG": "BULLISH", "SHORT": "BEARISH"}.get(
+                str(b.get("direction", "")).upper(), "RANGING",
+            )
+            r = vote_from_structure(
+                {"direction": sdir,
+                 "confidence": float(b.get("confidence", 0.0) or 0.0)}
+            )
+            votes.append(Vote("structure", r[0], r[1], 3.0))
+        except Exception:
+            pass
+
+        # Volume (prefer M5, fall back to H1).
+        try:
+            vbt = wm.volume_by_tf()
+            va = vbt.get("M5") or vbt.get("H1")
+            if va is not None:
+                r = vote_from_volume(va)
+                votes.append(Vote("volume", r[0], r[1], 1.0))
+        except Exception:
+            pass
+
+        # Wyckoff (H1).
+        try:
+            wy = wm.wyckoff_by_tf().get("H1")
+            if wy is not None:
+                r = vote_from_wyckoff(wy)
+                votes.append(Vote("wyckoff", r[0], r[1], 1.5))
+        except Exception:
+            pass
+
+        # Order blocks + FVGs both need the current price.
+        if current_price and current_price > 0:
+            try:
+                obs = wm.all_order_blocks()
+                if obs:
+                    r = vote_from_order_blocks(list(obs), current_price)
+                    votes.append(Vote("order_block", r[0], r[1], 1.0))
+            except Exception:
+                pass
+            try:
+                fvgs = wm.all_fvgs()
+                if fvgs:
+                    r = vote_from_fvg(
+                        list(fvgs), current_price, self._fvg_proximity(symbol),
+                    )
+                    votes.append(Vote("fvg", r[0], r[1], 1.0))
+            except Exception:
+                pass
+
+        candidates: list = []
+        try:
+            if votes:
+                candidates = list(decide_opportunities(votes))
+        except Exception:
+            pass
+
+        return votes, candidates
+
+    def _fvg_proximity(self, symbol: str) -> float:
+        """FVG proximity (price units), matching the detector the ED path uses."""
+        try:
+            pip_size = get_pip_size(symbol)
+        except KeyError:
+            pip_size = 0.0001
+        profile = get_profile(symbol)
+        return FVGDetector(
+            pip_size=pip_size,
+            proximity_pips=profile.fvg_proximity_pips,
+            min_size_pips=profile.fvg_min_size_pips,
+        ).proximity
 
     def _blend_concepts(
         self,

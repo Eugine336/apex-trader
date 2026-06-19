@@ -76,6 +76,15 @@ class WorldModel:
     concepts: tuple[tuple[str, tuple[Any, ...]], ...] = ()
     regime: tuple[tuple[str, str], ...] = ()
 
+    # ── Consensus layer (directional votes + ranked opportunities) ────
+    # Per-module directional votes and the opportunity-ranker's clustered
+    # trade ideas, synthesized at publish time from the analysis above.  They
+    # power the dashboard's module-votes + ranker panels and keep the
+    # WorldModel the single source of truth for them.  Stored as opaque
+    # objects (Vote / Opportunity) to avoid import coupling.
+    votes: tuple[Any, ...] = ()
+    candidates: tuple[Any, ...] = ()
+
     # ── Helpers ───────────────────────────────────────────────────────
 
     def fvgs_by_tf(self) -> dict[str, tuple[FairValueGap, ...]]:
@@ -113,6 +122,14 @@ class WorldModel:
     def regime_by_tf(self) -> dict[str, str]:
         """Classified volatility regime keyed by timeframe."""
         return dict(self.regime)
+
+    def votes_list(self) -> list[Any]:
+        """Per-module directional votes synthesized at publish time."""
+        return list(self.votes)
+
+    def candidates_list(self) -> list[Any]:
+        """Ranked opportunity candidates synthesized at publish time."""
+        return list(self.candidates)
 
     def all_fvgs(self) -> list[FairValueGap]:
         """Flat list of all FVGs across timeframes (highest TF first)."""
@@ -207,6 +224,8 @@ def build_world_model(
     entry_zones: Optional[list["EntryZone"]] = None,
     concepts: Optional[dict[str, list]] = None,
     regime: Optional[dict[str, str]] = None,
+    votes: Optional[list] = None,
+    candidates: Optional[list] = None,
 ) -> WorldModel:
     """Convenience builder: accepts mutable dicts, freezes them into tuples.
 
@@ -244,4 +263,6 @@ def build_world_model(
         entry_zones=tuple(entry_zones) if entry_zones else (),
         concepts=_freeze_lists(concepts),
         regime=_freeze_scalars(regime),
+        votes=tuple(votes) if votes else (),
+        candidates=tuple(candidates) if candidates else (),
     )
