@@ -111,6 +111,7 @@ class SystemContext:
     shadow_store: Optional[ShadowStore] = None
     tuner_agent: Optional[TunerAgent] = None
     ml_adapter: Optional[AdaptiveOptimizer] = None
+    rl_bridge: Optional[Any] = None
 
     # ── Ops / Dashboard / Persistence (Phase 5) ─────────────────────
     trade_journal: Optional[Any] = None
@@ -456,6 +457,18 @@ class SystemContext:
             ctx.shadow_store = _ShadowStore()
         except Exception as exc:
             logger.warning("[SystemContext] ShadowStore init failed: {}", exc)
+
+        # ── RL bridge ───────────────────────────────────────────────
+        # Dormant unless a trained checkpoint exists (the bridge self-disables
+        # otherwise), so this is default-neutral on a fresh install. Shares the
+        # Phase 4 ShadowStore so RL shadow contracts land in the same place.
+        try:
+            from rl.bridge import build_rl_bridge
+            ctx.rl_bridge = build_rl_bridge()
+            if ctx.rl_bridge is not None and ctx.shadow_store is not None:
+                ctx.rl_bridge._shadow_store = ctx.shadow_store
+        except Exception as exc:
+            logger.warning("[SystemContext] RLBridge init failed: {}", exc)
 
         # ── AdaptiveOptimizer (ML adapter) ──────────────────────────
         try:

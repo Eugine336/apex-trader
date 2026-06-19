@@ -372,3 +372,42 @@ class RLBridge:
             self._shadow_store.insert_contract(contract)
         except Exception as exc:
             logger.debug("[RLBridge] Phase 4 shadow contract persistence failed: %s", exc)
+
+
+# ── Event-driven wiring factory ─────────────────────────────────────────────────
+
+def resolve_rl_checkpoint(explicit: Optional[str] = None) -> str:
+    """Resolve the RL checkpoint path the live system should load.
+
+    If *explicit* is given it is used as-is. Otherwise prefer the curriculum
+    /multi-timeframe output (``apex_rl_mtf_best.pt``) when present and fall back
+    to ``apex_rl_best.pt`` so either filename works without a manual rename.
+    """
+    if explicit:
+        return explicit
+    ckpt_dir = Path("checkpoints")
+    mtf_best = ckpt_dir / "apex_rl_mtf_best.pt"
+    if mtf_best.exists():
+        return str(mtf_best)
+    return str(ckpt_dir / "apex_rl_best.pt")
+
+
+def build_rl_bridge(checkpoint: Optional[str] = None, enabled: bool = True) -> "RLBridge":
+    """Construct an ``RLBridge`` for the event-driven system.
+
+    Mirrors the construction the legacy scanner performed: resolve the
+    checkpoint, build the bridge, and fall back to a disabled bridge on any
+    failure. The bridge self-disables (``rl_delta`` is always 0) when no trained
+    checkpoint exists, so this is default-neutral on a fresh install.
+    """
+    ckpt = resolve_rl_checkpoint(checkpoint)
+    try:
+        bridge = RLBridge(checkpoint=ckpt, enabled=enabled)
+        logger.info(
+            "[rl] subsystem: %s (stage %s)",
+            bridge.status_label, bridge.authority.stage_label,
+        )
+        return bridge
+    except Exception as exc:
+        logger.warning("[rl] subsystem unavailable: %s", exc)
+        return RLBridge(checkpoint=ckpt, enabled=False)

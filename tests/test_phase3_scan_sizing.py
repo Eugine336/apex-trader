@@ -58,6 +58,13 @@ class TestSystemContextPhase3:
         ctx = SystemContext.create(config, _FakePM())
         assert ctx.opportunity_executor is not None
 
+    def test_creates_rl_bridge(self, config):
+        ctx = SystemContext.create(config, _FakePM())
+        if ctx.rl_bridge is None:
+            pytest.skip("RLBridge unavailable (torch not installed)")
+        # Dormant by default (no trained checkpoint) but must report status.
+        assert ctx.rl_bridge.status()["status_label"].startswith(("ACTIVE", "INACTIVE"))
+
     def test_all_phase3_subsystems_optional(self):
         ctx = SystemContext()
         assert ctx.orchestrator is None
@@ -66,6 +73,7 @@ class TestSystemContextPhase3:
         assert ctx.entry_engine is None
         assert ctx.execution_monitor is None
         assert ctx.opportunity_executor is None
+        assert ctx.rl_bridge is None
 
     def test_entry_engine_shares_drawdown_guard(self, config):
         ctx = SystemContext.create(config, _FakePM())

@@ -282,4 +282,11 @@ class RiskMixin(HelpersMixin):
             except Exception:
                 pass
 
+        rl = getattr(ctx, "rl_bridge", None) if ctx is not None else None
+        if rl is not None and hasattr(rl, "status"):
+            try:
+                result["rl"] = rl.status()
+            except Exception:
+                pass
+
         return result

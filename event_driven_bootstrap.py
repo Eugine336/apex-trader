@@ -2082,6 +2082,30 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[spread-feed] failed: {}", exc)
 
+        # ── Feed RL bridge: price stream + periodic authority eval ────
+        # Gated on the bridge being active (trained checkpoint loaded), so
+        # there is zero overhead when RL is dormant (the default).
+        rl = getattr(ctx, "rl_bridge", None)
+        if rl is not None and getattr(rl, "enabled", False):
+            try:
+                sym = getattr(event, "symbol", "")
+                if sym:
+                    df = self._fetch_candles(sym, "M5", 20)
+                    if df is not None and len(df) > 0:
+                        close_val = float(df["close"].iloc[-1])
+                        high_val = float(df["high"].iloc[-1])
+                        low_val = float(df["low"].iloc[-1])
+                        tr = (df["high"] - df["low"]).abs().tail(14)
+                        atr_val = float(tr.mean()) if len(tr) > 0 else 0.0
+                        rl.update_price(sym, high_val, low_val, close_val, atr_val, None)
+                # Throttle authority evaluation to roughly once per N updates.
+                n = getattr(self, "_rl_eval_counter", 0) + 1
+                self._rl_eval_counter = n
+                if n % 50 == 0:
+                    rl.evaluate_authority()
+            except Exception as exc:
+                logger.debug("[rl] price/authority feed failed: {}", exc)
+
     def _on_entry_decision(self, decision: dict[str, Any]) -> None:
         """Handle entry decisions from EntryOrchestrator.
 
@@ -2871,6 +2895,13 @@ class EventDrivenSystem:
                 )
             except Exception as exc:
                 logger.debug("[post-fill] SignalLedger trade-open failed: {}", exc)
+
+        # RL — count the live trade so authority progression can advance
+        if getattr(ctx, "rl_bridge", None) is not None:
+            try:
+                ctx.rl_bridge.record_live_trade()
+            except Exception as exc:
+                logger.debug("[post-fill] RL record_live_trade failed: {}", exc)
 
         # ── Domain event: ORDER_FILLED ───────────────────────────────
         try:
