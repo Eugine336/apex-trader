@@ -232,6 +232,7 @@ class PositionEvaluator:
         self._eval_count = 0
         self._suppressed_tickets: dict[str, float] = {}
         self._suppress_duration = 60.0
+        self._last_h1_close: dict[str, datetime] = {}
 
     def evaluate_all(self) -> None:
         """Snapshot all open positions and evaluate against latest ticks."""
@@ -282,11 +283,12 @@ class PositionEvaluator:
             if order_id in self._suppressed_tickets:
                 return
 
+            symbol = getattr(pos, "symbol", "")
             direction = getattr(pos, "direction", "")
             sl = getattr(pos, "sl", 0.0) or 0.0
             pip_size = 0.0001
             try:
-                pip_size = get_pip_size(getattr(pos, "symbol", ""))
+                pip_size = get_pip_size(symbol)
             except Exception:
                 pass
 
@@ -309,8 +311,20 @@ class PositionEvaluator:
                 mgmt.lowest_price_since_entry = price
             mgmt.last_eval_time = now
 
-            snap = build_position_snapshot(pos, tm_trade=mgmt, current_price=price)
-            intents = self._worker.evaluate(snap, now)
+            scan_ctx = self._build_scan_context(symbol, direction)
+            market_ctx = self._build_market_context(symbol, now)
+
+            if scan_ctx is not None:
+                current_score = scan_ctx.score
+                mgmt.score_history.append(current_score)
+                if len(mgmt.score_history) > 20:
+                    mgmt.score_history = mgmt.score_history[-20:]
+
+            snap = build_position_snapshot(
+                pos, tm_trade=mgmt, current_price=price,
+                score_history=tuple(mgmt.score_history),
+            )
+            intents = self._worker.evaluate(snap, now, scan=scan_ctx, market=market_ctx)
 
             if intents:
                 self._aggregator.register_position(
@@ -342,6 +356,100 @@ class PositionEvaluator:
                 "[pos-eval] error evaluating {}: {}",
                 getattr(pos, "symbol", "?"), exc,
             )
+
+    def _build_scan_context(
+        self, symbol: str, position_direction: str,
+    ) -> Optional[ScanContext]:
+        """Build ScanContext from WorldModel data. Returns None if unavailable."""
+        try:
+            wm = self._wm_store.get(symbol)
+            if wm is None:
+                return None
+
+            score = 0
+            scan_direction = ""
+            opposing_boost = 0
+
+            bias_dict = wm.bias_dict()
+            if bias_dict:
+                scan_direction = str(bias_dict.get("direction", "")).upper()
+                score = int(bias_dict.get("score", 0))
+                opposing_boost = int(bias_dict.get("opposing_boost", 0))
+
+            if not scan_direction or score == 0:
+                structs = wm.structure_by_tf()
+                for tf in ("H1", "H4", "M5"):
+                    sa = structs.get(tf)
+                    if sa is not None:
+                        trend = getattr(sa, "trend", "")
+                        if trend:
+                            scan_direction = "LONG" if "BULL" in str(trend).upper() else (
+                                "SHORT" if "BEAR" in str(trend).upper() else ""
+                            )
+                        s = getattr(sa, "score", 0)
+                        if s:
+                            score = int(s)
+                        break
+
+            if score == 0:
+                return None
+
+            return ScanContext(
+                direction=scan_direction,
+                score=score,
+                opposing_score_boost=opposing_boost,
+            )
+        except Exception:
+            return None
+
+    def _build_market_context(
+        self, symbol: str, now: datetime,
+    ) -> Optional[MarketContext]:
+        """Build MarketContext from TickStore + INSTRUMENT_REGISTRY + WorldModel."""
+        try:
+            tick = self._tick_store.get_latest(symbol)
+            current_spread_pips: Optional[float] = None
+            typical_spread_pips: Optional[float] = None
+
+            info = INSTRUMENT_REGISTRY.get(symbol)
+            pip_size = 0.0001
+            if info is not None:
+                pip_size = info.pip_size if hasattr(info, "pip_size") else 0.0001
+                typical_spread_pips = info.typical_spread_pips if info.typical_spread_pips else None
+
+            if tick is not None and tick.ask and tick.bid and pip_size > 0:
+                current_spread_pips = (tick.ask - tick.bid) / pip_size
+
+            h1_open = h1_close = h1_high = h1_low = h1_time = None
+            last_h1 = self._last_h1_close.get(symbol)
+            wm = self._wm_store.get(symbol)
+            if wm is not None:
+                structs = wm.structure_by_tf()
+                h1_sa = structs.get("H1")
+                if h1_sa is not None:
+                    h1_open = getattr(h1_sa, "last_candle_open", None)
+                    h1_close = getattr(h1_sa, "last_candle_close", None)
+                    h1_high = getattr(h1_sa, "last_candle_high", None)
+                    h1_low = getattr(h1_sa, "last_candle_low", None)
+                    h1_time = getattr(h1_sa, "last_candle_time", None)
+
+            ctx = MarketContext(
+                typical_spread=typical_spread_pips,
+                current_spread=current_spread_pips,
+                h1_last_closed_open=h1_open,
+                h1_last_closed_close=h1_close,
+                h1_last_closed_high=h1_high,
+                h1_last_closed_low=h1_low,
+                h1_last_closed_time=h1_time,
+                last_seen_h1_close=last_h1,
+            )
+
+            if h1_time is not None:
+                self._last_h1_close[symbol] = h1_time
+
+            return ctx
+        except Exception:
+            return None
 
     def suppress_ticket(self, ticket: str, duration: float = 60.0) -> None:
         """Suppress evaluation of a ticket for the given duration (seconds)."""

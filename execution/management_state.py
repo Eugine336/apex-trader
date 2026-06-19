@@ -55,6 +55,7 @@ class ManagementState:
     strategic_tf_alignment: Optional[float] = None
     strategic_assessment_time: Optional[datetime] = None
     last_eval_time: Optional[datetime] = None
+    score_history: list = field(default_factory=list)
 
 
 _DB_DIR = Path(__file__).resolve().parent.parent / "data"

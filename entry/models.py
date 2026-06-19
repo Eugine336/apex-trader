@@ -81,5 +81,5 @@ class EntryConfig:
     max_concurrent_pending: int = 5
     max_spread_multiplier: float = 3.0
     min_risk_reward: float = 1.5
-    min_entry_score: int = 65
+    min_entry_score: int = 85
     coalesce_hz: float = 15.0
