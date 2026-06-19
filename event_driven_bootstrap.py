@@ -766,22 +766,26 @@ class FlushLoop:
                         intents, open_positions,
                     )
                     for i, r in enumerate(results):
+                        intent = intents[i] if i < len(intents) else None
                         if r.success:
                             self._intents_executed += 1
-                            intent = intents[i] if i < len(intents) else None
-                            if (
-                                self._on_close is not None
-                                and intent is not None
-                                and intent.intent_type == IntentType.CLOSE
-                            ):
+                            if intent is not None and intent.intent_type == IntentType.CLOSE:
+                                if self._on_close is not None:
+                                    try:
+                                        self._on_close(intent, r)
+                                    except Exception as exc:
+                                        logger.debug("[flush-loop] close callback error: {}", exc)
+                            elif intent is not None:
+                                # SL/TP modify or partial close — surface the
+                                # during-trade action on the dashboard.
                                 try:
-                                    self._on_close(intent, r)
+                                    self._emit_modify_event(intent)
                                 except Exception as exc:
-                                    logger.debug("[flush-loop] close callback error: {}", exc)
+                                    logger.debug("[flush-loop] modify event error: {}", exc)
                         elif self._evaluator and not r.success:
                             err_msg = str(getattr(r, "error", "") or "").lower()
                             if "market closed" in err_msg or "market is closed" in err_msg:
-                                ticket = intents[i].position_ticket if i < len(intents) else ""
+                                ticket = intent.position_ticket if intent is not None else ""
                                 if ticket:
                                     self._evaluator.suppress_ticket(ticket, 60.0)
                             elif "no longer open" in err_msg:
@@ -790,6 +794,30 @@ class FlushLoop:
             except Exception as exc:
                 logger.warning("[flush-loop] error: {}", exc)
             _time.sleep(self._interval)
+
+    def _emit_modify_event(self, intent: Intent) -> None:
+        """Emit TRADE_MODIFIED for an executed SL/TP modify or partial close so
+        the action surfaces on the dashboard activity feed (best-effort)."""
+        store = get_event_store()
+        if store is None:
+            return
+        store.emit(
+            event_type=DE.TRADE_MODIFIED,
+            severity="INFO",
+            symbol=intent.symbol,
+            parent_id=intent.position_ticket or None,
+            source_module=intent.source or "execution",
+            payload={
+                "action": intent.intent_type.name,
+                "order_id": intent.position_ticket,
+                "symbol": intent.symbol,
+                "new_sl": intent.new_sl,
+                "new_tp": intent.new_tp,
+                "close_fraction": intent.close_fraction,
+                "source": intent.source,
+                "reason": (intent.reason or "")[:200],
+            },
+        )
 
     def _build_position_map(self) -> dict[str, dict]:
         """Build the open_positions dict the executor expects."""
@@ -2794,6 +2822,27 @@ class EventDrivenSystem:
                 )
             except Exception as exc:
                 logger.debug("[post-fill] SignalLedger trade-open failed: {}", exc)
+
+        # ── Domain event: ORDER_FILLED ───────────────────────────────
+        try:
+            es = get_event_store()
+            fill_price = getattr(result, "fill_price", getattr(result, "entry_price", expected_price)) or expected_price
+            es.emit(
+                DE.ORDER_FILLED, "INFO",
+                symbol=symbol,
+                parent_id=order_id or None,
+                source_module="event_driven",
+                payload={
+                    "order_id": order_id,
+                    "symbol": symbol,
+                    "direction": direction,
+                    "requested_price": float(expected_price or 0.0),
+                    "fill_price": float(fill_price),
+                    "lots": float(getattr(result, "lots", 0.0) or 0.0),
+                },
+            )
+        except Exception as exc:
+            logger.debug("[post-fill] ORDER_FILLED event emit failed: {}", exc)
 
         # ── Domain event: TRADE_OPEN ─────────────────────────────────
         try:

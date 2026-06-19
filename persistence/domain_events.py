@@ -25,6 +25,13 @@ ORDER_FILLED = "ORDER_FILLED"
 TRADE_OPEN = "TRADE_OPEN"
 TRADE_CLOSE = "TRADE_CLOSE"
 
+# ── In-trade management actions (event-driven) ──────────────────────────────
+# One event per executed management Intent that is not a full close — SL/TP
+# modification (breakeven, trailing, tighten, protective stop) or partial
+# close. Makes every during-trade action surface on the dashboard activity feed
+# (the legacy loop emitted no event for these).
+TRADE_MODIFIED = "TRADE_MODIFIED"
+
 # ── Shadow resolver (Phase 4) ───────────────────────────────────────────────
 SHADOW_CONTRACT_CREATED = "SHADOW_CONTRACT_CREATED"
 SHADOW_RESOLVED = "SHADOW_RESOLVED"
