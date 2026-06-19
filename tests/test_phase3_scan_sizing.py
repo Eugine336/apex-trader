@@ -34,12 +34,6 @@ class _FakePM:
 class TestSystemContextPhase3:
     """Phase 3 subsystems are created by SystemContext.create."""
 
-    def test_creates_pair_ranker(self, config):
-        ctx = SystemContext.create(config, _FakePM())
-        if ctx.pair_ranker is None:
-            pytest.skip("PairRanker unavailable (torch not installed)")
-        assert ctx.pair_ranker is not None
-
     def test_creates_orchestrator(self, config):
         ctx = SystemContext.create(config, _FakePM())
         assert ctx.orchestrator is not None
@@ -66,7 +60,6 @@ class TestSystemContextPhase3:
 
     def test_all_phase3_subsystems_optional(self):
         ctx = SystemContext()
-        assert ctx.pair_ranker is None
         assert ctx.orchestrator is None
         assert ctx.system_volatility_monitor is None
         assert ctx.opportunity_density_tracker is None

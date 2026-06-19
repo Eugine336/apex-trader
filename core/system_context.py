@@ -8,7 +8,7 @@ PortfolioGovernor, AccountRiskManager, CorrelationEngine, RiskEngine,
 RiskReporter).
 Phase 2: decision intelligence (DecisionEngine, SituationEngine,
 RiskGovernor, DecisionJournal, SessionEngine, NewsGuard).
-Phase 3: scan pipeline + sizing (PairRanker, OpportunityExecutor,
+Phase 3: scan pipeline + sizing (OpportunityExecutor,
 Orchestrator, SystemVolatilityMonitor, OpportunityDensityTracker,
 EntryEngine, ExecutionMonitor).
 Phase 4: learning + feedback (OutcomeFeedback, SignalLedger,
@@ -50,7 +50,6 @@ if TYPE_CHECKING:
     from risk.portfolio_risk_state import PortfolioRiskStateMachine
     from risk.risk_engine import RiskEngine
     from risk.risk_reporter import RiskReporter
-    from scanner.pair_ranker import PairRanker
     from trigger.entry_engine import EntryEngine
 
     from adaptive.counterfactual import CounterfactualEngine
@@ -92,7 +91,6 @@ class SystemContext:
     news_guard: Optional[NewsGuard] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
-    pair_ranker: Optional[PairRanker] = None
     opportunity_executor: Optional[OpportunityExecutor] = None
     orchestrator: Optional[Orchestrator] = None
     system_volatility_monitor: Optional[SystemVolatilityMonitor] = None
@@ -299,13 +297,6 @@ class SystemContext:
 
         # ── Scan Pipeline + Sizing (Phase 3) ─────────────────────────
 
-        # ── PairRanker ──────────────────────────────────────────────
-        try:
-            from scanner.pair_ranker import PairRanker as _PairRanker
-            ctx.pair_ranker = _PairRanker()
-        except Exception as exc:
-            logger.warning("[SystemContext] PairRanker init failed: {}", exc)
-
         # ── OpportunityExecutor ─────────────────────────────────────
         try:
             from management.opportunity_executor import OpportunityExecutor as _OppExec
@@ -361,10 +352,9 @@ class SystemContext:
             logger.warning("[SystemContext] ExecutionMonitor init failed: {}", exc)
 
         logger.info(
-            "[SystemContext] scan/sizing layer initialized — ranker={} "
+            "[SystemContext] scan/sizing layer initialized — "
             "opp_exec={} orchestrator={} vol_mon={} density={} "
             "entry_engine={} exec_mon={}",
-            ctx.pair_ranker is not None,
             ctx.opportunity_executor is not None,
             ctx.orchestrator is not None,
             ctx.system_volatility_monitor is not None,
