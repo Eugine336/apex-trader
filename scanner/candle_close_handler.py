@@ -192,6 +192,90 @@ class CandleCloseHandler:
         self._pool.shutdown(wait=False)
 
     # ------------------------------------------------------------------
+    # Startup warmup (backfill)
+    # ------------------------------------------------------------------
+
+    def warmup(
+        self,
+        symbols: list[str],
+        timeframes: Optional[list[str]] = None,
+        per_symbol_timeout: float = 30.0,
+    ) -> int:
+        """Backfill WorldModels at startup so analysis isn't blind on cold start.
+
+        Tick-driven analysis only refreshes a symbol's WorldModel once a candle
+        closes *after* startup — leaving a window where higher timeframes
+        (H1/H4/D1) have no structure/bias, and starving symbols that receive few
+        ticks.  This proactively fetches recent candles for each symbol ×
+        timeframe and runs the same brain-module pipeline a candle close would,
+        populating the store (and the entry plane via ``world_model_update``)
+        immediately.
+
+        Each symbol's timeframes are processed sequentially so the per-symbol
+        merge never races itself; different symbols run in parallel on the
+        worker pool.  Must be called BEFORE the live loops start so it cannot
+        race a live candle-close for the same symbol.  Best-effort: any fetch or
+        analysis failure is logged and skipped.
+
+        Returns the number of (symbol, timeframe) WorldModel updates published.
+        """
+        tfs = [tf for tf in (timeframes or list(TF_MODULE_MAP.keys()))
+               if tf in TF_MODULE_MAP]
+        if not symbols or not tfs:
+            return 0
+
+        futures = {
+            self._pool.submit(self._warmup_symbol, sym, tfs): sym
+            for sym in symbols
+        }
+        published = 0
+        for fut, sym in futures.items():
+            try:
+                published += fut.result(timeout=per_symbol_timeout)
+            except Exception as exc:
+                logger.debug("[cc-handler] warmup failed for {}: {}", sym, exc)
+
+        logger.info(
+            "[cc-handler] warmup complete — {} WorldModel update(s) across "
+            "{} symbol(s) × {} timeframe(s)",
+            published, len(symbols), len(tfs),
+        )
+        return published
+
+    def _warmup_symbol(self, symbol: str, timeframes: list[str]) -> int:
+        n = 0
+        for tf in timeframes:
+            try:
+                if self._warmup_one(symbol, tf):
+                    n += 1
+            except Exception as exc:
+                logger.debug(
+                    "[cc-handler] warmup {} {} failed: {}", symbol, tf, exc,
+                )
+        return n
+
+    def _warmup_one(self, symbol: str, tf: str) -> bool:
+        df = self._fetcher(symbol, tf, self._candle_count)
+        if df is None or df.empty:
+            return False
+        # Seed the bar hash so the first live candle-close for the same
+        # (unchanged) bar is correctly skipped as a duplicate.
+        with self._lock:
+            self._last_bar_hash[(symbol, tf)] = _bar_hash(df)
+        results = self._run_modules(symbol, tf, df)
+        if not results:
+            return False
+        current_price = 0.0
+        try:
+            current_price = float(df["close"].iloc[-1])
+        except Exception:
+            current_price = 0.0
+        self._merge_and_publish(
+            symbol, tf, results, datetime.now(timezone.utc), current_price,
+        )
+        return True
+
+    # ------------------------------------------------------------------
     # EventBus callback
     # ------------------------------------------------------------------
 

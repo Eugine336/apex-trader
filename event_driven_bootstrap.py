@@ -1380,6 +1380,20 @@ class EventDrivenSystem:
             self._candle_detector.register(sym)
         logger.info("[event-driven] registered {} symbols for candle detection", len(symbols))
 
+        # ── Warmup scan: backfill WorldModels before live loops start ────
+        # Without this the tick-driven analysis is blind until live candles
+        # close — HTF (H1/H4/D1) structure/bias is empty and tick-starved
+        # symbols are never analysed.  Best-effort; on failure we simply fall
+        # back to the live path.  Runs before the loops so it can't race a live
+        # candle-close for the same symbol.
+        if getattr(self._config, "ed_warmup_on_start", True):
+            try:
+                self._candle_handler.warmup(symbols)
+            except Exception as exc:
+                logger.warning(
+                    "[event-driven] warmup scan failed (continuing live): {}", exc,
+                )
+
         self._tick_router.start()
         self._mt5_poller.start()
         self._deriv_adapter.start()
