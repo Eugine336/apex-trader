@@ -44,6 +44,21 @@ from platforms.platform_manager import PlatformManager
 from risk.position_sizer import PositionSizer
 
 
+def _struct_trend_conf(struct_by_tf: dict, tf: str) -> tuple[str, float]:
+    """Read ``(trend, confidence)`` for a timeframe from a WorldModel's
+    ``structure_by_tf()`` mapping of ``StructureAnalysis`` objects.
+
+    Returns ``("UNKNOWN", 0.0)`` when the timeframe is absent.  Centralises
+    the correct way to read the WorldModel's structure layer so consumers
+    never treat it as a dict-of-dicts.
+    """
+    sa = struct_by_tf.get(tf)
+    if sa is None:
+        return "UNKNOWN", 0.0
+    trend = sa.trend.value if hasattr(sa.trend, "value") else str(sa.trend)
+    return trend, float(getattr(sa, "confidence", 0.0) or 0.0)
+
+
 # ── Tick source threads ──────────────────────────────────────────────
 
 
@@ -395,9 +410,9 @@ class PositionEvaluator:
                             scan_direction = "LONG" if "BULL" in str(trend).upper() else (
                                 "SHORT" if "BEAR" in str(trend).upper() else ""
                             )
-                        s = getattr(sa, "score", 0)
-                        if s:
-                            score = int(s)
+                        conf = float(getattr(sa, "confidence", 0.0) or 0.0)
+                        if conf:
+                            score = int(round(conf * 100))
                         break
 
             if score == 0:
@@ -498,18 +513,17 @@ class PositionEvaluator:
             except Exception:
                 pass
             wm = self._wm_store.get(symbol)
-            structure = getattr(wm, "structure", {}) if wm else {}
-            d1_s = structure.get("D1", {})
-            h4_s = structure.get("H4", {})
-            h1_s = structure.get("H1", {})
+            structure = wm.structure_by_tf() if wm is not None else {}
+            d1_trend, d1_conf = _struct_trend_conf(structure, "D1")
+            h4_trend, h4_conf = _struct_trend_conf(structure, "H4")
+            h1_trend, h1_conf = _struct_trend_conf(structure, "H1")
             score_hist = getattr(mgmt, "score_history", []) or []
             current_score = 0
             if wm is not None:
-                zones = getattr(wm, "entry_zones", [])
-                if zones:
-                    for z in zones:
-                        if getattr(z, "direction", "").upper() == norm_dir.replace("BUY", "LONG").replace("SELL", "SHORT"):
-                            current_score = max(current_score, getattr(z, "score", 0))
+                want_dir = norm_dir.replace("BUY", "LONG").replace("SELL", "SHORT")
+                for z in wm.entry_zones:
+                    if getattr(z, "direction", "").upper() == want_dir:
+                        current_score = max(current_score, getattr(z, "conviction", 0))
             fast_opp = self._fast_opposition.get(order_id, 0)
             m1_aligned = 0
             m1_trend = "UNKNOWN"
@@ -556,12 +570,12 @@ class PositionEvaluator:
                 original_risk_pips=risk_pips,
                 scan_score=current_score,
                 scan_direction=norm_dir.replace("BUY", "LONG").replace("SELL", "SHORT"),
-                d1_trend=d1_s.get("trend", "UNKNOWN"),
-                d1_confidence=d1_s.get("confidence", 0.0),
-                h4_trend=h4_s.get("trend", "UNKNOWN"),
-                h4_confidence=h4_s.get("confidence", 0.0),
-                h1_trend=h1_s.get("trend", "UNKNOWN"),
-                h1_confidence=h1_s.get("confidence", 0.0),
+                d1_trend=d1_trend,
+                d1_confidence=d1_conf,
+                h4_trend=h4_trend,
+                h4_confidence=h4_conf,
+                h1_trend=h1_trend,
+                h1_confidence=h1_conf,
                 fast_opposition_streak=fast_opp,
                 score_history=list(score_hist[-10:]),
                 open_trade_count=len(open_positions),
@@ -1809,9 +1823,9 @@ class EventDrivenSystem:
                         direction = ""
                         score = 0
                         if zones:
-                            best = max(zones, key=lambda z: getattr(z, "score", 0))
+                            best = max(zones, key=lambda z: getattr(z, "conviction", 0))
                             direction = getattr(best, "direction", "")
-                            score = getattr(best, "score", 0)
+                            score = getattr(best, "conviction", 0)
                         if direction and score > 0:
                             ctx.signal_ledger.record_signal(
                                 pair=sym,
@@ -2013,10 +2027,10 @@ class EventDrivenSystem:
                 try:
                     from decision.context import EntryContext as DEContext
                     wm = self._wm_store.get(symbol)
-                    structure = getattr(wm, "structure", {}) if wm else {}
-                    d1_s = structure.get("D1", {})
-                    h4_s = structure.get("H4", {})
-                    h1_s = structure.get("H1", {})
+                    structure = wm.structure_by_tf() if wm is not None else {}
+                    d1_trend, d1_conf = _struct_trend_conf(structure, "D1")
+                    h4_trend, h4_conf = _struct_trend_conf(structure, "H4")
+                    h1_trend, h1_conf = _struct_trend_conf(structure, "H1")
 
                     entry_ctx = DEContext(
                         symbol=symbol,
@@ -2029,12 +2043,12 @@ class EventDrivenSystem:
                         tp2=tp2,
                         risk_reward_2=abs(tp2 - entry_price) / max(abs(entry_price - sl), 1e-8) if sl else 0.0,
                         risk_pips=abs(entry_price - sl) / self._safe_pip_size(symbol) if sl else 0.0,
-                        d1_trend=d1_s.get("trend", "UNKNOWN"),
-                        d1_confidence=d1_s.get("confidence", 0.0),
-                        h4_trend=h4_s.get("trend", "UNKNOWN"),
-                        h4_confidence=h4_s.get("confidence", 0.0),
-                        h1_trend=h1_s.get("trend", "UNKNOWN"),
-                        h1_confidence=h1_s.get("confidence", 0.0),
+                        d1_trend=d1_trend,
+                        d1_confidence=d1_conf,
+                        h4_trend=h4_trend,
+                        h4_confidence=h4_conf,
+                        h1_trend=h1_trend,
+                        h1_confidence=h1_conf,
                         m1_aligned_count=decision.get("m1_aligned", 3),
                         m1_event=decision.get("m1_event", ""),
                         open_trade_count=len(open_positions),
@@ -2211,8 +2225,12 @@ class EventDrivenSystem:
                 try:
                     from brain.orchestrator import TradeProposal
                     wm = self._wm_store.get(symbol)
-                    structure = getattr(wm, "structure", {}) if wm else {}
-                    h4_s = structure.get("H4", {})
+                    structure = wm.structure_by_tf() if wm is not None else {}
+                    h4_sa = structure.get("H4")
+                    h4_alignment = (
+                        float(getattr(h4_sa, "confidence", 0.0) or 0.0)
+                        if h4_sa is not None else None
+                    )
 
                     proposal = TradeProposal(
                         pair=symbol,
@@ -2220,7 +2238,7 @@ class EventDrivenSystem:
                         scan_score=float(conviction),
                         de_conviction=de_conviction if de_conviction > 0 else None,
                         de_margin=None,
-                        tf_alignment=h4_s.get("confidence", None),
+                        tf_alignment=h4_alignment,
                     )
                     verdict = ctx.orchestrator.evaluate(proposal)
                     if verdict.vetoed:

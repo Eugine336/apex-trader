@@ -15,7 +15,7 @@ import threading
 import time as _time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
 
 from loguru import logger
 
@@ -26,6 +26,9 @@ from brain.liquidity_mapper import LiquidityMap
 from brain.volume_analyzer import VolumeAnalysis
 from brain.wyckoff_engine import WyckoffAnalysis
 from brain.inducement_detector import InducementAnalysis
+
+if TYPE_CHECKING:
+    from entry.models import EntryZone
 
 
 @dataclass(frozen=True)
@@ -57,6 +60,13 @@ class WorldModel:
     # multi-TF by nature, stored as a frozen dict snapshot.
     bias: tuple[tuple[str, Any], ...] = ()
 
+    # ── Synthesized entry layer ───────────────────────────────────────
+    # Actionable entry zones derived from the raw analysis above (FVG/OB
+    # confluence, bias-filtered).  Populated by the analysis plane at
+    # publish time so the WorldModel is the single source of truth for the
+    # entry plane — consumers read this rather than re-deriving zones.
+    entry_zones: tuple["EntryZone", ...] = ()
+
     # ── Helpers ───────────────────────────────────────────────────────
 
     def fvgs_by_tf(self) -> dict[str, tuple[FairValueGap, ...]]:
@@ -82,6 +92,10 @@ class WorldModel:
 
     def bias_dict(self) -> dict[str, Any]:
         return dict(self.bias)
+
+    def entry_zones_list(self) -> list["EntryZone"]:
+        """Actionable entry zones synthesized at publish time."""
+        return list(self.entry_zones)
 
     def all_fvgs(self) -> list[FairValueGap]:
         """Flat list of all FVGs across timeframes (highest TF first)."""
@@ -173,6 +187,7 @@ def build_world_model(
     wyckoff: Optional[dict[str, WyckoffAnalysis]] = None,
     inducement: Optional[dict[str, InducementAnalysis]] = None,
     bias: Optional[dict[str, Any]] = None,
+    entry_zones: Optional[list["EntryZone"]] = None,
 ) -> WorldModel:
     """Convenience builder: accepts mutable dicts, freezes them into tuples.
 
@@ -207,4 +222,5 @@ def build_world_model(
         wyckoff=_freeze_scalars(wyckoff),
         inducement=_freeze_scalars(inducement),
         bias=_freeze_scalars(bias),
+        entry_zones=tuple(entry_zones) if entry_zones else (),
     )

@@ -23,6 +23,143 @@ from brain.world_model import WorldModel, WorldModelStore
 from entry.models import EntryConfig, EntryZone, ZoneType
 
 
+def _resolve_bias(struct_by_tf: dict) -> Optional[str]:
+    """Derive directional bias from HTF structure (H4 > H1 > D1)."""
+    for tf in ("H4", "H1", "D1"):
+        sa = struct_by_tf.get(tf)
+        if sa is None:
+            continue
+        trend = sa.trend.value if hasattr(sa.trend, "value") else str(sa.trend)
+        if trend == "BULLISH":
+            return "LONG"
+        if trend == "BEARISH":
+            return "SHORT"
+    return None
+
+
+def _invalidation(direction: str, bottom: float, top: float) -> float:
+    zone_size = abs(top - bottom)
+    buffer = zone_size * 0.5
+    if direction == "LONG":
+        return bottom - buffer
+    return top + buffer
+
+
+def extract_entry_zones(
+    model: WorldModel, config: Optional[EntryConfig] = None,
+) -> list[EntryZone]:
+    """Derive actionable entry zones from a WorldModel snapshot.
+
+    This is the single, canonical zone-derivation implementation.  The
+    analysis plane calls it at publish time to populate
+    ``WorldModel.entry_zones``; ``ZoneWatcher`` reads that stored result
+    rather than re-deriving.
+
+    Priority: FVG+OB overlap > FVG alone > OB alone.
+    Only OPEN/PARTIALLY FVGs and FRESH/TESTED OBs qualify.
+    """
+    cfg = config or EntryConfig()
+    now = datetime.now(timezone.utc)
+    expiry = now + timedelta(seconds=cfg.zone_expiry_seconds)
+    zones: list[EntryZone] = []
+
+    fvgs_by_tf = model.fvgs_by_tf()
+    obs_by_tf = model.order_blocks_by_tf()
+    struct_by_tf = model.structure_by_tf()
+
+    bias_direction = _resolve_bias(struct_by_tf)
+
+    all_fvgs: list[tuple[str, FairValueGap]] = []
+    for tf, fvg_list in fvgs_by_tf.items():
+        for fvg in fvg_list:
+            if fvg.status in (FVGStatus.OPEN, FVGStatus.PARTIALLY):
+                all_fvgs.append((tf, fvg))
+
+    all_obs: list[tuple[str, OrderBlock]] = []
+    for tf, ob_list in obs_by_tf.items():
+        for ob in ob_list:
+            if ob.status in (OBStatus.FRESH, OBStatus.TESTED):
+                all_obs.append((tf, ob))
+
+    used_fvgs: set[int] = set()
+    used_obs: set[int] = set()
+
+    for fi, (ftf, fvg) in enumerate(all_fvgs):
+        for oi, (otf, ob) in enumerate(all_obs):
+            if fvg.kind != ob.kind:
+                continue
+            overlap_top = min(fvg.top, ob.top)
+            overlap_bottom = max(fvg.bottom, ob.bottom)
+            if overlap_top <= overlap_bottom:
+                continue
+
+            direction = "LONG" if fvg.kind == "BULLISH" else "SHORT"
+            if bias_direction and bias_direction != direction:
+                continue
+
+            inv = _invalidation(direction, overlap_bottom, overlap_top)
+            zones.append(EntryZone(
+                symbol=model.symbol,
+                direction=direction,
+                zone_type=ZoneType.FVG_OB_OVERLAP,
+                top=overlap_top,
+                bottom=overlap_bottom,
+                midpoint=(overlap_top + overlap_bottom) / 2,
+                invalidation_level=inv,
+                conviction=100,
+                created_at=now,
+                expires_at=expiry,
+                timeframe=ftf,
+                has_sweep=False,
+            ))
+            used_fvgs.add(fi)
+            used_obs.add(oi)
+
+    for fi, (ftf, fvg) in enumerate(all_fvgs):
+        if fi in used_fvgs:
+            continue
+        direction = "LONG" if fvg.kind == "BULLISH" else "SHORT"
+        if bias_direction and bias_direction != direction:
+            continue
+        inv = _invalidation(direction, fvg.bottom, fvg.top)
+        zones.append(EntryZone(
+            symbol=model.symbol,
+            direction=direction,
+            zone_type=ZoneType.FVG_MIDPOINT,
+            top=fvg.top,
+            bottom=fvg.bottom,
+            midpoint=fvg.midpoint,
+            invalidation_level=inv,
+            conviction=80,
+            created_at=now,
+            expires_at=expiry,
+            timeframe=ftf,
+        ))
+
+    for oi, (otf, ob) in enumerate(all_obs):
+        if oi in used_obs:
+            continue
+        direction = "LONG" if ob.kind == "BULLISH" else "SHORT"
+        if bias_direction and bias_direction != direction:
+            continue
+        inv = _invalidation(direction, ob.bottom, ob.top)
+        zones.append(EntryZone(
+            symbol=model.symbol,
+            direction=direction,
+            zone_type=ZoneType.OB_MIDPOINT,
+            top=ob.top,
+            bottom=ob.bottom,
+            midpoint=ob.midpoint,
+            invalidation_level=inv,
+            conviction=70,
+            created_at=now,
+            expires_at=expiry,
+            timeframe=otf,
+        ))
+
+    return zones
+
+
 class ZoneWatcher:
     """Watches WorldModel for actionable entry zones."""
 
@@ -53,7 +190,14 @@ class ZoneWatcher:
             return
         self._last_versions[symbol] = model.version
 
-        zones = self._extract_zones(model)
+        # The WorldModel is the single source of truth: read the zones the
+        # analysis plane synthesized at publish time.  Fall back to deriving
+        # them on the fly only if the producer did not populate them (e.g.
+        # a WorldModel built by an older code path or a test fixture).
+        if model.entry_zones:
+            zones = list(model.entry_zones)
+        else:
+            zones = extract_entry_zones(model, self._config)
         with self._lock:
             if zones:
                 self._zones[symbol] = zones
@@ -90,131 +234,10 @@ class ZoneWatcher:
                 self._zones.clear()
 
     def _extract_zones(self, model: WorldModel) -> list[EntryZone]:
-        """Extract entry zones from a WorldModel snapshot.
+        """Derive entry zones from a WorldModel snapshot.
 
-        Priority: FVG+OB overlap > FVG alone > OB alone.
-        Only OPEN FVGs and FRESH/TESTED OBs qualify.
+        Thin wrapper around the canonical module-level
+        :func:`extract_entry_zones` so there is a single implementation.
         """
-        now = datetime.now(timezone.utc)
-        expiry = now + timedelta(seconds=self._config.zone_expiry_seconds)
-        zones: list[EntryZone] = []
+        return extract_entry_zones(model, self._config)
 
-        fvgs_by_tf = model.fvgs_by_tf()
-        obs_by_tf = model.order_blocks_by_tf()
-        struct_by_tf = model.structure_by_tf()
-
-        bias_direction = self._resolve_bias(struct_by_tf)
-
-        all_fvgs: list[tuple[str, FairValueGap]] = []
-        for tf, fvg_list in fvgs_by_tf.items():
-            for fvg in fvg_list:
-                if fvg.status in (FVGStatus.OPEN, FVGStatus.PARTIALLY):
-                    all_fvgs.append((tf, fvg))
-
-        all_obs: list[tuple[str, OrderBlock]] = []
-        for tf, ob_list in obs_by_tf.items():
-            for ob in ob_list:
-                if ob.status in (OBStatus.FRESH, OBStatus.TESTED):
-                    all_obs.append((tf, ob))
-
-        used_fvgs: set[int] = set()
-        used_obs: set[int] = set()
-
-        for fi, (ftf, fvg) in enumerate(all_fvgs):
-            for oi, (otf, ob) in enumerate(all_obs):
-                if fvg.kind != ob.kind:
-                    continue
-                overlap_top = min(fvg.top, ob.top)
-                overlap_bottom = max(fvg.bottom, ob.bottom)
-                if overlap_top <= overlap_bottom:
-                    continue
-
-                direction = "LONG" if fvg.kind == "BULLISH" else "SHORT"
-                if bias_direction and bias_direction != direction:
-                    continue
-
-                inv = self._invalidation(direction, overlap_bottom, overlap_top)
-                zones.append(EntryZone(
-                    symbol=model.symbol,
-                    direction=direction,
-                    zone_type=ZoneType.FVG_OB_OVERLAP,
-                    top=overlap_top,
-                    bottom=overlap_bottom,
-                    midpoint=(overlap_top + overlap_bottom) / 2,
-                    invalidation_level=inv,
-                    conviction=100,
-                    created_at=now,
-                    expires_at=expiry,
-                    timeframe=ftf,
-                    has_sweep=False,
-                ))
-                used_fvgs.add(fi)
-                used_obs.add(oi)
-
-        for fi, (ftf, fvg) in enumerate(all_fvgs):
-            if fi in used_fvgs:
-                continue
-            direction = "LONG" if fvg.kind == "BULLISH" else "SHORT"
-            if bias_direction and bias_direction != direction:
-                continue
-            inv = self._invalidation(direction, fvg.bottom, fvg.top)
-            zones.append(EntryZone(
-                symbol=model.symbol,
-                direction=direction,
-                zone_type=ZoneType.FVG_MIDPOINT,
-                top=fvg.top,
-                bottom=fvg.bottom,
-                midpoint=fvg.midpoint,
-                invalidation_level=inv,
-                conviction=80,
-                created_at=now,
-                expires_at=expiry,
-                timeframe=ftf,
-            ))
-
-        for oi, (otf, ob) in enumerate(all_obs):
-            if oi in used_obs:
-                continue
-            direction = "LONG" if ob.kind == "BULLISH" else "SHORT"
-            if bias_direction and bias_direction != direction:
-                continue
-            inv = self._invalidation(direction, ob.bottom, ob.top)
-            zones.append(EntryZone(
-                symbol=model.symbol,
-                direction=direction,
-                zone_type=ZoneType.OB_MIDPOINT,
-                top=ob.top,
-                bottom=ob.bottom,
-                midpoint=ob.midpoint,
-                invalidation_level=inv,
-                conviction=70,
-                created_at=now,
-                expires_at=expiry,
-                timeframe=otf,
-            ))
-
-        return zones
-
-    @staticmethod
-    def _resolve_bias(
-        struct_by_tf: dict,
-    ) -> Optional[str]:
-        """Derive directional bias from HTF structure (H4 > H1 > D1)."""
-        for tf in ("H4", "H1", "D1"):
-            sa = struct_by_tf.get(tf)
-            if sa is None:
-                continue
-            trend = sa.trend.value if hasattr(sa.trend, "value") else str(sa.trend)
-            if trend == "BULLISH":
-                return "LONG"
-            if trend == "BEARISH":
-                return "SHORT"
-        return None
-
-    @staticmethod
-    def _invalidation(direction: str, bottom: float, top: float) -> float:
-        zone_size = abs(top - bottom)
-        buffer = zone_size * 0.5
-        if direction == "LONG":
-            return bottom - buffer
-        return top + buffer
