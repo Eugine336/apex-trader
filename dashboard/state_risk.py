@@ -131,13 +131,6 @@ class RiskMixin(HelpersMixin):
                 except Exception as exc:
                     logger.debug("[dashboard] account silos read failed: {}", exc)
 
-            try:
-                rl_bridge = getattr(getattr(loop, "scanner", None), "_rl", None) if loop is not None else None
-                if rl_bridge is not None and hasattr(rl_bridge, "status"):
-                    result["rl"] = rl_bridge.status()
-            except Exception as exc:
-                logger.debug("[dashboard] RL status read failed: {}", exc)
-
             gate_tuner = getattr(loop, "_gate_tuner", None) if loop is not None else (ctx.gate_tuner if ctx is not None else None)
             if gate_tuner is not None and hasattr(gate_tuner, "all_offsets"):
                 try:

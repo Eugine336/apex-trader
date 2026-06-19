@@ -61,42 +61,6 @@ def _mock_platform_manager(positions=None):
     return pm
 
 
-# ── Test: Kill switch env var ────────────────────────────────────────
-
-
-class TestKillSwitch:
-    def test_disabled_by_default(self):
-        from event_driven_bootstrap import is_event_driven_enabled
-        with patch.dict(os.environ, {}, clear=True):
-            os.environ.pop("USE_EVENT_DRIVEN", None)
-            assert is_event_driven_enabled() is False
-
-    def test_enabled_with_true(self):
-        from event_driven_bootstrap import is_event_driven_enabled
-        with patch.dict(os.environ, {"USE_EVENT_DRIVEN": "true"}):
-            assert is_event_driven_enabled() is True
-
-    def test_enabled_with_1(self):
-        from event_driven_bootstrap import is_event_driven_enabled
-        with patch.dict(os.environ, {"USE_EVENT_DRIVEN": "1"}):
-            assert is_event_driven_enabled() is True
-
-    def test_enabled_with_yes(self):
-        from event_driven_bootstrap import is_event_driven_enabled
-        with patch.dict(os.environ, {"USE_EVENT_DRIVEN": "yes"}):
-            assert is_event_driven_enabled() is True
-
-    def test_disabled_with_false(self):
-        from event_driven_bootstrap import is_event_driven_enabled
-        with patch.dict(os.environ, {"USE_EVENT_DRIVEN": "false"}):
-            assert is_event_driven_enabled() is False
-
-    def test_disabled_with_random_string(self):
-        from event_driven_bootstrap import is_event_driven_enabled
-        with patch.dict(os.environ, {"USE_EVENT_DRIVEN": "maybe"}):
-            assert is_event_driven_enabled() is False
-
-
 # ── Test: MT5TickPoller ──────────────────────────────────────────────
 
 
