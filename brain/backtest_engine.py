@@ -3,8 +3,9 @@ APEX TRADER — Backtest Engine
 Replays historical candles candle-by-candle so every decision can be stress-tested
 before real capital is exposed.
 
-Drives the LIVE decision path (PairScanner → EntryEngine) so backtest results
-are representative of the strategy actually traded in production.
+Drives the shared ED decision core (``brain.decision_core.analyze_window``) →
+EntryEngine — the same decision path the live event-driven system uses — so
+backtest results are representative of the strategy actually traded.
 """
 
 import asyncio
@@ -91,6 +92,71 @@ class BacktestSetup:
     opportunity_quality: float = 0.0
     entry_quality: float = 0.0
     consensus_agreement: float = 0.0
+
+
+@dataclass
+class _ScanView:
+    """Minimal scan-result view derived from a WorldModel.
+
+    Shaped for the backtest decision path (``status``/``direction``/``score``/
+    ``regime``/``bias_strength``) and for ``EntryEngine.calculate_entry`` (which
+    reads only ``confluences`` and ``score``).  This lets the backtest decide
+    through the shared ED decision core (``brain.decision_core.analyze_window``)
+    instead of the legacy ``PairScanner`` — one decision implementation for both
+    live and backtest.
+    """
+    status: str
+    direction: str
+    score: int
+    regime: str
+    bias_strength: str
+    confluences: list[str] = field(default_factory=list)
+    opportunity_quality: float = 0.0
+    entry_quality: float = 0.0
+    consensus_agreement: float = 0.0
+
+
+def _world_model_to_scan_view(wm) -> "_ScanView":
+    """Adapt a WorldModel into the scan-view the backtest decision path reads."""
+    bias = wm.bias_dict()
+    direction = str(bias.get("direction", "") or "")
+    strength = str(bias.get("strength", "NONE") or "NONE")
+    tradeable = bool(bias.get("tradeable", False))
+    status = "READY" if (tradeable and direction in ("LONG", "SHORT")) else "WAITING"
+    score = int(bias.get("score", 0) or 0)
+
+    regimes = wm.regime_by_tf()
+    regime = regimes.get("H1") or next(iter(regimes.values()), "UNKNOWN")
+
+    confluences: list[str] = []
+    agree = 0
+    total = 0
+    for v in wm.votes_list():
+        vdir = str(getattr(v, "direction", "") or "")
+        if vdir in ("LONG", "SHORT"):
+            total += 1
+            if vdir == direction:
+                module = str(getattr(v, "module", "") or "")
+                if module:
+                    confluences.append(module)
+                agree += 1
+    consensus_agreement = round(agree / total, 4) if total else 0.0
+
+    opportunity_quality = 0.0
+    cands = wm.candidates_list()
+    if cands:
+        opportunity_quality = round(float(getattr(cands[0], "confidence", 0.0) or 0.0), 4)
+
+    return _ScanView(
+        status=status,
+        direction=direction,
+        score=score,
+        regime=regime,
+        bias_strength=strength,
+        confluences=confluences,
+        opportunity_quality=opportunity_quality,
+        consensus_agreement=consensus_agreement,
+    )
 
 
 class DataLoader:
@@ -299,15 +365,11 @@ class BacktestEngine:
 
         self.config = config or AppConfig()
 
-        if scanner is not None:
-            self.scanner = scanner
-        else:
-            try:
-                from scanner.pair_scanner import PairScanner
-                self.scanner = PairScanner(config=self.config)
-            except Exception as exc:
-                logger.warning("[backtest] PairScanner unavailable ({}), backtest disabled", exc)
-                self.scanner = None
+        # Decision engine: the shared ED core (brain.decision_core.analyze_window)
+        # drives backtest decisions — identical to the live plane.  ``scanner``
+        # is retained only as an optional injected override (default unused); the
+        # legacy PairScanner is no longer constructed here.
+        self.scanner = scanner
 
         if entry_engine is not None:
             self.entry_engine = entry_engine
@@ -340,15 +402,10 @@ class BacktestEngine:
 
     def _require_decision_engine(self) -> None:
         """Raise loudly if the live decision engine is unavailable."""
-        missing = []
-        if self.scanner is None:
-            missing.append("PairScanner")
         if self.entry_engine is None:
-            missing.append("EntryEngine")
-        if missing:
             raise RuntimeError(
-                f"Backtest decision engine unavailable ({', '.join(missing)} "
-                f"failed to construct); cannot run a representative backtest"
+                "Backtest decision engine unavailable (EntryEngine failed to "
+                "construct); cannot run a representative backtest"
             )
 
     def run(
@@ -727,8 +784,8 @@ class BacktestEngine:
         now: datetime,
         balance: float,
     ) -> Optional[BacktestSetup]:
-        """Run the LIVE two-phase decision: PairScanner → EntryEngine."""
-        if self.scanner is None or self.entry_engine is None:
+        """Run the two-phase decision: shared ED decision core → EntryEngine."""
+        if self.entry_engine is None:
             return None
 
         h4 = slices.get("H4")
@@ -741,12 +798,15 @@ class BacktestEngine:
             return None
 
         try:
-            result = self.scanner.scan_pair(
-                pair=pair, h4_df=h4, h1_df=h1, m15_df=m15, m5_df=m5,
-                utc_now=now,
+            from brain.decision_core import analyze_window
+            wm = analyze_window(
+                pair,
+                {"H4": h4, "H1": h1, "M15": m15, "M5": m5},
+                timestamp=now,
             )
+            result = _world_model_to_scan_view(wm)
         except Exception as exc:
-            logger.warning("[backtest] scan_pair failed for {}: {}", pair, exc)
+            logger.warning("[backtest] decision core failed for {}: {}", pair, exc)
             return None
 
         if result.status != "READY" or result.direction not in ("LONG", "SHORT"):
