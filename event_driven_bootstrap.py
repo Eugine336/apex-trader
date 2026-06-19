@@ -2920,10 +2920,15 @@ class EventDrivenSystem:
         # before the ctx guard (no ctx dependency) and is fully best-effort.
         try:
             info = self._entry_context.pop(ticket, None) or {}
+            # A flat-dollar close that still gained pips (e.g. commission ate
+            # the dollar P&L) counts as a win for edge attribution.
+            won = (pnl_dollars or 0.0) > 0.0 or (
+                (pnl_dollars or 0.0) == 0.0 and (pnl_pips or 0.0) > 0.0
+            )
             self._zone_edge.record_trade(
                 symbol,
                 direction,
-                pnl_dollars > 0,
+                won,
                 zone_type=info.get("zone_type"),
                 regime=info.get("regime"),
                 concepts=info.get("concepts"),
