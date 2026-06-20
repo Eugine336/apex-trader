@@ -41,7 +41,10 @@ class TradesMixin(HelpersMixin):
         for pos in positions:
             symbol = str(getattr(pos, "symbol", ""))
             direction = normalize_direction(getattr(pos, "direction", ""))
-            entry_price = safe_float(getattr(pos, "entry_price", 0.0), 0.0)
+            entry_price = safe_float(
+                getattr(pos, "open_price", 0.0) or getattr(pos, "entry_price", 0.0),
+                0.0,
+            )
             current_price = entry_price
             order_id = str(getattr(pos, "order_id", getattr(pos, "ticket", "")))
 
@@ -73,7 +76,9 @@ class TradesMixin(HelpersMixin):
             else:
                 pnl_pips = 0.0
 
-            broker_pnl = safe_float(getattr(pos, "broker_pnl", 0.0), 0.0)
+            broker_pnl = safe_float(
+                getattr(pos, "pnl", 0.0) or getattr(pos, "broker_pnl", 0.0), 0.0,
+            )
             if broker_pnl != 0.0:
                 pnl_dollars = broker_pnl
             else:
