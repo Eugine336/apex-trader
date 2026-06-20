@@ -38,6 +38,7 @@ from brain.structure_engine import StructureEngine, StructureAnalysis
 from brain.volume_analyzer import VolumeAnalyzer, VolumeAnalysis
 from brain.world_model import WorldModel, WorldModelStore, build_world_model
 from brain.wyckoff_engine import WyckoffEngine, WyckoffAnalysis
+from brain.currency_strength import CurrencyStrengthMeter, CURRENCY_PAIRS
 from brain.concept_modules import run_concepts
 from config import get_pip_size
 from entry.models import EntryConfig
@@ -123,6 +124,9 @@ class CandleCloseHandler:
         self._structure = StructureEngine()
         self._liquidity = LiquidityMapper()
         self._volume = VolumeAnalyzer()
+        self._strength_meter = CurrencyStrengthMeter()
+        self._strength_cache: Optional[Any] = None
+        self._strength_cache_ts: float = 0.0
 
         self._bus.subscribe("candle_close", self._on_candle_close)
 
@@ -400,13 +404,85 @@ class CandleCloseHandler:
         """Derive per-module directional votes + ranked opportunities.
 
         Reuses the same vote extractors and opportunity ranker the legacy
-        scanner used, but sourced from the WorldModel's already-computed
-        analysis (structure, volume, wyckoff, order blocks, FVGs).  Modules
-        that need raw price series the ED plane does not retain (momentum,
-        VWAP, currency strength, liquidity sweep) are omitted.  Each extractor
-        is guarded so one failure cannot suppress the rest.
+        scanner used, sourced from the WorldModel's already-computed
+        analysis plus optional raw-series voters (momentum, VWAP, currency
+        strength, liquidity sweep).  Every auxiliary fetch is best-effort.
         """
-        return build_consensus(symbol, wm, current_price)
+        m5_df = None
+        h1_df = None
+        session_open_minutes = 0
+        try:
+            m5_df = self._fetcher(symbol, "M5", self._candle_count)
+        except Exception as exc:
+            logger.debug("[cc-handler] {} M5 fetch for consensus failed: {}", symbol, exc)
+        try:
+            h1_df = self._fetcher(symbol, "H1", self._candle_count)
+        except Exception as exc:
+            logger.debug("[cc-handler] {} H1 fetch for consensus failed: {}", symbol, exc)
+
+        if m5_df is not None and len(m5_df) > 1:
+            try:
+                if "time" in m5_df.columns:
+                    t0 = pd.to_datetime(m5_df["time"].iloc[0], utc=True, errors="coerce")
+                    t1 = pd.to_datetime(m5_df["time"].iloc[-1], utc=True, errors="coerce")
+                    if pd.notna(t0) and pd.notna(t1):
+                        session_open_minutes = max(
+                            0, int((t1 - t0).total_seconds() / 60.0),
+                        )
+                if session_open_minutes <= 0:
+                    session_open_minutes = max(0, int((len(m5_df) - 1) * 5))
+            except Exception as exc:
+                logger.debug("[cc-handler] {} session-minutes derive failed: {}", symbol, exc)
+                session_open_minutes = 0
+
+        cs_analysis = None
+        try:
+            prof = get_profile(symbol)
+            if getattr(prof, "currency_strength_enabled", False):
+                cs_analysis = self._currency_strength_analysis()
+        except Exception as exc:
+            logger.debug("[cc-handler] {} currency-strength prep failed: {}", symbol, exc)
+
+        return build_consensus(
+            symbol,
+            wm,
+            current_price,
+            m5_df=m5_df,
+            h1_df=h1_df,
+            liquidity_mapper=self._liquidity,
+            session_open_minutes=session_open_minutes,
+            currency_strength_analysis=cs_analysis,
+            currency_pairs=CURRENCY_PAIRS,
+        )
+
+    def _currency_strength_analysis(self) -> Optional[Any]:
+        """Best-effort cached currency-strength analysis for consensus voting."""
+        try:
+            now = _time.monotonic()
+            with self._lock:
+                if (
+                    self._strength_cache is not None
+                    and (now - self._strength_cache_ts) < 300.0
+                ):
+                    return self._strength_cache
+            price_data: dict[str, pd.DataFrame] = {}
+            for pair in CURRENCY_PAIRS:
+                try:
+                    df = self._fetcher(pair, "M5", self._candle_count)
+                    if df is not None and len(df) >= 30:
+                        price_data[pair] = df
+                except Exception as exc:
+                    logger.debug("[cc-handler] currency-strength fetch {} failed: {}", pair, exc)
+            if not price_data:
+                return None
+            analysis = self._strength_meter.calculate(price_data)
+            with self._lock:
+                self._strength_cache = analysis
+                self._strength_cache_ts = now
+            return analysis
+        except Exception as exc:
+            logger.debug("[cc-handler] currency-strength analysis failed: {}", exc)
+            return None
 
     def _blend_concepts(
         self,

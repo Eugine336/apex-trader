@@ -263,23 +263,36 @@ def fvg_proximity(symbol: str) -> float:
 
 
 def build_consensus(
-    symbol: str, wm: WorldModel, current_price: float,
+    symbol: str,
+    wm: WorldModel,
+    current_price: float,
+    *,
+    m5_df: Optional[pd.DataFrame] = None,
+    h1_df: Optional[pd.DataFrame] = None,
+    liquidity_mapper: Any = None,
+    session_open_minutes: Optional[int] = None,
+    currency_strength_analysis: Any = None,
+    currency_pairs: Optional[dict[str, tuple[str, str]]] = None,
 ) -> tuple[list, list]:
     """Derive per-module directional votes + ranked opportunities from a WM.
 
     Reuses the same vote extractors and opportunity ranker the legacy scanner
     used, sourced from the WorldModel's already-computed analysis (structure,
-    volume, wyckoff, order blocks, FVGs).  Modules needing raw price series the
-    ED plane does not retain (momentum, VWAP, currency strength, liquidity
-    sweep) are omitted.  Each extractor is guarded.
+    volume, wyckoff, order blocks, FVGs) and optional raw-series inputs for
+    momentum/VWAP/liquidity/currency-strength when provided by the caller.
+    Each extractor is guarded.
     """
     from brain.directional_consensus import (
         Vote,
         vote_from_structure,
+        vote_from_currency_strength,
         vote_from_volume,
         vote_from_wyckoff,
         vote_from_order_blocks,
         vote_from_fvg,
+        vote_from_liquidity,
+        vote_from_momentum,
+        vote_from_vwap,
         decide_opportunities,
     )
 
@@ -328,6 +341,54 @@ def build_consensus(
             if fvgs:
                 r = vote_from_fvg(list(fvgs), current_price, fvg_proximity(symbol))
                 votes.append(Vote("fvg", r[0], r[1], 1.0))
+        except Exception:
+            pass
+
+    if m5_df is not None and len(m5_df) > 0:
+        try:
+            if liquidity_mapper is not None:
+                try:
+                    pip_size = get_pip_size(symbol)
+                except Exception:
+                    pip_size = 0.0001
+                r = vote_from_liquidity(liquidity_mapper, m5_df, pip_size)
+                votes.append(Vote(
+                    "liquidity", r[0], r[1], 1.0, timeframe="M5",
+                    evidence=getattr(r, "evidence", {}) or {},
+                ))
+        except Exception:
+            pass
+        try:
+            r = vote_from_momentum(m5_df, h1_df)
+            votes.append(Vote(
+                "momentum", r[0], r[1], 1.0, timeframe="M5",
+                evidence=getattr(r, "evidence", {}) or {},
+            ))
+        except Exception:
+            pass
+        try:
+            mins = int(session_open_minutes) if session_open_minutes is not None else 0
+            r = vote_from_vwap(
+                m5_df, mins, float(current_price or 0.0),
+            )
+            votes.append(Vote(
+                "vwap", r[0], r[1], 1.0, timeframe="M5",
+                evidence=getattr(r, "evidence", {}) or {},
+            ))
+        except Exception:
+            pass
+
+    if currency_strength_analysis is not None:
+        try:
+            r = vote_from_currency_strength(
+                symbol,
+                currency_strength_analysis,
+                currency_pairs or {},
+            )
+            votes.append(Vote(
+                "currency_strength", r[0], r[1], 2.0,
+                evidence=getattr(r, "evidence", {}) or {},
+            ))
         except Exception:
             pass
 

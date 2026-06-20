@@ -28,6 +28,7 @@ from brain.world_model import WorldModelStore, build_world_model
 from core.system_context import SystemContext
 from persistence.event_store import get_event_store
 from persistence import domain_events as DE
+from persistence.position_store import PositionStore, STORE_UNAVAILABLE
 from tick import EventBus, Tick, TickStore, CandleCloseDetector, TickRouter
 from tick.models import CandleClose
 from scanner.candle_close_handler import CandleCloseHandler
@@ -401,11 +402,7 @@ class PositionEvaluator:
             symbol = getattr(pos, "symbol", "")
             direction = getattr(pos, "direction", "")
             sl = getattr(pos, "sl", 0.0) or 0.0
-            pip_size = 0.0001
-            try:
-                pip_size = get_pip_size(symbol)
-            except Exception:
-                pass
+            pip_size = self._safe_pip_size(symbol)
 
             mgmt = self._mgmt_store.get_or_create(
                 order_id,
@@ -540,13 +537,20 @@ class PositionEvaluator:
             typical_spread_pips: Optional[float] = None
 
             info = INSTRUMENT_REGISTRY.get(symbol)
-            pip_size = 0.0001
+            pip_size = self._safe_pip_size(symbol)
             if info is not None:
-                pip_size = info.pip_size if hasattr(info, "pip_size") else 0.0001
                 typical_spread_pips = info.typical_spread_pips if info.typical_spread_pips else None
 
             if tick is not None and tick.ask and tick.bid and pip_size > 0:
                 current_spread_pips = (tick.ask - tick.bid) / pip_size
+
+            m5_df = None
+            try:
+                data = self._pm.fetch_market_data(symbol, ["M5"], 120)
+                if isinstance(data, dict):
+                    m5_df = data.get("M5")
+            except Exception as exc:
+                logger.debug("[pos-eval] {} M5 fetch failed: {}", symbol, exc)
 
             h1_open = h1_close = h1_high = h1_low = h1_time = None
             last_h1 = self._last_h1_close.get(symbol)
@@ -570,6 +574,7 @@ class PositionEvaluator:
                 h1_last_closed_low=h1_low,
                 h1_last_closed_time=h1_time,
                 last_seen_h1_close=last_h1,
+                m5_df=m5_df,
             )
 
             if h1_time is not None:
@@ -578,6 +583,22 @@ class PositionEvaluator:
             return ctx
         except Exception:
             return None
+
+    def _safe_pip_size(self, symbol: str) -> float:
+        try:
+            spec = (
+                self._pm.get_symbol_spec(symbol)
+                if hasattr(self._pm, "get_symbol_spec")
+                else None
+            )
+            if spec and spec.get("pip_size", 0) > 0:
+                return float(spec["pip_size"])
+            return float(get_pip_size(symbol))
+        except Exception:
+            try:
+                return float(get_pip_size(symbol))
+            except Exception:
+                return 0.0001
 
     def suppress_ticket(self, ticket: str, duration: float = 60.0) -> None:
         """Suppress evaluation of a ticket for the given duration (seconds)."""
@@ -607,11 +628,7 @@ class PositionEvaluator:
             direction = getattr(pos, "direction", "")
             entry_price = _broker_entry_price(pos)
             norm_dir = "BUY" if direction.upper() in ("BUY", "LONG") else "SELL"
-            pip_size = 0.0001
-            try:
-                pip_size = get_pip_size(symbol)
-            except Exception:
-                pass
+            pip_size = self._safe_pip_size(symbol)
             sl = getattr(pos, "sl", 0.0) or mgmt.stop_loss or 0.0
             if norm_dir == "BUY":
                 pnl_pips = (price - entry_price) / pip_size if pip_size > 0 else 0.0
@@ -675,6 +692,47 @@ class PositionEvaluator:
                 except Exception:
                     de_heat_pct = 0.0
 
+            entry_oq = None
+            entry_eq = None
+            live_oq = None
+            live_eq = None
+            oq_decay = None
+            eq_decay = None
+            try:
+                entry_oq = getattr(mgmt, "entry_oq", None)
+                if entry_oq is not None:
+                    entry_oq = float(entry_oq)
+            except Exception:
+                entry_oq = None
+            try:
+                entry_eq = getattr(mgmt, "entry_eq", None)
+                if entry_eq is not None:
+                    entry_eq = float(entry_eq)
+            except Exception:
+                entry_eq = None
+            try:
+                if wm is not None and ctx.opportunity_executor is not None:
+                    candidates = (
+                        wm.candidates_list()
+                        if hasattr(wm, "candidates_list")
+                        else list(getattr(wm, "candidates", ()) or [])
+                    )
+                    want_dir = "LONG" if norm_dir == "BUY" else "SHORT"
+                    for cand in candidates:
+                        if str(getattr(cand, "direction", "")).upper() != want_dir:
+                            continue
+                        conf = float(getattr(cand, "confidence", 0.0) or 0.0)
+                        coh = float(getattr(cand, "coherence", 0.0) or 0.0)
+                        live_oq = max(0.0, min(10.0, conf * 10.0))
+                        live_eq = max(0.0, min(10.0, coh * 10.0))
+                        break
+            except Exception as exc:
+                logger.debug("[de-mgmt] live OQ/EQ read failed for {}: {}", symbol, exc)
+            if entry_oq is not None and live_oq is not None:
+                oq_decay = entry_oq - live_oq
+            if entry_eq is not None and live_eq is not None:
+                eq_decay = entry_eq - live_eq
+
             trade_ctx = TradeContext(
                 symbol=symbol,
                 order_id=order_id,
@@ -693,6 +751,12 @@ class PositionEvaluator:
                 original_risk_pips=risk_pips,
                 scan_score=current_score,
                 scan_direction=norm_dir.replace("BUY", "LONG").replace("SELL", "SHORT"),
+                live_oq=live_oq,
+                live_eq=live_eq,
+                entry_oq=entry_oq,
+                entry_eq=entry_eq,
+                oq_decay=oq_decay,
+                eq_decay=eq_decay,
                 d1_trend=d1_trend,
                 d1_confidence=d1_conf,
                 h4_trend=h4_trend,
@@ -837,6 +901,30 @@ class PositionEvaluator:
                         source="decision_engine",
                         reason=f"DE breakeven: {getattr(de_result, 'reason', '')[:60]}",
                     )])
+            elif action_name == Action.SCALE_IN.value:
+                try:
+                    scale_lots = float(getattr(de_result, "scale_lots", 0.0) or 0.0)
+                    if scale_lots > 0.0:
+                        tp = float(_broker_tp(pos) or 0.0)
+                        if tp > 0.0:
+                            idem_key = generate_idempotency_key(symbol, direction, scale_lots)
+                            comment = build_order_comment(
+                                "APEX", idem_key, score=current_score,
+                            )
+                            self._aggregator.submit([Intent.open(
+                                symbol=symbol,
+                                direction=direction,
+                                lots=scale_lots,
+                                entry_price=price,
+                                sl=sl,
+                                tp=tp,
+                                source="decision_engine",
+                                reason=f"DE scale-in: {getattr(de_result, 'reason', '')[:60]}",
+                                comment=comment,
+                                idempotency_key=idem_key,
+                            )])
+                except Exception as exc:
+                    logger.debug("[de-mgmt] scale-in intent build failed for {}: {}", order_id, exc)
 
             tf_align = getattr(sa, "tf_alignment", 0.0)
             momentum = getattr(sa, "momentum", 0.0)
@@ -2054,7 +2142,7 @@ class EventDrivenSystem:
         if ctx.risk_engine is not None:
             try:
                 broker_balance = self._pm.get_total_balance()
-                if broker_balance and broker_balance > 0:
+                if broker_balance is not None:
                     ctx.risk_engine.reconcile_balance(broker_balance)
             except Exception as exc:
                 logger.debug("[risk-state] balance reconcile failed: {}", exc)
@@ -2489,13 +2577,16 @@ class EventDrivenSystem:
         symbol = meta.get("symbol", "") if isinstance(meta, dict) else ""
         direction = meta.get("direction", "") if isinstance(meta, dict) else ""
         pnl_dollars = float(getattr(deal_info, "pnl", 0.0) or 0.0)
+        broker_commission = float(getattr(deal_info, "commission", 0.0) or 0.0)
+        broker_swap = float(getattr(deal_info, "swap", 0.0) or 0.0)
+        broker_fee = float(getattr(deal_info, "fee", 0.0) or 0.0)
         close_price = float(getattr(deal_info, "close_price", 0.0) or 0.0)
         exit_reason = getattr(deal_info, "exit_reason", None) or "EXTERNAL_CLOSE"
         raw_broker_reason = getattr(deal_info, "raw_reason_code", None)
 
         pnl_pips = 0.0
         try:
-            pip_size = get_pip_size(symbol)
+            pip_size = self._safe_pip_size(symbol)
             entry = float(
                 (self._entry_context.get(ticket) or {}).get("entry_price", 0.0)
                 or 0.0
@@ -2522,6 +2613,9 @@ class EventDrivenSystem:
             exit_reason=exit_reason,
             exit_reason_source="broker",
             raw_broker_reason=raw_broker_reason,
+            commission=broker_commission,
+            swap=broker_swap,
+            fee=broker_fee,
         )
         try:
             self._mgmt_store.remove(str(ticket))
@@ -2596,6 +2690,9 @@ class EventDrivenSystem:
         exit_reason: Optional[str] = None
         exit_reason_source = "event_driven"
         raw_broker_reason: Optional[int] = None
+        broker_commission = 0.0
+        broker_swap = 0.0
+        broker_fee = 0.0
 
         resp = getattr(result, "broker_response", None)
         platform = getattr(resp, "platform", "") if resp is not None else ""
@@ -2620,6 +2717,9 @@ class EventDrivenSystem:
             di_pnl = getattr(deal_info, "pnl", None)
             if di_pnl is not None:
                 pnl_dollars = float(di_pnl)
+            broker_commission = float(getattr(deal_info, "commission", 0.0) or 0.0)
+            broker_swap = float(getattr(deal_info, "swap", 0.0) or 0.0)
+            broker_fee = float(getattr(deal_info, "fee", 0.0) or 0.0)
             di_close = getattr(deal_info, "close_price", None)
             if di_close:
                 close_price = float(di_close)
@@ -2631,7 +2731,7 @@ class EventDrivenSystem:
 
         if symbol and direction:
             try:
-                pip_size = get_pip_size(symbol)
+                pip_size = self._safe_pip_size(symbol)
                 entry = float(
                     (self._entry_context.get(ticket) or {}).get("entry_price", 0.0)
                     or 0.0
@@ -2658,6 +2758,9 @@ class EventDrivenSystem:
             exit_reason=exit_reason,
             exit_reason_source=exit_reason_source,
             raw_broker_reason=raw_broker_reason,
+            commission=broker_commission,
+            swap=broker_swap,
+            fee=broker_fee,
         )
 
     def _recover_open_positions(self) -> None:
@@ -4242,6 +4345,9 @@ class EventDrivenSystem:
         exit_reason: Optional[str] = None,
         exit_reason_source: str = "event_driven",
         raw_broker_reason: Optional[int] = None,
+        commission: float = 0.0,
+        swap: float = 0.0,
+        fee: float = 0.0,
     ) -> None:
         """Feed closed-trade P&L into all risk + learning subsystems.
 

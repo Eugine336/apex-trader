@@ -616,6 +616,23 @@ class PlatformManager:
         connector = self._connector_by_platform_str(platform)
         return connector.get_deal_close_info(order_id)
 
+    def get_symbol_spec(self, symbol: str) -> dict:
+        """Return broker symbol spec for *symbol*, or ``{}`` when unavailable."""
+        try:
+            connector = self.get_connector(symbol)
+        except Exception as exc:
+            logger.debug("[platform_manager] get_symbol_spec connector lookup failed {}: {}", symbol, exc)
+            return {}
+        try:
+            spec_fn = getattr(connector, "get_symbol_spec", None)
+            if callable(spec_fn):
+                spec = spec_fn(symbol)
+                if isinstance(spec, dict):
+                    return spec
+        except Exception as exc:
+            logger.debug("[platform_manager] get_symbol_spec failed {}: {}", symbol, exc)
+        return {}
+
     def _connector_by_platform_str(self, platform: str) -> BaseConnector:
         """Resolve "mt5", "mt5_0", "mt5_1", "deriv" to the right connector."""
         if platform == "deriv":
