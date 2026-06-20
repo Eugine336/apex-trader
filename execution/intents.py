@@ -23,6 +23,7 @@ class IntentType(IntEnum):
     CLOSE supersedes everything.
     """
 
+    OPEN = 5
     MODIFY_TP = 10
     MODIFY_SL = 20
     PARTIAL_CLOSE = 30
@@ -50,6 +51,14 @@ class Intent:
     close_fraction: Optional[float] = None
     priority: int = 0
 
+    # ── OPEN-intent fields (entries carry no position ticket yet) ──────
+    direction: Optional[str] = None
+    lots: Optional[float] = None
+    entry_price: Optional[float] = None
+    stake_usd: Optional[float] = None
+    comment: Optional[str] = None
+    idempotency_key: Optional[str] = None
+
     @staticmethod
     def close(
         *,
@@ -67,6 +76,45 @@ class Intent:
             source=source,
             reason=reason,
             priority=IntentType.CLOSE,
+        )
+
+    @staticmethod
+    def open(
+        *,
+        symbol: str,
+        direction: str,
+        lots: float,
+        sl: float,
+        tp: float,
+        source: str,
+        reason: str,
+        entry_price: float = 0.0,
+        stake_usd: Optional[float] = None,
+        comment: str = "",
+        idempotency_key: str = "",
+        timestamp: Optional[datetime] = None,
+    ) -> Intent:
+        """An intent to OPEN a new position.
+
+        Carries no ``position_ticket`` (none exists until the broker fills it);
+        ``new_sl``/``new_tp`` hold the initial stop/target.
+        """
+        return Intent(
+            intent_type=IntentType.OPEN,
+            symbol=symbol,
+            position_ticket="",
+            timestamp=timestamp or datetime.now(timezone.utc),
+            source=source,
+            reason=reason,
+            new_sl=sl,
+            new_tp=tp,
+            direction=direction,
+            lots=lots,
+            entry_price=entry_price,
+            stake_usd=stake_usd,
+            comment=comment,
+            idempotency_key=idempotency_key,
+            priority=IntentType.OPEN,
         )
 
     @staticmethod

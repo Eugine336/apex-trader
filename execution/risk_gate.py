@@ -71,6 +71,9 @@ class RiskGate:
             Current account drawdown as a positive percentage (e.g. 8.5 means
             the account is 8.5 % below peak equity).
         """
+        if intent.intent_type == IntentType.OPEN:
+            return self._validate_open(intent, account_drawdown_pct)
+
         result = self._check_position_exists(intent, open_positions)
         if not result.allowed:
             return result
@@ -100,6 +103,25 @@ class RiskGate:
                 reason=f"Position {intent.position_ticket} no longer open",
             )
         return GateResult(allowed=True)
+
+    def _validate_open(
+        self, intent: Intent, drawdown_pct: float,
+    ) -> GateResult:
+        """Execution-time validation for an OPEN intent.
+
+        The heavy entry gating (drawdown freeze, governor, account risk,
+        correlation) runs upstream when the intent is created; this is the
+        last-mile check: basic validity, the emergency-drawdown block on new
+        entries, and the shared broker rate limit.
+        """
+        if not intent.symbol or not intent.direction:
+            return GateResult(allowed=False, reason="OPEN intent missing symbol/direction")
+        if not intent.lots and not intent.stake_usd:
+            return GateResult(allowed=False, reason="OPEN intent has no size (lots/stake)")
+        result = self._check_exposure(intent, drawdown_pct)
+        if not result.allowed:
+            return result
+        return self._check_rate_limit()
 
     def _check_sl_direction(
         self, intent: Intent, positions: dict[str, dict],
