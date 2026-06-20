@@ -23,7 +23,7 @@ from typing import Any, Optional
 import pandas as pd
 from loguru import logger
 
-from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open, Platform
+from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open, is_session_gated, Platform
 from brain.world_model import WorldModelStore, build_world_model
 from core.system_context import SystemContext
 from persistence.event_store import get_event_store
@@ -1091,6 +1091,7 @@ class EventDrivenSystem:
             world_model_store=self._wm_store,
             intent_aggregator=self._aggregator,
             mgmt_store=self._mgmt_store,
+            worker_config=self._build_worker_config(),
             ctx=ctx,
         )
         # Phase 3 (event-reactive management): the tick-eval loop evaluates
@@ -1113,6 +1114,7 @@ class EventDrivenSystem:
             pip_size_lookup=self._safe_pip_size,
             on_entry_decision=self._on_entry_decision,
             is_instrument_known=lambda s: s in INSTRUMENT_REGISTRY,
+            is_market_open=self._check_market_open,
             is_session_active=self._check_session_active,
             is_news_clear=self._check_news_clear,
             get_spread_pips=self._get_spread_pips,
@@ -1558,6 +1560,15 @@ class EventDrivenSystem:
             # advance, so a dead loop can no longer mask itself.
             self._wd_last_flush_count = getattr(self._flush_loop, "_flush_count", 0)
             self._wd_last_ticks_routed = getattr(self._tick_router, "ticks_routed", 0)
+            # Weekend-awareness: suppress tick-stall CRITICALs during FX closure
+            # unless we trade 24/7 synthetics that should always be ticking.
+            try:
+                setter = getattr(ctx.process_watchdog, "set_market_state_provider", None)
+                if callable(setter):
+                    _, deriv_symbols = self._classify_symbols()
+                    setter(self._is_fx_market_closed, bool(deriv_symbols))
+            except Exception as exc:
+                logger.debug("[event-driven] watchdog market-state wiring failed: {}", exc)
             self._watchdog_thread = threading.Thread(
                 target=self._watchdog_loop, daemon=True, name="ed-watchdog",
             )
@@ -2221,16 +2232,126 @@ class EventDrivenSystem:
             return None
 
     def _check_session_active(self, symbol: str) -> bool:
-        """SessionEngine callback for EntryOrchestrator gate."""
+        """SessionEngine callback for EntryOrchestrator gate.
+
+        24/7 instruments (Deriv synthetic indices) never close — they bypass
+        the FX session / weekend gate entirely.  For session-gated (FX) symbols
+        we additionally block new entries near the Friday close and during the
+        gap-prone first minutes of the Sunday FX reopen.
+        """
         ctx = self._ctx
         if ctx is None or ctx.session_engine is None:
             return True
+        # 24/7 synthetics — never gate on session or weekend status.
         try:
-            status = ctx.session_engine.get_status()
+            if is_always_open(symbol):
+                return True
+        except Exception:
+            pass
+        try:
+            session_engine = ctx.session_engine
+            status = session_engine.get_status()
+            if not status.is_tradeable:
+                return False
+            # Weekend-edge buffers only apply to session-gated (FX) instruments.
+            if is_session_gated(symbol):
+                risk_cfg = getattr(self._config, "risk", None)
+                close_buffer = int(getattr(risk_cfg, "weekend_close_buffer_minutes", 15))
+                mins_to_close = session_engine.minutes_to_fx_close()
+                if mins_to_close < close_buffer:
+                    logger.info(
+                        "[session-gate] {} — blocking entry, {}min to FX weekend close",
+                        symbol, mins_to_close,
+                    )
+                    return False
+                # Sunday-open gap window: block the first N minutes after the
+                # Sunday 22:00 UTC FX reopen (wide spreads / gap risk).
+                sunday_buffer = int(getattr(risk_cfg, "sunday_open_buffer_minutes", 30))
+                now = datetime.now(timezone.utc)
+                if now.weekday() == 6 and now.hour == 22 and now.minute < sunday_buffer:
+                    logger.info(
+                        "[session-gate] {} — blocking entry, Sunday-open gap window",
+                        symbol,
+                    )
+                    return False
             return status.is_tradeable
         except Exception as exc:
             logger.debug("[session-gate] SessionEngine check failed: {}", exc)
             return True
+
+    def _is_fx_market_closed(self) -> bool:
+        """True when the FX market is closed (weekend) per the SessionEngine.
+
+        Used to suppress the process watchdog's tick-stall alert during the
+        weekend, when FX ticks legitimately stop.
+        """
+        ctx = self._ctx
+        if ctx is None or ctx.session_engine is None:
+            return False
+        try:
+            return ctx.session_engine.get_status().current_session == "WEEKEND"
+        except Exception:
+            return False
+
+    def _build_worker_config(self) -> WorkerConfig:
+        """Build the PositionWorker config, mapping AppConfig weekend-protection
+        settings onto the worker so live config changes take effect.
+
+        Defensive: only primitive values are consumed (tests construct the
+        system with a MagicMock config, which would otherwise inject mocks).
+        """
+        cfg = WorkerConfig()
+        risk_cfg = getattr(self._config, "risk", None)
+        if risk_cfg is None:
+            return cfg
+        enabled = getattr(risk_cfg, "weekend_protection_enabled", None)
+        if isinstance(enabled, bool):
+            cfg.weekend_protection_enabled = enabled
+        mode = getattr(risk_cfg, "weekend_protection_mode", None)
+        if isinstance(mode, str):
+            cfg.weekend_protection_mode = mode
+        buffer = getattr(risk_cfg, "weekend_close_buffer_minutes", None)
+        if isinstance(buffer, int) and not isinstance(buffer, bool):
+            cfg.weekend_close_buffer_minutes = buffer
+        friday_hour = getattr(risk_cfg, "friday_close_hour_utc", None)
+        if isinstance(friday_hour, int) and not isinstance(friday_hour, bool):
+            cfg.friday_close_hour_utc = friday_hour
+        return cfg
+
+    def _check_market_open(self, symbol: str) -> bool:
+        """Broker-truth market-open gate for the EntryOrchestrator.
+
+        24/7 instruments (Deriv synthetics) are always open.  For everything
+        else we consult the broker's symbol ``trade_mode`` (MT5): CLOSEONLY (3)
+        or DISABLED (0) means the market is closed and new entries are blocked.
+        When the broker spec is unavailable (tests / dev) we pass through — the
+        SessionEngine gate still applies.
+        """
+        try:
+            if is_always_open(symbol):
+                return True
+        except Exception:
+            pass
+        try:
+            connector = self._pm.get_connector(symbol)
+        except Exception:
+            return True
+        spec_fn = getattr(connector, "get_symbol_spec", None)
+        if not callable(spec_fn):
+            return True
+        try:
+            spec = spec_fn(symbol)
+        except Exception as exc:
+            logger.debug("[market-open] symbol spec lookup failed for {}: {}", symbol, exc)
+            return True
+        mode = spec.get("trade_mode") if isinstance(spec, dict) else None
+        if mode is None:
+            return True
+        # 0 = DISABLED, 3 = CLOSEONLY — market not open for new positions.
+        if mode in (0, 3):
+            logger.info("[market-open] {} closed — broker trade_mode={}", symbol, mode)
+            return False
+        return True
 
     def _check_news_clear(self, symbol: str) -> bool:
         """NewsGuard callback for EntryOrchestrator gate."""
@@ -2715,6 +2836,7 @@ class EventDrivenSystem:
                         proposed_tp2_price=tp2,
                         scanner_score=float(conviction),
                         de_confidence=de_conviction if de_conviction > 0 else float(conviction) / 100.0,
+                        day_of_week=datetime.now(timezone.utc).weekday(),
                     )
                     plan = ctx.trade_planner.plan_trade(plan_ctx)
                     if plan is not None and hasattr(plan, "action"):

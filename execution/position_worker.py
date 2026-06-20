@@ -28,6 +28,7 @@ from typing import Optional
 
 from execution.intents import Intent, IntentType
 from execution.position_snapshot import PositionSnapshot
+from config import is_always_open, is_session_gated
 
 
 @dataclass
@@ -88,6 +89,15 @@ class WorkerConfig:
     session_close_enabled: bool = True
     index_close_buffer_minutes: int = 30
     dead_zone_management: bool = True
+
+    # ── Weekend protection ───────────────────────────────────────────
+    # Pre-weekend de-risk for session-gated (FX) and index positions. Mirrors
+    # AppConfig.risk.weekend_protection_*; synthetics (24/7) are never touched.
+    weekend_protection_enabled: bool = True
+    weekend_protection_mode: str = "derisk"   # "close" | "derisk" | "reduce"
+    weekend_close_buffer_minutes: int = 15
+    friday_close_hour_utc: int = 21
+    weekend_reduce_fraction: float = 0.5
 
     # ── Spread deterioration ─────────────────────────────────────────
     spread_monitor_enabled: bool = True
@@ -177,6 +187,7 @@ class PositionWorker:
         # ── Layer 2: Exit checks (ExitChecksMixin logic) ─────────────
         self._check_absolute_profit_protection(snap, intents)
         self._check_dynamic_sl_tightening(snap, intents)
+        self._check_weekend_protection(snap, now, intents)
 
         if scan is not None:
             self._check_invalidation(snap, scan, intents)
@@ -572,6 +583,69 @@ class PositionWorker:
                         source="dead_zone_protection",
                         reason=f"Dead zone — SL→BE {be_level:.5f}",
                     ))
+
+    def _check_weekend_protection(
+        self,
+        snap: PositionSnapshot,
+        now: datetime,
+        out: list[Intent],
+    ) -> None:
+        """Pre-weekend protection for session-gated (FX) and index positions.
+
+        Within ``weekend_close_buffer_minutes`` of the Friday FX close, apply
+        the configured action so positions are not carried over the weekend
+        gap unmanaged.  24/7 synthetics are never touched.
+
+        Modes:
+            "close"  — flatten the position
+            "derisk" — move the SL to breakeven (if not already there)
+            "reduce" — partially close to cut weekend exposure
+        """
+        if not self.cfg.weekend_protection_enabled:
+            return
+        # Never touch 24/7 synthetics — they trade through the weekend.
+        if is_always_open(snap.symbol):
+            return
+        if now.weekday() != 4:  # Friday only
+            return
+        close_total = self.cfg.friday_close_hour_utc * 60
+        now_total = now.hour * 60 + now.minute
+        diff = close_total - now_total
+        if not (0 < diff <= self.cfg.weekend_close_buffer_minutes):
+            return
+
+        mode = self.cfg.weekend_protection_mode
+        if mode == "close":
+            out.append(Intent.close(
+                symbol=snap.symbol,
+                ticket=snap.order_id,
+                source="weekend_protection",
+                reason=f"Weekend protection — FX closes in {diff}min (close)",
+            ))
+        elif mode == "reduce":
+            if not snap.partial_closed:
+                out.append(Intent.partial_close(
+                    symbol=snap.symbol,
+                    ticket=snap.order_id,
+                    fraction=self.cfg.weekend_reduce_fraction,
+                    source="weekend_protection",
+                    reason=f"Weekend protection — FX closes in {diff}min (reduce)",
+                ))
+        else:  # "derisk" — move SL to breakeven
+            if not snap.at_breakeven and snap.pip_size > 0:
+                be_level = self._breakeven_level(
+                    snap.entry_price,
+                    "LONG" if snap.is_long else "SHORT",
+                    self.cfg.breakeven_buffer_pips,
+                    snap.pip_size,
+                )
+                out.append(Intent.modify_sl(
+                    symbol=snap.symbol,
+                    ticket=snap.order_id,
+                    new_sl=be_level,
+                    source="weekend_protection",
+                    reason=f"Weekend protection — FX closes in {diff}min (SL→BE {be_level:.5f})",
+                ))
 
     def _check_opportunity_cost(
         self,

@@ -659,6 +659,10 @@ class RiskConfig:
     # Hour (UTC) at which the FX week is treated as closing on Friday. New FX
     # entries are blocked within weekend_close_buffer_minutes of this time.
     friday_close_hour_utc: int = 21
+    # Minutes after the Sunday 22:00 UTC FX reopen during which new entries on
+    # session-gated (FX) instruments are blocked — the open is gap-prone with
+    # wide spreads, so we wait out the first burst before trading it.
+    sunday_open_buffer_minutes: int = 30
     micro_account_threshold_usd: float = 100.0
     deriv_min_stake_usd: float = 0.35
     # Hard ceiling on the ACTUAL fraction of the account a single trade may
