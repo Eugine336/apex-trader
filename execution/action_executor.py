@@ -10,7 +10,8 @@ The executor guarantees:
    ticket) are not.
 4. **Metrics** — counters and latency tracked for observability.
 
-Thread-safe: uses a ``threading.Lock`` to serialize ``execute()`` calls.
+Thread-safe: a ``threading.Lock`` serializes the broker call itself; retry
+backoff sleeps run outside the lock so one retrying intent never stalls others.
 """
 
 from __future__ import annotations
@@ -193,8 +194,7 @@ class ActionExecutor:
                 intent=intent, success=False, error=reason,
             )
 
-        with self._lock:
-            return self._execute_with_retry(intent, open_positions)
+        return self._execute_with_retry(intent, open_positions)
 
     def execute_batch(
         self,
@@ -244,7 +244,11 @@ class ActionExecutor:
 
             t0 = time.monotonic()
             try:
-                result = self._dispatch(intent, open_positions)
+                # Serialize only the actual broker call. The retry backoff
+                # ``time.sleep`` above runs OUTSIDE the lock so a retrying intent
+                # never stalls other broker operations.
+                with self._lock:
+                    result = self._dispatch(intent, open_positions)
                 elapsed_ms = (time.monotonic() - t0) * 1000
 
                 if result.success:
