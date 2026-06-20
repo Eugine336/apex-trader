@@ -16,6 +16,38 @@ from datetime import datetime, timezone
 from typing import Optional
 
 
+def _pos_pnl(pos) -> float:
+    """Broker-reported P&L, falling back to legacy attribute names."""
+    v = getattr(pos, "pnl", None)
+    if v is None:
+        v = getattr(pos, "broker_pnl", None)
+    return float(v) if v is not None else 0.0
+
+
+def _pos_lots(pos) -> float:
+    """Broker-reported lots, falling back to legacy ``broker_lots``."""
+    v = getattr(pos, "lots", None)
+    if not v:
+        v = getattr(pos, "broker_lots", None)
+    return float(v) if v else 0.0
+
+
+def _pos_entry(pos) -> float:
+    """Broker open price, falling back to legacy ``entry_price``."""
+    v = getattr(pos, "open_price", None)
+    if not v:
+        v = getattr(pos, "entry_price", None)
+    return float(v) if v else 0.0
+
+
+def _pos_tp(pos) -> float:
+    """Broker take-profit (single broker TP == tp1), falling back to ``tp1``."""
+    v = getattr(pos, "tp", None)
+    if not v:
+        v = getattr(pos, "tp1", None)
+    return float(v) if v else 0.0
+
+
 @dataclass(frozen=True)
 class PositionSnapshot:
     """Immutable point-in-time view of a single open position.
@@ -129,13 +161,13 @@ def build_position_snapshot(
     Accepts the live mutable objects and freezes their state. Safe to call
     from the trading loop thread — the returned snapshot is immutable.
     """
-    tp1 = getattr(pos, "tp1", 0.0) or 0.0
+    tp1 = _pos_tp(pos)
     tp2 = getattr(pos, "tp2", 0.0) or 0.0
     sl = getattr(pos, "sl", 0.0) or 0.0
 
     sl_original = sl
     tp2_original = tp2
-    remaining_lots = getattr(pos, "lots", 0.0) or 0.0
+    remaining_lots = _pos_lots(pos)
     pnl_pips = 0.0
     pnl_dollars = 0.0
     pip_size = 0.0001
@@ -191,8 +223,8 @@ def build_position_snapshot(
         platform=getattr(pos, "platform", ""),
         symbol=getattr(pos, "symbol", ""),
         direction=getattr(pos, "direction", ""),
-        entry_price=getattr(pos, "entry_price", 0.0),
-        lots=getattr(pos, "lots", 0.0),
+        entry_price=_pos_entry(pos),
+        lots=_pos_lots(pos),
         remaining_lots=remaining_lots,
         open_time=getattr(pos, "open_time", datetime.now(timezone.utc)),
         score=getattr(pos, "score", 0),
@@ -209,8 +241,8 @@ def build_position_snapshot(
         partial_closed=partial_closed,
         re_entry_eligible=getattr(pos, "re_entry_eligible", False),
         current_price=current_price,
-        broker_pnl=getattr(pos, "broker_pnl", 0.0),
-        broker_lots=getattr(pos, "broker_lots", 0.0),
+        broker_pnl=_pos_pnl(pos),
+        broker_lots=_pos_lots(pos),
         pnl_pips=pnl_pips,
         pnl_dollars=pnl_dollars,
         pip_size=pip_size,

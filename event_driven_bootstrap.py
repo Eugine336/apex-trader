@@ -63,6 +63,42 @@ def _struct_trend_conf(struct_by_tf: dict, tf: str) -> tuple[str, float]:
     return trend, float(getattr(sa, "confidence", 0.0) or 0.0)
 
 
+# ── Broker-truth field readers ───────────────────────────────────────
+# Open positions returned by the platform layer are broker ``PositionInfo``
+# objects (fields: ``pnl``, ``lots``, ``open_price``, ``current_price``,
+# ``sl``, ``tp``, ``swap``).  Older call sites read legacy attribute names
+# (``profit``, ``entry_price``, ``tp1``/``tp2``) that do not exist on
+# ``PositionInfo`` and so silently resolved to defaults.  These helpers
+# prefer the broker-reported field and fall back to the legacy name so both
+# real broker objects and any legacy/test doubles resolve correctly.
+
+
+def _broker_pnl(pos) -> float:
+    """Broker-reported P&L for an open position (falls back to legacy)."""
+    v = getattr(pos, "pnl", None)
+    if v is None:
+        v = getattr(pos, "profit", None)
+    if v is None:
+        v = getattr(pos, "broker_pnl", None)
+    return float(v) if v is not None else 0.0
+
+
+def _broker_entry_price(pos, default: float = 0.0) -> float:
+    """Broker open price for a position (falls back to legacy ``entry_price``)."""
+    v = getattr(pos, "open_price", None)
+    if not v:
+        v = getattr(pos, "entry_price", None)
+    return float(v) if v else float(default)
+
+
+def _broker_tp(pos) -> float:
+    """Broker take-profit for a position (single broker TP == tp1)."""
+    v = getattr(pos, "tp", None)
+    if not v:
+        v = getattr(pos, "tp1", None)
+    return float(v) if v else 0.0
+
+
 # ── Tick source threads ──────────────────────────────────────────────
 
 
@@ -375,13 +411,13 @@ class PositionEvaluator:
                 order_id,
                 original_stop_loss=sl,
                 stop_loss=sl,
-                tp1=getattr(pos, "tp1", 0.0) or 0.0,
+                tp1=_broker_tp(pos),
                 tp2=getattr(pos, "tp2", 0.0) or 0.0,
                 original_tp2=getattr(pos, "tp2", 0.0) or 0.0,
                 remaining_size_lots=getattr(pos, "lots", 0.0) or 0.0,
                 pip_size=pip_size,
-                highest_price_since_entry=getattr(pos, "entry_price", price),
-                lowest_price_since_entry=getattr(pos, "entry_price", price),
+                highest_price_since_entry=_broker_entry_price(pos, price),
+                lowest_price_since_entry=_broker_entry_price(pos, price),
             )
 
             if price > mgmt.highest_price_since_entry:
@@ -420,7 +456,7 @@ class PositionEvaluator:
                     elif intent.intent_type == IntentType.MODIFY_SL and intent.new_sl:
                         mgmt.stop_loss = intent.new_sl
                         if not mgmt.at_breakeven:
-                            entry = getattr(pos, "entry_price", 0.0)
+                            entry = _broker_entry_price(pos)
                             if direction.upper() in ("BUY", "LONG"):
                                 if intent.new_sl >= entry:
                                     mgmt.at_breakeven = True
@@ -569,7 +605,7 @@ class PositionEvaluator:
             from decision.actions import Action
             symbol = getattr(pos, "symbol", "")
             direction = getattr(pos, "direction", "")
-            entry_price = getattr(pos, "entry_price", 0.0)
+            entry_price = _broker_entry_price(pos)
             norm_dir = "BUY" if direction.upper() in ("BUY", "LONG") else "SELL"
             pip_size = 0.0001
             try:
@@ -647,7 +683,7 @@ class PositionEvaluator:
                 current_price=price,
                 current_sl=sl,
                 pnl_pips=pnl_pips,
-                pnl_dollars=getattr(pos, "profit", 0.0) or 0.0,
+                pnl_dollars=_broker_pnl(pos),
                 hold_minutes=hold_mins,
                 at_breakeven=mgmt.at_breakeven,
                 tp1_hit=mgmt.tp1_hit,
@@ -1091,6 +1127,16 @@ class EventDrivenSystem:
         # fill time so the close path can attribute the outcome to the right
         # learned keys.
         self._entry_context: dict[Any, dict[str, Any]] = {}
+
+        # Dedup guard so a closed ticket's realized P&L is booked exactly once
+        # across the system-close path (_handle_close_result) and the
+        # external-close reconciliation path (_reconcile_external_closes).
+        self._closed_tickets: dict[str, float] = {}
+        self._closed_tickets_lock = threading.Lock()
+        # Last-seen open book for external-close detection:
+        # ticket -> {symbol, direction, platform}.
+        self._known_open: dict[str, dict] = {}
+        self._external_close_attempts: dict[str, int] = {}
 
         # ── Analysis plane ───────────────────────────────────────────
         self._candle_handler = CandleCloseHandler(
@@ -1948,7 +1994,7 @@ class EventDrivenSystem:
                 positions = self._pm.get_all_open_positions()
                 acct_unrealized: dict[str, float] = defaultdict(float)
                 for pos in positions:
-                    pnl = getattr(pos, "profit", 0.0) or 0.0
+                    pnl = _broker_pnl(pos)
                     sym = getattr(pos, "symbol", "")
                     acct = ctx.account_key(sym, self._pm)
                     acct_unrealized[acct] += pnl
@@ -1999,6 +2045,50 @@ class EventDrivenSystem:
             )
         except Exception:
             return
+
+        # ── Broker-truth balance reconciliation (B13) ──────────────────
+        # Pull the risk engine's running balance back to broker truth every
+        # cycle so commission/swap/slippage/manual-trade drift can never
+        # accumulate.  Fail-safe — leaves the internal balance untouched on
+        # any failure (reconcile_balance ignores None/negative).
+        if ctx.risk_engine is not None:
+            try:
+                broker_balance = self._pm.get_total_balance()
+                if broker_balance and broker_balance > 0:
+                    ctx.risk_engine.reconcile_balance(broker_balance)
+            except Exception as exc:
+                logger.debug("[risk-state] balance reconcile failed: {}", exc)
+
+        # ── Broker margin-level stop-out proximity (B14) ───────────────
+        # The broker's margin_level is the authoritative stop-out signal.
+        # Warn (once, hysteretically) when any account approaches it.
+        margin_warned = getattr(self, "_margin_warned", None)
+        if margin_warned is None:
+            margin_warned = {}
+            self._margin_warned = margin_warned
+        try:
+            for acct, ainfo in self._pm.get_account_summary().items():
+                ml = float(getattr(ainfo, "margin_level", 0.0) or 0.0)
+                if 0.0 < ml < 150.0:
+                    if not margin_warned.get(acct, False):
+                        logger.critical(
+                            "[risk-state] account {} margin level {:.0f}% — "
+                            "approaching broker stop-out", acct, ml,
+                        )
+                        margin_warned[acct] = True
+                elif ml >= 200.0:
+                    margin_warned[acct] = False
+        except Exception as exc:
+            logger.debug("[risk-state] margin-level check failed: {}", exc)
+
+        # ── External-close reconciliation (B16) ────────────────────────
+        # Book positions closed at the broker (stop-out / manual / SL/TP)
+        # instead of silently dropping their local state.  Broker-confirmed
+        # before booking; fully fail-safe.
+        try:
+            self._reconcile_external_closes(positions)
+        except Exception as exc:
+            logger.debug("[risk-state] external-close reconcile failed: {}", exc)
 
         position_risks: list = []
         acct_risk_dollars: dict[str, float] = defaultdict(float)
@@ -2108,10 +2198,13 @@ class EventDrivenSystem:
         # ── Portfolio risk state machine ──
         if ctx.portfolio_risk_sm is not None:
             try:
-                equity = (
-                    ctx.account_risk.total_balance()
-                    if ctx.account_risk is not None else 0.0
-                )
+                equity = 0.0
+                try:
+                    equity = float(self._pm.get_total_equity() or 0.0)
+                except Exception:
+                    equity = 0.0
+                if equity <= 0 and ctx.account_risk is not None:
+                    equity = ctx.account_risk.total_balance()
                 heat_pct = (
                     compute_live_heat_pct(position_risks, equity)
                     if equity > 0 else 0.0
@@ -2222,7 +2315,7 @@ class EventDrivenSystem:
                 worst_pos = None
                 worst_pnl = float("inf")
                 for pos in positions:
-                    pnl = getattr(pos, "profit", getattr(pos, "pnl", 0.0)) or 0.0
+                    pnl = _broker_pnl(pos)
                     if pnl < worst_pnl:
                         worst_pnl = pnl
                         worst_pos = pos
@@ -2246,7 +2339,7 @@ class EventDrivenSystem:
                 for pos in positions:
                     ticket = str(getattr(pos, "order_id", getattr(pos, "ticket", "")))
                     symbol = getattr(pos, "symbol", "")
-                    entry_price = getattr(pos, "entry_price", 0.0) or 0.0
+                    entry_price = _broker_entry_price(pos)
                     current_sl = getattr(pos, "sl", 0.0) or 0.0
                     direction = getattr(pos, "direction", "LONG")
                     if not ticket or entry_price <= 0:
@@ -2345,6 +2438,148 @@ class EventDrivenSystem:
         except Exception as exc:
             logger.debug("[shadow-resolve] failed: {}", exc)
 
+    def _mark_booked(self, ticket: str) -> bool:
+        """Claim a ticket for P&L booking exactly once.
+
+        Returns True if this caller is the first to book the ticket, False if
+        it was already booked (caller should skip to avoid a double count).
+        Thread-safe; bounded.
+        """
+        if not ticket:
+            return True
+        key = str(ticket)
+        now = _time.monotonic()
+        with self._closed_tickets_lock:
+            if len(self._closed_tickets) > 256:
+                cutoff = now - 3600.0
+                self._closed_tickets = {
+                    t: ts for t, ts in self._closed_tickets.items() if ts > cutoff
+                }
+            if key in self._closed_tickets:
+                return False
+            self._closed_tickets[key] = now
+            return True
+
+    def _book_external_close(self, ticket: str, meta: dict) -> bool:
+        """Book a position closed outside the system using broker truth.
+
+        Returns True when the close is confirmed by the broker's deal history
+        and booked (or was already booked by the system-close path); False when
+        the close cannot be confirmed yet (transient fetch failure, reconnect,
+        or a platform without deal history) so the caller retries next cycle.
+        Requiring broker confirmation before booking prevents a transient empty
+        position fetch from false-booking live positions as closed.
+        """
+        platform = (meta.get("platform") or "") if isinstance(meta, dict) else ""
+        deal_info = None
+        if platform:
+            try:
+                deal_info = self._pm.get_deal_close_info(str(ticket), platform)
+            except Exception as exc:
+                logger.warning(
+                    "[external-close] deal info fetch failed {}: {}", ticket, exc,
+                )
+                return False
+        if deal_info is None:
+            return False  # cannot confirm — retry later
+
+        if not self._mark_booked(str(ticket)):
+            return True  # already booked by the system-close path
+
+        symbol = meta.get("symbol", "") if isinstance(meta, dict) else ""
+        direction = meta.get("direction", "") if isinstance(meta, dict) else ""
+        pnl_dollars = float(getattr(deal_info, "pnl", 0.0) or 0.0)
+        close_price = float(getattr(deal_info, "close_price", 0.0) or 0.0)
+        exit_reason = getattr(deal_info, "exit_reason", None) or "EXTERNAL_CLOSE"
+        raw_broker_reason = getattr(deal_info, "raw_reason_code", None)
+
+        pnl_pips = 0.0
+        try:
+            pip_size = get_pip_size(symbol)
+            entry = float(
+                (self._entry_context.get(ticket) or {}).get("entry_price", 0.0)
+                or 0.0
+            )
+            if entry > 0 and close_price > 0 and pip_size > 0:
+                if str(direction).upper() in ("BUY", "LONG"):
+                    pnl_pips = (close_price - entry) / pip_size
+                else:
+                    pnl_pips = (entry - close_price) / pip_size
+        except Exception:
+            pass
+
+        logger.warning(
+            "[external-close] {} {} closed at broker (reason={}, pnl=${:.2f}) "
+            "— booking realized outcome", symbol, ticket, exit_reason, pnl_dollars,
+        )
+        self._on_trade_closed(
+            symbol=symbol,
+            direction=direction,
+            pnl_dollars=pnl_dollars,
+            pnl_pips=pnl_pips,
+            ticket=ticket,
+            close_price=close_price,
+            exit_reason=exit_reason,
+            exit_reason_source="broker",
+            raw_broker_reason=raw_broker_reason,
+        )
+        try:
+            self._mgmt_store.remove(str(ticket))
+        except Exception:
+            pass
+        return True
+
+    def _reconcile_external_closes(self, positions: list) -> None:
+        """Detect positions closed at the broker (SL/TP/stop-out/manual) and
+        book their realized outcome instead of silently dropping local state.
+
+        Broker-confirmed before booking, so a transient empty/partial position
+        fetch never false-books live positions.  Unconfirmed disappearances are
+        retried; after a bounded number of cycles they are dropped with a
+        CRITICAL log so a stuck ticket cannot leak forever.
+        """
+        current: dict[str, dict] = {}
+        for pos in positions:
+            ticket = str(
+                getattr(pos, "order_id", getattr(pos, "ticket", "")) or ""
+            )
+            if not ticket:
+                continue
+            current[ticket] = {
+                "symbol": getattr(pos, "symbol", ""),
+                "direction": getattr(pos, "direction", ""),
+                "platform": getattr(pos, "platform", ""),
+            }
+
+        vanished = [t for t in self._known_open if t not in current]
+        still_pending: dict[str, dict] = {}
+        for ticket in vanished:
+            meta = self._known_open.get(ticket, {})
+            attempts = self._external_close_attempts.get(ticket, 0) + 1
+            self._external_close_attempts[ticket] = attempts
+            # Debounce: require the ticket to be absent for at least two
+            # consecutive cycles before attempting to book, so a single
+            # transient empty/partial position fetch (e.g. mid-reconnect) can
+            # never false-book a still-open position as closed.
+            if attempts < 2:
+                still_pending[ticket] = meta
+                continue
+            if self._book_external_close(ticket, meta):
+                self._external_close_attempts.pop(ticket, None)
+                continue
+            if attempts >= 12:
+                logger.critical(
+                    "[external-close] {} ({}) vanished but the broker close "
+                    "could not be confirmed after {} cycles — dropping "
+                    "tracking; P&L NOT booked, manual reconciliation required",
+                    ticket, meta.get("symbol", "?"), attempts,
+                )
+                self._external_close_attempts.pop(ticket, None)
+            else:
+                still_pending[ticket] = meta
+
+        self._known_open = {**current, **still_pending}
+
     def _handle_close_result(self, intent: Intent, result: Any) -> None:
         """Called by FlushLoop when a CLOSE intent succeeds.
 
@@ -2357,22 +2592,61 @@ class EventDrivenSystem:
 
         pnl_dollars = 0.0
         pnl_pips = 0.0
+        close_price = 0.0
+        exit_reason: Optional[str] = None
+        exit_reason_source = "event_driven"
+        raw_broker_reason: Optional[int] = None
+
         resp = getattr(result, "broker_response", None)
+        platform = getattr(resp, "platform", "") if resp is not None else ""
         if resp is not None:
             pnl_dollars = float(getattr(resp, "pnl", 0.0) or 0.0)
+            close_price = float(getattr(resp, "close_price", 0.0) or 0.0)
+
+        # Broker truth: realized P&L (includes commission + swap + fee), the
+        # actual fill price and the broker's exit reason from deal history.
+        # Fail-safe — falls back to the CloseResult / local values on any
+        # failure (e.g. Deriv, timeout, ticket not yet in history).  Never
+        # blocks the close-feedback path.
+        deal_info = None
+        if ticket and platform:
+            try:
+                deal_info = self._pm.get_deal_close_info(str(ticket), platform)
+            except Exception as exc:
+                logger.warning(
+                    "[close] broker deal info fetch failed {}: {}", ticket, exc,
+                )
+        if deal_info is not None:
+            di_pnl = getattr(deal_info, "pnl", None)
+            if di_pnl is not None:
+                pnl_dollars = float(di_pnl)
+            di_close = getattr(deal_info, "close_price", None)
+            if di_close:
+                close_price = float(di_close)
+            di_reason = getattr(deal_info, "exit_reason", None)
+            if di_reason:
+                exit_reason = di_reason
+                exit_reason_source = "broker"
+                raw_broker_reason = getattr(deal_info, "raw_reason_code", None)
 
         if symbol and direction:
             try:
                 pip_size = get_pip_size(symbol)
-                entry = getattr(resp, "entry_price", 0.0) or 0.0
-                close_p = getattr(resp, "close_price", 0.0) or 0.0
-                if entry > 0 and close_p > 0 and pip_size > 0:
+                entry = float(
+                    (self._entry_context.get(ticket) or {}).get("entry_price", 0.0)
+                    or 0.0
+                )
+                if entry > 0 and close_price > 0 and pip_size > 0:
                     if direction.upper() in ("BUY", "LONG"):
-                        pnl_pips = (close_p - entry) / pip_size
+                        pnl_pips = (close_price - entry) / pip_size
                     else:
-                        pnl_pips = (entry - close_p) / pip_size
+                        pnl_pips = (entry - close_price) / pip_size
             except Exception:
                 pass
+
+        # Book exactly once — the external-close reconciler may race this path.
+        if not self._mark_booked(str(ticket)):
+            return
 
         self._on_trade_closed(
             symbol=symbol,
@@ -2380,6 +2654,10 @@ class EventDrivenSystem:
             pnl_dollars=pnl_dollars,
             pnl_pips=pnl_pips,
             ticket=ticket,
+            close_price=close_price,
+            exit_reason=exit_reason,
+            exit_reason_source=exit_reason_source,
+            raw_broker_reason=raw_broker_reason,
         )
 
     def _recover_open_positions(self) -> None:
@@ -2393,7 +2671,7 @@ class EventDrivenSystem:
                 ticket = str(getattr(pos, "order_id", getattr(pos, "ticket", "")))
                 if not ticket:
                     continue
-                entry_price = getattr(pos, "entry_price", 0.0)
+                entry_price = _broker_entry_price(pos)
                 sl = getattr(pos, "sl", 0.0) or 0.0
                 pip_size = 0.0001
                 try:
@@ -2404,7 +2682,7 @@ class EventDrivenSystem:
                     ticket,
                     original_stop_loss=sl,
                     stop_loss=sl,
-                    tp1=getattr(pos, "tp1", 0.0) or 0.0,
+                    tp1=_broker_tp(pos),
                     tp2=getattr(pos, "tp2", 0.0) or 0.0,
                     original_tp2=getattr(pos, "tp2", 0.0) or 0.0,
                     remaining_size_lots=getattr(pos, "lots", 0.0) or 0.0,
@@ -2450,6 +2728,86 @@ class EventDrivenSystem:
             return get_pip_size(symbol)
         except Exception:
             return 0.0001
+
+    def _symbol_spec(self, symbol: str) -> dict:
+        """Broker symbol spec (cached), or ``{}`` when unavailable.
+
+        Specs rarely change during a session, so the first successful lookup
+        per symbol is cached.  Fully fail-safe — returns ``{}`` on any error so
+        callers fall back to config-derived values.
+        """
+        cache = getattr(self, "_symbol_spec_cache", None)
+        if cache is None:
+            cache = {}
+            self._symbol_spec_cache = cache
+        if symbol in cache:
+            return cache[symbol]
+        spec: dict = {}
+        try:
+            connector = self._pm.get_connector(symbol)
+            spec_fn = getattr(connector, "get_symbol_spec", None)
+            if callable(spec_fn):
+                got = spec_fn(symbol)
+                if isinstance(got, dict):
+                    spec = got
+        except Exception as exc:
+            logger.debug("[symbol-spec] lookup failed for {}: {}", symbol, exc)
+        # Only cache non-empty specs so a transient failure is retried later.
+        if spec:
+            cache[symbol] = spec
+        return spec
+
+    def _broker_pip_value(
+        self, symbol: str, pip_size: float, fallback: float,
+    ) -> float:
+        """Broker-truth money-per-pip-per-lot from the symbol spec.
+
+        Derived as ``tick_value * (pip_size / tick_size)``.  Returns
+        ``fallback`` (config value) on any gap so sizing/P&L never break.
+        """
+        try:
+            spec = self._symbol_spec(symbol)
+            tick_value = spec.get("trade_tick_value")
+            tick_size = spec.get("trade_tick_size")
+            if (
+                tick_value and tick_size and tick_size > 0
+                and pip_size and pip_size > 0
+            ):
+                pv = float(tick_value) * (float(pip_size) / float(tick_size))
+                if pv > 0:
+                    return pv
+        except Exception as exc:
+            logger.debug("[symbol-spec] pip-value derive failed {}: {}", symbol, exc)
+        return fallback
+
+    def _snap_to_broker_volume(self, symbol: str, lots: float) -> float:
+        """Snap a lot size to the broker's volume_min/max/step.
+
+        Prevents broker rejection from an unaligned volume.  No-op (returns
+        ``lots`` unchanged) when the spec is unavailable or ``lots <= 0``.
+        """
+        if lots <= 0:
+            return lots
+        try:
+            spec = self._symbol_spec(symbol)
+            if not spec:
+                return lots
+            vmin = spec.get("volume_min")
+            vmax = spec.get("volume_max")
+            vstep = spec.get("volume_step")
+            snapped = lots
+            if vstep and float(vstep) > 0:
+                step = float(vstep)
+                snapped = round(round(snapped / step) * step, 8)
+            if vmin and snapped < float(vmin):
+                snapped = float(vmin)
+            if vmax and float(vmax) > 0 and snapped > float(vmax):
+                snapped = float(vmax)
+            if snapped > 0:
+                return snapped
+        except Exception as exc:
+            logger.debug("[symbol-spec] volume snap failed {}: {}", symbol, exc)
+        return lots
 
     def _rl_augment(self, symbol: str, direction: str, base_score: float):
         """Run RL ``augment_score`` for an entry candidate.
@@ -3453,6 +3811,9 @@ class EventDrivenSystem:
 
             info = INSTRUMENT_REGISTRY.get(symbol)
             pip_value = info.pip_value_per_lot if info else 10.0
+            # Prefer broker-truth money-per-pip from the symbol spec; falls
+            # back to the config value when the spec is unavailable.
+            pip_value = self._broker_pip_value(symbol, pip_size, pip_value)
 
             sizer = PositionSizer()
             size_result = sizer.calculate(
@@ -3502,6 +3863,13 @@ class EventDrivenSystem:
                     symbol, size_result.sizing_mode,
                 )
                 return
+
+            # Snap MT5 lots to the broker's volume_min/max/step so an
+            # unaligned size is never rejected (broker-truth constraints).
+            if size_result.lots > 0:
+                size_result.lots = self._snap_to_broker_volume(
+                    symbol, size_result.lots,
+                )
 
             # ── Execute order ────────────────────────────────────────
             order_ts = _time.time()
@@ -3620,16 +3988,22 @@ class EventDrivenSystem:
                             for sig in sigs or []:
                                 if getattr(sig, "is_directional", False):
                                     concept_names.append(sig.name)
+                    # Broker fill price is the truth for entry attribution and
+                    # for the close path's pnl_pips / risk_pips; fall back to
+                    # the planned entry price only if the broker omits it.
+                    fill_price = float(getattr(result, "fill_price", 0.0) or 0.0)
+                    if fill_price <= 0:
+                        fill_price = float(entry_price or 0.0)
                     self._entry_context[result.order_id] = {
                         "zone_type": decision.get("zone_type", ""),
                         "regime": regime,
                         "concepts": sorted(set(concept_names)),
-                        "entry_price": float(entry_price or 0.0),
+                        "entry_price": fill_price,
                         "sl": float(sl or 0.0),
                         "tp": float(tp1 or 0.0),
                         "risk_pips": (
-                            abs(float(entry_price) - float(sl)) / self._safe_pip_size(symbol)
-                            if entry_price and sl and self._safe_pip_size(symbol) > 0
+                            abs(fill_price - float(sl)) / self._safe_pip_size(symbol)
+                            if fill_price and sl and self._safe_pip_size(symbol) > 0
                             else 0.0
                         ),
                     }
@@ -3728,6 +4102,12 @@ class EventDrivenSystem:
 
         order_id = str(getattr(result, "order_id", getattr(result, "ticket", "")) or "")
 
+        # Broker fill price (truth) for all entry-time learning attribution;
+        # fall back to the requested price only when the broker omits it.
+        entry_fill_price = float(getattr(result, "fill_price", 0.0) or 0.0)
+        if entry_fill_price <= 0:
+            entry_fill_price = float(expected_price or 0.0)
+
         try:
             if ctx.account_risk is not None and balance and balance > 0:
                 acct = ctx.account_key(symbol, self._pm)
@@ -3770,7 +4150,7 @@ class EventDrivenSystem:
                 attribution = {
                     "pair": symbol,
                     "direction": direction,
-                    "entry_price": expected_price,
+                    "entry_price": entry_fill_price,
                     "timestamp": datetime.now(timezone.utc).isoformat(),
                     "world_model_version": getattr(wm, "version", 0) if wm else 0,
                 }
@@ -3858,6 +4238,10 @@ class EventDrivenSystem:
         pnl_dollars: float,
         pnl_pips: float,
         ticket: str,
+        close_price: float = 0.0,
+        exit_reason: Optional[str] = None,
+        exit_reason_source: str = "event_driven",
+        raw_broker_reason: Optional[int] = None,
     ) -> None:
         """Feed closed-trade P&L into all risk + learning subsystems.
 
@@ -3965,7 +4349,7 @@ class EventDrivenSystem:
         _risk_pips = float(info.get("risk_pips", 0.0) or 0.0)
         pnl_r = (pnl_pips / _risk_pips) if _risk_pips > 0 else 0.0
         outcome = "WIN" if pnl_dollars > 0 else "LOSS"
-        cause_value = "event_driven_close"
+        cause_value = exit_reason or "event_driven_close"
 
         # OutcomeFeedback — link realised R to entry attribution
         if ctx.outcome_feedback is not None:
@@ -4033,13 +4417,13 @@ class EventDrivenSystem:
             try:
                 now_dt = datetime.now(timezone.utc)
                 tick = self._tick_store.get_latest(symbol)
-                close_price = tick.mid if tick else 0.0
+                exit_price = close_price or (tick.mid if tick else 0.0)
                 ctx.post_close_tracker.record_close(
                     trade_id=str(ticket),
                     pair=symbol,
                     direction=direction,
                     entry_price=float(info.get("entry_price", 0.0) or 0.0),
-                    exit_price=close_price,
+                    exit_price=exit_price,
                     exit_cause=cause_value,
                     sl_price=float(info.get("sl", 0.0) or 0.0),
                     tp_price=float(info.get("tp", 0.0) or 0.0),
@@ -4066,13 +4450,14 @@ class EventDrivenSystem:
                     "pnl_pips": round(float(pnl_pips), 2),
                     "outcome": outcome,
                     "exit_reason": cause_value,
-                    # Attribution for the reconciliation feed: the ED system
-                    # determined this close internally (no separate broker
-                    # deal-history reason), so source is "event_driven" and
-                    # there is no raw broker reason to diverge from.  This also
-                    # satisfies invariant I2 (every exit_reason has a source).
-                    "exit_reason_source": "event_driven",
-                    "raw_broker_reason": None,
+                    # Attribution for the reconciliation feed: when the broker's
+                    # deal history supplied the close reason, source is "broker"
+                    # and ``raw_broker_reason`` carries the broker reason code.
+                    # Otherwise the ED system determined the close internally
+                    # (source "event_driven", no raw broker reason).  Either way
+                    # invariant I2 (every exit_reason has a source) holds.
+                    "exit_reason_source": exit_reason_source,
+                    "raw_broker_reason": raw_broker_reason,
                     "balance": float(balance or 0.0),
                 },
             )
@@ -4085,12 +4470,12 @@ class EventDrivenSystem:
                 import asyncio
                 from brain.trade_journal import TradeRecord
                 tick = self._tick_store.get_latest(symbol)
-                close_price = tick.mid if tick else 0.0
+                exit_price = close_price or (tick.mid if tick else 0.0)
                 record = TradeRecord(
                     pair=symbol,
                     direction=direction,
-                    entry=0.0,
-                    exit=close_price,
+                    entry=float(info.get("entry_price", 0.0) or 0.0),
+                    exit=exit_price,
                     pnl=round(float(pnl_pips), 2),
                     score=0,
                     confluences="",
