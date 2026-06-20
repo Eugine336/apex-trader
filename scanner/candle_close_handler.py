@@ -106,6 +106,14 @@ class CandleCloseHandler:
         )
 
         self._lock = threading.Lock()
+        # Serializes the read-merge-version-publish sequence in
+        # ``_merge_and_publish``.  Candle-close events are dispatched on a
+        # worker pool, so two timeframes of the same symbol can merge+publish
+        # concurrently; without this a stale read drops one timeframe's
+        # contribution (lost update).  Separate from ``self._lock`` (which
+        # guards counters/bar-hashes and is re-taken inside ``_build_consensus``)
+        # to avoid self-deadlock.
+        self._publish_lock = threading.RLock()
         self._last_bar_hash: dict[tuple[str, str], str] = {}
         self._events_received: int = 0
         self._events_processed: int = 0
@@ -284,6 +292,22 @@ class CandleCloseHandler:
     # ------------------------------------------------------------------
 
     def _merge_and_publish(
+        self,
+        symbol: str,
+        tf: str,
+        results: dict[str, Any],
+        close_time: datetime,
+        current_price: float = 0.0,
+    ) -> None:
+        # Hold the publish lock across the whole read-merge-version-publish
+        # sequence so concurrent worker-pool handlers cannot drop a timeframe
+        # via a stale read (see ``self._publish_lock``).
+        with self._publish_lock:
+            self._merge_and_publish_locked(
+                symbol, tf, results, close_time, current_price,
+            )
+
+    def _merge_and_publish_locked(
         self,
         symbol: str,
         tf: str,
