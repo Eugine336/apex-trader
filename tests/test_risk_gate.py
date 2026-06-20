@@ -169,14 +169,14 @@ class TestRateLimit:
     def test_within_limit(self):
         gate = RiskGate(GateConfig(max_calls_per_second=10))
         for _ in range(10):
-            result = gate.validate(_close_intent(), _positions())
+            result = gate.validate(_tp_intent(), _positions())
             assert result.allowed
 
     def test_exceeds_limit(self):
         gate = RiskGate(GateConfig(max_calls_per_second=3))
         results = []
         for _ in range(5):
-            results.append(gate.validate(_close_intent(), _positions()))
+            results.append(gate.validate(_tp_intent(), _positions()))
         rejected = [r for r in results if not r.allowed]
         assert len(rejected) >= 2
         assert "rate limit" in rejected[0].reason.lower()
@@ -184,8 +184,38 @@ class TestRateLimit:
     def test_rate_limit_disabled(self):
         gate = RiskGate(GateConfig(max_calls_per_second=0))
         for _ in range(20):
-            result = gate.validate(_close_intent(), _positions())
+            result = gate.validate(_tp_intent(), _positions())
             assert result.allowed
+
+    def test_risk_reducing_intents_never_throttled(self):
+        # CLOSE / MODIFY_SL / PARTIAL_CLOSE protect the account and must never
+        # be delayed by the rate budget, even when the symbol window is full.
+        gate = RiskGate(GateConfig(max_calls_per_second=1))
+        gate.validate(_tp_intent(), _positions())  # saturate EURUSD window
+        assert not gate.validate(_tp_intent(), _positions()).allowed
+        for intent in (
+            _close_intent(),
+            _sl_intent(new_sl=1.08100),
+            _partial_intent(),
+        ):
+            assert gate.validate(intent, _positions()).allowed
+
+    def test_rate_limit_is_per_symbol(self):
+        # A flood on one symbol must not starve actions on another symbol.
+        gate = RiskGate(GateConfig(max_calls_per_second=2))
+        pos = _positions()
+        pos["999"] = {
+            "symbol": "GBPUSD", "direction": "BUY", "sl": 1.25000,
+            "platform": "mt5", "lots": 0.10, "remaining_lots": 0.10,
+        }
+        for _ in range(2):
+            assert gate.validate(_tp_intent(), pos).allowed
+        assert not gate.validate(_tp_intent(), pos).allowed  # EURUSD full
+        gbp_tp = Intent.modify_tp(
+            symbol="GBPUSD", ticket="999", new_tp=1.30000,
+            source="test", reason="test",
+        )
+        assert gate.validate(gbp_tp, pos).allowed  # GBPUSD has its own budget
 
 
 # ── Integration ──────────────────────────────────────────────────────
