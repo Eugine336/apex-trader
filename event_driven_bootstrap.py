@@ -38,6 +38,7 @@ from execution.risk_gate import GateConfig
 from execution.position_worker import PositionWorker, WorkerConfig, ScanContext, MarketContext
 from execution.position_snapshot import PositionSnapshot, build_position_snapshot
 from execution.management_state import ManagementStateStore
+from execution.management_scheduler import ManagementScheduler
 from entry import EntryOrchestrator, EntryConfig
 from platform_context import build_context_for_symbol
 from platforms.platform_manager import PlatformManager
@@ -265,8 +266,16 @@ class PositionEvaluator:
         self._fast_opposition: dict[str, int] = {}
         self._last_h1_close: dict[str, datetime] = {}
 
-    def evaluate_all(self) -> None:
-        """Snapshot all open positions and evaluate against latest ticks."""
+    def evaluate_all(
+        self, scheduler: Optional[ManagementScheduler] = None,
+    ) -> None:
+        """Snapshot all open positions and evaluate against latest ticks.
+
+        When *scheduler* is provided (event-reactive mode), only the symbols it
+        reports as due this cycle are evaluated — active symbols shortly after a
+        tick, idle symbols on the safety-net cadence.  When None, every open
+        position is evaluated (the legacy fixed-rate sweep).
+        """
         try:
             positions = self._pm.get_all_open_positions()
         except Exception as exc:
@@ -294,6 +303,14 @@ class PositionEvaluator:
                 active_tickets.add(ticket)
 
         self._mgmt_store.cleanup(active_tickets)
+
+        # Event-reactive gating: restrict this cycle to the symbols the
+        # scheduler reports as due.  cleanup() above still ran over ALL live
+        # tickets, so state for not-yet-due symbols is preserved.
+        if scheduler is not None:
+            due = set(scheduler.due(list(by_symbol.keys())))
+            scheduler.forget(by_symbol.keys())
+            by_symbol = {s: pl for s, pl in by_symbol.items() if s in due}
 
         if self._parallel and len(by_symbol) > 1:
             # Fan out one task per symbol; each task evaluates that symbol's
@@ -911,9 +928,11 @@ class TickEvalLoop:
         self,
         evaluator: PositionEvaluator,
         interval: float = 0.1,
+        scheduler: Optional[ManagementScheduler] = None,
     ) -> None:
         self._evaluator = evaluator
         self._interval = interval
+        self._scheduler = scheduler
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._durations_ms: deque = deque(maxlen=500)
@@ -942,7 +961,7 @@ class TickEvalLoop:
         while self._running:
             t0 = _time.perf_counter()
             try:
-                self._evaluator.evaluate_all()
+                self._evaluator.evaluate_all(scheduler=self._scheduler)
             except Exception as exc:
                 logger.warning("[tick-eval] error: {}", exc)
             finally:
@@ -1057,6 +1076,18 @@ class EventDrivenSystem:
             mgmt_store=self._mgmt_store,
             ctx=ctx,
         )
+        # Phase 3 (event-reactive management): when enabled, the tick-eval loop
+        # evaluates only the symbols a ManagementScheduler reports as due
+        # (active symbols shortly after a tick, idle symbols on the safety-net
+        # cadence) instead of re-scanning every position on the fixed 10 Hz
+        # timer.  Default OFF preserves the timer sweep; enable via
+        # APEX_ED_EVENT_REACTIVE_MGMT for controlled live validation.
+        self._event_reactive_mgmt = os.environ.get(
+            "APEX_ED_EVENT_REACTIVE_MGMT", "0"
+        ).strip().lower() in ("1", "true", "yes", "on")
+        self._mgmt_scheduler = (
+            ManagementScheduler() if self._event_reactive_mgmt else None
+        )
 
         # ── Entry plane ──────────────────────────────────────────────
         self._entry_orchestrator = EntryOrchestrator(
@@ -1078,7 +1109,9 @@ class EventDrivenSystem:
             evaluator=self._evaluator,
             on_close_callback=self._handle_close_result,
         )
-        self._tick_eval_loop = TickEvalLoop(self._evaluator)
+        self._tick_eval_loop = TickEvalLoop(
+            self._evaluator, scheduler=self._mgmt_scheduler,
+        )
 
         # ── Tick source adapters ─────────────────────────────────────
         mt5_symbols, deriv_symbols = self._classify_symbols()
@@ -1091,6 +1124,16 @@ class EventDrivenSystem:
 
         # ── Event wiring ─────────────────────────────────────────────
         self._event_bus.subscribe("tick", self._entry_orchestrator.on_tick)
+        if self._mgmt_scheduler is not None:
+            # Event-reactive management: mark a symbol active on each tick so
+            # the tick-eval loop evaluates it on the next cycle.  Cheap + thread
+            # -safe; heavy evaluation stays on the loop, not the tick thread.
+            self._event_bus.subscribe(
+                "tick",
+                lambda tick: self._mgmt_scheduler.note_event(
+                    getattr(tick, "symbol", ""),
+                ),
+            )
         self._event_bus.subscribe(
             "candle_close:M1", lambda ev: self._entry_orchestrator.on_m1_close(ev.symbol),
         )
