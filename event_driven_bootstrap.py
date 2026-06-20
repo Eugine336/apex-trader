@@ -377,6 +377,15 @@ class PositionEvaluator:
             self._run_decision_engine_management(
                 pos, price, now, now_mono, mgmt, order_id, snap,
             )
+
+            # Persist the in-place mutations from this cycle (trailing SL,
+            # breakeven / partial / tp1 flags, price extremes) so they survive
+            # a crash — otherwise recovery reloads stale flags and could, e.g.,
+            # re-fire a partial close. Dirty-gated, so it is a no-op write when
+            # nothing material changed. Skipped if a CLOSE already removed the
+            # state this cycle (avoids re-inserting a closed position).
+            if self._mgmt_store.get(order_id) is not None:
+                self._mgmt_store.persist(mgmt)
         except Exception as exc:
             logger.debug(
                 "[pos-eval] error evaluating {}: {}",

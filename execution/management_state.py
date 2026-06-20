@@ -108,6 +108,9 @@ class ManagementStateStore:
 
     def __init__(self, db_path: Optional[str] = None) -> None:
         self._states: dict[str, ManagementState] = {}
+        # Signature of the last-persisted SQLite columns per ticket, so
+        # ``persist`` can skip a write when nothing material changed this cycle.
+        self._last_sig: dict[str, tuple] = {}
         self._lock = threading.RLock()
         self._db_path = db_path
         self._conn: Optional[sqlite3.Connection] = None
@@ -160,6 +163,7 @@ class ManagementStateStore:
                     status=row[14],
                 )
                 self._states[state.ticket] = state
+                self._last_sig[state.ticket] = self._sig(state)
         except Exception as exc:
             logger.warning("[mgmt-state] DB load failed: {}", exc)
 
@@ -187,8 +191,44 @@ class ManagementStateStore:
                 now_str,
             ))
             self._conn.commit()
+            self._last_sig[state.ticket] = self._sig(state)
         except Exception as exc:
             logger.debug("[mgmt-state] persist failed for {}: {}", state.ticket, exc)
+
+    @staticmethod
+    def _sig(state: ManagementState) -> tuple:
+        """Signature of the persisted columns that matter for crash recovery.
+
+        The volatile price extremes are deliberately excluded so a per-cycle
+        ``persist`` is a no-op write when only the price drifted; the SL and
+        breakeven/partial/tp1 flags (the columns that, if lost, cause wrong
+        stops or a double partial close on recovery) are all included.
+        """
+        return (
+            round(state.stop_loss, 8),
+            round(state.tp1, 8),
+            round(state.tp2, 8),
+            round(state.remaining_size_lots, 8),
+            bool(state.tp1_hit),
+            bool(state.at_breakeven),
+            bool(state.trailing),
+            bool(state.partial_closed),
+            state.status,
+        )
+
+    def persist(self, state: ManagementState, *, force: bool = False) -> bool:
+        """Persist a state the caller mutated in place (e.g. the position
+        worker updating trailing SL / breakeven / partial flags).
+
+        Dirty-gated: writes to SQLite only when a persisted column actually
+        changed since the last write, so calling it every evaluation cycle is
+        cheap. Returns ``True`` if a write occurred.
+        """
+        with self._lock:
+            if not force and self._sig(state) == self._last_sig.get(state.ticket):
+                return False
+            self._persist(state)
+            return True
 
     def get(self, ticket: str) -> Optional[ManagementState]:
         with self._lock:
@@ -213,6 +253,7 @@ class ManagementStateStore:
     def remove(self, ticket: str) -> None:
         with self._lock:
             self._states.pop(ticket, None)
+            self._last_sig.pop(ticket, None)
             if self._conn is not None:
                 try:
                     self._conn.execute(
@@ -228,6 +269,7 @@ class ManagementStateStore:
             stale = [t for t in self._states if t not in active_tickets]
             for t in stale:
                 del self._states[t]
+                self._last_sig.pop(t, None)
             if self._conn is not None and stale:
                 try:
                     placeholders = ",".join("?" for _ in stale)
