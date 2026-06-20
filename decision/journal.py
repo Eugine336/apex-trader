@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -26,6 +27,10 @@ class DecisionJournal:
         self._base_dir.mkdir(parents=True, exist_ok=True)
         self._current_date: str = ""
         self._file = None
+        # Guards file rotation/writes so concurrent management evaluations
+        # (parallel position scan) cannot interleave writes or race on the
+        # shared file handle.
+        self._lock = threading.RLock()
 
     def log(
         self,
@@ -85,15 +90,16 @@ class DecisionJournal:
             },
         }
 
-        try:
-            date_str = now.strftime("%Y-%m-%d")
-            if date_str != self._current_date:
-                self._rotate_file(date_str)
-            if self._file is not None:
-                self._file.write(json.dumps(record, default=str) + "\n")
-                self._file.flush()
-        except Exception as exc:
-            logger.warning("[DecisionJournal] write failed: {}", exc)
+        with self._lock:
+            try:
+                date_str = now.strftime("%Y-%m-%d")
+                if date_str != self._current_date:
+                    self._rotate_file(date_str)
+                if self._file is not None:
+                    self._file.write(json.dumps(record, default=str) + "\n")
+                    self._file.flush()
+            except Exception as exc:
+                logger.warning("[DecisionJournal] write failed: {}", exc)
 
         logger.info(
             "[DECISION] {} {} | {} → {} | {} | pnl=${:+.2f} ({:+.1f}pip) align={:+.2f} struct={:.2f} | {}",
@@ -163,15 +169,16 @@ class DecisionJournal:
             },
         }
 
-        try:
-            date_str = now.strftime("%Y-%m-%d")
-            if date_str != self._current_date:
-                self._rotate_file(date_str)
-            if self._file is not None:
-                self._file.write(json.dumps(record, default=str) + "\n")
-                self._file.flush()
-        except Exception as exc:
-            logger.warning("[DecisionJournal] entry write failed: {}", exc)
+        with self._lock:
+            try:
+                date_str = now.strftime("%Y-%m-%d")
+                if date_str != self._current_date:
+                    self._rotate_file(date_str)
+                if self._file is not None:
+                    self._file.write(json.dumps(record, default=str) + "\n")
+                    self._file.flush()
+            except Exception as exc:
+                logger.warning("[DecisionJournal] entry write failed: {}", exc)
 
         logger.info(
             "[ENTRY DECISION] {} {} | {} → {} | {} | score={} align={:+.2f} struct={:.2f} conv={:.2f} | {}",
@@ -194,9 +201,10 @@ class DecisionJournal:
         self._current_date = date_str
 
     def close(self) -> None:
-        if self._file is not None:
-            try:
-                self._file.close()
-            except Exception:
-                pass
-            self._file = None
+        with self._lock:
+            if self._file is not None:
+                try:
+                    self._file.close()
+                except Exception:
+                    pass
+                self._file = None
