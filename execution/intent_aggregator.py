@@ -129,8 +129,11 @@ class IntentAggregator:
         if not buffer:
             return []
 
+        opens = [i for i in buffer if i.intent_type == IntentType.OPEN]
+        managed = [i for i in buffer if i.intent_type != IntentType.OPEN]
+
         by_position: dict[str, list[Intent]] = defaultdict(list)
-        for intent in buffer:
+        for intent in managed:
             by_position[intent.position_ticket].append(intent)
 
         result: list[Intent] = []
@@ -138,6 +141,8 @@ class IntentAggregator:
             result.extend(
                 self._resolve_position(ticket, pos_intents, info.get(ticket)),
             )
+
+        result.extend(self._resolve_opens(opens))
 
         result.sort(key=lambda i: i.priority, reverse=True)
         return result
@@ -222,6 +227,25 @@ class IntentAggregator:
                 ),
             ]
         return list(intents)
+
+    def _resolve_opens(self, opens: list[Intent]) -> list[Intent]:
+        """Deduplicate OPEN intents.
+
+        Entries carry no position ticket, so they are keyed separately from
+        management intents — by idempotency key when present, else by
+        symbol+direction. Repeats of the same intended entry in one cycle
+        collapse to the most recent, so a duplicate decision can never enqueue
+        two orders for the same setup.
+        """
+        if not opens:
+            return []
+        by_key: dict[str, Intent] = {}
+        for i in opens:
+            key = i.idempotency_key or f"{i.symbol}|{(i.direction or '').upper()}"
+            cur = by_key.get(key)
+            if cur is None or i.timestamp > cur.timestamp:
+                by_key[key] = i
+        return list(by_key.values())
 
 
 def should_skip_sl_update(
