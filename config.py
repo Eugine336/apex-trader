@@ -1076,6 +1076,10 @@ class DecisionConfig:
     reversal_weighted_evidence: bool = True
     reversal_required_strength: float = 2.0
     reversal_momentum_full: float = 0.6      # momentum reaching this counts as full strength
+    # #TF-conflict — when enabled the management read folds higher-timeframe
+    # conflict into opposition scoring (helper is always present; this turns it
+    # on in the live decision path).
+    tf_conflict_aware: bool = True
     # ── HTF = bounded context (Scenario A) ────────────────────────────────
     # When the full HTF stack (D1+H4+H1) supports the trade direction, give a
     # bounded size BONUS on top of the conviction model — HTF helps when it
