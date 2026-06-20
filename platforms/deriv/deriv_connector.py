@@ -598,8 +598,9 @@ class DerivConnector(BaseConnector):
             if sym.startswith("_"):
                 continue
             try:
-                resp = await self._send(
-                    {"contracts_for": sym, "currency": "USD", "product_type": "basic"}
+                resp = await self._send_raw(
+                    {"contracts_for": sym, "currency": "USD", "product_type": "basic"},
+                    allow_reconnect=False,
                 )
                 if resp.get("error"):
                     continue
@@ -685,48 +686,105 @@ class DerivConnector(BaseConnector):
 
     async def _send(self, payload: dict) -> dict:
         async with self._lock:
-            self._req_id += 1
-            req_id = self._req_id
-            payload["req_id"] = req_id
-            for attempt in range(2):  # one retry after reconnect
-                try:
-                    await self._ws.send(json.dumps(payload))
-                    # Correlate the response to THIS request by req_id. Deriv
-                    # multiplexes subscription/stream frames (e.g. the buy
-                    # ``subscribe`` stream, tick updates) onto the same socket,
-                    # so a blind ``recv()`` can read a stale or out-of-band frame
-                    # — e.g. a previous failed buy's error — and mis-attribute it
-                    # to this request. That is what made a documented-correct
-                    # ``proposal`` (with ``symbol``) appear to fail with the
-                    # buy's 'Properties not allowed: symbol'. Discard uncorrelated
-                    # frames until the matching req_id arrives, bounded by the
-                    # request timeout so a missing reply still fails fast.
-                    deadline = _time.monotonic() + _REQUEST_TIMEOUT
-                    while True:
-                        remaining = deadline - _time.monotonic()
-                        if remaining <= 0:
-                            raise asyncio.TimeoutError(
-                                f"No Deriv response for req_id={req_id}"
-                            )
-                        raw = await asyncio.wait_for(
-                            self._ws.recv(), timeout=remaining
+            return await self._send_raw(payload)
+
+    async def _send_raw(self, payload: dict, allow_reconnect: bool = True) -> dict:
+        """Inner send/recv WITHOUT acquiring ``self._lock``.
+
+        Split out from ``_send`` so the reconnect path
+        (``_reconnect`` → ``_connect_async`` → ``_discover_multipliers``) can
+        re-enter the sender without re-acquiring the non-reentrant lock that the
+        public ``_send`` already holds. ``allow_reconnect=False`` is used for
+        sends issued from inside a reconnect to avoid recursive reconnects.
+        """
+        self._req_id += 1
+        req_id = self._req_id
+        payload["req_id"] = req_id
+        for attempt in range(2):  # one retry after reconnect
+            try:
+                await self._ws.send(json.dumps(payload))
+                # Correlate the response to THIS request by req_id. Deriv
+                # multiplexes subscription/stream frames (e.g. the buy
+                # ``subscribe`` stream, tick updates) onto the same socket,
+                # so a blind ``recv()`` can read a stale or out-of-band frame
+                # — e.g. a previous failed buy's error — and mis-attribute it
+                # to this request. That is what made a documented-correct
+                # ``proposal`` (with ``symbol``) appear to fail with the
+                # buy's 'Properties not allowed: symbol'. Discard uncorrelated
+                # frames until the matching req_id arrives, bounded by the
+                # request timeout so a missing reply still fails fast.
+                deadline = _time.monotonic() + _REQUEST_TIMEOUT
+                while True:
+                    remaining = deadline - _time.monotonic()
+                    if remaining <= 0:
+                        raise asyncio.TimeoutError(
+                            f"No Deriv response for req_id={req_id}"
                         )
-                        msg = json.loads(raw)
-                        if msg.get("req_id") == req_id:
-                            return msg
-                        logger.debug(
-                            "Deriv discarding uncorrelated frame req_id={} "
-                            "(awaiting {})",
-                            msg.get("req_id"), req_id,
-                        )
-                except Exception as exc:
-                    if attempt == 0:
-                        logger.warning("Deriv send error ({}), reconnecting…", exc)
-                        ok = await self._reconnect()
-                        if not ok:
-                            raise ConnectionError("Deriv reconnect failed") from exc
-                    else:
-                        raise
+                    raw = await asyncio.wait_for(
+                        self._ws.recv(), timeout=remaining
+                    )
+                    msg = json.loads(raw)
+                    if msg.get("req_id") == req_id:
+                        return msg
+                    logger.debug(
+                        "Deriv discarding uncorrelated frame req_id={} "
+                        "(awaiting {})",
+                        msg.get("req_id"), req_id,
+                    )
+            except Exception as exc:
+                if attempt == 0 and allow_reconnect:
+                    logger.warning("Deriv send error ({}), reconnecting…", exc)
+                    ok = await self._reconnect()
+                    if not ok:
+                        raise ConnectionError("Deriv reconnect failed") from exc
+                    # A lost confirmation on a buy may mean the order actually
+                    # landed before the socket dropped. Re-check idempotency
+                    # before re-sending to avoid a duplicate contract.
+                    dup = await self._check_buy_idempotency(payload, req_id)
+                    if dup is not None:
+                        return dup
+                else:
+                    raise
+
+    async def _check_buy_idempotency(
+        self, payload: dict, req_id: int,
+    ) -> Optional[dict]:
+        """Return a synthetic buy response if this buy's idem_key already filled.
+
+        Used after a reconnect inside ``_send_raw`` to prevent re-sending a buy
+        whose first attempt may have succeeded. Uses an unlocked portfolio query
+        (``_send_raw`` with ``allow_reconnect=False``) so it is safe to call
+        while the public ``_send`` lock is held.
+        """
+        if not payload.get("buy"):
+            return None
+        idem = (payload.get("passthrough") or {}).get("idem_key")
+        if not idem:
+            return None
+        for cid, info in self._positions.items():
+            if info.get("idem_key") == idem:
+                logger.warning(
+                    "Deriv reconnect duplicate prevented — idem_key {} "
+                    "already tracked as contract {}", idem, cid,
+                )
+                return {"buy": {"contract_id": cid}, "req_id": req_id}
+        try:
+            pf = await self._send_raw(
+                {"portfolio": 1, "contract_type": ["MULTUP", "MULTDOWN"]},
+                allow_reconnect=False,
+            )
+            for c in pf.get("portfolio", {}).get("contracts", []):
+                pt = c.get("passthrough") or {}
+                if pt.get("idem_key") == idem:
+                    cid = str(c.get("contract_id", ""))
+                    logger.warning(
+                        "Deriv reconnect duplicate prevented — idem_key {} "
+                        "already filled as contract {}", idem, cid,
+                    )
+                    return {"buy": {"contract_id": cid}, "req_id": req_id}
+        except Exception as exc:
+            logger.warning("[deriv] reconnect idempotency lookup failed: {}", exc)
+        return None
 
     def _reserve_history_slot(self) -> float:
         """Reserve the next ``ticks_history`` send slot.
@@ -1660,8 +1718,13 @@ class DerivConnector(BaseConnector):
         multiplier = pos.get("multiplier", 0)
 
         if open_price > 0 and stake > 0 and multiplier > 0:
+            # Clamp SL to the stake (Deriv hard cap) the same way place_order
+            # does. Without this, a breakeven/trailing move can produce a
+            # stop_loss dollar value above the stake and Deriv silently rejects
+            # the contract_update. Keep the exact contract formula otherwise.
             if new_sl is not None:
-                limit_order["stop_loss"] = round(abs(open_price - new_sl) / open_price * stake * multiplier, 2)
+                sl_dollar = round(abs(open_price - new_sl) / open_price * stake * multiplier, 2)
+                limit_order["stop_loss"] = min(sl_dollar, round(stake, 2))
             if new_tp is not None:
                 limit_order["take_profit"] = round(abs(new_tp - open_price) / open_price * stake * multiplier, 2)
         else:

@@ -324,7 +324,14 @@ class ShadowEngine:
             self._conn.commit()
         except Exception:
             self._conn = None
-        """Recover unclosed shadow trades from DB on restart."""
+
+    def _reload_open_trades(self):
+        """Recover unclosed shadow trades from DB on restart.
+
+        Must run AFTER ``self.open_trades`` / ``self.bar_counter`` exist (i.e.
+        from ``__init__`` after _init_db), which is why it lives in its own
+        method rather than inside _init_db.
+        """
         import logging
         _logger = logging.getLogger("apex.rl.shadow")
         try:

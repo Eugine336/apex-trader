@@ -16,6 +16,7 @@ from loguru import logger
 
 from config import get_pip_size
 from brain.symbol_mapper import SymbolMapper
+from platforms.order_idempotency import build_order_comment, extract_idempotency_key
 from platforms.base_connector import (
     AccountInfo,
     BaseConnector,
@@ -462,6 +463,11 @@ class MT5Connector(BaseConnector):
         price = tick.ask if is_buy else tick.bid
 
         order_comment = str(comment or "APEX")[:31]
+        # Ensure the idempotency key is embedded in the comment so dedup
+        # (_find_order_by_idem_key) can match it on retries/reconnects. If the
+        # caller's comment doesn't already carry the key, rebuild it.
+        if idempotency_key and extract_idempotency_key(order_comment) != idempotency_key:
+            order_comment = build_order_comment("APEX", idempotency_key)
 
         request = {
             "action": mt5.TRADE_ACTION_DEAL,
@@ -601,6 +607,29 @@ class MT5Connector(BaseConnector):
         result = None
         latency = 0.0
         for attempt in range(1, max_attempts + 1):
+            # On a retry, the prior send may have actually filled despite an
+            # ambiguous TIMEOUT/CONNECTION error. Re-check idempotency before
+            # re-sending to avoid a duplicate position.
+            if attempt > 1 and idempotency_key:
+                dup = self._find_order_by_idem_key(idempotency_key)
+                if dup is not None:
+                    logger.warning(
+                        "MT5 retry duplicate prevented — idem_key {} already filled as ticket {}",
+                        idempotency_key, dup.ticket,
+                    )
+                    return OrderResult(
+                        success=True,
+                        order_id=str(dup.ticket),
+                        fill_price=dup.price,
+                        requested_price=dup.price,
+                        slippage_pips=0.0,
+                        lots=dup.volume,
+                        symbol=symbol,
+                        direction=direction.upper(),
+                        sl=dup.sl,
+                        tp=dup.tp,
+                        platform="mt5",
+                    )
             t0 = _time.monotonic()
             result = mt5.order_send(request)
             latency = (_time.monotonic() - t0) * 1000

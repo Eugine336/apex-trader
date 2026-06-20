@@ -503,6 +503,12 @@ class TradeManager:
     # ------------------------------------------------------------------
 
     def _update_pnl(self, trade: ManagedTrade) -> None:
+        if trade.pip_size <= 0:
+            logger.warning(
+                "[TradeManager] {} pip_size {} ≤ 0 — skipping P&L update (cannot compute)",
+                trade.pair, trade.pip_size,
+            )
+            return
         if self._is_long(trade.direction):
             raw_pips = (trade.current_price - trade.entry_price) / trade.pip_size
         else:

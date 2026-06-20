@@ -108,6 +108,7 @@ class RiskEngine:
             micro_account_threshold_usd=self.risk_cfg.micro_account_threshold_usd,
             deriv_min_stake_usd=self.risk_cfg.deriv_min_stake_usd,
             max_risk_pct_per_trade=self.risk_cfg.max_risk_pct_per_trade,
+            engine_cap=self._RISK_PCT_CAP,
         )
         self.pnl_tracker = PnLTracker(starting_balance=self.balance)
         self.spread_monitor = SpreadMonitor(
@@ -369,6 +370,23 @@ class RiskEngine:
                     symbol=pair,
                 )
             checks.append(f"Size reduced to fit daily limit — {reduced_risk:.3%} risk")
+
+        # Re-verify after sizing: the MIN_LOT floor can push max_loss back above
+        # the remaining daily budget even after the reduction above. Reject the
+        # trade rather than silently breaching the daily loss limit.
+        if remaining_daily > 0 and size_result.max_loss > remaining_daily:
+            rejections.append(
+                f"Sized max_loss ${size_result.max_loss:.2f} exceeds remaining "
+                f"daily budget ${remaining_daily:.2f} (min-lot floor)"
+            )
+            logger.warning(
+                f"[RiskEngine] REJECTED {pair}: min-lot max_loss "
+                f"${size_result.max_loss:.2f} > remaining daily ${remaining_daily:.2f}"
+            )
+            return self._build_assessment(
+                False, 0.0, 0.0, 0.0, checks, rejections, mode,
+                dd_status, len(trades), now,
+            )
 
         risk_pips = size_result.risk_pips
         if risk_pips > 0:

@@ -454,7 +454,10 @@ class EntryEngine:
                     f"({','.join(m.name for m in _pattern_matches[1:])})"
                 )
 
-        recent = m1_df.iloc[-5:] if len(m1_df) >= 5 else m1_df.iloc[-3:]
+        # Drop the still-forming bar so momentum is judged on CLOSED candles
+        # only (the pattern checks above already do this via drop_forming_bar).
+        m1_closed = drop_forming_bar(m1_df)
+        recent = m1_closed.iloc[-5:] if len(m1_closed) >= 5 else m1_closed.iloc[-3:]
         n = len(recent)
         if direction == "LONG":
             aligned = sum(1 for _, row in recent.iterrows() if float(row["close"]) > float(row["open"]))

@@ -472,17 +472,21 @@ class EventStore:
                         remaining.append(self._queue.get_nowait())
                     except queue.Empty:
                         break
-                if remaining:
-                    self._conn.executemany(
-                        "INSERT OR IGNORE INTO events "
-                        "(event_id, correlation_id, parent_id, ts_utc_ms,"
-                        " event_type, severity, symbol, source_module,"
-                        " payload_json, seq)"
-                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                        remaining,
-                    )
-                    self._conn.commit()
-                self._conn.close()
+                # Acquire the DB lock before touching the connection — if the
+                # writer thread failed to join within the timeout it may still
+                # be mid-write, and an unsynchronised access here would race it.
+                with self._db_lock:
+                    if remaining:
+                        self._conn.executemany(
+                            "INSERT OR IGNORE INTO events "
+                            "(event_id, correlation_id, parent_id, ts_utc_ms,"
+                            " event_type, severity, symbol, source_module,"
+                            " payload_json, seq)"
+                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                            remaining,
+                        )
+                        self._conn.commit()
+                    self._conn.close()
             except Exception as exc:
                 print(f"[event_store] close cleanup failed: {exc}", file=sys.stderr)
             self._conn = None

@@ -44,10 +44,15 @@ class PositionSizer:
         micro_account_threshold_usd: float = 100.0,
         deriv_min_stake_usd: float = 0.35,
         max_risk_pct_per_trade: float = 5.0,
+        engine_cap: float = 0.025,
     ):
         self.micro_account_threshold_usd = micro_account_threshold_usd
         self.deriv_min_stake_usd = deriv_min_stake_usd
         self.max_risk_pct_per_trade = max_risk_pct_per_trade
+        # Hard per-trade ceiling enforced by the RiskEngine (fraction, e.g. 0.025
+        # = 2.5%). Sizing clamps to this so the sizer can never risk more than the
+        # engine believes it approved.
+        self._engine_cap = engine_cap
 
     def _sanitize_risk_pct(self, risk_pct: float, label: str = "") -> float:
         """Validate that ``risk_pct`` is a fraction (0-1), not a percentage.
@@ -103,6 +108,24 @@ class PositionSizer:
             )
 
         risk_pct = self._sanitize_risk_pct(risk_pct, symbol)
+        # Harmonize with the engine's hard cap so the sizer never risks more than
+        # the engine believes it approved.
+        risk_pct = min(risk_pct, self._engine_cap)
+        if risk_pct <= 0.0:
+            logger.warning(
+                "[PositionSizer] {} risk_pct resolved to 0 — skipping (no allocation)",
+                symbol or "trade",
+            )
+            return SizeResult(
+                lots=0.0,
+                stake_usd=0.0,
+                risk_amount=0.0,
+                risk_pips=0.0,
+                pip_value=pip_value_per_lot,
+                max_loss=0.0,
+                margin_estimate=0.0,
+                sizing_mode="skip_zero_alloc",
+            )
         risk_amount = account_balance * risk_pct
         if pip_size <= 0 or pip_value_per_lot <= 0:
             logger.warning(
@@ -172,9 +195,26 @@ class PositionSizer:
         The multiplier controls leverage (profit potential), not loss size.
         """
         risk_pct = self._sanitize_risk_pct(risk_pct, "deriv")
+        risk_pct = min(risk_pct, self._engine_cap)
         risk_amount = account_balance * risk_pct
         risk_distance = abs(entry_price - stop_loss)
         stake = round(risk_amount, 2)
+
+        if risk_pct <= 0.0 or stake <= 0.0:
+            logger.warning(
+                "[PositionSizer] deriv stake resolved to ${:.2f} — skipping (no allocation)",
+                stake,
+            )
+            return SizeResult(
+                lots=0.0,
+                stake_usd=0.0,
+                risk_amount=round(risk_amount, 2),
+                risk_pips=round(risk_distance, 5),
+                pip_value=0.0,
+                max_loss=0.0,
+                margin_estimate=0.0,
+                sizing_mode="stake_skip_zero_alloc",
+            )
 
         if account_balance < self.micro_account_threshold_usd and stake < self.deriv_min_stake_usd:
             logger.warning(

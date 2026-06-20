@@ -44,6 +44,7 @@ from platform_context import build_context_for_symbol
 from platforms.platform_manager import PlatformManager
 from platforms.order_idempotency import build_order_comment, generate_idempotency_key
 from risk.position_sizer import PositionSizer
+from ops.lifecycle import ShutdownManager
 from adaptive.zone_edge_tracker import ZoneEdgeTracker
 
 
@@ -832,6 +833,7 @@ class FlushLoop:
 
     def _loop(self) -> None:
         while self._running:
+            intents: list[Intent] = []
             try:
                 intents = self._aggregator.flush()
                 if intents:
@@ -866,7 +868,22 @@ class FlushLoop:
                                 pass
                 self._flush_count += 1
             except Exception as exc:
-                logger.warning("[flush-loop] error: {}", exc)
+                # The aggregator was already drained by flush(); if execution
+                # raised, re-queue the intents so risk-reducing actions
+                # (emergency close, breakeven moves) are retried next cycle
+                # instead of being silently lost.
+                if intents:
+                    try:
+                        self._aggregator.submit(intents)
+                    except Exception as resubmit_exc:
+                        logger.error(
+                            "[flush-loop] re-queue failed, {} intents lost: {}",
+                            len(intents), resubmit_exc,
+                        )
+                logger.warning(
+                    "[flush-loop] error ({} intents re-queued): {}",
+                    len(intents), exc,
+                )
             _time.sleep(self._interval)
 
     def _emit_modify_event(self, intent: Intent) -> None:
@@ -1104,6 +1121,12 @@ class EventDrivenSystem:
         )
 
         # ── Background loops ─────────────────────────────────────────
+        # Dedicated bounded pool so the entry path (blocking broker I/O) runs
+        # off the tick-poller / EventBus-publishing thread — otherwise each
+        # entry stalls tick ingestion for ALL symbols while it executes.
+        self._entry_pool = ThreadPoolExecutor(
+            max_workers=2, thread_name_prefix="entry",
+        )
         self._flush_loop = FlushLoop(
             self._aggregator, self._executor, self._pm,
             evaluator=self._evaluator,
@@ -1135,7 +1158,10 @@ class EventDrivenSystem:
                 ),
             )
         self._event_bus.subscribe(
-            "candle_close:M1", lambda ev: self._entry_orchestrator.on_m1_close(ev.symbol),
+            "candle_close:M1",
+            lambda ev: self._entry_pool.submit(
+                self._entry_orchestrator.on_m1_close, ev.symbol,
+            ),
         )
         self._event_bus.subscribe(
             "world_model_update", self._entry_orchestrator.on_world_model_update,
@@ -1528,11 +1554,27 @@ class EventDrivenSystem:
         ctx = self._ctx
         if ctx is not None and ctx.process_watchdog is not None:
             self._watchdog_running = True
+            # Baselines for stall detection — record_tick() only fires when these
+            # advance, so a dead loop can no longer mask itself.
+            self._wd_last_flush_count = getattr(self._flush_loop, "_flush_count", 0)
+            self._wd_last_ticks_routed = getattr(self._tick_router, "ticks_routed", 0)
             self._watchdog_thread = threading.Thread(
                 target=self._watchdog_loop, daemon=True, name="ed-watchdog",
             )
             self._watchdog_thread.start()
             logger.info("[event-driven] process watchdog started")
+
+        # ── Wire SIGTERM/SIGINT/SIGHUP → graceful shutdown ───────────
+        # Without this, docker stop / k8s kills the process without flushing
+        # stores. register_signal_handlers is a no-op off the main thread.
+        try:
+            self._shutdown_manager = ShutdownManager(
+                self, getattr(self._config, "ops", self._config),
+            )
+            if self._shutdown_manager.register_signal_handlers():
+                logger.info("[event-driven] shutdown signal handlers installed")
+        except Exception as exc:
+            logger.debug("[event-driven] signal handler registration skipped: {}", exc)
 
         # ── Initialize TradeJournal (async) ──────────────────────────
         if ctx is not None and ctx.trade_journal is not None:
@@ -1567,6 +1609,10 @@ class EventDrivenSystem:
         self._deriv_adapter.stop()
         self._tick_router.stop()
         self._candle_handler.shutdown()
+        try:
+            self._entry_pool.shutdown(wait=False)
+        except Exception:
+            pass
         self._event_bus.clear()
         self._mgmt_store.close()
 
@@ -1630,6 +1676,16 @@ class EventDrivenSystem:
     @property
     def is_running(self) -> bool:
         return self._running
+
+    # Alias used by ShutdownManager.request_shutdown() to suspend the loop on a
+    # SIGTERM/SIGINT/SIGHUP so run_forever() falls through to stop().
+    @property
+    def running(self) -> bool:
+        return self._running
+
+    @running.setter
+    def running(self, value: bool) -> None:
+        self._running = bool(value)
 
     @property
     def world_model_store(self) -> WorldModelStore:
@@ -1711,10 +1767,40 @@ class EventDrivenSystem:
             if ctx is not None and ctx.process_watchdog is not None:
                 try:
                     ctx.process_watchdog.beat()
-                    ctx.process_watchdog.record_tick()
+                    # Only record a tick when the REAL processing loops have made
+                    # progress since the last check. Previously record_tick() was
+                    # called unconditionally here, so the watchdog reset its own
+                    # stall timer every iteration and check_stall() could never
+                    # fire even if the management/flush loops had died.
+                    cur_flush = getattr(self._flush_loop, "_flush_count", 0)
+                    cur_ticks = getattr(self._tick_router, "ticks_routed", 0)
+                    if (
+                        cur_flush != self._wd_last_flush_count
+                        or cur_ticks != self._wd_last_ticks_routed
+                    ):
+                        ctx.process_watchdog.record_tick()
+                        self._wd_last_flush_count = cur_flush
+                        self._wd_last_ticks_routed = cur_ticks
                     ctx.process_watchdog.check_stall()
                 except Exception:
                     pass
+
+            # ── Deriv position-store health ───────────────────────────
+            # Losing this store leaves multiplier contracts unmanaged. Surface
+            # the degraded state loudly so an operator can intervene.
+            try:
+                deriv = getattr(self._pm, "deriv", None)
+                store = getattr(deriv, "_store", None) if deriv is not None else None
+                if store is not None and hasattr(store, "is_healthy") and not store.is_healthy():
+                    if not getattr(self, "_deriv_store_unhealthy_warned", False):
+                        logger.critical(
+                            "[event-driven] Deriv position store DEGRADED ({}) — "
+                            "multiplier contracts may be unmanaged; manual review required",
+                            store.degraded_reason() if hasattr(store, "degraded_reason") else "unknown",
+                        )
+                        self._deriv_store_unhealthy_warned = True
+            except Exception:
+                pass
 
             if ctx is not None and ctx.daily_maintenance is not None:
                 try:
@@ -1724,6 +1810,22 @@ class EventDrivenSystem:
                         try:
                             es = get_event_store()
                             es.prune()
+                        except Exception:
+                            pass
+                        # Bound shadow-store growth: discard PENDING shadow
+                        # contracts older than 48h that will never resolve.
+                        try:
+                            ss = getattr(ctx, "shadow_store", None)
+                            if ss is not None:
+                                cutoff_ms = int(
+                                    (_time.time() - 48 * 3600) * 1000
+                                )
+                                discarded = ss.discard_stale_pending(cutoff_ms)
+                                if discarded:
+                                    logger.info(
+                                        "[event-driven] discarded {} stale shadow contract(s)",
+                                        discarded,
+                                    )
                         except Exception:
                             pass
                 except Exception as exc:
@@ -2792,7 +2894,7 @@ class EventDrivenSystem:
                     )
                     cap_mult = ctx.capital_allocator.get_sizing_multiplier(fp)
                 except Exception as exc:
-                    logger.debug("[cap-alloc] sizing multiplier failed: {}", exc)
+                    logger.warning("[cap-alloc] sizing multiplier failed: {}", exc)
 
             # ── Execution profile selection (L5.5b) ──────────────────
             exec_profile = None
@@ -2990,6 +3092,14 @@ class EventDrivenSystem:
                         "zone_type": decision.get("zone_type", ""),
                         "regime": regime,
                         "concepts": sorted(set(concept_names)),
+                        "entry_price": float(entry_price or 0.0),
+                        "sl": float(sl or 0.0),
+                        "tp": float(tp1 or 0.0),
+                        "risk_pips": (
+                            abs(float(entry_price) - float(sl)) / self._safe_pip_size(symbol)
+                            if entry_price and sl and self._safe_pip_size(symbol) > 0
+                            else 0.0
+                        ),
                     }
                 except Exception as exc:
                     logger.debug("[entry-ctx] capture failed: {}", exc)
@@ -3225,6 +3335,7 @@ class EventDrivenSystem:
         # Attribute the realized outcome to the zone/concept keys captured at
         # entry so future conviction reflects what actually pays off.  Runs
         # before the ctx guard (no ctx dependency) and is fully best-effort.
+        info: dict[str, Any] = {}
         try:
             info = self._entry_context.pop(ticket, None) or {}
             # A flat-dollar close that still gained pips (e.g. commission ate
@@ -3292,7 +3403,10 @@ class EventDrivenSystem:
 
         # ── LEARNING LAYER (Phase 4) ────────────────────────────────
 
-        pnl_r = 0.0
+        # Realized R from the entry's original stop distance (captured at fill).
+        # Previously hardcoded to 0.0, which fed every learner a flat reward.
+        _risk_pips = float(info.get("risk_pips", 0.0) or 0.0)
+        pnl_r = (pnl_pips / _risk_pips) if _risk_pips > 0 else 0.0
         outcome = "WIN" if pnl_dollars > 0 else "LOSS"
         cause_value = "event_driven_close"
 
@@ -3367,11 +3481,11 @@ class EventDrivenSystem:
                     trade_id=str(ticket),
                     pair=symbol,
                     direction=direction,
-                    entry_price=0.0,
+                    entry_price=float(info.get("entry_price", 0.0) or 0.0),
                     exit_price=close_price,
                     exit_cause=cause_value,
-                    sl_price=0.0,
-                    tp_price=0.0,
+                    sl_price=float(info.get("sl", 0.0) or 0.0),
+                    tp_price=float(info.get("tp", 0.0) or 0.0),
                     entry_timestamp=now_dt,
                     exit_timestamp=now_dt,
                     entry_score=0,
@@ -3460,11 +3574,15 @@ class EventDrivenSystem:
                     horizon="SWING",
                     extra=regime_str,
                 )
-                risk_pips_est = abs(pnl_pips) if pnl_pips != 0 else 1.0
+                # Use the entry's real stop distance for R, not abs(pnl_pips)
+                # (which collapsed every outcome to ±1).
+                risk_pips_est = _risk_pips if _risk_pips > 0 else (
+                    abs(pnl_pips) if pnl_pips != 0 else 1.0
+                )
                 r_multiple = pnl_pips / risk_pips_est if risk_pips_est > 0 else 0.0
                 ctx.capital_allocator.record_outcome(fp, r_multiple)
             except Exception as exc:
-                logger.debug("[close-evo] CapitalAllocator record failed: {}", exc)
+                logger.warning("[close-evo] CapitalAllocator record failed: {}", exc)
 
         # ExecutionProfileManager — record outcome for the profile used
         if ctx.execution_profiles is not None:
