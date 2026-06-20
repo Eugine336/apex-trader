@@ -1484,6 +1484,21 @@ class EventDrivenSystem:
 
         self._recover_open_positions()
 
+        # ── Event-log reconciliation: surface crash-window discrepancies ──
+        # Read-only: fold the replayable event log into the order_ids it
+        # believes are open and compare to the broker's live positions.  Logs
+        # any mismatch (missed closes / orphan positions) so an unclean restart
+        # is visible; never opens or closes anything.  Best-effort.
+        try:
+            from persistence.recovery import run_startup_recovery
+            broker_ids = [
+                str(getattr(p, "order_id", getattr(p, "ticket", "")))
+                for p in self._pm.get_all_open_positions()
+            ]
+            run_startup_recovery(get_event_store(), broker_ids)
+        except Exception as exc:
+            logger.debug("[event-driven] event-log reconciliation failed: {}", exc)
+
         symbols = list(INSTRUMENT_REGISTRY.keys())
         for sym in symbols:
             self._candle_detector.register(sym)
