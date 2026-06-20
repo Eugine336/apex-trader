@@ -16,7 +16,6 @@ import os
 import threading
 import time as _time
 from collections import defaultdict, deque
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -233,7 +232,6 @@ class PositionEvaluator:
         intent_aggregator: IntentAggregator,
         mgmt_store: Optional[ManagementStateStore] = None,
         worker_config: Optional[WorkerConfig] = None,
-        max_workers: int = 4,
         ctx: Optional[SystemContext] = None,
     ) -> None:
         self._pm = platform_manager
@@ -242,9 +240,6 @@ class PositionEvaluator:
         self._aggregator = intent_aggregator
         self._mgmt_store = mgmt_store or ManagementStateStore()
         self._worker = PositionWorker(worker_config or WorkerConfig())
-        self._pool = ThreadPoolExecutor(
-            max_workers=max_workers, thread_name_prefix="pos-eval",
-        )
         self._lock = threading.Lock()
         self._running = False
         self._eval_count = 0
