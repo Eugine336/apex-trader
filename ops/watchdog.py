@@ -25,7 +25,7 @@ import os
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 from loguru import logger
 
@@ -46,10 +46,31 @@ class ProcessWatchdog:
         self._last_tick_mono: float = time.monotonic()
         self._stall_logged: bool = False
         self._beats: int = 0
+        # Weekend-awareness: when the FX market is closed (weekend) and there
+        # are no 24/7 instruments expected to keep ticking, a tick stall is
+        # EXPECTED — suppress the CRITICAL alert so it doesn't fire all weekend
+        # and desensitise operators to a real Monday connection failure.
+        self._is_market_closed: Optional[Callable[[], bool]] = None
+        self._has_always_open: bool = False
         try:
             self._heartbeat_path.parent.mkdir(parents=True, exist_ok=True)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[ops] heartbeat parent mkdir failed: {}", exc)
+
+    def set_market_state_provider(
+        self,
+        is_market_closed: Optional[Callable[[], bool]],
+        has_always_open_symbols: bool = False,
+    ) -> None:
+        """Wire the session/market-state callback used to suppress weekend stalls.
+
+        ``is_market_closed`` returns True when the FX market is closed (weekend).
+        ``has_always_open_symbols`` is True when the watchlist contains 24/7
+        instruments (Deriv synthetics) that should keep ticking regardless — in
+        that case a stall is never expected and the alert is NOT suppressed.
+        """
+        self._is_market_closed = is_market_closed
+        self._has_always_open = bool(has_always_open_symbols)
 
     # ── Heartbeat ─────────────────────────────────────────────────────────
     def beat(self, force: bool = False) -> None:
@@ -93,6 +114,22 @@ class ProcessWatchdog:
         """
         age = time.monotonic() - self._last_tick_mono
         if age > self._max_tick:
+            # Suppress the alert when a stall is expected: FX market closed
+            # (weekend) AND no 24/7 instruments that should keep ticking.
+            if self._is_market_closed is not None and not self._has_always_open:
+                try:
+                    market_closed = bool(self._is_market_closed())
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[ops] market-state check failed: {}", exc)
+                    market_closed = False
+                if market_closed:
+                    if not self._stall_logged:
+                        logger.bind(component="ops", event="tick_stall_weekend").debug(
+                            "Tick gap {:.0f}s during market closure — stall alert suppressed",
+                            age,
+                        )
+                        self._stall_logged = True
+                    return round(age, 1)
             if not self._stall_logged:
                 logger.bind(component="ops", event="tick_stall").critical(
                     "🚨 TICK STALL — no completed tick for {:.0f}s (budget {:.0f}s)",
