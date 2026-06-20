@@ -154,7 +154,10 @@ class BackfillRunner:
             return True
         assert self._conn is not None
         self._conn.execute(
-            "INSERT INTO events VALUES (?,?,?,?,?,?,?,?,?)",
+            "INSERT INTO events "
+            "(event_id, correlation_id, parent_id, ts_utc_ms, event_type,"
+            " severity, symbol, source_module, payload_json)"
+            " VALUES (?,?,?,?,?,?,?,?,?)",
             (
                 event_id,
                 correlation_id,

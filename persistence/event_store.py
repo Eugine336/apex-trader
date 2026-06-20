@@ -42,7 +42,8 @@ CREATE TABLE IF NOT EXISTS events (
     severity       TEXT NOT NULL,
     symbol         TEXT,
     source_module  TEXT,
-    payload_json   TEXT
+    payload_json   TEXT,
+    seq            INTEGER
 )
 """
 
@@ -50,6 +51,7 @@ _CREATE_IDX_CORRELATION = "CREATE INDEX IF NOT EXISTS idx_events_correlation ON 
 _CREATE_IDX_TS = "CREATE INDEX IF NOT EXISTS idx_events_ts ON events (ts_utc_ms)"
 _CREATE_IDX_TYPE = "CREATE INDEX IF NOT EXISTS idx_events_type ON events (event_type)"
 _CREATE_IDX_SYMBOL = "CREATE INDEX IF NOT EXISTS idx_events_symbol ON events (symbol)"
+_CREATE_IDX_SEQ = "CREATE INDEX IF NOT EXISTS idx_events_seq ON events (seq)"
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -103,6 +105,13 @@ class EventStore:
         self._queue: queue.Queue = queue.Queue(maxsize=max_queue)
         self._dropped = 0
         self._dropped_lock = threading.Lock()
+        # Monotonic, per-process event sequence.  Assigned at emit time under
+        # its own lock and seeded from the persisted MAX(seq) on connect, so it
+        # continues across restarts and gives a strict total order for replay
+        # even when events share a millisecond timestamp.  Gaps indicate events
+        # dropped under queue saturation.
+        self._seq = 0
+        self._seq_lock = threading.Lock()
         # Serialises every access to the single shared sqlite connection across
         # the writer thread, the dashboard reader thread, and the main-thread
         # pruner — without this, concurrent cursors race ("database is locked" /
@@ -131,11 +140,22 @@ class EventStore:
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute(_CREATE_EVENTS)
+        # Migrate DBs created before the seq column existed.
+        existing_cols = {
+            r[1] for r in self._conn.execute("PRAGMA table_info(events)").fetchall()
+        }
+        if "seq" not in existing_cols:
+            self._conn.execute("ALTER TABLE events ADD COLUMN seq INTEGER")
         self._conn.execute(_CREATE_IDX_CORRELATION)
         self._conn.execute(_CREATE_IDX_TS)
         self._conn.execute(_CREATE_IDX_TYPE)
         self._conn.execute(_CREATE_IDX_SYMBOL)
+        self._conn.execute(_CREATE_IDX_SEQ)
         self._conn.commit()
+        # Continue the sequence from the persisted maximum (0 on a fresh or
+        # pre-migration DB) so replay ordering is monotonic across restarts.
+        row = self._conn.execute("SELECT MAX(seq) FROM events").fetchone()
+        self._seq = int(row[0]) if row and row[0] is not None else 0
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -156,6 +176,9 @@ class EventStore:
             payload_json = json.dumps(payload) if payload else None
         except (TypeError, ValueError):
             payload_json = json.dumps({"_serialization_error": True, "repr": repr(payload)[:500]})
+        with self._seq_lock:
+            self._seq += 1
+            seq = self._seq
         row = (
             eid,
             correlation_id,
@@ -166,6 +189,7 @@ class EventStore:
             symbol,
             source_module,
             payload_json,
+            seq,
         )
         try:
             self._queue.put_nowait(row)
@@ -205,7 +229,7 @@ class EventStore:
             params.append(since_ms)
 
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        sql = f"SELECT * FROM events{where} ORDER BY ts_utc_ms ASC LIMIT ?"
+        sql = f"SELECT * FROM events{where} ORDER BY ts_utc_ms ASC, seq ASC LIMIT ?"
         params.append(limit)
 
         try:
@@ -258,7 +282,7 @@ class EventStore:
         where = " WHERE " + " AND ".join(clauses)
         sql = (
             f"SELECT * FROM events{where}"
-            f" ORDER BY ts_utc_ms DESC LIMIT ? OFFSET ?"
+            f" ORDER BY ts_utc_ms DESC, seq DESC LIMIT ? OFFSET ?"
         )
         params.extend([limit, offset])
 
@@ -269,6 +293,33 @@ class EventStore:
                 return [dict(zip(cols, row)) for row in cur.fetchall()]
         except Exception as exc:
             print(f"[event_store] query_events failed: {exc}", file=sys.stderr)
+            return []
+
+    def replay(
+        self,
+        *,
+        after_seq: int = 0,
+        limit: int = 1000,
+    ) -> List[Dict[str, Any]]:
+        """Return events with ``seq > after_seq`` in strict ascending order.
+
+        ``seq`` is a per-process monotonic counter (continued across restarts
+        from the persisted maximum), so this yields a deterministic total
+        order suitable for replay — unlike timestamp ordering, it never ties.
+        Page through by passing the last returned row's ``seq`` as the next
+        ``after_seq``.  Rows written before the seq column was introduced have
+        ``seq IS NULL`` and are intentionally excluded.
+        """
+        try:
+            with self._db_lock:
+                cur = self._conn.execute(
+                    "SELECT * FROM events WHERE seq > ? ORDER BY seq ASC LIMIT ?",
+                    (after_seq, limit),
+                )
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+        except Exception as exc:
+            print(f"[event_store] replay failed: {exc}", file=sys.stderr)
             return []
 
     def get_trade_close_map(self) -> Dict[str, Dict[str, Any]]:
@@ -375,8 +426,8 @@ class EventStore:
         insert_sql = (
             "INSERT OR IGNORE INTO events "
             "(event_id, correlation_id, parent_id, ts_utc_ms, event_type,"
-            " severity, symbol, source_module, payload_json)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            " severity, symbol, source_module, payload_json, seq)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
         )
         while not self._shutdown.is_set():
             batch: List[tuple] = []
@@ -426,8 +477,8 @@ class EventStore:
                         "INSERT OR IGNORE INTO events "
                         "(event_id, correlation_id, parent_id, ts_utc_ms,"
                         " event_type, severity, symbol, source_module,"
-                        " payload_json)"
-                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        " payload_json, seq)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                         remaining,
                     )
                     self._conn.commit()
