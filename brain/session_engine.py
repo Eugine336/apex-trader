@@ -5,6 +5,8 @@ A professional trader never trades in dead markets
 or right before a news bomb drops.
 """
 
+import threading
+
 import pandas as pd
 from datetime import datetime, time, timezone
 from loguru import logger
@@ -282,6 +284,10 @@ class NewsGuard:
         self.pause_after = pause_after
         self._cache = []
         self._cache_time = None
+        # Serializes the freshness-check + network fetch + cache update so
+        # concurrent callers (parallel position scan, entry checks on tick
+        # threads) don't stampede the feed or read a torn cache.
+        self._lock = threading.Lock()
 
     def check(self, pairs_in_play: list[str], utc_now: Optional[datetime] = None) -> NewsStatus:
         """
@@ -366,6 +372,12 @@ class NewsGuard:
         return list(currencies)
 
     def _fetch_events(self, utc_now: datetime) -> Optional[list[NewsEvent]]:
+        """Single-flight wrapper: one thread fetches at a time; others waiting
+        on the lock re-check freshness and reuse the populated cache."""
+        with self._lock:
+            return self._fetch_events_locked(utc_now)
+
+    def _fetch_events_locked(self, utc_now: datetime) -> Optional[list[NewsEvent]]:
         """
         Fetch economic calendar events.
         Uses ForexFactory RSS feed as primary source.
