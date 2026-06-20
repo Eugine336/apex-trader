@@ -1822,6 +1822,9 @@ class DerivConnector(BaseConnector):
             return DealCloseInfo(
                 pnl=pnl,
                 exit_reason=exit_reason,
+                commission=0.0,
+                swap=0.0,
+                fee=0.0,
                 close_price=close_price,
                 close_time=close_time,
                 raw_comment=str(poc.get("status", "")),

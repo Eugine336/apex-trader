@@ -1052,7 +1052,12 @@ class MT5Connector(BaseConnector):
 
     def get_realized_pnl(self, order_id: str) -> Optional[float]:
         """Return the broker's realized P&L for a closed ticket via history_deals_get.
-        Returns None if the deal history isn't available."""
+
+        Superseded for the event-driven close path by ``get_deal_close_info()``,
+        which returns the same net P&L plus exit attribution and close price.
+        Kept for backward compatibility with older callers.
+        Returns None if the deal history isn't available.
+        """
         self._require_connection()
         try:
             ticket = int(order_id)
@@ -1073,7 +1078,19 @@ class MT5Connector(BaseConnector):
             deals = mt5.history_deals_get(position=ticket)
             if deals is None or len(deals) == 0:
                 return None
-            total_pnl = sum(d.profit + d.commission + d.swap + d.fee for d in deals)
+            total_commission = float(
+                sum(getattr(d, "commission", 0.0) or 0.0 for d in deals),
+            )
+            total_swap = float(
+                sum(getattr(d, "swap", 0.0) or 0.0 for d in deals),
+            )
+            total_fee = float(
+                sum(getattr(d, "fee", 0.0) or 0.0 for d in deals),
+            )
+            total_profit = float(
+                sum(getattr(d, "profit", 0.0) or 0.0 for d in deals),
+            )
+            total_pnl = total_profit + total_commission + total_swap + total_fee
             closing_deal = None
             for d in deals:
                 if getattr(d, "entry", None) == 1:  # DEAL_ENTRY_OUT
@@ -1094,6 +1111,9 @@ class MT5Connector(BaseConnector):
             return DealCloseInfo(
                 pnl=round(total_pnl, 2),
                 exit_reason=exit_reason,
+                commission=round(total_commission, 2),
+                swap=round(total_swap, 2),
+                fee=round(total_fee, 2),
                 raw_reason_code=reason_code,
                 raw_comment=comment or "",
                 close_price=fill_price,

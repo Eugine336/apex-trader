@@ -38,6 +38,9 @@ class TradeRecord:
     swap_status: str = "unavailable"
     risk_dollars: Optional[float] = None
     exit_cause: Optional[str] = None
+    broker_swap: Optional[float] = None
+    broker_commission: Optional[float] = None
+    broker_fee: Optional[float] = None
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -88,6 +91,14 @@ class TradeJournal:
                         time_to_tp1 REAL,
                         time_to_exit REAL,
                         outcome TEXT NOT NULL,
+                        pnl_dollars REAL DEFAULT 0.0,
+                        swap_modeled REAL,
+                        swap_status TEXT DEFAULT 'unavailable',
+                        risk_dollars REAL,
+                        exit_cause TEXT,
+                        broker_swap REAL,
+                        broker_commission REAL,
+                        broker_fee REAL,
                         timestamp TEXT NOT NULL
                     )
                     """
@@ -135,6 +146,24 @@ class TradeJournal:
                 except Exception as exc:
                     logger.debug("[trade_journal] exit_cause column migration skipped (likely already exists): {}", exc)
                     pass
+                try:
+                    await db.execute("ALTER TABLE trades ADD COLUMN broker_swap REAL")
+                    await db.commit()
+                except Exception as exc:
+                    logger.debug("[trade_journal] broker_swap column migration skipped (likely already exists): {}", exc)
+                    pass
+                try:
+                    await db.execute("ALTER TABLE trades ADD COLUMN broker_commission REAL")
+                    await db.commit()
+                except Exception as exc:
+                    logger.debug("[trade_journal] broker_commission column migration skipped (likely already exists): {}", exc)
+                    pass
+                try:
+                    await db.execute("ALTER TABLE trades ADD COLUMN broker_fee REAL")
+                    await db.commit()
+                except Exception as exc:
+                    logger.debug("[trade_journal] broker_fee column migration skipped (likely already exists): {}", exc)
+                    pass
             self._initialized = True
 
     async def log_trade(self, trade: TradeRecord) -> None:
@@ -146,8 +175,8 @@ class TradeJournal:
                     pair, direction, entry, exit, pnl, score, confluences, regime,
                     session, spread, slippage, entry_type, time_to_tp1, time_to_exit,
                     outcome, pnl_dollars, swap_modeled, swap_status, risk_dollars,
-                    exit_cause, timestamp
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    exit_cause, broker_swap, broker_commission, broker_fee, timestamp
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     trade.pair,
@@ -170,6 +199,9 @@ class TradeJournal:
                     trade.swap_status,
                     trade.risk_dollars,
                     trade.exit_cause,
+                    trade.broker_swap,
+                    trade.broker_commission,
+                    trade.broker_fee,
                     trade.timestamp.isoformat(),
                 ),
             )

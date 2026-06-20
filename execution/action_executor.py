@@ -34,6 +34,18 @@ from platforms.circuit_breaker import CircuitBreaker
 class BrokerPort(Protocol):
     """Minimal broker interface the executor needs."""
 
+    def execute_entry(
+        self,
+        symbol: str,
+        direction: str,
+        lots: float,
+        sl: float,
+        tp: float,
+        comment: str = "",
+        stake_usd: Optional[float] = None,
+        idempotency_key: str = "",
+    ) -> Any: ...
+
     def modify_trade(
         self,
         order_id: str,
@@ -327,6 +339,28 @@ class ActionExecutor:
         """Route an intent to the appropriate broker call."""
         pos = open_positions.get(intent.position_ticket, {})
         platform = pos.get("platform", "")
+
+        if intent.intent_type == IntentType.OPEN:
+            resp = self._broker.execute_entry(
+                symbol=intent.symbol,
+                direction=str(intent.direction or ""),
+                lots=float(intent.lots or 0.0),
+                sl=float(intent.new_sl or 0.0),
+                tp=float(intent.new_tp or 0.0),
+                comment=str(intent.comment or ""),
+                stake_usd=(
+                    float(intent.stake_usd)
+                    if intent.stake_usd is not None
+                    else None
+                ),
+                idempotency_key=str(intent.idempotency_key or ""),
+            )
+            success = getattr(resp, "success", bool(resp))
+            error = getattr(resp, "error", None) or (None if success else "open failed")
+            return ExecutionResult(
+                intent=intent, success=success, error=error,
+                broker_response=resp,
+            )
 
         if intent.intent_type == IntentType.CLOSE:
             resp = self._broker.close_trade(

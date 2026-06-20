@@ -26,9 +26,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
 
+from loguru import logger
+
 from execution.intents import Intent, IntentType
 from execution.position_snapshot import PositionSnapshot
 from config import is_always_open, is_session_gated
+from management.trailing_stop import StructureTrailingStop
 
 
 @dataclass
@@ -53,6 +56,7 @@ class WorkerConfig:
     heat_trail_factor_defensive: float = 0.7
     heat_trail_factor_reducing: float = 0.5
     heat_trail_factor_emergency: float = 0.5
+    trailing_swing_lookback: int = 12
 
     # ── Stall exit ───────────────────────────────────────────────────
     stall_limits: dict = field(default_factory=lambda: {
@@ -140,6 +144,7 @@ class MarketContext:
     h1_last_closed_time: Optional[datetime] = None
     last_seen_h1_close: Optional[datetime] = None
     blocked_candidate: Optional[dict] = None
+    m5_df: Optional[pd.DataFrame] = None
 
 
 class PositionWorker:
@@ -156,6 +161,9 @@ class PositionWorker:
 
     def __init__(self, config: Optional[WorkerConfig] = None) -> None:
         self.cfg = config or WorkerConfig()
+        self._structure_trailing = StructureTrailingStop(
+            swing_lookback=self.cfg.trailing_swing_lookback,
+        )
 
     def evaluate(
         self,
@@ -194,6 +202,7 @@ class PositionWorker:
             self._check_conviction_collapse(snap, intents)
 
         if market is not None:
+            self._check_structure_trailing(snap, market, out=intents)
             self._check_htf_candle_close(snap, market, intents)
             self._check_spread_deterioration(snap, market, intents)
             self._check_session_close(snap, now, intents)
@@ -396,6 +405,60 @@ class PositionWorker:
             source="dynamic_sl_tighten",
             reason=f"Dynamic SL tighten — {snap.sl:.5f} → {new_sl:.5f} ({profit_r:.1f}R)",
         ))
+
+    def _should_structure_trail(self, snap: PositionSnapshot) -> bool:
+        if snap.plan_trail_strategy == "none":
+            return False
+        activation = snap.plan_trail_activation_r
+        if activation is not None and snap.pnl_r < activation:
+            return False
+        return self._structure_trailing.should_trail(
+            snap.pnl_pips, snap.at_breakeven,
+        )
+
+    def _check_structure_trailing(
+        self, snap: PositionSnapshot, market: MarketContext, out: list[Intent],
+    ) -> None:
+        if snap.pip_size <= 0:
+            return
+        if not self._should_structure_trail(snap):
+            return
+        df_m5 = getattr(market, "m5_df", None)
+        if df_m5 is None or len(df_m5) < 10:
+            return
+        try:
+            trail_factor = 1.0
+            if self.cfg.heat_trail_tighten_enabled:
+                heat_state = str(getattr(self.cfg, "portfolio_heat_state", "NORMAL")).upper()
+                if heat_state == "DEFENSIVE":
+                    trail_factor = float(self.cfg.heat_trail_factor_defensive)
+                elif heat_state == "REDUCING":
+                    trail_factor = float(self.cfg.heat_trail_factor_reducing)
+                elif heat_state == "EMERGENCY":
+                    trail_factor = float(self.cfg.heat_trail_factor_emergency)
+
+            buffer_pips = None
+            if 0.0 < trail_factor < 1.0:
+                buffer_pips = float(self._structure_trailing.buffer_pips) * trail_factor
+
+            new_sl = self._structure_trailing.calculate_trail(
+                "LONG" if snap.is_long else "SHORT",
+                snap.sl,
+                df_m5,
+                snap.pip_size,
+                buffer_pips=buffer_pips,
+            )
+            if new_sl is None:
+                return
+            out.append(Intent.modify_sl(
+                symbol=snap.symbol,
+                ticket=snap.order_id,
+                new_sl=new_sl,
+                source="structure_trailing",
+                reason=f"Structure trail SL → {new_sl:.5f}",
+            ))
+        except Exception as exc:
+            logger.debug("[pos-worker] structure trailing failed for {}: {}", snap.order_id, exc)
 
     def _check_invalidation(
         self, snap: PositionSnapshot, scan: ScanContext, out: list[Intent],
