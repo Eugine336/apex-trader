@@ -187,6 +187,12 @@ class M1CandleConfirmer:
         if len(m1_df) < 5:
             return ConfirmationResult(False, "none", "M1 < 5 bars for momentum")
 
+        # Drop the still-forming bar so momentum is judged on CLOSED candles
+        # only (the structure path already does this via drop_forming_bar).
+        m1_df = drop_forming_bar(m1_df)
+        if len(m1_df) < 5:
+            return ConfirmationResult(False, "none", "M1 < 5 closed bars for momentum")
+
         if zone is not None:
             proximity = 10.0 * pip_size  # ~10 pips
             last_row = m1_df.iloc[-1]

@@ -171,6 +171,14 @@ class EntryGate:
         risk = abs(entry - sl)
         if risk <= 0:
             return GateResult(False, "risk_reward_ok", "Zero risk distance")
+        # Sign validation: an inverted SL/TP (e.g. SL above entry on a LONG)
+        # would still yield a positive R:R via abs() and pass the magnitude
+        # check. Reject geometrically impossible setups first.
+        is_long = direction.upper() == "LONG"
+        if is_long and (sl >= entry or tp1 <= entry or tp2 <= entry):
+            return GateResult(False, "risk_reward_ok", "Inverted SL/TP for LONG")
+        if not is_long and (sl <= entry or tp1 >= entry or tp2 >= entry):
+            return GateResult(False, "risk_reward_ok", "Inverted SL/TP for SHORT")
         reward1 = abs(tp1 - entry)
         rr1 = reward1 / risk
         if rr1 < 1.0:

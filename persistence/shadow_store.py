@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import sqlite3
 import sys
+import threading
 import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -131,6 +132,10 @@ class ShadowStore:
         self._db_path = db_path or _DB_PATH
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None
+        # Serialises all access to the shared sqlite connection. The resolver
+        # thread and the dashboard reader touch this store concurrently; without
+        # a lock their cursors race on the single connection.
+        self._lock = threading.RLock()
         self._connect()
 
     def _connect(self) -> None:
@@ -168,94 +173,97 @@ class ShadowStore:
     def insert_contract(self, contract: ShadowContract) -> Optional[str]:
         if self._conn is None:
             return None
-        try:
-            self._conn.execute(
-                """INSERT INTO shadow_contracts
-                   (contract_id, correlation_id, setup_id, symbol, direction,
-                    entry_price, stop_loss, tp1, tp2, tp3, pip_size,
-                    position_size, entry_timeframe, rejecting_gate, score,
-                    ts_utc_ms, status, source)
-                   VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-                (
-                    contract.contract_id,
-                    contract.correlation_id,
-                    contract.setup_id,
-                    contract.symbol,
-                    contract.direction,
-                    contract.entry_price,
-                    contract.stop_loss,
-                    contract.tp1,
-                    contract.tp2,
-                    contract.tp3,
-                    contract.pip_size,
-                    contract.position_size,
-                    contract.entry_timeframe,
-                    contract.rejecting_gate,
-                    contract.score,
-                    contract.ts_utc_ms,
-                    contract.status,
-                    contract.source,
-                ),
-            )
-            self._conn.commit()
-            return contract.contract_id
-        except Exception as exc:
-            logger.debug("[ShadowStore] insert_contract failed: {}", exc)
-            return None
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """INSERT INTO shadow_contracts
+                       (contract_id, correlation_id, setup_id, symbol, direction,
+                        entry_price, stop_loss, tp1, tp2, tp3, pip_size,
+                        position_size, entry_timeframe, rejecting_gate, score,
+                        ts_utc_ms, status, source)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        contract.contract_id,
+                        contract.correlation_id,
+                        contract.setup_id,
+                        contract.symbol,
+                        contract.direction,
+                        contract.entry_price,
+                        contract.stop_loss,
+                        contract.tp1,
+                        contract.tp2,
+                        contract.tp3,
+                        contract.pip_size,
+                        contract.position_size,
+                        contract.entry_timeframe,
+                        contract.rejecting_gate,
+                        contract.score,
+                        contract.ts_utc_ms,
+                        contract.status,
+                        contract.source,
+                    ),
+                )
+                self._conn.commit()
+                return contract.contract_id
+            except Exception as exc:
+                logger.debug("[ShadowStore] insert_contract failed: {}", exc)
+                return None
 
     def resolve_contract(
         self, contract_id: str, resolution: ShadowResolution,
     ) -> bool:
         if self._conn is None:
             return False
-        try:
-            meta_json = (
-                json.dumps(resolution.resolver_meta)
-                if resolution.resolver_meta
-                else None
-            )
-            self._conn.execute(
-                """UPDATE shadow_contracts
-                   SET status=?, outcome=?, r_multiple=?, exit_reason=?,
-                       exit_price=?, resolution_ts=?,
-                       resolution_granularity=?, bars_replayed=?,
-                       resolver_meta=?
-                   WHERE contract_id=?""",
-                (
-                    "RESOLVED",
-                    resolution.outcome,
-                    resolution.r_multiple,
-                    resolution.exit_reason,
-                    resolution.exit_price,
-                    resolution.resolution_ts,
-                    resolution.resolution_granularity,
-                    resolution.bars_replayed,
-                    meta_json,
-                    contract_id,
-                ),
-            )
-            self._conn.commit()
-            return True
-        except Exception as exc:
-            logger.debug("[ShadowStore] resolve_contract failed: {}", exc)
-            return False
+        with self._lock:
+            try:
+                meta_json = (
+                    json.dumps(resolution.resolver_meta)
+                    if resolution.resolver_meta
+                    else None
+                )
+                self._conn.execute(
+                    """UPDATE shadow_contracts
+                       SET status=?, outcome=?, r_multiple=?, exit_reason=?,
+                           exit_price=?, resolution_ts=?,
+                           resolution_granularity=?, bars_replayed=?,
+                           resolver_meta=?
+                       WHERE contract_id=?""",
+                    (
+                        "RESOLVED",
+                        resolution.outcome,
+                        resolution.r_multiple,
+                        resolution.exit_reason,
+                        resolution.exit_price,
+                        resolution.resolution_ts,
+                        resolution.resolution_granularity,
+                        resolution.bars_replayed,
+                        meta_json,
+                        contract_id,
+                    ),
+                )
+                self._conn.commit()
+                return True
+            except Exception as exc:
+                logger.debug("[ShadowStore] resolve_contract failed: {}", exc)
+                return False
 
     def mark_expired(self, contract_id: str, bars_replayed: int) -> bool:
         if self._conn is None:
             return False
-        try:
-            self._conn.execute(
-                """UPDATE shadow_contracts
-                   SET status='EXPIRED', outcome='EXPIRED',
-                       resolution_ts=?, bars_replayed=?
-                   WHERE contract_id=?""",
-                (_now_ms(), bars_replayed, contract_id),
-            )
-            self._conn.commit()
-            return True
-        except Exception as exc:
-            logger.debug("[ShadowStore] mark_expired failed: {}", exc)
-            return False
+        with self._lock:
+            try:
+                self._conn.execute(
+                    """UPDATE shadow_contracts
+                       SET status='EXPIRED', outcome='EXPIRED',
+                           resolution_ts=?, bars_replayed=?
+                       WHERE contract_id=?""",
+                    (_now_ms(), bars_replayed, contract_id),
+                )
+                self._conn.commit()
+                return True
+            except Exception as exc:
+                logger.debug("[ShadowStore] mark_expired failed: {}", exc)
+                return False
 
     def discard_stale_pending(self, older_than_ms: int) -> int:
         """Discard PENDING contracts older than the cutoff.
@@ -266,90 +274,95 @@ class ShadowStore:
         """
         if self._conn is None:
             return 0
-        try:
-            cur = self._conn.execute(
-                """UPDATE shadow_contracts
-                   SET status='DISCARDED', outcome='DISCARDED', resolution_ts=?
-                   WHERE status='PENDING' AND ts_utc_ms < ?""",
-                (_now_ms(), older_than_ms),
-            )
-            self._conn.commit()
-            return cur.rowcount or 0
-        except Exception as exc:
-            logger.debug("[ShadowStore] discard_stale_pending failed: {}", exc)
-            return 0
+        with self._lock:
+            try:
+                cur = self._conn.execute(
+                    """UPDATE shadow_contracts
+                       SET status='DISCARDED', outcome='DISCARDED', resolution_ts=?
+                       WHERE status='PENDING' AND ts_utc_ms < ?""",
+                    (_now_ms(), older_than_ms),
+                )
+                self._conn.commit()
+                return cur.rowcount or 0
+            except Exception as exc:
+                logger.debug("[ShadowStore] discard_stale_pending failed: {}", exc)
+                return 0
 
     def get_pending(self, limit: int = 100) -> List[ShadowContract]:
         if self._conn is None:
             return []
-        try:
-            cur = self._conn.execute(
-                "SELECT * FROM shadow_contracts WHERE status='PENDING' "
-                "ORDER BY ts_utc_ms ASC LIMIT ?",
-                (limit,),
-            )
-            cols = [d[0] for d in cur.description]
-            return [ShadowContract(**dict(zip(cols, row))) for row in cur.fetchall()]
-        except Exception as exc:
-            logger.debug("[ShadowStore] get_pending failed: {}", exc)
-            return []
+        with self._lock:
+            try:
+                cur = self._conn.execute(
+                    "SELECT * FROM shadow_contracts WHERE status='PENDING' "
+                    "ORDER BY ts_utc_ms ASC LIMIT ?",
+                    (limit,),
+                )
+                cols = [d[0] for d in cur.description]
+                return [ShadowContract(**dict(zip(cols, row))) for row in cur.fetchall()]
+            except Exception as exc:
+                logger.debug("[ShadowStore] get_pending failed: {}", exc)
+                return []
 
     def get_resolved(
         self, symbol: Optional[str] = None, limit: int = 200,
     ) -> List[ShadowContract]:
         if self._conn is None:
             return []
-        try:
-            if symbol:
-                cur = self._conn.execute(
-                    "SELECT * FROM shadow_contracts WHERE status='RESOLVED' "
-                    "AND symbol=? ORDER BY ts_utc_ms DESC LIMIT ?",
-                    (symbol, limit),
-                )
-            else:
-                cur = self._conn.execute(
-                    "SELECT * FROM shadow_contracts WHERE status='RESOLVED' "
-                    "ORDER BY ts_utc_ms DESC LIMIT ?",
-                    (limit,),
-                )
-            cols = [d[0] for d in cur.description]
-            return [ShadowContract(**dict(zip(cols, row))) for row in cur.fetchall()]
-        except Exception as exc:
-            logger.debug("[ShadowStore] get_resolved failed: {}", exc)
-            return []
+        with self._lock:
+            try:
+                if symbol:
+                    cur = self._conn.execute(
+                        "SELECT * FROM shadow_contracts WHERE status='RESOLVED' "
+                        "AND symbol=? ORDER BY ts_utc_ms DESC LIMIT ?",
+                        (symbol, limit),
+                    )
+                else:
+                    cur = self._conn.execute(
+                        "SELECT * FROM shadow_contracts WHERE status='RESOLVED' "
+                        "ORDER BY ts_utc_ms DESC LIMIT ?",
+                        (limit,),
+                    )
+                cols = [d[0] for d in cur.description]
+                return [ShadowContract(**dict(zip(cols, row))) for row in cur.fetchall()]
+            except Exception as exc:
+                logger.debug("[ShadowStore] get_resolved failed: {}", exc)
+                return []
 
     def count_by_status(self) -> Dict[str, int]:
         if self._conn is None:
             return {}
-        try:
-            cur = self._conn.execute(
-                "SELECT status, COUNT(*) FROM shadow_contracts GROUP BY status"
-            )
-            return dict(cur.fetchall())
-        except Exception as exc:
-            logger.debug("[ShadowStore] count_by_status failed: {}", exc)
-            return {}
+        with self._lock:
+            try:
+                cur = self._conn.execute(
+                    "SELECT status, COUNT(*) FROM shadow_contracts GROUP BY status"
+                )
+                return dict(cur.fetchall())
+            except Exception as exc:
+                logger.debug("[ShadowStore] count_by_status failed: {}", exc)
+                return {}
 
     def get_outcomes_by_gate(self) -> List[Dict[str, Any]]:
         """Aggregate resolved+expired contracts grouped by rejecting_gate."""
         if self._conn is None:
             return []
-        try:
-            cur = self._conn.execute(
-                """SELECT rejecting_gate, outcome,
-                          COUNT(*) as cnt,
-                          AVG(r_multiple) as avg_r,
-                          AVG(bars_replayed) as avg_bars
-                   FROM shadow_contracts
-                   WHERE status IN ('RESOLVED', 'EXPIRED')
-                   GROUP BY rejecting_gate, outcome
-                   ORDER BY rejecting_gate, outcome"""
-            )
-            cols = [d[0] for d in cur.description]
-            return [dict(zip(cols, row)) for row in cur.fetchall()]
-        except Exception as exc:
-            logger.debug("[ShadowStore] get_outcomes_by_gate failed: {}", exc)
-            return []
+        with self._lock:
+            try:
+                cur = self._conn.execute(
+                    """SELECT rejecting_gate, outcome,
+                              COUNT(*) as cnt,
+                              AVG(r_multiple) as avg_r,
+                              AVG(bars_replayed) as avg_bars
+                       FROM shadow_contracts
+                       WHERE status IN ('RESOLVED', 'EXPIRED')
+                       GROUP BY rejecting_gate, outcome
+                       ORDER BY rejecting_gate, outcome"""
+                )
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+            except Exception as exc:
+                logger.debug("[ShadowStore] get_outcomes_by_gate failed: {}", exc)
+                return []
 
     def get_gate_edge(self) -> List[Dict[str, Any]]:
         """Per-gate counterfactual edge of the setups each gate REJECTED.
@@ -365,20 +378,21 @@ class ShadowStore:
         """
         if self._conn is None:
             return []
-        try:
-            cur = self._conn.execute(
-                """SELECT rejecting_gate, outcome,
-                          COUNT(*) AS cnt,
-                          SUM(r_multiple) AS sum_r,
-                          SUM(CASE WHEN r_multiple IS NOT NULL THEN 1 ELSE 0 END) AS n_r
-                   FROM shadow_contracts
-                   WHERE status IN ('RESOLVED', 'EXPIRED')
-                   GROUP BY rejecting_gate, outcome"""
-            )
-            rows = cur.fetchall()
-        except Exception as exc:
-            logger.debug("[ShadowStore] get_gate_edge failed: {}", exc)
-            return []
+        with self._lock:
+            try:
+                cur = self._conn.execute(
+                    """SELECT rejecting_gate, outcome,
+                              COUNT(*) AS cnt,
+                              SUM(r_multiple) AS sum_r,
+                              SUM(CASE WHEN r_multiple IS NOT NULL THEN 1 ELSE 0 END) AS n_r
+                       FROM shadow_contracts
+                       WHERE status IN ('RESOLVED', 'EXPIRED')
+                       GROUP BY rejecting_gate, outcome"""
+                )
+                rows = cur.fetchall()
+            except Exception as exc:
+                logger.debug("[ShadowStore] get_gate_edge failed: {}", exc)
+                return []
 
         _key = {
             "WIN": "wins", "LOSS": "losses", "BE": "be",
@@ -424,21 +438,22 @@ class ShadowStore:
         """
         if self._conn is None:
             return []
-        try:
-            cur = self._conn.execute(
-                """SELECT symbol, outcome,
-                          COUNT(*) as cnt,
-                          AVG(r_multiple) as avg_r
-                   FROM shadow_contracts
-                   WHERE status IN ('RESOLVED', 'EXPIRED')
-                   GROUP BY symbol, outcome
-                   ORDER BY symbol, outcome"""
-            )
-            cols = [d[0] for d in cur.description]
-            return [dict(zip(cols, row)) for row in cur.fetchall()]
-        except Exception as exc:
-            logger.debug("[ShadowStore] get_outcomes_by_symbol failed: {}", exc)
-            return []
+        with self._lock:
+            try:
+                cur = self._conn.execute(
+                    """SELECT symbol, outcome,
+                              COUNT(*) as cnt,
+                              AVG(r_multiple) as avg_r
+                       FROM shadow_contracts
+                       WHERE status IN ('RESOLVED', 'EXPIRED')
+                       GROUP BY symbol, outcome
+                       ORDER BY symbol, outcome"""
+                )
+                cols = [d[0] for d in cur.description]
+                return [dict(zip(cols, row)) for row in cur.fetchall()]
+            except Exception as exc:
+                logger.debug("[ShadowStore] get_outcomes_by_symbol failed: {}", exc)
+                return []
 
     def get_all_contracts(
         self,
@@ -449,33 +464,35 @@ class ShadowStore:
         """Get contracts with optional filters, newest-first."""
         if self._conn is None:
             return []
-        try:
-            clauses: List[str] = []
-            params: list = []
-            if status:
-                clauses.append("status = ?")
-                params.append(status)
-            if rejecting_gate:
-                clauses.append("rejecting_gate = ?")
-                params.append(rejecting_gate)
-            where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-            cur = self._conn.execute(
-                f"SELECT * FROM shadow_contracts{where} ORDER BY ts_utc_ms DESC LIMIT ?",
-                (*params, limit),
-            )
-            cols = [d[0] for d in cur.description]
-            return [ShadowContract(**dict(zip(cols, row))) for row in cur.fetchall()]
-        except Exception as exc:
-            logger.debug("[ShadowStore] get_all_contracts failed: {}", exc)
-            return []
+        with self._lock:
+            try:
+                clauses: List[str] = []
+                params: list = []
+                if status:
+                    clauses.append("status = ?")
+                    params.append(status)
+                if rejecting_gate:
+                    clauses.append("rejecting_gate = ?")
+                    params.append(rejecting_gate)
+                where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+                cur = self._conn.execute(
+                    f"SELECT * FROM shadow_contracts{where} ORDER BY ts_utc_ms DESC LIMIT ?",
+                    (*params, limit),
+                )
+                cols = [d[0] for d in cur.description]
+                return [ShadowContract(**dict(zip(cols, row))) for row in cur.fetchall()]
+            except Exception as exc:
+                logger.debug("[ShadowStore] get_all_contracts failed: {}", exc)
+                return []
 
     def close(self) -> None:
-        if self._conn:
-            try:
-                self._conn.close()
-            except Exception:
-                logger.debug("[ShadowStore] conn.close() failed during cleanup")
-            self._conn = None
+        with self._lock:
+            if self._conn:
+                try:
+                    self._conn.close()
+                except Exception:
+                    logger.debug("[ShadowStore] conn.close() failed during cleanup")
+                self._conn = None
 
 
 def new_contract_id() -> str:

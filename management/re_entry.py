@@ -59,7 +59,19 @@ class ReEntryManager:
         if not getattr(closed_trade, "re_entry_eligible", False):
             return self._not_eligible(pair, direction, "Trade not eligible for re-entry")
 
-        candles_since = getattr(closed_trade, "candles_since_entry", 0)
+        # Cooldown must be measured from when the triggering trade CLOSED, not
+        # from when it was opened. Using candles_since_entry let any long-lived
+        # trade bypass the cooldown instantly. Derive candles elapsed since the
+        # close timestamp using the trade's own timeframe.
+        close_time = getattr(closed_trade, "close_time", None)
+        if close_time is not None:
+            tf_minutes = {"M1": 1, "M5": 5, "M15": 15, "H1": 60, "H4": 240}.get(
+                getattr(closed_trade, "entry_timeframe", "M5"), 5,
+            )
+            elapsed_min = (datetime.now(timezone.utc) - close_time).total_seconds() / 60.0
+            candles_since = int(elapsed_min // tf_minutes) if tf_minutes > 0 else 0
+        else:
+            candles_since = getattr(closed_trade, "candles_since_entry", 0)
         remaining_cooldown = max(0, self.cooldown_candles - candles_since)
         if remaining_cooldown > 0:
             return self._not_eligible(

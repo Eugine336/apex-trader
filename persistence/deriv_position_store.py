@@ -55,14 +55,31 @@ class DerivPositionStore:
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         self._conn: Optional[sqlite3.Connection] = None
         self._lock = threading.Lock()
+        # Health flag — flipped to False on any read/write error so the bootstrap
+        # can pause new entries (losing this store leaves multiplier contracts
+        # unmanaged). Failures are still swallowed at the call site; this only
+        # exposes the degraded state for monitoring.
+        self._healthy: bool = True
+        self._last_error: str = ""
         self._connect()
+
+    def is_healthy(self) -> bool:
+        """True while every store operation has succeeded; False after any error."""
+        return self._healthy
+
+    def degraded_reason(self) -> str:
+        return self._last_error if not self._healthy else ""
+
+    def _mark_unhealthy(self, reason: str) -> None:
+        self._healthy = False
+        self._last_error = reason
 
     def _connect(self) -> None:
         self._conn = sqlite3.connect(
             str(self._db_path), timeout=10, check_same_thread=False,
         )
         self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA synchronous=FULL")
         self._conn.execute(_CREATE_TABLE)
         self._conn.commit()
         logger.debug("DerivPositionStore opened — {}", self._db_path)
@@ -97,6 +114,7 @@ class DerivPositionStore:
                 self._conn.commit()
             except Exception as exc:
                 logger.error("DerivPositionStore save failed for {}: {}", contract_id, exc)
+                self._mark_unhealthy(f"save {contract_id}: {exc}")
 
     def update_position(self, contract_id: str, **fields) -> None:
         """Update specific fields (e.g. sl/tp) on a persisted contract."""
@@ -117,6 +135,7 @@ class DerivPositionStore:
                 self._conn.commit()
             except Exception as exc:
                 logger.error("DerivPositionStore update failed for {}: {}", contract_id, exc)
+                self._mark_unhealthy(f"update {contract_id}: {exc}")
 
     def remove_position(self, contract_id: str) -> None:
         """Remove a closed contract from persistence."""
@@ -131,6 +150,7 @@ class DerivPositionStore:
                 self._conn.commit()
             except Exception as exc:
                 logger.error("DerivPositionStore remove failed for {}: {}", contract_id, exc)
+                self._mark_unhealthy(f"remove {contract_id}: {exc}")
 
     def load_all_positions(self) -> dict[str, dict]:
         """Load all persisted contracts as a {contract_id: data} mapping.
@@ -147,6 +167,7 @@ class DerivPositionStore:
                 rows = cursor.fetchall()
             except Exception as exc:
                 logger.error("DerivPositionStore load failed: {}", exc)
+                self._mark_unhealthy(f"load_all: {exc}")
                 return {}
         out: dict[str, dict] = {}
         for row in rows:

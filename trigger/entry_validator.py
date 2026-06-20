@@ -229,6 +229,14 @@ class EntryValidator:
 
     def check_risk_reward(self, signal: EntrySignal) -> tuple[bool, str]:
         min_rr = self.config.risk.min_risk_reward
+        # Sign validation first: inverted SL/TP would still pass the magnitude
+        # check below (risk_reward_* are computed via abs()).
+        entry = signal.entry_price
+        is_long = str(signal.direction).upper() == "LONG"
+        if is_long and (signal.stop_loss >= entry or signal.tp1 <= entry or signal.tp2 <= entry):
+            return False, "Inverted SL/TP for LONG"
+        if not is_long and (signal.stop_loss <= entry or signal.tp1 >= entry or signal.tp2 >= entry):
+            return False, "Inverted SL/TP for SHORT"
         if signal.risk_reward_1 < 1.0:
             return False, f"R:R to TP1 below 1:1 ({signal.risk_reward_1:.2f})"
         if signal.risk_reward_2 < min_rr:

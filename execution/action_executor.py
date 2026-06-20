@@ -341,9 +341,25 @@ class ActionExecutor:
             )
 
         if intent.intent_type == IntentType.PARTIAL_CLOSE:
+            # Deriv close_order is full-close only — routing a partial there
+            # would over-close the entire multiplier contract. Skip rather than
+            # silently liquidate the whole position.
+            if platform == "deriv":
+                logger.warning(
+                    "PARTIAL_CLOSE skipped on deriv (full-close only connector) | {}",
+                    intent.position_ticket,
+                )
+                return ExecutionResult(
+                    intent=intent, success=False,
+                    error="partial close unsupported on deriv (would over-close)",
+                )
             remaining = pos.get("remaining_lots", pos.get("lots", 0.0))
             fraction = intent.close_fraction or 0.5
-            close_lots = round(remaining * fraction, 2)
+            close_lots = remaining * fraction
+            # Snap to the broker volume step so the partial is not rejected for
+            # an unaligned volume (hard-coded 2dp rounding could violate step).
+            vol_step = pos.get("volume_step", 0.01) or 0.01
+            close_lots = round(round(close_lots / vol_step) * vol_step, 8)
             if close_lots <= 0:
                 return ExecutionResult(
                     intent=intent, success=False,

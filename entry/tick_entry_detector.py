@@ -14,6 +14,7 @@ source (TickStore, direct feed, backtest harness).
 from __future__ import annotations
 
 import threading
+import time as _time
 from datetime import datetime, timezone
 from typing import Callable, Optional, Protocol
 
@@ -26,6 +27,13 @@ from entry.models import (
     PendingEntry,
 )
 from entry.zone_watcher import ZoneWatcher
+
+# Default freshness window for an entry-driving tick. A delayed tick must not
+# trigger a market entry at a stale price.
+_MAX_TICK_AGE_SECONDS = 5.0
+# Upper bound on the dedup set so it can't grow without limit across a long
+# session if reset() is not called frequently.
+_MAX_TRIGGERED_ZONES = 4096
 
 
 class TickData(Protocol):
@@ -70,6 +78,17 @@ class TickEntryDetector:
         if not zones:
             return None
 
+        # Reject stale ticks — a delayed tick could trigger an entry at a price
+        # that no longer reflects the market.
+        age = self._tick_age_seconds(tick.timestamp)
+        max_age = getattr(self._config, "max_tick_age_seconds", _MAX_TICK_AGE_SECONDS)
+        if age is not None and age > max_age:
+            logger.warning(
+                "[tick-entry] stale tick rejected for {}: {:.1f}s old (limit {:.1f}s)",
+                symbol, age, max_age,
+            )
+            return None
+
         with self._lock:
             if len(self._pending) >= self._config.max_concurrent_pending:
                 return None
@@ -81,7 +100,9 @@ class TickEntryDetector:
         proximity = self._config.zone_proximity_pips * pip_size
 
         for zone in zones:
-            zone_key = (zone.symbol, zone.top, zone.bottom)
+            # Tolerance-based key so an identically-priced band re-uses the same
+            # dedup entry rather than slipping past raw float equality.
+            zone_key = (zone.symbol, round(zone.top, 5), round(zone.bottom, 5))
 
             with self._lock:
                 if zone_key in self._triggered_zones:
@@ -91,7 +112,7 @@ class TickEntryDetector:
 
             if self._check_invalidation(price, zone):
                 with self._lock:
-                    self._triggered_zones.add(zone_key)
+                    self._mark_triggered(zone_key)
                 continue
 
             spread = abs(tick.ask - tick.bid)
@@ -111,7 +132,7 @@ class TickEntryDetector:
 
                 with self._lock:
                     self._pending[symbol] = pending
-                    self._triggered_zones.add(zone_key)
+                    self._mark_triggered(zone_key)
 
                 logger.info(
                     "[tick-entry] {} zone touch: {} @ {:.5f} (zone {:.5f}–{:.5f})",
@@ -158,6 +179,29 @@ class TickEntryDetector:
         with self._lock:
             self._pending.clear()
             self._triggered_zones.clear()
+
+    def _mark_triggered(self, zone_key: tuple[str, float, float]) -> None:
+        """Record a triggered zone, bounding the set so it can't grow forever.
+
+        Caller must already hold ``self._lock``.
+        """
+        if len(self._triggered_zones) >= _MAX_TRIGGERED_ZONES:
+            self._triggered_zones.clear()
+        self._triggered_zones.add(zone_key)
+
+    @staticmethod
+    def _tick_age_seconds(ts: object) -> Optional[float]:
+        """Age of a tick timestamp in seconds, or None if it can't be derived.
+
+        Accepts a ``datetime`` (naive treated as UTC) or an epoch float/int.
+        """
+        try:
+            if isinstance(ts, datetime):
+                ref = ts if ts.tzinfo else ts.replace(tzinfo=timezone.utc)
+                return (datetime.now(timezone.utc) - ref).total_seconds()
+            return _time.time() - float(ts)  # type: ignore[arg-type]
+        except Exception:
+            return None
 
     @staticmethod
     def _is_within_zone(

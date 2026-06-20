@@ -55,8 +55,13 @@ def _key_matches(provided: str) -> bool:
 # Caveat: behind a reverse proxy every request appears to originate from the
 # proxy's (often loopback) address — turn this off if you front the dashboard
 # with a proxy, and authenticate at the proxy instead.
-_TRUST_LOOPBACK = os.getenv("DD_DASHBOARD_TRUST_LOOPBACK", "1").strip().lower() not in (
-    "0", "false", "no", "off", "",
+# Default OFF: behind a reverse proxy every request appears to originate from
+# the proxy's (often loopback) address, so trusting loopback would expose the
+# control endpoints (close_all, emergency-close, risk_mode) with no auth.
+# Opt in explicitly with DD_DASHBOARD_TRUST_LOOPBACK=1 only when the dashboard
+# is bound directly (no proxy in front).
+_TRUST_LOOPBACK = os.getenv("DD_DASHBOARD_TRUST_LOOPBACK", "0").strip().lower() in (
+    "1", "true", "yes", "on",
 )
 
 

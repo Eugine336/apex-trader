@@ -131,7 +131,7 @@ class PositionStore:
             str(self._db_path), timeout=10, check_same_thread=False,
         )
         self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA synchronous=FULL")
         self._conn.execute(_CREATE_TABLE)
         self._conn.execute(_CREATE_IN_FLIGHT)
         self._conn.execute(_CREATE_GUARD_STATE)
@@ -326,7 +326,11 @@ class PositionStore:
             except Exception as exc:
                 self._record_failure(f"load_all: {exc}")
                 logger.error("PositionStore load failed: {}", exc)
-                return []
+                # Do NOT return [] — an empty list would make the system boot
+                # believing there are zero open positions while real ones exist
+                # at the broker. Surface the failure so startup can halt and
+                # require manual reconciliation.
+                raise
 
     def clear_all(self) -> None:
         """Delete all persisted positions (used by emergency flatten)."""

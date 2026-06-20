@@ -20,6 +20,7 @@ from threading import Lock
 from typing import Optional
 
 from execution.intents import Intent, IntentType
+from config import get_pip_size
 
 
 # Actions that reduce or protect risk (closing, partial-closing, or tightening
@@ -149,8 +150,16 @@ class RiskGate:
         if current_sl <= 0:
             return GateResult(allowed=True)
 
+        # max_sl_loosen_pips is expressed in pips; convert to a price distance
+        # before comparing against price levels (current_sl / new_sl).
+        try:
+            pip_size = get_pip_size(pos.get("symbol", "")) or 0.0001
+        except Exception:
+            pip_size = 0.0001
+        max_loosen_price = self._cfg.max_sl_loosen_pips * pip_size
+
         if direction in ("BUY", "LONG"):
-            if intent.new_sl < current_sl - self._cfg.max_sl_loosen_pips:
+            if intent.new_sl < current_sl - max_loosen_price:
                 return GateResult(
                     allowed=False,
                     reason=(
@@ -159,7 +168,7 @@ class RiskGate:
                     ),
                 )
         elif direction in ("SELL", "SHORT"):
-            if intent.new_sl > current_sl + self._cfg.max_sl_loosen_pips:
+            if intent.new_sl > current_sl + max_loosen_price:
                 return GateResult(
                     allowed=False,
                     reason=(
