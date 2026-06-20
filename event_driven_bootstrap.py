@@ -991,6 +991,16 @@ class EventDrivenSystem:
             broker=self._pm,  # PlatformManager satisfies BrokerPort
             config=ExecutorConfig(),
         )
+        # Phase 1 (single execution plane): when enabled, entries flow through
+        # the shared ActionExecutor (RiskGate OPEN validation → CircuitBreaker →
+        # broker.execute_entry), serialized on the same executor lock as
+        # management actions, instead of calling PlatformManager.execute_entry
+        # directly on the tick thread.  Default OFF preserves the current
+        # synchronous direct path; enable via APEX_ED_ENTRY_VIA_EXECUTOR for
+        # controlled live validation before flipping the default.
+        self._entry_via_executor = os.environ.get(
+            "APEX_ED_ENTRY_VIA_EXECUTOR", "0"
+        ).strip().lower() in ("1", "true", "yes", "on")
         self._mgmt_store = ManagementStateStore(db_path="data/management_state.db")
         self._evaluator = PositionEvaluator(
             platform_manager=self._pm,
@@ -2798,16 +2808,56 @@ class EventDrivenSystem:
             idem_key = generate_idempotency_key(
                 symbol, direction, float(size_result.lots),
             )
-            result = self._pm.execute_entry(
-                symbol=symbol,
-                direction=direction,
-                lots=size_result.lots,
-                sl=sl,
-                tp=tp1,
-                stake_usd=size_result.stake_usd if pctx.uses_stake else None,
-                comment=build_order_comment("APEX", idem_key, score=conviction),
-                idempotency_key=idem_key,
-            )
+            _comment = build_order_comment("APEX", idem_key, score=conviction)
+            _stake = size_result.stake_usd if pctx.uses_stake else None
+
+            # Phase 1 (single execution plane): route the entry through the
+            # shared ActionExecutor when enabled, otherwise use the direct
+            # broker call.  The executor path is built defensively — if the
+            # Intent.open factory is unavailable the entry falls back to the
+            # direct path *before* any broker call, so a flagged-on entry can
+            # never be dropped or double-sent.
+            open_intent = None
+            if self._entry_via_executor:
+                try:
+                    open_intent = Intent.open(
+                        symbol=symbol,
+                        direction=direction,
+                        lots=float(size_result.lots),
+                        entry_price=float(entry_price),
+                        sl=float(sl),
+                        tp=float(tp1),
+                        stake_usd=_stake,
+                        comment=_comment,
+                        idempotency_key=idem_key,
+                        source="event_driven",
+                        reason="entry_decision",
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[entry-via-executor] Intent.open unavailable, using "
+                        "direct path | {} {} | {}", symbol, direction, exc,
+                    )
+                    open_intent = None
+
+            if open_intent is not None:
+                exec_result = self._executor.execute(open_intent, {})
+                result = (
+                    exec_result.broker_response
+                    if exec_result.broker_response is not None
+                    else exec_result
+                )
+            else:
+                result = self._pm.execute_entry(
+                    symbol=symbol,
+                    direction=direction,
+                    lots=size_result.lots,
+                    sl=sl,
+                    tp=tp1,
+                    stake_usd=_stake,
+                    comment=_comment,
+                    idempotency_key=idem_key,
+                )
 
             if result.success:
                 logger.info(
