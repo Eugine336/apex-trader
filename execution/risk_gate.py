@@ -22,6 +22,17 @@ from typing import Optional
 from execution.intents import Intent, IntentType
 
 
+# Actions that reduce or protect risk (closing, partial-closing, or tightening
+# the stop).  These must never be throttled by the rate limit — delaying a stop
+# or close to satisfy a call budget is exactly the failure we want to avoid.
+# Mirrors the CLOSE/PARTIAL_CLOSE set already exempted from the emergency
+# drawdown block in ``_check_exposure`` (plus MODIFY_SL, whose loosening is
+# already blocked upstream by ``_check_sl_direction``).
+_RISK_REDUCING_TYPES = frozenset(
+    {IntentType.CLOSE, IntentType.PARTIAL_CLOSE, IntentType.MODIFY_SL}
+)
+
+
 @dataclass
 class GateConfig:
     """Tunables for the risk gate."""
@@ -50,7 +61,7 @@ class RiskGate:
     def __init__(self, config: Optional[GateConfig] = None) -> None:
         self._cfg = config or GateConfig()
         self._rate_lock = Lock()
-        self._call_times: list[float] = []
+        self._call_times: dict[str, list[float]] = {}
 
     def validate(
         self,
@@ -86,7 +97,7 @@ class RiskGate:
         if not result.allowed:
             return result
 
-        result = self._check_rate_limit()
+        result = self._check_rate_limit(intent)
         if not result.allowed:
             return result
 
@@ -121,7 +132,7 @@ class RiskGate:
         result = self._check_exposure(intent, drawdown_pct)
         if not result.allowed:
             return result
-        return self._check_rate_limit()
+        return self._check_rate_limit(intent)
 
     def _check_sl_direction(
         self, intent: Intent, positions: dict[str, dict],
@@ -175,25 +186,33 @@ class RiskGate:
             )
         return GateResult(allowed=True)
 
-    def _check_rate_limit(self) -> GateResult:
+    def _check_rate_limit(self, intent: Intent) -> GateResult:
         if self._cfg.max_calls_per_second <= 0:
             return GateResult(allowed=True)
 
         now = time.monotonic()
         window = 1.0
+        symbol = intent.symbol or ""
+        risk_reducing = intent.intent_type in _RISK_REDUCING_TYPES
 
         with self._rate_lock:
-            self._call_times = [
-                t for t in self._call_times if now - t < window
+            times = [
+                t for t in self._call_times.get(symbol, ()) if now - t < window
             ]
-            if len(self._call_times) >= self._cfg.max_calls_per_second:
+            if (
+                not risk_reducing
+                and len(times) >= self._cfg.max_calls_per_second
+            ):
+                self._call_times[symbol] = times
                 return GateResult(
                     allowed=False,
                     reason=(
-                        f"Rate limit: {len(self._call_times)} calls in last "
-                        f"{window}s (max {self._cfg.max_calls_per_second})"
+                        f"Rate limit for {symbol or '<none>'}: {len(times)} "
+                        f"calls in last {window}s "
+                        f"(max {self._cfg.max_calls_per_second})"
                     ),
                 )
-            self._call_times.append(now)
+            times.append(now)
+            self._call_times[symbol] = times
 
         return GateResult(allowed=True)
