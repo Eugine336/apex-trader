@@ -266,6 +266,16 @@ class SystemContext:
             if de_cfg is not None:
                 ctx.decision_engine = _DecisionEngine(
                     soften_gate=getattr(de_cfg, "soften_gate", True),
+                    reversal_weighted_evidence=getattr(
+                        de_cfg, "reversal_weighted_evidence", True,
+                    ),
+                    reversal_required_strength=getattr(
+                        de_cfg, "reversal_required_strength", 2.0,
+                    ),
+                    reversal_momentum_full=getattr(
+                        de_cfg, "reversal_momentum_full", 0.6,
+                    ),
+                    tf_conflict_aware=getattr(de_cfg, "tf_conflict_aware", True),
                 )
             else:
                 ctx.decision_engine = _DecisionEngine(soften_gate=True)
@@ -435,6 +445,14 @@ class SystemContext:
         try:
             from adaptive.gate_tuner import GateTuner as _GateTuner
             ctx.gate_tuner = _GateTuner()
+            # Wire tuned gate offsets into the live entry engine — without this
+            # the EntryEngine's gate_tuner stays None and the learned offsets
+            # never reach live entry-gate thresholds.
+            if ctx.entry_engine is not None:
+                try:
+                    ctx.entry_engine.gate_tuner = ctx.gate_tuner
+                except Exception as exc:
+                    logger.warning("[SystemContext] GateTuner→EntryEngine wire failed: {}", exc)
         except Exception as exc:
             logger.warning("[SystemContext] GateTuner init failed: {}", exc)
 

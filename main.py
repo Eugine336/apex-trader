@@ -179,6 +179,14 @@ def main() -> None:
         if not platform_manager.any_connected:
             logger.error("No platforms connected — cannot trade. Set DERIV_CLIENT_ID and DERIV_ACCESS_TOKEN in .env")
             return
+        from platforms.startup_check import StartupCheck
+        passed, results = StartupCheck().run_all()
+        for r in results:
+            lvl = "INFO" if r.passed else "ERROR"
+            logger.log(lvl, "  [{}] {} — {} ({:.0f}ms)", "✅" if r.passed else "❌", r.name, r.message, r.duration_ms)
+        if not passed:
+            logger.error("Startup self-test FAILED — refusing to start trading to protect capital")
+            return
         from event_driven_bootstrap import EventDrivenSystem
         ed_system = EventDrivenSystem(config, platform_manager, ctx=sys_ctx)
         ed_system.run_forever()

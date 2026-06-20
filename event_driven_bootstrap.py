@@ -627,6 +627,18 @@ class PositionEvaluator:
                 except Exception:
                     pass
 
+            # Live portfolio heat for this position's account — feeds the
+            # situation engine / risk governor management review (was hardcoded
+            # 0.0, so heat-aware management never engaged).
+            de_heat_pct = 0.0
+            if ctx.account_risk is not None:
+                try:
+                    de_heat_pct = float(
+                        ctx.account_risk.heat(ctx.account_key(symbol, self._pm))
+                    )
+                except Exception:
+                    de_heat_pct = 0.0
+
             trade_ctx = TradeContext(
                 symbol=symbol,
                 order_id=order_id,
@@ -654,7 +666,7 @@ class PositionEvaluator:
                 fast_opposition_streak=fast_opp,
                 score_history=list(score_hist[-10:]),
                 open_trade_count=len(open_positions),
-                portfolio_heat_pct=0.0,
+                portfolio_heat_pct=de_heat_pct,
                 session_name=session_name,
                 session_tradeable=session_tradeable,
                 minutes_to_high_impact_news=news_mins,
@@ -767,6 +779,27 @@ class PositionEvaluator:
                         new_sl=new_sl,
                         source="decision_engine",
                         reason=f"DE protective: {getattr(de_result, 'reason', '')[:60]}",
+                    )])
+            elif action_name == Action.MOVE_TO_BREAKEVEN.value:
+                # DE explicitly produces MOVE_TO_BREAKEVEN; the executor only
+                # understood CLOSE/TIGHTEN_SL/SET_PROTECTIVE_STOP before, so the
+                # verdict was journaled then silently dropped. Move SL to entry
+                # (use DE's new_sl if it supplied one, else the entry price).
+                be_sl = getattr(de_result, "new_sl", None)
+                if not be_sl or be_sl <= 0:
+                    be_sl = entry_price
+                if be_sl and be_sl > 0:
+                    pip_s = pip_size
+                    self._aggregator.register_position(
+                        ticket=order_id, direction=direction,
+                        current_sl=sl, pip_size=pip_s,
+                    )
+                    self._aggregator.submit([Intent.modify_sl(
+                        symbol=symbol,
+                        ticket=order_id,
+                        new_sl=be_sl,
+                        source="decision_engine",
+                        reason=f"DE breakeven: {getattr(de_result, 'reason', '')[:60]}",
                     )])
 
             tf_align = getattr(sa, "tf_alignment", 0.0)
@@ -1813,11 +1846,59 @@ class EventDrivenSystem:
             except Exception:
                 pass
 
+            # ── Broker auto-reconnection ──────────────────────────────
+            # Self-heal dropped MT5/Deriv sockets so an unattended system
+            # recovers without operator intervention. Non-blocking: only
+            # attempts a platform whose backoff window has elapsed.
+            try:
+                conns = self._pm.check_connections()
+                for plat, alive in conns.items():
+                    if alive:
+                        continue
+                    if self._pm.should_attempt_reconnect(plat):
+                        ok = self._pm.reconnect_platform(plat)
+                        logger.log(
+                            "INFO" if ok else "WARNING",
+                            "[event-driven] auto-reconnect {} → {}",
+                            plat, "recovered" if ok else "failed (will retry)",
+                        )
+            except Exception as exc:
+                logger.debug("[event-driven] auto-reconnect check failed: {}", exc)
+
+            # ── Scanner-blindness watchdog ────────────────────────────
+            if ctx is not None and getattr(ctx, "health_watchdog", None) is not None:
+                try:
+                    blind, reason = ctx.health_watchdog.is_scanner_blind()
+                    if blind and not getattr(self, "_scanner_blind_warned", False):
+                        logger.critical(
+                            "[event-driven] SCANNER BLIND — {} (no fresh "
+                            "analysis signals); entries may be starved", reason,
+                        )
+                        self._scanner_blind_warned = True
+                    elif not blind:
+                        self._scanner_blind_warned = False
+                except Exception:
+                    pass
+
             if ctx is not None and ctx.daily_maintenance is not None:
                 try:
                     if ctx.daily_maintenance.should_run():
                         result = ctx.daily_maintenance.run()
                         logger.info("[event-driven] daily maintenance — {}", result)
+                        # Day-roll → reset the daily risk silos (portfolio
+                        # governor daily P&L/halt + per-account daily loss caps).
+                        # These were never reset in the event-driven path, so a
+                        # daily-loss halt would persist indefinitely across days.
+                        if ctx.portfolio_governor is not None:
+                            try:
+                                ctx.portfolio_governor.reset_daily()
+                            except Exception as exc:
+                                logger.debug("[event-driven] governor daily reset failed: {}", exc)
+                        if ctx.account_risk is not None:
+                            try:
+                                ctx.account_risk.reset_daily()
+                            except Exception as exc:
+                                logger.debug("[event-driven] account-risk daily reset failed: {}", exc)
                         try:
                             es = get_event_store()
                             es.prune()
@@ -1853,6 +1934,11 @@ class EventDrivenSystem:
             _time.sleep(10.0)
 
     def _run_portfolio_heat_check(self, ctx: SystemContext) -> None:
+        # Drive the portfolio risk state machine + per-account heat gate from
+        # live capital-at-risk FIRST, so the canonical heat-response path below
+        # acts on a freshly-evaluated state (it only reads ``state``).
+        self._apply_portfolio_risk_state(ctx)
+
         # Canonical heat response (DEFENSIVE/REDUCING/EMERGENCY → intents).
         self._check_portfolio_heat()
 
@@ -1885,6 +1971,211 @@ class EventDrivenSystem:
 
         # Shadow contract resolution — live tick-driven (see _resolve_shadows).
         self._resolve_shadows()
+
+    def _apply_portfolio_risk_state(self, ctx: SystemContext) -> None:
+        """Compute live capital-at-risk and drive the portfolio risk state
+        machine + per-account heat gate.
+
+        Without this, ``PortfolioRiskStateMachine.evaluate`` is never called so
+        the SM is frozen at NORMAL and the EMERGENCY/REDUCING/DEFENSIVE response
+        handlers in ``_check_portfolio_heat`` can never fire; and
+        ``AccountRiskManager.set_heat`` is never called so ``heat_blocked`` is
+        always False.  Runs every watchdog cycle.  Fully fail-safe — any failure
+        leaves the existing behaviour unchanged.
+        """
+        if ctx is None:
+            return
+        try:
+            positions = self._pm.get_all_open_positions()
+        except Exception as exc:
+            logger.debug("[risk-state] positions fetch failed: {}", exc)
+            return
+        try:
+            from risk.portfolio_risk_state import (
+                PortfolioRiskSnapshot,
+                PositionRisk,
+                compute_position_risk_dollars,
+                compute_live_heat_pct,
+            )
+        except Exception:
+            return
+
+        position_risks: list = []
+        acct_risk_dollars: dict[str, float] = defaultdict(float)
+        acct_positions: dict[str, list] = defaultdict(list)
+        balance_refreshed: set[str] = set()
+
+        # Rebuild the tick-store critical-level set from the live book so ticks
+        # approaching an active SL/TP bypass Hz coalescing (they could be
+        # silently dropped during volatility spikes otherwise). A full resync
+        # each cycle keeps the set current on SL/TP modification and bounded to
+        # only live levels — covering register-on-open / update-on-modify /
+        # unregister-on-close in one pass.
+        try:
+            self._tick_store.clear_critical_levels()
+        except Exception:
+            pass
+
+        for pos in positions:
+            try:
+                symbol = getattr(pos, "symbol", "")
+                direction = getattr(pos, "direction", "LONG")
+                entry_price = float(getattr(pos, "open_price", 0.0) or 0.0)
+                sl = float(getattr(pos, "sl", 0.0) or 0.0)
+                tp = float(getattr(pos, "tp", 0.0) or 0.0)
+                lots = float(getattr(pos, "lots", 0.0) or 0.0)
+                if symbol:
+                    try:
+                        if sl > 0:
+                            self._tick_store.register_critical_level(symbol, sl)
+                        if tp > 0:
+                            self._tick_store.register_critical_level(symbol, tp)
+                    except Exception:
+                        pass
+                pip_size = self._safe_pip_size(symbol)
+                info = INSTRUMENT_REGISTRY.get(symbol)
+                pip_value = info.pip_value_per_lot if info else 10.0
+                is_long = str(direction).upper() in ("BUY", "LONG")
+                at_be = (
+                    (sl >= entry_price if is_long else sl <= entry_price)
+                    if (sl > 0 and entry_price > 0) else False
+                )
+                risk_dollars, is_fallback = compute_position_risk_dollars(
+                    direction=direction,
+                    entry_price=entry_price,
+                    sl=sl,
+                    lots=lots,
+                    pip_size=pip_size,
+                    pip_value_per_lot=pip_value,
+                    at_breakeven=at_be,
+                )
+                position_risks.append(PositionRisk(
+                    order_id=str(getattr(pos, "order_id", "")),
+                    symbol=symbol,
+                    direction=direction,
+                    risk_dollars=risk_dollars,
+                    is_at_breakeven=at_be,
+                    is_fallback=is_fallback,
+                ))
+                if ctx.account_risk is not None:
+                    acct = ctx.account_key(symbol, self._pm)
+                    acct_risk_dollars[acct] += risk_dollars
+                    acct_positions[acct].append(pos)
+                    if acct not in balance_refreshed:
+                        balance_refreshed.add(acct)
+                        try:
+                            bal = self._pm.get_platform_balance(symbol)
+                            if bal and bal > 0:
+                                ctx.account_risk.update_balance(acct, bal)
+                        except Exception:
+                            pass
+            except Exception as exc:
+                logger.debug("[risk-state] position risk calc failed: {}", exc)
+                continue
+
+        # ── Per-account heat gate (feeds AccountRiskManager.heat_blocked) ──
+        if ctx.account_risk is not None:
+            try:
+                for acct, risk_d in acct_risk_dollars.items():
+                    bal = ctx.account_risk.balance(acct)
+                    heat_pct = (risk_d / bal * 100.0) if bal > 0 else 0.0
+                    ctx.account_risk.set_heat(acct, heat_pct)
+            except Exception as exc:
+                logger.debug("[risk-state] account heat set failed: {}", exc)
+
+            # ── Daily flatten cap → close intents for breached accounts ──
+            try:
+                for acct, acct_pos in acct_positions.items():
+                    if not ctx.account_risk.flatten_breached(acct):
+                        continue
+                    for pos in acct_pos:
+                        ticket = str(getattr(pos, "order_id", "") or "")
+                        sym = getattr(pos, "symbol", "")
+                        if ticket:
+                            self._aggregator.submit([Intent.close(
+                                symbol=sym,
+                                ticket=ticket,
+                                source="account_risk",
+                                reason="account_flatten_cap_breached",
+                            )])
+                    logger.warning(
+                        "[risk-state] account {} flatten cap breached — "
+                        "{} CLOSE intents submitted", acct, len(acct_pos),
+                    )
+            except Exception as exc:
+                logger.debug("[risk-state] flatten-cap close failed: {}", exc)
+
+        # ── Portfolio risk state machine ──
+        if ctx.portfolio_risk_sm is not None:
+            try:
+                equity = (
+                    ctx.account_risk.total_balance()
+                    if ctx.account_risk is not None else 0.0
+                )
+                heat_pct = (
+                    compute_live_heat_pct(position_risks, equity)
+                    if equity > 0 else 0.0
+                )
+                corr_safe, max_exposure = self._portfolio_correlation_state(positions)
+                snapshot = PortfolioRiskSnapshot(
+                    live_heat_pct=heat_pct,
+                    position_risks=position_risks,
+                    correlation_safe=corr_safe,
+                    max_currency_exposure=max_exposure,
+                )
+                # Ladder + de-escalation (NORMAL ↔ DEFENSIVE ↔ REDUCING).
+                ctx.portfolio_risk_sm.evaluate(snapshot)
+
+                # Hard emergency triggers force-escalate from any state.
+                from risk.portfolio_risk_state import EmergencyTriggerResult
+                trig = EmergencyTriggerResult()
+                emerg_pct = getattr(
+                    ctx.portfolio_risk_sm, "heat_emergency_pct", 4.0,
+                )
+                if heat_pct >= emerg_pct:
+                    trig.extreme_heat = True
+                if ctx.drawdown_guard is not None:
+                    try:
+                        from brain.drawdown_guard import DrawdownMode
+                        if ctx.drawdown_guard.get_status().mode == DrawdownMode.FROZEN.value:
+                            trig.drawdown_frozen = True
+                    except Exception:
+                        pass
+                if trig.any_fired:
+                    ctx.portfolio_risk_sm.escalate_to_emergency(
+                        trig, heat_pct, corr_safe,
+                    )
+            except Exception as exc:
+                logger.debug("[risk-state] portfolio SM evaluate failed: {}", exc)
+
+    def _portfolio_correlation_state(self, positions: list) -> tuple[bool, float]:
+        """Return (correlation_safe, max_currency_exposure) for the open book.
+
+        Uses the correlation engine when available; defaults to *safe* so a
+        missing/failed correlation read never spuriously trips the SM into
+        DEFENSIVE (heat remains the primary driver).
+        """
+        ctx = self._ctx
+        if ctx is None or getattr(ctx, "correlation_engine", None) is None:
+            return True, 0.0
+        try:
+            from brain.correlation_engine import OpenTrade
+            trades = [
+                OpenTrade(
+                    pair=getattr(p, "symbol", ""),
+                    direction=getattr(p, "direction", "LONG"),
+                    risk_pct=0.02,
+                )
+                for p in positions
+                if getattr(p, "symbol", "")
+            ]
+            exposure_fn = getattr(ctx.correlation_engine, "max_currency_exposure", None)
+            if callable(exposure_fn):
+                max_exp = float(exposure_fn(trades) or 0.0)
+                return (max_exp < 1.0), max_exp
+        except Exception as exc:
+            logger.debug("[risk-state] correlation read failed: {}", exc)
+        return True, 0.0
 
     def _check_portfolio_heat(self) -> None:
         """Continuous portfolio heat monitoring — generates intents for open positions.
@@ -2438,6 +2729,13 @@ class EventDrivenSystem:
         ctx = self._ctx
         if ctx is None:
             return
+        # A WorldModel update means the analysis/scan pipeline is alive — feed
+        # the health watchdog so is_scanner_blind() reflects real liveness.
+        if getattr(ctx, "health_watchdog", None) is not None:
+            try:
+                ctx.health_watchdog.record_scan_success()
+            except Exception:
+                pass
         if ctx.opportunity_density_tracker is not None:
             try:
                 ready_symbols = []
@@ -2731,6 +3029,28 @@ class EventDrivenSystem:
                     h4_trend, h4_conf = _struct_trend_conf(structure, "H4")
                     h1_trend, h1_conf = _struct_trend_conf(structure, "H1")
 
+                    # Live graded-risk inputs — the RiskGovernor's graded entry
+                    # path measures portfolio heat + spread; previously these
+                    # arrived as 0.0 so the dimensions never engaged.
+                    de_heat_pct = 0.0
+                    if ctx.account_risk is not None:
+                        try:
+                            de_heat_pct = float(
+                                ctx.account_risk.heat(ctx.account_key(symbol, self._pm))
+                            )
+                        except Exception:
+                            de_heat_pct = 0.0
+                    de_cur_spread = 0.0
+                    de_typ_spread = 0.0
+                    try:
+                        de_cur_spread = float(self._get_spread_pips(symbol) or 0.0)
+                        _sinfo = INSTRUMENT_REGISTRY.get(symbol)
+                        de_typ_spread = float(
+                            getattr(_sinfo, "typical_spread_pips", 0.0) or 0.0
+                        ) if _sinfo else 0.0
+                    except Exception:
+                        pass
+
                     entry_ctx = DEContext(
                         symbol=symbol,
                         direction="LONG" if direction.upper() in ("BUY", "LONG") else "SHORT",
@@ -2752,6 +3072,9 @@ class EventDrivenSystem:
                         m1_event=decision.get("m1_event", ""),
                         open_trade_count=len(open_positions),
                         max_open_trades=self._config.risk.max_open_trades,
+                        portfolio_heat_pct=de_heat_pct,
+                        current_spread=de_cur_spread,
+                        typical_spread=de_typ_spread,
                     )
                     sa = ctx.situation_engine.assess_entry(entry_ctx)
                     de_result = ctx.decision_engine.decide_entry(entry_ctx, sa)
@@ -2975,6 +3298,59 @@ class EventDrivenSystem:
                 except Exception as exc:
                     logger.debug("[orchestrator] Orchestrator eval failed: {}", exc)
 
+            # ── Adaptive optimizer: losing-pattern block + size adjust ──
+            # Applies learned pair/session/regime edge to the live entry: a
+            # statistically-confident losing pattern is blocked; otherwise the
+            # learned size multiplier is folded into combined_mult below.
+            adapt_mult = 1.0
+            if ctx is not None and getattr(ctx, "ml_adapter", None) is not None:
+                try:
+                    _regime = "UNKNOWN"
+                    wm = self._wm_store.get(symbol)
+                    if wm is not None:
+                        try:
+                            rbtf = wm.regime_by_tf()
+                            _regime = str(
+                                rbtf.get("H1")
+                                or rbtf.get("H4")
+                                or next(iter(rbtf.values()), "UNKNOWN")
+                            )
+                        except Exception:
+                            _regime = "UNKNOWN"
+                    _session = "UNKNOWN"
+                    if ctx.session_engine is not None:
+                        try:
+                            _session = getattr(
+                                ctx.session_engine.get_status(), "name", "UNKNOWN",
+                            )
+                        except Exception:
+                            _session = "UNKNOWN"
+                    _zone_type = decision.get("zone_type", "")
+                    block_enabled = getattr(
+                        self._config.risk, "losing_pattern_block_enabled", True,
+                    )
+                    if block_enabled:
+                        is_loser, loser_reason = ctx.ml_adapter.is_losing_pattern(
+                            symbol, _regime, _session, _zone_type,
+                        )
+                        if is_loser:
+                            logger.warning(
+                                "EVENT-DRIVEN ENTRY BLOCKED | {} — losing pattern: {}",
+                                symbol, loser_reason,
+                            )
+                            self._record_shadow_rejection(
+                                symbol, direction, entry_price, sl, tp1,
+                                "losing_pattern", conviction,
+                            )
+                            return
+                    adj = ctx.ml_adapter.get_trade_adjustments(symbol, _regime, _session)
+                    adapt_mult = float(
+                        getattr(adj, "position_size_multiplier", 1.0) or 1.0
+                    )
+                except Exception as exc:
+                    logger.debug("[adaptive] optimizer adjust failed: {}", exc)
+                    adapt_mult = 1.0
+
             # ── Volatility + density sizing adjustments ──────────────
             vol_mult = 1.0
             density_mult = 1.0
@@ -3090,7 +3466,24 @@ class EventDrivenSystem:
                 symbol=symbol,
             )
 
-            combined_mult = de_size_mult * orch_mult * vol_mult * density_mult * exec_mult * cap_mult
+            # ── Per-instrument volatility sizing (current vs average ATR) ──
+            # Complements the system-wide vol_mult: scales THIS instrument's
+            # size by its own ATR regime. Folded into combined_mult so the
+            # existing [0.15, 2.0] clamp still bounds the final size.
+            inst_vol_mult = 1.0
+            try:
+                vdf = self._fetch_candles(symbol, "M5", 60)
+                if vdf is not None and len(vdf) >= 20:
+                    tr = (vdf["high"] - vdf["low"]).abs()
+                    cur_atr = float(tr.tail(14).mean())
+                    avg_atr = float(tr.tail(50).mean())
+                    inst_vol_mult = sizer.adjust_for_volatility(
+                        1.0, cur_atr, avg_atr,
+                    )
+            except Exception:
+                inst_vol_mult = 1.0
+
+            combined_mult = de_size_mult * orch_mult * vol_mult * inst_vol_mult * density_mult * exec_mult * cap_mult * adapt_mult
             combined_mult = max(0.15, min(2.0, combined_mult))
             if abs(combined_mult - 1.0) > 1e-6:
                 if size_result.lots > 0:
@@ -3098,9 +3491,9 @@ class EventDrivenSystem:
                 if size_result.stake_usd > 0:
                     size_result.stake_usd = round(max(0.35, size_result.stake_usd * combined_mult), 2)
                 logger.info(
-                    "[SIZING] {} final×{:.2f} (DE×{:.2f} ORCH×{:.2f} VOL×{:.2f} DEN×{:.2f} EXEC×{:.2f} CAP×{:.2f}) → {:.2f} lots / ${:.2f} stake",
+                    "[SIZING] {} final×{:.2f} (DE×{:.2f} ORCH×{:.2f} VOL×{:.2f} IVOL×{:.2f} DEN×{:.2f} EXEC×{:.2f} CAP×{:.2f}) → {:.2f} lots / ${:.2f} stake",
                     symbol, combined_mult, de_size_mult, orch_mult, vol_mult,
-                    density_mult, exec_mult, cap_mult, size_result.lots, size_result.stake_usd,
+                    inst_vol_mult, density_mult, exec_mult, cap_mult, size_result.lots, size_result.stake_usd,
                 )
 
             if size_result.lots <= 0 and size_result.stake_usd <= 0:
@@ -3193,6 +3586,23 @@ class EventDrivenSystem:
                     "EVENT-DRIVEN ORDER PLACED | {} {} {:.2f} lots ticket={}",
                     symbol, direction, result.lots, result.order_id,
                 )
+                try:
+                    from ops.logging_config import audit_trade
+                    audit_trade(
+                        "order_placed",
+                        event="open",
+                        symbol=symbol,
+                        direction=direction,
+                        lots=float(getattr(result, "lots", 0.0) or 0.0),
+                        stake_usd=float(size_result.stake_usd or 0.0),
+                        entry_price=float(entry_price or 0.0),
+                        sl=float(sl or 0.0),
+                        tp=float(tp1 or 0.0),
+                        ticket=str(getattr(result, "order_id", "")),
+                        conviction=float(conviction or 0.0),
+                    )
+                except Exception:
+                    pass
                 self._on_order_filled(symbol, direction, result, balance,
                                       entry_price, order_ts)
 
@@ -3522,6 +3932,31 @@ class EventDrivenSystem:
                 ctx.account_risk.register_realized(acct, pnl_dollars)
             except Exception as exc:
                 logger.debug("[close-risk] AccountRisk update failed: {}", exc)
+
+        # Audit trail — realized close (trade audit) + the post-close daily
+        # risk picture (risk audit). Best-effort; never blocks the close path.
+        try:
+            from ops.logging_config import audit_trade, audit_risk
+            audit_trade(
+                "position_closed",
+                event="close",
+                symbol=symbol,
+                direction=direction,
+                pnl_dollars=round(float(pnl_dollars), 2),
+                pnl_pips=round(float(pnl_pips), 2),
+                ticket=str(ticket),
+            )
+            if ctx.account_risk is not None:
+                acct = ctx.account_key(symbol, self._pm)
+                audit_risk(
+                    "account_daily_pnl",
+                    account=acct,
+                    daily_pnl=round(ctx.account_risk.daily_pnl(acct), 2),
+                    daily_pnl_pct=round(ctx.account_risk.daily_pnl_pct(acct), 2),
+                    halted=ctx.account_risk.daily_loss_halted(acct),
+                )
+        except Exception:
+            pass
 
         # ── LEARNING LAYER (Phase 4) ────────────────────────────────
 
