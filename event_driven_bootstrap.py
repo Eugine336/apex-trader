@@ -242,6 +242,15 @@ class PositionEvaluator:
         self._aggregator = intent_aggregator
         self._mgmt_store = mgmt_store or ManagementStateStore()
         self._worker = PositionWorker(worker_config or WorkerConfig())
+        # Parallelize the per-tick position scan across symbols.  Each pool
+        # task evaluates ALL positions of one symbol sequentially, so every
+        # per-position / per-order_id evaluator field is written by exactly one
+        # thread, and the shared stores it touches (ManagementStateStore,
+        # IntentAggregator, DecisionJournal) are internally locked.  Set
+        # APEX_ED_POSEVAL_PARALLEL=0 to fall back to a serial scan.
+        self._parallel = os.environ.get(
+            "APEX_ED_POSEVAL_PARALLEL", "1"
+        ).strip().lower() in ("1", "true", "yes", "on")
         self._pool = ThreadPoolExecutor(
             max_workers=max_workers, thread_name_prefix="pos-eval",
         )
@@ -286,15 +295,45 @@ class PositionEvaluator:
 
         self._mgmt_store.cleanup(active_tickets)
 
-        for symbol, pos_list in by_symbol.items():
-            tick = self._tick_store.get_latest(symbol)
-            if tick is None:
-                continue
-            price = tick.mid
-            for pos in pos_list:
-                self._evaluate_position(pos, price, now, now_mono)
+        if self._parallel and len(by_symbol) > 1:
+            # Fan out one task per symbol; each task evaluates that symbol's
+            # positions sequentially.  Wait for all before returning so the
+            # cycle's timing/eval_count stay accurate.
+            futures = [
+                self._pool.submit(
+                    self._evaluate_symbol, symbol, pos_list, now, now_mono,
+                )
+                for symbol, pos_list in by_symbol.items()
+            ]
+            for fut in futures:
+                try:
+                    fut.result()
+                except Exception as exc:
+                    logger.debug("[pos-eval] symbol task error: {}", exc)
+        else:
+            for symbol, pos_list in by_symbol.items():
+                self._evaluate_symbol(symbol, pos_list, now, now_mono)
 
         self._eval_count += 1
+
+    def _evaluate_symbol(
+        self, symbol: str, pos_list: list, now: datetime, now_mono: float,
+    ) -> None:
+        """Evaluate all positions of one symbol against its latest tick.
+
+        Runs on a single thread per symbol (serial within the symbol), so
+        per-order_id evaluator state is never touched concurrently.
+        """
+        try:
+            tick = self._tick_store.get_latest(symbol)
+        except Exception as exc:
+            logger.debug("[pos-eval] {} get_latest failed: {}", symbol, exc)
+            return
+        if tick is None:
+            return
+        price = tick.mid
+        for pos in pos_list:
+            self._evaluate_position(pos, price, now, now_mono)
 
     def _evaluate_position(
         self, pos, price: float, now: datetime, now_mono: float,
@@ -489,6 +528,13 @@ class PositionEvaluator:
     def suppress_ticket(self, ticket: str, duration: float = 60.0) -> None:
         """Suppress evaluation of a ticket for the given duration (seconds)."""
         self._suppressed_tickets[ticket] = _time.monotonic() + duration
+
+    def shutdown(self) -> None:
+        """Stop the per-symbol evaluation worker pool (called on system stop)."""
+        try:
+            self._pool.shutdown(wait=False)
+        except Exception:
+            pass
 
     def _run_decision_engine_management(
         self, pos, price: float, now: datetime, now_mono: float,
@@ -889,6 +935,7 @@ class TickEvalLoop:
         self._running = False
         if self._thread is not None:
             self._thread.join(timeout=2.0)
+        self._evaluator.shutdown()
         logger.info("[tick-eval] stopped ({} evals)", self._evaluator.eval_count)
 
     def _loop(self) -> None:
