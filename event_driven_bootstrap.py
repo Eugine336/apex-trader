@@ -1057,15 +1057,15 @@ class EventDrivenSystem:
             broker=self._pm,  # PlatformManager satisfies BrokerPort
             config=ExecutorConfig(),
         )
-        # Phase 1 (single execution plane): when enabled, entries flow through
-        # the shared ActionExecutor (RiskGate OPEN validation → CircuitBreaker →
+        # Phase 1 (single execution plane): entries flow through the shared
+        # ActionExecutor (RiskGate OPEN validation → CircuitBreaker →
         # broker.execute_entry), serialized on the same executor lock as
         # management actions, instead of calling PlatformManager.execute_entry
-        # directly on the tick thread.  Default OFF preserves the current
-        # synchronous direct path; enable via APEX_ED_ENTRY_VIA_EXECUTOR for
-        # controlled live validation before flipping the default.
+        # directly on the tick thread.  Live by default; set
+        # APEX_ED_ENTRY_VIA_EXECUTOR=0 as a kill switch to fall back to the
+        # direct broker path.
         self._entry_via_executor = os.environ.get(
-            "APEX_ED_ENTRY_VIA_EXECUTOR", "0"
+            "APEX_ED_ENTRY_VIA_EXECUTOR", "1"
         ).strip().lower() in ("1", "true", "yes", "on")
         self._mgmt_store = ManagementStateStore(db_path="data/management_state.db")
         self._evaluator = PositionEvaluator(
