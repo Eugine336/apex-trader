@@ -1076,14 +1076,14 @@ class EventDrivenSystem:
             mgmt_store=self._mgmt_store,
             ctx=ctx,
         )
-        # Phase 3 (event-reactive management): when enabled, the tick-eval loop
-        # evaluates only the symbols a ManagementScheduler reports as due
-        # (active symbols shortly after a tick, idle symbols on the safety-net
-        # cadence) instead of re-scanning every position on the fixed 10 Hz
-        # timer.  Default OFF preserves the timer sweep; enable via
-        # APEX_ED_EVENT_REACTIVE_MGMT for controlled live validation.
+        # Phase 3 (event-reactive management): the tick-eval loop evaluates
+        # only the symbols a ManagementScheduler reports as due (active symbols
+        # shortly after a tick, idle symbols on the safety-net cadence) instead
+        # of re-scanning every position on the fixed 10 Hz timer.  Live by
+        # default; set APEX_ED_EVENT_REACTIVE_MGMT=0 as a kill switch to fall
+        # back to the full timer sweep.
         self._event_reactive_mgmt = os.environ.get(
-            "APEX_ED_EVENT_REACTIVE_MGMT", "0"
+            "APEX_ED_EVENT_REACTIVE_MGMT", "1"
         ).strip().lower() in ("1", "true", "yes", "on")
         self._mgmt_scheduler = (
             ManagementScheduler() if self._event_reactive_mgmt else None
