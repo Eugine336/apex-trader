@@ -35,6 +35,7 @@ from dashboard.state_module_governor import ModuleGovernorMixin
 from dashboard.state_learning import LearningMixin
 from dashboard.state_health import HealthMixin
 from dashboard.state_operations import OperationsMixin
+from dashboard.state_departments import DepartmentsMixin
 
 
 class LiveState(
@@ -59,6 +60,7 @@ class LiveState(
     LearningMixin,
     HealthMixin,
     OperationsMixin,
+    DepartmentsMixin,
 ):
     """
     Central state provider for the dashboard.

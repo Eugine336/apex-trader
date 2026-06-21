@@ -2,6 +2,7 @@ import React from 'react';
 import { useOutletContext } from 'react-router-dom';
 import { useApi } from '../hooks/useApi';
 import TradeCard from '../components/TradeCard';
+import DepartmentGrid from '../components/DepartmentGrid';
 import { EquityChart, PnLBarChart } from '../components/Charts';
 
 function StatTile({ label, value, sub, cls }) {
@@ -23,6 +24,10 @@ export default function Overview() {
 
   const { data: perfData } = useApi('/api/performance', 0);
   const { data: scanData } = useApi('/api/scanner', 0);
+  // Department health: live via WS slow channel, with a polled fallback so the
+  // org board populates even before the first WS push.
+  const { data: deptData } = useApi('/api/departments', 15000);
+  const departments = state.departments || deptData;
 
   const p = perfData || perf;
   const sc = scanData || scanner;
@@ -42,8 +47,10 @@ export default function Overview() {
     <div>
       <div className="page-header">
         <h2>Overview</h2>
-        <p>Real-time system snapshot</p>
+        <p>The 9-department trading organism — live health at a glance</p>
       </div>
+
+      <DepartmentGrid data={departments} />
 
       <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(6, 1fr)' }}>
         <StatTile

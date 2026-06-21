@@ -322,6 +322,11 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
         """Ops control room — health, drawdown, equity, open positions, risk events, regime map, exposure, layer pulse, governor actions, watchdog, and tick-latency profile."""
         return _state.get_operations()
 
+    @app.get("/api/departments")
+    def departments():
+        """9-department organisation health summary — the org-chart home board."""
+        return _state.get_departments()
+
     @app.post("/api/control")
     async def control(body: dict):
         action = body.get("action", "")
@@ -410,6 +415,7 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
                             "shadow": _state.get_shadow_outcomes(),
                             "reversal": _state.get_reversal_breakdown(),
                             "decisions": _state.get_decisions(limit=20),
+                            "departments": _state.get_departments(),
                         }
                         await manager.broadcast(payload)
                     except Exception as exc:
