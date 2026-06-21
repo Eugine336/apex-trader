@@ -66,6 +66,7 @@ _SIZE_ADJUST = "SIZE_ADJUST"
 _PROFILE_CHANGE = "PROFILE_CHANGE"
 _MODULE_SUPPRESS = "MODULE_SUPPRESS"
 _TOXIC_PAIR_BLOCK = "TOXIC_PAIR_BLOCK"
+_PARAM_PROMOTE = "PARAM_PROMOTE"
 
 # The recommendation types Governance knows how to evaluate.  Anything else is
 # fail-closed REJECTED.
@@ -77,6 +78,7 @@ _KNOWN_TYPES = frozenset(
         _PROFILE_CHANGE,
         _MODULE_SUPPRESS,
         _TOXIC_PAIR_BLOCK,
+        _PARAM_PROMOTE,
     }
 )
 
@@ -203,6 +205,8 @@ class GovernanceDivision:
         # (behaviour-neutral) once the type is recognised.
         if rec_type == _PROFILE_CHANGE:
             return self._eval_profile_change(payload)
+        if rec_type == _PARAM_PROMOTE:
+            return self._eval_param_promote(payload)
         return GovernanceVerdict.AUTHORIZED, f"{rec_type} authorised"
 
     def _eval_size_adjust(self, payload: dict) -> Tuple[GovernanceVerdict, str]:
@@ -246,6 +250,28 @@ class GovernanceDivision:
         if profile is None or str(profile).strip() == "":
             return GovernanceVerdict.REJECTED, "profile change with no profile"
         return GovernanceVerdict.AUTHORIZED, f"profile '{profile}' authorised"
+
+    def _eval_param_promote(self, payload: dict) -> Tuple[GovernanceVerdict, str]:
+        """A ParameterEvolver promotion is authorised only when it names a
+        parameter and carries a finite proposed value.
+
+        The evolver has already walk-forward + shadow-validated the candidate;
+        Governance's job here is the boundary check (named parameter, finite
+        value) and the audit record — it never applies the value itself
+        (the evolver runs in recommend-only / shadow mode)."""
+        param_name = str(payload.get("param_name") or "").strip()
+        if not param_name:
+            return GovernanceVerdict.REJECTED, "param promote with no parameter name"
+        proposed = _as_float(payload.get("proposed_value"), default=None)
+        if proposed is None or not math.isfinite(proposed):
+            return (
+                GovernanceVerdict.REJECTED,
+                f"non-finite proposed value for {param_name}",
+            )
+        return (
+            GovernanceVerdict.AUTHORIZED,
+            f"param {param_name} -> {proposed:g} authorised",
+        )
 
     def _eval_toxic_pair(self, payload: dict) -> Tuple[GovernanceVerdict, str]:
         """Record a toxic module-pair finding and (optionally) contain it.

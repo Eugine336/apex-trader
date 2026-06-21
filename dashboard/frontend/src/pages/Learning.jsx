@@ -1319,23 +1319,48 @@ function RegimeDetection({ d }) {
   );
 }
 
-// ── Risk Management (L8) ──────────────────────────────────────────────────────
+// ── Risk Management (live RiskEngine) ─────────────────────────────────────────
 function RiskManagement({ d }) {
   const events = d?.risk_events || [];
   const correlations = d?.correlations || [];
-  const state = d?.state || 'NORMAL';
+  const state = d?.risk_mode || d?.state || 'NORMAL';
   const stateOk = state === 'NORMAL';
+  const dailyPnl = Number(d?.daily_pnl_dollars) || 0;
+  const lossUsed = Number(d?.daily_loss_used_pct) || 0;
   return (
     <div className="card mb-20">
       <div className="card-header">
-        <span className="card-title">Risk Management (L8)</span>
+        <span className="card-title">Risk Management (RiskEngine)</span>
         <StatusPill on={d?.enabled} />
+      </div>
+      <div style={{ fontSize: 11, color: 'var(--text-muted)', padding: '0 12px 10px' }}>
+        Live account-survival authority — balance, daily P&L, drawdown, risk
+        mode and how much of the daily-loss budget is used. Sourced directly
+        from the RiskEngine (DrawdownGuard + P&L tracker).
       </div>
       <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
         <div className="stat-card">
-          <div className="stat-label">Breaker State</div>
+          <div className="stat-label">Risk Mode</div>
           <div className="stat-value" style={{ color: stateOk ? 'var(--green-bright)' : 'var(--red-bright)' }}>
             {state}
+          </div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Balance</div>
+          <div className="stat-value">{d?.balance != null ? `$${d.balance}` : '—'}</div>
+        </div>
+        <div className="stat-card">
+          <div className="stat-label">Daily P&L</div>
+          <div className="stat-value" style={{ color: dailyPnl >= 0 ? 'var(--green-bright)' : 'var(--red-bright)' }}>
+            {`$${dailyPnl.toFixed(2)} (${d?.daily_pnl_pct != null ? d.daily_pnl_pct : 0}%)`}
+          </div>
+        </div>
+      </div>
+      <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
+        <div className="stat-card">
+          <div className="stat-label">Daily Loss Used</div>
+          <div className="stat-value" style={{ color: lossUsed >= 80 ? 'var(--red-bright)' : 'var(--text-primary)' }}>
+            {`${lossUsed}%`}
           </div>
         </div>
         <div className="stat-card">
@@ -1351,8 +1376,8 @@ function RiskManagement({ d }) {
       </div>
       <div className="grid-3 mb-16" style={{ padding: '0 12px' }}>
         <div className="stat-card">
-          <div className="stat-label">Daily Drawdown</div>
-          <div className="stat-value">{d?.daily_drawdown_pct || 0}%</div>
+          <div className="stat-label">Daily Loss Limit</div>
+          <div className="stat-value">{d?.daily_loss_limit_pct || 0}%</div>
         </div>
         <div className="stat-card">
           <div className="stat-label">Peak Equity</div>

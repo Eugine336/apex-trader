@@ -106,6 +106,9 @@ class LearningMixin:
         return getattr(self._loop(), "_interaction_analyzer", None)
 
     def _param_evolution_obj(self) -> Any:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None and getattr(ctx, "param_evolver", None) is not None:
+            return ctx.param_evolver
         return getattr(self._loop(), "_param_evolver", None)
 
     def _signal_discovery_obj(self) -> Any:
@@ -145,6 +148,9 @@ class LearningMixin:
         return getattr(self._loop(), "_regime_detector", None)
 
     def _risk_manager_obj(self) -> Any:
+        ctx = getattr(self, "_system_context", None)
+        if ctx is not None and getattr(ctx, "risk_engine", None) is not None:
+            return ctx.risk_engine
         return getattr(self._loop(), "_risk_manager", None)
 
     def _behavior_discovery_obj(self) -> Any:
@@ -852,17 +858,20 @@ class LearningMixin:
             **meta,
         }
 
-    # ── Risk Management (L8) ────────────────────────────────────────────────────
+    # ── Risk Management (live RiskEngine) ───────────────────────────────────────
     def _learning_risk_management(self) -> dict:
+        """Live RiskEngine state — balance, daily P&L, drawdown, risk mode and
+        daily-loss-limit usage.  Reads ``RiskEngine.get_state()`` (the old dead
+        ``_risk_manager`` panel was wired to a legacy object that no longer
+        exists; the live authority is ``ctx.risk_engine``)."""
         manager = self._risk_manager_obj()
-        cfg = getattr(self._config(), "risk_management", None)
+        cfg = getattr(self._config(), "risk", None)
         meta = {
-            "config_flag": bool(getattr(cfg, "enabled", False)),
-            "daily_drawdown_limit_pct": _round(getattr(cfg, "daily_drawdown_limit_pct", 0.0), 3),
-            "rolling_drawdown_limit_pct": _round(getattr(cfg, "rolling_drawdown_limit_pct", 0.0), 3),
-            "hard_stop_drawdown_pct": _round(getattr(cfg, "hard_stop_drawdown_pct", 0.0), 3),
+            "max_daily_drawdown_pct": _round(getattr(cfg, "max_daily_drawdown_pct", 0.0), 3),
+            "max_weekly_drawdown_pct": _round(getattr(cfg, "max_weekly_drawdown_pct", 0.0), 3),
+            "risk_per_trade_pct": _round(getattr(cfg, "risk_per_trade_pct", 0.0), 3),
         }
-        if manager is None:
+        if manager is None or not hasattr(manager, "get_state"):
             return _idle(meta)
         state = manager.get_state() or {}
         events = []
@@ -873,13 +882,6 @@ class LearningMixin:
                 "reason": str(e.get("reason", "")),
                 "ts": e.get("ts"),
             })
-        curve = []
-        for pt in state.get("equity_curve", []) or []:
-            curve.append({
-                "equity": _round(pt.get("equity", 0.0), 2),
-                "pnl": _round(pt.get("pnl", 0.0), 2),
-                "ts": pt.get("ts"),
-            })
         correlations = []
         for c in state.get("correlations", []) or []:
             correlations.append({
@@ -888,19 +890,26 @@ class LearningMixin:
                 "correlation": _round(c.get("correlation", 0.0), 4),
             })
         return {
-            "enabled": bool(state.get("enabled", False)),
+            "enabled": bool(state.get("enabled", True)),
             "source": "live",
-            "state": str(state.get("state", "")),
+            "state": str(state.get("state", "NORMAL")),
+            "risk_mode": str(state.get("risk_mode", state.get("state", "NORMAL"))),
+            "balance": _round(state.get("balance", 0.0), 2),
+            "current_equity": _round(state.get("current_equity", 0.0), 2),
+            "peak_equity": _round(state.get("peak_equity", 0.0), 2),
+            "daily_pnl_dollars": _round(state.get("daily_pnl_dollars", 0.0), 2),
+            "daily_pnl_pct": _round(state.get("daily_pnl_pct", 0.0), 3),
             "rolling_drawdown_pct": _round(state.get("rolling_drawdown_pct", 0.0), 3),
             "daily_drawdown_pct": _round(state.get("daily_drawdown_pct", 0.0), 3),
-            "peak_equity": _round(state.get("peak_equity", 0.0), 2),
-            "current_equity": _round(state.get("current_equity", 0.0), 2),
+            "daily_loss_limit_pct": _round(state.get("daily_loss_limit_pct", 0.0), 3),
+            "daily_loss_used_pct": _round(state.get("daily_loss_used_pct", 0.0), 2),
+            "current_risk_pct": _round(state.get("current_risk_pct", 0.0), 4),
             "sizing_factor": _round(state.get("sizing_factor", 1.0), 4),
             "should_flatten": bool(state.get("should_flatten", False)),
-            "cooldown_until": state.get("cooldown_until"),
+            "consecutive_losses": int(state.get("consecutive_losses", 0) or 0),
+            "consecutive_wins": int(state.get("consecutive_wins", 0) or 0),
             "limits": state.get("limits", {}) or {},
             "risk_events": events,
-            "equity_curve": curve,
             "correlations": correlations,
             **meta,
         }

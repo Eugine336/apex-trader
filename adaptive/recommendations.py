@@ -60,6 +60,7 @@ class RecommendationType:
     PROFILE_CHANGE = "PROFILE_CHANGE"        # ExecutionProfiles: SL/TP execution profile
     MODULE_SUPPRESS = "MODULE_SUPPRESS"      # Governor: shadow / disable a module
     TOXIC_PAIR_BLOCK = "TOXIC_PAIR_BLOCK"    # InteractionAnalyzer: toxic module-pair finding
+    PARAM_PROMOTE = "PARAM_PROMOTE"          # ParameterEvolver: promote a shadow-validated threshold
 
     ALL = (
         WEIGHT_UPDATE,
@@ -68,6 +69,7 @@ class RecommendationType:
         PROFILE_CHANGE,
         MODULE_SUPPRESS,
         TOXIC_PAIR_BLOCK,
+        PARAM_PROMOTE,
     )
 
 
