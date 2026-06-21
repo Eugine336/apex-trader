@@ -78,6 +78,37 @@ class ExitCause(Enum):
             return cls.UNKNOWN
         r = reason.strip().lower()
 
+        # Exact terse broker / shadow exit tokens first. MT5 deal-reason codes
+        # (``_MT5_DEAL_REASON_MAP``) and the Deriv connector emit short tokens
+        # like "SL"/"TP"/"STOP_OUT"/"MANUAL" that the substring matchers below
+        # would miss (they look for "stop loss", "tp1", …). Mapping them here
+        # keeps broker-side closes a typed feature instead of collapsing to
+        # UNKNOWN.
+        _broker_tokens = {
+            "sl": cls.STOP_LOSS,
+            "tp": cls.TP2_TARGET,
+            "tp1": cls.TP1_PARTIAL,
+            "tp2": cls.TP2_TARGET,
+            "tp3": cls.TP3_EXTENDED,
+            "so": cls.STOP_LOSS,
+            "stop_out": cls.STOP_LOSS,
+            "manual": cls.MANUAL,
+            "client": cls.MANUAL,
+            "mobile": cls.MANUAL,
+            "web": cls.MANUAL,
+            "algo": cls.STRATEGIC_CLOSE,
+            "expert": cls.STRATEGIC_CLOSE,
+            "rollover": cls.BROKER_SIDE,
+            "split": cls.BROKER_SIDE,
+            "variation_margin": cls.MARGIN_FLATTEN,
+            "vmargin": cls.MARGIN_FLATTEN,
+            "external_close": cls.BROKER_SIDE,
+            "broker_closed_unknown": cls.BROKER_SIDE,
+        }
+        token = _broker_tokens.get(r)
+        if token is not None:
+            return token
+
         # Order matters: check the most specific markers first so a generic
         # substring (e.g. "stop") does not shadow "stopped at breakeven".
         if "breakeven" in r or "break even" in r or "be stop" in r:

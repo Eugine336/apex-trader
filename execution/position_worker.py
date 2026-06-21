@@ -58,6 +58,16 @@ class WorkerConfig:
     heat_trail_factor_emergency: float = 0.5
     trailing_swing_lookback: int = 12
 
+    # ── ATR trailing fallback ────────────────────────────────────────
+    # When structure trailing finds no swing level to trail (e.g. a
+    # consensus-triggered entry with no nearby structure), fall back to an
+    # ATR-distance trail so every runner still gets a moving protective stop.
+    # Structure trailing always takes priority; this only fires when it
+    # produced nothing AND trailing is otherwise active.
+    atr_trail_fallback_enabled: bool = True
+    atr_trail_period: int = 14
+    atr_trail_mult: float = 1.5
+
     # ── Stall exit ───────────────────────────────────────────────────
     stall_limits: dict = field(default_factory=lambda: {
         "M1": 30, "M5": 60, "M15": 90, "H1": 180, "H4": 360,
@@ -202,7 +212,9 @@ class PositionWorker:
             self._check_conviction_collapse(snap, intents)
 
         if market is not None:
-            self._check_structure_trailing(snap, market, out=intents)
+            trailed = self._check_structure_trailing(snap, market, out=intents)
+            if not trailed:
+                self._check_atr_trailing(snap, market, out=intents)
             self._check_htf_candle_close(snap, market, intents)
             self._check_spread_deterioration(snap, market, intents)
             self._check_session_close(snap, now, intents)
@@ -418,14 +430,20 @@ class PositionWorker:
 
     def _check_structure_trailing(
         self, snap: PositionSnapshot, market: MarketContext, out: list[Intent],
-    ) -> None:
+    ) -> bool:
+        """Trail the stop to recent M5 structure.
+
+        Returns True when a structure-based MODIFY_SL intent was emitted, so the
+        caller can decide whether to fall back to the ATR trail. Returns False
+        when trailing is inactive or no structural level improved the stop.
+        """
         if snap.pip_size <= 0:
-            return
+            return False
         if not self._should_structure_trail(snap):
-            return
+            return False
         df_m5 = getattr(market, "m5_df", None)
         if df_m5 is None or len(df_m5) < 10:
-            return
+            return False
         try:
             trail_factor = 1.0
             if self.cfg.heat_trail_tighten_enabled:
@@ -449,7 +467,7 @@ class PositionWorker:
                 buffer_pips=buffer_pips,
             )
             if new_sl is None:
-                return
+                return False
             out.append(Intent.modify_sl(
                 symbol=snap.symbol,
                 ticket=snap.order_id,
@@ -457,8 +475,71 @@ class PositionWorker:
                 source="structure_trailing",
                 reason=f"Structure trail SL → {new_sl:.5f}",
             ))
+            return True
         except Exception as exc:
             logger.debug("[pos-worker] structure trailing failed for {}: {}", snap.order_id, exc)
+            return False
+
+    def _check_atr_trailing(
+        self, snap: PositionSnapshot, market: MarketContext, out: list[Intent],
+    ) -> None:
+        """ATR-distance trailing fallback.
+
+        Runs only when structure trailing produced no level (e.g. a
+        consensus-triggered entry with no nearby swing structure) and trailing
+        is otherwise active. Trails the stop at ``atr_trail_mult × ATR`` from the
+        current price, never moving the stop backwards. Heat-aware: tightens the
+        distance under elevated portfolio heat, mirroring structure trailing.
+        """
+        if not self.cfg.atr_trail_fallback_enabled:
+            return
+        if snap.pip_size <= 0:
+            return
+        if not self._should_structure_trail(snap):
+            return
+        df_m5 = getattr(market, "m5_df", None)
+        if df_m5 is None or len(df_m5) < self.cfg.atr_trail_period + 1:
+            return
+        try:
+            from brain.volatility_stop import latest_atr
+
+            atr = latest_atr(df_m5, self.cfg.atr_trail_period)
+            if atr is None or atr <= 0:
+                return
+
+            trail_factor = 1.0
+            if self.cfg.heat_trail_tighten_enabled:
+                heat_state = str(getattr(self.cfg, "portfolio_heat_state", "NORMAL")).upper()
+                if heat_state == "DEFENSIVE":
+                    trail_factor = float(self.cfg.heat_trail_factor_defensive)
+                elif heat_state == "REDUCING":
+                    trail_factor = float(self.cfg.heat_trail_factor_reducing)
+                elif heat_state == "EMERGENCY":
+                    trail_factor = float(self.cfg.heat_trail_factor_emergency)
+
+            distance = float(self.cfg.atr_trail_mult) * atr
+            if 0.0 < trail_factor < 1.0:
+                distance *= trail_factor
+            if distance <= 0:
+                return
+
+            if snap.is_long:
+                new_sl = round(snap.current_price - distance, 5)
+                if new_sl <= snap.sl:
+                    return
+            else:
+                new_sl = round(snap.current_price + distance, 5)
+                if new_sl >= snap.sl:
+                    return
+            out.append(Intent.modify_sl(
+                symbol=snap.symbol,
+                ticket=snap.order_id,
+                new_sl=new_sl,
+                source="atr_trailing",
+                reason=f"ATR trail SL → {new_sl:.5f} ({self.cfg.atr_trail_mult:.1f}×ATR)",
+            ))
+        except Exception as exc:
+            logger.debug("[pos-worker] ATR trailing failed for {}: {}", snap.order_id, exc)
 
     def _check_invalidation(
         self, snap: PositionSnapshot, scan: ScanContext, out: list[Intent],
