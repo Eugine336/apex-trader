@@ -42,6 +42,31 @@ from entry.models import EntryConfig
 from entry.zone_watcher import extract_entry_zones
 
 
+# ── Throttled failure visibility ─────────────────────────────────────────
+# Consensus vote modules run per candle-close for every symbol/TF.  A module
+# that fails must be *visible* (audit #18 — no silent ``except: pass``), but a
+# per-cycle WARNING would flood the log.  Log the first failure of each
+# (key, module) at WARNING with the exception, then throttle repeats to at
+# most once per interval so a persistently-broken module stays surfaced
+# without spamming.
+import time as _time
+
+_WARN_THROTTLE_S = 300.0
+_last_warned: dict[str, float] = {}
+
+
+def _warn_module_failure(scope: str, module: str, symbol: str, exc: Exception) -> None:
+    key = f"{scope}:{module}:{symbol}"
+    now = _time.monotonic()
+    last = _last_warned.get(key, 0.0)
+    if now - last >= _WARN_THROTTLE_S:
+        _last_warned[key] = now
+        logger.warning(
+            "[consensus] {} module '{}' failed for {}: {} — {}",
+            scope, module, symbol, type(exc).__name__, exc,
+        )
+
+
 # TF → brain modules to run when that timeframe closes.  Canonical home; the
 # handler re-exports this so existing imports keep working.
 TF_MODULE_MAP: dict[str, list[str]] = {
@@ -177,19 +202,14 @@ def run_tf_modules(
             elif mod == "structure":
                 results["structure"] = structure.analyze(df)
         except Exception as exc:
-            logger.debug(
-                "[decision-core] {} {} module '{}' failed: {}",
-                symbol, tf, mod, exc,
-            )
+            _warn_module_failure(f"tf-{tf}", mod, symbol, exc)
 
     try:
         signals, regime = run_concepts(df)
         results["concepts"] = signals
         results["regime"] = regime
     except Exception as exc:
-        logger.debug(
-            "[decision-core] {} {} concept modules failed: {}", symbol, tf, exc,
-        )
+        _warn_module_failure(f"tf-{tf}", "concepts", symbol, exc)
 
     return results
 
@@ -308,8 +328,8 @@ def build_consensus(
              "confidence": float(b.get("confidence", 0.0) or 0.0)}
         )
         votes.append(Vote("structure", r[0], r[1], 3.0))
-    except Exception:
-        pass
+    except Exception as exc:
+        _warn_module_failure("consensus", "structure", symbol, exc)
 
     try:
         vbt = wm.volume_by_tf()
@@ -317,16 +337,16 @@ def build_consensus(
         if va is not None:
             r = vote_from_volume(va)
             votes.append(Vote("volume", r[0], r[1], 1.0))
-    except Exception:
-        pass
+    except Exception as exc:
+        _warn_module_failure("consensus", "volume", symbol, exc)
 
     try:
         wy = wm.wyckoff_by_tf().get("H1")
         if wy is not None:
             r = vote_from_wyckoff(wy)
             votes.append(Vote("wyckoff", r[0], r[1], 1.5))
-    except Exception:
-        pass
+    except Exception as exc:
+        _warn_module_failure("consensus", "wyckoff", symbol, exc)
 
     if current_price and current_price > 0:
         try:
@@ -334,15 +354,15 @@ def build_consensus(
             if obs:
                 r = vote_from_order_blocks(list(obs), current_price)
                 votes.append(Vote("order_block", r[0], r[1], 1.0))
-        except Exception:
-            pass
+        except Exception as exc:
+            _warn_module_failure("consensus", "order_block", symbol, exc)
         try:
             fvgs = wm.all_fvgs()
             if fvgs:
                 r = vote_from_fvg(list(fvgs), current_price, fvg_proximity(symbol))
                 votes.append(Vote("fvg", r[0], r[1], 1.0))
-        except Exception:
-            pass
+        except Exception as exc:
+            _warn_module_failure("consensus", "fvg", symbol, exc)
 
     if m5_df is not None and len(m5_df) > 0:
         try:
@@ -356,16 +376,16 @@ def build_consensus(
                     "liquidity", r[0], r[1], 1.0, timeframe="M5",
                     evidence=getattr(r, "evidence", {}) or {},
                 ))
-        except Exception:
-            pass
+        except Exception as exc:
+            _warn_module_failure("consensus", "liquidity", symbol, exc)
         try:
             r = vote_from_momentum(m5_df, h1_df)
             votes.append(Vote(
                 "momentum", r[0], r[1], 1.0, timeframe="M5",
                 evidence=getattr(r, "evidence", {}) or {},
             ))
-        except Exception:
-            pass
+        except Exception as exc:
+            _warn_module_failure("consensus", "momentum", symbol, exc)
         try:
             mins = int(session_open_minutes) if session_open_minutes is not None else 0
             r = vote_from_vwap(
@@ -375,8 +395,8 @@ def build_consensus(
                 "vwap", r[0], r[1], 1.0, timeframe="M5",
                 evidence=getattr(r, "evidence", {}) or {},
             ))
-        except Exception:
-            pass
+        except Exception as exc:
+            _warn_module_failure("consensus", "vwap", symbol, exc)
 
     if currency_strength_analysis is not None:
         try:
@@ -389,15 +409,15 @@ def build_consensus(
                 "currency_strength", r[0], r[1], 2.0,
                 evidence=getattr(r, "evidence", {}) or {},
             ))
-        except Exception:
-            pass
+        except Exception as exc:
+            _warn_module_failure("consensus", "currency_strength", symbol, exc)
 
     candidates: list = []
     try:
         if votes:
             candidates = list(decide_opportunities(votes))
-    except Exception:
-        pass
+    except Exception as exc:
+        _warn_module_failure("consensus", "decide_opportunities", symbol, exc)
 
     return votes, candidates
 

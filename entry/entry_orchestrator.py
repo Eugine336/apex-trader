@@ -59,6 +59,7 @@ class EntryOrchestrator:
         get_spread_pips: Optional[Callable[[str], float]] = None,
         get_m1_dataframe: Optional[Callable[[str], Optional[pd.DataFrame]]] = None,
         on_gate_trace: Optional[Callable[..., None]] = None,
+        gate_tuner: Optional[object] = None,
     ) -> None:
         self._config = config or EntryConfig()
         self._pip_size = pip_size_lookup or (lambda _: 0.0001)
@@ -75,7 +76,7 @@ class EntryOrchestrator:
 
         self._zone_watcher = ZoneWatcher(world_model_store, self._config)
         self._m1_confirmer = M1CandleConfirmer(self._config, self._pip_size)
-        self._gate = EntryGate(self._config)
+        self._gate = EntryGate(self._config, gate_tuner=gate_tuner)
         self._tick_detector = TickEntryDetector(
             zone_watcher=self._zone_watcher,
             config=self._config,

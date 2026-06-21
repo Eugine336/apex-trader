@@ -173,9 +173,9 @@ class DerivConnector(BaseConnector):
         if self._reconnect_base_delay <= 0:
             self._reconnect_base_delay = float(_RECONNECT_DELAY)
 
-        self._max_tick_age_seconds = float(
-            os.getenv("MAX_TICK_AGE_SECONDS", str(max_tick_age_seconds))
-        )
+        # Tick-freshness limit comes straight from config (RiskConfig resolves
+        # the MAX_TICK_AGE_SECONDS env override explicitly at the config layer).
+        self._max_tick_age_seconds = float(max_tick_age_seconds)
         self._ws: Any = None
         self._connected = False
         self._reconnecting = False

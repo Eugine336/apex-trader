@@ -43,8 +43,15 @@ class EntryGate:
     def __init__(
         self,
         config: Optional[EntryConfig] = None,
+        gate_tuner: Optional[object] = None,
     ) -> None:
         self._config = config or EntryConfig()
+        # Optional shadow-fed GateTuner.  When present it can LOWER the entry
+        # score bar within a bounded envelope (offset ∈ [-3, 0]) if the gate's
+        # rejected setups keep winning.  The lowered bar never drops below
+        # ``watchlist_score`` (enforced in _check_score).  Neutral (None) by
+        # default so the live gate is unchanged unless a tuner is wired.
+        self._gate_tuner = gate_tuner
 
     def validate_all(
         self,
@@ -153,6 +160,19 @@ class EntryGate:
 
     def _check_score(self, symbol: str, score: int) -> GateResult:
         min_score = self._config.min_entry_score
+        # Apply the learned GateTuner offset (bounded, loosening-only) so the
+        # live bar reflects what the shadow outcomes have proven — but never
+        # below the watchlist floor.  Previously the tuner's offset only
+        # reached the legacy backtest engine, never the live EntryGate.
+        if self._gate_tuner is not None:
+            try:
+                offset = float(self._gate_tuner.offset("entry_engine"))
+                floor = int(getattr(self._config, "watchlist_score", min_score))
+                min_score = max(floor, int(round(min_score + offset)))
+            except Exception as exc:
+                logger.debug(
+                    "[entry-gate] gate-tuner offset unavailable: {}", exc,
+                )
         if score < min_score:
             return GateResult(
                 False, "score_minimum",

@@ -115,9 +115,9 @@ class MT5Connector(BaseConnector):
         self._not_found_warned: set[str] = set()  # warn once then silent
         self._broker_name = broker_name
         self._reject_on_minlot_inflation = reject_on_minlot_inflation
-        self._max_tick_age_seconds = float(
-            os.getenv("MAX_TICK_AGE_SECONDS", str(max_tick_age_seconds))
-        )
+        # Tick-freshness limit comes straight from config (RiskConfig resolves
+        # the MAX_TICK_AGE_SECONDS env override explicitly at the config layer).
+        self._max_tick_age_seconds = float(max_tick_age_seconds)
         # Defer SymbolMapper creation when broker_name is "auto".
         # connect() will detect the real broker name and create the mapper then.
         # Creating it now with "auto" would trigger a "no config" warning.

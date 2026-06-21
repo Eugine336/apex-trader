@@ -291,3 +291,25 @@ class TestRiskConfigDefault:
         from config import RiskConfig
         cfg = RiskConfig()
         assert cfg.max_tick_age_seconds == 120.0
+
+    def test_env_override_applied_at_config_layer(self):
+        """MAX_TICK_AGE_SECONDS is resolved once, explicitly, in RiskConfig —
+        not silently inside each connector's __init__ (audit #14)."""
+        from config import RiskConfig
+        with patch.dict("os.environ", {"MAX_TICK_AGE_SECONDS": "45"}):
+            cfg = RiskConfig()
+        assert cfg.max_tick_age_seconds == 45.0
+
+    def test_explicit_config_value_not_overridden_by_env(self):
+        """An explicitly-configured non-default value wins over the env var —
+        the env only fills in when the field is left at its default."""
+        from config import RiskConfig
+        with patch.dict("os.environ", {"MAX_TICK_AGE_SECONDS": "45"}):
+            cfg = RiskConfig(max_tick_age_seconds=300.0)
+        assert cfg.max_tick_age_seconds == 300.0
+
+    def test_invalid_env_value_keeps_default(self):
+        from config import RiskConfig
+        with patch.dict("os.environ", {"MAX_TICK_AGE_SECONDS": "not-a-number"}):
+            cfg = RiskConfig()
+        assert cfg.max_tick_age_seconds == 120.0

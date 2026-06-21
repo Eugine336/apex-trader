@@ -6,6 +6,7 @@ commodities, indices, and Deriv synthetics.
 """
 
 import math
+import os
 from dataclasses import dataclass, field
 from enum import Enum
 from loguru import logger
@@ -947,6 +948,28 @@ class RiskConfig:
     management_status_log_interval_cycles: int = 100
 
     def __post_init__(self) -> None:
+        # Resolve the MAX_TICK_AGE_SECONDS env override here — once, explicitly,
+        # at the config layer — rather than silently inside each connector's
+        # __init__ (where it overrode an explicitly-configured value).  The env
+        # var only applies when the field is left at its default, so an explicit
+        # config value is always respected.
+        if self.max_tick_age_seconds == 120.0:
+            _env_tick_age = os.getenv("MAX_TICK_AGE_SECONDS")
+            if _env_tick_age is not None:
+                try:
+                    self.max_tick_age_seconds = float(_env_tick_age)
+                    logger.info(
+                        "[config] max_tick_age_seconds set from "
+                        "MAX_TICK_AGE_SECONDS env → {}s",
+                        self.max_tick_age_seconds,
+                    )
+                except ValueError:
+                    logger.warning(
+                        "[config] MAX_TICK_AGE_SECONDS env not a number "
+                        "({!r}) — keeping default {}s",
+                        _env_tick_age, self.max_tick_age_seconds,
+                    )
+
         def _check_finite_positive(name: str, val: float) -> None:
             if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
                 raise ValueError(
