@@ -328,6 +328,33 @@ class ConsensusConfig:
     # discarding it at the (direction, confidence) collapse. Additive context for
     # the ranker / orchestrator / dashboard — never changes the consensus verdict.
     carry_vote_evidence: bool = True
+    # ── Active market-driven trigger (Phase 4 — the "big flip") ───────────
+    # When enabled, the Consensus Division stops being a passive confirmer and
+    # becomes the ACTIVE entry trigger: on every analysis cycle it forms a
+    # thesis from the full analyst panel and, when conviction clears
+    # ``conviction_threshold``, initiates an entry candidate WITHOUT requiring a
+    # structural zone (direction comes from the weighted vote, SL/TP are
+    # ATR-derived). The candidate then flows through the SAME
+    # Compliance → Portfolio → Execution pipeline as a zone-triggered entry, so
+    # the only hardcoded vetoes remain the physically necessary ones (market
+    # closed, risk cap, spread, duplicate, broker down). There is deliberately
+    # NO hardcoded frequency governor — the Learning Division tightens
+    # conviction organically via trade outcomes; ``trigger_cooldown_seconds`` is
+    # only a re-fire debounce so the same standing thesis is not re-submitted
+    # every candle between fills (Compliance still owns the duplicate veto).
+    #
+    # Defaults OFF so this phase is behaviour-neutral and shippable — flip
+    # ``active_trigger_enabled`` to True to activate the market-driven trigger.
+    active_trigger_enabled: bool = False
+    conviction_threshold: float = 0.62
+    # Saturation scale for |net_score| in the conviction blend; <=0 derives it
+    # from ``min_net_score * 2`` so a panel at ~2× the net floor reads decisive.
+    net_scale: float = 0.0
+    atr_period: int = 14
+    atr_sl_mult: float = 1.5
+    atr_tp1_rr: float = 1.5
+    atr_tp2_rr: float = 3.0
+    trigger_cooldown_seconds: float = 300.0
 
     def __post_init__(self) -> None:
         if not isinstance(self.min_contributors, int) or self.min_contributors < 1:
@@ -361,6 +388,30 @@ class ConsensusConfig:
                     f"ConsensusConfig.high_authority_modules entry '{mod}' "
                     f"not present in weights: {list(self.weights.keys())}"
                 )
+        if not (0.0 <= self.conviction_threshold <= 1.0):
+            raise ValueError(
+                f"ConsensusConfig.conviction_threshold must be in [0, 1], "
+                f"got {self.conviction_threshold!r}"
+            )
+        if not isinstance(self.net_scale, (int, float)) or self.net_scale < 0:
+            raise ValueError(
+                f"ConsensusConfig.net_scale must be >= 0, got {self.net_scale!r}"
+            )
+        if not isinstance(self.atr_period, int) or self.atr_period < 1:
+            raise ValueError(
+                f"ConsensusConfig.atr_period must be an int >= 1, got {self.atr_period!r}"
+            )
+        for fld in ("atr_sl_mult", "atr_tp1_rr", "atr_tp2_rr"):
+            val = getattr(self, fld)
+            if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
+                raise ValueError(
+                    f"ConsensusConfig.{fld} must be finite > 0, got {val!r}"
+                )
+        if not isinstance(self.trigger_cooldown_seconds, (int, float)) or self.trigger_cooldown_seconds < 0:
+            raise ValueError(
+                f"ConsensusConfig.trigger_cooldown_seconds must be >= 0, "
+                f"got {self.trigger_cooldown_seconds!r}"
+            )
 
 
 # ---------------------------------------------------------------------------
