@@ -386,6 +386,31 @@ class TestCircuitBreaker:
         metrics = executor.get_metrics()
         assert metrics.intents_circuit_open >= 1
 
+    def test_persistent_connection_error_trips_breaker(self):
+        """A connection that keeps failing IS a real failure — after retries
+        are exhausted on every call, the breaker must record failures and
+        eventually open.  Regression for audit #15 (ConnectionError must not
+        be retried forever without tripping the breaker)."""
+        broker = FakeBroker()
+        broker.raise_on_close = ConnectionError("Connection lost")
+        cfg = _fast_cfg(
+            max_retries=1,
+            circuit_failure_threshold=3,
+            circuit_cooldown_s=10.0,
+        )
+        executor = ActionExecutor(broker, cfg)
+
+        # Each call exhausts retries (transient ConnectionError) and records a
+        # single breaker failure.  After the threshold, the breaker opens.
+        for _ in range(3):
+            res = executor.execute(_close_intent(), _positions())
+            assert not res.success
+
+        blocked = executor.execute(_close_intent(), _positions())
+        assert "circuit open" in (blocked.error or "").lower(), (
+            "Persistent ConnectionError never tripped the breaker"
+        )
+
     def test_close_failures_do_not_block_open(self):
         """A tripped CLOSE/manage breaker must NOT block new OPEN entries.
 

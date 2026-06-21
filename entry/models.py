@@ -82,4 +82,8 @@ class EntryConfig:
     max_spread_multiplier: float = 3.0
     min_risk_reward: float = 1.5
     min_entry_score: int = 85
+    # Hard floor for the GateTuner-adjusted entry-score bar.  The tuner may
+    # LOWER min_entry_score within a bounded envelope when its rejected setups
+    # keep winning, but the live gate never drops the bar below this floor.
+    watchlist_score: int = 70
     coalesce_hz: float = 15.0

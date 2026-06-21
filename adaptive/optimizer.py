@@ -12,7 +12,7 @@ the difference.
 
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 from loguru import logger
 
@@ -93,6 +93,41 @@ class AdaptiveOptimizer(TuningGuardMixin):
         self._last_train_time: Optional[datetime] = None
         self._trades_since_train: int = 0
         self._last_recommendations: list[str] = []
+
+        # Closed-trade history provider.  Wired at startup to the persistent
+        # TradeJournal (see EventDrivenSystem.start) so the learners train on
+        # the real recorded outcomes.  Without it, get_trade_history() returns
+        # an empty list and every learner trains on nothing.
+        self._trade_history_provider: Optional[Callable[[], list[dict]]] = None
+
+    def set_trade_history_provider(
+        self, provider: Callable[[], list[dict]]
+    ) -> None:
+        """Inject the closed-trade source the learners train on.
+
+        ``provider`` is a zero-arg callable returning the full closed-trade
+        history as a list of plain dicts (e.g. TradeJournal.get_all_trades_as_dicts).
+        """
+        self._trade_history_provider = provider
+
+    def get_trade_history(self) -> list[dict]:
+        """Return the recorded closed-trade history for learner training.
+
+        Returns an empty list (never raises) when no provider is wired or the
+        provider fails, so a degraded history source can never break the tune
+        cycle — it just means the learners have no fresh data this pass.
+        """
+        if self._trade_history_provider is None:
+            return []
+        try:
+            trades = self._trade_history_provider()
+            return list(trades) if trades else []
+        except Exception as exc:
+            logger.warning(
+                "[ml-adapter] trade-history provider failed: {} — {}",
+                type(exc).__name__, exc,
+            )
+            return []
 
     def run_optimization(self, trades: list[dict]) -> OptimizationReport:
         # When the Tuner Agent is sole authority it drives the sub-learners

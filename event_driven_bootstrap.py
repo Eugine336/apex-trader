@@ -1353,6 +1353,11 @@ class EventDrivenSystem:
             get_spread_pips=self._get_spread_pips,
             get_m1_dataframe=self._get_m1_dataframe,
             on_gate_trace=self._on_gate_trace,
+            # Wire the shadow-fed GateTuner into the LIVE entry gate so its
+            # learned (bounded) score-bar offset actually modifies live entry
+            # decisions — previously the offset only reached the legacy
+            # backtest engine and the live EntryGate ignored it.
+            gate_tuner=(ctx.gate_tuner if ctx is not None else None),
         )
 
         # ── Background loops ─────────────────────────────────────────
@@ -1878,8 +1883,57 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[startup] TradeJournal init failed: {}", exc)
 
-        # ── Register tunable adapters with TunerAgent ────────────────
-        self._register_tunable_adapters()
+        # ── Wire the learner trade-history pipeline ──────────────────
+        # The adaptive learners (pair/session/regime/score) train on the
+        # closed-trade history exposed via ml_adapter.get_trade_history().
+        # Back it with the persistent TradeJournal so the learners see the
+        # REAL recorded outcomes (previously the call hit a non-existent
+        # method, was swallowed, and every learner trained on an empty list).
+        # A short TTL cache avoids re-reading the whole journal DB on every
+        # tunable adapter within a single tune cycle.
+        if (
+            ctx is not None
+            and ctx.ml_adapter is not None
+            and ctx.trade_journal is not None
+        ):
+            try:
+                self._trade_history_cache: list[dict] = []
+                self._trade_history_cache_at: float = 0.0
+                _journal = ctx.trade_journal
+
+                def _journal_trades() -> list[dict]:
+                    now = _time.monotonic()
+                    if (
+                        self._trade_history_cache
+                        and now - self._trade_history_cache_at < 5.0
+                    ):
+                        return self._trade_history_cache
+                    import asyncio
+                    loop = asyncio.new_event_loop()
+                    try:
+                        trades = loop.run_until_complete(
+                            _journal.get_all_trades_as_dicts()
+                        )
+                    finally:
+                        loop.close()
+                    self._trade_history_cache = list(trades) if trades else []
+                    self._trade_history_cache_at = now
+                    return self._trade_history_cache
+
+                ctx.ml_adapter.set_trade_history_provider(_journal_trades)
+                logger.info(
+                    "[event-driven] learner trade-history pipeline wired "
+                    "(ml_adapter ← TradeJournal)",
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[event-driven] trade-history pipeline wiring failed: {}", exc,
+                )
+
+        # Tunable adapters are registered once in __init__ (idempotent by name
+        # via TunerAgent.register). The previous duplicate registration here was
+        # redundant — the closures (_trades_provider/_prices_provider) resolve
+        # their subsystems lazily, so construction-time registration is correct.
 
         logger.info("[event-driven] all subsystems started")
         logger.info("-" * 60)
@@ -2320,7 +2374,9 @@ class EventDrivenSystem:
         if ctx is None:
             return
         try:
-            positions = self._pm.get_all_open_positions()
+            snap = self._pm.get_open_positions_snapshot()
+            positions = snap.positions
+            failed_platforms = snap.failed_platforms
         except Exception as exc:
             logger.debug("[risk-state] positions fetch failed: {}", exc)
             return
@@ -2374,7 +2430,7 @@ class EventDrivenSystem:
         # instead of silently dropping their local state.  Broker-confirmed
         # before booking; fully fail-safe.
         try:
-            self._reconcile_external_closes(positions)
+            self._reconcile_external_closes(positions, failed_platforms)
         except Exception as exc:
             logger.debug("[risk-state] external-close reconcile failed: {}", exc)
 
@@ -2848,7 +2904,9 @@ class EventDrivenSystem:
             pass
         return True
 
-    def _reconcile_external_closes(self, positions: list) -> None:
+    def _reconcile_external_closes(
+        self, positions: list, failed_platforms: Optional[set] = None
+    ) -> None:
         """Detect positions closed at the broker (SL/TP/stop-out/manual) and
         book their realized outcome instead of silently dropping local state.
 
@@ -2856,7 +2914,14 @@ class EventDrivenSystem:
         fetch never false-books live positions.  Unconfirmed disappearances are
         retried; after a bounded number of cycles they are dropped with a
         CRITICAL log so a stuck ticket cannot leak forever.
+
+        ``failed_platforms`` (from the broker snapshot) lists platforms whose
+        position fetch errored this cycle.  A ticket on a failed platform is
+        *unknown*, not absent — it is held in tracking and never booked as
+        closed, so a transient connector failure can never false-book a live
+        position on the other (healthy) platform.
         """
+        failed = failed_platforms or set()
         current: dict[str, dict] = {}
         for pos in positions:
             ticket = str(
@@ -2874,6 +2939,13 @@ class EventDrivenSystem:
         still_pending: dict[str, dict] = {}
         for ticket in vanished:
             meta = self._known_open.get(ticket, {})
+            # A ticket whose owning platform failed to report this cycle is
+            # unknown — never book it as closed.  Hold it in tracking and reset
+            # the debounce counter so the next clean cycle starts fresh.
+            if failed and (meta.get("platform") or "") in failed:
+                still_pending[ticket] = meta
+                self._external_close_attempts.pop(ticket, None)
+                continue
             attempts = self._external_close_attempts.get(ticket, 0) + 1
             self._external_close_attempts[ticket] = attempts
             # Debounce: require the ticket to be absent for at least two
@@ -3072,6 +3144,8 @@ class EventDrivenSystem:
             )
         except Exception as exc:
             logger.debug("[manage] result handling failed: {}", exc)
+
+    def _recover_open_positions(self) -> None:
         """Initialize management state for any positions open at startup."""
         try:
             positions = self._pm.get_all_open_positions()
@@ -3769,6 +3843,97 @@ class EventDrivenSystem:
                             symbol, ccy, currency_counts[ccy] + 1, max_corr,
                         )
                         return
+
+            # ── Gate 5c: RiskEngine EV + duplicate-pair veto ─────────
+            # Reuse the RiskEngine's expected-value estimator and duplicate
+            # guard (the same logic in RiskEngine.assess) rather than sizing
+            # through assess() — the bootstrap owns its richer sizing chain.
+            # Now that the learner trade-history pipeline is wired (real
+            # recorded outcomes), the EV gate can actually fire.  Fully
+            # de-risking: any error fails OPEN here (other hard gates already
+            # ran), and an insufficient-history EV estimate never vetoes.
+            if ctx is not None and ctx.risk_engine is not None:
+                try:
+                    # Explicit duplicate pair+direction veto.
+                    dup = False
+                    for pos in open_positions:
+                        if (
+                            getattr(pos, "symbol", "").upper() == symbol.upper()
+                            and getattr(pos, "direction", "").upper()
+                            == direction.upper()
+                        ):
+                            dup = True
+                            break
+                    if dup:
+                        logger.warning(
+                            "EVENT-DRIVEN ENTRY BLOCKED | {} — already have {} "
+                            "position (duplicate pair+direction)",
+                            symbol, direction,
+                        )
+                        return
+
+                    # Adaptive spread gate: block when the live spread is
+                    # abnormally wide vs this instrument's rolling average
+                    # (SpreadMonitor).  Distinct from EntryGate's static
+                    # multiplier — this catches per-instrument blow-outs.
+                    spread_mon = getattr(ctx.risk_engine, "spread_monitor", None)
+                    if spread_mon is not None:
+                        try:
+                            cur_spread = self._get_spread_pips(symbol)
+                            safe, why = spread_mon.is_spread_safe(symbol, cur_spread)
+                            if not safe:
+                                logger.warning(
+                                    "EVENT-DRIVEN ENTRY BLOCKED | {} — {}",
+                                    symbol, why,
+                                )
+                                return
+                        except Exception as exc:
+                            logger.debug(
+                                "[entry-risk] spread-monitor check skipped: {}", exc,
+                            )
+
+                    ev_estimator = getattr(ctx.risk_engine, "ev_estimator", None)
+                    trade_history = (
+                        ctx.ml_adapter.get_trade_history()
+                        if ctx.ml_adapter is not None else []
+                    )
+                    if ev_estimator is not None and trade_history:
+                        _regime = ""
+                        _session = ""
+                        try:
+                            if ctx.regime_detector is not None:
+                                _rs = ctx.regime_detector.get_regime(symbol)
+                                _regime = getattr(_rs, "regime", "") or ""
+                        except Exception:
+                            _regime = ""
+                        try:
+                            if ctx.session_engine is not None:
+                                _session = getattr(
+                                    ctx.session_engine.get_status(), "name", "",
+                                ) or ""
+                        except Exception:
+                            _session = ""
+                        ev_est = ev_estimator.estimate(
+                            symbol, _regime, _session, trade_history,
+                        )
+                        ev_threshold = self._config.risk.ev_threshold
+                        if (
+                            ev_est.expected_value < ev_threshold
+                            and ev_est.confidence in ("high", "medium")
+                        ):
+                            logger.warning(
+                                "EVENT-DRIVEN ENTRY BLOCKED | {} — negative EV "
+                                "{:+.4f} ({} conf, n={}) < threshold {}",
+                                symbol, ev_est.expected_value,
+                                ev_est.confidence, ev_est.sample_size,
+                                ev_threshold,
+                            )
+                            return
+                except Exception as exc:
+                    logger.debug(
+                        "[entry-risk] EV/duplicate veto skipped (non-fatal): {}",
+                        exc,
+                    )
 
             # ── Gate 5b: RL authority — veto + score augmentation ────
             rl = getattr(ctx, "rl_bridge", None) if ctx is not None else None
@@ -5058,10 +5223,17 @@ class EventDrivenSystem:
                 m5_df = self._fetch_candles(symbol, "M5", 50)
                 if m5_df is not None:
                     from types import SimpleNamespace
+                    # We are inside the close handler, so the trade just closed:
+                    # anchor the re-entry cooldown to the REAL close time and the
+                    # trade's timeframe.  Previously close_time was omitted and
+                    # candles_since_entry hard-coded to 0, so the cooldown math
+                    # used a meaningless input.
                     closed = SimpleNamespace(
                         pair=symbol,
                         direction=direction,
                         re_entry_eligible=True,
+                        close_time=datetime.now(timezone.utc),
+                        entry_timeframe="M5",
                         candles_since_entry=0,
                     )
                     opp = ctx.re_entry_manager.check_re_entry(closed, m5_df)

@@ -132,6 +132,41 @@ class TestEntryGateScore:
         assert passed is True
 
 
+class _FakeTuner:
+    def __init__(self, offset: float):
+        self._offset = offset
+
+    def offset(self, family: str) -> float:
+        return self._offset if family == "entry_engine" else 0.0
+
+
+class TestEntryGateTunerWiring:
+    """GateTuner learned offset must reach the LIVE entry gate (audit Part 2)."""
+
+    def test_tuner_offset_lowers_bar(self):
+        cfg = EntryConfig(min_entry_score=85, watchlist_score=70)
+        # Offset -3 lowers the bar to 82, so a score-83 setup now passes.
+        gate = EntryGate(config=cfg, gate_tuner=_FakeTuner(-3.0))
+        passed, results = gate.validate_all(**_defaults(score=83))
+        score_gate = [r for r in results if r.gate_name == "score_minimum"][0]
+        assert score_gate.passed is True
+
+    def test_tuner_offset_never_below_watchlist_floor(self):
+        cfg = EntryConfig(min_entry_score=72, watchlist_score=70)
+        # Even a large (out-of-envelope) offset can't drop below the floor.
+        gate = EntryGate(config=cfg, gate_tuner=_FakeTuner(-50.0))
+        passed, results = gate.validate_all(**_defaults(score=69))
+        score_gate = [r for r in results if r.gate_name == "score_minimum"][0]
+        assert score_gate.passed is False
+        assert "minimum 70" in score_gate.reason
+
+    def test_no_tuner_uses_base_threshold(self):
+        cfg = EntryConfig(min_entry_score=85)
+        gate = EntryGate(config=cfg)  # no tuner
+        passed, _ = gate.validate_all(**_defaults(score=83))
+        assert passed is False
+
+
 class TestEntryGateRiskReward:
     def test_rr_below_1_fails(self):
         gate = EntryGate()

@@ -513,3 +513,31 @@ class TestLosingPatternGate:
         # Same pair but a different session → the 2-dim pattern does not match.
         blocked, _ = opt.is_losing_pattern("NZDJPY", "RANGING", "LONDON", "SWEEP")
         assert blocked is False
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Trade-history provider (learner data pipeline)
+# ──────────────────────────────────────────────────────────────────────────
+
+class TestTradeHistoryProvider:
+    def test_no_provider_returns_empty(self):
+        opt = AdaptiveOptimizer()
+        assert opt.get_trade_history() == []
+
+    def test_provider_returns_trades(self):
+        opt = AdaptiveOptimizer()
+        trades = [_make_trade(pnl=12.0), _make_trade(pnl=-8.0)]
+        opt.set_trade_history_provider(lambda: trades)
+        out = opt.get_trade_history()
+        assert len(out) == 2
+        assert out[0]["pnl"] == 12.0
+
+    def test_failing_provider_returns_empty_not_raises(self):
+        opt = AdaptiveOptimizer()
+
+        def _boom():
+            raise RuntimeError("journal down")
+
+        opt.set_trade_history_provider(_boom)
+        # Must never propagate — a degraded history source cannot break tuning.
+        assert opt.get_trade_history() == []
