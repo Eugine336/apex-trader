@@ -2845,14 +2845,35 @@ class LearningGovernanceConfig:
     path directly; the :class:`adaptive.recommendations.RecommendationGateway`
     is the authorisation boundary.
 
-    ``governance_required`` defaults to ``False`` so every recommendation is
-    auto-approved — i.e. behaviour is identical to applying the learner's change
-    directly. Phase 7 (Governance) flips this to ``True`` and injects a real
-    authoriser, at which point a recommendation only takes effect once approved.
+    ``governance_required`` defaults to ``True`` (Phase 7): a real authoriser
+    (the :class:`governance.division.GovernanceDivision`) is injected and every
+    recommendation must pass through it.  The authoriser is permissive-but-
+    bounded, so the system still behaves identically to applying the learner's
+    change directly — it only gains an explicit authorisation gate that rejects
+    pathological values.  When no authoriser is wired the gateway still
+    auto-approves, so this flag is safe even if Governance fails to construct.
     """
 
-    governance_required: bool = False
+    governance_required: bool = True
     recommendation_history_limit: int = 500
+    # Governance authorisation bounds (behaviour-neutral defaults — wide enough
+    # to authorise everything the learners emit today, tight enough to reject
+    # pathological values the learners never produce).
+    max_size_multiplier: float = 5.0
+    min_size_multiplier: float = 0.0
+    max_weight_multiplier: float = 10.0
+    # Toxic module-pair enforcement: when True, Governance shadows the weaker
+    # module of a toxic pair reported by the InteractionAnalyzer. Off by default
+    # so deploying Governance changes no live behaviour.
+    enforce_toxic_pairs: bool = False
+    # Module-promotion lifecycle thresholds (SHADOW→VALIDATION→LIMITED→FULL).
+    promotion_validation_min_signals: int = 20
+    promotion_validation_min_accuracy: float = 0.50
+    promotion_limited_min_signals: int = 40
+    promotion_limited_min_accuracy: float = 0.52
+    promotion_full_min_signals: int = 80
+    promotion_full_min_accuracy: float = 0.55
+    promotion_full_min_marginal_r: float = 0.0
 
 
 @dataclass

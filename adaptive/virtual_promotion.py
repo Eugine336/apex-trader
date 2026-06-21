@@ -85,6 +85,12 @@ class VirtualSignalManager(TuningGuardMixin):
         self._signal_discovery = signal_discovery
         self._emitter_feedback = emitter_feedback
         self._counterfactual = counterfactual
+        # Optional Governance (Department ⑧) authority. When wired, a virtual
+        # module may only be promoted to live (ACTIVE) weight once Governance
+        # authorises it — closing the self-promotion void. None ⇒ unchanged
+        # (the manager's own thresholds still apply); behaviour-neutral while
+        # virtual promotion is disabled, which is the default.
+        self._governance = None
         self._last_result: Optional[VirtualLifecycleResult] = None
         self._last_eval_ts: float = 0.0
 
@@ -98,6 +104,15 @@ class VirtualSignalManager(TuningGuardMixin):
 
     def set_counterfactual(self, counterfactual) -> None:
         self._counterfactual = counterfactual
+
+    def set_governance(self, governance) -> None:
+        """Inject (or clear) the Governance authority that signs off promotions.
+
+        When wired, :meth:`_promote_eligible` routes every shadow→active
+        promotion through ``governance.authorize_promotion`` and only promotes
+        on an AUTHORIZED verdict. No-op effect while virtual promotion is
+        disabled (the default), so wiring this is behaviour-neutral."""
+        self._governance = governance
 
     @property
     def enabled(self) -> bool:
@@ -227,6 +242,13 @@ class VirtualSignalManager(TuningGuardMixin):
             marginal_r = float(cf.get("mr_per_trade", 0.0)) if cf else 0.0
             if marginal_r < min_marginal_r:
                 continue
+            # Governance sign-off (Department ⑧): a virtual module may not gain
+            # live (ACTIVE) weight without Governance authorisation. The
+            # registry's ``promote`` grants the module's full configured weight,
+            # so this is a request for FULL authority. No-op when no Governance
+            # is wired (behaviour-neutral).
+            if not self._governance_authorizes(rec.name, accuracy, n, marginal_r, cf):
+                continue
             if self._registry.promote(
                 rec.name, weight=initial_weight, total_trades=total_trades,
                 reason=(
@@ -317,6 +339,40 @@ class VirtualSignalManager(TuningGuardMixin):
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[virtual] cf row parse failed: {}", exc)
         return out
+
+    def _governance_authorizes(
+        self, name: str, accuracy: float, signals: int, marginal_r: float,
+        cf: Optional[dict],
+    ) -> bool:
+        """Whether Governance signs off promoting ``name`` to live weight.
+
+        Returns True when no Governance is wired (behaviour-neutral). When one
+        is wired, the promotion (which grants full configured weight) is
+        evaluated against the FULL-authority bar; fail-closed (no promotion) on
+        any error so a virtual module can never reach live weight without an
+        explicit AUTHORIZED verdict."""
+        gov = self._governance
+        authorize = getattr(gov, "authorize_promotion", None) if gov is not None else None
+        if not callable(authorize):
+            return True
+        try:
+            from governance.models import PromotionStage
+
+            metrics = {
+                "accuracy": float(accuracy),
+                "sample_size": int(signals),
+                "marginal_r": float(marginal_r),
+                "better_off_without": (
+                    bool(cf.get("better_off_without", False)) if cf else False
+                ),
+            }
+            # Promotion to full weight ⇒ request FULL authority (one rung above
+            # LIMITED), so the strictest lifecycle bar applies.
+            verdict = authorize(name, PromotionStage.LIMITED, metrics)
+            return bool(getattr(verdict, "approved", False))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[virtual] governance authorise failed for {}: {}", name, exc)
+            return False
 
     # ── Dashboard ─────────────────────────────────────────────────────────
 

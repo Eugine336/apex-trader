@@ -10,17 +10,18 @@ This module defines that boundary:
 * :class:`LearningRecommendation` — the uniform, audit-friendly object every
   learner emits instead of reaching into the live path.
 * :class:`RecommendationGateway` — the single chokepoint a recommendation passes
-  through.  Until Governance (Phase 7) installs a real authoriser, the gateway
-  **auto-approves** every recommendation, so wiring a learner through it is a
-  pure contract change with **zero behaviour change**.  Phase 7 flips
-  ``governance_required`` to ``True`` and injects an authoriser; from then on a
-  recommendation only takes effect once Governance approves it.
+  through.  Governance (Phase 7) installs an authoriser and the gateway now
+  requires it by default.  Until an authoriser is injected the gateway
+  **auto-approves** every recommendation, so wiring a learner through it stays a
+  pure contract change with **zero behaviour change**; once Governance injects
+  its (permissive-but-bounded) authoriser the system still behaves identically —
+  it only gains an explicit authorisation gate that rejects pathological values.
 
 Design properties:
 
-* **Behaviour-neutral by default.**  ``governance_required=False`` (the default)
-  ⇒ every ``submit`` returns ``APPROVED`` ⇒ identical behaviour to applying the
-  mutation directly.
+* **Behaviour-neutral by default.**  No authoriser wired (or
+  ``governance_required=False``) ⇒ every ``submit`` returns ``APPROVED`` ⇒
+  identical behaviour to applying the mutation directly.
 * **Fail-open is never silent.**  If an injected authoriser raises, the gateway
   records the fault and falls back to the configured default decision (approve
   while governance is not yet required, reject once it is) — and logs it.
@@ -144,7 +145,7 @@ class RecommendationGateway:
     def __init__(
         self,
         *,
-        governance_required: bool = False,
+        governance_required: bool = True,
         authorizer: Optional[Authorizer] = None,
         history_limit: int = 500,
     ) -> None:

@@ -1595,6 +1595,25 @@ class EventDrivenSystem:
                     exc,
                 )
 
+        # ── Governance Division readiness (Department 8) ─────────────
+        # Governance is constructed in SystemContext.create() and installed as
+        # the authoriser on the Learning→Governance RecommendationGateway there
+        # (Learning recommends → Governance authorises → behaviour changes). No
+        # runtime binding is needed here — the enforcement arms (ModuleGovernor,
+        # TunerAgent) are injected at construction — so the spine only confirms
+        # the authoriser is live for visibility. Never raises.
+        if ctx is not None and ctx.governance is not None:
+            try:
+                gw = ctx.recommendation_gateway
+                logger.info(
+                    "[event-driven] Governance Division active — "
+                    "recommendation authoriser={}, governance_required={}",
+                    bool(gw is not None and getattr(gw, "has_authorizer", False)),
+                    bool(gw is not None and getattr(gw, "governance_required", False)),
+                )
+            except Exception as exc:
+                logger.debug("[event-driven] governance readiness log failed: {}", exc)
+
         # ── Background loops ─────────────────────────────────────────
         # Dedicated bounded pool so the entry path (blocking broker I/O) runs
         # off the tick-poller / EventBus-publishing thread — otherwise each

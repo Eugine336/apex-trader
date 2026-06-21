@@ -122,7 +122,8 @@ class TestGatewayGovernance:
         assert "authoriser error" in decision.reason
 
     def test_set_governance_required_toggles_behaviour(self):
-        gw = RecommendationGateway(authorizer=lambda r: False)
+        # Start explicitly not-required (the default is now True post-Phase 7).
+        gw = RecommendationGateway(governance_required=False, authorizer=lambda r: False)
         assert gw.is_approved(_rec()) is True       # not required yet
         gw.set_governance_required(True)
         assert gw.is_approved(_rec()) is False      # now enforced

@@ -44,6 +44,7 @@ if TYPE_CHECKING:
     from decision.governor import RiskGovernor
     from decision.journal import DecisionJournal
     from decision.situation import SituationEngine
+    from governance.division import GovernanceDivision
     from governor.portfolio_governor import PortfolioGovernor
     from management.opportunity_executor import OpportunityExecutor
     from platforms.platform_manager import PlatformManager
@@ -98,6 +99,9 @@ class SystemContext:
 
     # ── Compliance (Department 3 — pure permit layer) ─────────────────
     compliance: Optional[ComplianceDivision] = None
+
+    # ── Governance (Department 8 — authorise Learning + contain) ──────
+    governance: Optional["GovernanceDivision"] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
     opportunity_executor: Optional[OpportunityExecutor] = None
@@ -650,6 +654,45 @@ class SystemContext:
         except Exception as exc:
             logger.warning("[SystemContext] TunerAgent init failed: {}", exc)
 
+        # ── GovernanceDivision (Department 8 — authorise + contain) ──
+        # Learning recommends; Governance authorises. Wired as the authoriser on
+        # the RecommendationGateway and given the enforcement arms: the
+        # ModuleGovernor (to shadow a harmful module) and the TunerAgent (to
+        # freeze a runaway tunable). Permissive-but-bounded by default, so
+        # turning governance on is behaviour-neutral — it only adds the explicit
+        # gate. If construction fails the gateway keeps no authoriser and
+        # auto-approves (fail-safe — trading is never blocked by a governance
+        # wiring fault).
+        try:
+            from governance.division import GovernanceDivision as _Governance
+
+            lg_cfg = getattr(config, "learning_governance", None)
+            ctx.governance = _Governance(
+                module_governor=ctx.module_governor,
+                tuner_agent=ctx.tuner_agent,
+                min_size_multiplier=getattr(lg_cfg, "min_size_multiplier", 0.0) if lg_cfg else 0.0,
+                max_size_multiplier=getattr(lg_cfg, "max_size_multiplier", 5.0) if lg_cfg else 5.0,
+                max_weight_multiplier=getattr(lg_cfg, "max_weight_multiplier", 10.0) if lg_cfg else 10.0,
+                enforce_toxic_pairs=getattr(lg_cfg, "enforce_toxic_pairs", False) if lg_cfg else False,
+                validation_min_signals=getattr(lg_cfg, "promotion_validation_min_signals", 20) if lg_cfg else 20,
+                validation_min_accuracy=getattr(lg_cfg, "promotion_validation_min_accuracy", 0.50) if lg_cfg else 0.50,
+                limited_min_signals=getattr(lg_cfg, "promotion_limited_min_signals", 40) if lg_cfg else 40,
+                limited_min_accuracy=getattr(lg_cfg, "promotion_limited_min_accuracy", 0.52) if lg_cfg else 0.52,
+                full_min_signals=getattr(lg_cfg, "promotion_full_min_signals", 80) if lg_cfg else 80,
+                full_min_accuracy=getattr(lg_cfg, "promotion_full_min_accuracy", 0.55) if lg_cfg else 0.55,
+                full_min_marginal_r=getattr(lg_cfg, "promotion_full_min_marginal_r", 0.0) if lg_cfg else 0.0,
+                history_limit=int(getattr(lg_cfg, "recommendation_history_limit", 500) if lg_cfg else 500),
+            )
+            # Install Governance as the authoriser on the Learning→Governance
+            # gateway and require authorisation (per config; default on).
+            if ctx.recommendation_gateway is not None:
+                ctx.recommendation_gateway.set_authorizer(ctx.governance.authorize)
+                ctx.recommendation_gateway.set_governance_required(
+                    bool(getattr(lg_cfg, "governance_required", True) if lg_cfg else True)
+                )
+        except Exception as exc:
+            logger.warning("[SystemContext] GovernanceDivision init failed: {}", exc)
+
         logger.info(
             "[SystemContext] learning layer initialized — outcome_fb={} "
             "ledger={} emitter_fb={} vote_cal={} mod_gov={} post_close={} "
@@ -785,6 +828,20 @@ class SystemContext:
                     emitter_feedback=ctx.emitter_feedback,
                     counterfactual=ctx.counterfactual_engine,
                 )
+                # Governance signs off virtual-module promotions (no module
+                # reaches live weight without authorisation). No-op while
+                # virtual promotion is disabled (default) — behaviour-neutral.
+                if ctx.governance is not None:
+                    try:
+                        ctx.virtual_signal_manager.set_governance(ctx.governance)
+                        ctx.governance.bind_runtime(
+                            virtual_registry=ctx.virtual_module_registry
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[SystemContext] VirtualSignalManager→governance wire failed: {}",
+                            exc,
+                        )
         except Exception as exc:
             logger.warning("[SystemContext] VirtualSignalManager init failed: {}", exc)
 
