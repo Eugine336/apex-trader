@@ -531,6 +531,14 @@ class PlatformManager:
         stake_usd: Optional[float] = None,  # Deriv only — risk amount in USD
         idempotency_key: str = "",
     ) -> OrderResult:
+        """Place a market entry. **Executor-only broker mutator.**
+
+        The Execution Division (``ActionExecutor``) is the sole intended
+        caller — it is the only path that enforces the RiskGate + circuit
+        breaker before a broker write.  Do not call this directly from
+        Intelligence / Consensus / Compliance / Portfolio / Operations code;
+        emit an ``Intent`` and route it through the executor instead.
+        """
         connector = self.get_connector(symbol)
         platform = "mt5" if isinstance(connector, MT5Connector) else "deriv"
 
@@ -573,6 +581,11 @@ class PlatformManager:
         comment: str = "",
         idempotency_key: str = "",
     ) -> OrderResult:
+        """Place a pending (limit/stop) entry. **Executor-only broker mutator.**
+
+        Intended to be driven by the Execution Division. Other departments
+        should emit an ``Intent`` rather than calling this directly.
+        """
         connector = self.get_connector(symbol)
         platform = "mt5" if isinstance(connector, MT5Connector) else "deriv"
         with self._broker_write_lock:
@@ -599,6 +612,10 @@ class PlatformManager:
         new_sl: Optional[float] = None,
         new_tp: Optional[float] = None,
     ) -> bool:
+        """Modify a position's SL/TP. **Executor-only broker mutator.**
+
+        Intended to be driven by the Execution Division via an ``Intent``.
+        """
         # platform string may be "mt5", "mt5_0", "mt5_1", or "deriv"
         connector = self._connector_by_platform_str(platform)
         with self._broker_write_lock:
@@ -610,6 +627,10 @@ class PlatformManager:
         platform: str,
         lots: Optional[float] = None,
     ) -> CloseResult:
+        """Close (or partially close) a position. **Executor-only broker mutator.**
+
+        Intended to be driven by the Execution Division via an ``Intent``.
+        """
         connector = self._connector_by_platform_str(platform)
         with self._broker_write_lock:
             return connector.close_order(order_id, lots)

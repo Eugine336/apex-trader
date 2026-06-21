@@ -1310,16 +1310,12 @@ class EventDrivenSystem:
             broker=self._pm,  # PlatformManager satisfies BrokerPort
             config=ExecutorConfig(),
         )
-        # Phase 1 (single execution plane): entries flow through the shared
+        # Single execution plane: ALL entries flow through the shared
         # ActionExecutor (RiskGate OPEN validation → CircuitBreaker →
         # broker.execute_entry), serialized on the same executor lock as
-        # management actions, instead of calling PlatformManager.execute_entry
-        # directly on the tick thread.  Live by default; set
-        # APEX_ED_ENTRY_VIA_EXECUTOR=0 as a kill switch to fall back to the
-        # direct broker path.
-        self._entry_via_executor = os.environ.get(
-            "APEX_ED_ENTRY_VIA_EXECUTOR", "1"
-        ).strip().lower() in ("1", "true", "yes", "on")
+        # management actions.  The Execution Division is the sole broker
+        # gateway — there is no direct PlatformManager.execute_entry fallback,
+        # so no entry can bypass the RiskGate or circuit breaker.
         self._mgmt_store = ManagementStateStore(db_path="data/management_state.db")
         self._evaluator = PositionEvaluator(
             platform_manager=self._pm,
@@ -4575,53 +4571,40 @@ class EventDrivenSystem:
             _comment = build_order_comment("APEX", idem_key, score=conviction)
             _stake = size_result.stake_usd if pctx.uses_stake else None
 
-            # Phase 1 (single execution plane): route the entry through the
-            # shared ActionExecutor when enabled, otherwise use the direct
-            # broker call.  The executor path is built defensively — if the
-            # Intent.open factory is unavailable the entry falls back to the
-            # direct path *before* any broker call, so a flagged-on entry can
-            # never be dropped or double-sent.
-            open_intent = None
-            if self._entry_via_executor:
-                try:
-                    open_intent = Intent.open(
-                        symbol=symbol,
-                        direction=direction,
-                        lots=float(size_result.lots),
-                        entry_price=float(entry_price),
-                        sl=float(sl),
-                        tp=float(tp1),
-                        stake_usd=_stake,
-                        comment=_comment,
-                        idempotency_key=idem_key,
-                        source="event_driven",
-                        reason="entry_decision",
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[entry-via-executor] Intent.open unavailable, using "
-                        "direct path | {} {} | {}", symbol, direction, exc,
-                    )
-                    open_intent = None
-
-            if open_intent is not None:
-                exec_result = self._executor.execute(open_intent, {})
-                result = (
-                    exec_result.broker_response
-                    if exec_result.broker_response is not None
-                    else exec_result
-                )
-            else:
-                result = self._pm.execute_entry(
+            # Single execution plane: the entry is routed through the shared
+            # ActionExecutor — the sole broker gateway (RiskGate OPEN
+            # validation → CircuitBreaker → broker.execute_entry).  There is
+            # no direct PlatformManager fallback: if the Intent.open factory
+            # is unavailable the entry is aborted *before* any broker call so
+            # a flagged entry can never bypass the RiskGate or circuit breaker.
+            try:
+                open_intent = Intent.open(
                     symbol=symbol,
                     direction=direction,
-                    lots=size_result.lots,
-                    sl=sl,
-                    tp=tp1,
+                    lots=float(size_result.lots),
+                    entry_price=float(entry_price),
+                    sl=float(sl),
+                    tp=float(tp1),
                     stake_usd=_stake,
                     comment=_comment,
                     idempotency_key=idem_key,
+                    source="event_driven",
+                    reason="entry_decision",
                 )
+            except Exception as exc:
+                logger.error(
+                    "EVENT-DRIVEN ORDER ABORTED | {} {} | Intent.open "
+                    "unavailable, refusing to bypass execution plane | {}",
+                    symbol, direction, exc,
+                )
+                return
+
+            exec_result = self._executor.execute(open_intent, {})
+            result = (
+                exec_result.broker_response
+                if exec_result.broker_response is not None
+                else exec_result
+            )
 
             if result.success:
                 logger.info(

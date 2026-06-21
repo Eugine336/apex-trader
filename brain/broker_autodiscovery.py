@@ -146,24 +146,19 @@ class BrokerAutoDiscovery:
             self.broker_name, reason,
         )
 
-        try:
-            import MetaTrader5 as mt5
-        except ImportError:
-            logger.warning("MetaTrader5 not installed — skipping auto-discovery")
+        # Broker I/O is owned by the Execution Division (platforms/mt5) — pull
+        # the full broker symbol list through the gateway helper instead of
+        # importing MetaTrader5 here.
+        from platforms.mt5.mt5_discovery import (
+            list_broker_symbols,
+            discover_symbol_constraints,
+        )
+
+        broker_symbol_names = list_broker_symbols()
+        if not broker_symbol_names:
+            logger.warning("No broker symbols discovered — skipping auto-discovery")
             return {}
 
-        if not mt5.initialize():
-            logger.warning("MT5 not connected — skipping auto-discovery")
-            return {}
-
-        # Pull every symbol the broker offers
-        all_broker_symbols = mt5.symbols_get()
-        if not all_broker_symbols:
-            logger.warning("MT5 returned no symbols")
-            mt5.shutdown()
-            return {}
-
-        broker_symbol_names = [s.name for s in all_broker_symbols]
         logger.info(
             "MT5 broker '{}' has {} total symbols — matching against APEX registry ...",
             self.broker_name, len(broker_symbol_names),
@@ -172,24 +167,7 @@ class BrokerAutoDiscovery:
         overrides = self._match_all(broker_symbol_names)
 
         # ── Discover symbol constraints (stops_level, volume) per symbol ──
-        constraints: dict[str, dict] = {}
-        for apex_name, broker_symbol in overrides.items():
-            # symbol_info() returns None if the symbol isn't selected in
-            # Market Watch — call symbol_select() first to force it visible.
-            mt5.symbol_select(broker_symbol, True)
-            info = mt5.symbol_info(broker_symbol)
-            if info is not None:
-                constraints[broker_symbol] = {
-                    "volume_min":    round(info.volume_min, 8),
-                    "volume_max":    round(info.volume_max, 2),
-                    "volume_step":   round(info.volume_step, 8),
-                    "stops_level":   int(info.trade_stops_level),
-                    "digits":        int(info.digits),
-                    "point":         float(info.point),
-                    "contract_size": float(info.trade_contract_size),
-                }
-
-        mt5.shutdown()
+        constraints = discover_symbol_constraints(list(overrides.values()))
 
         if constraints:
             logger.info(
@@ -283,7 +261,6 @@ class BrokerAutoDiscovery:
                 s = s[len(prefix):]
                 break
         # Strip trailing N only if it follows a number (BOOM500N → BOOM500)
-        import re
         s = re.sub(r"(\d+)N$", r"\1", s)
         # Strip known suffixes longest-first — only if core remains >= 4 chars
         for suffix in sorted(_STRIP_SUFFIXES, key=len, reverse=True):
@@ -535,22 +512,15 @@ def run_autodiscovery(mt5_broker_name: str = "auto", force: bool = False) -> Non
     Writes all broker JSONs. Silent if configs are fresh.
     """
 
-    # ── MT5 discovery ─────────────────────────────────────────────────────
-    try:
-        import MetaTrader5 as mt5
-        if mt5.initialize():
-            info = mt5.terminal_info()
-            if info and mt5_broker_name == "auto":
-                # Use company name as broker identifier — sanitise to filename safe
-                raw = getattr(info, "company", "unknown")
-                broker_slug = re.sub(r"[^a-z0-9]", "_", raw.lower()).strip("_")
-                broker_slug = re.sub(r"_+", "_", broker_slug)
-                mt5_broker_name = broker_slug or "mt5_broker"
-                logger.info("MT5 broker detected: '{}' → slug: '{}'", raw, broker_slug)
-            mt5.shutdown()
-    except Exception as exc:
-        logger.warning("[autodiscovery] MT5 broker detection failed: {}", exc)
-        pass
+    # ── MT5 broker detection ──────────────────────────────────────────────
+    # Broker I/O is owned by the Execution Division (platforms/mt5) — detect
+    # the broker slug through the gateway helper instead of importing
+    # MetaTrader5 here.
+    if mt5_broker_name == "auto":
+        from platforms.mt5.mt5_discovery import detect_broker_slug
+
+        detected = detect_broker_slug()
+        mt5_broker_name = detected or "auto"
 
     if mt5_broker_name and mt5_broker_name != "auto":
         BrokerAutoDiscovery(mt5_broker_name).run(force=force)
