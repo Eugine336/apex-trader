@@ -38,6 +38,7 @@ if TYPE_CHECKING:
     from brain.outcome_feedback import OutcomeFeedback
     from brain.regime_detector import SystemVolatilityMonitor
     from brain.session_engine import NewsGuard, SessionEngine
+    from compliance.division import ComplianceDivision
     from config import AppConfig
     from decision.engine import DecisionEngine
     from decision.governor import RiskGovernor
@@ -89,6 +90,9 @@ class SystemContext:
     decision_journal: Optional[DecisionJournal] = None
     session_engine: Optional[SessionEngine] = None
     news_guard: Optional[NewsGuard] = None
+
+    # ── Compliance (Department 3 — pure permit layer) ─────────────────
+    compliance: Optional[ComplianceDivision] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
     opportunity_executor: Optional[OpportunityExecutor] = None
@@ -252,6 +256,27 @@ class SystemContext:
             ctx.news_guard = _NewsGuard()
         except Exception as exc:
             logger.warning("[SystemContext] NewsGuard init failed: {}", exc)
+
+        # ── ComplianceDivision (Department 3 — pure permit layer) ────
+        # Built with the subsystem references it owns.  The broker/platform-
+        # bound callables (market-open, broker-health, live spread) are bound
+        # later by the event-driven bootstrap via ``compliance.bind_runtime``,
+        # since those depend on the PlatformManager + broker-truth helpers.
+        try:
+            from compliance.division import ComplianceDivision as _Compliance
+
+            gcfg = getattr(config, "governor", None)
+            max_pos = int(getattr(gcfg, "max_open_positions", 8)) if gcfg else 8
+            ctx.compliance = _Compliance(
+                drawdown_guard=ctx.drawdown_guard,
+                portfolio_risk_sm=ctx.portfolio_risk_sm,
+                account_risk=ctx.account_risk,
+                news_guard=ctx.news_guard,
+                spread_monitor=getattr(ctx.risk_engine, "spread_monitor", None),
+                max_open_positions=max_pos,
+            )
+        except Exception as exc:
+            logger.warning("[SystemContext] ComplianceDivision init failed: {}", exc)
 
         # ── SituationEngine ─────────────────────────────────────────
         try:

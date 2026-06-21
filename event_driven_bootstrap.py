@@ -26,6 +26,11 @@ from loguru import logger
 
 from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open, is_session_gated, Platform
 from brain.world_model import WorldModelStore, build_world_model
+from compliance import (
+    ComplianceAccount,
+    ComplianceBook,
+    ComplianceCandidate,
+)
 from core.system_context import SystemContext
 from persistence.event_store import get_event_store
 from persistence import domain_events as DE
@@ -1358,6 +1363,26 @@ class EventDrivenSystem:
             # backtest engine and the live EntryGate ignored it.
             gate_tuner=(ctx.gate_tuner if ctx is not None else None),
         )
+
+        # ── Compliance Division runtime binding ──────────────────────
+        # The ComplianceDivision is constructed in SystemContext.create()
+        # with the subsystem references it owns; bind the broker/platform-
+        # dependent callables here (the bootstrap holds the PlatformManager
+        # and the broker-truth helpers).  This makes Compliance the single
+        # authoritative permit layer consulted in ``_on_entry_decision``.
+        if ctx is not None and ctx.compliance is not None:
+            try:
+                ctx.compliance.bind_runtime(
+                    is_market_open=self._check_market_open,
+                    is_broker_available=self._is_broker_available,
+                    get_spread_pips=self._get_spread_pips,
+                    spread_monitor=getattr(ctx.risk_engine, "spread_monitor", None),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[event-driven] ComplianceDivision runtime binding failed: {}",
+                    exc,
+                )
 
         # ── Background loops ─────────────────────────────────────────
         # Dedicated bounded pool so the entry path (blocking broker I/O) runs
@@ -3486,6 +3511,27 @@ class EventDrivenSystem:
             return False
         return True
 
+    def _is_broker_available(self, symbol: str) -> bool:
+        """Broker-health permit signal for the ComplianceDivision.
+
+        True when the connector routing ``symbol`` reports a live connection.
+        When the connector or its state can't be determined we return True
+        (the downstream ActionExecutor circuit breaker is the authoritative
+        execution guard — Compliance should not false-block on an unknown).
+        """
+        try:
+            connector = self._pm.get_connector(symbol)
+        except Exception:
+            return True
+        is_conn = getattr(connector, "is_connected", None)
+        if not callable(is_conn):
+            return True
+        try:
+            return bool(is_conn())
+        except Exception as exc:
+            logger.debug("[broker-health] {} is_connected check failed: {}", symbol, exc)
+            return True
+
     def _check_news_clear(self, symbol: str) -> bool:
         """NewsGuard callback for EntryOrchestrator gate."""
         ctx = self._ctx
@@ -3655,13 +3701,18 @@ class EventDrivenSystem:
     def _on_entry_decision(self, decision: dict[str, Any]) -> None:
         """Handle entry decisions from EntryOrchestrator.
 
-        Checks all risk subsystems before executing an order:
-        1. DrawdownGuard — FROZEN mode blocks all entries
-        2. PortfolioRiskStateMachine — DEFENSIVE+ blocks new entries
-        3. PortfolioGovernor — max positions, daily loss, concentration
-        4. AccountRiskManager — per-account daily loss cap / heat
-        5. CorrelationEngine — cluster exposure (replaces simple currency count)
-        6. PositionSizer — compute lot size / stake
+        Permit / sizing pipeline before an order is placed:
+        0. Operational guards — BE-stop cooldown, system-paused.
+        1. ComplianceDivision — the single authoritative permit layer
+           (market-open, broker-available, news, spread, duplicate, daily-loss
+           [per-account silo, one source], heat, DrawdownGuard FROZEN,
+           max-positions, PortfolioRisk DEFENSIVE+).  Fail-CLOSED.
+        2. PortfolioGovernor — portfolio CONCENTRATION only (currency / sector
+           / correlated), via ``check_exposure_only`` (Portfolio Division).
+        3. CorrelationEngine — cluster exposure (Portfolio Division).
+        4. RiskEngine EV veto — edge/profitability judgement (fails open).
+        5. RL authority, DecisionEngine, RiskGovernor — conviction + graded review.
+        6. PositionSizer — compute lot size / stake.
         """
         symbol = decision.get("symbol", "")
         direction = decision.get("direction", "")
@@ -3700,54 +3751,58 @@ class EventDrivenSystem:
                 logger.info("EVENT-DRIVEN ENTRY SKIPPED | {} — system paused", symbol)
                 return
 
-            # ── Gate 1: DrawdownGuard ────────────────────────────────
-            if ctx is not None and ctx.drawdown_guard is not None:
-                try:
-                    from brain.drawdown_guard import DrawdownMode
-                    dd_status = ctx.drawdown_guard.get_status()
-                    if dd_status.mode == DrawdownMode.FROZEN.value:
-                        logger.warning(
-                            "EVENT-DRIVEN ENTRY BLOCKED | {} — DrawdownGuard FROZEN "
-                            "(daily loss limit hit)", symbol,
-                        )
-                        return
-                    if dd_status.mode == DrawdownMode.RECOVERY.value:
-                        logger.info(
-                            "EVENT-DRIVEN ENTRY NOTE | {} — DrawdownGuard RECOVERY mode", symbol,
-                        )
-                except Exception as exc:
-                    logger.warning(
-                        "EVENT-DRIVEN ENTRY BLOCKED | {} — DrawdownGuard check "
-                        "errored, failing closed: {}", symbol, exc,
-                    )
-                    return
-
-            # ── Gate 2: PortfolioRiskStateMachine ────────────────────
-            if ctx is not None and ctx.portfolio_risk_sm is not None:
-                try:
-                    from risk.portfolio_risk_state import PortfolioRiskState
-                    sm_state = ctx.portfolio_risk_sm.state
-                    if sm_state in (
-                        PortfolioRiskState.DEFENSIVE,
-                        PortfolioRiskState.REDUCING,
-                        PortfolioRiskState.EMERGENCY,
+            # ── Compliance Division: single authoritative permit ─────
+            # Department 3 — the ONE pure permit layer.  Consolidates the
+            # necessary vetoes (market-open, broker-available, news, spread,
+            # duplicate, daily-loss [single source: per-account silo],
+            # per-account heat, DrawdownGuard FROZEN, max-positions,
+            # PortfolioRisk DEFENSIVE+) into a single fail-CLOSED call that
+            # collects ALL rejection reasons.  Replaces the previously
+            # scattered inline Gates 1/2/4 + the duplicate/spread sub-checks
+            # of the old fail-OPEN Gate 5c.
+            acct = ""
+            try:
+                if ctx is not None:
+                    acct = ctx.account_key(symbol, self._pm)
+                    if (
+                        ctx.account_risk is not None
+                        and balance and balance > 0
                     ):
-                        logger.warning(
-                            "EVENT-DRIVEN ENTRY BLOCKED | {} — PortfolioRisk state={} "
-                            "(entries frozen)", symbol, sm_state.name,
-                        )
-                        return
-                except Exception as exc:
+                        ctx.account_risk.update_balance(acct, balance)
+            except Exception as exc:
+                logger.debug("[compliance] account-key/balance refresh failed: {}", exc)
+                acct = ""
+
+            if ctx is not None:
+                if ctx.compliance is None:
+                    # ctx exists but the permit layer failed to construct —
+                    # never trade without Compliance (fail-closed).
+                    logger.error(
+                        "EVENT-DRIVEN ENTRY BLOCKED | {} — Compliance Division "
+                        "unavailable (failing closed)", symbol,
+                    )
+                    return
+                verdict = ctx.compliance.permit(
+                    ComplianceCandidate(symbol=symbol, direction=direction),
+                    ComplianceBook(open_positions=open_positions),
+                    ComplianceAccount(account_key=acct, balance=balance or 0.0),
+                )
+                if verdict.rejected:
                     logger.warning(
-                        "EVENT-DRIVEN ENTRY BLOCKED | {} — PortfolioRiskSM check "
-                        "errored, failing closed: {}", symbol, exc,
+                        "EVENT-DRIVEN ENTRY BLOCKED | {} — Compliance: {}",
+                        symbol, "; ".join(verdict.reasons),
                     )
                     return
 
-            # ── Gate 3: PortfolioGovernor ────────────────────────────
+            # ── Gate 3: PortfolioGovernor — concentration only ───────
+            # Daily-loss + max-positions are now owned by the Compliance
+            # Division above (V7 — one daily-loss source).  The Governor here
+            # contributes ONLY its portfolio concentration analysis (currency
+            # / sector / correlated exposure), which the Portfolio Division
+            # will absorb in a later phase.
             if ctx is not None and ctx.portfolio_governor is not None:
                 try:
-                    verdict = ctx.portfolio_governor.check(
+                    verdict = ctx.portfolio_governor.check_exposure_only(
                         symbol=symbol,
                         direction=direction,
                         open_positions=open_positions,
@@ -3762,31 +3817,6 @@ class EventDrivenSystem:
                 except Exception as exc:
                     logger.warning(
                         "EVENT-DRIVEN ENTRY BLOCKED | {} — PortfolioGovernor check "
-                        "errored, failing closed: {}", symbol, exc,
-                    )
-                    return
-
-            # ── Gate 4: AccountRiskManager ───────────────────────────
-            if ctx is not None and ctx.account_risk is not None:
-                try:
-                    acct = ctx.account_key(symbol, self._pm)
-                    if balance and balance > 0:
-                        ctx.account_risk.update_balance(acct, balance)
-                    if ctx.account_risk.daily_loss_halted(acct):
-                        logger.warning(
-                            "EVENT-DRIVEN ENTRY BLOCKED | {} — AccountRisk: account {} "
-                            "daily loss cap hit", symbol, acct,
-                        )
-                        return
-                    if ctx.account_risk.heat_blocked(acct):
-                        logger.warning(
-                            "EVENT-DRIVEN ENTRY BLOCKED | {} — AccountRisk: account {} "
-                            "heat blocked", symbol, acct,
-                        )
-                        return
-                except Exception as exc:
-                    logger.warning(
-                        "EVENT-DRIVEN ENTRY BLOCKED | {} — AccountRisk check "
                         "errored, failing closed: {}", symbol, exc,
                     )
                     return
@@ -3843,54 +3873,14 @@ class EventDrivenSystem:
                         )
                         return
 
-            # ── Gate 5c: RiskEngine EV + duplicate-pair veto ─────────
-            # Reuse the RiskEngine's expected-value estimator and duplicate
-            # guard (the same logic in RiskEngine.assess) rather than sizing
-            # through assess() — the bootstrap owns its richer sizing chain.
-            # Now that the learner trade-history pipeline is wired (real
-            # recorded outcomes), the EV gate can actually fire.  Fully
-            # de-risking: any error fails OPEN here (other hard gates already
-            # ran), and an insufficient-history EV estimate never vetoes.
+            # ── Gate 5d: RiskEngine EV veto ──────────────────────────
+            # Duplicate-pair and adaptive-spread vetoes moved to the
+            # Compliance Division above (necessary permits, fail-closed).
+            # The expected-value veto remains here — it is an edge/profitability
+            # judgement (Portfolio/Learning territory), not a hard permit, so it
+            # deliberately fails OPEN (an insufficient-history EV never vetoes).
             if ctx is not None and ctx.risk_engine is not None:
                 try:
-                    # Explicit duplicate pair+direction veto.
-                    dup = False
-                    for pos in open_positions:
-                        if (
-                            getattr(pos, "symbol", "").upper() == symbol.upper()
-                            and getattr(pos, "direction", "").upper()
-                            == direction.upper()
-                        ):
-                            dup = True
-                            break
-                    if dup:
-                        logger.warning(
-                            "EVENT-DRIVEN ENTRY BLOCKED | {} — already have {} "
-                            "position (duplicate pair+direction)",
-                            symbol, direction,
-                        )
-                        return
-
-                    # Adaptive spread gate: block when the live spread is
-                    # abnormally wide vs this instrument's rolling average
-                    # (SpreadMonitor).  Distinct from EntryGate's static
-                    # multiplier — this catches per-instrument blow-outs.
-                    spread_mon = getattr(ctx.risk_engine, "spread_monitor", None)
-                    if spread_mon is not None:
-                        try:
-                            cur_spread = self._get_spread_pips(symbol)
-                            safe, why = spread_mon.is_spread_safe(symbol, cur_spread)
-                            if not safe:
-                                logger.warning(
-                                    "EVENT-DRIVEN ENTRY BLOCKED | {} — {}",
-                                    symbol, why,
-                                )
-                                return
-                        except Exception as exc:
-                            logger.debug(
-                                "[entry-risk] spread-monitor check skipped: {}", exc,
-                            )
-
                     ev_estimator = getattr(ctx.risk_engine, "ev_estimator", None)
                     trade_history = (
                         ctx.ml_adapter.get_trade_history()
