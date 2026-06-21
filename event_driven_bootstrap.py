@@ -70,6 +70,24 @@ def _struct_trend_conf(struct_by_tf: dict, tf: str) -> tuple[str, float]:
     return trend, float(getattr(sa, "confidence", 0.0) or 0.0)
 
 
+def _struct_event(struct_by_tf: dict, tf: str) -> str:
+    """Read the last structural event (BOS/CHOCH) for a timeframe from a
+    WorldModel's ``structure_by_tf()`` mapping of ``StructureAnalysis``.
+
+    Returns ``"NONE"`` when the timeframe is absent or has no event.  The
+    DecisionEngine's structure-integrity dimension keys off these BOS/CHOCH
+    strings (``BOS_BEARISH``/``CHOCH_BULLISH``/…) to tell whether market
+    structure has broken for or against an open position.
+    """
+    sa = struct_by_tf.get(tf)
+    if sa is None:
+        return "NONE"
+    ev = getattr(sa, "last_event", None)
+    if ev is None:
+        return "NONE"
+    return ev.value if hasattr(ev, "value") else str(ev)
+
+
 # ── Broker-truth field readers ───────────────────────────────────────
 # Open positions returned by the platform layer are broker ``PositionInfo``
 # objects (fields: ``pnl``, ``lots``, ``open_price``, ``current_price``,
@@ -674,6 +692,83 @@ class PositionEvaluator:
         """Suppress evaluation of a ticket for the given duration (seconds)."""
         self._suppressed_tickets[ticket] = _time.monotonic() + duration
 
+    def _management_micro_context(self, symbol: str, norm_dir: str) -> dict:
+        """Live M1 momentum + H1 candle context for the management DecisionEngine.
+
+        The strategic DecisionEngine management path scores a ``momentum``
+        dimension from M1 candle alignment + M1 structural events, and a
+        ``structure_integrity`` dimension that also reads the last H1 candle.
+        These inputs were never populated for open positions, so momentum was
+        pinned at its default and the regime read could not respond to live
+        price action.  This mirrors the entry-side M1 confirmation logic
+        (``entry/m1_confirmation.py``): last-5 closed-candle alignment for the
+        count and ``StructureEngine`` micro-structure for the event.
+
+        Returns the same safe defaults the ``TradeContext`` carries when data
+        is unavailable, so a missing/short feed never changes behaviour or
+        raises.  Reads go through the cached ``fetch_market_data`` (the M1@100
+        and H1@200 keys the entry/analysis planes already warm), so no extra
+        broker round-trips are added.
+        """
+        out: dict[str, Any] = {
+            "m1_aligned_count": 0,
+            "m1_event": "NONE",
+            "m1_trend": "UNKNOWN",
+            "h1_last_candle_bearish": None,
+            "h1_last_candle_doji": False,
+        }
+        is_long = norm_dir.upper() in ("BUY", "LONG")
+
+        # ── M1 momentum (alignment count + micro-structure event) ────────
+        try:
+            from brain.market_data_utils import drop_forming_bar
+            from brain.structure_engine import StructureEngine
+
+            m1_data = self._pm.fetch_market_data(symbol, ["M1"], 100)
+            m1_df = m1_data.get("M1") if m1_data else None
+            if m1_df is not None and len(m1_df) >= 5:
+                closed = drop_forming_bar(m1_df)
+                if closed is not None and len(closed) >= 5:
+                    last5 = closed.iloc[-5:]
+                    closes = last5["close"].values
+                    opens = last5["open"].values
+                    if is_long:
+                        aligned = sum(1 for c, o in zip(closes, opens) if c > o)
+                    else:
+                        aligned = sum(1 for c, o in zip(closes, opens) if c < o)
+                    out["m1_aligned_count"] = int(aligned)
+                    try:
+                        pip_size = self._safe_pip_size(symbol)
+                        engine = StructureEngine(swing_lookback=3, pip_size=pip_size)
+                        analysis = engine.analyze(closed.iloc[-min(len(closed), 100):])
+                        out["m1_event"] = analysis.last_event.value
+                        out["m1_trend"] = analysis.trend.value
+                    except Exception:
+                        pass
+        except Exception as exc:
+            logger.debug("[de-mgmt] M1 momentum read failed for {}: {}", symbol, exc)
+
+        # ── H1 last-closed-candle context (count matches analysis plane) ─
+        try:
+            from brain.market_data_utils import drop_forming_bar
+
+            h1_data = self._pm.fetch_market_data(symbol, ["H1"], 200)
+            h1_df = h1_data.get("H1") if h1_data else None
+            if h1_df is not None and len(h1_df) >= 2:
+                closed = drop_forming_bar(h1_df)
+                if closed is not None and len(closed) >= 1:
+                    last = closed.iloc[-1]
+                    o = float(last["open"])
+                    c = float(last["close"])
+                    rng = float(last["high"]) - float(last["low"])
+                    body = abs(c - o)
+                    out["h1_last_candle_bearish"] = c < o
+                    out["h1_last_candle_doji"] = rng > 0 and (body / rng) < 0.1
+        except Exception as exc:
+            logger.debug("[de-mgmt] H1 candle read failed for {}: {}", symbol, exc)
+
+        return out
+
     def shutdown(self) -> None:
         """Stop the per-symbol evaluation worker pool (called on system stop)."""
         try:
@@ -715,6 +810,12 @@ class PositionEvaluator:
             d1_trend, d1_conf = _struct_trend_conf(structure, "D1")
             h4_trend, h4_conf = _struct_trend_conf(structure, "H4")
             h1_trend, h1_conf = _struct_trend_conf(structure, "H1")
+            # Structural break events (BOS/CHOCH) per timeframe — feed the
+            # DecisionEngine's structure-integrity dimension so CLOSE can
+            # outscore HOLD when structure breaks against an open position.
+            d1_event = _struct_event(structure, "D1")
+            h4_event = _struct_event(structure, "H4")
+            h1_event = _struct_event(structure, "H1")
             score_hist = getattr(mgmt, "score_history", []) or []
             current_score = 0
             if wm is not None:
@@ -723,8 +824,10 @@ class PositionEvaluator:
                     if getattr(z, "direction", "").upper() == want_dir:
                         current_score = max(current_score, getattr(z, "conviction", 0))
             fast_opp = self._fast_opposition.get(order_id, 0)
-            _m1_aligned = 0
-            _m1_trend = "UNKNOWN"
+            # Live M1 momentum + H1 candle context (mirrors the entry-side M1
+            # confirmation). Un-freezes the momentum dimension, which was
+            # previously fed the static default for every open position.
+            micro = self._management_micro_context(symbol, norm_dir)
             session_name = "UNKNOWN"
             session_tradeable = True
             if ctx.session_engine is not None:
@@ -829,10 +932,18 @@ class PositionEvaluator:
                 eq_decay=eq_decay,
                 d1_trend=d1_trend,
                 d1_confidence=d1_conf,
+                d1_event=d1_event,
                 h4_trend=h4_trend,
                 h4_confidence=h4_conf,
+                h4_event=h4_event,
                 h1_trend=h1_trend,
                 h1_confidence=h1_conf,
+                h1_event=h1_event,
+                h1_last_candle_bearish=micro["h1_last_candle_bearish"],
+                h1_last_candle_doji=micro["h1_last_candle_doji"],
+                m1_trend=micro["m1_trend"],
+                m1_event=micro["m1_event"],
+                m1_aligned_count=micro["m1_aligned_count"],
                 fast_opposition_streak=fast_opp,
                 score_history=list(score_hist[-10:]),
                 open_trade_count=len(open_positions),
