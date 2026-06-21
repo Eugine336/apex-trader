@@ -293,6 +293,7 @@ def build_consensus(
     session_open_minutes: Optional[int] = None,
     currency_strength_analysis: Any = None,
     currency_pairs: Optional[dict[str, tuple[str, str]]] = None,
+    correlation_signal: Any = None,
     vote_calibrator: Any = None,
     module_governor: Any = None,
     win_rate_provider: Any = None,
@@ -301,9 +302,20 @@ def build_consensus(
 
     Reuses the same vote extractors and opportunity ranker the legacy scanner
     used, sourced from the WorldModel's already-computed analysis (structure,
-    volume, wyckoff, order blocks, FVGs) and optional raw-series inputs for
-    momentum/VWAP/liquidity/currency-strength when provided by the caller.
-    Each extractor is guarded.
+    volume, wyckoff, order blocks, FVGs, inducement) and optional raw-series
+    inputs for momentum/VWAP/volatility/liquidity/currency-strength when provided
+    by the caller. Each extractor is guarded.
+
+    The full analyst roster votes here so the consensus panel is complete:
+    structure, volume, wyckoff, order_block, fvg, liquidity, momentum, vwap,
+    currency_strength, **inducement**, **volatility**, and **correlation**.
+    Inducement reads its reversal direction straight off the WorldModel.
+    Volatility confirms the structural bias only when ATR is expanding (it
+    abstains in compression — a coiling market has no directional edge).
+    Correlation is intermarket *confirmation* (distinct from Portfolio's
+    exposure management) and abstains until a cross-pair ``correlation_signal``
+    is supplied — the per-symbol WorldModel carries none today, so it is
+    behaviour-neutral by default.
 
     The optional ``vote_calibrator`` and ``module_governor`` close the adaptive
     feedback loop on the vote panel itself: a module the
@@ -327,6 +339,9 @@ def build_consensus(
         vote_from_liquidity,
         vote_from_momentum,
         vote_from_vwap,
+        vote_from_inducement,
+        vote_from_volatility,
+        vote_from_correlation,
         decide_opportunities,
     )
 
@@ -403,6 +418,22 @@ def build_consensus(
     except Exception as exc:
         _warn_module_failure("consensus", "wyckoff", symbol, exc)
 
+    try:
+        ind_by_tf = wm.inducement_by_tf()
+        ia = (
+            ind_by_tf.get("M5")
+            or ind_by_tf.get("H1")
+            or next(iter(ind_by_tf.values()), None)
+        )
+        if ia is not None:
+            r = vote_from_inducement(ia)
+            _add_vote(
+                "inducement", r[0], r[1], 1.5,
+                evidence=getattr(r, "evidence", {}) or {},
+            )
+    except Exception as exc:
+        _warn_module_failure("consensus", "inducement", symbol, exc)
+
     if current_price and current_price > 0:
         try:
             obs = wm.all_order_blocks()
@@ -452,6 +483,15 @@ def build_consensus(
             )
         except Exception as exc:
             _warn_module_failure("consensus", "vwap", symbol, exc)
+        try:
+            bdir = str(wm.bias_dict().get("direction", "") or "").upper()
+            r = vote_from_volatility(m5_df, bdir)
+            _add_vote(
+                "volatility", r[0], r[1], 1.0, timeframe="M5",
+                evidence=getattr(r, "evidence", {}) or {},
+            )
+        except Exception as exc:
+            _warn_module_failure("consensus", "volatility", symbol, exc)
 
     if currency_strength_analysis is not None:
         try:
@@ -466,6 +506,16 @@ def build_consensus(
             )
         except Exception as exc:
             _warn_module_failure("consensus", "currency_strength", symbol, exc)
+
+    if correlation_signal is not None:
+        try:
+            r = vote_from_correlation(correlation_signal)
+            _add_vote(
+                "correlation", r[0], r[1], 1.0,
+                evidence=getattr(r, "evidence", {}) or {},
+            )
+        except Exception as exc:
+            _warn_module_failure("consensus", "correlation", symbol, exc)
 
     candidates: list = []
     try:
@@ -601,7 +651,14 @@ def analyze_window(
         wm = replace(wm, entry_zones=tuple(zones))
 
     try:
-        votes, candidates = build_consensus(symbol, wm, current_price)
+        votes, candidates = build_consensus(
+            symbol,
+            wm,
+            current_price,
+            m5_df=candles_by_tf.get("M5"),
+            h1_df=candles_by_tf.get("H1"),
+            liquidity_mapper=liquidity,
+        )
         if votes or candidates:
             wm = replace(wm, votes=tuple(votes), candidates=tuple(candidates))
     except Exception as exc:  # noqa: BLE001

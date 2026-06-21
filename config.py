@@ -288,6 +288,9 @@ _DEFAULT_CONSENSUS_WEIGHTS: dict[str, float] = {
     "liquidity": 1.0,
     "momentum": 1.0,
     "vwap": 1.0,
+    "inducement": 1.0,
+    "volatility": 1.0,
+    "correlation": 1.0,
 }
 
 
