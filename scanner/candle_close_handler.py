@@ -89,6 +89,9 @@ class CandleCloseHandler:
         entry_config: Optional[EntryConfig] = None,
         edge_weight: Optional[Callable[..., float]] = None,
         concept_weight: Optional[Callable[..., float]] = None,
+        vote_calibrator: Optional[Any] = None,
+        module_governor: Optional[Any] = None,
+        win_rate_provider: Optional[Any] = None,
     ) -> None:
         self._bus = event_bus
         self._store = world_model_store
@@ -101,6 +104,17 @@ class CandleCloseHandler:
         # concept's contribution to the bias blend.
         self._edge_weight = edge_weight
         self._concept_weight = concept_weight
+        # Adaptive vote-panel hooks (default-neutral when None): the
+        # VoteCalibrator scales each module's static consensus weight by its
+        # learned accuracy multiplier, and the ModuleGovernor excludes
+        # SHADOWED/DISABLED modules from the panel.  Both are no-ops unless the
+        # operator turns their feature flag on.
+        self._vote_calibrator = vote_calibrator
+        self._module_governor = module_governor
+        # Opportunity-ranker win-rate source (default-neutral when None): feeds
+        # the ranker a calibrated per-pair win probability so candidate EV is
+        # learned, not the hardcoded prior.
+        self._win_rate_provider = win_rate_provider
         self._pool = ThreadPoolExecutor(
             max_workers=max(1, max_workers),
             thread_name_prefix="cc-handler",
@@ -453,6 +467,9 @@ class CandleCloseHandler:
             session_open_minutes=session_open_minutes,
             currency_strength_analysis=cs_analysis,
             currency_pairs=CURRENCY_PAIRS,
+            vote_calibrator=self._vote_calibrator,
+            module_governor=self._module_governor,
+            win_rate_provider=self._win_rate_provider,
         )
 
     def _currency_strength_analysis(self) -> Optional[Any]:

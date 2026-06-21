@@ -1334,6 +1334,11 @@ class OrchestratorConfig:
     dimension_floor: float = 0.6
     # Per-dimension "full credit" reference points.
     ranker_ev_full: float = 1.5      # R units at which ranker EV gives full size
+    # When True, the live entry path feeds the selected ranked opportunity's
+    # (optionally win-rate-calibrated) expected value into the orchestrator's
+    # ranker_ev sizing dimension. Default OFF so sizing is unchanged until the
+    # operator opts in — the candidate EV is otherwise only recorded, not sized.
+    use_ranker_ev: bool = False
     de_margin_full: float = 0.5      # enter-skip margin at which DE gives full size
     scan_score_full: float = 100.0   # confluence score giving full size
     # ── #6 — Decision-engine enter/skip gate softening ───────────────────

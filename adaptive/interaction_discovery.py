@@ -559,6 +559,28 @@ class InteractionAnalyzer:
             "optimal_subset": optimal.to_dict(),
         }
         self._write_cache(payload, len(prepared), len(mods))
+
+        # Surface the discovered relationships at INFO so the dormant
+        # intelligence is visible in the operational log (not only the
+        # dashboard / cache). Read-only — recommendations the operator (or a
+        # future governor wire) may act on; the analyzer itself never shadows.
+        try:
+            shadow = list(optimal.shadow_modules or [])
+            if toxic or shadow:
+                top_toxic = ", ".join(
+                    f"{p['module_a']}+{p['module_b']}({p['interaction_effect']:+.3f})"
+                    for p in toxic[:3]
+                ) or "none"
+                logger.info(
+                    "[interaction] {} trade(s) analysed — toxic pairs: [{}]; "
+                    "optimal subset shadows: [{}] (improvement {:+.3f}R)",
+                    len(prepared), top_toxic,
+                    ", ".join(shadow) or "none",
+                    float(optimal.improvement or 0.0),
+                )
+        except Exception as exc:  # noqa: BLE001 — logging must never break compute
+            logger.debug("[interaction] summary log failed: {}", exc)
+
         return payload
 
     def _closed_attributions(self, lookback: int) -> list[TradeAttribution]:
