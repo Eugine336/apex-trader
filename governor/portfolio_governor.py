@@ -107,12 +107,64 @@ class PortfolioGovernor:
                 f"governor error (fail-closed): {exc}",
             )
 
+    def check_exposure_only(
+        self,
+        symbol: str,
+        direction: str,
+        open_positions: list[Any] | None = None,
+        account_balance: float = 0.0,
+    ) -> GovernorVerdict:
+        """Concentration-only verdict (currency / sector / correlated exposure).
+
+        Deliberately SKIPS the daily-loss-cap halt and the max-open-positions
+        cap: both of those are *necessary permits* now owned by the Compliance
+        Division (the daily-loss authority is the per-account silo — V7, one
+        source of truth).  This entry point keeps the Governor's portfolio
+        *concentration* analysis live (Portfolio Division territory) without
+        re-introducing a competing daily-loss / position-count gate.
+
+        Fail-closed by default, mirroring :meth:`check`.
+        """
+        try:
+            return self._check_inner(
+                symbol,
+                direction,
+                open_positions or [],
+                account_balance,
+                include_daily_loss=False,
+                include_max_positions=False,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if not getattr(self.config, "fail_closed", True):
+                logger.warning(
+                    "[Governor] exposure check error for {} {} — failing OPEN: {}",
+                    direction,
+                    symbol,
+                    exc,
+                )
+                return GovernorVerdict(allowed=True, reason=f"governor error (fail-open): {exc}")
+            logger.error(
+                "[Governor] exposure check error for {} {} — failing CLOSED: {}",
+                direction,
+                symbol,
+                exc,
+            )
+            return self._block(
+                symbol,
+                direction,
+                "governor_error",
+                f"governor error (fail-closed): {exc}",
+            )
+
     def _check_inner(
         self,
         symbol: str,
         direction: str,
         open_positions: list[Any],
         account_balance: float,
+        *,
+        include_daily_loss: bool = True,
+        include_max_positions: bool = True,
     ) -> GovernorVerdict:
         cfg = self.config
         if not cfg.enabled:
@@ -123,7 +175,9 @@ class PortfolioGovernor:
             self._evaluate_halt()
 
         # ── Check 1: daily loss cap (HARD safety halt — never graded) ────
-        if self.daily_trading_halted:
+        # Owned by the Compliance Division (per-account silo) when
+        # ``include_daily_loss`` is False — see ``check_exposure_only``.
+        if include_daily_loss and self.daily_trading_halted:
             pct = self._daily_pnl_pct()
             return self._block(
                 symbol,
@@ -137,7 +191,9 @@ class PortfolioGovernor:
         positions = [p for p in positions if p is not None]
 
         # ── Check 2: max open positions (HARD physics cap — never graded) ─
-        if len(positions) >= cfg.max_open_positions:
+        # Owned by the Compliance Division when ``include_max_positions`` is
+        # False — see ``check_exposure_only``.
+        if include_max_positions and len(positions) >= cfg.max_open_positions:
             return self._block(
                 symbol,
                 direction,
