@@ -1017,6 +1017,20 @@ class MT5Connector(BaseConnector):
         is_buy = position.type == mt5.ORDER_TYPE_BUY
         close_type = mt5.ORDER_TYPE_SELL if is_buy else mt5.ORDER_TYPE_BUY
         tick = mt5.symbol_info_tick(position.symbol)
+        if tick is None or (tick.bid == 0.0 and tick.ask == 0.0):
+            # No live tick — market is closed or symbol disabled. Tag it so the
+            # executor circuit breaker does NOT treat this as a real failure.
+            err = f"MARKET_CLOSED: no tick for {position.symbol}"
+            logger.warning("MT5 close skipped for {}: {}", order_id, err)
+            return CloseResult(
+                success=False,
+                order_id=order_id,
+                close_price=0.0,
+                lots_closed=0.0,
+                pnl=0.0,
+                platform="mt5",
+                error=err,
+            )
         price = tick.bid if is_buy else tick.ask
         close_lots = lots if lots is not None else position.volume
 
@@ -1036,6 +1050,10 @@ class MT5Connector(BaseConnector):
         result = mt5.order_send(request)
         if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
             err = result.comment if result else str(mt5.last_error())
+            # Tag market-closed closes so the executor circuit breaker does not
+            # count an expected weekend/holiday close as a real broker failure.
+            if "market closed" in err.lower() or "market is closed" in err.lower():
+                err = f"MARKET_CLOSED: {err}"
             logger.error("MT5 close failed for {}: {}", order_id, err)
             return CloseResult(
                 success=False,

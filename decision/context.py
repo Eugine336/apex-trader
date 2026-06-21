@@ -205,6 +205,16 @@ class EntryContext:
     # ── Confluences from scan ────────────────────────────────────────────
     confluences: list[str] = field(default_factory=list)
 
+    # ── Directional consensus panel (full, uncompressed) ─────────────────
+    # The per-module directional votes synthesized by the analysis plane
+    # (structure, currency_strength, wyckoff, volume, order_block, fvg,
+    # momentum, vwap, liquidity). Carried in full — each Vote keeps its module,
+    # direction, confidence, weight and evidence — so the decision engine can
+    # reason over WHICH modules agree/dissent rather than a single score. The
+    # SituationEngine derives a signed consensus dimension from this while
+    # keeping the panel intact (never collapsed to one number).
+    consensus_votes: list = field(default_factory=list)
+
     @property
     def is_long(self) -> bool:
         return self.direction.upper() in ("BUY", "LONG")

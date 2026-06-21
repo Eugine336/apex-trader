@@ -461,20 +461,42 @@ class PositionEvaluator:
 
                 for intent in intents:
                     if intent.intent_type == IntentType.CLOSE:
-                        self._mgmt_store.remove(order_id)
+                        # Do NOT remove management state optimistically — if the
+                        # broker close fails (circuit open, market closed, reject)
+                        # the position is still live and must stay managed. The
+                        # close-success callback (_handle_close_result) removes it.
+                        pass
                     elif intent.intent_type == IntentType.MODIFY_SL and intent.new_sl:
+                        prev_sl = mgmt.stop_loss
+                        prev_at_be = mgmt.at_breakeven
                         mgmt.stop_loss = intent.new_sl
+                        new_at_be = mgmt.at_breakeven
                         if not mgmt.at_breakeven:
                             entry = _broker_entry_price(pos)
                             if direction.upper() in ("BUY", "LONG"):
                                 if intent.new_sl >= entry:
-                                    mgmt.at_breakeven = True
+                                    new_at_be = True
                             else:
                                 if intent.new_sl <= entry:
-                                    mgmt.at_breakeven = True
+                                    new_at_be = True
+                            mgmt.at_breakeven = new_at_be
+                        # Snapshot so a failed SL modify rolls back (no phantom
+                        # breakeven, SL move retried next cycle).
+                        self._record_inflight_manage(
+                            order_id, intent.intent_type,
+                            {"stop_loss": prev_sl, "at_breakeven": prev_at_be},
+                        )
                     elif intent.intent_type == IntentType.PARTIAL_CLOSE:
+                        prev_pc = mgmt.partial_closed
+                        prev_tp1 = mgmt.tp1_hit
                         mgmt.partial_closed = True
                         mgmt.tp1_hit = True
+                        # Snapshot so a rejected TP1 partial rolls back and is
+                        # retried instead of being permanently marked taken.
+                        self._record_inflight_manage(
+                            order_id, intent.intent_type,
+                            {"partial_closed": prev_pc, "tp1_hit": prev_tp1},
+                        )
 
             self._run_decision_engine_management(
                 pos, price, now, now_mono, mgmt, order_id, snap,
@@ -968,6 +990,7 @@ class FlushLoop:
         platform_manager: PlatformManager,
         evaluator: Optional[PositionEvaluator] = None,
         on_close_callback: Optional[Any] = None,
+        on_manage_callback: Optional[Any] = None,
         interval: float = 0.1,
     ) -> None:
         self._aggregator = aggregator
@@ -975,6 +998,7 @@ class FlushLoop:
         self._pm = platform_manager
         self._evaluator = evaluator
         self._on_close = on_close_callback
+        self._on_manage = on_manage_callback
         self._interval = interval
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -1021,20 +1045,40 @@ class FlushLoop:
                                     except Exception as exc:
                                         logger.debug("[flush-loop] close callback error: {}", exc)
                             elif intent is not None:
-                                # SL/TP modify or partial close — surface the
-                                # during-trade action on the dashboard.
+                                # SL/TP modify or partial close — commit the
+                                # optimistic management state (callback) and
+                                # surface the during-trade action on the dashboard.
+                                if self._on_manage is not None:
+                                    try:
+                                        self._on_manage(intent, r)
+                                    except Exception as exc:
+                                        logger.debug("[flush-loop] manage callback error: {}", exc)
                                 try:
                                     self._emit_modify_event(intent)
                                 except Exception as exc:
                                     logger.debug("[flush-loop] modify event error: {}", exc)
-                        elif self._evaluator and not r.success:
-                            err_msg = str(getattr(r, "error", "") or "").lower()
-                            if "market closed" in err_msg or "market is closed" in err_msg:
-                                ticket = intent.position_ticket if intent is not None else ""
-                                if ticket:
-                                    self._evaluator.suppress_ticket(ticket, 60.0)
-                            elif "no longer open" in err_msg:
-                                pass
+                        else:
+                            # Failed execution: roll back any optimistic
+                            # management mutation so the action retries rather
+                            # than leaving phantom state (breakeven/partial).
+                            if (
+                                intent is not None
+                                and intent.intent_type != IntentType.OPEN
+                                and intent.intent_type != IntentType.CLOSE
+                                and self._on_manage is not None
+                            ):
+                                try:
+                                    self._on_manage(intent, r)
+                                except Exception as exc:
+                                    logger.debug("[flush-loop] manage rollback error: {}", exc)
+                            if self._evaluator:
+                                err_msg = str(getattr(r, "error", "") or "").lower()
+                                if "market closed" in err_msg or "market is closed" in err_msg or "market_closed" in err_msg:
+                                    ticket = intent.position_ticket if intent is not None else ""
+                                    if ticket:
+                                        self._evaluator.suppress_ticket(ticket, 60.0)
+                                elif "no longer open" in err_msg:
+                                    pass
                 self._flush_count += 1
             except Exception as exc:
                 # The aggregator was already drained by flush(); if execution
@@ -1238,6 +1282,16 @@ class EventDrivenSystem:
         self._known_open: dict[str, dict] = {}
         self._external_close_attempts: dict[str, int] = {}
 
+        # In-flight management mutations awaiting broker confirmation. The
+        # management loop applies an optimistic flag (at_breakeven / partial_-
+        # closed / SL move) to prevent re-firing the same action every 100ms,
+        # and records the pre-mutation values here keyed by (ticket, type). The
+        # execution-result callback commits on success or ROLLS BACK on failure
+        # so a rejected modify/partial is retried instead of leaving phantom
+        # state (phantom breakeven, an un-taken TP1 partial marked done).
+        self._inflight_manage: dict[tuple[str, int], dict[str, Any]] = {}
+        self._inflight_manage_lock = threading.Lock()
+
         # ── Analysis plane ───────────────────────────────────────────
         self._candle_handler = CandleCloseHandler(
             event_bus=self._event_bus,
@@ -1312,6 +1366,7 @@ class EventDrivenSystem:
             self._aggregator, self._executor, self._pm,
             evaluator=self._evaluator,
             on_close_callback=self._handle_close_result,
+            on_manage_callback=self._handle_manage_result,
         )
         self._tick_eval_loop = TickEvalLoop(
             self._evaluator, scheduler=self._mgmt_scheduler,
@@ -2854,6 +2909,17 @@ class EventDrivenSystem:
         direction = getattr(intent, "direction", "")
         ticket = intent.position_ticket
 
+        # CLOSE intents historically carried no direction, so every learner fed
+        # off this path received pnl_pips=0 and an R-multiple of 0 — silently
+        # corrupting all adaptive learning. Recover the direction from the
+        # last-known open book (snapshotted each reconcile cycle) when the
+        # intent itself does not carry it.
+        if not direction:
+            meta = self._known_open.get(ticket, {}) if ticket else {}
+            direction = (meta.get("direction") if isinstance(meta, dict) else "") or ""
+            if not symbol and isinstance(meta, dict):
+                symbol = meta.get("symbol", "") or ""
+
         pnl_dollars = 0.0
         pnl_pips = 0.0
         close_price = 0.0
@@ -2933,7 +2999,79 @@ class EventDrivenSystem:
             fee=broker_fee,
         )
 
-    def _recover_open_positions(self) -> None:
+        # Now that the broker-confirmed close is booked, drop management state.
+        # (Removal moved here from the optimistic management-loop path so a
+        # FAILED close keeps the position managed and retried.)
+        try:
+            self._mgmt_store.remove(str(ticket))
+        except Exception:
+            pass
+        self._clear_inflight_manage_ticket(str(ticket))
+
+    def _record_inflight_manage(
+        self, ticket: str, intent_type: IntentType, prev: dict[str, Any],
+    ) -> None:
+        """Record pre-mutation management values for rollback on exec failure."""
+        try:
+            with self._inflight_manage_lock:
+                self._inflight_manage[(str(ticket), int(intent_type))] = prev
+        except Exception:
+            pass
+
+    def _clear_inflight_manage_ticket(self, ticket: str) -> None:
+        """Drop all in-flight rollback snapshots for a (now closed) ticket."""
+        try:
+            with self._inflight_manage_lock:
+                for key in [k for k in self._inflight_manage if k[0] == str(ticket)]:
+                    self._inflight_manage.pop(key, None)
+        except Exception:
+            pass
+
+    def _handle_manage_result(self, intent: Intent, result: Any) -> None:
+        """Commit or roll back an optimistic management mutation.
+
+        Called by FlushLoop for every executed MODIFY_SL / MODIFY_TP /
+        PARTIAL_CLOSE intent (success and failure). On success the optimistic
+        state stands and the snapshot is dropped. On a real failure (anything
+        other than an expected market-closed skip) the pre-mutation values are
+        restored so the action re-fires next cycle instead of leaving phantom
+        state.
+        """
+        try:
+            ticket = str(getattr(intent, "position_ticket", "") or "")
+            itype = getattr(intent, "intent_type", None)
+            if not ticket or itype is None:
+                return
+            key = (ticket, int(itype))
+            with self._inflight_manage_lock:
+                prev = self._inflight_manage.pop(key, None)
+            success = bool(getattr(result, "success", False))
+            if success or prev is None:
+                return
+            err = str(getattr(result, "error", "") or "").lower()
+            if "market_closed" in err or "market closed" in err or "market is closed" in err:
+                # Expected: market shut. Keep the optimistic guard so we do not
+                # hammer a closed market; it will reconcile when the market opens
+                # (a fresh evaluation re-derives the correct state).
+                return
+            mgmt = self._mgmt_store.get(ticket)
+            if mgmt is None:
+                return
+            for field_name, value in prev.items():
+                try:
+                    setattr(mgmt, field_name, value)
+                except Exception:
+                    pass
+            try:
+                self._mgmt_store.persist(mgmt, force=True)
+            except Exception:
+                pass
+            logger.warning(
+                "[manage] {} {} failed — rolled back optimistic state ({})",
+                itype.name, ticket, getattr(result, "error", ""),
+            )
+        except Exception as exc:
+            logger.debug("[manage] result handling failed: {}", exc)
         """Initialize management state for any positions open at startup."""
         try:
             positions = self._pm.get_all_open_positions()
@@ -3505,7 +3643,11 @@ class EventDrivenSystem:
                             "EVENT-DRIVEN ENTRY NOTE | {} — DrawdownGuard RECOVERY mode", symbol,
                         )
                 except Exception as exc:
-                    logger.debug("[entry-risk] DrawdownGuard check failed: {}", exc)
+                    logger.warning(
+                        "EVENT-DRIVEN ENTRY BLOCKED | {} — DrawdownGuard check "
+                        "errored, failing closed: {}", symbol, exc,
+                    )
+                    return
 
             # ── Gate 2: PortfolioRiskStateMachine ────────────────────
             if ctx is not None and ctx.portfolio_risk_sm is not None:
@@ -3523,7 +3665,11 @@ class EventDrivenSystem:
                         )
                         return
                 except Exception as exc:
-                    logger.debug("[entry-risk] PortfolioRiskSM check failed: {}", exc)
+                    logger.warning(
+                        "EVENT-DRIVEN ENTRY BLOCKED | {} — PortfolioRiskSM check "
+                        "errored, failing closed: {}", symbol, exc,
+                    )
+                    return
 
             # ── Gate 3: PortfolioGovernor ────────────────────────────
             if ctx is not None and ctx.portfolio_governor is not None:
@@ -3541,7 +3687,11 @@ class EventDrivenSystem:
                         )
                         return
                 except Exception as exc:
-                    logger.debug("[entry-risk] PortfolioGovernor check failed: {}", exc)
+                    logger.warning(
+                        "EVENT-DRIVEN ENTRY BLOCKED | {} — PortfolioGovernor check "
+                        "errored, failing closed: {}", symbol, exc,
+                    )
+                    return
 
             # ── Gate 4: AccountRiskManager ───────────────────────────
             if ctx is not None and ctx.account_risk is not None:
@@ -3562,7 +3712,11 @@ class EventDrivenSystem:
                         )
                         return
                 except Exception as exc:
-                    logger.debug("[entry-risk] AccountRisk check failed: {}", exc)
+                    logger.warning(
+                        "EVENT-DRIVEN ENTRY BLOCKED | {} — AccountRisk check "
+                        "errored, failing closed: {}", symbol, exc,
+                    )
+                    return
 
             # ── Gate 5: Correlation / exposure ───────────────────────
             if ctx is not None and ctx.correlation_engine is not None:
@@ -3587,7 +3741,11 @@ class EventDrivenSystem:
                         )
                         return
                 except Exception as exc:
-                    logger.debug("[entry-risk] Correlation check failed: {}", exc)
+                    logger.warning(
+                        "EVENT-DRIVEN ENTRY BLOCKED | {} — Correlation check "
+                        "errored, failing closed: {}", symbol, exc,
+                    )
+                    return
             else:
                 # Fallback: simple currency-count check
                 max_open = self._config.risk.max_open_trades
@@ -3706,6 +3864,13 @@ class EventDrivenSystem:
                         portfolio_heat_pct=de_heat_pct,
                         current_spread=de_cur_spread,
                         typical_spread=de_typ_spread,
+                        # Full directional-consensus panel synthesized by the
+                        # analysis plane — passed uncompressed so the decision
+                        # engine reasons over which modules agree/dissent.
+                        consensus_votes=(
+                            list(getattr(wm, "votes", ()) or [])
+                            if wm is not None else []
+                        ),
                     )
                     sa = ctx.situation_engine.assess_entry(entry_ctx)
                     de_result = ctx.decision_engine.decide_entry(entry_ctx, sa)
@@ -3975,6 +4140,20 @@ class EventDrivenSystem:
                             )
                             return
                     adj = ctx.ml_adapter.get_trade_adjustments(symbol, _regime, _session)
+                    # Honor the optimizer's AVOID veto. When should_trade is
+                    # False (regime/pair/session flagged AVOID) the size
+                    # multiplier is left at its 1.0 default — reading it alone
+                    # silently traded at full size through the veto.
+                    if not getattr(adj, "should_trade", True):
+                        logger.warning(
+                            "EVENT-DRIVEN ENTRY BLOCKED | {} — optimizer AVOID: {}",
+                            symbol, getattr(adj, "reason", "")[:80],
+                        )
+                        self._record_shadow_rejection(
+                            symbol, direction, entry_price, sl, tp1,
+                            "optimizer_avoid", conviction,
+                        )
+                        return
                     adapt_mult = float(
                         getattr(adj, "position_size_multiplier", 1.0) or 1.0
                     )
@@ -4118,7 +4297,11 @@ class EventDrivenSystem:
                 inst_vol_mult = 1.0
 
             combined_mult = de_size_mult * orch_mult * vol_mult * inst_vol_mult * density_mult * exec_mult * cap_mult * adapt_mult
-            combined_mult = max(0.15, min(2.0, combined_mult))
+            # Cap at 1.0 so the combined multiplier can only DE-RISK below the
+            # PositionSizer's per-trade risk ceiling (risk_per_trade_pct, hard-
+            # capped at engine_cap=2.5%). Allowing >1.0 here multiplied AFTER the
+            # sizer's cap, doubling effective per-trade risk (2.5%×2.0 = 5%).
+            combined_mult = max(0.15, min(1.0, combined_mult))
             if abs(combined_mult - 1.0) > 1e-6:
                 if size_result.lots > 0:
                     size_result.lots = round(max(0.01, size_result.lots * combined_mult), 2)
@@ -4278,6 +4461,12 @@ class EventDrivenSystem:
                             abs(fill_price - float(sl)) / self._safe_pip_size(symbol)
                             if fill_price and sl and self._safe_pip_size(symbol) > 0
                             else 0.0
+                        ),
+                        # Record the execution profile actually selected at entry
+                        # so the close path attributes the outcome to the right
+                        # profile (was hard-coded to "standard_swing").
+                        "exec_profile": (
+                            getattr(exec_profile, "name", "") or "standard_swing"
                         ),
                     }
                 except Exception as exc:
@@ -4805,7 +4994,8 @@ class EventDrivenSystem:
         # ExecutionProfileManager — record outcome for the profile used
         if ctx.execution_profiles is not None:
             try:
-                ctx.execution_profiles.record_outcome("standard_swing", pnl_pips / 10.0 if pnl_pips else 0.0)
+                _prof_name = str(info.get("exec_profile", "") or "standard_swing")
+                ctx.execution_profiles.record_outcome(_prof_name, pnl_pips / 10.0 if pnl_pips else 0.0)
             except Exception as exc:
                 logger.debug("[close-evo] ExecutionProfileManager record failed: {}", exc)
 

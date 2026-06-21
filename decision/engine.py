@@ -104,6 +104,12 @@ class DecisionEngine:
         conviction_size_max: float = 1.5,
         market_mode_threshold: float = 0.40,
         adopted_observation_minutes: float = 10.0,
+        consensus_aware: bool = True,
+        consensus_enter_weight: float = 0.30,
+        consensus_skip_weight: float = 0.45,
+        consensus_min_alignment: float = 0.15,
+        consensus_conviction_weight: float = 0.15,
+        consensus_high_authority_veto: bool = True,
     ) -> None:
         self.weights = weights or DecisionWeights()
         # Roadmap D — regime-dependent weighting.
@@ -195,6 +201,18 @@ class DecisionEngine:
         # Adopted/orphan trades get a protective observation window (config-driven,
         # was a hardcoded 10-minute literal at the decide_management gate).
         self.adopted_observation_minutes = max(0.0, float(adopted_observation_minutes))
+        # ── Directional-consensus integration ───────────────────────────
+        # The per-module vote panel becomes a decision dimension: it adds ENTER
+        # support when it agrees with the trade direction, SKIP pressure when it
+        # opposes, and feeds conviction (→ size). A high-authority module
+        # opposing with confidence is a hard veto. Bounded so it informs rather
+        # than dominates; fully inert when ``consensus_aware`` is False.
+        self.consensus_aware = bool(consensus_aware)
+        self.consensus_enter_weight = max(0.0, float(consensus_enter_weight))
+        self.consensus_skip_weight = max(0.0, float(consensus_skip_weight))
+        self.consensus_min_alignment = max(0.0, float(consensus_min_alignment))
+        self.consensus_conviction_weight = max(0.0, float(consensus_conviction_weight))
+        self.consensus_high_authority_veto = bool(consensus_high_authority_veto)
 
     @staticmethod
     def _tf_conflict_opposition(sa: SituationAssessment) -> float:
@@ -933,6 +951,21 @@ class DecisionEngine:
             enter_score += 0.05
             evidence.append(f"high data confidence ({sa.read_confidence:.2f})")
 
+        # ── Directional consensus → ENTER support ────────────────────────
+        # When the module panel agrees with the trade direction it adds bounded
+        # ENTER conviction (scaled by how strongly it aligns). The full panel is
+        # in sa.consensus_components — this reads the signed alignment but the
+        # SKIP side below also inspects the dissent structure.
+        consensus_align = float(getattr(sa, "consensus_alignment", 0.0) or 0.0)
+        if self.consensus_aware and consensus_align > self.consensus_min_alignment:
+            contrib = consensus_align * self.consensus_enter_weight
+            enter_score += contrib
+            comps = sa.consensus_vector() if hasattr(sa, "consensus_vector") else {}
+            for_mods = ", ".join(comps.get("for", [])[:4]) or "panel"
+            evidence.append(
+                f"consensus supports ({consensus_align:+.2f}) [{for_mods}] +{contrib:.2f}"
+            )
+
         # ── SKIP score ───────────────────────────────────────────────────
         skip_score = 0.0
         skip_parts: list[str] = []
@@ -978,6 +1011,32 @@ class DecisionEngine:
             penalty = (1.5 - ctx.risk_reward_2) * 0.20
             skip_score += penalty
             skip_parts.append(f"weak R:R ({ctx.risk_reward_2:.1f}) +{penalty:.2f}")
+
+        # ── Directional consensus → SKIP pressure + high-authority veto ──
+        # The module panel opposing the trade direction adds SKIP pressure
+        # scaled by how strongly it dissents. A high-authority module (e.g.
+        # currency_strength) opposing with confidence is a hard veto: a large
+        # SKIP penalty that, combined with the bounded ENTER side, drives the
+        # margin negative so the trade is not taken. This consumes the full
+        # dissent structure, not a collapsed score.
+        if self.consensus_aware:
+            comps = sa.consensus_vector() if hasattr(sa, "consensus_vector") else {}
+            ha_oppose = list(comps.get("high_authority_oppose", []) or [])
+            if consensus_align < -self.consensus_min_alignment:
+                penalty = abs(consensus_align) * self.consensus_skip_weight
+                skip_score += penalty
+                against = ", ".join(comps.get("against", [])[:4]) or "panel"
+                skip_parts.append(
+                    f"consensus opposes ({consensus_align:+.2f}) [{against}] +{penalty:.2f}"
+                )
+            if self.consensus_high_authority_veto and ha_oppose:
+                # Hard veto contribution — a high-authority dissent should be
+                # decisive, not averaged away.
+                veto_pen = 0.60
+                skip_score += veto_pen
+                skip_parts.append(
+                    f"high-authority consensus veto [{', '.join(ha_oppose)}] +{veto_pen:.2f}"
+                )
 
         # ── Reversal trade type (roadmap E) ──────────────────────────────
         # A counter-HTF setup is only taken as a REVERSAL when it carries strong
@@ -1138,6 +1197,12 @@ class DecisionEngine:
             + (sa.momentum + 1.0) / 2.0 * w.conviction_momentum
             + sa.read_confidence * w.conviction_confidence
         )
+        # Consensus nudges conviction (→ size) within a bounded band: panel
+        # agreement lifts it, dissent trims it. Kept small so the panel informs
+        # sizing without overwhelming the structural conviction model.
+        if self.consensus_aware and self.consensus_conviction_weight > 0.0:
+            align = float(getattr(sa, "consensus_alignment", 0.0) or 0.0)
+            c += align * self.consensus_conviction_weight
         return max(0.0, min(1.0, c))
 
     @staticmethod
