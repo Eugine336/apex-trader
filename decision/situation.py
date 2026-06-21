@@ -86,6 +86,16 @@ class SituationAssessment:
     urgency_components: dict = field(default_factory=dict)
     confidence_components: dict = field(default_factory=dict)
 
+    # ── Directional consensus dimension (signed scalar + full breakdown) ──
+    # ``consensus_alignment`` is in [-1, +1]: +1 = the whole module panel agrees
+    # with the trade direction, -1 = the panel opposes it, 0 = mixed/no panel.
+    # It is an agreement-weighted read of the per-module votes — but the full
+    # panel (which modules voted for/against, their confidence, high-authority
+    # opposition) is kept in ``consensus_components`` so the decision engine
+    # reasons over the structure, not a collapsed number.
+    consensus_alignment: float = 0.0
+    consensus_components: dict = field(default_factory=dict)
+
     def momentum_vector(self) -> dict:
         """Return the momentum component breakdown ({"candle": float, ...})."""
         return dict(self.momentum_components)
@@ -97,6 +107,10 @@ class SituationAssessment:
     def urgency_vector(self) -> dict:
         """Return the urgency component breakdown ({"news": float, ...})."""
         return dict(self.urgency_components)
+
+    def consensus_vector(self) -> dict:
+        """Return the directional-consensus breakdown (per-module for/against)."""
+        return dict(self.consensus_components)
 
 
 class SituationEngine:
@@ -294,10 +308,82 @@ class SituationEngine:
             ),
         }
 
-        # ── 8. Label ────────────────────────────────────────────────────
+        # ── 8. Directional consensus panel ──────────────────────────────
+        # Fold the per-module vote panel into a signed alignment relative to
+        # the trade direction, keeping the full for/against breakdown. The panel
+        # is intelligence the entry plane already computed but historically only
+        # reached the dashboard — here it becomes a decision dimension.
+        self._assess_consensus(sa, ctx, evidence, is_long)
+
+        # ── 9. Label ────────────────────────────────────────────────────
         sa.primary_label = self._derive_entry_label(sa, ctx)
         sa.evidence = evidence
         return sa
+
+    def _assess_consensus(
+        self,
+        sa: SituationAssessment,
+        ctx: EntryContext,
+        evidence: list[str],
+        is_long: bool,
+    ) -> None:
+        """Derive the signed consensus alignment + full for/against breakdown.
+
+        Never collapses the panel to a single gate — the signed scalar is kept
+        ALONGSIDE the per-module breakdown (contributors, dissenters, high-
+        authority opposition) so ``decide_entry`` can weigh the structure.
+        """
+        votes = list(getattr(ctx, "consensus_votes", None) or [])
+        if not votes:
+            sa.consensus_alignment = 0.0
+            sa.consensus_components = {}
+            return
+
+        trade_dir = "LONG" if is_long else "SHORT"
+        high_authority = {"currency_strength"}  # mirrors ConsensusConfig default
+        for_mods: list[str] = []
+        against_mods: list[str] = []
+        for_mag = 0.0
+        against_mag = 0.0
+        high_auth_oppose: list[str] = []
+
+        for v in votes:
+            vdir = str(getattr(v, "direction", "NEUTRAL") or "NEUTRAL").upper()
+            if vdir not in ("LONG", "SHORT"):
+                continue
+            conf = float(getattr(v, "confidence", 0.0) or 0.0)
+            weight = float(getattr(v, "weight", 1.0) or 0.0)
+            module = str(getattr(v, "module", "") or "")
+            mag = max(0.0, conf) * max(0.0, weight)
+            if mag <= 0:
+                continue
+            if vdir == trade_dir:
+                for_mods.append(module)
+                for_mag += mag
+            else:
+                against_mods.append(module)
+                against_mag += mag
+                if module in high_authority and conf >= 0.6:
+                    high_auth_oppose.append(module)
+
+        total = for_mag + against_mag
+        alignment = (for_mag - against_mag) / total if total > 0 else 0.0
+        sa.consensus_alignment = round(max(-1.0, min(1.0, alignment)), 4)
+        sa.consensus_components = {
+            "for": for_mods,
+            "against": against_mods,
+            "for_magnitude": round(for_mag, 4),
+            "against_magnitude": round(against_mag, 4),
+            "high_authority_oppose": high_auth_oppose,
+            "participation": len(for_mods) + len(against_mods),
+        }
+        if total > 0 and (for_mods or against_mods):
+            evidence.append(
+                f"consensus={sa.consensus_alignment:+.2f} "
+                f"[for: {', '.join(for_mods) or 'none'}; "
+                f"against: {', '.join(against_mods) or 'none'}"
+                f"{'; HA-oppose: ' + ', '.join(high_auth_oppose) if high_auth_oppose else ''}]"
+            )
 
     def _derive_entry_label(
         self, sa: SituationAssessment, ctx: EntryContext,

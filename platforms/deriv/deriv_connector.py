@@ -942,11 +942,19 @@ class DerivConnector(BaseConnector):
                     f"message={err.get('message')}"
                 )
             bal = resp.get("balance", {})
+            balance_val = float(bal.get("balance", 0))
+            # Equity must mark open positions to market. Deriv's balance frame
+            # carries only realized cash, so fold in the summed unrealized P&L of
+            # open multiplier contracts. Fail-safe: any failure falls back to
+            # balance-only equity (the prior behavior) rather than blocking the
+            # balance-dependent risk path.
+            unrealized = self._sum_open_unrealized_pnl()
+            equity_val = balance_val + unrealized
             info = AccountInfo(
-                balance=float(bal.get("balance", 0)),
-                equity=float(bal.get("balance", 0)),
+                balance=balance_val,
+                equity=equity_val,
                 margin=0.0,
-                free_margin=float(bal.get("balance", 0)),
+                free_margin=equity_val,
                 margin_level=0.0,
                 currency=bal.get("currency", "USD"),
                 leverage=1,
@@ -955,6 +963,26 @@ class DerivConnector(BaseConnector):
             self._acct_cache = info
             self._acct_cache_ts = now
             return info
+
+    def _sum_open_unrealized_pnl(self) -> float:
+        """Sum unrealized P&L across open multiplier contracts (fail-safe → 0.0).
+
+        Uses the portfolio endpoint's per-contract ``profit`` (mark-to-market).
+        Never raises — a fetch failure returns 0.0 so equity degrades to the
+        realized balance instead of breaking the account-info path.
+        """
+        try:
+            resp = self._sync_send({
+                "portfolio": 1,
+                "contract_type": ["MULTUP", "MULTDOWN"],
+            })
+            if resp.get("error"):
+                return 0.0
+            contracts = resp.get("portfolio", {}).get("contracts", [])
+            return float(sum(float(c.get("profit", 0) or 0.0) for c in contracts))
+        except Exception as exc:
+            logger.debug("Deriv unrealized P&L sum failed: {}", exc)
+            return 0.0
 
     # ── Market data ──────────────────────────────────────────────────────
 

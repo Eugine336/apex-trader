@@ -389,12 +389,17 @@ class TestCircuitBreaker:
     def test_close_failures_do_not_block_open(self):
         """A tripped CLOSE/manage breaker must NOT block new OPEN entries.
 
-        Regression for the production incident where weekend "Market closed"
-        close failures tripped the shared breaker and starved 24/7 synthetic
-        entries.  OPEN and CLOSE now use independent breakers.
+        Regression for the production incident where weekend close failures
+        tripped the shared breaker and starved 24/7 synthetic entries.  OPEN
+        and CLOSE now use independent breakers. A genuine permanent failure
+        (invalid ticket) is used to trip the manage breaker — market-closed is
+        deliberately excluded from the breaker (see
+        test_market_closed_does_not_trip_breaker).
         """
         broker = FakeBroker()
-        broker.close_return = FakeCloseResult(success=False, error="Market closed")
+        broker.close_return = FakeCloseResult(
+            success=False, error="Invalid ticket — position not found",
+        )
         cfg = _fast_cfg(
             max_retries=0,
             circuit_failure_threshold=3,
@@ -414,6 +419,36 @@ class TestCircuitBreaker:
             "OPEN was blocked by the CLOSE breaker — breakers are not isolated"
         )
         assert len(broker.open_calls) == 1
+
+    def test_market_closed_does_not_trip_breaker(self):
+        """Market-closed close failures must never open the manage breaker.
+
+        A closed weekend/holiday market is an expected condition, not a broker
+        fault. Repeated market-closed closes must not count toward the failure
+        budget (otherwise the manage breaker opens and blocks legitimate
+        closes/modifies on 24/7 instruments), and must not be retried.
+        """
+        broker = FakeBroker()
+        broker.close_return = FakeCloseResult(
+            success=False, error="MARKET_CLOSED: Market closed",
+        )
+        cfg = _fast_cfg(
+            max_retries=2,
+            circuit_failure_threshold=3,
+            circuit_cooldown_s=10.0,
+        )
+        executor = ActionExecutor(broker, cfg)
+
+        # Far more attempts than the failure threshold — the breaker must stay
+        # closed because market-closed does not count as a failure.
+        for _ in range(10):
+            r = executor.execute(_close_intent(), _positions())
+            assert not r.success
+            assert "market" in (r.error or "").lower()
+            # Never retried (no point — the market stays closed).
+            assert r.retried is False
+        still_open = executor.execute(_close_intent(), _positions())
+        assert "circuit open" not in (still_open.error or "").lower()
 
     def test_open_failures_do_not_block_close(self):
         """Symmetric: a tripped OPEN breaker must not block exits/closes."""

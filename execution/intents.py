@@ -66,6 +66,7 @@ class Intent:
         ticket: str,
         source: str,
         reason: str,
+        direction: Optional[str] = None,
         timestamp: Optional[datetime] = None,
     ) -> Intent:
         return Intent(
@@ -75,6 +76,7 @@ class Intent:
             timestamp=timestamp or datetime.now(timezone.utc),
             source=source,
             reason=reason,
+            direction=direction,
             priority=IntentType.CLOSE,
         )
 

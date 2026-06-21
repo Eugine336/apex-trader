@@ -110,10 +110,25 @@ _TRANSIENT_SUBSTRINGS = (
     "network",
 )
 
+# Market-closed is an EXPECTED condition (weekend/holiday FX), not a broker
+# fault. It must never count toward the circuit breaker's failure budget, and
+# retrying is pointless — the market stays closed. Recognized via the
+# ``MARKET_CLOSED:`` tag emitted by the connectors as well as raw substrings.
+_MARKET_CLOSED_SUBSTRINGS = (
+    "market_closed",
+    "market closed",
+    "market is closed",
+)
+
 
 def _is_transient(error: BaseException | str) -> bool:
     msg = str(error).lower()
     return any(s in msg for s in _TRANSIENT_SUBSTRINGS)
+
+
+def _is_market_closed(error: BaseException | str) -> bool:
+    msg = str(error).lower()
+    return any(s in msg for s in _MARKET_CLOSED_SUBSTRINGS)
 
 
 # ── Executor ─────────────────────────────────────────────────────────
@@ -294,6 +309,22 @@ class ActionExecutor:
                         intent.position_ticket,
                         elapsed_ms,
                         " (retried)" if retried else "",
+                    )
+                    result.execution_time_ms = elapsed_ms
+                    result.retried = retried
+                    return result
+
+                # Market-closed is expected, not a fault: do NOT record a
+                # breaker failure (would otherwise open the manage breaker and
+                # block legitimate closes/modifies on 24/7 instruments) and do
+                # NOT retry (the market will not reopen within the backoff).
+                if _is_market_closed(result.error or ""):
+                    self._add_latency(elapsed_ms)
+                    logger.info(
+                        "EXECUTOR SKIP (market closed) | {} {} | {}",
+                        intent.intent_type.name,
+                        intent.position_ticket,
+                        result.error,
                     )
                     result.execution_time_ms = elapsed_ms
                     result.retried = retried
