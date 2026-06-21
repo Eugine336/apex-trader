@@ -33,6 +33,13 @@ class FakeCloseResult:
     pnl: float = 12.50
 
 
+@dataclass
+class FakeOpenResult:
+    success: bool = True
+    error: Optional[str] = None
+    order_id: str = "99999"
+
+
 class FakeBroker:
     """Minimal broker that satisfies BrokerPort."""
 
@@ -44,6 +51,9 @@ class FakeBroker:
         self.raise_on_modify: Optional[Exception] = None
         self.raise_on_close: Optional[Exception] = None
         self.call_count = 0
+        self.open_calls: list[dict] = []
+        self.open_return: Any = FakeOpenResult()
+        self.raise_on_open: Optional[Exception] = None
 
     def modify_trade(
         self,
@@ -75,6 +85,26 @@ class FakeBroker:
         })
         return self.close_return
 
+    def execute_entry(
+        self,
+        symbol: str,
+        direction: str,
+        lots: float,
+        sl: float,
+        tp: float,
+        comment: str = "",
+        stake_usd: Optional[float] = None,
+        idempotency_key: str = "",
+    ) -> Any:
+        self.call_count += 1
+        if self.raise_on_open:
+            raise self.raise_on_open
+        self.open_calls.append({
+            "symbol": symbol, "direction": direction, "lots": lots,
+            "sl": sl, "tp": tp,
+        })
+        return self.open_return
+
 
 # ── Helpers ──────────────────────────────────────────────────────────
 
@@ -95,6 +125,13 @@ def _positions(**overrides) -> dict[str, dict]:
 
 def _close_intent(ticket: str = "12345") -> Intent:
     return Intent.close(symbol="EURUSD", ticket=ticket, source="test", reason="test")
+
+
+def _open_intent(symbol: str = "V50_1S") -> Intent:
+    return Intent.open(
+        symbol=symbol, direction="BUY", lots=0.10, sl=1.0, tp=2.0,
+        source="test", reason="test",
+    )
 
 
 def _sl_intent(ticket: str = "12345", new_sl: float = 1.08100) -> Intent:
@@ -348,6 +385,57 @@ class TestCircuitBreaker:
         assert "circuit open" in result.error.lower()
         metrics = executor.get_metrics()
         assert metrics.intents_circuit_open >= 1
+
+    def test_close_failures_do_not_block_open(self):
+        """A tripped CLOSE/manage breaker must NOT block new OPEN entries.
+
+        Regression for the production incident where weekend "Market closed"
+        close failures tripped the shared breaker and starved 24/7 synthetic
+        entries.  OPEN and CLOSE now use independent breakers.
+        """
+        broker = FakeBroker()
+        broker.close_return = FakeCloseResult(success=False, error="Market closed")
+        cfg = _fast_cfg(
+            max_retries=0,
+            circuit_failure_threshold=3,
+            circuit_cooldown_s=10.0,
+        )
+        executor = ActionExecutor(broker, cfg)
+
+        # Trip the CLOSE/manage breaker.
+        for _ in range(3):
+            executor.execute(_close_intent(), _positions())
+        blocked = executor.execute(_close_intent(), _positions())
+        assert "circuit open" in (blocked.error or "").lower()
+
+        # OPEN path must remain available — its breaker is independent.
+        opened = executor.execute(_open_intent(), _positions())
+        assert opened.success, (
+            "OPEN was blocked by the CLOSE breaker — breakers are not isolated"
+        )
+        assert len(broker.open_calls) == 1
+
+    def test_open_failures_do_not_block_close(self):
+        """Symmetric: a tripped OPEN breaker must not block exits/closes."""
+        broker = FakeBroker()
+        broker.open_return = FakeOpenResult(success=False, error="open rejected")
+        cfg = _fast_cfg(
+            max_retries=0,
+            circuit_failure_threshold=3,
+            circuit_cooldown_s=10.0,
+        )
+        executor = ActionExecutor(broker, cfg)
+
+        for _ in range(3):
+            executor.execute(_open_intent(), _positions())
+        blocked = executor.execute(_open_intent(), _positions())
+        assert "circuit open" in (blocked.error or "").lower()
+
+        # CLOSE path must remain available so risk exits are never starved.
+        closed = executor.execute(_close_intent(), _positions())
+        assert closed.success, (
+            "CLOSE was blocked by the OPEN breaker — breakers are not isolated"
+        )
 
 
 # ── Batch execution ──────────────────────────────────────────────────

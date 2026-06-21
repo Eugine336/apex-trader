@@ -185,6 +185,11 @@ class DerivConnector(BaseConnector):
         self._mapper = SymbolMapper("deriv")
 
         self._discovered_multipliers: dict[str, list[int]] = {}
+        # Some Deriv accounts/contracts reject ``symbol`` inside the buy
+        # ``parameters`` shortcut ("Properties not allowed: symbol"). Once we
+        # observe that, route subsequent orders straight through the canonical
+        # proposal→buy flow instead of re-sending the rejected payload each time.
+        self._buy_parameters_unsupported = False
 
         self._loop = asyncio.new_event_loop()
         self._loop_thread = threading.Thread(
@@ -1288,6 +1293,25 @@ class DerivConnector(BaseConnector):
             return payload
 
         buy_payload = build_order_payload(amount, multiplier, send_limit_order)
+        if getattr(self, "_buy_parameters_unsupported", False):
+            # Skip the known-rejected buy-with-parameters call and go straight
+            # to the canonical proposal→buy flow.
+            return self._buy_via_proposal(
+                mapped=mapped,
+                contract_type=contract_type,
+                amount=amount,
+                multiplier=multiplier,
+                sl_pct=sl_pct,
+                tp_pct=tp_pct,
+                passthrough=passthrough,
+                entry_price=price,
+                lots=lots,
+                symbol=symbol,
+                direction=direction,
+                sl=sl,
+                tp=tp,
+                idempotency_key=idempotency_key,
+            )
         t0 = _time.monotonic()
         resp = self._sync_send(buy_payload)
         latency = (_time.monotonic() - t0) * 1000
@@ -1316,6 +1340,7 @@ class DerivConnector(BaseConnector):
             # limit_order strip from misattributing the cause to SL/TP.
             if self._is_symbol_property_error(err):
                 use_proposal_fallback = True
+                self._buy_parameters_unsupported = True
                 break
 
             changed = False
@@ -1412,6 +1437,7 @@ class DerivConnector(BaseConnector):
 
             if self._is_symbol_property_error(err):
                 use_proposal_fallback = True
+                self._buy_parameters_unsupported = True
                 break
 
         if use_proposal_fallback:
