@@ -228,6 +228,8 @@ class MT5Connector(BaseConnector):
         """
         self._require_connection()
         mapped = self.symbol_map(symbol)
+        if mapped is None:
+            return {}
         try:
             si = mt5.symbol_info(mapped)
             if si is None:
@@ -292,6 +294,10 @@ class MT5Connector(BaseConnector):
     def get_price(self, symbol: str) -> TickData:
         self._require_connection()
         mapped = self.symbol_map(symbol)
+        if mapped is None:
+            raise RuntimeError(
+                f"Symbol '{symbol}' not available on broker '{self._broker_name}'"
+            )
         tick = mt5.symbol_info_tick(mapped)
         if tick is None:
             raise RuntimeError(f"No tick data for {mapped}: {mt5.last_error()}")
@@ -340,7 +346,7 @@ class MT5Connector(BaseConnector):
         self._require_connection()
         mapped = self.symbol_map(symbol)
         # None means already confirmed not on this broker — skip immediately
-        if self._symbol_cache.get(symbol) is None and symbol in self._symbol_cache:
+        if mapped is None:
             raise RuntimeError(f"Symbol '{symbol}' not available on broker '{self._broker_name}'")
         tf_const = self.timeframe_map(timeframe)
         rates = mt5.copy_rates_from_pos(mapped, tf_const, 0, count)
@@ -414,6 +420,14 @@ class MT5Connector(BaseConnector):
     ) -> OrderResult:
         self._require_connection()
         mapped = self.symbol_map(symbol)
+        if mapped is None:
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0,
+                requested_price=0.0, slippage_pips=0.0, lots=lots,
+                symbol=symbol, direction=str(direction).upper(),
+                sl=sl, tp=tp, platform="mt5",
+                error=f"Symbol '{symbol}' not available on broker '{self._broker_name}'",
+            )
 
         if idempotency_key:
             dup = self._find_order_by_idem_key(idempotency_key)
@@ -729,6 +743,15 @@ class MT5Connector(BaseConnector):
     ) -> OrderResult:
         self._require_connection()
         mapped = self.symbol_map(symbol)
+        if mapped is None:
+            return OrderResult(
+                success=False, order_id="", fill_price=0.0,
+                requested_price=entry_price, slippage_pips=0.0, lots=lots,
+                symbol=symbol,
+                direction="BUY" if str(order_kind).upper().startswith("BUY") else "SELL",
+                sl=sl, tp=tp, platform="mt5",
+                error=f"Symbol '{symbol}' not available on broker '{self._broker_name}'",
+            )
 
         if idempotency_key:
             dup = self._find_order_by_idem_key(idempotency_key)
@@ -1186,7 +1209,7 @@ class MT5Connector(BaseConnector):
             )
             self._not_found_warned.add(apex_symbol)
         self._symbol_cache[apex_symbol] = None
-        return apex_symbol
+        return None
 
     def timeframe_map(self, tf: str) -> Any:
         if not _MT5_AVAILABLE:

@@ -173,6 +173,17 @@ class MT5TickPoller:
                             "[mt5-poller] {} tick error (count={}): {}",
                             sym, error_counts[sym], exc,
                         )
+                    # A symbol confirmed unavailable on the broker will never
+                    # recover — drop it immediately instead of spinning to the
+                    # 500-failure threshold.
+                    if "not available on broker" in str(exc):
+                        logger.warning(
+                            "[mt5-poller] {} removed from poll — not available on broker",
+                            sym,
+                        )
+                        self._symbols.remove(sym)
+                        removed.add(sym)
+                        continue
 
                 if error_counts.get(sym, 0) >= remove_after:
                     logger.warning(
@@ -1686,11 +1697,53 @@ class EventDrivenSystem:
         # is visible; never opens or closes anything.  Best-effort.
         try:
             from persistence.recovery import run_startup_recovery
-            broker_ids = [
-                str(getattr(p, "order_id", getattr(p, "ticket", "")))
-                for p in self._pm.get_all_open_positions()
-            ]
-            run_startup_recovery(get_event_store(), broker_ids)
+            open_positions = self._pm.get_all_open_positions()
+            pos_by_ticket = {
+                str(getattr(p, "order_id", getattr(p, "ticket", ""))): p
+                for p in open_positions
+            }
+            broker_ids = [t for t in pos_by_ticket if t]
+            report = run_startup_recovery(get_event_store(), broker_ids)
+            # Adopt broker orphans (positions with no entry in the event log,
+            # e.g. opened during a crash window) into the log so the persistent
+            # lifecycle projection is consistent and the mismatch does not recur
+            # on every restart.  Emit a TRADE_OPEN with an audit marker; this is
+            # bookkeeping only — it never opens or closes a broker position.
+            if report is not None and report.orphan_at_broker:
+                es = get_event_store()
+                adopted = 0
+                for ticket in sorted(report.orphan_at_broker):
+                    pos = pos_by_ticket.get(ticket)
+                    if pos is None:
+                        continue
+                    try:
+                        es.emit(
+                            DE.TRADE_OPEN, "WARNING",
+                            symbol=getattr(pos, "symbol", "") or "",
+                            source_module="startup_orphan_adoption",
+                            payload={
+                                "order_id": ticket,
+                                "symbol": getattr(pos, "symbol", "") or "",
+                                "direction": getattr(pos, "direction", "") or "",
+                                "lots": float(getattr(pos, "lots", 0.0) or 0.0),
+                                "entry_price": _broker_entry_price(pos),
+                                "sl": float(getattr(pos, "sl", 0.0) or 0.0),
+                                "tp": _broker_tp(pos),
+                                "adopted": True,
+                                "reason": "orphan_at_broker_no_log_entry",
+                            },
+                        )
+                        adopted += 1
+                    except Exception as exc:
+                        logger.debug(
+                            "[recovery] orphan adoption emit failed for {}: {}",
+                            ticket, exc,
+                        )
+                if adopted:
+                    logger.warning(
+                        "[recovery] adopted {} broker orphan position(s) into the "
+                        "event log (audit: orphan_at_broker_no_log_entry)", adopted,
+                    )
         except Exception as exc:
             logger.debug("[event-driven] event-log reconciliation failed: {}", exc)
 
@@ -2263,23 +2316,43 @@ class EventDrivenSystem:
 
             # ── Daily flatten cap → close intents for breached accounts ──
             try:
+                fx_closed = self._is_fx_market_closed()
                 for acct, acct_pos in acct_positions.items():
                     if not ctx.account_risk.flatten_breached(acct):
                         continue
+                    submitted = 0
+                    deferred = 0
                     for pos in acct_pos:
                         ticket = str(getattr(pos, "order_id", "") or "")
                         sym = getattr(pos, "symbol", "")
-                        if ticket:
-                            self._aggregator.submit([Intent.close(
-                                symbol=sym,
-                                ticket=ticket,
-                                source="account_risk",
-                                reason="account_flatten_cap_breached",
-                            )])
-                    logger.warning(
-                        "[risk-state] account {} flatten cap breached — "
-                        "{} CLOSE intents submitted", acct, len(acct_pos),
-                    )
+                        if not ticket:
+                            continue
+                        # Don't spin closing session-gated instruments while the
+                        # market is closed (weekend): the broker rejects with
+                        # "Market closed", which would otherwise loop every cycle
+                        # and trip the executor circuit breaker.  24/7 synthetic
+                        # indices are always closeable and proceed normally.
+                        if fx_closed and not is_always_open(sym):
+                            deferred += 1
+                            continue
+                        self._aggregator.submit([Intent.close(
+                            symbol=sym,
+                            ticket=ticket,
+                            source="account_risk",
+                            reason="account_flatten_cap_breached",
+                        )])
+                        submitted += 1
+                    if submitted:
+                        logger.warning(
+                            "[risk-state] account {} flatten cap breached — "
+                            "{} CLOSE intents submitted", acct, submitted,
+                        )
+                    if deferred:
+                        logger.warning(
+                            "[risk-state] account {} flatten cap breached — "
+                            "{} close(s) deferred (market closed, will retry on "
+                            "session open)", acct, deferred,
+                        )
             except Exception as exc:
                 logger.debug("[risk-state] flatten-cap close failed: {}", exc)
 
