@@ -660,3 +660,136 @@ def vote_from_vwap(
         return VoteResult("LONG", conf, ev)
     else:
         return VoteResult("SHORT", conf, ev)
+
+
+def vote_from_inducement(inducement_analysis) -> VoteResult:
+    """Extract a signed vote from InducementAnalysis.
+
+    Inducement (stop hunts / fake breakouts / turtle soup / liquidity grabs)
+    is a reversal signal: the detector already resolves the post-trap
+    ``expected_direction`` (LONG after a sell-side sweep, SHORT after a
+    buy-side sweep) and its own confidence. We pass that through directly.
+    NEUTRAL/0 when nothing was detected or no direction resolved.
+    """
+    detected = bool(getattr(inducement_analysis, "inducement_detected", False))
+    direction = str(
+        getattr(inducement_analysis, "expected_direction", "NONE") or "NONE"
+    ).upper()
+    conf = float(getattr(inducement_analysis, "confidence", 0.0) or 0.0)
+    trap_type = getattr(inducement_analysis, "type", "NONE")
+    ev = {
+        "detected": detected,
+        "type": trap_type,
+        "expected_direction": direction,
+        "raw_confidence": conf,
+    }
+
+    if not detected or direction not in ("LONG", "SHORT"):
+        return VoteResult("NEUTRAL", 0.0, ev)
+
+    return VoteResult(direction, max(0.0, min(1.0, conf)), ev)
+
+
+def vote_from_volatility(
+    m5_df,
+    bias_direction: str,
+    *,
+    atr_window: int = 14,
+    baseline_window: int = 50,
+    expansion_ratio: float = 1.2,
+    max_expansion: float = 2.5,
+) -> VoteResult:
+    """Volatility-regime vote: expansion confirms the structural bias direction.
+
+    Volatility carries no direction of its own — it measures expansion vs
+    compression. So this analyst only votes when ATR is *expanding* AND the
+    structural bias already has a direction, reading the expansion as conviction
+    behind that move (continuation). In compression (coiling) it abstains —
+    NEUTRAL — because a quiet market has no directional edge to confirm.
+
+    ``expansion_ratio`` is the recent-vs-baseline ATR threshold above which the
+    market is treated as expanding; confidence scales linearly from there up to
+    ``max_expansion``. NEUTRAL/0 when ATR is unavailable or the bias has no
+    direction (fail-safe).
+    """
+    bd = str(bias_direction or "").upper()
+    ev: dict = {"bias_direction": bd}
+
+    if bd not in ("LONG", "SHORT"):
+        return VoteResult("NEUTRAL", 0.0, ev)
+
+    if m5_df is None or len(m5_df) < baseline_window + 1:
+        return VoteResult("NEUTRAL", 0.0, ev)
+
+    try:
+        from brain.volatility_stop import atr_series
+
+        recent = atr_series(m5_df, atr_window)
+        base = atr_series(m5_df, baseline_window)
+        if recent.empty or base.empty:
+            return VoteResult("NEUTRAL", 0.0, ev)
+        atr_recent = float(recent.iloc[-1])
+        atr_base = float(base.iloc[-1])
+    except Exception:
+        return VoteResult("NEUTRAL", 0.0, ev)
+
+    if (
+        not math.isfinite(atr_recent)
+        or not math.isfinite(atr_base)
+        or atr_base <= 0
+        or atr_recent <= 0
+    ):
+        return VoteResult("NEUTRAL", 0.0, ev)
+
+    ratio = atr_recent / atr_base
+    ev.update({
+        "atr_recent": round(atr_recent, 6),
+        "atr_baseline": round(atr_base, 6),
+        "expansion_ratio": round(ratio, 4),
+    })
+
+    if ratio < expansion_ratio:
+        # Compression / normal range — market coiling, no directional edge.
+        ev["regime"] = "COMPRESSION" if ratio < 1.0 else "NORMAL"
+        return VoteResult("NEUTRAL", 0.0, ev)
+
+    ev["regime"] = "EXPANSION"
+    span = max(1e-9, max_expansion - expansion_ratio)
+    conf = max(0.0, min(1.0, (ratio - expansion_ratio) / span))
+    return VoteResult(bd, conf, ev)
+
+
+def vote_from_correlation(correlation_signal) -> VoteResult:
+    """Intermarket-confirmation vote.
+
+    Confirms a direction when correlated instruments agree (e.g. a risk-on
+    basket rising together, or a USD-strength read aligning across the complex).
+    This is intermarket *confirmation* — distinct from exposure management,
+    which belongs to the Portfolio Division.
+
+    Expects a mapping ``{"direction": "LONG"|"SHORT", "confidence": float,
+    "agreement": float, "detail": str}`` (or any object exposing those
+    attributes). Returns NEUTRAL/0 when no intermarket read is supplied — the
+    per-symbol WorldModel carries none today, so this abstains until a
+    cross-pair confirmation feed is wired (fail-safe, behaviour-neutral).
+    """
+    if not correlation_signal:
+        return VoteResult("NEUTRAL", 0.0)
+
+    def _get(key: str, default):
+        if isinstance(correlation_signal, dict):
+            return correlation_signal.get(key, default)
+        return getattr(correlation_signal, key, default)
+
+    direction = str(_get("direction", "NEUTRAL") or "NEUTRAL").upper()
+    conf = float(_get("confidence", 0.0) or 0.0)
+    ev = {
+        "direction": direction,
+        "agreement": _get("agreement", None),
+        "detail": _get("detail", ""),
+    }
+
+    if direction not in ("LONG", "SHORT"):
+        return VoteResult("NEUTRAL", 0.0, ev)
+
+    return VoteResult(direction, max(0.0, min(1.0, conf)), ev)
