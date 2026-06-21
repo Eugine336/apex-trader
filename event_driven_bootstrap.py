@@ -1437,6 +1437,10 @@ class EventDrivenSystem:
 
         self._be_stop_cooldown: dict[str, float] = {}
         self._be_cooldown_seconds = 300.0
+        # Re-fire debounce for the ACTIVE consensus entry trigger (Phase 4):
+        # last unix-ts a zoneless consensus entry was dispatched per symbol, so
+        # a standing thesis is not re-submitted every candle close between fills.
+        self._consensus_entry_cooldown: dict[str, float] = {}
         self._paused = False
         self._register_tunable_adapters()
 
@@ -3698,7 +3702,167 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[rl] price/authority feed failed: {}", exc)
 
-    def _on_entry_decision(self, decision: dict[str, Any]) -> None:
+        # ── Consensus Division: ACTIVE market-driven entry trigger ────
+        # The big flip — when enabled, a sufficiently convicted consensus
+        # thesis initiates an entry on its own, with no structural zone
+        # required. Best-effort and fully guarded so it can never disrupt the
+        # analysis/feed path above; a no-op unless the operator turns it on.
+        try:
+            sym = getattr(event, "symbol", "")
+            if sym:
+                self._evaluate_consensus_entry(sym)
+        except Exception as exc:
+            logger.debug("[consensus-trigger] evaluation failed: {}", exc)
+
+    def _evaluate_consensus_entry(self, symbol: str) -> None:
+        """Consensus Division — ACTIVE, market-driven entry trigger (Phase 4).
+
+        Independent of any structural zone: when the full analyst panel forms a
+        thesis whose conviction clears ``ConsensusConfig.conviction_threshold``,
+        the Consensus Division itself initiates an entry candidate. Direction
+        comes from the weighted vote (never from a zone bias), SL/TP are
+        ATR-derived, and the candidate flows through the SAME
+        ``_on_entry_decision`` pipeline (Compliance → Portfolio → Execution) as
+        every other entry. Gated behind ``active_trigger_enabled`` so it is
+        behaviour-neutral until the operator enables it.
+
+        There is deliberately no frequency governor — only a re-fire debounce
+        (``trigger_cooldown_seconds``); the Learning Division tightens
+        conviction organically through outcomes, and Compliance owns the
+        authoritative duplicate / risk vetoes.
+        """
+        cfg = getattr(self._config, "consensus", None)
+        if cfg is None or not getattr(cfg, "active_trigger_enabled", False):
+            return
+
+        try:
+            wm = self._wm_store.get(symbol)
+        except Exception:
+            wm = None
+        if wm is None:
+            return
+        votes = list(getattr(wm, "votes", ()) or [])
+        if not votes:
+            return
+
+        from brain.directional_consensus import form_thesis
+
+        try:
+            thesis = form_thesis(
+                votes,
+                min_net_score=cfg.min_net_score,
+                min_agreement=cfg.min_agreement,
+                high_authority_modules=list(cfg.high_authority_modules),
+                high_authority_oppose_confidence=cfg.high_authority_oppose_confidence,
+                min_contributors=cfg.min_contributors,
+                conviction_threshold=cfg.conviction_threshold,
+                net_scale=cfg.net_scale,
+            )
+        except Exception as exc:
+            logger.debug("[consensus-trigger] {} thesis failed: {}", symbol, exc)
+            return
+
+        # Always log the thesis (visibility) — even when it does not trigger.
+        logger.debug("[consensus-trigger] {} {}", symbol, thesis.summary)
+        if not thesis.trigger:
+            return
+
+        direction = thesis.direction  # "LONG" | "SHORT"
+
+        # Re-fire debounce: avoid resubmitting the same standing thesis every
+        # candle. Compliance still enforces the authoritative duplicate veto.
+        now = _time.time()
+        if now < self._consensus_entry_cooldown.get(symbol, 0.0):
+            return
+
+        # Cheap pre-check: skip if we already hold this pair in this direction.
+        try:
+            long_aliases = {"LONG", "BUY"}
+            short_aliases = {"SHORT", "SELL"}
+            want = long_aliases if direction == "LONG" else short_aliases
+            for p in (self._pm.get_all_open_positions() or []):
+                if isinstance(p, dict):
+                    psym = str(p.get("symbol", ""))
+                    pdir = str(p.get("direction", "") or p.get("type", ""))
+                else:
+                    psym = str(getattr(p, "symbol", ""))
+                    pdir = str(getattr(p, "direction", "") or getattr(p, "type", ""))
+                if psym == symbol and pdir.upper() in want:
+                    return
+        except Exception:
+            pass
+
+        # Reference price + ATR for a zoneless SL/TP. The order fills at market;
+        # these define risk geometry only.
+        m5 = self._fetch_candles(symbol, "M5", max(60, int(cfg.atr_period) + 20))
+        if m5 is None or len(m5) < max(15, int(cfg.atr_period) + 1):
+            return
+        try:
+            entry_price = float(m5["close"].iloc[-1])
+        except Exception:
+            return
+        if entry_price <= 0:
+            return
+
+        try:
+            from brain.volatility_stop import latest_atr
+            atr = latest_atr(m5, int(cfg.atr_period))
+        except Exception as exc:
+            logger.debug("[consensus-trigger] {} ATR failed: {}", symbol, exc)
+            return
+        if not atr or atr <= 0:
+            return
+
+        sl_dist = float(atr) * float(cfg.atr_sl_mult)
+        if sl_dist <= 0:
+            return
+        if direction == "LONG":
+            sl = entry_price - sl_dist
+            tp1 = entry_price + sl_dist * float(cfg.atr_tp1_rr)
+            tp2 = entry_price + sl_dist * float(cfg.atr_tp2_rr)
+        else:
+            sl = entry_price + sl_dist
+            tp1 = entry_price - sl_dist * float(cfg.atr_tp1_rr)
+            tp2 = entry_price - sl_dist * float(cfg.atr_tp2_rr)
+
+        score = int(round(max(0.0, min(1.0, thesis.conviction)) * 100))
+        try:
+            risk_pips = abs(entry_price - sl) / self._safe_pip_size(symbol)
+        except Exception:
+            risk_pips = 0.0
+        try:
+            spread_pips = self._get_spread_pips(symbol)
+        except Exception:
+            spread_pips = 0.0
+
+        decision = {
+            "symbol": symbol,
+            "direction": direction,
+            "entry_price": entry_price,
+            "stop_loss": round(sl, 8),
+            "tp1": round(tp1, 8),
+            "tp2": round(tp2, 8),
+            "conviction": score,
+            "zone_type": "",
+            "timeframe": "M5",
+            "source": "consensus",
+            "consensus_conviction": thesis.conviction,
+            "risk_pips": risk_pips,
+            "spread_pips": spread_pips,
+        }
+
+        logger.info(
+            "[consensus-trigger] {} {} thesis conviction={:.2f} → ENTRY @ {:.5f} "
+            "SL={:.5f} TP={:.5f} (zoneless, market-driven)",
+            symbol, direction, thesis.conviction, entry_price, sl, tp1,
+        )
+        self._consensus_entry_cooldown[symbol] = now + float(
+            getattr(cfg, "trigger_cooldown_seconds", 300.0)
+        )
+        try:
+            self._on_entry_decision(decision)
+        except Exception:
+            logger.exception("[consensus-trigger] {} entry dispatch failed", symbol)
         """Handle entry decisions from EntryOrchestrator.
 
         Permit / sizing pipeline before an order is placed:

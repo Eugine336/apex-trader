@@ -250,6 +250,127 @@ def decide(
     )
 
 
+@dataclass
+class ConsensusThesis:
+    """The Consensus Division's market thesis for one symbol on one cycle.
+
+    Where :class:`DirectionDecision` is the raw weighted-vote outcome, the
+    thesis is the *actionable* read the Consensus Division emits every analysis
+    cycle: a direction, a single bounded ``conviction`` scalar in ``[0, 1]``, the
+    structured panel split (supporting / opposing / abstaining), and a
+    ``trigger`` flag that is True only when the thesis is convicted enough to
+    *initiate* an entry on its own — no structural zone required. The full
+    :class:`DirectionDecision` is retained on ``decision`` so nothing downstream
+    is forced to read a collapsed scalar (the structure is never thrown away).
+
+    ``trigger=True`` is the market-driven entry signal: the intelligence layer
+    decided, based purely on what the market is doing. Conviction is derived
+    from how strongly the panel agrees (``agreement``) and how decisive the net
+    weighted vote is (``net_score`` saturated by ``net_scale``) — both already
+    incorporate the live :class:`VoteCalibrator` weights applied upstream.
+    """
+
+    direction: str                      # "LONG" | "SHORT" | "NEUTRAL"
+    conviction: float                   # 0.0 .. 1.0
+    decision: DirectionDecision         # full structured panel (never collapsed away)
+    supporting: list[Vote] = field(default_factory=list)
+    opposing: list[Vote] = field(default_factory=list)
+    abstaining: list[Vote] = field(default_factory=list)
+    trigger: bool = False
+
+    @property
+    def supporting_modules(self) -> list[str]:
+        return [v.module for v in self.supporting]
+
+    @property
+    def opposing_modules(self) -> list[str]:
+        return [v.module for v in self.opposing]
+
+    @property
+    def summary(self) -> str:
+        sup = ", ".join(self.supporting_modules) if self.supporting else "none"
+        opp = ", ".join(self.opposing_modules) if self.opposing else "none"
+        return (
+            f"thesis {self.direction} conviction={self.conviction:.2f} "
+            f"trigger={self.trigger} "
+            f"(net={self.decision.net_score:+.2f} agree={self.decision.agreement:.0%}; "
+            f"for: {sup}; against: {opp})"
+        )
+
+
+def form_thesis(
+    votes: list[Vote],
+    *,
+    min_net_score: float,
+    min_agreement: float,
+    high_authority_modules: list[str],
+    high_authority_oppose_confidence: float,
+    min_contributors: int = 1,
+    conviction_threshold: float = 0.62,
+    net_scale: float = 0.0,
+    log_suppressed_minorities: bool = False,
+) -> ConsensusThesis:
+    """Turn a vote panel into an actionable :class:`ConsensusThesis`.
+
+    Runs the existing weighted :func:`decide` (so all of its NEUTRAL guards —
+    net-score floor, agreement floor, high-authority opposition veto, minimum
+    contributors — still apply), then derives a single bounded ``conviction``
+    scalar and a ``trigger`` flag. ``trigger`` is True only when a directional
+    thesis forms AND ``conviction >= conviction_threshold`` — that is the
+    market-driven, zone-independent entry signal.
+
+    ``conviction`` blends panel agreement (how unanimous the non-neutral voters
+    are) with net decisiveness (``|net_score|`` saturated by ``net_scale``;
+    ``net_scale<=0`` derives a sane scale from ``min_net_score``). Both inputs
+    are in ``[0, 1]`` so conviction is too. NEUTRAL theses carry conviction 0.0
+    and never trigger.
+    """
+    decision = decide(
+        votes,
+        min_net_score=min_net_score,
+        min_agreement=min_agreement,
+        high_authority_modules=high_authority_modules,
+        high_authority_oppose_confidence=high_authority_oppose_confidence,
+        min_contributors=min_contributors,
+        log_suppressed_minorities=log_suppressed_minorities,
+    )
+
+    direction = decision.direction
+    if direction not in ("LONG", "SHORT"):
+        return ConsensusThesis(
+            direction="NEUTRAL",
+            conviction=0.0,
+            decision=decision,
+            supporting=[],
+            opposing=[v for v in decision.votes if v.direction not in ("NEUTRAL", direction)],
+            abstaining=[v for v in decision.votes if v.direction == "NEUTRAL"],
+            trigger=False,
+        )
+
+    scale = net_scale if net_scale and net_scale > 0 else max(min_net_score * 2.0, 1e-9)
+    net_sat = min(1.0, abs(decision.net_score) / scale)
+    conviction = round(min(1.0, 0.5 * decision.agreement + 0.5 * net_sat), 4)
+
+    supporting = [v for v in decision.votes if v.direction == direction]
+    opposing = [
+        v for v in decision.votes
+        if v.direction not in ("NEUTRAL", direction)
+    ]
+    abstaining = [v for v in decision.votes if v.direction == "NEUTRAL"]
+
+    trigger = conviction >= conviction_threshold
+
+    return ConsensusThesis(
+        direction=direction,
+        conviction=conviction,
+        decision=decision,
+        supporting=supporting,
+        opposing=opposing,
+        abstaining=abstaining,
+        trigger=trigger,
+    )
+
+
 def decide_opportunities(
     votes: list[Vote],
     *,
