@@ -4721,7 +4721,20 @@ class EventDrivenSystem:
                         is_loser, loser_reason = ctx.ml_adapter.is_losing_pattern(
                             symbol, _regime, _session, _zone_type,
                         )
-                        if is_loser:
+                        # Learning recommends the block; Governance authorises it
+                        # (auto-approved until Phase 7 → identical behaviour).
+                        if is_loser and self._recommendation_approved(
+                            "AVOID_PATTERN",
+                            {
+                                "pair": symbol,
+                                "regime": _regime,
+                                "session": _session,
+                                "entry_type": _zone_type,
+                                "reason": loser_reason,
+                            },
+                            source="optimizer.losing_pattern",
+                            confidence=0.8,
+                        ):
                             logger.warning(
                                 "EVENT-DRIVEN ENTRY BLOCKED | {} — losing pattern: {}",
                                 symbol, loser_reason,
@@ -4735,8 +4748,21 @@ class EventDrivenSystem:
                     # Honor the optimizer's AVOID veto. When should_trade is
                     # False (regime/pair/session flagged AVOID) the size
                     # multiplier is left at its 1.0 default — reading it alone
-                    # silently traded at full size through the veto.
-                    if not getattr(adj, "should_trade", True):
+                    # silently traded at full size through the veto. The veto is
+                    # a Learning recommendation; Governance authorises it
+                    # (auto-approved until Phase 7 → identical behaviour).
+                    if not getattr(adj, "should_trade", True) and \
+                            self._recommendation_approved(
+                                "AVOID_PATTERN",
+                                {
+                                    "pair": symbol,
+                                    "regime": _regime,
+                                    "session": _session,
+                                    "reason": getattr(adj, "reason", ""),
+                                },
+                                source="optimizer.avoid_veto",
+                                confidence=float(getattr(adj, "confidence", 0.0) or 0.0),
+                            ):
                         logger.warning(
                             "EVENT-DRIVEN ENTRY BLOCKED | {} — optimizer AVOID: {}",
                             symbol, getattr(adj, "reason", "")[:80],
@@ -4746,9 +4772,19 @@ class EventDrivenSystem:
                             "optimizer_avoid", conviction,
                         )
                         return
-                    adapt_mult = float(
+                    # Position-size multiplier is a SIZE_ADJUST recommendation —
+                    # applied on approval, neutral (1.0) if Governance rejects.
+                    _opt_mult = float(
                         getattr(adj, "position_size_multiplier", 1.0) or 1.0
                     )
+                    if _opt_mult != 1.0 and not self._recommendation_approved(
+                        "SIZE_ADJUST",
+                        {"multiplier": _opt_mult, "pair": symbol},
+                        source="optimizer.size",
+                        confidence=float(getattr(adj, "confidence", 0.0) or 0.0),
+                    ):
+                        _opt_mult = 1.0
+                    adapt_mult = _opt_mult
                 except Exception as exc:
                     logger.debug("[adaptive] optimizer adjust failed: {}", exc)
                     adapt_mult = 1.0
@@ -4793,6 +4829,15 @@ class EventDrivenSystem:
                         extra=regime_str,
                     )
                     cap_mult = ctx.capital_allocator.get_sizing_multiplier(fp)
+                    # Capital-allocation sizing is a SIZE_ADJUST recommendation —
+                    # applied on approval, neutral (1.0) if Governance rejects.
+                    if cap_mult != 1.0 and not self._recommendation_approved(
+                        "SIZE_ADJUST",
+                        {"multiplier": float(cap_mult), "fingerprint": str(fp),
+                         "pair": symbol},
+                        source="capital_allocator",
+                    ):
+                        cap_mult = 1.0
                 except Exception as exc:
                     logger.warning("[cap-alloc] sizing multiplier failed: {}", exc)
 
@@ -4812,6 +4857,18 @@ class EventDrivenSystem:
                         regime=regime_str,
                         consensus_strength=float(conviction) / 100.0 if conviction else 0.5,
                     )
+                    # Execution-profile selection is a PROFILE_CHANGE recommendation
+                    # — applied on approval, dropped if Governance rejects.
+                    if exec_profile is not None and not self._recommendation_approved(
+                        "PROFILE_CHANGE",
+                        {
+                            "profile": getattr(exec_profile, "name", str(exec_profile)),
+                            "regime": regime_str,
+                            "pair": symbol,
+                        },
+                        source="execution_profiles",
+                    ):
+                        exec_profile = None
                 except Exception as exc:
                     logger.debug("[exec-prof] profile selection failed: {}", exc)
 
@@ -5195,6 +5252,40 @@ class EventDrivenSystem:
                 ctx.shadow_store.insert_contract(contract)
             except Exception as exc:
                 logger.debug("[shadow] rejection record failed: {}", exc)
+
+    def _recommendation_approved(
+        self,
+        rec_type: str,
+        payload: dict,
+        *,
+        source: str,
+        confidence: float = 0.0,
+        evidence: Optional[dict] = None,
+    ) -> bool:
+        """Submit a Learning recommendation through the gateway, return approval.
+
+        This is the Department ⑦→⑧ boundary: Learning recommends, Governance
+        authorises. When no gateway is wired (or governance is not required) the
+        recommendation is auto-approved, so the caller applies the learner's
+        change exactly as before — behaviour-neutral. Never raises.
+        """
+        ctx = self._ctx
+        gateway = getattr(ctx, "recommendation_gateway", None) if ctx else None
+        if gateway is None:
+            return True
+        try:
+            from adaptive.recommendations import LearningRecommendation
+            rec = LearningRecommendation(
+                source=source,
+                recommendation_type=rec_type,
+                payload=dict(payload or {}),
+                confidence=float(confidence),
+                evidence=dict(evidence or {}),
+            )
+            return bool(gateway.submit(rec).approved)
+        except Exception as exc:  # noqa: BLE001 — authorisation overlay must never block trading
+            logger.debug("[recommendations] submit failed ({}): {}", rec_type, exc)
+            return True
 
     # ── Trade close feedback chain ───────────────────────────────────
 

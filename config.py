@@ -2838,6 +2838,24 @@ class OpsConfig:
 
 
 @dataclass
+class LearningGovernanceConfig:
+    """Settings for the Learning → Governance recommendation pipeline (P6/P7).
+
+    The Learning Division (⑦) emits recommendations instead of mutating the live
+    path directly; the :class:`adaptive.recommendations.RecommendationGateway`
+    is the authorisation boundary.
+
+    ``governance_required`` defaults to ``False`` so every recommendation is
+    auto-approved — i.e. behaviour is identical to applying the learner's change
+    directly. Phase 7 (Governance) flips this to ``True`` and injects a real
+    authoriser, at which point a recommendation only takes effect once approved.
+    """
+
+    governance_required: bool = False
+    recommendation_history_limit: int = 500
+
+
+@dataclass
 class AppConfig:
     # All 4 categories enabled — forex, commodity, index, synthetic
     enabled_categories: list[str] = field(
@@ -2866,6 +2884,9 @@ class AppConfig:
     counterfactual: CounterfactualConfig = field(default_factory=CounterfactualConfig)
     interaction: InteractionConfig = field(default_factory=InteractionConfig)
     param_evolution: ParameterEvolutionConfig = field(default_factory=ParameterEvolutionConfig)
+    learning_governance: LearningGovernanceConfig = field(
+        default_factory=LearningGovernanceConfig
+    )
     signal_discovery: SignalDiscoveryConfig = field(default_factory=SignalDiscoveryConfig)
     capital_allocation: CapitalAllocationConfig = field(default_factory=CapitalAllocationConfig)
     execution_profiles: ExecutionProfileConfig = field(default_factory=ExecutionProfileConfig)
