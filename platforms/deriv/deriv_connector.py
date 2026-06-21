@@ -201,11 +201,16 @@ class DerivConnector(BaseConnector):
         self._mapper = SymbolMapper("deriv")
 
         self._discovered_multipliers: dict[str, list[int]] = {}
-        # Some Deriv accounts/contracts reject ``symbol`` inside the buy
-        # ``parameters`` shortcut ("Properties not allowed: symbol"). Once we
-        # observe that, route subsequent orders straight through the canonical
-        # proposal→buy flow instead of re-sending the rejected payload each time.
-        self._buy_parameters_unsupported = False
+        # Deriv's documented multiplier-contract flow is proposal→buy, where the
+        # contract definition (including ``symbol``) lives in the ``proposal``
+        # request and the ``buy`` only references the returned proposal id.  The
+        # buy-with-inline-``parameters`` shortcut rejects ``symbol`` on these
+        # accounts ("Properties not allowed: symbol"), so default to the
+        # canonical proposal→buy flow from the first order instead of always
+        # failing the first buy of each session and then falling back.  Left as
+        # an instance flag so a future account that accepts the shortcut could
+        # re-enable it, but it is never the path we try first.
+        self._buy_parameters_unsupported = True
 
         self._loop = asyncio.new_event_loop()
         self._loop_thread = threading.Thread(
@@ -627,7 +632,25 @@ class DerivConnector(BaseConnector):
         return asyncio.Lock()
 
     async def _discover_multipliers(self) -> None:
-        """Query Deriv contracts_for API to discover valid multipliers per symbol."""
+        """Discover valid multipliers per Deriv symbol straight from the broker.
+
+        Broker-driven, not config-driven.  Pulls the live ``active_symbols`` set
+        so only real, tradeable Deriv symbol names are ever queried, then runs
+        ``contracts_for`` for every enabled instrument that maps onto one of
+        those symbols (plus any symbol already named in deriv.json).  The
+        discovered multiplier lists are cached in ``self._discovered_multipliers``
+        so live orders size on broker truth instead of the conservative
+        hard-coded fallback — this is what lets a symbol like ``JD25`` (enabled,
+        but absent from deriv.json) get its real multipliers without a manual
+        config edit.
+
+        Fully fail-safe: any failure leaves discovery partial and the fallback
+        path intact; never raises and never blocks connect.  Already-discovered
+        symbols are skipped so a reconnect only fills gaps rather than re-querying
+        the whole universe.
+        """
+        # 1. Symbols named in the static config (back-compat: metals, overrides).
+        config_syms: set[str] = set()
         try:
             cfg_path = __file__.replace(
                 "platforms/deriv/deriv_connector.py",
@@ -635,15 +658,66 @@ class DerivConnector(BaseConnector):
             )
             with open(cfg_path) as f:
                 cfg = json.load(f)
-            mult_keys = set(cfg.get("multipliers", {}).keys())
-            override_vals = set(cfg.get("overrides", {}).values())
-            symbols = sorted((mult_keys | override_vals) - {"_default"})
+            config_syms = (
+                set(cfg.get("multipliers", {}).keys())
+                | set(cfg.get("overrides", {}).values())
+            )
         except Exception:
-            symbols = []
+            config_syms = set()
 
-        for sym in symbols:
-            if sym.startswith("_"):
-                continue
+        # 2. Live tradeable symbol set from the broker (the source of truth for
+        #    valid symbol NAMES — avoids querying names we invented ourselves).
+        active: set[str] = set()
+        try:
+            resp = await self._send_raw(
+                {"active_symbols": "brief", "product_type": "basic"},
+                allow_reconnect=False,
+            )
+            if not resp.get("error"):
+                active = {
+                    str(s.get("symbol"))
+                    for s in resp.get("active_symbols", [])
+                    if s.get("symbol")
+                }
+                logger.info("Deriv active_symbols — {} tradeable symbols", len(active))
+        except Exception as exc:
+            logger.debug("Deriv active_symbols fetch failed: {}", exc)
+
+        # 3. Every enabled Deriv instrument mapped to its broker symbol.  This
+        #    is what extends discovery beyond the static config to cover all
+        #    synthetics the system actually trades.  Restricted to DERIV-platform
+        #    instruments (the multiplier contracts) so we don't waste a
+        #    contracts_for round-trip on MT5-routed forex/indices.
+        mapped_enabled: set[str] = set()
+        try:
+            from config import INSTRUMENT_REGISTRY, Platform
+
+            for apex_sym, info in INSTRUMENT_REGISTRY.items():
+                if getattr(info, "platform", None) != Platform.DERIV:
+                    continue
+                try:
+                    broker_sym = self.symbol_map(apex_sym)
+                except Exception:
+                    continue
+                if broker_sym:
+                    mapped_enabled.add(broker_sym)
+        except Exception as exc:
+            logger.debug("Deriv enabled-symbol mapping failed: {}", exc)
+
+        candidates = {
+            s for s in (config_syms | mapped_enabled)
+            if s and not str(s).startswith("_")
+        }
+        # When the broker gave us its live list, only query names it actually
+        # offers (a symbol not in active_symbols is not tradeable here, so a
+        # contracts_for call would just error).  If the active fetch failed,
+        # fall back to querying every candidate so discovery still runs.
+        if active:
+            candidates &= active
+
+        for sym in sorted(candidates):
+            if sym in self._discovered_multipliers:
+                continue  # reconnect: only fill gaps, don't re-query everything
             try:
                 resp = await self._send_raw(
                     {"contracts_for": sym, "currency": "USD", "product_type": "basic"},
@@ -657,13 +731,12 @@ class DerivConnector(BaseConnector):
                     ctype = contract.get("contract_type", "")
                     if ctype not in ("MULTUP", "MULTDOWN"):
                         continue
-                    if "multiplier_range" in contract:
-                        mrange = contract["multiplier_range"]
-                        for v in mrange:
-                            mults.add(int(v))
-                    if "multipliers" in contract:
-                        for v in contract["multipliers"]:
-                            mults.add(int(v))
+                    for key in ("multiplier_range", "multipliers"):
+                        for v in contract.get(key, []) or []:
+                            try:
+                                mults.add(int(v))
+                            except (TypeError, ValueError):
+                                continue
                 if mults:
                     sorted_mults = sorted(mults)
                     self._discovered_multipliers[sym] = sorted_mults
