@@ -19,7 +19,7 @@ import time as _time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import pandas as pd
 from loguru import logger
@@ -126,11 +126,17 @@ class MT5TickPoller:
         tick_router: TickRouter,
         symbols: list[str],
         poll_interval: float = 0.05,
+        should_poll: Optional[Callable[[str], bool]] = None,
     ) -> None:
         self._pm = platform_manager
         self._router = tick_router
         self._symbols = list(symbols)
         self._interval = poll_interval
+        # Gate that returns False when a symbol's market is currently closed
+        # (e.g. session-gated FX/commodity/index instruments on the weekend).
+        # Closed symbols are skipped before any broker call, so they neither
+        # emit stale-tick warnings nor accrue toward permanent removal.
+        self._should_poll = should_poll or (lambda _sym: True)
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._error_counts: dict[str, int] = {}
@@ -163,6 +169,11 @@ class MT5TickPoller:
                 if not self._running:
                     break
                 if sym in removed:
+                    continue
+                # Skip symbols whose market is closed (weekend FX/commodity/
+                # index).  No broker call, no stale-tick warning, no failure
+                # count — polling resumes automatically when the market reopens.
+                if not self._should_poll(sym):
                     continue
                 try:
                     td = self._pm.get_price(sym)
@@ -218,11 +229,17 @@ class DerivTickAdapter:
         tick_router: TickRouter,
         symbols: list[str],
         poll_interval: float = 0.1,
+        should_poll: Optional[Callable[[str], bool]] = None,
     ) -> None:
         self._pm = platform_manager
         self._router = tick_router
         self._symbols = list(symbols)
         self._interval = poll_interval
+        # Gate that returns False when a symbol's market is currently closed.
+        # Deriv serves both 24/7 synthetics (always polled) and session-gated
+        # FX/commodity mirrors (skipped on the weekend) — the gate keeps the
+        # weekend log quiet without dropping the 24/7 feed.
+        self._should_poll = should_poll or (lambda _sym: True)
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._error_counts: dict[str, int] = {}
@@ -252,6 +269,10 @@ class DerivTickAdapter:
             for sym in self._symbols:
                 if not self._running:
                     break
+                # Skip closed-market symbols (weekend FX/commodity mirrors).
+                # 24/7 synthetics always pass the gate and keep streaming.
+                if not self._should_poll(sym):
+                    continue
                 try:
                     td = self._pm.get_price(sym)
                     if td is not None and td.bid > 0:
@@ -1635,9 +1656,11 @@ class EventDrivenSystem:
         mt5_symbols, deriv_symbols = self._classify_symbols()
         self._mt5_poller = MT5TickPoller(
             self._pm, self._tick_router, mt5_symbols,
+            should_poll=self._should_poll_symbol,
         )
         self._deriv_adapter = DerivTickAdapter(
             self._pm, self._tick_router, deriv_symbols,
+            should_poll=self._should_poll_symbol,
         )
 
         # ── Event wiring ─────────────────────────────────────────────
@@ -3697,6 +3720,30 @@ class EventDrivenSystem:
             return ctx.session_engine.get_status().current_session == "WEEKEND"
         except Exception:
             return False
+
+    def _should_poll_symbol(self, symbol: str) -> bool:
+        """True when *symbol*'s market is currently open and worth polling.
+
+        Polling gate for the tick adapters.  24/7 instruments (Deriv synthetics
+        and crypto) are always polled.  Session-gated 24/5 instruments (forex,
+        commodities, indices) are skipped while the FX market is closed
+        (weekend), which stops the stale-tick warning flood and prevents the
+        consecutive-failure removal from dropping symbols that are merely
+        closed.  Polling resumes automatically when the market reopens — no
+        symbol is permanently removed for a weekend closure.
+
+        Fail-open: any uncertainty (unknown symbol, SessionEngine error)
+        defaults to polling so a real feed is never silently starved.
+        """
+        try:
+            if is_always_open(symbol):
+                return True
+        except Exception:
+            return True
+        try:
+            return not self._is_fx_market_closed()
+        except Exception:
+            return True
 
     def _build_worker_config(self) -> WorkerConfig:
         """Build the PositionWorker config, mapping AppConfig weekend-protection
