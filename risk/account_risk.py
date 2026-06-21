@@ -97,6 +97,16 @@ class AccountRiskManager:
     def heat_blocked(self, account: str) -> bool:
         return self._heat.get(account, 0.0) >= self.heat_block_pct
 
+    def heat_accounts(self) -> list[str]:
+        """Account keys that currently carry a heat reading.
+
+        Lets the heat monitor zero out accounts whose positions have all
+        closed: heat is only re-computed for accounts that still hold open
+        positions, so without an explicit zero a stale reading would persist
+        and keep blocking new entries with zero live exposure.
+        """
+        return list(self._heat.keys())
+
     def clear_heat(self) -> None:
         self._heat.clear()
 
