@@ -99,10 +99,11 @@ def test_conviction_is_bounded_unit_interval():
 
 # ── Config wiring + validation ────────────────────────────────────────────
 
-def test_consensus_config_active_trigger_defaults_off():
+def test_consensus_config_active_trigger_defaults_on():
     cfg = ConsensusConfig()
-    # Behaviour-neutral by default — the operator opts in to the market-driven trigger.
-    assert cfg.active_trigger_enabled is False
+    # Market-driven trigger is active by default — the intelligence layer can
+    # initiate entries without a structural zone.
+    assert cfg.active_trigger_enabled is True
     assert 0.0 <= cfg.conviction_threshold <= 1.0
     assert cfg.atr_period >= 1
     assert cfg.atr_sl_mult > 0 and cfg.atr_tp1_rr > 0 and cfg.atr_tp2_rr > 0
