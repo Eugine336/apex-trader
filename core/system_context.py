@@ -61,6 +61,7 @@ if TYPE_CHECKING:
     from adaptive.module_governor import ModuleGovernor
     from adaptive.optimizer import AdaptiveOptimizer
     from adaptive.post_close_tracker import PostCloseTracker
+    from adaptive.recommendations import RecommendationGateway
     from adaptive.signal_ledger import SignalLedger
     from adaptive.tuner_agent import TunerAgent
     from adaptive.vote_calibrator import VoteCalibrator
@@ -118,6 +119,7 @@ class SystemContext:
     interaction_analyzer: Optional[InteractionAnalyzer] = None
     shadow_store: Optional[ShadowStore] = None
     tuner_agent: Optional[TunerAgent] = None
+    recommendation_gateway: Optional[RecommendationGateway] = None
     ml_adapter: Optional[AdaptiveOptimizer] = None
     win_rate_provider: Optional[Any] = None
     rl_bridge: Optional[Any] = None
@@ -472,6 +474,25 @@ class SystemContext:
         except Exception as exc:
             logger.warning("[SystemContext] CounterfactualEngine init failed: {}", exc)
 
+        # ── RecommendationGateway (Learning ⑦ → Governance ⑧ boundary) ──
+        # The single authorisation chokepoint every Learning recommendation
+        # passes through. Auto-approves while governance is not required (the
+        # default), so routing learners through it is behaviour-neutral; Phase 7
+        # flips governance_required on and injects an authoriser.
+        try:
+            from adaptive.recommendations import RecommendationGateway as _RecGateway
+            lg_cfg = getattr(config, "learning_governance", None)
+            ctx.recommendation_gateway = _RecGateway(
+                governance_required=bool(
+                    getattr(lg_cfg, "governance_required", False) if lg_cfg else False
+                ),
+                history_limit=int(
+                    getattr(lg_cfg, "recommendation_history_limit", 500) if lg_cfg else 500
+                ),
+            )
+        except Exception as exc:
+            logger.warning("[SystemContext] RecommendationGateway init failed: {}", exc)
+
         # ── VoteCalibrator ──────────────────────────────────────────
         try:
             from adaptive.vote_calibrator import VoteCalibrator as _VoteCalib
@@ -481,6 +502,26 @@ class SystemContext:
             )
             if ctx.counterfactual_engine is not None:
                 ctx.vote_calibrator.set_counterfactual(ctx.counterfactual_engine)
+            if ctx.outcome_feedback is not None:
+                try:
+                    ctx.vote_calibrator.set_outcome_feedback(ctx.outcome_feedback)
+                except Exception as exc:
+                    logger.warning(
+                        "[SystemContext] VoteCalibrator→outcome_feedback wire failed: {}",
+                        exc,
+                    )
+            # Route weight-multiplier publication through the recommendation
+            # gateway (Learning recommends → Governance authorises). Auto-approved
+            # until Phase 7, so calibration behaviour is unchanged.
+            if ctx.recommendation_gateway is not None:
+                try:
+                    ctx.vote_calibrator.set_recommendation_gateway(
+                        ctx.recommendation_gateway
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[SystemContext] VoteCalibrator→gateway wire failed: {}", exc
+                    )
         except Exception as exc:
             logger.warning("[SystemContext] VoteCalibrator init failed: {}", exc)
 
@@ -528,6 +569,17 @@ class SystemContext:
                     lookback=getattr(ia_cfg, "lookback", 500) if ia_cfg else 500,
                     interval=getattr(ia_cfg, "interval", 500) if ia_cfg else 500,
                 )
+                # Toxic module-pair findings flow to Governance as recommendations.
+                if ctx.recommendation_gateway is not None:
+                    try:
+                        ctx.interaction_analyzer.set_recommendation_gateway(
+                            ctx.recommendation_gateway
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[SystemContext] InteractionAnalyzer→gateway wire failed: {}",
+                            exc,
+                        )
         except Exception as exc:
             logger.warning("[SystemContext] InteractionAnalyzer init failed: {}", exc)
 

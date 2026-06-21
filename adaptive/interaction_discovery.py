@@ -262,6 +262,11 @@ class InteractionAnalyzer:
         self._lock = threading.RLock()
         self._conn: Optional[sqlite3.Connection] = None
         self._last_computed_trades: int = 0
+        # Optional Learning→Governance recommendation gateway. When wired, the
+        # toxic module-pair findings are emitted as TOXIC_PAIR_BLOCK
+        # recommendations for Governance (Phase 7) to act on. Observational only:
+        # this engine never enforces — it reports.
+        self._recommendation_gateway = None
         try:
             self._db_path.parent.mkdir(parents=True, exist_ok=True)
         except Exception as exc:  # noqa: BLE001
@@ -293,6 +298,14 @@ class InteractionAnalyzer:
                 except Exception:  # noqa: BLE001
                     logger.debug("[interaction] conn.close() failed")
                 self._conn = None
+
+    def set_recommendation_gateway(self, gateway) -> None:
+        """Inject (or clear) the Learning→Governance recommendation gateway.
+
+        When wired, each recompute emits the discovered toxic module pairs as
+        TOXIC_PAIR_BLOCK recommendations for Governance to consume. The analyzer
+        still enforces nothing — it only reports through the pipeline."""
+        self._recommendation_gateway = gateway
 
     @property
     def lookback(self) -> int:
@@ -581,7 +594,42 @@ class InteractionAnalyzer:
         except Exception as exc:  # noqa: BLE001 — logging must never break compute
             logger.debug("[interaction] summary log failed: {}", exc)
 
+        # Emit toxic module-pair findings as recommendations for Governance
+        # (Phase 7). Recorded through the gateway only — never enforced here, so
+        # this changes no live behaviour.
+        self._emit_toxic_recommendations(toxic)
+
         return payload
+
+    def _emit_toxic_recommendations(self, toxic: list[dict]) -> None:
+        """Submit each toxic module pair as a TOXIC_PAIR_BLOCK recommendation.
+
+        No-op when no gateway is wired or there are no toxic pairs. Never raises
+        — a fault here must not break the (periodic) compute pass.
+        """
+        gateway = self._recommendation_gateway
+        if gateway is None or not toxic:
+            return
+        try:
+            from adaptive.recommendations import (
+                LearningRecommendation,
+                RecommendationType,
+            )
+            for pair in toxic:
+                rec = LearningRecommendation(
+                    source="interaction_analyzer",
+                    recommendation_type=RecommendationType.TOXIC_PAIR_BLOCK,
+                    payload={
+                        "module_a": pair.get("module_a"),
+                        "module_b": pair.get("module_b"),
+                        "interaction_effect": pair.get("interaction_effect"),
+                    },
+                    confidence=abs(float(pair.get("interaction_effect", 0.0) or 0.0)),
+                    evidence={"relationship": pair.get("relationship")},
+                )
+                gateway.submit(rec)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[interaction] toxic recommendation emit failed: {}", exc)
 
     def _closed_attributions(self, lookback: int) -> list[TradeAttribution]:
         if self._cf is None:

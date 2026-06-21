@@ -127,6 +127,14 @@ class VoteCalibrator(TuningGuardMixin):
         # marginal R (per attributed trade) so a module that is accurate yet
         # harmful by marginal R can be damped. Read-only: never recomputes.
         self._counterfactual = None
+        # Optional Learning→Governance recommendation gateway. When wired, a new
+        # multiplier map is published as a WEIGHT_UPDATE recommendation that must
+        # be approved before it takes effect (auto-approved until Phase 7, so
+        # behaviour is unchanged). When None, the map publishes directly.
+        self._recommendation_gateway = None
+        # Optional read-only OutcomeFeedback — attached as supporting evidence on
+        # the WEIGHT_UPDATE recommendation (per-module accuracy snapshot).
+        self._outcome_feedback = None
         self._modules = tuple(modules) if modules else DEFAULT_VOTE_MODULES
         # Published, immutable multiplier map (never mutated in place — swapped
         # atomically on recalibrate so concurrent scanner reads are safe).
@@ -149,6 +157,21 @@ class VoteCalibrator(TuningGuardMixin):
         attribution table is consulted; the engine is never recomputed here.
         """
         self._counterfactual = counterfactual
+
+    def set_recommendation_gateway(self, gateway) -> None:
+        """Inject (or clear) the Learning→Governance recommendation gateway.
+
+        When wired, a freshly-computed multiplier map is submitted as a
+        WEIGHT_UPDATE recommendation and only published if approved. Auto-approved
+        until Governance (Phase 7) flips ``governance_required`` on, so wiring
+        this is behaviour-neutral.
+        """
+        self._recommendation_gateway = gateway
+
+    def set_outcome_feedback(self, outcome_feedback) -> None:
+        """Inject (or clear) the read-only OutcomeFeedback source used as
+        supporting evidence (per-module accuracy) on weight recommendations."""
+        self._outcome_feedback = outcome_feedback
 
     @property
     def enabled(self) -> bool:
@@ -279,9 +302,27 @@ class VoteCalibrator(TuningGuardMixin):
             }
 
         cal = self._compute_calibration(accuracy_data, self._cf_marginal_r_map())
-        with self._lock:
-            self._multipliers = dict(cal.multipliers)
+        # Route the new multiplier map through the Learning→Governance gateway:
+        # publish only when the WEIGHT_UPDATE recommendation is approved. With no
+        # gateway wired (or governance not required) this is always approved, so
+        # the map publishes exactly as before — behaviour-neutral.
+        if cal.skipped or self._publish_approved(cal):
+            with self._lock:
+                self._multipliers = dict(cal.multipliers)
+                self._last_calibration = cal
+        else:
+            # Rejected by Governance — keep the previously-published map and
+            # record that the new calibration did not take effect.
+            cal.skipped = True
+            cal.reason = (cal.reason + " | " if cal.reason else "") + \
+                "rejected by governance"
+            cal.multipliers = dict(self._multipliers)
             self._last_calibration = cal
+            logger.info(
+                "[vote-calibrator] new calibration rejected by governance — "
+                "retaining previous multiplier map",
+            )
+            return cal
         if not cal.skipped:
             logger.info(
                 "[vote-calibrator] recalibrated ({} method, {} qualifying): {}",
@@ -291,6 +332,59 @@ class VoteCalibrator(TuningGuardMixin):
                 ) or "none",
             )
         return cal
+
+    def _publish_approved(self, cal: "VoteCalibration") -> bool:
+        """Submit the new multiplier map to the recommendation gateway.
+
+        Returns True (publish) when no gateway is wired or the WEIGHT_UPDATE
+        recommendation is approved. Never raises — any fault publishes (the
+        gateway is an authorisation overlay, not a tuning authority).
+        """
+        gateway = self._recommendation_gateway
+        if gateway is None:
+            return True
+        try:
+            from adaptive.recommendations import (
+                LearningRecommendation,
+                RecommendationType,
+            )
+            rec = LearningRecommendation(
+                source="vote_calibrator",
+                recommendation_type=RecommendationType.WEIGHT_UPDATE,
+                payload={"multipliers": dict(cal.multipliers)},
+                confidence=float(cal.qualifying_modules) / max(len(self._modules), 1),
+                evidence={
+                    "method": cal.method,
+                    "qualifying_modules": cal.qualifying_modules,
+                    "sample_sizes": dict(cal.sample_sizes),
+                    "counterfactual_used": bool(cal.counterfactual_used),
+                    "module_accuracy": self._outcome_feedback_evidence(),
+                },
+            )
+            return bool(gateway.submit(rec).approved)
+        except Exception as exc:  # noqa: BLE001 — authorisation overlay must never break tuning
+            logger.debug("[vote-calibrator] gateway submit failed: {}", exc)
+            return True
+
+    def _outcome_feedback_evidence(self) -> dict:
+        """Per-module accuracy snapshot from OutcomeFeedback (evidence only).
+
+        Empty when unwired or on any fault — never raises.
+        """
+        of = self._outcome_feedback
+        if of is None:
+            return {}
+        try:
+            getter = getattr(of, "get_module_accuracy", None) or getattr(
+                of, "module_accuracy", None
+            )
+            if getter is None:
+                return {}
+            data = getter() if callable(getter) else getter
+            return dict(data) if isinstance(data, dict) else {}
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[vote-calibrator] outcome-feedback evidence failed: {}", exc)
+            return {}
 
     # ── Counterfactual signal (read-only) ─────────────────────────────────
 
