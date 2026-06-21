@@ -165,7 +165,9 @@ class TunerAgent:
             return list(self._tunables.keys())
 
     def reset_failure_count(self, name: str) -> bool:
-        """Re-enable a tunable that was auto-disabled after repeated failures."""
+        """Re-enable a tunable that was auto-disabled after repeated failures.
+
+        Also the release path for a Governance ``freeze_tunable`` containment."""
         with self._lock:
             st = self._state.get(name)
             if st is None:
@@ -173,6 +175,36 @@ class TunerAgent:
             st.consecutive_failures = 0
             st.disabled = False
         logger.info("[tuner-agent] '{}' failure count reset — re-enabled", name)
+        return True
+
+    def freeze_tunable(self, name: str, *, reason: str = "") -> bool:
+        """Disable a tunable on a Governance containment order.
+
+        Governance (Department ⑧) decides *that* a runaway tunable must stop;
+        the agent is the enforcement arm that *executes* it — flipping the same
+        ``disabled`` flag the failure-tripwire uses (honoured in ``_run_batch``,
+        so a frozen tunable is skipped on every cycle) and writing an audit row.
+        Reverse with :meth:`reset_failure_count`.  Returns False for an unknown
+        tunable.  Never raises.
+        """
+        with self._lock:
+            st = self._state.get(name)
+            if st is None:
+                logger.warning("[tuner-agent] freeze_tunable unknown tunable '{}'", name)
+                return False
+            already = st.disabled
+            st.disabled = True
+        if not already:
+            logger.warning(
+                "[tuner-agent] '{}' FROZEN by governance containment — {}",
+                name, reason or "no reason given",
+            )
+            self._write_audit(TuneResult(
+                tunable_name=str(name),
+                success=False,
+                reason=f"frozen by governance: {reason}" if reason else "frozen by governance",
+                error="governance_containment",
+            ))
         return True
 
     # ── Sole-authority enforcement ──────────────────────────────────────
