@@ -4,31 +4,77 @@ import StatusBar from './StatusBar';
 import ConnectionBanner from './ConnectionBanner';
 import useLiveState from '../hooks/useLiveState';
 
-const NAV = [
-  { to: '/', icon: '⬡', label: 'Overview' },
-  { to: '/trades', icon: '⚡', label: 'Active Trades' },
-  { to: '/history', icon: '📋', label: 'Trade History' },
-  { to: '/scanner', icon: '◎', label: 'Scanner' },
-  { to: '/module-votes', icon: '🗳', label: 'Module Votes' },
-  { to: '/module-governor', icon: '🚦', label: 'Module Governor' },
-  { to: '/ranker', icon: '🏆', label: 'Ranker' },
-  { to: '/performance', icon: '📈', label: 'Performance' },
-  { to: '/operations', icon: '🖥', label: 'Operations' },
-  { to: '/risk', icon: '🛡', label: 'Risk Monitor' },
-  { to: '/ml', icon: '🧠', label: 'ML Insights' },
-  { to: '/decisions', icon: '🎯', label: 'Decisions' },
-  { to: '/governor', icon: '🏛', label: 'Governor' },
-  { to: '/planner', icon: '🗺', label: 'Planner' },
-  { to: '/decision-trace', icon: '🧬', label: 'Decision Trace' },
-  { to: '/orchestrator', icon: '🎛', label: 'Orchestrator' },
-  { to: '/feedback', icon: '🔁', label: 'Outcome Feedback' },
-  { to: '/learning', icon: '🧪', label: 'Learning Layer' },
-  { to: '/evolution', icon: '🌱', label: 'Evolution (L5)' },
-  { to: '/position-health', icon: '🩺', label: 'Position Health' },
-  { to: '/activity', icon: '🔔', label: 'Activity' },
-  { to: '/shadow', icon: '👻', label: 'Shadow Outcomes' },
-  { to: '/reconciliation', icon: '⚖', label: 'Reconciliation' },
-  { to: '/controls', icon: '⚙', label: 'Controls' },
+const HOME = { to: '/', icon: '⬡', label: 'Overview' };
+
+const NAV_SECTIONS = [
+  {
+    section: '① Intelligence',
+    items: [
+      { to: '/module-votes', icon: '🗳', label: 'Module Votes' },
+      { to: '/scanner', icon: '◎', label: 'Scanner' },
+    ],
+  },
+  {
+    section: '② Consensus',
+    items: [
+      { to: '/ranker', icon: '🏆', label: 'Ranker' },
+      { to: '/decisions', icon: '🎯', label: 'Decisions' },
+      { to: '/decision-trace', icon: '🧬', label: 'Decision Trace' },
+      { to: '/orchestrator', icon: '🎛', label: 'Orchestrator' },
+    ],
+  },
+  {
+    section: '③ Compliance',
+    items: [
+      { to: '/risk', icon: '🛡', label: 'Risk Monitor' },
+    ],
+  },
+  {
+    section: '④ Portfolio',
+    items: [
+      { to: '/governor', icon: '🏛', label: 'Governor' },
+      { to: '/planner', icon: '🗺', label: 'Planner' },
+    ],
+  },
+  {
+    section: '⑤ Execution',
+    items: [
+      { to: '/operations', icon: '🖥', label: 'Operations' },
+    ],
+  },
+  {
+    section: '⑥ Operations',
+    items: [
+      { to: '/trades', icon: '⚡', label: 'Active Trades' },
+      { to: '/position-health', icon: '🩺', label: 'Position Health' },
+      { to: '/history', icon: '📋', label: 'Trade History' },
+    ],
+  },
+  {
+    section: '⑦ Learning',
+    items: [
+      { to: '/learning', icon: '🧪', label: 'Learning Layer' },
+      { to: '/feedback', icon: '🔁', label: 'Outcome Feedback' },
+      { to: '/ml', icon: '🧠', label: 'ML Insights' },
+      { to: '/evolution', icon: '🌱', label: 'Evolution (L5)' },
+      { to: '/shadow', icon: '👻', label: 'Shadow Outcomes' },
+      { to: '/reconciliation', icon: '⚖', label: 'Reconciliation' },
+    ],
+  },
+  {
+    section: '⑧ Governance',
+    items: [
+      { to: '/module-governor', icon: '🚦', label: 'Module Governor' },
+    ],
+  },
+  {
+    section: '⑨ Command Center',
+    items: [
+      { to: '/performance', icon: '📈', label: 'Performance' },
+      { to: '/activity', icon: '🔔', label: 'Activity' },
+      { to: '/controls', icon: '⚙', label: 'Controls' },
+    ],
+  },
 ];
 
 export default function Layout() {
@@ -40,19 +86,31 @@ export default function Layout() {
       <aside className="sidebar">
         <div className="sidebar-brand">
           <h1>APEX TRADER</h1>
-          <p>Institutional Trading System</p>
+          <p>Autonomous Trading Organism</p>
         </div>
         <nav className="sidebar-nav">
-          {NAV.map((n) => (
-            <NavLink
-              key={n.to}
-              to={n.to}
-              end={n.to === '/'}
-              className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
-            >
-              <span className="nav-icon">{n.icon}</span>
-              {n.label}
-            </NavLink>
+          <NavLink
+            to={HOME.to}
+            end
+            className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+          >
+            <span className="nav-icon">{HOME.icon}</span>
+            {HOME.label}
+          </NavLink>
+          {NAV_SECTIONS.map((sec) => (
+            <div key={sec.section}>
+              <div className="nav-section-label">{sec.section}</div>
+              {sec.items.map((n) => (
+                <NavLink
+                  key={n.to}
+                  to={n.to}
+                  className={({ isActive }) => `nav-item${isActive ? ' active' : ''}`}
+                >
+                  <span className="nav-icon">{n.icon}</span>
+                  {n.label}
+                </NavLink>
+              ))}
+            </div>
           ))}
         </nav>
         <div className="sidebar-footer">
