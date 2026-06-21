@@ -4106,6 +4106,8 @@ class EventDrivenSystem:
             self._on_entry_decision(decision)
         except Exception:
             logger.exception("[consensus-trigger] {} entry dispatch failed", symbol)
+
+    def _on_entry_decision(self, decision: dict[str, Any]) -> None:
         """Handle entry decisions from EntryOrchestrator.
 
         Permit / sizing pipeline before an order is placed:
