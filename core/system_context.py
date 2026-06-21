@@ -142,6 +142,7 @@ class SystemContext:
     signal_discovery: Optional[Any] = None
     virtual_module_registry: Optional[Any] = None
     virtual_signal_manager: Optional[Any] = None
+    param_evolver: Optional[Any] = None
 
     # ── Planning + shadow (Phase 6) ──────────────────────────────────
     trade_planner: Optional[Any] = None
@@ -807,6 +808,84 @@ class SystemContext:
         except Exception as exc:
             logger.warning("[SystemContext] SignalDiscoveryEngine init failed: {}", exc)
 
+        # ── ParameterEvolver (L5a) — SHADOW ONLY ───────────────────
+        # Explores consensus/ranker thresholds, replay + shadow validates
+        # candidates, then RECOMMENDS promotions through the RecommendationGateway
+        # (Learning ⑦ → Governance ⑧).  The promote callback NEVER mutates live
+        # config: it submits the proven candidate as a PARAM_PROMOTE recommendation
+        # for audit/authorisation and returns False, so the engine records a
+        # "recommended" decision and the parameter is never changed by it.  A
+        # fault here can never affect trading (construction + run are exception-safe).
+        try:
+            from adaptive.param_evolution import ParameterEvolver as _ParamEvolver
+            from adaptive.recommendations import (
+                LearningRecommendation as _LearnRec,
+                RecommendationType as _RecType,
+            )
+            pe_cfg = getattr(config, "param_evolution", None)
+            if pe_cfg is not None and ctx.counterfactual_engine is not None:
+                _gateway = ctx.recommendation_gateway
+
+                def _param_current_values() -> dict:
+                    """Live centre-point for candidate generation (read-only)."""
+                    cons = getattr(config, "consensus", None)
+                    rank = getattr(config, "opportunity_ranker", None)
+                    vals: dict[str, float] = {}
+                    if cons is not None:
+                        vals["min_net_score"] = float(getattr(cons, "min_net_score", 1.5))
+                        vals["min_agreement"] = float(getattr(cons, "min_agreement", 0.55))
+                        vals["min_contributors"] = float(getattr(cons, "min_contributors", 2))
+                    if rank is not None:
+                        vals["min_expected_value"] = float(getattr(rank, "min_expected_value", 0.0))
+                        vals["min_cluster_confidence"] = float(
+                            getattr(rank, "min_cluster_confidence", 0.0)
+                        )
+                        vals["min_cluster_contributors"] = float(
+                            getattr(rank, "min_cluster_contributors", 1)
+                        )
+                    return vals
+
+                def _param_promote_recommend(name: str, location: str, value: float) -> bool:
+                    """SHADOW-ONLY promotion hook: submit a recommendation through
+                    the gateway (audited + governance-authorised) and ALWAYS return
+                    False so the parameter is never mutated by the evolver."""
+                    if _gateway is None:
+                        return False
+                    try:
+                        _gateway.submit(_LearnRec(
+                            source="param_evolver",
+                            recommendation_type=_RecType.PARAM_PROMOTE,
+                            payload={
+                                "param_name": name,
+                                "location": location,
+                                "proposed_value": float(value),
+                            },
+                            confidence=0.0,
+                            evidence={"mode": "shadow"},
+                        ))
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("[SystemContext] param promote submit failed: {}", exc)
+                    return False  # never apply — shadow mode only
+
+                ctx.param_evolver = _ParamEvolver(
+                    ctx.counterfactual_engine,
+                    enabled=bool(getattr(pe_cfg, "param_evolution_enabled", False)),
+                    db_path=getattr(pe_cfg, "param_evolution_db_path", None),
+                    current_values_provider=_param_current_values,
+                    promote_callback=_param_promote_recommend,
+                    candidates_per_param=int(getattr(pe_cfg, "candidates_per_param", 10)),
+                    replay_lookback=int(getattr(pe_cfg, "replay_lookback", 500)),
+                    shadow_validation_trades=int(getattr(pe_cfg, "shadow_validation_trades", 50)),
+                    significance_threshold=float(getattr(pe_cfg, "significance_threshold", 0.05)),
+                    walk_forward_split=float(getattr(pe_cfg, "walk_forward_split", 0.7)),
+                    evolution_cooldown_hours=float(getattr(pe_cfg, "evolution_cooldown_hours", 48.0)),
+                    max_concurrent_shadows=int(getattr(pe_cfg, "max_concurrent_shadows", 3)),
+                    rollback_window=int(getattr(pe_cfg, "rollback_window", 100)),
+                    min_replay_trades=int(getattr(pe_cfg, "min_replay_trades", 50)),
+                )
+        except Exception as exc:
+            logger.warning("[SystemContext] ParameterEvolver init failed: {}", exc)
+
         # ── VirtualModuleRegistry (L5c) ────────────────────────────
         try:
             from adaptive.virtual_modules import VirtualModuleRegistry as _VMReg
@@ -878,7 +957,7 @@ class SystemContext:
         logger.info(
             "[SystemContext] evolution+planning initialized — "
             "cap_alloc={} exec_prof={} regime={} behavior={} "
-            "sig_disc={} virt_reg={} virt_mgr={} "
+            "sig_disc={} virt_reg={} virt_mgr={} param_evolver={} "
             "planner={} outcome_log={} calibrator={} re_entry={}",
             ctx.capital_allocator is not None,
             ctx.execution_profiles is not None,
@@ -887,6 +966,7 @@ class SystemContext:
             ctx.signal_discovery is not None,
             ctx.virtual_module_registry is not None,
             ctx.virtual_signal_manager is not None,
+            ctx.param_evolver is not None,
             ctx.trade_planner is not None,
             ctx.outcome_logger is not None,
             ctx.calibrator is not None,

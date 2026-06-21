@@ -564,6 +564,69 @@ class RiskEngine:
             timestamp=now,
         )
 
+    def get_state(self) -> dict:
+        """Read-only snapshot for the dashboard (Risk panel).
+
+        Surfaces live RiskEngine state — balance, daily P&L, drawdown, risk
+        mode and daily-loss-limit usage — drawn from the DrawdownGuard and
+        PnLTracker.  Read-only and self-contained; never mutates and (being
+        called from the dashboard) tolerates partial state gracefully.
+        """
+        now = datetime.now(timezone.utc)
+        status = self.drawdown_guard.get_status(now)
+        snap = self.pnl_tracker.get_snapshot(account_balance=self.balance, timestamp=now)
+
+        # daily_total_pct is in percent (e.g. -2.4); drawdown-from-peak + the
+        # guard's daily_pnl_pct are fractions (e.g. -0.024).
+        daily_pnl_pct = float(snap.daily_total_pct)
+        daily_limit_pct = float(self.risk_cfg.max_daily_drawdown_pct)  # e.g. 3.0
+        daily_loss_pct = abs(daily_pnl_pct) if daily_pnl_pct < 0 else 0.0
+        daily_loss_used_pct = (
+            round(min(100.0, daily_loss_pct / daily_limit_pct * 100.0), 2)
+            if daily_limit_pct > 0 else 0.0
+        )
+
+        rolling_dd_pct = round(float(status.drawdown_from_peak_pct) * 100.0, 3)
+        normal_risk = self.drawdown_guard.risk_map.get(DrawdownMode.NORMAL, 0.0) or 0.0
+        sizing_factor = (
+            round(float(status.current_risk_pct) / normal_risk, 4)
+            if normal_risk > 0 else 1.0
+        )
+        # Best-effort peak equity in dollars from the rolling drawdown fraction.
+        dd_frac = float(status.drawdown_from_peak_pct)
+        peak_equity = (
+            round(self.balance / (1.0 - dd_frac), 2)
+            if 0.0 < dd_frac < 1.0 else round(self.balance, 2)
+        )
+        is_frozen = status.mode == DrawdownMode.FROZEN.value
+
+        return {
+            "enabled": True,
+            "source": "live",
+            "state": status.mode,                 # legacy key consumed by the panel
+            "risk_mode": status.mode,
+            "balance": round(self.balance, 2),
+            "current_equity": round(self.balance + float(snap.daily_unrealized), 2),
+            "peak_equity": peak_equity,
+            "daily_pnl_dollars": round(float(snap.daily_realized), 2),
+            "daily_pnl_pct": round(daily_pnl_pct, 3),
+            "daily_drawdown_pct": round(daily_loss_pct, 3),
+            "rolling_drawdown_pct": rolling_dd_pct,
+            "daily_loss_limit_pct": round(daily_limit_pct, 3),
+            "daily_loss_used_pct": daily_loss_used_pct,
+            "current_risk_pct": round(float(status.current_risk_pct) * 100.0, 4),
+            "sizing_factor": sizing_factor,
+            "should_flatten": bool(is_frozen),
+            "consecutive_losses": int(status.consecutive_losses),
+            "consecutive_wins": int(status.consecutive_wins),
+            "limits": {
+                "max_daily_drawdown_pct": daily_limit_pct,
+                "max_weekly_drawdown_pct": float(self.risk_cfg.max_weekly_drawdown_pct),
+            },
+            "risk_events": [],      # RiskEngine keeps no event list; panel degrades
+            "correlations": [],     # correlation surfaced elsewhere (Portfolio)
+        }
+
     def reset_daily(self) -> None:
         now = datetime.now(timezone.utc)
         self.pnl_tracker.reset_daily(now)

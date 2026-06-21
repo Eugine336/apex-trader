@@ -5834,6 +5834,16 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[close-evo] BehaviorDiscovery record failed: {}", exc)
 
+        # ParameterEvolver (L5a) — SHADOW ONLY: advance active shadows on the
+        # newly-closed trade and (cooldown permitting) seed a fresh tournament.
+        # Recommends promotions through the gateway; never mutates live config.
+        # Fully exception-safe — a fault here never affects trading.
+        if ctx.param_evolver is not None:
+            try:
+                ctx.param_evolver.run_cycle()
+            except Exception as exc:
+                logger.debug("[close-evo] ParameterEvolver run_cycle failed: {}", exc)
+
         # OutcomeLogger — link plan → outcome
         if ctx.outcome_logger is not None:
             try:
