@@ -106,6 +106,14 @@ def _broker_tp(pos) -> float:
     return float(v) if v else 0.0
 
 
+# Operations Division — scale-in / partial-close tuning (V13).
+# A scale-in is an *add* to an existing winner, so it risks a fraction of a
+# fresh entry's per-trade ceiling. The partial-close default banks half the
+# position when a verdict carries no explicit ratio.
+_SCALE_IN_RISK_FRACTION = 0.5
+_DEFAULT_PARTIAL_CLOSE_RATIO = 0.5
+
+
 # ── Tick source threads ──────────────────────────────────────────────
 
 
@@ -291,6 +299,7 @@ class PositionEvaluator:
         worker_config: Optional[WorkerConfig] = None,
         max_workers: int = 4,
         ctx: Optional[SystemContext] = None,
+        config: Optional[AppConfig] = None,
     ) -> None:
         self._pm = platform_manager
         self._tick_store = tick_store
@@ -298,6 +307,7 @@ class PositionEvaluator:
         self._aggregator = intent_aggregator
         self._mgmt_store = mgmt_store or ManagementStateStore()
         self._worker = PositionWorker(worker_config or WorkerConfig())
+        self._config = config
         # Parallelize the per-tick position scan across symbols.  Each pool
         # task evaluates ALL positions of one symbol sequentially, so every
         # per-position / per-order_id evaluator field is written by exactly one
@@ -878,10 +888,15 @@ class PositionEvaluator:
                     ticket=order_id, direction=direction,
                     current_sl=sl, pip_size=pip_s,
                 )
+                # V14 — carry the DecisionEngine's own normalised exit cause
+                # (e.g. fast_opposition_decay, thesis_decay) as the intent source
+                # when it supplied one, so the specific strategic cause reaches
+                # the learners; fall back to the generic strategic-close tag.
+                de_cause = getattr(de_result, "exit_cause", None) or "decision_engine"
                 self._aggregator.submit([Intent.close(
                     symbol=symbol,
                     ticket=order_id,
-                    source="decision_engine",
+                    source=de_cause,
                     reason=f"DE: {getattr(de_result, 'reason', '')[:100]}",
                 )])
                 logger.info(
@@ -941,29 +956,19 @@ class PositionEvaluator:
                         reason=f"DE breakeven: {getattr(de_result, 'reason', '')[:60]}",
                     )])
             elif action_name == Action.SCALE_IN.value:
-                try:
-                    scale_lots = float(getattr(de_result, "scale_lots", 0.0) or 0.0)
-                    if scale_lots > 0.0:
-                        tp = float(_broker_tp(pos) or 0.0)
-                        if tp > 0.0:
-                            idem_key = generate_idempotency_key(symbol, direction, scale_lots)
-                            comment = build_order_comment(
-                                "APEX", idem_key, score=current_score,
-                            )
-                            self._aggregator.submit([Intent.open(
-                                symbol=symbol,
-                                direction=direction,
-                                lots=scale_lots,
-                                entry_price=price,
-                                sl=sl,
-                                tp=tp,
-                                source="decision_engine",
-                                reason=f"DE scale-in: {getattr(de_result, 'reason', '')[:60]}",
-                                comment=comment,
-                                idempotency_key=idem_key,
-                            )])
-                except Exception as exc:
-                    logger.debug("[de-mgmt] scale-in intent build failed for {}: {}", order_id, exc)
+                # V13 — route the add-on through the SAME Compliance → Portfolio
+                # pipeline as a fresh entry (it was previously a direct
+                # Intent.open that bypassed both). Portfolio owns the size.
+                self._scale_in_position(
+                    pos, price, sl, symbol, direction, de_result,
+                    current_score, open_positions,
+                )
+            elif action_name == Action.PARTIAL_CLOSE.value:
+                # V13 — DE/governor can ask to bank part of a position; the
+                # verdict was previously journaled then dropped (no handler).
+                self._partial_close_position(
+                    order_id, symbol, direction, sl, pip_size, de_result,
+                )
 
             tf_align = getattr(sa, "tf_alignment", 0.0)
             momentum = getattr(sa, "momentum", 0.0)
@@ -976,6 +981,211 @@ class PositionEvaluator:
 
         except Exception as exc:
             logger.debug("[de-mgmt] DecisionEngine management failed for {}: {}", order_id, exc)
+
+    # ── Scale-in / partial-close handlers (V13) ──────────────────────
+    def _scale_in_position(
+        self,
+        pos,
+        price: float,
+        sl: float,
+        symbol: str,
+        direction: str,
+        de_result,
+        current_score: int,
+        open_positions: list,
+    ) -> None:
+        """Add to a winning position through the full entry pipeline.
+
+        A scale-in is a deliberate same-pair+direction *duplicate*, so it cannot
+        simply replay the entry path (Compliance hard-vetoes duplicates). It is
+        routed through ``Compliance.permit`` for every OTHER necessary veto
+        (market-open, broker, news, spread, daily-loss, heat, drawdown-frozen,
+        max-positions, portfolio-risk-state) — the expected ``duplicate`` veto is
+        the only failure tolerated — and then sized by ``Portfolio.evaluate`` from
+        a reduced base risk so the add-on never re-risks a full position. The
+        Portfolio verdict (not the DecisionEngine's advisory ``scale_lots``) is
+        the authoritative size.
+        """
+        ctx = self._ctx
+        if ctx is None:
+            return
+        try:
+            tp = float(_broker_tp(pos) or 0.0)
+            if tp <= 0.0:
+                logger.debug("[de-mgmt] scale-in skipped {} — no take-profit on book", symbol)
+                return
+
+            balance = self._pm.get_platform_balance(symbol)
+            if not balance or balance <= 0:
+                logger.debug("[de-mgmt] scale-in skipped {} — balance unavailable", symbol)
+                return
+            acct = ctx.account_key(symbol, self._pm)
+
+            # ── Compliance (duplicate-tolerant) ──────────────────────
+            if ctx.compliance is None:
+                logger.error(
+                    "[de-mgmt] scale-in BLOCKED {} — Compliance unavailable (fail-closed)",
+                    symbol,
+                )
+                return
+            verdict = ctx.compliance.permit(
+                ComplianceCandidate(symbol=symbol, direction=direction),
+                ComplianceBook(open_positions=open_positions),
+                ComplianceAccount(account_key=acct, balance=balance or 0.0),
+            )
+            if verdict.rejected:
+                blocking = [
+                    o for o in verdict.outcomes
+                    if not o.passed and o.name != "duplicate"
+                ]
+                if blocking:
+                    logger.info(
+                        "[de-mgmt] scale-in BLOCKED {} — Compliance: {}",
+                        symbol, "; ".join(o.reason for o in blocking),
+                    )
+                    return
+
+            # ── Portfolio: size the add-on from a reduced base risk ──
+            from portfolio.models import (
+                PortfolioAccount as _PFAccount,
+                PortfolioCandidate as _PFCandidate,
+                SizingFactors as _PFFactors,
+            )
+
+            portfolio = ctx.portfolio
+            if portfolio is None:
+                logger.debug("[de-mgmt] scale-in skipped {} — Portfolio unavailable", symbol)
+                return
+
+            risk_pct = _SCALE_IN_RISK_FRACTION * (
+                getattr(self._config.risk, "risk_per_trade_pct", 1.0) / 100.0
+                if self._config is not None else 0.01
+            )
+            if ctx.drawdown_guard is not None:
+                try:
+                    dd_risk = getattr(
+                        ctx.drawdown_guard.get_status(), "current_risk_pct", 0.0,
+                    ) or 0.0
+                    if dd_risk > 0:
+                        risk_pct = min(risk_pct, _SCALE_IN_RISK_FRACTION * dd_risk)
+                except Exception:
+                    pass
+            if risk_pct <= 0:
+                return
+
+            pip_size = self._safe_pip_size(symbol)
+            info = INSTRUMENT_REGISTRY.get(symbol)
+            pip_value = info.pip_value_per_lot if info else 10.0
+            pctx = build_context_for_symbol(symbol)
+
+            daily_pnl = 0.0
+            daily_cap = 0.0
+            if ctx.account_risk is not None:
+                try:
+                    if acct:
+                        daily_pnl = float(ctx.account_risk.daily_pnl(acct))
+                    daily_cap = float(
+                        getattr(ctx.account_risk, "daily_loss_cap_pct", 0.0) or 0.0
+                    )
+                except Exception:
+                    daily_pnl, daily_cap = 0.0, 0.0
+
+            pf_verdict = portfolio.evaluate(
+                _PFCandidate(
+                    symbol=symbol,
+                    direction=direction,
+                    entry_price=price,
+                    stop_loss=sl,
+                    conviction=float(current_score or 0.0),
+                    context=pctx,
+                    pip_size=pip_size,
+                    pip_value_per_lot=pip_value,
+                    broker=self._pm.get_platform_name(symbol) if hasattr(self._pm, "get_platform_name") else "",
+                ),
+                open_positions,
+                _PFAccount(
+                    balance=balance,
+                    account_key=acct,
+                    daily_pnl=daily_pnl,
+                    daily_loss_cap_pct=daily_cap,
+                ),
+                _PFFactors(base_risk_pct=risk_pct),
+            )
+            if not pf_verdict.approved:
+                logger.info(
+                    "[de-mgmt] scale-in SKIPPED {} — Portfolio: {}",
+                    symbol, pf_verdict.reason,
+                )
+                return
+
+            add_lots = pf_verdict.lots
+            add_stake = pf_verdict.stake_usd
+            if add_lots <= 0 and add_stake <= 0:
+                return
+
+            idem_key = generate_idempotency_key(symbol, direction, add_lots or add_stake)
+            comment = build_order_comment("APEX", idem_key, score=current_score)
+            self._aggregator.submit([Intent.open(
+                symbol=symbol,
+                direction=direction,
+                lots=add_lots,
+                entry_price=price,
+                sl=sl,
+                tp=tp,
+                stake_usd=add_stake if add_stake > 0 else None,
+                source="decision_engine_scale_in",
+                reason=f"DE scale-in: {getattr(de_result, 'reason', '')[:60]}",
+                comment=comment,
+                idempotency_key=idem_key,
+            )])
+            logger.info(
+                "[DE-MGMT] {} {} SCALE-IN — {} {:.4g} (risk≈{:.3%})",
+                symbol, direction,
+                "stake" if add_stake > 0 else "lots",
+                add_stake if add_stake > 0 else add_lots,
+                pf_verdict.risk_pct,
+            )
+        except Exception as exc:
+            logger.debug("[de-mgmt] scale-in failed for {}: {}", symbol, exc)
+
+    def _partial_close_position(
+        self,
+        order_id: str,
+        symbol: str,
+        direction: str,
+        sl: float,
+        pip_size: float,
+        de_result,
+    ) -> None:
+        """Bank part of an open position on a DE/governor PARTIAL_CLOSE verdict.
+
+        The close fraction comes from the verdict's ``partial_ratio`` when set,
+        otherwise a sane default. Routed through the IntentAggregator → executor
+        like every other management action (Execution remains the sole gateway).
+        """
+        try:
+            ratio = float(getattr(de_result, "partial_ratio", 0.0) or 0.0)
+            if ratio <= 0.0:
+                ratio = _DEFAULT_PARTIAL_CLOSE_RATIO
+            ratio = max(0.05, min(0.95, ratio))
+            self._aggregator.register_position(
+                ticket=order_id, direction=direction,
+                current_sl=sl, pip_size=pip_size,
+            )
+            self._aggregator.submit([Intent.partial_close(
+                symbol=symbol,
+                ticket=order_id,
+                fraction=ratio,
+                source="decision_engine_partial",
+                reason=f"DE partial {ratio:.0%}: {getattr(de_result, 'reason', '')[:60]}",
+            )])
+            logger.info(
+                "[DE-MGMT] {} {} PARTIAL_CLOSE {:.0%} — {}",
+                symbol, direction, ratio,
+                getattr(de_result, "reason", "")[:80],
+            )
+        except Exception as exc:
+            logger.debug("[de-mgmt] partial-close failed for {}: {}", order_id, exc)
 
     @property
     def eval_count(self) -> int:
@@ -1330,6 +1540,7 @@ class EventDrivenSystem:
             mgmt_store=self._mgmt_store,
             worker_config=self._build_worker_config(),
             ctx=ctx,
+            config=config,
         )
         # Phase 3 (event-reactive management): the tick-eval loop evaluates
         # only the symbols a ManagementScheduler reports as due (active symbols
@@ -3079,6 +3290,19 @@ class EventDrivenSystem:
                         pnl_pips = (entry - close_price) / pip_size
             except Exception:
                 pass
+
+        # When the broker deal history did not supply an exit reason, fall back
+        # to the close intent's own structured source (e.g. "stop_loss",
+        # "conviction_collapse", "tp2_target", "structure_trailing") so the
+        # management *cause* reaches the learners instead of being lost. This is
+        # what lets _on_trade_closed normalise to a typed ExitCause (V14).
+        if not exit_reason:
+            intent_cause = (
+                getattr(intent, "source", "") or getattr(intent, "reason", "")
+            )
+            if intent_cause:
+                exit_reason = intent_cause
+                exit_reason_source = "management"
 
         # Book exactly once — the external-close reconciler may race this path.
         if not self._mark_booked(str(ticket)):
@@ -5240,7 +5464,18 @@ class EventDrivenSystem:
         _risk_pips = float(info.get("risk_pips", 0.0) or 0.0)
         pnl_r = (pnl_pips / _risk_pips) if _risk_pips > 0 else 0.0
         outcome = "WIN" if pnl_dollars > 0 else "LOSS"
-        cause_value = exit_reason or "event_driven_close"
+        # V14 — normalise the exit reason to a typed ExitCause value so every
+        # learner receives a consistent categorical exit feature instead of an
+        # inconsistent free-text string. The structured management intent source
+        # (carried through by _handle_close_result) is often already a canonical
+        # ExitCause value — match it exactly first; otherwise fall back to the
+        # best-effort text classifier for broker deal-history strings.
+        from management.exit_cause import ExitCause
+        _raw_cause = exit_reason or "event_driven_close"
+        try:
+            cause_value = ExitCause(_raw_cause).value
+        except (ValueError, TypeError):
+            cause_value = ExitCause.from_reason(_raw_cause).value
 
         # OutcomeFeedback — link realised R to entry attribution
         if ctx.outcome_feedback is not None:
@@ -5481,29 +5716,39 @@ class EventDrivenSystem:
         # structural setup is still valid (see management/re_entry.py).
         if ctx is not None and ctx.re_entry_manager is not None and is_breakeven_exit:
             try:
+                entry_tf = str(info.get("entry_timeframe", "M5") or "M5")
                 m5_df = self._fetch_candles(symbol, "M5", 50)
+                m1_df = self._fetch_candles(symbol, "M1", 50)
                 if m5_df is not None:
                     from types import SimpleNamespace
-                    # We are inside the close handler, so the trade just closed:
-                    # anchor the re-entry cooldown to the REAL close time and the
-                    # trade's timeframe.  Previously close_time was omitted and
-                    # candles_since_entry hard-coded to 0, so the cooldown math
-                    # used a meaningless input.
+                    # Feed the ReEntryManager the REAL closed-trade context (not a
+                    # bare pair/direction stub): the actual ticket, the entry
+                    # price/risk, the captured thesis (zone/regime/concepts) and
+                    # the trade's own timeframe — so the re-entry evaluation and
+                    # its audit reflect the trade that just closed, and the
+                    # cooldown is anchored to the real close time.
                     closed = SimpleNamespace(
                         pair=symbol,
                         direction=direction,
                         re_entry_eligible=True,
                         close_time=datetime.now(timezone.utc),
-                        entry_timeframe="M5",
+                        entry_timeframe=entry_tf,
                         candles_since_entry=0,
+                        trade_id=str(ticket),
+                        entry_price=float(info.get("entry_price", 0.0) or 0.0),
+                        risk_pips=float(info.get("risk_pips", 0.0) or 0.0),
+                        regime=info.get("regime"),
+                        zone_type=info.get("zone_type"),
+                        concepts=info.get("concepts"),
                     )
-                    opp = ctx.re_entry_manager.check_re_entry(closed, m5_df)
+                    opp = ctx.re_entry_manager.check_re_entry(closed, m5_df, m1_df)
                     if opp is not None and getattr(opp, "eligible", False):
                         logger.info(
-                            "[re-entry] {} {} opportunity: {} (zone={})",
+                            "[re-entry] {} {} opportunity: {} (zone={}, thesis: regime={} zone_type={})",
                             symbol, direction,
                             getattr(opp, "reason", ""),
                             getattr(opp, "new_entry_zone", None),
+                            info.get("regime"), info.get("zone_type"),
                         )
                         self._arm_re_entry_zone(symbol, direction, opp)
             except Exception as exc:
