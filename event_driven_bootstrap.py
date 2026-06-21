@@ -1275,6 +1275,17 @@ class FlushLoop:
                         if r.success:
                             self._intents_executed += 1
                             if intent is not None and intent.intent_type == IntentType.CLOSE:
+                                # Stop the evaluator from re-emitting another
+                                # CLOSE for this ticket while the local position
+                                # book still shows it open (it refreshes on the
+                                # next reconcile cycle).  Without this the same
+                                # position is closed once at the broker and then
+                                # a second CLOSE races in ~3s later and is
+                                # rejected as "no longer open".
+                                if self._evaluator is not None:
+                                    tkt = intent.position_ticket
+                                    if tkt:
+                                        self._evaluator.suppress_ticket(tkt, 60.0)
                                 if self._on_close is not None:
                                     try:
                                         self._on_close(intent, r)
@@ -1314,7 +1325,13 @@ class FlushLoop:
                                     if ticket:
                                         self._evaluator.suppress_ticket(ticket, 60.0)
                                 elif "no longer open" in err_msg:
-                                    pass
+                                    # The position is already gone at the broker
+                                    # but still in the local book — suppress so
+                                    # the evaluator stops re-emitting closes for
+                                    # it until the book refreshes next reconcile.
+                                    ticket = intent.position_ticket if intent is not None else ""
+                                    if ticket:
+                                        self._evaluator.suppress_ticket(ticket, 60.0)
                 self._flush_count += 1
             except Exception as exc:
                 # The aggregator was already drained by flush(); if execution
@@ -2094,6 +2111,15 @@ class EventDrivenSystem:
         # from the first entry evaluation after a restart.
         self._restore_governor_state()
 
+        # ── Seed the risk layer from broker truth before any trading ─────
+        # The RiskEngine is constructed (in SystemContext) before the brokers
+        # connect, so its balance starts at the config placeholder.  Pull live
+        # broker balances in now — once, at startup — so the very first entry
+        # is sized/gated and the drawdown guard tracks against real account
+        # equity instead of the placeholder, rather than waiting for the first
+        # watchdog reconcile (which could be after the first trade).
+        self._seed_broker_truth()
+
         symbols = list(INSTRUMENT_REGISTRY.keys())
         for sym in symbols:
             self._candle_detector.register(sym)
@@ -2229,6 +2255,50 @@ class EventDrivenSystem:
     # — letting trading resume past the daily loss cap. Persist it to disk and
     # restore on startup so the cap survives crashes/restarts within the day.
     _GOVERNOR_STATE_PATH = "data/governor_state.json"
+
+    def _seed_broker_truth(self) -> None:
+        """Pull live broker balances into the risk layer once at startup.
+
+        ``RiskEngine`` is built before the brokers connect, so its balance is
+        the construction-time placeholder until the first watchdog reconcile.
+        Seeding here — after the brokers are online but before the trading
+        loops start — guarantees the first trade is sized and the drawdown
+        guard tracks against real broker equity (pooled across accounts), and
+        seeds the per-account silo balances that the heat gate divides by.
+        Fully fail-safe: any failure leaves the existing balances untouched
+        (the watchdog reconcile remains the ongoing source of truth).
+        """
+        ctx = self._ctx
+        if ctx is None:
+            return
+        # RiskEngine global balance ← pooled broker truth.
+        if ctx.risk_engine is not None:
+            try:
+                broker_balance = self._pm.get_total_balance()
+                if broker_balance is not None and broker_balance > 0:
+                    ctx.risk_engine.reconcile_balance(broker_balance)
+            except Exception as exc:
+                logger.debug("[startup] risk-engine balance seed failed: {}", exc)
+        # Per-account silos ← per-account broker balance (heat denominator,
+        # daily-loss %).  Resolved per open position's account on the watchdog
+        # too, but seeding from any held position now avoids a first-cycle gap.
+        if ctx.account_risk is not None:
+            try:
+                snap = self._pm.get_open_positions_snapshot()
+                seeded: set[str] = set()
+                for pos in snap.positions:
+                    sym = getattr(pos, "symbol", "")
+                    if not sym:
+                        continue
+                    acct = ctx.account_key(sym, self._pm)
+                    if acct in seeded:
+                        continue
+                    bal = self._pm.get_platform_balance(sym)
+                    if bal and bal > 0:
+                        ctx.account_risk.update_balance(acct, bal)
+                        seeded.add(acct)
+            except Exception as exc:
+                logger.debug("[startup] account-risk balance seed failed: {}", exc)
 
     def _restore_governor_state(self) -> None:
         ctx = self._ctx
@@ -2796,6 +2866,16 @@ class EventDrivenSystem:
         # ── Per-account heat gate (feeds AccountRiskManager.heat_blocked) ──
         if ctx.account_risk is not None:
             try:
+                live_accts = set(acct_risk_dollars.keys())
+                # Zero heat for accounts that no longer hold ANY open position.
+                # Heat is only ever re-computed for accounts that still have
+                # positions (the loop below), so without this an account whose
+                # positions have all closed keeps its last (non-zero) reading
+                # forever and permanently blocks new entries despite zero live
+                # exposure.  Re-evaluated every watchdog cycle.
+                for stale_acct in ctx.account_risk.heat_accounts():
+                    if stale_acct not in live_accts:
+                        ctx.account_risk.set_heat(stale_acct, 0.0)
                 for acct, risk_d in acct_risk_dollars.items():
                     bal = ctx.account_risk.balance(acct)
                     heat_pct = (risk_d / bal * 100.0) if bal > 0 else 0.0
@@ -5856,18 +5936,14 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[close-evo] OutcomeLogger outcome failed: {}", exc)
 
-        # Calibrator — auto-calibrate planner thresholds
-        if ctx.calibrator is not None and ctx.outcome_logger is not None:
-            try:
-                completed = ctx.outcome_logger.completed_count()
-                if ctx.calibrator.should_calibrate(completed):
-                    trades = ctx.outcome_logger.get_completed_trades()
-                    new_config = ctx.calibrator.calibrate(trades)
-                    if ctx.trade_planner is not None and new_config is not None:
-                        ctx.trade_planner.update_config(new_config)
-                        logger.info("[calibrator] planner config auto-calibrated from {} completed trades", completed)
-            except Exception as exc:
-                logger.debug("[close-evo] Calibrator run failed: {}", exc)
+        # Planner calibration is owned by the TunerAgent (PlannerCalibratorTunable,
+        # ON_TRADE_BATCH) which already ran above via ``tuner_agent.on_trade_close``
+        # and applies the new PlannerConfig through the authorised path.  The old
+        # direct ``ctx.calibrator.calibrate()`` call here was blocked by the agent
+        # (sole authority) every close — it logged a "TUNING BYPASS BLOCKED"
+        # warning, then applied the *unchanged* config and logged a misleading
+        # "auto-calibrated" line.  Removed to keep tuning on the single authorised
+        # route.
 
         logger.info(
             "EVENT-DRIVEN CLOSE FEEDBACK | {} {} ticket={} pnl=${:.2f} ({:.1f}pip) | risk+learning+evolution",
