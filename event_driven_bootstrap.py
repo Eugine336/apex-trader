@@ -4471,22 +4471,21 @@ class EventDrivenSystem:
             # back to the config value when the spec is unavailable.
             pip_value = self._broker_pip_value(symbol, pip_size, pip_value)
 
-            sizer = PositionSizer()
-            size_result = sizer.calculate(
-                account_balance=balance,
-                risk_pct=risk_pct,
-                entry_price=entry_price,
-                stop_loss=sl,
-                pip_size=pip_size,
-                pip_value_per_lot=pip_value,
-                context=pctx,
-                symbol=symbol,
+            # The Portfolio Division reuses the RiskEngine's shared PositionSizer
+            # (so the per-trade risk ceiling stays authoritative). The same
+            # instance backs the per-instrument volatility factor below.
+            shared_sizer = (
+                getattr(ctx.risk_engine, "position_sizer", None)
+                if ctx is not None and ctx.risk_engine is not None
+                else None
             )
+            if shared_sizer is None:
+                shared_sizer = PositionSizer()
 
             # ── Per-instrument volatility sizing (current vs average ATR) ──
             # Complements the system-wide vol_mult: scales THIS instrument's
-            # size by its own ATR regime. Folded into combined_mult so the
-            # existing [0.15, 2.0] clamp still bounds the final size.
+            # size by its own ATR regime. Passed to Portfolio as one factor so
+            # the existing [0.15, 1.0] clamp still bounds the final size.
             inst_vol_mult = 1.0
             try:
                 vdf = self._fetch_candles(symbol, "M5", 60)
@@ -4494,28 +4493,100 @@ class EventDrivenSystem:
                     tr = (vdf["high"] - vdf["low"]).abs()
                     cur_atr = float(tr.tail(14).mean())
                     avg_atr = float(tr.tail(50).mean())
-                    inst_vol_mult = sizer.adjust_for_volatility(
+                    inst_vol_mult = shared_sizer.adjust_for_volatility(
                         1.0, cur_atr, avg_atr,
                     )
             except Exception:
                 inst_vol_mult = 1.0
 
-            combined_mult = de_size_mult * orch_mult * vol_mult * inst_vol_mult * density_mult * exec_mult * cap_mult * adapt_mult
-            # Cap at 1.0 so the combined multiplier can only DE-RISK below the
-            # PositionSizer's per-trade risk ceiling (risk_per_trade_pct, hard-
-            # capped at engine_cap=2.5%). Allowing >1.0 here multiplied AFTER the
-            # sizer's cap, doubling effective per-trade risk (2.5%×2.0 = 5%).
-            combined_mult = max(0.15, min(1.0, combined_mult))
-            if abs(combined_mult - 1.0) > 1e-6:
-                if size_result.lots > 0:
-                    size_result.lots = round(max(0.01, size_result.lots * combined_mult), 2)
-                if size_result.stake_usd > 0:
-                    size_result.stake_usd = round(max(0.35, size_result.stake_usd * combined_mult), 2)
-                logger.info(
-                    "[SIZING] {} final×{:.2f} (DE×{:.2f} ORCH×{:.2f} VOL×{:.2f} IVOL×{:.2f} DEN×{:.2f} EXEC×{:.2f} CAP×{:.2f}) → {:.2f} lots / ${:.2f} stake",
-                    symbol, combined_mult, de_size_mult, orch_mult, vol_mult,
-                    inst_vol_mult, density_mult, exec_mult, cap_mult, size_result.lots, size_result.stake_usd,
+            # ── Portfolio Division: cohesive sizing + exposure + budget ──
+            # Replaces the inline fresh-sizer + ad-hoc multiplier chain. The
+            # division folds every factor transparently, enforces the remaining
+            # daily-loss budget (the protection the dead RiskEngine.assess chain
+            # owned), and reports book exposure.
+            from portfolio.division import PortfolioDivision as _PortfolioDivision
+            from portfolio.models import (
+                PortfolioAccount as _PFAccount,
+                PortfolioCandidate as _PFCandidate,
+                SizingFactors as _PFFactors,
+            )
+            from risk.position_sizer import SizeResult as _SizeResult
+
+            portfolio = ctx.portfolio if ctx is not None else None
+            if portfolio is None:
+                portfolio = _PortfolioDivision(
+                    position_sizer=shared_sizer,
+                    correlation_engine=(
+                        ctx.correlation_engine if ctx is not None else None
+                    ),
                 )
+
+            _acct_key = ctx.account_key(symbol, self._pm) if ctx is not None else ""
+            _daily_pnl = 0.0
+            _daily_cap = 0.0
+            if ctx is not None and ctx.account_risk is not None:
+                try:
+                    if _acct_key:
+                        _daily_pnl = float(ctx.account_risk.daily_pnl(_acct_key))
+                    _daily_cap = float(
+                        getattr(ctx.account_risk, "daily_loss_cap_pct", 0.0) or 0.0
+                    )
+                except Exception:
+                    _daily_pnl, _daily_cap = 0.0, 0.0
+
+            pf_factors = _PFFactors(
+                base_risk_pct=risk_pct,
+                de_size_mult=de_size_mult,
+                orch_mult=orch_mult,
+                vol_mult=vol_mult,
+                inst_vol_mult=inst_vol_mult,
+                density_mult=density_mult,
+                exec_mult=exec_mult,
+                cap_mult=cap_mult,
+                adapt_mult=adapt_mult,
+            )
+            pf_verdict = portfolio.evaluate(
+                _PFCandidate(
+                    symbol=symbol,
+                    direction=direction,
+                    entry_price=entry_price,
+                    stop_loss=sl,
+                    conviction=float(conviction or 0.0),
+                    context=pctx,
+                    pip_size=pip_size,
+                    pip_value_per_lot=pip_value,
+                ),
+                open_positions,
+                _PFAccount(
+                    balance=balance or 0.0,
+                    account_key=_acct_key,
+                    daily_pnl=_daily_pnl,
+                    daily_loss_cap_pct=_daily_cap,
+                ),
+                pf_factors,
+            )
+
+            if not pf_verdict.approved:
+                logger.warning(
+                    "EVENT-DRIVEN ENTRY SKIPPED | {} — Portfolio: {}",
+                    symbol, pf_verdict.reason,
+                )
+                return
+
+            combined_mult = pf_verdict.combined_mult
+            # Adapt the Portfolio verdict back into a SizeResult so the existing
+            # downstream (zero-check, broker-volume snap, intent build, audit)
+            # stays unchanged.
+            size_result = _SizeResult(
+                lots=pf_verdict.lots,
+                stake_usd=pf_verdict.stake_usd,
+                risk_amount=round((balance or 0.0) * pf_verdict.risk_pct, 2),
+                risk_pips=0.0,
+                pip_value=pip_value,
+                max_loss=pf_verdict.max_loss,
+                margin_estimate=0.0,
+                sizing_mode=pf_verdict.sizing_mode,
+            )
 
             if size_result.lots <= 0 and size_result.stake_usd <= 0:
                 logger.warning(
