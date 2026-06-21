@@ -327,6 +327,26 @@ class SignalDiscoveryEngine:
             "walk_forward_ratio_threshold": self._wf_ratio_threshold,
             "rules": [r.to_dict() for r in discovered[:100]],
         }
+
+        # Surface qualifying discoveries at INFO so the dormant signal-discovery
+        # intelligence is visible operationally (not only on the dashboard).
+        # Read-only — discovered rules are observed/flagged, never auto-promoted
+        # to a live entry source here.
+        try:
+            if qualifying:
+                top = ", ".join(
+                    f"{r.label}(edge {r.edge:+.3f}, wf {r.wf_ratio:.2f})"
+                    for r in qualifying[:3]
+                )
+                logger.info(
+                    "[signal-discovery] {} trade(s) analysed — {} qualifying "
+                    "rule(s), {} active: {}",
+                    len(ordered), len(qualifying),
+                    sum(1 for r in qualifying if r.active), top,
+                )
+        except Exception as exc:  # noqa: BLE001 — logging must never break compute
+            logger.debug("[signal-discovery] summary log failed: {}", exc)
+
         return payload
 
     @staticmethod

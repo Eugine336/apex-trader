@@ -111,6 +111,7 @@ class SystemContext:
     shadow_store: Optional[ShadowStore] = None
     tuner_agent: Optional[TunerAgent] = None
     ml_adapter: Optional[AdaptiveOptimizer] = None
+    win_rate_provider: Optional[Any] = None
     rl_bridge: Optional[Any] = None
 
     # ── Ops / Dashboard / Persistence (Phase 5) ─────────────────────
@@ -500,6 +501,32 @@ class SystemContext:
                     pass
         except Exception as exc:
             logger.warning("[SystemContext] AdaptiveOptimizer init failed: {}", exc)
+
+        # ── AdaptiveWinRateProvider ─────────────────────────────────
+        # Closes the opportunity-ranker's ``win_rate_provider`` hook: feeds the
+        # ranker (and the orchestrator EV sizing that consumes it) a calibrated
+        # per-pair win probability from the learned PairLearner / EVEstimator
+        # instead of the hardcoded 0.40 prior. Read-only over both learners;
+        # gated by ``adaptive_win_rate_provider_enabled`` and behaviour-neutral
+        # at cold start (resolves to the same 0.40 prior until real history
+        # exists).
+        try:
+            if bool(getattr(config, "adaptive_win_rate_provider_enabled", True)):
+                from adaptive.win_rate_provider import AdaptiveWinRateProvider as _WRP
+                pair_learner = (
+                    getattr(ctx.ml_adapter, "pair_learner", None)
+                    if ctx.ml_adapter is not None else None
+                )
+                ev_estimator = (
+                    getattr(ctx.risk_engine, "ev_estimator", None)
+                    if ctx.risk_engine is not None else None
+                )
+                ctx.win_rate_provider = _WRP(
+                    pair_learner=pair_learner,
+                    ev_estimator=ev_estimator,
+                )
+        except Exception as exc:
+            logger.warning("[SystemContext] AdaptiveWinRateProvider init failed: {}", exc)
 
         # ── TunerAgent ──────────────────────────────────────────────
         try:

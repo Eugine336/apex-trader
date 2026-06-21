@@ -293,6 +293,9 @@ def build_consensus(
     session_open_minutes: Optional[int] = None,
     currency_strength_analysis: Any = None,
     currency_pairs: Optional[dict[str, tuple[str, str]]] = None,
+    vote_calibrator: Any = None,
+    module_governor: Any = None,
+    win_rate_provider: Any = None,
 ) -> tuple[list, list]:
     """Derive per-module directional votes + ranked opportunities from a WM.
 
@@ -301,6 +304,17 @@ def build_consensus(
     volume, wyckoff, order blocks, FVGs) and optional raw-series inputs for
     momentum/VWAP/liquidity/currency-strength when provided by the caller.
     Each extractor is guarded.
+
+    The optional ``vote_calibrator`` and ``module_governor`` close the adaptive
+    feedback loop on the vote panel itself: a module the
+    :class:`~adaptive.module_governor.ModuleGovernor` has SHADOWED/DISABLED is
+    excluded from the panel entirely, and every surviving vote's static
+    ``ConsensusConfig`` weight is scaled by the
+    :class:`~adaptive.vote_calibrator.VoteCalibrator` multiplier (a module that
+    predicts well votes louder, one that is mostly noise votes softer). Both are
+    no-ops when their feature flag is off — the calibrator returns the base
+    weight unchanged and the governor reports nothing suppressed — so wiring
+    them in is behaviour-neutral until the operator enables them.
     """
     from brain.directional_consensus import (
         Vote,
@@ -318,6 +332,47 @@ def build_consensus(
 
     votes: list = []
 
+    def _add_vote(
+        module: str,
+        direction: str,
+        confidence: float,
+        base_weight: float,
+        *,
+        timeframe: str = "",
+        evidence: Optional[dict] = None,
+    ) -> None:
+        """Append a Vote after applying governor suppression + calibrated weight.
+
+        Both adaptive hooks are guarded so a malfunctioning learner can never
+        block the panel: on any error the module is kept with its base weight.
+        """
+        # Module Governor: exclude SHADOWED / DISABLED modules from the panel.
+        if module_governor is not None:
+            try:
+                if module_governor.is_suppressed(module):
+                    return
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "[consensus] {} governor check failed for {}: {}",
+                    symbol, module, exc,
+                )
+        # Vote Calibrator: scale the static consensus weight by the learned,
+        # bounded, mean-1.0 multiplier (unchanged when calibration is off).
+        weight = base_weight
+        if vote_calibrator is not None:
+            try:
+                weight = vote_calibrator.calibrated_weight(module, base_weight)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "[consensus] {} calibrate failed for {}: {}",
+                    symbol, module, exc,
+                )
+                weight = base_weight
+        votes.append(
+            Vote(module, direction, confidence, weight,
+                 timeframe=timeframe, evidence=evidence or {})
+        )
+
     try:
         b = wm.bias_dict()
         sdir = {"LONG": "BULLISH", "SHORT": "BEARISH"}.get(
@@ -327,7 +382,7 @@ def build_consensus(
             {"direction": sdir,
              "confidence": float(b.get("confidence", 0.0) or 0.0)}
         )
-        votes.append(Vote("structure", r[0], r[1], 3.0))
+        _add_vote("structure", r[0], r[1], 3.0)
     except Exception as exc:
         _warn_module_failure("consensus", "structure", symbol, exc)
 
@@ -336,7 +391,7 @@ def build_consensus(
         va = vbt.get("M5") or vbt.get("H1")
         if va is not None:
             r = vote_from_volume(va)
-            votes.append(Vote("volume", r[0], r[1], 1.0))
+            _add_vote("volume", r[0], r[1], 1.0)
     except Exception as exc:
         _warn_module_failure("consensus", "volume", symbol, exc)
 
@@ -344,7 +399,7 @@ def build_consensus(
         wy = wm.wyckoff_by_tf().get("H1")
         if wy is not None:
             r = vote_from_wyckoff(wy)
-            votes.append(Vote("wyckoff", r[0], r[1], 1.5))
+            _add_vote("wyckoff", r[0], r[1], 1.5)
     except Exception as exc:
         _warn_module_failure("consensus", "wyckoff", symbol, exc)
 
@@ -353,14 +408,14 @@ def build_consensus(
             obs = wm.all_order_blocks()
             if obs:
                 r = vote_from_order_blocks(list(obs), current_price)
-                votes.append(Vote("order_block", r[0], r[1], 1.0))
+                _add_vote("order_block", r[0], r[1], 1.0)
         except Exception as exc:
             _warn_module_failure("consensus", "order_block", symbol, exc)
         try:
             fvgs = wm.all_fvgs()
             if fvgs:
                 r = vote_from_fvg(list(fvgs), current_price, fvg_proximity(symbol))
-                votes.append(Vote("fvg", r[0], r[1], 1.0))
+                _add_vote("fvg", r[0], r[1], 1.0)
         except Exception as exc:
             _warn_module_failure("consensus", "fvg", symbol, exc)
 
@@ -372,18 +427,18 @@ def build_consensus(
                 except Exception:
                     pip_size = 0.0001
                 r = vote_from_liquidity(liquidity_mapper, m5_df, pip_size)
-                votes.append(Vote(
+                _add_vote(
                     "liquidity", r[0], r[1], 1.0, timeframe="M5",
                     evidence=getattr(r, "evidence", {}) or {},
-                ))
+                )
         except Exception as exc:
             _warn_module_failure("consensus", "liquidity", symbol, exc)
         try:
             r = vote_from_momentum(m5_df, h1_df)
-            votes.append(Vote(
+            _add_vote(
                 "momentum", r[0], r[1], 1.0, timeframe="M5",
                 evidence=getattr(r, "evidence", {}) or {},
-            ))
+            )
         except Exception as exc:
             _warn_module_failure("consensus", "momentum", symbol, exc)
         try:
@@ -391,10 +446,10 @@ def build_consensus(
             r = vote_from_vwap(
                 m5_df, mins, float(current_price or 0.0),
             )
-            votes.append(Vote(
+            _add_vote(
                 "vwap", r[0], r[1], 1.0, timeframe="M5",
                 evidence=getattr(r, "evidence", {}) or {},
-            ))
+            )
         except Exception as exc:
             _warn_module_failure("consensus", "vwap", symbol, exc)
 
@@ -405,17 +460,44 @@ def build_consensus(
                 currency_strength_analysis,
                 currency_pairs or {},
             )
-            votes.append(Vote(
+            _add_vote(
                 "currency_strength", r[0], r[1], 2.0,
                 evidence=getattr(r, "evidence", {}) or {},
-            ))
+            )
         except Exception as exc:
             _warn_module_failure("consensus", "currency_strength", symbol, exc)
 
     candidates: list = []
     try:
         if votes:
-            candidates = list(decide_opportunities(votes))
+            # Resolve the per-pair calibrated win-rate callable for the ranker
+            # so opportunity EV uses learned PairLearner/EVEstimator rates
+            # instead of the hardcoded prior. Behaviour-neutral when no provider
+            # is wired or the pair has no history (falls back to the prior).
+            wr_callable = None
+            if win_rate_provider is not None:
+                try:
+                    regime = ""
+                    try:
+                        rb = wm.regime_by_tf()
+                        regime = (
+                            rb.get("H1") or rb.get("M5")
+                            or next(iter(rb.values()), "")
+                        )
+                    except Exception:
+                        regime = ""
+                    wr_callable, _ = win_rate_provider.for_pair(
+                        symbol, regime=regime or "",
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "[consensus] {} win-rate provider resolve failed: {}",
+                        symbol, exc,
+                    )
+                    wr_callable = None
+            candidates = list(
+                decide_opportunities(votes, win_rate_provider=wr_callable)
+            )
     except Exception as exc:
         _warn_module_failure("consensus", "decide_opportunities", symbol, exc)
 

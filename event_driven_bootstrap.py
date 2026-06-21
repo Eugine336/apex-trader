@@ -1299,6 +1299,9 @@ class EventDrivenSystem:
             candle_fetcher=self._fetch_candles,
             edge_weight=self._zone_edge.zone_weight,
             concept_weight=self._zone_edge.concept_weight,
+            vote_calibrator=getattr(ctx, "vote_calibrator", None) if ctx else None,
+            module_governor=getattr(ctx, "module_governor", None) if ctx else None,
+            win_rate_provider=getattr(ctx, "win_rate_provider", None) if ctx else None,
         )
 
         # ── Execution plane ──────────────────────────────────────────
@@ -4216,13 +4219,63 @@ class EventDrivenSystem:
                         if h4_sa is not None else None
                     )
 
+                    want_dir = "LONG" if direction.upper() in ("BUY", "LONG") else "SHORT"
+
+                    # Select the ranked opportunity matching the entry direction
+                    # (highest EV) so the orchestrator's ranker_ev sizing
+                    # dimension is fed by the calibrated candidate EV instead of
+                    # staying neutral.  Gated by ``orchestrator.use_ranker_ev``
+                    # (default off) so sizing is unchanged until the operator
+                    # opts in; best-effort selection leaves the fields None
+                    # (neutral) on any miss.
+                    ranker_ev = None
+                    ranker_coherence = None
+                    ranker_confidence = None
+                    candidate_count = 0
+                    _use_ranker_ev = False
+                    try:
+                        _orch_cfg = getattr(self._config, "orchestrator", None)
+                        _use_ranker_ev = bool(
+                            getattr(_orch_cfg, "use_ranker_ev", False)
+                        )
+                    except Exception:
+                        _use_ranker_ev = False
+                    if _use_ranker_ev:
+                        try:
+                            cands = (
+                                wm.candidates_list()
+                                if wm is not None and hasattr(wm, "candidates_list")
+                                else list(getattr(wm, "candidates", ()) or [])
+                            )
+                            matching = [
+                                c for c in cands
+                                if str(getattr(c, "direction", "")).upper() == want_dir
+                            ]
+                            candidate_count = len(cands)
+                            if matching:
+                                best = max(
+                                    matching,
+                                    key=lambda c: float(getattr(c, "expected_value", 0.0) or 0.0),
+                                )
+                                ranker_ev = float(getattr(best, "expected_value", 0.0) or 0.0)
+                                ranker_coherence = float(getattr(best, "coherence", 0.0) or 0.0)
+                                ranker_confidence = float(getattr(best, "confidence", 0.0) or 0.0)
+                        except Exception as exc:
+                            logger.debug(
+                                "[orch] {} candidate EV select failed: {}", symbol, exc,
+                            )
+
                     proposal = TradeProposal(
                         pair=symbol,
-                        direction="LONG" if direction.upper() in ("BUY", "LONG") else "SHORT",
+                        direction=want_dir,
                         scan_score=float(conviction),
                         de_conviction=de_conviction if de_conviction > 0 else None,
                         de_margin=None,
                         tf_alignment=h4_alignment,
+                        ranker_ev=ranker_ev,
+                        ranker_coherence=ranker_coherence,
+                        ranker_confidence=ranker_confidence,
+                        candidate_count=candidate_count,
                     )
                     verdict = ctx.orchestrator.evaluate(proposal)
                     # Emit ORCHESTRATOR_PROPOSAL so the dashboard's orchestrator
