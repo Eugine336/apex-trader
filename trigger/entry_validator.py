@@ -17,13 +17,6 @@ from brain.correlation_engine import CorrelationEngine, OpenTrade
 from brain.session_engine import SessionEngine
 from trigger.entry_engine import EntrySignal
 
-_MT5_AVAILABLE = False
-try:
-    import MetaTrader5 as mt5  # type: ignore[import-untyped]
-    _MT5_AVAILABLE = True
-except ImportError:
-    mt5 = None
-
 
 @dataclass
 class ValidationResult:
@@ -141,9 +134,11 @@ class EntryValidator:
 
     def check_market_open(self, pair: str, platform: str = "mt5") -> tuple[bool, str]:
         """
-        Asks MT5 directly whether this symbol is currently tradeable.
-        Uses symbol_info().trade_mode — no hardcoded hours, works for any
-        instrument including ones added in future.
+        Asks the broker (via the injected MT5 connector gateway) whether this
+        symbol is currently tradeable, using symbol_info().trade_mode — no
+        hardcoded hours, works for any instrument including ones added in
+        future.  All broker I/O is owned by the Execution Division; this gate
+        never imports MetaTrader5 directly.
 
         Trade modes:
             0 = SYMBOL_TRADE_MODE_DISABLED  — trading disabled
@@ -153,55 +148,40 @@ class EntryValidator:
             4 = SYMBOL_TRADE_MODE_FULL      — fully open
 
         Deriv synthetics are always open — skip this check entirely for them.
-        If MT5 is unavailable (e.g. running tests), pass through gracefully.
+        If no connector is wired (e.g. running tests), pass through gracefully.
         """
         # Deriv instruments never have exchange-hour restrictions
         if platform == "deriv" or is_always_open(pair):
             return True, "24/7 instrument — market always open"
 
-        if not _MT5_AVAILABLE or mt5 is None:
-            # If a live MT5 connector is wired we EXPECT MT5 to be available;
-            # its absence means we cannot confirm the market is open → fail
-            # closed. Only skip the check when no connector is wired (tests/dev).
-            if self._mt5_connector is not None:
-                return False, "MT5 unavailable but connector wired — fail-closed"
-            return True, "MT5 not available — market hours check skipped"
-
-        # Resolve broker symbol name via connector if injected, else use raw pair
-        mapped = pair
-        if self._mt5_connector is not None:
-            try:
-                mapped = self._mt5_connector.symbol_map(pair)
-            except Exception as exc:
-                logger.warning("[entry_validator] symbol_map lookup failed: {}", exc)
-                pass
+        if self._mt5_connector is None:
+            # No connector wired (tests/dev) — cannot confirm, pass through.
+            return True, "MT5 connector not wired — market hours check skipped"
 
         try:
-            mt5.symbol_select(mapped, True)
-            info = mt5.symbol_info(mapped)
-            if info is None:
-                # Cannot confirm tradeability — fail closed rather than letting
-                # an order through to a possibly-closed market.
-                logger.warning(f"[{pair}] symbol_info returned None — fail-closed on market hours")
-                return False, f"Market hours unknown for {pair} (symbol_info None) — fail-closed"
-
-            mode = info.trade_mode
-
-            # SYMBOL_TRADE_MODE_FULL (4) = fully open
-            # SYMBOL_TRADE_MODE_LONGONLY (1) or SHORTONLY (2) = partially open
-            # SYMBOL_TRADE_MODE_CLOSEONLY (3) or DISABLED (0) = closed
-            if mode == 4:
-                return True, "Market open (trade_mode=FULL)"
-            elif mode in (1, 2):
-                return True, f"Market partially open (trade_mode={mode})"
-            elif mode == 3:
-                return False, f"Market closing — close-only mode ({pair})"
-            else:
-                return False, f"Market closed — trading disabled ({pair}, trade_mode={mode})"
-
+            spec = self._mt5_connector.get_symbol_spec(pair)
         except Exception as exc:
             logger.warning(f"[{pair}] Market hours check error: {exc} — fail-closed")
             return False, f"Market hours check failed ({exc}) — fail-closed"
+
+        mode = spec.get("trade_mode") if isinstance(spec, dict) else None
+        if mode is None:
+            # Cannot confirm tradeability — fail closed rather than letting an
+            # order through to a possibly-closed market.
+            logger.warning(f"[{pair}] trade_mode unavailable — fail-closed on market hours")
+            return False, f"Market hours unknown for {pair} (trade_mode None) — fail-closed"
+
+        # SYMBOL_TRADE_MODE_FULL (4) = fully open
+        # SYMBOL_TRADE_MODE_LONGONLY (1) or SHORTONLY (2) = partially open
+        # SYMBOL_TRADE_MODE_CLOSEONLY (3) or DISABLED (0) = closed
+        if mode == 4:
+            return True, "Market open (trade_mode=FULL)"
+        elif mode in (1, 2):
+            return True, f"Market partially open (trade_mode={mode})"
+        elif mode == 3:
+            return False, f"Market closing — close-only mode ({pair})"
+        else:
+            return False, f"Market closed — trading disabled ({pair}, trade_mode={mode})"
 
     def check_spread(
         self, pair: str, current_spread_pips: float,

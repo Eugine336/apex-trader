@@ -164,31 +164,48 @@ class ActionExecutor:
         self._lock = Lock()
         self._metrics = ExecutorMetrics()
         self._metrics_lock = Lock()
-        # Separate breakers per operation class so a failing CLOSE/manage path
-        # (e.g. a closed FX market on the weekend) cannot trip the breaker that
-        # gates new OPEN entries.  24/7 synthetic-index entries must never be
-        # blocked by forex close failures on a different instrument.
+        # Separate breakers per operation class AND per platform so a failing
+        # CLOSE/manage path on one broker (e.g. a closed FX market on MT5 over
+        # the weekend) cannot trip the breaker that gates manage operations on
+        # a different broker (24/7 Deriv synthetics), nor the breaker that
+        # gates new OPEN entries.  OPEN is a single breaker because the target
+        # platform is only resolved by symbol routing inside PlatformManager
+        # (not known at intent time).  Manage breakers are keyed by platform;
+        # the "" key is the fallback when a position's platform is unknown.
         self._circuit_open = CircuitBreaker(
             name="action_executor.open",
             failure_threshold=self._cfg.circuit_failure_threshold,
             cooldown_seconds=self._cfg.circuit_cooldown_s,
         )
-        self._circuit_manage = CircuitBreaker(
-            name="action_executor.manage",
-            failure_threshold=self._cfg.circuit_failure_threshold,
-            cooldown_seconds=self._cfg.circuit_cooldown_s,
-        )
+        self._circuit_manage: dict[str, CircuitBreaker] = {
+            platform: CircuitBreaker(
+                name=f"action_executor.manage.{platform or 'unknown'}",
+                failure_threshold=self._cfg.circuit_failure_threshold,
+                cooldown_seconds=self._cfg.circuit_cooldown_s,
+            )
+            for platform in ("mt5", "deriv", "")
+        }
 
-    def _breaker_for(self, intent: Intent) -> CircuitBreaker:
+    def _breaker_for(
+        self, intent: Intent, open_positions: dict[str, dict],
+    ) -> CircuitBreaker:
         """Return the breaker that governs this intent's operation class.
 
         OPEN (new entries) is isolated from the management/exit path
         (CLOSE, PARTIAL_CLOSE, MODIFY_*) so failures on one cannot starve
-        the other.
+        the other.  Manage operations are further isolated per platform so a
+        broker outage / closed market on MT5 cannot block manage operations on
+        Deriv (and vice versa).
         """
         if intent.intent_type == IntentType.OPEN:
             return self._circuit_open
-        return self._circuit_manage
+        platform = str(
+            (open_positions.get(intent.position_ticket, {}) or {}).get(
+                "platform", ""
+            )
+            or ""
+        )
+        return self._circuit_manage.get(platform, self._circuit_manage[""])
 
     # ── Public API ───────────────────────────────────────────────────
 
@@ -226,9 +243,9 @@ class ActionExecutor:
                 gate_reason=gate.reason,
             )
 
-        if not self._breaker_for(intent).can_execute():
+        if not self._breaker_for(intent, open_positions).can_execute():
             self._inc("intents_circuit_open")
-            status = self._breaker_for(intent).get_status()
+            status = self._breaker_for(intent, open_positions).get_status()
             reason = (
                 f"Circuit open — {status.failure_count} failures, "
                 f"cooldown {status.cooldown_remaining_seconds:.0f}s remaining"
@@ -281,7 +298,7 @@ class ActionExecutor:
     ) -> ExecutionResult:
         last_error: Optional[str] = None
         retried = False
-        circuit = self._breaker_for(intent)
+        circuit = self._breaker_for(intent, open_positions)
 
         for attempt in range(1 + self._cfg.max_retries):
             if attempt > 0:
