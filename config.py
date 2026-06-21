@@ -343,9 +343,9 @@ class ConsensusConfig:
     # only a re-fire debounce so the same standing thesis is not re-submitted
     # every candle between fills (Compliance still owns the duplicate veto).
     #
-    # Defaults OFF so this phase is behaviour-neutral and shippable — flip
-    # ``active_trigger_enabled`` to True to activate the market-driven trigger.
-    active_trigger_enabled: bool = False
+    # Flip ``active_trigger_enabled`` to True to activate the market-driven
+    # trigger so the intelligence layer can initiate entries without a zone.
+    active_trigger_enabled: bool = True
     conviction_threshold: float = 0.62
     # Saturation scale for |net_score| in the conviction blend; <=0 derives it
     # from ``min_net_score * 2`` so a panel at ~2× the net floor reads decisive.
