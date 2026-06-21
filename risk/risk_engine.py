@@ -140,6 +140,15 @@ class RiskEngine:
         portfolio_heat_pct: float = 0.0,
         strategy_allocation: float = 1.0,
     ) -> RiskAssessment:
+        """DEPRECATED for the live entry path — superseded by the organisational
+        split. The event-driven entry handler now runs the binary safety vetoes
+        (FROZEN / daily-loss / max-trades / correlation / duplicate / EV / spread)
+        as discrete Compliance-style gates and sizes through ``PortfolioDivision``
+        (``portfolio/division.py``), which also enforces the remaining
+        daily-loss budget this chain owned. ``assess`` is retained for the
+        backtest engine, offline tooling, and tests — do not reintroduce it on
+        the live path.
+        """
         now = datetime.now(timezone.utc)
         # A passed balance of exactly 0.0 is a real state (margin call) and must
         # NOT silently fall back to the stale internal balance — only None does.

@@ -643,6 +643,11 @@ class RiskConfig:
     pending_orders_enabled: bool = True
     pending_max_wait_minutes: int = 30
     max_cluster_same_direction: int = 2
+    # Portfolio Division soft exposure budgets. 0 == disabled (no-op) so default
+    # behaviour is unchanged; tighten to have Portfolio mark a trade REDUCED when
+    # the same pair / same broker already holds more than this many positions.
+    max_pair_concentration: int = 0
+    max_broker_positions: int = 0
     allow_intentional_hedge: bool = True
     margin_guardian_enabled: bool = True
     margin_warn_pct: float = 200.0

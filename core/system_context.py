@@ -47,6 +47,7 @@ if TYPE_CHECKING:
     from governor.portfolio_governor import PortfolioGovernor
     from management.opportunity_executor import OpportunityExecutor
     from platforms.platform_manager import PlatformManager
+    from portfolio.division import PortfolioDivision
     from risk.account_risk import AccountRiskManager
     from risk.portfolio_risk_state import PortfolioRiskStateMachine
     from risk.risk_engine import RiskEngine
@@ -82,6 +83,9 @@ class SystemContext:
     account_risk: Optional[AccountRiskManager] = None
     portfolio_governor: Optional[PortfolioGovernor] = None
     risk_reporter: Optional[RiskReporter] = None
+    # Portfolio Division — the cohesive capital-allocation/exposure layer that
+    # owns sizing (replaces the inline fresh-PositionSizer + multiplier chain).
+    portfolio: Optional["PortfolioDivision"] = None
 
     # ── Decision intelligence ────────────────────────────────────────
     decision_engine: Optional[DecisionEngine] = None
@@ -229,9 +233,39 @@ class SystemContext:
         except Exception as exc:
             logger.warning("[SystemContext] RiskReporter init failed: {}", exc)
 
+        # ── PortfolioDivision ────────────────────────────────────────
+        # The cohesive capital-allocation layer. Reuses the RiskEngine's own
+        # PositionSizer (so the per-trade risk ceiling stays authoritative —
+        # no fresh sizer that could bypass it) and the live CorrelationEngine
+        # for currency-decomposition exposure.
+        try:
+            from portfolio.division import PortfolioDivision
+
+            sizer = getattr(ctx.risk_engine, "position_sizer", None)
+            if sizer is None:
+                from risk.position_sizer import PositionSizer
+                sizer = PositionSizer(
+                    micro_account_threshold_usd=risk_cfg.micro_account_threshold_usd,
+                    deriv_min_stake_usd=risk_cfg.deriv_min_stake_usd,
+                    max_risk_pct_per_trade=risk_cfg.max_risk_pct_per_trade,
+                )
+            ctx.portfolio = PortfolioDivision(
+                position_sizer=sizer,
+                correlation_engine=ctx.correlation_engine,
+                max_pair_concentration=getattr(
+                    risk_cfg, "max_pair_concentration", 0,
+                ),
+                max_broker_positions=getattr(
+                    risk_cfg, "max_broker_positions", 0,
+                ),
+            )
+        except Exception as exc:
+            logger.warning("[SystemContext] PortfolioDivision init failed: {}", exc)
+
         logger.info(
             "[SystemContext] risk layer initialized — drawdown={} corr={} "
-            "risk_engine={} portfolio_sm={} governor={} account_risk={} reporter={}",
+            "risk_engine={} portfolio_sm={} governor={} account_risk={} "
+            "reporter={} portfolio={}",
             ctx.drawdown_guard is not None,
             ctx.correlation_engine is not None,
             ctx.risk_engine is not None,
@@ -239,6 +273,7 @@ class SystemContext:
             ctx.portfolio_governor is not None,
             ctx.account_risk is not None,
             ctx.risk_reporter is not None,
+            ctx.portfolio is not None,
         )
 
         # ── Decision Intelligence (Phase 2) ──────────────────────────
