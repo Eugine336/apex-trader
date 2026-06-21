@@ -128,6 +128,8 @@ class DerivConnector(BaseConnector):
         max_tick_age_seconds: float = 120.0,
         token_refresh_callback: Optional[Callable[[], tuple[str, float]]] = None,
         position_store: Optional[DerivPositionStore] = None,
+        reconnect_max_attempts: int = _MAX_RECONNECT_ATTEMPTS,
+        reconnect_base_delay: float = _RECONNECT_DELAY,
     ):
         # New API: OAuth2 access token + REST OTP flow.
         # client_id     — OAuth2 client id (from the Deriv Developer Dashboard)
@@ -156,6 +158,20 @@ class DerivConnector(BaseConnector):
         self._token_lock = threading.Lock()
         self._token_monitor_stop = threading.Event()
         self._token_monitor_thread: Optional[threading.Thread] = None
+
+        # Reconnect policy — sourced from OpsConfig (reconnect_max_retries /
+        # reconnect_base_delay_seconds) by the PlatformManager, falling back to
+        # the module defaults. Used by _reconnect's attempt loop + backoff.
+        try:
+            self._max_reconnect_attempts = max(1, int(reconnect_max_attempts))
+        except (TypeError, ValueError):
+            self._max_reconnect_attempts = _MAX_RECONNECT_ATTEMPTS
+        try:
+            self._reconnect_base_delay = float(reconnect_base_delay)
+        except (TypeError, ValueError):
+            self._reconnect_base_delay = float(_RECONNECT_DELAY)
+        if self._reconnect_base_delay <= 0:
+            self._reconnect_base_delay = float(_RECONNECT_DELAY)
 
         self._max_tick_age_seconds = float(
             os.getenv("MAX_TICK_AGE_SECONDS", str(max_tick_age_seconds))
@@ -205,6 +221,18 @@ class DerivConnector(BaseConnector):
         self._lock: asyncio.Lock = asyncio.run_coroutine_threadsafe(
             self._make_lock(), self._loop
         ).result(timeout=5)
+        # Serialises (re)connect attempts so the reactive reconnect (triggered
+        # from _send_raw on a dropped socket) and the proactive reconnect
+        # (PlatformManager watchdog → connect()) can never open two sockets at
+        # once. Without this, both schedule _connect_async on self._loop and
+        # interleave at await points, each assigning self._ws and leaking the
+        # other — eventually tripping Deriv's 5-concurrent-connection cap so
+        # every further reconnect is refused. Distinct from self._lock (the
+        # send lock) to avoid a deadlock: the reactive path already holds
+        # self._lock when it reconnects.
+        self._connect_lock: asyncio.Lock = asyncio.run_coroutine_threadsafe(
+            self._make_lock(), self._loop
+        ).result(timeout=5)
         self._thread_lock = threading.Lock()
         self._last_history_request: float = 0.0
         # ticks_history rate-limit gate. ``_next_history_at`` is the monotonic
@@ -239,6 +267,19 @@ class DerivConnector(BaseConnector):
             return False
 
     async def _connect_async(self) -> bool:
+        """Establish the WebSocket, serialised against any in-flight reconnect.
+
+        Acquires ``_connect_lock`` and short-circuits if a concurrent
+        (re)connect already restored a live socket, so the proactive
+        (watchdog) and reactive (_send_raw) paths never open two sockets at
+        once. The actual connect work lives in ``_do_connect``.
+        """
+        async with self._connect_lock:
+            if self._connected and self._ws is not None and self._ws_is_open():
+                return True
+            return await self._do_connect()
+
+    async def _do_connect(self) -> bool:
         # ── New API flow ────────────────────────────────────────────────────
         # 1. Verify the access token has not expired (a reconnect cannot
         #    self-recover without a fresh token).
@@ -246,6 +287,7 @@ class DerivConnector(BaseConnector):
         # 3. Fetch a fresh, single-use OTP WebSocket URL via REST.
         # 4. Open the WebSocket — it is pre-authenticated, so no authorize
         #    message is sent.
+        # Caller MUST hold ``_connect_lock``.
         if not self._check_token_valid():
             return False
 
@@ -643,46 +685,93 @@ class DerivConnector(BaseConnector):
         self._ws = None
         logger.info("Deriv disconnected")
 
-    def is_connected(self) -> bool:
-        if self._ws is None or not self._connected:
+    def _ws_is_open(self) -> bool:
+        """True if the underlying WebSocket object is in the OPEN state.
+
+        Independent of the ``_connected`` flag so it can be used inside the
+        (re)connect guard to detect a socket another path just opened.
+        """
+        ws = self._ws
+        if ws is None:
             return False
         # websockets >= 10 uses .state; older versions expose .open
-        state = getattr(self._ws, "state", None)
+        state = getattr(ws, "state", None)
         if state is not None:
-            import websockets.connection as _wsc
-            return state == _wsc.State.OPEN
-        return bool(getattr(self._ws, "open", False))
+            try:
+                import websockets.connection as _wsc
+                return state == _wsc.State.OPEN
+            except Exception:
+                # Fall back to the .open property if the State enum import
+                # path changed across websockets versions.
+                return bool(getattr(ws, "open", False))
+        return bool(getattr(ws, "open", False))
+
+    def is_connected(self) -> bool:
+        if not self._connected:
+            return False
+        return self._ws_is_open()
 
     async def _reconnect(self) -> bool:
+        """Reactively rebuild a dropped/expired socket.
+
+        Serialised through ``_connect_lock`` so it can never race the proactive
+        (watchdog) reconnect into opening a duplicate socket. The lock is held
+        only for each individual connect attempt — never across the backoff
+        sleep — so a concurrent proactive reconnect can still make progress and
+        either path satisfies the other via the in-guard liveness check.
+        Backoff and attempt count come from OpsConfig.
+        """
         self._reconnecting = True
-        self._connected = False
-        self._authorized = False
-        # Close any stale socket so we don't leak connections (Deriv allows
-        # only 5 concurrent connections per user).
-        if self._ws is not None:
-            try:
-                await self._ws.close()
-            except Exception:
-                pass
-            self._ws = None
         try:
-            for attempt in range(1, _MAX_RECONNECT_ATTEMPTS + 1):
-                logger.warning("Deriv reconnect attempt {}/{}", attempt, _MAX_RECONNECT_ATTEMPTS)
-                # _connect_async fetches a FRESH single-use OTP every call, so
-                # each reconnect attempt gets a new pre-authenticated WS URL.
-                ok = await self._connect_async()
+            for attempt in range(1, self._max_reconnect_attempts + 1):
+                async with self._connect_lock:
+                    # On a retry, a concurrent (proactive/watchdog) reconnect
+                    # may have already restored a healthy socket while we were
+                    # sleeping — adopt it instead of opening another. Not on the
+                    # first attempt: this path was invoked because OUR socket
+                    # broke, so it must always be torn down and rebuilt once.
+                    if (
+                        attempt > 1
+                        and self._connected
+                        and self._ws is not None
+                        and self._ws_is_open()
+                    ):
+                        return True
+                    self._connected = False
+                    self._authorized = False
+                    # Close any stale socket so we don't leak connections
+                    # (Deriv allows only 5 concurrent connections per user).
+                    if self._ws is not None:
+                        try:
+                            await self._ws.close()
+                        except Exception:
+                            pass
+                        self._ws = None
+                    logger.warning(
+                        "Deriv reconnect attempt {}/{}",
+                        attempt, self._max_reconnect_attempts,
+                    )
+                    # _do_connect fetches a FRESH single-use OTP every call, so
+                    # each reconnect attempt gets a new pre-authenticated WS URL
+                    # (this is the Deriv re-authentication step).
+                    ok = await self._do_connect()
                 if ok:
                     return True
                 # If the access token has expired, further attempts are futile
-                # until DERIV_ACCESS_TOKEN is refreshed — stop early.
+                # until DERIV_ACCESS_TOKEN is refreshed — stop early, loudly.
                 if self._token_expires_at - _time.time() <= 0:
                     logger.critical(
                         "Deriv reconnect aborted — access token expired. "
                         "Refresh DERIV_ACCESS_TOKEN to restore the connection."
                     )
                     return False
-                await asyncio.sleep(_RECONNECT_DELAY * attempt)
-            logger.error("Deriv reconnect failed after {} attempts", _MAX_RECONNECT_ATTEMPTS)
+                await asyncio.sleep(self._reconnect_base_delay * attempt)
+            logger.critical(
+                "🚨 Deriv reconnect FAILED after {} attempts — connection is "
+                "DOWN; Deriv trading/management is offline until it recovers "
+                "(the watchdog will keep retrying)",
+                self._max_reconnect_attempts,
+            )
             return False
         finally:
             self._reconnecting = False

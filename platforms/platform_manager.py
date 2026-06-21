@@ -140,6 +140,8 @@ class PlatformManager:
             token_expires_in=float(os.getenv("DERIV_TOKEN_EXPIRES_IN", "3600")),
             app_id=os.getenv("DERIV_APP_ID", ""),
             max_tick_age_seconds=self.config.risk.max_tick_age_seconds,
+            reconnect_max_attempts=getattr(self.config.ops, "reconnect_max_retries", 10),
+            reconnect_base_delay=getattr(self.config.ops, "reconnect_base_delay_seconds", 5.0),
         )
 
         self._mt5_connected_flags: list[bool] = [False] * len(self.mt5_connectors)
@@ -147,7 +149,11 @@ class PlatformManager:
 
         self._mt5_was_connected: list[bool] = [False] * len(self.mt5_connectors)
         self._deriv_was_connected = False
-        self._reconnect_delays = [5, 10, 20, 40, 60]
+        # Exponential backoff schedule for proactive reconnects, derived from
+        # OpsConfig.reconnect_base_delay_seconds so the cadence is configurable
+        # (default base 5.0 → [5, 10, 20, 40, 60], the historical schedule).
+        _base = float(getattr(self.config.ops, "reconnect_base_delay_seconds", 5.0) or 5.0)
+        self._reconnect_delays = [max(1.0, _base * mult) for mult in (1, 2, 4, 8, 12)]
         self._mt5_reconnect_attempts: list[int] = [0] * len(self.mt5_connectors)
         self._deriv_reconnect_attempt = 0
         self._mt5_next_reconnects: list[float] = [0.0] * len(self.mt5_connectors)
