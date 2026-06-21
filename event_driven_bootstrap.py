@@ -12,6 +12,7 @@ Stop:   ``system.stop()``
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time as _time
@@ -1747,6 +1748,11 @@ class EventDrivenSystem:
         except Exception as exc:
             logger.debug("[event-driven] event-log reconciliation failed: {}", exc)
 
+        # ── Restore PortfolioGovernor daily tally + loss-cap halt ─────────
+        # Must run before the loops so an active daily-loss halt is enforced
+        # from the first entry evaluation after a restart.
+        self._restore_governor_state()
+
         symbols = list(INSTRUMENT_REGISTRY.keys())
         for sym in symbols:
             self._candle_detector.register(sym)
@@ -1827,12 +1833,69 @@ class EventDrivenSystem:
         logger.info("  ENTRY:     zones → tick detection → M1 confirm → gates → executor")
         logger.info("-" * 60)
 
+    # ── PortfolioGovernor daily-state persistence ────────────────────────
+    # The governor's daily P&L tally + loss-cap halt only lived in memory, so
+    # a restart mid-day reset the day's loss budget and lifted any active halt
+    # — letting trading resume past the daily loss cap. Persist it to disk and
+    # restore on startup so the cap survives crashes/restarts within the day.
+    _GOVERNOR_STATE_PATH = "data/governor_state.json"
+
+    def _restore_governor_state(self) -> None:
+        ctx = self._ctx
+        if ctx is None or ctx.portfolio_governor is None:
+            return
+        try:
+            path = self._GOVERNOR_STATE_PATH
+            if not os.path.exists(path):
+                return
+            with open(path, "r", encoding="utf-8") as fh:
+                payload = json.load(fh)
+            # Only restore a same-UTC-day tally; a stale prior-day file must not
+            # resurrect yesterday's halt (the day-roll reset owns that).
+            saved_day = str(payload.get("utc_day", ""))
+            today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            if saved_day and saved_day != today:
+                logger.info(
+                    "[event-driven] governor state from {} is stale (today {}) "
+                    "— starting daily tally fresh", saved_day, today,
+                )
+                return
+            ctx.portfolio_governor.restore_state(payload)
+            if payload.get("daily_trading_halted"):
+                logger.warning(
+                    "[event-driven] restored governor daily-loss HALT from disk "
+                    "(daily_pnl={}) — halt persists across restart",
+                    payload.get("daily_pnl"),
+                )
+        except Exception as exc:
+            logger.debug("[event-driven] governor state restore failed: {}", exc)
+
+    def _persist_governor_state(self) -> None:
+        ctx = self._ctx
+        if ctx is None or ctx.portfolio_governor is None:
+            return
+        try:
+            payload = ctx.portfolio_governor.to_state()
+            payload["utc_day"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+            path = self._GOVERNOR_STATE_PATH
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            tmp = f"{path}.tmp"
+            with open(tmp, "w", encoding="utf-8") as fh:
+                json.dump(payload, fh)
+            os.replace(tmp, path)
+        except Exception as exc:
+            logger.debug("[event-driven] governor state persist failed: {}", exc)
+
     def stop(self) -> None:
         """Stop all subsystems gracefully."""
         if not self._running:
             return
         self._running = False
         logger.info("[event-driven] shutting down...")
+
+        # Persist the governor daily tally/halt so a restart inside the same
+        # UTC day resumes with the correct loss budget.
+        self._persist_governor_state()
 
         self._tick_eval_loop.stop()
         self._flush_loop.stop()
@@ -2144,6 +2207,10 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[heat-mon] account risk unrealized update failed: {}", exc)
 
+        # Persist the governor daily tally/halt every cycle so a hard crash
+        # (no clean shutdown) still retains the day's loss budget on restart.
+        self._persist_governor_state()
+
     def _run_periodic_learning(self, ctx: SystemContext) -> None:
         if ctx.post_close_tracker is not None:
             try:
@@ -2158,6 +2225,31 @@ class EventDrivenSystem:
 
         # Shadow contract resolution — live tick-driven (see _resolve_shadows).
         self._resolve_shadows()
+
+    def _register_entry_zone_critical_levels(self) -> None:
+        """Register active entry-zone boundaries as tick-store critical levels.
+
+        Boundaries (top/bottom) frame the trigger band the TickEntryDetector
+        watches; registering them lets ticks approaching an arming entry bypass
+        Hz coalescing. Fully fail-safe — additive registration only.
+        """
+        try:
+            orch = getattr(self, "_entry_orchestrator", None)
+            zw = orch.zone_watcher if orch is not None else None
+            if zw is None:
+                return
+            for zsym in zw.all_symbols_with_zones():
+                for zone in zw.get_active_zones(zsym):
+                    top = float(getattr(zone, "top", 0.0) or 0.0)
+                    bottom = float(getattr(zone, "bottom", 0.0) or 0.0)
+                    if top > 0:
+                        self._tick_store.register_critical_level(zsym, top)
+                    if bottom > 0:
+                        self._tick_store.register_critical_level(zsym, bottom)
+        except Exception as exc:
+            logger.debug(
+                "[risk-state] entry-zone critical-level resync failed: {}", exc,
+            )
 
     def _apply_portfolio_risk_state(self, ctx: SystemContext) -> None:
         """Compute live capital-at-risk and drive the portfolio risk state
@@ -2246,6 +2338,11 @@ class EventDrivenSystem:
             self._tick_store.clear_critical_levels()
         except Exception:
             pass
+
+        # Register active entry-zone boundaries too, so a tick approaching an
+        # arming entry trigger isn't coalesced away during a volatility spike
+        # (a missed zone touch = a missed entry).
+        self._register_entry_zone_critical_levels()
 
         for pos in positions:
             try:
