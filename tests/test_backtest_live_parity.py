@@ -257,11 +257,13 @@ def test_apply_pnl_legacy_is_multiplicative():
 # ── Management context completeness: live-parity fields (audit) ──────────
 
 
-def _struct(trend, conf, event="NONE"):
+def _struct(trend, conf, event="NONE", swing_high=None, swing_low=None):
     return SimpleNamespace(
         trend=SimpleNamespace(value=trend),
         confidence=conf,
         last_event=SimpleNamespace(value=event),
+        swing_high=swing_high,
+        swing_low=swing_low,
     )
 
 
@@ -376,6 +378,86 @@ def test_trade_context_carries_h1_candle_context():
                                    {"M1": _h1_slice(), "H1": _h1_slice()}, "EURUSD")
     # H1 last candle closes below open → bearish (opposes the LONG).
     assert ctx.h1_last_candle_bearish is True
+
+
+# ── Tier 1–3 data-path wiring (swing levels, session_name, entry M1/regime/
+#    spread/session, micro-confirmation) ───────────────────────────────────
+
+
+def _rich_wm_with_swings():
+    wm = _rich_wm()
+    wm.structure_by_tf = lambda: {
+        "D1": _struct("BULLISH", 0.8, swing_high=1.20, swing_low=1.05),
+        "H4": _struct("BULLISH", 0.7, swing_high=1.18, swing_low=1.06),
+        "H1": _struct("BEARISH", 0.6, "CHOCH_BEARISH", swing_high=1.15, swing_low=1.08),
+        "M5": _struct("BEARISH", 0.5, "BOS_BEARISH"),
+    }
+    return wm
+
+
+def test_trade_context_carries_swing_levels():
+    eng = BacktestEngine()
+    trade = _trade_with_entry_quality()
+    candle = pd.Series({"time": pd.Timestamp("2024-01-01 01:00", tz="UTC"),
+                        "open": 1.10, "high": 1.101, "low": 1.099, "close": 1.0995})
+    ctx = eng._build_trade_context(trade, candle, _rich_wm_with_swings(),
+                                   {"M1": _h1_slice(), "H1": _h1_slice()}, "EURUSD")
+    assert ctx.d1_swing_high == 1.20 and ctx.d1_swing_low == 1.05
+    assert ctx.h4_swing_high == 1.18 and ctx.h4_swing_low == 1.06
+    assert ctx.h1_swing_high == 1.15 and ctx.h1_swing_low == 1.08
+
+
+def test_trade_context_carries_session_name():
+    eng = BacktestEngine()
+    trade = _trade_with_entry_quality()
+    candle = pd.Series({"time": pd.Timestamp("2024-01-01 13:00", tz="UTC"),
+                        "open": 1.10, "high": 1.101, "low": 1.099, "close": 1.0995})
+    ctx = eng._build_trade_context(trade, candle, _rich_wm(),
+                                   {"M1": _h1_slice(), "H1": _h1_slice()}, "EURUSD")
+    # session_name is now passed through (was dropped before) — a real label,
+    # not the "UNKNOWN" default.
+    assert isinstance(ctx.session_name, str) and ctx.session_name != "UNKNOWN"
+
+
+def _entry_signal():
+    return SimpleNamespace(
+        entry_price=1.10, stop_loss=1.095, tp1=1.105, tp2=1.115, confluences=[],
+    )
+
+
+def test_entry_context_populates_regime_spread_session():
+    eng = BacktestEngine()
+    ctx = eng._build_entry_context(
+        "EURUSD", "LONG", _entry_signal(), 100, _zone("LONG", 100),
+        {"M1": _h1_slice()}, _rich_wm(), 10_000.0, [],
+        datetime(2024, 1, 1, 13, 0, tzinfo=timezone.utc),
+    )
+    # Regime feeds regime-specific DecisionWeights (was "" → base weights only).
+    assert ctx.regime == "TREND"
+    # Spread dimension now engages (typical_spread > 0), using the backtest cfg.
+    assert ctx.typical_spread == pytest.approx(eng.config.backtest.default_spread_pips)
+    assert ctx.current_spread == ctx.typical_spread
+    # Session state is wired from the candle timestamp.
+    assert isinstance(ctx.session_tradeable, bool)
+    # M1 evidence flows from the live micro reader (not a constant default).
+    assert ctx.m1_trend in ("BULLISH", "BEARISH", "RANGING", "UNKNOWN")
+    assert isinstance(ctx.m1_aligned_count, int)
+
+
+def test_struct_swings_helper():
+    from brain.backtest_engine import _struct_swings
+    structure = {"H4": _struct("BULLISH", 0.7, swing_high=1.18, swing_low=1.06)}
+    assert _struct_swings(structure, "H4") == (1.18, 1.06)
+    assert _struct_swings(structure, "D1") == (None, None)
+
+
+def test_micro_confirmation_from_event_helper():
+    from brain.backtest_engine import _micro_confirmation_from_event
+    assert _micro_confirmation_from_event("BOS_BULLISH", "LONG") == ("choch_bos", "MARKET")
+    assert _micro_confirmation_from_event("CHOCH_BEARISH", "SHORT") == ("choch_bos", "MARKET")
+    # Opposing / absent events leave the PENDING default unchanged.
+    assert _micro_confirmation_from_event("BOS_BEARISH", "LONG") == ("", "PENDING")
+    assert _micro_confirmation_from_event("NONE", "LONG") == ("", "PENDING")
 
 
 def test_management_partial_close_banks_fraction(monkeypatch):

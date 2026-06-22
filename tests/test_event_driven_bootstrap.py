@@ -470,3 +470,33 @@ class TestEntryDecisionCallback:
         }
         system._on_entry_decision(decision)
         pm.execute_entry.assert_not_called()
+
+
+# ── Tier 1–3 data-path helper functions ──────────────────────────────
+
+
+class TestDataPathHelpers:
+    def test_struct_swings_reads_levels(self):
+        from event_driven_bootstrap import _struct_swings
+        structure = {
+            "H4": SimpleNamespace(swing_high=1.18, swing_low=1.06),
+        }
+        assert _struct_swings(structure, "H4") == (1.18, 1.06)
+
+    def test_struct_swings_missing_tf_is_none(self):
+        from event_driven_bootstrap import _struct_swings
+        assert _struct_swings({}, "D1") == (None, None)
+
+    def test_micro_confirmation_aligned_bos_is_market(self):
+        from event_driven_bootstrap import _micro_confirmation_from_event
+        assert _micro_confirmation_from_event("BOS_BULLISH", "LONG") == (
+            "choch_bos", "MARKET",
+        )
+        assert _micro_confirmation_from_event("CHOCH_BEARISH", "SELL") == (
+            "choch_bos", "MARKET",
+        )
+
+    def test_micro_confirmation_opposing_or_none_stays_pending(self):
+        from event_driven_bootstrap import _micro_confirmation_from_event
+        assert _micro_confirmation_from_event("BOS_BEARISH", "LONG") == ("", "PENDING")
+        assert _micro_confirmation_from_event("NONE", "SHORT") == ("", "PENDING")

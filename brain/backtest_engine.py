@@ -226,6 +226,35 @@ def _struct_event(struct_by_tf: dict, tf: str) -> str:
     return ev.value if hasattr(ev, "value") else str(ev)
 
 
+def _struct_swings(struct_by_tf: dict, tf: str) -> tuple[Optional[float], Optional[float]]:
+    """Read ``(swing_high, swing_low)`` for a timeframe from a WorldModel's
+    ``structure_by_tf()`` mapping.
+
+    Mirrors ``event_driven_bootstrap._struct_swings`` so the backtest feeds the
+    DecisionEngine's structure-based protective stop the same swing levels the
+    live management plane does. Returns ``(None, None)`` when absent.
+    """
+    sa = struct_by_tf.get(tf)
+    if sa is None:
+        return None, None
+    return getattr(sa, "swing_high", None), getattr(sa, "swing_low", None)
+
+
+def _micro_confirmation_from_event(m1_event: str, direction: str) -> tuple[str, str]:
+    """Derive ``(micro_confirmation, entry_mode)`` from a live M1 structural event.
+
+    Mirrors ``event_driven_bootstrap._micro_confirmation_from_event`` so the
+    backtest entry plane reaches the MARKET fast-path on the same M1 BOS/CHoCH
+    confirmation the live plane uses. Returns ``("", "PENDING")`` otherwise.
+    """
+    ev = str(m1_event or "").upper()
+    is_long = direction.upper() in ("BUY", "LONG")
+    aligned = ("BULLISH" in ev) if is_long else ("BEARISH" in ev)
+    if ("BOS" in ev or "CHOCH" in ev) and aligned:
+        return "choch_bos", "MARKET"
+    return "", "PENDING"
+
+
 def _oq_eq_from_wm(wm, direction: str) -> tuple[Optional[float], Optional[float]]:
     """Live OQ/EQ for ``direction`` from a WorldModel's shared quality layer.
 
@@ -1134,7 +1163,7 @@ class BacktestEngine:
 
         # ── DecisionEngine adjudication (consensus-opposition SKIP) ─────────
         entry_ctx = self._build_entry_context(
-            pair, direction, signal, score, zone, slices, wm, balance, votes,
+            pair, direction, signal, score, zone, slices, wm, balance, votes, now,
         )
         sa = self.situation_engine.assess_entry(entry_ctx)
         de_result = self.decision_engine.decide_entry(entry_ctx, sa)
@@ -1260,6 +1289,7 @@ class BacktestEngine:
         wm,
         balance: float,
         votes: list,
+        now: Optional[datetime] = None,
     ):
         """Build the EntryContext the live SituationEngine/DecisionEngine read."""
         from decision.context import EntryContext
@@ -1274,6 +1304,9 @@ class BacktestEngine:
 
         is_long = direction == "LONG"
         micro = self._micro_from_slice(slices.get("M1"), is_long)
+        micro_conf, entry_mode_v = _micro_confirmation_from_event(
+            micro["m1_event"], direction,
+        )
 
         sl = signal.stop_loss
         entry_price = signal.entry_price
@@ -1284,6 +1317,25 @@ class BacktestEngine:
         )
         zone_type = getattr(zone, "zone_type", "")
         zone_type = str(getattr(zone_type, "value", zone_type) or "")
+
+        # Simulated spread (pips) so the RiskGovernor's graded spread dimension
+        # engages instead of being skipped (typical_spread>0 guard). The replay
+        # has no live tick spread, so current ≈ typical (a neutral ratio) using
+        # the configured backtest default. News timing has no historical feed →
+        # minutes_to_high_impact_news keeps its safe 999 default (accepted).
+        typical_spread = float(
+            getattr(self.config.backtest, "default_spread_pips", 0.0) or 0.0
+        )
+
+        # Session tradeable from the candle timestamp (same SessionEngine the
+        # management plane uses), so entry urgency can engage in replay.
+        session_tradeable = True
+        if now is not None and self.session_engine is not None:
+            try:
+                ss = self.session_engine.get_status(now)
+                session_tradeable = bool(getattr(ss, "is_tradeable", True))
+            except Exception:
+                session_tradeable = True
 
         return EntryContext(
             symbol=pair,
@@ -1297,6 +1349,8 @@ class BacktestEngine:
             tp2=signal.tp2,
             risk_reward_2=rr2,
             risk_pips=risk_pips,
+            entry_mode=entry_mode_v,
+            micro_confirmation=micro_conf,
             account_balance=balance,
             risk_pct=self.risk_per_trade,
             d1_trend=d1_trend, d1_confidence=d1_conf, d1_event=d1_event,
@@ -1309,6 +1363,9 @@ class BacktestEngine:
             bias_direction=str(getattr(zone, "bias_direction", "") or ""),
             open_trade_count=0,
             max_open_trades=getattr(self.config.risk, "max_open_trades", 5),
+            current_spread=typical_spread,
+            typical_spread=typical_spread,
+            session_tradeable=session_tradeable,
             regime=wm.regime_by_tf().get("H1", "") or "",
             confluences=list(signal.confluences),
             consensus_votes=list(votes),
@@ -1804,6 +1861,12 @@ class BacktestEngine:
         h4_event = _struct_event(structure, "H4")
         h1_event = _struct_event(structure, "H1")
         m5_event = _struct_event(structure, "M5")
+        # Structural swing levels — feed the DecisionEngine's protective-stop
+        # placement for adopted trades (candidate lists were always empty in
+        # replay), mirroring the live management builder.
+        d1_swing_high, d1_swing_low = _struct_swings(structure, "D1")
+        h4_swing_high, h4_swing_low = _struct_swings(structure, "H4")
+        h1_swing_high, h1_swing_low = _struct_swings(structure, "H1")
 
         micro = self._micro_from_slice(slices.get("M1"), is_long)
         h1_candle = _h1_candle_context(slices.get("H1"), is_long)
@@ -1920,8 +1983,11 @@ class BacktestEngine:
             oq_decay=oq_decay,
             eq_decay=eq_decay,
             d1_trend=d1_trend, d1_confidence=d1_conf, d1_event=d1_event,
+            d1_swing_high=d1_swing_high, d1_swing_low=d1_swing_low,
             h4_trend=h4_trend, h4_confidence=h4_conf, h4_event=h4_event,
+            h4_swing_high=h4_swing_high, h4_swing_low=h4_swing_low,
             h1_trend=h1_trend, h1_confidence=h1_conf, h1_event=h1_event,
+            h1_swing_high=h1_swing_high, h1_swing_low=h1_swing_low,
             h1_last_candle_bearish=h1_candle["h1_last_candle_bearish"],
             h1_last_candle_doji=h1_candle["h1_last_candle_doji"],
             m1_trend=micro["m1_trend"],
@@ -1931,7 +1997,11 @@ class BacktestEngine:
             fast_opposition_streak=int(trade.get("fast_opp", 0) or 0),
             score_history=list(hist[-10:]),
             consensus_votes=list(consensus_votes),
+            session_name=session_name,
             session_tradeable=session_tradeable,
+            # Single-position serial replay → no concurrent book, so portfolio
+            # heat is genuinely 0 (accepted simplification; the heat-aware
+            # governor path has nothing to bind against in this model).
             open_trade_count=1,
             max_open_trades=getattr(self.config.risk, "max_open_trades", 5),
         )

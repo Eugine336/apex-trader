@@ -108,6 +108,10 @@ class TradeContext:
     news_impact: str = "NONE"
 
     # ── Pressure (from _compute_in_trade_context_pressure) ───────────────
+    # TODO: no `_compute_in_trade_context_pressure` exists in the codebase yet;
+    # neither the live nor backtest builder populates these, so they stay at
+    # their defaults and only `context_pressure` is logged (cosmetic). Wire a
+    # pressure computation here before relying on these for any decision.
     context_pressure: int = 0
     opposing_boost: int = 0
     pressure_details: list[str] = field(default_factory=list)
