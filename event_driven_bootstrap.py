@@ -1832,6 +1832,12 @@ class EventDrivenSystem:
 
         self._be_stop_cooldown: dict[str, float] = {}
         self._be_cooldown_seconds = 300.0
+        # General per-symbol re-entry cooldown for the ZONE entry path: last
+        # unix-ts a position closed per symbol. Prevents the zone path from
+        # re-arming on the very next M1 close after any exit (not just BE
+        # exits). Consensus/trigger entries use their own cooldown below.
+        self._last_close_time: dict[str, float] = {}
+        self._zone_reentry_cooldown_seconds = 300.0
         # Re-fire debounce for the ACTIVE consensus entry trigger (Phase 4):
         # last unix-ts a zoneless consensus entry was dispatched per symbol, so
         # a standing thesis is not re-submitted every candle close between fills.
@@ -4412,6 +4418,22 @@ class EventDrivenSystem:
                 logger.info("EVENT-DRIVEN ENTRY SKIPPED | {} — system paused", symbol)
                 return
 
+            # ── Gate 0c: Zone re-entry cooldown ──────────────────────
+            # Applies to the ZONE entry path only — prevents re-arming the
+            # same symbol on the next M1 close after any exit. Consensus /
+            # trigger entries carry their own cooldown (Gate above the call)
+            # and are exempt here.
+            if decision.get("source") != "consensus":
+                last_close = self._last_close_time.get(symbol, 0.0)
+                since_close = _time.time() - last_close
+                if last_close and since_close < self._zone_reentry_cooldown_seconds:
+                    logger.info(
+                        "[entry-gate] {} re-entry blocked — {:.0f}s since last close "
+                        "(cooldown {:.0f}s)",
+                        symbol, since_close, self._zone_reentry_cooldown_seconds,
+                    )
+                    return
+
             # ── Compliance Division: single authoritative permit ─────
             # Department 3 — the ONE pure permit layer.  Consolidates the
             # necessary vetoes (market-open, broker-available, news, spread,
@@ -6080,6 +6102,11 @@ class EventDrivenSystem:
         if is_breakeven_exit:
             self._be_stop_cooldown[symbol] = _time.monotonic() + self._be_cooldown_seconds
             logger.info("[be-cooldown] {} cooldown for {:.0f}s (breakeven exit)", symbol, self._be_cooldown_seconds)
+
+        # ── Zone re-entry cooldown — record EVERY close ─────────────
+        # Gate 0c in _on_entry_decision uses this to stop the zone path
+        # re-arming the same symbol on the next M1 close after any exit.
+        self._last_close_time[symbol] = _time.time()
 
         # ── Re-entry evaluation ──────────────────────────────────────
         # ReEntryManager only re-arms trades stopped at breakeven whose

@@ -742,13 +742,20 @@ class PositionWorker:
                         self.cfg.breakeven_buffer_pips,
                         snap.pip_size,
                     )
-                    out.append(Intent.modify_sl(
-                        symbol=snap.symbol,
-                        ticket=snap.order_id,
-                        new_sl=be_level,
-                        source="dead_zone_protection",
-                        reason=f"Dead zone — SL→BE {be_level:.5f}",
-                    ))
+                    if self._be_move_is_valid(snap, be_level):
+                        out.append(Intent.modify_sl(
+                            symbol=snap.symbol,
+                            ticket=snap.order_id,
+                            new_sl=be_level,
+                            source="dead_zone_protection",
+                            reason=f"Dead zone — SL→BE {be_level:.5f}",
+                        ))
+                    else:
+                        logger.debug(
+                            "[dead-zone] {} BE move skipped — not profitable enough "
+                            "or SL would not improve (pnl={:.1f}p sl={:.5f} be={:.5f})",
+                            snap.symbol, snap.pnl_pips, snap.sl, be_level,
+                        )
 
     def _check_weekend_protection(
         self,
@@ -805,13 +812,20 @@ class PositionWorker:
                     self.cfg.breakeven_buffer_pips,
                     snap.pip_size,
                 )
-                out.append(Intent.modify_sl(
-                    symbol=snap.symbol,
-                    ticket=snap.order_id,
-                    new_sl=be_level,
-                    source="weekend_protection",
-                    reason=f"Weekend protection — FX closes in {diff}min (SL→BE {be_level:.5f})",
-                ))
+                if self._be_move_is_valid(snap, be_level):
+                    out.append(Intent.modify_sl(
+                        symbol=snap.symbol,
+                        ticket=snap.order_id,
+                        new_sl=be_level,
+                        source="weekend_protection",
+                        reason=f"Weekend protection — FX closes in {diff}min (SL→BE {be_level:.5f})",
+                    ))
+                else:
+                    logger.debug(
+                        "[weekend] {} BE derisk skipped — not profitable enough "
+                        "or SL would not improve (pnl={:.1f}p sl={:.5f} be={:.5f})",
+                        snap.symbol, snap.pnl_pips, snap.sl, be_level,
+                    )
 
     def _check_opportunity_cost(
         self,
@@ -860,3 +874,22 @@ class PositionWorker:
         if direction == "LONG":
             return round(entry_price + buffer_pips * pip_size, 5)
         return round(entry_price - buffer_pips * pip_size, 5)
+
+    @staticmethod
+    def _be_move_is_valid(snap: PositionSnapshot, be_level: float) -> bool:
+        """Return True only if moving SL to ``be_level`` is safe to submit.
+
+        Guards the dead-zone / weekend breakeven moves so they never emit an
+        SL that the broker would reject as "Invalid stops":
+
+        1. The trade must be profitable enough (> 2 pips) — a flat/new
+           position has no profit to protect and BE sits the wrong side of price.
+        2. The proposed SL must IMPROVE the current SL (move it closer to
+           price for a winner), never loosen it. For a long, ``be_level`` must
+           be above the current SL; for a short, below it.
+        """
+        if snap.pnl_pips <= 2.0:
+            return False
+        if snap.is_long:
+            return be_level > snap.sl
+        return be_level < snap.sl
