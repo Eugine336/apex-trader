@@ -164,12 +164,14 @@ class TestCleanStart:
     def test_purge_removes_learned_artifacts_on_schema_mismatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp) / "data"
+            version_file = Path(tmp) / ".schema_version"
             d.mkdir()
             version_file = Path(tmp) / ".local_schema_version"
             version_file.write_text("1\n")
             (d / "scoring_weights.json").write_text("{}")
             (d / "zone_edge.json").write_text("{}")
             (d / "apex_positions.db").write_text("live")  # must be preserved
+            version_file.write_text("1")
 
             res = purge_stale_learned_data(
                 str(d),
@@ -185,11 +187,10 @@ class TestCleanStart:
     def test_purge_skips_when_schema_matches(self):
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp) / "data"
+            version_file = Path(tmp) / ".schema_version"
             d.mkdir()
-            version_file = Path(tmp) / ".local_schema_version"
-            version_file.write_text("2\n")
             (d / "scoring_weights.json").write_text("{}")
-
+            version_file.write_text("2")
             assert (
                 purge_stale_learned_data(
                     str(d),
@@ -199,6 +200,78 @@ class TestCleanStart:
                 == "already clean"
             )
             assert (d / "scoring_weights.json").exists()
+
+    def test_sync_uses_fetch_then_hard_reset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            commands: list[list[str]] = []
+
+            def _fake_run(cmd, capture_output=True, text=True):
+                commands.append(list(cmd))
+                if cmd[-2:] == ["rev-parse", "--is-inside-work-tree"]:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
+                if cmd[-2:] == ["fetch", "origin"]:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                if cmd[-3:] == ["reset", "--hard", "origin/main"]:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unexpected")
+
+            with patch("platforms.clean_start.subprocess.run", side_effect=_fake_run):
+                res = sync_clean_state_from_remote(str(d), branch="main")
+
+            assert res == "reset to origin/main"
+            assert commands[1][-2:] == ["fetch", "origin"]
+            assert commands[2][-3:] == ["reset", "--hard", "origin/main"]
+
+    def test_sync_falls_back_to_master_when_main_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            commands: list[list[str]] = []
+
+            def _fake_run(cmd, capture_output=True, text=True):
+                commands.append(list(cmd))
+                if cmd[-2:] == ["rev-parse", "--is-inside-work-tree"]:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
+                if cmd[-2:] == ["fetch", "origin"]:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                if cmd[-3:] == ["reset", "--hard", "origin/main"]:
+                    return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unknown ref")
+                if cmd[-3:] == ["reset", "--hard", "origin/master"]:
+                    return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="unexpected")
+
+            with patch("platforms.clean_start.subprocess.run", side_effect=_fake_run):
+                res = sync_clean_state_from_remote(str(d), branch="main")
+
+            assert res == "reset to origin/master (fallback)"
+            assert commands[2][-3:] == ["reset", "--hard", "origin/main"]
+            assert commands[3][-3:] == ["reset", "--hard", "origin/master"]
+
+    def test_startup_runner_is_context_free(self):
+        with patch(
+            "platforms.clean_start.sync_clean_state_from_remote",
+            return_value="reset to origin/main",
+        ) as mock_sync, patch(
+            "platforms.clean_start.purge_stale_learned_data",
+            return_value="purged 2: scoring_weights.json, zone_edge.json",
+        ) as mock_purge:
+            res = run_startup_clean_start(
+                data_dir="custom-data",
+                branch="main",
+                schema_version="42",
+                local_schema_version_file="local.version",
+            )
+
+        assert res == (
+            "reset to origin/main",
+            "purged 2: scoring_weights.json, zone_edge.json",
+        )
+        mock_sync.assert_called_once_with(data_dir="custom-data", branch="main")
+        mock_purge.assert_called_once_with(
+            data_dir="custom-data",
+            schema_version="42",
+            local_schema_version_file="local.version",
+        )
 
     def test_pull_non_git_dir(self):
         with tempfile.TemporaryDirectory() as tmp:

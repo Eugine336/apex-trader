@@ -2200,7 +2200,7 @@ class EventDrivenSystem:
         logger.info("  APEX TRADER — EVENT-DRIVEN MODE")
         logger.info("=" * 60)
 
-        # Clean-start executes in ``main()`` before ``SystemContext.create()``,
+        # Clean-start executes in main() before SystemContext.create(),
         # so learned DB files are not locked on Windows when purge runs.
 
         # ── Startup recovery: crash marker detection ─────────────────

@@ -11,9 +11,6 @@ from dataclasses import dataclass, field
 from enum import Enum
 from loguru import logger
 
-# Learned-artifact schema compatibility gate used by startup clean-start.
-# Bump this manually when a code change makes persisted learned/adaptive
-# artifacts incompatible and they must be purged/rebuilt.
 SCHEMA_VERSION = "2"
 
 

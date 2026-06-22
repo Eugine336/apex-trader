@@ -98,9 +98,6 @@ def main() -> None:
     logger.info("Phase 8 — Dashboard available (--dashboard to launch)")
 
     # ── Clean-start before any subsystem opens SQLite handles ───────────
-    # Runs against path/config values only. Must happen before
-    # ``SystemContext.create()`` so Windows can purge stale DB files without
-    # WinError 32 file-lock failures.
     try:
         from platforms.clean_start import run_startup_clean_start
 
