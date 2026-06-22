@@ -489,6 +489,20 @@ class PositionEvaluator:
                 mgmt.lowest_price_since_entry = price
             mgmt.last_eval_time = now
 
+            # Live mark-to-market P&L in pips.  The management state's
+            # ``pnl_pips`` was never refreshed, so every PositionWorker check
+            # that gates on P&L (invalidation's ``pnl_pips <= 0``, breakeven,
+            # profit protection, stall flat-threshold) saw a permanent 0.0 —
+            # making "low score with negative P&L" fire on freshly opened
+            # positions.  Feed the broker-truth entry price + latest tick so
+            # those checks evaluate against reality.
+            entry_px = _broker_entry_price(pos, price)
+            if pip_size > 0 and entry_px > 0:
+                if direction.upper() in ("BUY", "LONG"):
+                    mgmt.pnl_pips = (price - entry_px) / pip_size
+                else:
+                    mgmt.pnl_pips = (entry_px - price) / pip_size
+
             scan_ctx = self._build_scan_context(symbol, direction)
             market_ctx = self._build_market_context(symbol, now)
 
