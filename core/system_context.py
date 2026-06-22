@@ -344,6 +344,15 @@ class SystemContext:
                         de_cfg, "reversal_momentum_full", 0.6,
                     ),
                     tf_conflict_aware=getattr(de_cfg, "tf_conflict_aware", True),
+                    range_edge_required=getattr(
+                        de_cfg, "range_edge_required", True,
+                    ),
+                    range_edge_htf_min=getattr(
+                        de_cfg, "range_edge_htf_min", 0.20,
+                    ),
+                    range_edge_consensus_min=getattr(
+                        de_cfg, "range_edge_consensus_min", 0.40,
+                    ),
                 )
             else:
                 ctx.decision_engine = _DecisionEngine(soften_gate=True)

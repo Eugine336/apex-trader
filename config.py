@@ -1162,6 +1162,15 @@ class DecisionConfig:
     # conflict into opposition scoring (helper is always present; this turns it
     # on in the live decision path).
     tf_conflict_aware: bool = True
+    # ── No-directional-edge range guard ───────────────────────────────────
+    # A flat "range" setup (|tf_alignment| < range_edge_htf_min) with no strong
+    # module-panel consensus (consensus_alignment < range_edge_consensus_min)
+    # has no directional edge: entering it on zone shape + R:R alone is the
+    # dominant slow-bleed loss pattern. When enabled, such setups are forced to
+    # SKIP unless the HTF stack or the consensus panel supplies real direction.
+    range_edge_required: bool = True
+    range_edge_htf_min: float = 0.20
+    range_edge_consensus_min: float = 0.40
     # ── HTF = bounded context (Scenario A) ────────────────────────────────
     # When the full HTF stack (D1+H4+H1) supports the trade direction, give a
     # bounded size BONUS on top of the conviction model — HTF helps when it
