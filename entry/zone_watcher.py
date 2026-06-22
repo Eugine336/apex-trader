@@ -78,16 +78,26 @@ def extract_entry_zones(
 
     bias_direction = _resolve_bias(struct_by_tf)
 
-    def _conv(base: int, direction: str, zone_type: ZoneType, tf: str) -> int:
-        """Scale a base conviction by the learned edge (default-neutral)."""
-        if edge_weight is None:
-            return base
-        try:
-            regime = regime_by_tf.get(tf)
-            w = float(edge_weight(model.symbol, direction, zone_type.value, regime))
-            return max(1, min(100, int(round(base * w))))
-        except Exception:  # noqa: BLE001 — learning must never break analysis
-            return base
+    def _conv(
+        base: int,
+        direction: str,
+        zone_type: ZoneType,
+        tf: str,
+        is_counter: bool = False,
+    ) -> int:
+        """Scale a base conviction by the learned edge (default-neutral) and
+        apply the counter-trend penalty when the zone opposes the HTF bias."""
+        val = float(base)
+        if edge_weight is not None:
+            try:
+                regime = regime_by_tf.get(tf)
+                w = float(edge_weight(model.symbol, direction, zone_type.value, regime))
+                val = base * w
+            except Exception:  # noqa: BLE001 — learning must never break analysis
+                val = float(base)
+        if is_counter:
+            val *= cfg.counter_trend_conviction_mult
+        return max(1, min(100, int(round(val))))
 
     all_fvgs: list[tuple[str, FairValueGap]] = []
     for tf, fvg_list in fvgs_by_tf.items():
@@ -125,7 +135,7 @@ def extract_entry_zones(
                 bottom=overlap_bottom,
                 midpoint=(overlap_top + overlap_bottom) / 2,
                 invalidation_level=inv,
-                conviction=_conv(100, direction, ZoneType.FVG_OB_OVERLAP, ftf),
+                conviction=_conv(100, direction, ZoneType.FVG_OB_OVERLAP, ftf, is_counter),
                 created_at=now,
                 expires_at=expiry,
                 timeframe=ftf,
@@ -150,7 +160,7 @@ def extract_entry_zones(
             bottom=fvg.bottom,
             midpoint=fvg.midpoint,
             invalidation_level=inv,
-            conviction=_conv(80, direction, ZoneType.FVG_MIDPOINT, ftf),
+            conviction=_conv(80, direction, ZoneType.FVG_MIDPOINT, ftf, is_counter),
             created_at=now,
             expires_at=expiry,
             timeframe=ftf,
@@ -172,7 +182,7 @@ def extract_entry_zones(
             bottom=ob.bottom,
             midpoint=ob.midpoint,
             invalidation_level=inv,
-            conviction=_conv(70, direction, ZoneType.OB_MIDPOINT, otf),
+            conviction=_conv(70, direction, ZoneType.OB_MIDPOINT, otf, is_counter),
             created_at=now,
             expires_at=expiry,
             timeframe=otf,

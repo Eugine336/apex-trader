@@ -334,6 +334,9 @@ class SystemContext:
             if de_cfg is not None:
                 ctx.decision_engine = _DecisionEngine(
                     soften_gate=getattr(de_cfg, "soften_gate", True),
+                    gate_safety_margin=getattr(
+                        de_cfg, "gate_safety_margin", -0.3,
+                    ),
                     reversal_weighted_evidence=getattr(
                         de_cfg, "reversal_weighted_evidence", True,
                     ),

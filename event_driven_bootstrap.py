@@ -858,11 +858,18 @@ class PositionEvaluator:
                         symbol, exc,
                     )
             score_hist = getattr(mgmt, "score_history", []) or []
+            # scan_score must measure the OPPOSING signal strength — the
+            # conviction of a zone in the WorldModel bias / scan direction.
+            # Previously this read the trade's OWN-direction zone, so a SHORT
+            # trade's own score=100 was handed to the engine's opposing-scan
+            # CLOSE term (engine.py: scan_opposing and scan_score >= 65) and
+            # fired a full 0.30 CLOSE boost on every counter-trend trade. Pair
+            # it with scan_direction so both refer to the same direction; 0
+            # when no opposing zone is active.
             current_score = 0
-            if wm is not None:
-                want_dir = norm_dir.replace("BUY", "LONG").replace("SELL", "SHORT")
+            if wm is not None and bias_scan_dir in ("LONG", "SHORT"):
                 for z in wm.entry_zones:
-                    if getattr(z, "direction", "").upper() == want_dir:
+                    if getattr(z, "direction", "").upper() == bias_scan_dir:
                         current_score = max(current_score, getattr(z, "conviction", 0))
             fast_opp = self._fast_opposition.get(order_id, 0)
             # Live M1 momentum + H1 candle context (mirrors the entry-side M1
@@ -4749,6 +4756,16 @@ class EventDrivenSystem:
                     d1_trend, d1_conf = _struct_trend_conf(structure, "D1")
                     h4_trend, h4_conf = _struct_trend_conf(structure, "H4")
                     h1_trend, h1_conf = _struct_trend_conf(structure, "H1")
+                    # Structural break events (BOS/CHOCH) per timeframe — the
+                    # entry plane previously omitted these, so assess_entry saw
+                    # every HTF event as "NONE" and structure integrity froze at
+                    # the zone-quality baseline regardless of an opposing HTF
+                    # break. Management already feeds them; mirroring it here so
+                    # the entry read matches what management would immediately
+                    # see (no more enter-then-instant-close on opposing HTF).
+                    d1_event = _struct_event(structure, "D1")
+                    h4_event = _struct_event(structure, "H4")
+                    h1_event = _struct_event(structure, "H1")
 
                     # Live graded-risk inputs — the RiskGovernor's graded entry
                     # path measures portfolio heat + spread; previously these
@@ -4785,10 +4802,13 @@ class EventDrivenSystem:
                         risk_pips=abs(entry_price - sl) / self._safe_pip_size(symbol) if sl else 0.0,
                         d1_trend=d1_trend,
                         d1_confidence=d1_conf,
+                        d1_event=d1_event,
                         h4_trend=h4_trend,
                         h4_confidence=h4_conf,
+                        h4_event=h4_event,
                         h1_trend=h1_trend,
                         h1_confidence=h1_conf,
+                        h1_event=h1_event,
                         m1_aligned_count=decision.get("m1_aligned", 3),
                         m1_event=decision.get("m1_event", ""),
                         is_counter_trend=bool(decision.get("is_counter_trend", False)),

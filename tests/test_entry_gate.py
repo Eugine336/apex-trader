@@ -42,7 +42,7 @@ class TestEntryGateAllPass:
         passed, results = gate.validate_all(**_defaults())
         assert passed is True
         assert all(r.passed for r in results)
-        assert len(results) == 10
+        assert len(results) == 11
 
     def test_results_include_all_gate_names(self):
         gate = EntryGate()
@@ -52,7 +52,7 @@ class TestEntryGateAllPass:
             "instrument_known", "price_finite", "market_open",
             "session_active", "spread_ok", "news_clear",
             "drawdown_ok", "score_minimum", "risk_reward_ok",
-            "zone_valid",
+            "zone_valid", "alignment",
         }
         assert names == expected
 
@@ -129,6 +129,42 @@ class TestEntryGateScore:
         cfg = EntryConfig(min_entry_score=80)
         gate = EntryGate(config=cfg)
         passed, _ = gate.validate_all(**_defaults(score=80))
+        assert passed is True
+
+
+class TestEntryGateAlignment:
+    """Strongly counter-trend entries are rejected at the gate (Bug #3)."""
+
+    def test_strong_opposition_rejected(self):
+        gate = EntryGate()  # default min_htf_alignment = -0.5
+        passed, results = gate.validate_all(**_defaults(alignment=-0.93))
+        assert passed is False
+        align = next(r for r in results if r.gate_name == "alignment")
+        assert not align.passed
+        assert "Alignment" in align.reason
+
+    def test_mild_opposition_allowed(self):
+        gate = EntryGate()
+        passed, _ = gate.validate_all(**_defaults(alignment=-0.30))
+        assert passed is True
+
+    def test_support_allowed(self):
+        gate = EntryGate()
+        passed, _ = gate.validate_all(**_defaults(alignment=0.80))
+        assert passed is True
+
+    def test_none_alignment_permissive(self):
+        gate = EntryGate()
+        passed, results = gate.validate_all(**_defaults(alignment=None))
+        assert passed is True
+        align = next(r for r in results if r.gate_name == "alignment")
+        assert align.passed
+
+    def test_floor_disabled_when_config_none(self):
+        cfg = EntryConfig()
+        cfg.min_htf_alignment = None  # type: ignore[assignment]
+        gate = EntryGate(config=cfg)
+        passed, _ = gate.validate_all(**_defaults(alignment=-0.99))
         assert passed is True
 
 

@@ -147,6 +147,43 @@ def test_trade_context_scan_direction_from_live_bias():
     assert ctx.pnl_pips == pytest.approx((1.1005 - 1.10) / eng.pip_size)
 
 
+def test_trade_context_scan_score_is_opposing_not_own():
+    """Bug #2 — scan_score must be the OPPOSING (scan-direction) zone
+    conviction, never the trade's own-direction zone. A LONG trade with a
+    SHORT bias must report the SHORT zone's conviction as scan_score, while
+    score_history still tracks the trade's own LONG zone."""
+    eng = BacktestEngine()
+    setup = BacktestSetup(direction="LONG", entry_price=1.10, stop_loss=1.095,
+                          tp1=1.105, tp2=1.115, score=100, zone_type="FVG_OB_OVERLAP")
+    trade = {
+        "setup": setup, "symbol": "EURUSD", "order_id": "bt-1",
+        "entry_time": datetime(2024, 1, 1, tzinfo=timezone.utc),
+        "entry_price": 1.10, "stop_loss": 1.095, "tp1": 1.105, "tp2": 1.115,
+        "risk": 0.0005, "tp1_hit": False, "at_breakeven": False,
+        "realized_r": 0.0, "lots": 0.05, "fast_opp": 0, "entry_type": "FVG_OB_OVERLAP",
+    }
+    candle = pd.Series({"time": pd.Timestamp("2024-01-01 01:00", tz="UTC"),
+                        "open": 1.10, "high": 1.101, "low": 1.099, "close": 1.1005})
+    wm = SimpleNamespace(
+        structure_by_tf=lambda: {},
+        bias_dict=lambda: {"direction": "SHORT", "score": 80},
+        regime_by_tf=lambda: {},
+        votes_list=lambda: [],
+        candidates_list=lambda: [],
+        entry_zones_list=lambda: [_zone("LONG", 100), _zone("SHORT", 90)],
+    )
+    m1 = pd.DataFrame({
+        "time": pd.date_range("2024-01-01", periods=6, freq="min", tz="UTC"),
+        "open": [1.10] * 6, "high": [1.101] * 6, "low": [1.099] * 6,
+        "close": [1.1005] * 6, "volume": [100] * 6,
+    })
+    ctx = eng._build_trade_context(trade, candle, wm, {"M1": m1}, "EURUSD")
+    # scan_score = opposing SHORT zone (90), NOT the own LONG zone (100).
+    assert ctx.scan_score == 90
+    # score_history still tracks the trade's own LONG zone conviction (100).
+    assert trade["score_history"][-1] == 100
+
+
 # ── Management routing: CLOSE / SECURE (Phase 2) ─────────────────────────
 
 
