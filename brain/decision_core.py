@@ -70,8 +70,8 @@ def _warn_module_failure(scope: str, module: str, symbol: str, exc: Exception) -
 # TF → brain modules to run when that timeframe closes.  Canonical home; the
 # handler re-exports this so existing imports keep working.
 TF_MODULE_MAP: dict[str, list[str]] = {
-    "M5": ["fvg", "order_block", "volume", "inducement"],
-    "M15": ["fvg"],
+    "M5": ["fvg", "order_block", "volume", "inducement", "structure"],
+    "M15": ["fvg", "structure"],
     "H1": ["fvg", "order_block", "liquidity", "volume", "wyckoff", "structure"],
     "H4": ["order_block", "liquidity", "structure"],
     "D1": ["structure"],

@@ -114,8 +114,7 @@ def extract_entry_zones(
                 continue
 
             direction = "LONG" if fvg.kind == "BULLISH" else "SHORT"
-            if bias_direction and bias_direction != direction:
-                continue
+            is_counter = bool(bias_direction) and bias_direction != direction
 
             inv = _invalidation(direction, overlap_bottom, overlap_top)
             zones.append(EntryZone(
@@ -131,6 +130,8 @@ def extract_entry_zones(
                 expires_at=expiry,
                 timeframe=ftf,
                 has_sweep=False,
+                is_counter_trend=is_counter,
+                bias_direction=bias_direction or "",
             ))
             used_fvgs.add(fi)
             used_obs.add(oi)
@@ -139,8 +140,7 @@ def extract_entry_zones(
         if fi in used_fvgs:
             continue
         direction = "LONG" if fvg.kind == "BULLISH" else "SHORT"
-        if bias_direction and bias_direction != direction:
-            continue
+        is_counter = bool(bias_direction) and bias_direction != direction
         inv = _invalidation(direction, fvg.bottom, fvg.top)
         zones.append(EntryZone(
             symbol=model.symbol,
@@ -154,14 +154,15 @@ def extract_entry_zones(
             created_at=now,
             expires_at=expiry,
             timeframe=ftf,
+            is_counter_trend=is_counter,
+            bias_direction=bias_direction or "",
         ))
 
     for oi, (otf, ob) in enumerate(all_obs):
         if oi in used_obs:
             continue
         direction = "LONG" if ob.kind == "BULLISH" else "SHORT"
-        if bias_direction and bias_direction != direction:
-            continue
+        is_counter = bool(bias_direction) and bias_direction != direction
         inv = _invalidation(direction, ob.bottom, ob.top)
         zones.append(EntryZone(
             symbol=model.symbol,
@@ -175,6 +176,8 @@ def extract_entry_zones(
             created_at=now,
             expires_at=expiry,
             timeframe=otf,
+            is_counter_trend=is_counter,
+            bias_direction=bias_direction or "",
         ))
 
     return zones
