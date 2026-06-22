@@ -719,4 +719,26 @@ def analyze_window(
     except Exception as exc:  # noqa: BLE001
         logger.debug("[decision-core] {} consensus build failed: {}", symbol, exc)
 
+    # Synthesize the shared setup-quality layer (real OQ/EQ + regime analysis)
+    # so the WorldModel carries identical quality signals in live and backtest.
+    try:
+        from brain.quality_layer import compute_quality_layer
+
+        ql = compute_quality_layer(
+            symbol,
+            wm,
+            m5_df=candles_by_tf.get("M5"),
+            h1_df=candles_by_tf.get("H1"),
+            current_price=current_price,
+        )
+        wm = replace(
+            wm,
+            opportunity_quality=ql["opportunity_quality"],
+            entry_quality_long=ql["entry_quality_long"],
+            entry_quality_short=ql["entry_quality_short"],
+            regime_analysis=ql["regime_analysis"],
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[decision-core] {} quality layer failed: {}", symbol, exc)
+
     return wm

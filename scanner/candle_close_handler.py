@@ -413,6 +413,14 @@ class CandleCloseHandler:
         except Exception as exc:
             logger.debug("[cc-handler] {} consensus build failed: {}", symbol, exc)
 
+        # Attach the shared setup-quality layer (real OQ/EQ + regime analysis)
+        # so the live WorldModel carries the same quality signals the backtest
+        # plane computes via ``analyze_window`` — single shared implementation.
+        try:
+            wm = self._attach_quality(symbol, wm, current_price)
+        except Exception as exc:
+            logger.debug("[cc-handler] {} quality layer failed: {}", symbol, exc)
+
         self._store.publish(wm)
         self._bus.publish("world_model_update", symbol)
         logger.debug(
@@ -479,6 +487,40 @@ class CandleCloseHandler:
             module_governor=self._module_governor,
             win_rate_provider=self._win_rate_provider,
             weights=self._consensus_config.weights,
+        )
+
+    def _attach_quality(
+        self, symbol: str, wm: WorldModel, current_price: float,
+    ) -> WorldModel:
+        """Synthesize the shared setup-quality layer onto the WorldModel.
+
+        Fetches M5/H1 candles (best-effort) and delegates to the single shared
+        ``brain.quality_layer.compute_quality_layer`` — the SAME implementation
+        the backtest plane uses via ``analyze_window`` — so live and backtest
+        carry identical Opportunity/Entry Quality scores and regime analysis.
+        """
+        m5_df = None
+        h1_df = None
+        try:
+            m5_df = self._fetcher(symbol, "M5", self._candle_count)
+        except Exception as exc:
+            logger.debug("[cc-handler] {} M5 fetch for quality failed: {}", symbol, exc)
+        try:
+            h1_df = self._fetcher(symbol, "H1", self._candle_count)
+        except Exception as exc:
+            logger.debug("[cc-handler] {} H1 fetch for quality failed: {}", symbol, exc)
+
+        from brain.quality_layer import compute_quality_layer
+
+        ql = compute_quality_layer(
+            symbol, wm, m5_df=m5_df, h1_df=h1_df, current_price=current_price,
+        )
+        return replace(
+            wm,
+            opportunity_quality=ql["opportunity_quality"],
+            entry_quality_long=ql["entry_quality_long"],
+            entry_quality_short=ql["entry_quality_short"],
+            regime_analysis=ql["regime_analysis"],
         )
 
     def _currency_strength_analysis(self) -> Optional[Any]:

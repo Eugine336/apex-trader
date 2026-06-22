@@ -227,32 +227,25 @@ def _struct_event(struct_by_tf: dict, tf: str) -> str:
 
 
 def _oq_eq_from_wm(wm, direction: str) -> tuple[Optional[float], Optional[float]]:
-    """Live OQ/EQ for ``direction`` from a WorldModel's ranked candidates.
+    """Live OQ/EQ for ``direction`` from a WorldModel's shared quality layer.
 
     Mirrors the live management read in
-    ``event_driven_bootstrap._run_decision_engine_management``: the first
-    candidate matching the trade direction yields ``OQ = confidence×10`` and
-    ``EQ = coherence×10`` (both clamped 0–10). Returns ``(None, None)`` when no
-    matching candidate / no candidate list is available — exactly the live
-    "not recomputed this cycle" semantics that apply no quality pressure.
+    ``event_driven_bootstrap._run_decision_engine_management``: both planes read
+    the WorldModel's ``opportunity_quality`` (direction-free) and the
+    direction-aware ``entry_quality_long`` / ``entry_quality_short``, computed by
+    the single shared ``brain.quality_layer.compute_quality_layer``.  Returns
+    ``(None, None)`` when the layer was not computed this cycle — exactly the
+    live "not recomputed" semantics that apply no quality pressure.
     """
-    want = "LONG" if str(direction).upper() in ("BUY", "LONG") else "SHORT"
-    try:
-        if hasattr(wm, "candidates_list"):
-            candidates = wm.candidates_list()
-        else:
-            candidates = list(getattr(wm, "candidates", ()) or [])
-    except Exception:
-        return None, None
-    for cand in candidates:
-        if str(getattr(cand, "direction", "")).upper() != want:
-            continue
-        conf = float(getattr(cand, "confidence", 0.0) or 0.0)
-        coh = float(getattr(cand, "coherence", 0.0) or 0.0)
-        oq = max(0.0, min(10.0, conf * 10.0))
-        eq = max(0.0, min(10.0, coh * 10.0))
-        return oq, eq
-    return None, None
+    from brain.quality_layer import entry_quality_for
+
+    oq = getattr(wm, "opportunity_quality", None)
+    if oq is not None:
+        oq = max(0.0, min(10.0, float(oq)))
+    eq = entry_quality_for(wm, direction)
+    if eq is not None:
+        eq = max(0.0, min(10.0, float(eq)))
+    return oq, eq
 
 
 def _h1_candle_context(h1_df, is_long: bool) -> dict:
@@ -513,6 +506,14 @@ class BacktestEngine:
                 self.entry_engine = None
 
         self.session_engine = SessionEngine()
+        # Cross-instrument volatility monitor — fed each bar from the H1 regime
+        # analysis and applied as a sizing multiplier in ``_size_trade`` so the
+        # backtest mirrors the live SystemVolatilityMonitor size gate.
+        try:
+            from brain.regime_detector import SystemVolatilityMonitor
+            self.system_volatility_monitor = SystemVolatilityMonitor()
+        except Exception:
+            self.system_volatility_monitor = None
         self.journal = journal
         self.starting_balance = starting_balance
         self.risk_per_trade = risk_per_trade
@@ -650,6 +651,11 @@ class BacktestEngine:
             slices = self._build_slices(data_by_timeframe, now)
             if not slices:
                 continue
+
+            # Feed the cross-instrument volatility monitor from this bar's H1
+            # regime analysis (single-symbol replay → one analysis per bar; the
+            # monitor's pct thresholds collapse to "this pair spiking or not").
+            self._update_system_volatility(slices)
 
             if open_trade is None:
                 setup = self._decide_setup(pair, slices, now, balance)
@@ -1354,6 +1360,19 @@ class BacktestEngine:
                 daily_pnl=float(getattr(self, "_bt_daily_pnl", 0.0) or 0.0),
                 daily_loss_cap_pct=daily_cap,
             )
+            # Apply the cross-instrument volatility size gate the same way the
+            # live plane folds ``system_volatility_monitor.get_size_multiplier()``
+            # into the entry size.
+            if self.system_volatility_monitor is not None:
+                try:
+                    de_size_mult = round(
+                        de_size_mult * float(
+                            self.system_volatility_monitor.get_size_multiplier()
+                        ),
+                        3,
+                    )
+                except Exception:
+                    pass
             factors = SizingFactors(
                 base_risk_pct=self.risk_per_trade,
                 de_size_mult=de_size_mult,
@@ -1378,6 +1397,24 @@ class BacktestEngine:
             max_loss = round(lots * (abs(signal.entry_price - signal.stop_loss) / self.pip_size)
                              * self.pip_value_per_lot, 2)
         return lots, max_loss, risk_amount
+
+    def _update_system_volatility(self, slices: dict[str, pd.DataFrame]) -> None:
+        """Feed the SystemVolatilityMonitor from this bar's H1 regime analysis.
+
+        Single-symbol replay supplies one :class:`RegimeAnalysis` per bar — the
+        monitor's percent-of-pairs thresholds therefore collapse to "this pair
+        spiking or not", which is the best available cross-instrument proxy in a
+        per-symbol backtest. Best-effort; never raises.
+        """
+        if self.system_volatility_monitor is None:
+            return
+        try:
+            from brain.quality_layer import compute_regime_analysis
+
+            ra = compute_regime_analysis(slices.get("H1"))
+            self.system_volatility_monitor.update([ra] if ra is not None else [])
+        except Exception as exc:
+            logger.debug("[backtest] system volatility update failed: {}", exc)
 
     def _micro_from_slice(self, m1_df, is_long: bool) -> dict:
         """M1 alignment count + micro-structure event/trend from a candle slice.
