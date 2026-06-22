@@ -4657,11 +4657,22 @@ class EventDrivenSystem:
                     )
 
             # ── Gate 5b: RL authority — veto + score augmentation ────
+            # Capture the RL augmentation so it can also feed the TradePlanner's
+            # RL-aware TP scheme below (otherwise rl_expected_r stays 0 and the
+            # planner's RL branch is dead).
+            rl_action_plan = 0
+            rl_conf_plan = 0.0
+            rl_expected_r_plan = 0.0
+            rl_stage_plan = 1
             rl = getattr(ctx, "rl_bridge", None) if ctx is not None else None
             if rl is not None and getattr(rl, "enabled", False):
                 try:
                     aug = self._rl_augment(symbol, direction, conviction)
                     if aug is not None:
+                        rl_action_plan = aug.rl_action
+                        rl_conf_plan = aug.rl_confidence
+                        rl_expected_r_plan = aug.rl_expected_r
+                        rl_stage_plan = aug.authority_stage
                         hw = getattr(ctx, "health_watchdog", None)
                         if hw is not None:
                             try:
@@ -4844,6 +4855,10 @@ class EventDrivenSystem:
                         scanner_score=float(conviction),
                         de_confidence=de_conviction if de_conviction > 0 else float(conviction) / 100.0,
                         day_of_week=datetime.now(timezone.utc).weekday(),
+                        rl_action=rl_action_plan,
+                        rl_confidence=rl_conf_plan,
+                        rl_expected_r=rl_expected_r_plan,
+                        rl_stage=rl_stage_plan,
                     )
                     plan = ctx.trade_planner.plan_trade(plan_ctx)
                     if plan is not None and hasattr(plan, "action"):

@@ -197,6 +197,10 @@ class TestUpdatePriceWiring:
         )
         assert bridge.enabled
 
+        # Deterministic: this test asserts an FX (session-gated) entry opens
+        # regardless of when CI runs, so bypass the live session gate here.
+        bridge.shadow.session_filter_enabled = False
+
         from rl.shadow import RLSignal
 
         signal = RLSignal(
