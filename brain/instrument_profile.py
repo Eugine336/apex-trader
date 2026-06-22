@@ -10,7 +10,9 @@ No symbol names are hardcoded here. Everything is driven by category
 so the system scales to any number of instruments automatically.
 """
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from typing import Any, Callable, Optional
+
 from loguru import logger
 
 from config import INSTRUMENT_REGISTRY
@@ -201,32 +203,120 @@ _PROFILE_MAP: dict[str, InstrumentProfile] = {
 
 
 # ---------------------------------------------------------------------------
+# Self-calibrating derivation (ATR-normalised geometry)
+# ---------------------------------------------------------------------------
+#
+# The per-category constants above are PRIORS — used at cold start and as a
+# floor.  Once a symbol has accrued enough ATR history (``InstrumentStats``),
+# its pip-geometry is recomputed as a UNIVERSAL multiple of the symbol's own
+# live ATR, so one rule self-calibrates to every instrument instead of a
+# category literal.  These ``k`` ratios are the single shared formula set;
+# they were anchored against the forex profile at its typical M5 ATR and apply
+# unchanged to gold, indices, crypto and synthetics — only the live ATR differs.
+_ATR_GEOMETRY_RATIOS: dict[str, float] = {
+    "fvg_proximity_pips": 0.60,       # qualify an FVG within ~0.6 ATR of price
+    "fvg_min_size_pips": 0.40,        # ignore gaps smaller than ~0.4 ATR (spread noise)
+    "ob_buffer_pips": 0.40,           # tolerance around an OB edge
+    "ob_min_impulse_pips": 2.00,      # an OB needs a ~2 ATR impulse to qualify
+    "sl_buffer_pips": 0.40,           # stop buffer beyond the zone
+    "min_risk_pips": 1.00,            # reject setups whose SL is under ~1 ATR
+    "min_swing_size_pips": 0.60,      # a swing must clear ~0.6 ATR to count
+    "mtf_overlap_threshold_pips": 0.40,
+}
+
+# The timeframe whose ATR scales the analysis-plane geometry.
+_GEOMETRY_ATR_TF = "M5"
+
+# Optional injected provider: ``symbol -> InstrumentStats | None``.  When unset
+# (default), ``get_profile`` returns the category constants unchanged — so the
+# self-calibrating path is strictly opt-in and behaviour-preserving until a live
+# stats feed is wired and validated.
+_stats_provider: Optional[Callable[[str], Any]] = None
+
+
+def set_stats_provider(provider: Optional[Callable[[str], Any]]) -> None:
+    """Register (or clear) the ``symbol -> InstrumentStats`` provider.
+
+    Passing ``None`` reverts ``get_profile`` to the hardcoded category profiles.
+    """
+    global _stats_provider
+    _stats_provider = provider
+
+
+def derive_profile(base: InstrumentProfile, stats: Any) -> InstrumentProfile:
+    """Return a self-calibrated profile: ATR-scaled geometry over ``base``.
+
+    Pip-geometry fields are recomputed as ``k * live_ATR_pips`` (each floored at
+    the category constant's lower bound so calibration never makes a threshold
+    nonsensically small), while structural / enable fields (``swing_lookback``,
+    ``m1_confirmation_bars``, the ``*_enabled`` flags, ``min_entry_score``) keep
+    the category value — those are not ATR-derivable.  Falls back to ``base``
+    unchanged when ``stats`` is missing or not yet calibrated, so cold start is
+    identical to today's behaviour.
+    """
+    try:
+        if stats is None or not stats.is_calibrated(_GEOMETRY_ATR_TF):
+            return base
+        atr_pips = float(stats.atr_pips(_GEOMETRY_ATR_TF))
+        if atr_pips <= 0:
+            return base
+    except Exception:  # noqa: BLE001 — calibration must never break analysis
+        return base
+
+    overrides: dict[str, float] = {}
+    for fld, k in _ATR_GEOMETRY_RATIOS.items():
+        derived = k * atr_pips
+        # Floor at half the category prior so a quiet session can't collapse a
+        # threshold to ~0; the prior is the conservative lower bound.
+        floor = getattr(base, fld) * 0.5
+        overrides[fld] = round(max(derived, floor), 4)
+
+    return replace(base, **overrides)
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
 def get_profile(symbol: str) -> InstrumentProfile:
     """
     Return the InstrumentProfile for a symbol.
-    Looks up the category from INSTRUMENT_REGISTRY and returns
-    the matching profile. Falls back to forex if unknown.
+
+    Looks up the category from INSTRUMENT_REGISTRY for the base (cold-start)
+    profile, then — when a stats provider is registered and the symbol is
+    calibrated — returns an ATR-normalised, self-calibrated profile derived from
+    that symbol's own live volatility.  Falls back to forex if the symbol is
+    unknown, and to the category constants whenever stats are unavailable.
     """
     info = INSTRUMENT_REGISTRY.get(symbol.upper())
     if info is None:
         logger.warning(
             "InstrumentProfile — unknown symbol '{}', using forex defaults", symbol
         )
-        return _FOREX_PROFILE
+        base = _FOREX_PROFILE
+    else:
+        category = info.category.value   # "forex" / "commodity" / "index" / "synthetic"
+        base = _PROFILE_MAP.get(category, _FOREX_PROFILE)
 
-    category = info.category.value   # "forex" / "commodity" / "index" / "synthetic"
-    profile = _PROFILE_MAP.get(category, _FOREX_PROFILE)
+    profile = base
+    if _stats_provider is not None:
+        try:
+            stats = _stats_provider(symbol.upper())
+            profile = derive_profile(base, stats)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "InstrumentProfile — stats derivation failed for {}: {}", symbol, exc
+            )
+            profile = base
 
     logger.debug(
         "InstrumentProfile — {} → category={} | swing_lookback={} | "
-        "fvg_proximity={} | sl_buffer={} | min_score={}",
-        symbol, category,
+        "fvg_proximity={} | sl_buffer={} | min_score={} | calibrated={}",
+        symbol, profile.category,
         profile.swing_lookback,
         profile.fvg_proximity_pips,
         profile.sl_buffer_pips,
         profile.min_entry_score,
+        profile is not base,
     )
     return profile
