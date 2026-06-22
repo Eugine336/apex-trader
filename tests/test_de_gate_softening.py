@@ -211,7 +211,7 @@ class TestConfigValidation:
     def test_defaults(self):
         c = OrchestratorConfig()
         assert c.soften_de_gate is True
-        assert c.de_safety_margin == -1.0
+        assert c.de_safety_margin == -0.3
         assert c.de_gate_quality_floor == 0.15
 
     def test_quality_floor_out_of_range_rejected(self):

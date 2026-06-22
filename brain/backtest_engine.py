@@ -1106,6 +1106,21 @@ class BacktestEngine:
             return None
 
         # ── EntryGate (score ≥ 85 floor, same gate as the live zone path) ───
+        # Signed HTF alignment from the WorldModel bias (same derivation as the
+        # live entry orchestrator) so the alignment floor gate behaves
+        # identically in replay — strongly counter-trend setups are rejected
+        # rather than entered and instantly closed.
+        gate_alignment: Optional[float] = None
+        try:
+            _bias = wm.bias_dict()
+            _bdir = str(_bias.get("direction", "") or "").upper()
+            _bscore = max(0.0, min(100.0, float(_bias.get("score", 0) or 0))) / 100.0
+            if _bdir in ("LONG", "SHORT"):
+                gate_alignment = _bscore if _bdir == direction.upper() else -_bscore
+            else:
+                gate_alignment = 0.0
+        except Exception:
+            gate_alignment = None
         try:
             passed, results = self.entry_gate.validate_all(
                 symbol=pair,
@@ -1117,6 +1132,7 @@ class BacktestEngine:
                 score=score,
                 current_spread_pips=0.0,
                 zone=zone,
+                alignment=gate_alignment,
                 is_instrument_known=True,
                 is_market_open=True,
                 is_session_active=True,
@@ -1820,6 +1836,7 @@ class BacktestEngine:
         # Current zone conviction → rolling score_history (trajectory/confidence
         # /thesis-deterioration). Mirrors live's per-cycle score append.
         current_score = 0
+        opposing_score = 0
         try:
             zones = (
                 wm.entry_zones_list() if hasattr(wm, "entry_zones_list")
@@ -1827,10 +1844,20 @@ class BacktestEngine:
             )
             want_dir = "LONG" if is_long else "SHORT"
             for z in zones:
-                if str(getattr(z, "direction", "") or "").upper() == want_dir:
-                    current_score = max(current_score, int(getattr(z, "conviction", 0) or 0))
+                zdir = str(getattr(z, "direction", "") or "").upper()
+                conv = int(getattr(z, "conviction", 0) or 0)
+                # Own-direction zone → drives score_history (trade's own thesis
+                # trajectory). Scan/bias-direction zone → drives scan_score, the
+                # OPPOSING signal strength the engine's CLOSE term reads. These
+                # are different directions; conflating them mis-fed the trade's
+                # own conviction as opposing strength (see live Bug #2 fix).
+                if zdir == want_dir:
+                    current_score = max(current_score, conv)
+                if scan_direction in ("LONG", "SHORT") and zdir == scan_direction:
+                    opposing_score = max(opposing_score, conv)
         except Exception:
             current_score = 0
+            opposing_score = 0
         hist = trade.setdefault("score_history", [])
         hist.append(current_score)
 
@@ -1911,7 +1938,7 @@ class BacktestEngine:
             partial_closed=bool(trade.get("partial_closed", False)),
             lots=lots,
             original_risk_pips=risk_pips,
-            scan_score=current_score or int(getattr(setup, "score", 0) or 0),
+            scan_score=opposing_score,
             scan_direction=scan_direction,
             live_oq=live_oq,
             live_eq=live_eq,

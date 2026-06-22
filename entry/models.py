@@ -91,4 +91,17 @@ class EntryConfig:
     # LOWER min_entry_score within a bounded envelope when its rejected setups
     # keep winning, but the live gate never drops the bar below this floor.
     watchlist_score: int = 70
+    # Minimum signed HTF alignment for an entry. Alignment is +1 (HTF fully
+    # supports the trade) → -1 (HTF fully opposes). A strongly counter-trend
+    # setup (alignment below this floor) is rejected at the gate regardless of
+    # zone geometry — those entries are immediately closed by management's
+    # structure read, so taking them only burns spread. None disables the gate.
+    min_htf_alignment: float = -0.5
+    # Conviction multiplier applied to a counter-trend zone (its direction
+    # opposes the resolved HTF bias). Pure zone geometry (FVG+OB=100, FVG=80,
+    # OB=70) ignored whether the setup fought the trend, so a counter-trend
+    # FVG+OB scored the same 100 as a with-trend one and sailed through the
+    # score≥85 gate. At 0.70 a counter-trend FVG+OB becomes 70 (< 85 gate),
+    # naturally filtering geometry-only counter-trend setups.
+    counter_trend_conviction_mult: float = 0.70
     coalesce_hz: float = 15.0

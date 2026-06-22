@@ -1260,6 +1260,16 @@ class DecisionConfig:
     fast_opposition_max_streak: int = 8      # streak at which the pressure ramp caps
     fast_opposition_decay_weight: float = 0.30  # max CLOSE pressure at full ramp
     fast_opposition_profit_threshold: float = 0.3  # only applies below this R
+    # ── Softened entry gate floor ─────────────────────────────────────────
+    # When ``soften_gate`` is on, a mildly-negative ENTER/SKIP margin flows
+    # through as ENTER carrying a bounded quality multiplier (orchestrator
+    # sizes it) instead of a hard SKIP. ``gate_safety_margin`` is the hard
+    # floor: a margin at/below it is genuinely hopeless and still hard-SKIPs.
+    # Tightened from the legacy -1.0 (which let alignment as bad as -0.95 enter
+    # softened) to -0.3 so the softened gate actually has teeth — deeply
+    # counter-trend setups are rejected, not merely sized down.
+    soften_gate: bool = True
+    gate_safety_margin: float = -0.3
 
 
 # ---------------------------------------------------------------------------
@@ -1451,7 +1461,7 @@ class OrchestratorConfig:
     # genuinely hopeless and still hard-SKIPs; ``de_gate_quality_floor`` is the
     # smallest quality multiplier a softened setup can carry.
     soften_de_gate: bool = True
-    de_safety_margin: float = -1.0
+    de_safety_margin: float = -0.3
     de_gate_quality_floor: float = 0.15
     # Per-dimension "full credit" reference for the softened-DE quality gradient
     # the orchestrator folds in (the margin-derived multiplier is already bounded

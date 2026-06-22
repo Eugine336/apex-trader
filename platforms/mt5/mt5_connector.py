@@ -103,6 +103,7 @@ class MT5Connector(BaseConnector):
         reject_on_minlot_inflation: bool = False,
         max_tick_age_seconds: float = 120.0,
         max_slippage_pips: float = 0.0,
+        min_rr_after_adjust: float = 1.5,
     ):
         self._login = login
         self._password = password
@@ -115,6 +116,11 @@ class MT5Connector(BaseConnector):
         self._not_found_warned: set[str] = set()  # warn once then silent
         self._broker_name = broker_name
         self._reject_on_minlot_inflation = reject_on_minlot_inflation
+        # When the broker's minimum stop distance forces the SL/TP wider than
+        # requested, the position sizer already sized for the tighter SL and the
+        # approved R:R no longer exists. Reject the order if the post-adjustment
+        # R:R falls below this floor rather than silently taking a worse trade.
+        self._min_rr_after_adjust = float(min_rr_after_adjust)
         # Tick-freshness limit comes straight from config (RiskConfig resolves
         # the MAX_TICK_AGE_SECONDS env override explicitly at the config layer).
         self._max_tick_age_seconds = float(max_tick_age_seconds)
@@ -579,6 +585,27 @@ class MT5Connector(BaseConnector):
                 )
                 tp = round(new_tp, digits)
                 request["tp"] = tp
+
+            # R:R viability after stop adjustment. The position sizer approved
+            # the trade on the ORIGINAL (tighter) SL; once the broker minimum
+            # widens it, the reward:risk that justified the entry may be gone.
+            # Reject rather than silently take a degraded trade.
+            if self._min_rr_after_adjust > 0 and tp > 0:
+                adj_risk = abs(price - sl)
+                adj_reward = abs(tp - price)
+                if adj_risk > 0:
+                    adj_rr = adj_reward / adj_risk
+                    if adj_rr < self._min_rr_after_adjust:
+                        logger.warning(
+                            "[MT5] Order rejected — SL/TP adjustment destroyed R:R "
+                            "(new R:R={:.2f}, minimum={:.2f}) for {} {}",
+                            adj_rr, self._min_rr_after_adjust, mapped, direction,
+                        )
+                        return self._fail_order(
+                            symbol, direction, lots, sl, tp,
+                            f"RR_TOO_LOW_AFTER_ADJUST: new R:R {adj_rr:.2f} < "
+                            f"min {self._min_rr_after_adjust:.2f}",
+                        )
 
         # ── Exact pre-trade margin check (broker's own math) ───────────────
         # Ask the broker exactly how much margin this order needs and fail

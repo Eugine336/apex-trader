@@ -65,6 +65,7 @@ class EntryOrchestrator:
         self._pip_size = pip_size_lookup or (lambda _: 0.0001)
         self._on_entry = on_entry_decision
         self._on_gate_trace = on_gate_trace
+        self._wm_store = world_model_store
 
         self._is_market_open = is_market_open or (lambda _: True)
         self._is_session_active = is_session_active or (lambda _: True)
@@ -182,6 +183,30 @@ class EntryOrchestrator:
                 "touch_time": pending.touch_time,
             }
 
+    def _htf_alignment(self, symbol: str, direction: str) -> Optional[float]:
+        """Signed HTF alignment for a trade direction from the WorldModel bias.
+
+        Returns +score/100 when the bias direction supports the trade,
+        -score/100 when it opposes, 0.0 when the bias is undirected, and
+        ``None`` when no WorldModel/bias is available (gate stays permissive).
+        """
+        if self._wm_store is None:
+            return None
+        try:
+            wm = self._wm_store.get(symbol)
+            if wm is None:
+                return None
+            bias = wm.bias_dict()
+            bdir = str(bias.get("direction", "") or "").upper()
+            score = float(bias.get("score", 0) or 0)
+            if bdir not in ("LONG", "SHORT"):
+                return 0.0
+            signed = max(0.0, min(100.0, score)) / 100.0
+            return signed if bdir == direction.upper() else -signed
+        except Exception as exc:
+            logger.debug("[entry-orch] alignment read failed for {}: {}", symbol, exc)
+            return None
+
     def _run_gates_and_emit(
         self,
         symbol: str,
@@ -209,6 +234,8 @@ class EntryOrchestrator:
 
         spread_pips = self._get_spread(symbol)
 
+        alignment = self._htf_alignment(symbol, direction)
+
         passed, results = self._gate.validate_all(
             symbol=symbol,
             direction=direction,
@@ -219,6 +246,7 @@ class EntryOrchestrator:
             score=zone.conviction,
             current_spread_pips=spread_pips,
             zone=zone,
+            alignment=alignment,
             is_instrument_known=self._is_instrument_known(symbol),
             is_market_open=self._is_market_open(symbol),
             is_session_active=self._is_session_active(symbol),

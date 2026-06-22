@@ -65,6 +65,7 @@ class EntryGate:
         score: int,
         current_spread_pips: float,
         zone: Optional[EntryZone] = None,
+        alignment: Optional[float] = None,
         is_instrument_known: bool = True,
         is_market_open: bool = True,
         is_session_active: bool = True,
@@ -89,6 +90,7 @@ class EntryGate:
             self._check_news(symbol, is_news_clear),
             self._check_drawdown(is_drawdown_ok),
             self._check_score(symbol, score),
+            self._check_alignment(symbol, direction, alignment),
             self._check_risk_reward(entry_price, stop_loss, tp1, tp2, direction),
             self._check_zone_valid(zone, utc_now),
         ]
@@ -179,6 +181,29 @@ class EntryGate:
                 f"Score {score} < minimum {min_score}",
             )
         return GateResult(True, "score_minimum", f"Score {score} OK")
+
+    def _check_alignment(
+        self, symbol: str, direction: str, alignment: Optional[float],
+    ) -> GateResult:
+        """Reject entries that strongly oppose the higher-timeframe bias.
+
+        ``alignment`` is signed: +1 = HTF fully supports the trade direction,
+        -1 = HTF fully opposes. A setup below ``min_htf_alignment`` is closed
+        almost immediately by management's HTF structure read, so taking it
+        only pays spread twice. ``None`` (no alignment supplied) is permissive
+        so callers that cannot compute it keep prior behaviour.
+        """
+        min_align = getattr(self._config, "min_htf_alignment", None)
+        if min_align is None or alignment is None:
+            return GateResult(True, "alignment", "No alignment floor")
+        if not math.isfinite(alignment):
+            return GateResult(True, "alignment", "Alignment unavailable")
+        if alignment < min_align:
+            return GateResult(
+                False, "alignment",
+                f"Alignment {alignment:.2f} < minimum {min_align:.2f}",
+            )
+        return GateResult(True, "alignment", f"Alignment {alignment:.2f} OK")
 
     def _check_risk_reward(
         self,

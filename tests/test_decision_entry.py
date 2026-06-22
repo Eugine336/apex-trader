@@ -88,6 +88,32 @@ class TestSituationAssessEntry:
         sa = situation.assess_entry(ctx)
         assert sa.structure_integrity == pytest.approx(0.5, abs=0.01)
 
+    def test_opposing_htf_event_drops_structure_integrity(self, situation):
+        """Bug #1 — an opposing HTF break (now wired into the entry context)
+        must pull structure_integrity below the zone-quality baseline, matching
+        what management would immediately see."""
+        base = _make_ctx(entry_type="FVG_OB_OVERLAP", direction="LONG")
+        sa_base = situation.assess_entry(base)
+        opposed = _make_ctx(
+            entry_type="FVG_OB_OVERLAP",
+            direction="LONG",
+            h4_event="BOS_BEARISH",
+            d1_event="CHOCH_BEARISH",
+        )
+        sa_opp = situation.assess_entry(opposed)
+        assert sa_opp.structure_integrity < sa_base.structure_integrity
+        assert sa_opp.structure_components["H4"] < 0
+        assert sa_opp.structure_components["D1"] < 0
+
+    def test_default_htf_events_are_none(self, situation):
+        """Events default to NONE → no structure penalty (back-compat)."""
+        ctx = _make_ctx(entry_type="FVG_OB_OVERLAP")
+        assert ctx.h4_event == "NONE"
+        assert ctx.d1_event == "NONE"
+        sa = situation.assess_entry(ctx)
+        assert sa.structure_components["H4"] == 0
+        assert sa.structure_components["D1"] == 0
+
     def test_news_proximity_raises_urgency(self, situation):
         ctx = _make_ctx(minutes_to_high_impact_news=5.0, news_impact="HIGH")
         sa = situation.assess_entry(ctx)
