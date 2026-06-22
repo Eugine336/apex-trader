@@ -252,3 +252,161 @@ def test_apply_pnl_legacy_is_multiplicative():
     # legacy compounds by pnl_r * risk_per_trade (minus commission fraction).
     assert new_balance < 10_000.0 * (1.0 + eng.risk_per_trade)
     assert new_balance > 10_000.0
+
+
+# ── Management context completeness: live-parity fields (audit) ──────────
+
+
+def _struct(trend, conf, event="NONE"):
+    return SimpleNamespace(
+        trend=SimpleNamespace(value=trend),
+        confidence=conf,
+        last_event=SimpleNamespace(value=event),
+    )
+
+
+def _rich_wm():
+    """A WorldModel stub exposing the full surface live management reads."""
+    return SimpleNamespace(
+        structure_by_tf=lambda: {
+            "D1": _struct("BULLISH", 0.8),
+            "H4": _struct("BULLISH", 0.7),
+            "H1": _struct("BEARISH", 0.6, "CHOCH_BEARISH"),
+            "M5": _struct("BEARISH", 0.5, "BOS_BEARISH"),
+        },
+        bias_dict=lambda: {"direction": "SHORT"},
+        regime_by_tf=lambda: {"H1": "TREND"},
+        votes_list=lambda: [
+            SimpleNamespace(module="structure", direction="SHORT", confidence=0.8, weight=1.0),
+            SimpleNamespace(module="momentum", direction="SHORT", confidence=0.6, weight=1.0),
+        ],
+        candidates_list=lambda: [
+            SimpleNamespace(direction="LONG", confidence=0.4, coherence=0.5),
+        ],
+        entry_zones_list=lambda: [
+            SimpleNamespace(direction="LONG", conviction=90),
+        ],
+    )
+
+
+def _trade_with_entry_quality():
+    setup = BacktestSetup(direction="LONG", entry_price=1.10, stop_loss=1.095,
+                          tp1=1.105, tp2=1.115, score=100, zone_type="FVG_OB_OVERLAP",
+                          entry_oq=8.0, entry_eq=7.0, pip_value_per_lot=10.0)
+    return {
+        "setup": setup, "symbol": "EURUSD", "order_id": "bt-1",
+        "entry_time": datetime(2024, 1, 1, tzinfo=timezone.utc),
+        "entry_price": 1.10, "stop_loss": 1.095, "tp1": 1.105, "tp2": 1.115,
+        "risk": 0.0005, "tp1_hit": False, "at_breakeven": False,
+        "realized_r": 0.0, "lots": 0.10, "fast_opp": 0, "entry_type": "FVG_OB_OVERLAP",
+        "score_history": [], "entry_oq": 8.0, "entry_eq": 7.0,
+        "partial_closed": False, "trailing": False, "remaining_fraction": 1.0,
+    }
+
+
+def _h1_slice():
+    return pd.DataFrame({
+        "time": pd.date_range("2024-01-01", periods=3, freq="h", tz="UTC"),
+        "open": [1.101, 1.101, 1.101], "high": [1.102, 1.102, 1.102],
+        "low": [1.099, 1.099, 1.099], "close": [1.0995, 1.0995, 1.0995],
+        "volume": [100, 100, 100],
+    })
+
+
+def test_trade_context_carries_m5_structure():
+    eng = BacktestEngine()
+    trade = _trade_with_entry_quality()
+    candle = pd.Series({"time": pd.Timestamp("2024-01-01 01:00", tz="UTC"),
+                        "open": 1.10, "high": 1.101, "low": 1.099, "close": 1.0995})
+    ctx = eng._build_trade_context(trade, candle, _rich_wm(),
+                                   {"M1": _h1_slice(), "H1": _h1_slice()}, "EURUSD")
+    assert ctx.m5_trend == "BEARISH"
+    assert ctx.m5_confidence == pytest.approx(0.5)
+    assert ctx.m5_event == "BOS_BEARISH"
+
+
+def test_trade_context_carries_consensus_panel():
+    eng = BacktestEngine()
+    trade = _trade_with_entry_quality()
+    candle = pd.Series({"time": pd.Timestamp("2024-01-01 01:00", tz="UTC"),
+                        "open": 1.10, "high": 1.101, "low": 1.099, "close": 1.0995})
+    ctx = eng._build_trade_context(trade, candle, _rich_wm(),
+                                   {"M1": _h1_slice(), "H1": _h1_slice()}, "EURUSD")
+    assert len(ctx.consensus_votes) == 2
+    assert {v.module for v in ctx.consensus_votes} == {"structure", "momentum"}
+
+
+def test_trade_context_computes_oq_decay_and_dollars():
+    eng = BacktestEngine()
+    trade = _trade_with_entry_quality()
+    candle = pd.Series({"time": pd.Timestamp("2024-01-01 01:00", tz="UTC"),
+                        "open": 1.10, "high": 1.101, "low": 1.099, "close": 1.1005})
+    ctx = eng._build_trade_context(trade, candle, _rich_wm(),
+                                   {"M1": _h1_slice(), "H1": _h1_slice()}, "EURUSD")
+    # live_oq = candidate.confidence×10 = 4.0; entry_oq = 8.0 → decay = +4.0
+    assert ctx.live_oq == pytest.approx(4.0)
+    assert ctx.oq_decay == pytest.approx(4.0)
+    # pnl_dollars = pnl_pips × pip_value × lots × open fraction (all > 0 here)
+    assert ctx.pnl_dollars > 0
+
+
+def test_trade_context_appends_score_history():
+    eng = BacktestEngine()
+    trade = _trade_with_entry_quality()
+    candle = pd.Series({"time": pd.Timestamp("2024-01-01 01:00", tz="UTC"),
+                        "open": 1.10, "high": 1.101, "low": 1.099, "close": 1.0995})
+    wm = _rich_wm()
+    eng._build_trade_context(trade, candle, wm, {"M1": _h1_slice(), "H1": _h1_slice()}, "EURUSD")
+    eng._build_trade_context(trade, candle, wm, {"M1": _h1_slice(), "H1": _h1_slice()}, "EURUSD")
+    # Matching-direction zone conviction (90) appended each cycle.
+    assert trade["score_history"] == [90, 90]
+
+
+def test_trade_context_carries_h1_candle_context():
+    eng = BacktestEngine()
+    trade = _trade_with_entry_quality()  # LONG
+    candle = pd.Series({"time": pd.Timestamp("2024-01-01 01:00", tz="UTC"),
+                        "open": 1.10, "high": 1.101, "low": 1.099, "close": 1.0995})
+    ctx = eng._build_trade_context(trade, candle, _rich_wm(),
+                                   {"M1": _h1_slice(), "H1": _h1_slice()}, "EURUSD")
+    # H1 last candle closes below open → bearish (opposes the LONG).
+    assert ctx.h1_last_candle_bearish is True
+
+
+def test_management_partial_close_banks_fraction(monkeypatch):
+    eng = _managed_engine(Action.PARTIAL_CLOSE, monkeypatch=monkeypatch)
+    eng.decision_engine = SimpleNamespace(
+        decide_management=lambda ctx, sa: ManagementDecision(
+            action=Action.PARTIAL_CLOSE, reason="stub",
+        )
+    )
+    trade = _open_trade_dict()
+    trade["remaining_fraction"] = 1.0
+    trade["realized_r"] = 0.0
+    # LONG in profit: close above entry.
+    candle = pd.Series({"time": pd.Timestamp("2024-01-01 01:00", tz="UTC"),
+                        "open": 1.10, "high": 1.1100, "low": 1.0999, "close": 1.1050})
+    out = eng._run_management(trade, candle, _slices(), "EURUSD",
+                              datetime(2024, 1, 1, 1, tzinfo=timezone.utc))
+    assert out is None  # partial close is not a full exit
+    assert trade["partial_closed"] is True
+    assert trade["remaining_fraction"] == pytest.approx(0.5)
+    assert trade["realized_r"] > 0  # banked some profit
+
+
+def test_management_scale_in_is_safe_noop(monkeypatch):
+    eng = _managed_engine(Action.SCALE_IN, monkeypatch=monkeypatch)
+    eng.decision_engine = SimpleNamespace(
+        decide_management=lambda ctx, sa: ManagementDecision(
+            action=Action.SCALE_IN, reason="stub",
+        )
+    )
+    trade = _open_trade_dict()
+    original_sl = trade["stop_loss"]
+    candle = pd.Series({"time": pd.Timestamp("2024-01-01 01:00", tz="UTC"),
+                        "open": 1.10, "high": 1.1005, "low": 1.0998, "close": 1.1003})
+    out = eng._run_management(trade, candle, _slices(), "EURUSD",
+                              datetime(2024, 1, 1, 1, tzinfo=timezone.utc))
+    assert out is None  # not modelled, base position held
+    assert trade["stop_loss"] == original_sl
+
