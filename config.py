@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from loguru import logger
 
-SCHEMA_VERSION = "1"
+SCHEMA_VERSION = "3"
 
 
 class InstrumentCategory(Enum):
