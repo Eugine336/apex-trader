@@ -107,11 +107,15 @@ class TradeContext:
     minutes_to_high_impact_news: float = 999.0
     news_impact: str = "NONE"
 
-    # ── Pressure (from _compute_in_trade_context_pressure) ───────────────
-    # TODO: no `_compute_in_trade_context_pressure` exists in the codebase yet;
-    # neither the live nor backtest builder populates these, so they stay at
-    # their defaults and only `context_pressure` is logged (cosmetic). Wire a
-    # pressure computation here before relying on these for any decision.
+    # ── Pressure (from compute_in_trade_context_pressure) ────────────────
+    # Populated by both management builders via
+    # ``decision.situation.compute_in_trade_context_pressure`` — a diagnostic
+    # summary of the independent signals opposing the open trade
+    # (``context_pressure`` = count, ``opposing_boost`` = structural-break
+    # subset, ``pressure_details`` = the list). Surfaced in the journal/dashboard.
+    # NOT re-scored as a separate CLOSE term: the underlying opposing signals are
+    # already scored individually in ``decide_management`` (re-scoring would
+    # double-count and over-close).
     context_pressure: int = 0
     opposing_boost: int = 0
     pressure_details: list[str] = field(default_factory=list)
