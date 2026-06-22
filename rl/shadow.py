@@ -23,15 +23,19 @@ Integration with APEX scanner:
 from __future__ import annotations
 
 import json
+import logging
 import sqlite3
 import threading
 import numpy as np
+from collections import deque
 from dataclasses import dataclass, asdict
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
 from .network import ApexRLAgent, ACTION_LABELS
+
+_logger = logging.getLogger("apex.rl.shadow")
 
 
 # ── Signal dataclass ──────────────────────────────────────────────────────────
@@ -96,6 +100,13 @@ class ShadowEngine:
     MAX_DRAWDOWN         = 0.15
     MIN_REGIMES_TESTED   = 3
 
+    # Minimum recent bars required before a structure-aware SL can be derived.
+    # Below this the engine falls back to an ATR stop (mirrors the live
+    # EntryEngine, which falls back to its ATR stop when structure is absent).
+    MIN_STRUCT_BARS      = 8
+    # How many recent bars to retain per pair for swing-extreme detection.
+    STRUCT_WINDOW        = 50
+
     def __init__(self, checkpoint_path: str, db_path: str = "shadow_journal.db"):
         self.agent: ApexRLAgent | None = None
         self._meta: dict = {}
@@ -107,6 +118,33 @@ class ShadowEngine:
 
         self.open_trades: dict[str, ShadowTrade] = {}
         self.bar_counter: dict[str, int]          = {}
+
+        # Rolling per-pair high/low buffers, fed by ``update_price`` every bar.
+        # These supply the swing extremes used for the structure-aware stop so
+        # the shadow's exit geometry matches the live engine's intent instead of
+        # a hardcoded ATR multiple.
+        self.recent_highs: dict[str, deque] = {}
+        self.recent_lows:  dict[str, deque] = {}
+
+        # Live exit-model parameters, sourced from the same ConsensusConfig the
+        # live consensus/ATR-stop path uses so authority is earned against the
+        # same SL distance and reward:risk the live engine trades.
+        self._sl_atr_mult = 1.5
+        self._tp_rr       = 3.0
+        try:
+            from config import ConsensusConfig
+            _cc = ConsensusConfig()
+            self._sl_atr_mult = float(_cc.atr_sl_mult)
+            self._tp_rr       = float(_cc.atr_tp2_rr)
+        except Exception as exc:  # pragma: no cover - config import guard
+            _logger.debug("[Shadow] ConsensusConfig unavailable, using defaults: %s", exc)
+
+        # Session awareness — skip shadow entries for session-gated (FX)
+        # instruments when the market is not tradeable, mirroring the live
+        # entry path. Disable per-engine for deterministic/offline tests.
+        self.session_filter_enabled = True
+        self._session_engine = None
+
         self._reload_open_trades()
 
     # ── Signal generation ─────────────────────────────────────────────────
@@ -162,6 +200,14 @@ class ShadowEngine:
         self.bar_counter[pair] = self.bar_counter.get(pair, 0) + 1
         bar = self.bar_counter[pair]
 
+        # Feed the rolling swing buffers so a structure-aware stop can be
+        # derived when the next trade opens on this pair.
+        if pair not in self.recent_highs:
+            self.recent_highs[pair] = deque(maxlen=self.STRUCT_WINDOW)
+            self.recent_lows[pair]  = deque(maxlen=self.STRUCT_WINDOW)
+        self.recent_highs[pair].append(float(high))
+        self.recent_lows[pair].append(float(low))
+
         if pair not in self.open_trades:
             return
 
@@ -198,16 +244,38 @@ class ShadowEngine:
         close:      float,
         atr:        float,
         pip_size:   float = 0.0001,
+        now:        Optional[datetime] = None,
     ):
-        """Open a paper trade based on a signal. Called by shadow coordinator."""
+        """Open a paper trade based on a signal. Called by shadow coordinator.
+
+        The agent decides WHEN to trade (its neural net produced ``signal``);
+        WHERE the stop/target go and HOW risk is measured now mirror the live
+        engine: a structure-aware stop from recent swing extremes, an
+        InstrumentProfile-driven minimum-risk floor, and the live config
+        reward:risk for the target. The hardcoded ATR stop is used only as a
+        fallback when no recent structure is available.
+        """
         if pair in self.open_trades and not self.open_trades[pair].closed:
             return  # already in a trade on this pair
+
+        # ── Session gate (live parity) ────────────────────────────────────
+        if self.session_filter_enabled and self._is_session_gated(pair):
+            if not self._session_tradeable(now):
+                _logger.info(
+                    "[Shadow] %s entry skipped — session not tradeable", pair
+                )
+                return
 
         direction = 1 if signal.action == 1 else -1
         spread    = 1.5 * pip_size
         entry     = close + (spread if direction == 1 else -spread)
-        sl        = entry - direction * 1.5 * atr
-        tp        = entry + direction * 3.0 * atr
+
+        sl, tp = self._compute_levels(pair, direction, entry, atr, pip_size)
+        if sl is None or tp is None:
+            _logger.warning(
+                "[Shadow] %s entry skipped — could not derive a valid stop", pair
+            )
+            return
 
         t = ShadowTrade(
             pair=pair,
@@ -222,6 +290,122 @@ class ShadowEngine:
         )
         self.open_trades[pair] = t
         self._save_trade(t)
+
+    # ── Live-parity exit-model helpers ────────────────────────────────────
+
+    def _compute_levels(
+        self,
+        pair:      str,
+        direction: int,
+        entry:     float,
+        atr:       float,
+        pip_size:  float,
+    ) -> tuple[Optional[float], Optional[float]]:
+        """Return ``(sl, tp)`` using a structure-aware stop with ATR fallback.
+
+        Structure stop: the protective stop is anchored to the nearest recent
+        swing extreme (swing low for longs, swing high for shorts) plus a
+        per-instrument buffer, then floored to the InstrumentProfile minimum
+        risk distance. When fewer than ``MIN_STRUCT_BARS`` recent bars exist the
+        engine falls back to an ATR stop (logged), exactly like the live
+        EntryEngine falls back when structure is unavailable.
+        """
+        profile, category = self._profile(pair)
+        buffer = (profile.sl_buffer_pips * pip_size) if profile is not None else (2.0 * pip_size)
+        min_risk = self._min_risk_distance(entry, pip_size, profile, category)
+
+        highs = self.recent_highs.get(pair)
+        lows  = self.recent_lows.get(pair)
+        have_structure = (
+            highs is not None and lows is not None and len(lows) >= self.MIN_STRUCT_BARS
+        )
+
+        sl = None
+        if have_structure:
+            if direction == 1:
+                swing_low = min(lows)
+                cand = swing_low - buffer
+                if cand < entry:               # stop must sit below a long entry
+                    sl = cand
+            else:
+                swing_high = max(highs)
+                cand = swing_high + buffer
+                if cand > entry:               # stop must sit above a short entry
+                    sl = cand
+
+        if sl is None:
+            # ── ATR fallback (no usable structure) ───────────────────────
+            _logger.warning(
+                "[Shadow] %s — no usable recent structure (%d bars), using ATR stop",
+                pair, 0 if lows is None else len(lows),
+            )
+            if atr <= 0:
+                return None, None
+            sl = entry - direction * self._sl_atr_mult * atr
+
+        # ── Minimum-risk floor (InstrumentProfile, live parity) ──────────
+        risk = abs(entry - sl)
+        if risk < min_risk:
+            sl = entry - direction * min_risk
+            risk = min_risk
+
+        if risk <= 0:
+            return None, None
+
+        tp = entry + direction * risk * self._tp_rr
+        return sl, tp
+
+    @staticmethod
+    def _profile(pair: str):
+        """Return ``(InstrumentProfile | None, category)`` for *pair*."""
+        try:
+            from brain.instrument_profile import get_profile
+            from config import INSTRUMENT_REGISTRY
+            prof = get_profile(pair)
+            info = INSTRUMENT_REGISTRY.get(pair.upper())
+            category = info.category.value if info is not None else prof.category
+            return prof, category
+        except Exception:
+            return None, ""
+
+    @staticmethod
+    def _min_risk_distance(entry: float, pip_size: float, profile, category: str) -> float:
+        """Per-instrument minimum SL distance, matching EntryEngine's SL floor.
+
+        Synthetics/crypto floor to a price-relative percentage (their pip count
+        is meaningless at high prices); everything else floors to
+        ``min_risk_pips`` distance.
+        """
+        if category == "synthetic":
+            return entry * 0.003   # 0.3%
+        if category == "crypto":
+            return entry * 0.0015  # 0.15%
+        min_pips = profile.min_risk_pips if profile is not None else 5.0
+        return min_pips * pip_size
+
+    @staticmethod
+    def _is_session_gated(pair: str) -> bool:
+        """True only for known FX instruments — others (synthetics, crypto,
+        indices, commodities, unknown) are treated as always-open and never
+        skipped, matching the live ``is_always_open`` handling."""
+        try:
+            from config import INSTRUMENT_REGISTRY, InstrumentCategory
+            info = INSTRUMENT_REGISTRY.get(pair.upper())
+            return info is not None and info.category == InstrumentCategory.FOREX
+        except Exception:
+            return False
+
+    def _session_tradeable(self, now: Optional[datetime]) -> bool:
+        if self._session_engine is None:
+            try:
+                from brain.session_engine import SessionEngine
+                self._session_engine = SessionEngine()
+            except Exception:
+                return True  # cannot evaluate — do not block
+        try:
+            return bool(self._session_engine.get_status(now).is_tradeable)
+        except Exception:
+            return True
 
     # ── Qualification check ───────────────────────────────────────────────
 
@@ -239,6 +423,12 @@ class ShadowEngine:
                 "reason": f"Need {self.MIN_SHADOW_TRADES} trades, have {len(trades)}",
                 "n_trades": len(trades),
                 "n_shadow_trades": len(trades),
+                # Cold-start: an empty/short book has no realised drawdown. Emit
+                # an explicit 0.0 so the authority manager does not read the
+                # missing key as a 100% drawdown and surface a phantom failure.
+                "win_rate": 0.0,
+                "expectancy": 0.0,
+                "max_drawdown": 0.0,
             }
 
         r_values  = [t["actual_r"] for t in trades]

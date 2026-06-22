@@ -126,6 +126,10 @@ class AuthorityManager:
 
     DEMOTION_DRAWDOWN_THRESHOLD = 0.25  # auto-demote if DD exceeds this
     DEMOTION_WINRATE_THRESHOLD  = 0.45  # auto-demote if win rate drops below this
+    # Below this shadow-trade count the drawdown gate is skipped: an empty or
+    # tiny book has no statistically meaningful drawdown, so a missing/degenerate
+    # value must not surface as a phantom 100% drawdown failure (cold start).
+    COLD_START_MIN_TRADES       = 10
 
     def __init__(self, db_path: str = "authority.db"):
         self.db_path = db_path
@@ -243,14 +247,22 @@ class AuthorityManager:
     # ── Internal ─────────────────────────────────────────────────────────
 
     def _check_requirements(self, m: dict, req: StageRequirements) -> tuple[bool, str]:
+        # Cold start: with too few shadow trades the drawdown figure is not
+        # meaningful (an empty book reads as 100%). Skip the drawdown gate so the
+        # honest blocker (the shadow-trade count) is the only one reported.
+        n_trades = m.get("n_shadow_trades", 0)
+        dd_pass = (
+            True if n_trades < self.COLD_START_MIN_TRADES
+            else m.get("max_drawdown", 1) <= req.max_drawdown
+        )
         checks = [
-            (m.get("n_shadow_trades", 0) >= req.min_shadow_trades,
-             f"shadow_trades {m.get('n_shadow_trades',0)} < {req.min_shadow_trades}"),
+            (n_trades >= req.min_shadow_trades,
+             f"shadow_trades {n_trades} < {req.min_shadow_trades}"),
             (m.get("win_rate", 0)    >= req.min_win_rate,
              f"win_rate {m.get('win_rate',0):.2%} < {req.min_win_rate:.2%}"),
             (m.get("expectancy", 0)  >= req.min_expectancy,
              f"expectancy {m.get('expectancy',0):.3f} < {req.min_expectancy}"),
-            (m.get("max_drawdown", 1) <= req.max_drawdown,
+            (dd_pass,
              f"drawdown {m.get('max_drawdown',1):.2%} > {req.max_drawdown:.2%}"),
             (m.get("n_live_trades", 0) >= req.min_live_trades,
              f"live_trades {m.get('n_live_trades',0)} < {req.min_live_trades}"),
