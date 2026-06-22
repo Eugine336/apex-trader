@@ -80,6 +80,16 @@ class WorkerConfig:
     structure_exit_tf_alignment_enabled: bool = False
     structure_exit_tf_alignment_defer: float = 0.5
 
+    # ── Entry grace period ───────────────────────────────────────────
+    # A freshly opened position is always marginally underwater (it pays the
+    # spread on entry).  Discretionary "thesis changed" exits — invalidation,
+    # conviction collapse, HTF-candle-close — must NOT fire inside this window,
+    # otherwise any symbol whose live bias score sits below the invalidation
+    # threshold gets force-closed on the very first management tick (0 pips,
+    # spread-only loss).  Hard safety checks (SL/TP/breakeven/trailing/profit
+    # protection/session/weekend/spread) are NEVER gated by this window.
+    min_hold_seconds: float = 120.0
+
     # ── Invalidation check ───────────────────────────────────────────
     invalidation_score_threshold: int = 40
     opposing_signal_threshold: int = 75
@@ -194,6 +204,17 @@ class PositionWorker:
         if snap.trade_status in ("CLOSED", "STOPPED", "TIME_EXIT"):
             return intents
 
+        # Position age — discretionary exits are suppressed inside the entry
+        # grace window so a brand-new position is not cut on spread-only P&L
+        # before it has any chance to develop.  Fail-open: if open_time is
+        # missing/unparseable, treat the position as past grace (never starve
+        # a real exit signal).
+        try:
+            age_seconds = (now - snap.open_time).total_seconds()
+        except Exception:
+            age_seconds = float("inf")
+        past_grace = age_seconds >= self.cfg.min_hold_seconds
+
         # ── Layer 1: Tick-level checks (TradeManager.update logic) ────
         self._check_stop_loss(snap, intents)
         self._check_tp1(snap, intents)
@@ -207,7 +228,7 @@ class PositionWorker:
         self._check_dynamic_sl_tightening(snap, intents)
         self._check_weekend_protection(snap, now, intents)
 
-        if scan is not None:
+        if scan is not None and past_grace:
             self._check_invalidation(snap, scan, intents)
             self._check_conviction_collapse(snap, intents)
 
@@ -215,7 +236,8 @@ class PositionWorker:
             trailed = self._check_structure_trailing(snap, market, out=intents)
             if not trailed:
                 self._check_atr_trailing(snap, market, out=intents)
-            self._check_htf_candle_close(snap, market, intents)
+            if past_grace:
+                self._check_htf_candle_close(snap, market, intents)
             self._check_spread_deterioration(snap, market, intents)
             self._check_session_close(snap, now, intents)
             self._check_opportunity_cost(snap, now, market, intents)

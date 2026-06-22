@@ -332,6 +332,41 @@ class TestInvalidation:
         assert not any("invalidation" in i.source for i in intents)
 
 
+class TestEntryGracePeriod:
+    """Discretionary exits must be suppressed inside the entry grace window."""
+
+    def test_fresh_position_skips_invalidation(self):
+        # Position opened 2s ago, underwater, low score — invalidation would
+        # normally fire, but the grace window must suppress it.
+        open_t = NOW - timedelta(seconds=2)
+        snap = _snap(pnl_pips=-1.0, open_time=open_t)
+        scan = ScanContext(direction="SHORT", score=30)
+        worker = PositionWorker(WorkerConfig(min_hold_seconds=120.0))
+        intents = worker.evaluate(snap, NOW, scan=scan)
+        assert not any("invalidation" in i.source for i in intents)
+
+    def test_aged_position_allows_invalidation(self):
+        # Same underwater low-score position, but well past the grace window.
+        open_t = NOW - timedelta(seconds=200)
+        snap = _snap(pnl_pips=-1.0, open_time=open_t)
+        scan = ScanContext(direction="SHORT", score=30)
+        worker = PositionWorker(WorkerConfig(min_hold_seconds=120.0))
+        intents = worker.evaluate(snap, NOW, scan=scan)
+        assert any(i.source == "invalidation_low_score" for i in intents)
+
+    def test_stop_loss_fires_inside_grace(self):
+        # Hard safety (SL) must NEVER be gated by the grace window.
+        open_t = NOW - timedelta(seconds=2)
+        snap = _snap(
+            direction="BUY", sl=1.09900, current_price=1.09800,
+            open_time=open_t,
+        )
+        scan = ScanContext(direction="SHORT", score=30)
+        worker = PositionWorker(WorkerConfig(min_hold_seconds=120.0))
+        intents = worker.evaluate(snap, NOW, scan=scan)
+        assert any(i.source == "stop_loss" for i in intents)
+
+
 class TestConvictionCollapse:
     def test_declining_scores_exits(self):
         snap = _snap(
