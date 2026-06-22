@@ -85,6 +85,17 @@ class WorldModel:
     votes: tuple[Any, ...] = ()
     candidates: tuple[Any, ...] = ()
 
+    # ── Setup-quality layer (second-order analysis) ───────────────────
+    # Real Opportunity/Entry Quality scores (0–10) and the per-symbol
+    # RegimeAnalysis, synthesized at publish time by
+    # ``brain.quality_layer.compute_quality_layer``.  Shared by the live and
+    # backtest planes so both engines read identical quality signals.  ``None``
+    # means "not computed this cycle" — consumers apply no quality pressure.
+    opportunity_quality: Optional[float] = None
+    entry_quality_long: Optional[float] = None
+    entry_quality_short: Optional[float] = None
+    regime_analysis: Optional[Any] = None
+
     # ── Helpers ───────────────────────────────────────────────────────
 
     def fvgs_by_tf(self) -> dict[str, tuple[FairValueGap, ...]]:

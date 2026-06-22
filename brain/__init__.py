@@ -11,7 +11,6 @@ from brain.execution_monitor import ExecutionMonitor, ExecutionStats
 from brain.fvg_detector import FairValueGap, FVGDetector, FVGStatus
 from brain.inducement_detector import InducementAnalysis, InducementDetector
 from brain.liquidity_mapper import LiquidityMap, LiquidityMapper, LiquidityZone
-from brain.mtf_orchestrator import Confluence, MTFOrchestrator, TradeSetup
 from brain.order_block import OBStatus, OrderBlock, OrderBlockDetector
 from brain.regime_detector import MarketRegime, RegimeAnalysis, RegimeDetector
 from brain.session_engine import (NewsGuard, NewsStatus, SessionEngine,
@@ -35,7 +34,6 @@ __all__ = [
     "VolumeAnalyzer", "VolumeAnalysis", "VolumeDivergence",
     "InducementDetector", "InducementAnalysis",
     "WyckoffEngine", "WyckoffAnalysis", "WyckoffPhase",
-    "MTFOrchestrator", "TradeSetup", "Confluence",
     "TradeJournal", "TradeRecord", "DecisionRecord",
     "DrawdownGuard", "DrawdownMode", "DrawdownStatus",
     "ExecutionMonitor", "ExecutionStats",

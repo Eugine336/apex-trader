@@ -925,23 +925,24 @@ class PositionEvaluator:
             except Exception:
                 entry_eq = None
             try:
-                if wm is not None and ctx.opportunity_executor is not None:
-                    candidates = (
-                        wm.candidates_list()
-                        if hasattr(wm, "candidates_list")
-                        else list(getattr(wm, "candidates", ()) or [])
-                    )
-                    want_dir = "LONG" if norm_dir == "BUY" else "SHORT"
-                    for cand in candidates:
-                        if str(getattr(cand, "direction", "")).upper() != want_dir:
-                            continue
-                        conf = float(getattr(cand, "confidence", 0.0) or 0.0)
-                        coh = float(getattr(cand, "coherence", 0.0) or 0.0)
-                        live_oq = max(0.0, min(10.0, conf * 10.0))
-                        live_eq = max(0.0, min(10.0, coh * 10.0))
-                        break
+                if wm is not None:
+                    live_oq = getattr(wm, "opportunity_quality", None)
+                    if live_oq is not None:
+                        live_oq = max(0.0, min(10.0, float(live_oq)))
+                    from brain.quality_layer import entry_quality_for
+                    eq_val = entry_quality_for(wm, norm_dir)
+                    if eq_val is not None:
+                        live_eq = max(0.0, min(10.0, float(eq_val)))
             except Exception as exc:
                 logger.debug("[de-mgmt] live OQ/EQ read failed for {}: {}", symbol, exc)
+            # Capture the entry-time quality baseline on the first eval after a
+            # position opens (mirrors the backtest, which captures it at open).
+            if entry_oq is None and live_oq is not None:
+                entry_oq = live_oq
+                mgmt.entry_oq = live_oq
+            if entry_eq is None and live_eq is not None:
+                entry_eq = live_eq
+                mgmt.entry_eq = live_eq
             if entry_oq is not None and live_oq is not None:
                 oq_decay = entry_oq - live_oq
             if entry_eq is not None and live_eq is not None:
@@ -2821,7 +2822,41 @@ class EventDrivenSystem:
             if ctx is not None:
                 self._run_periodic_learning(ctx)
 
+            # ── System-wide volatility state (cross-instrument) ───────
+            # Aggregate per-symbol RegimeAnalysis (carried on each WorldModel)
+            # into the SystemVolatilityMonitor so the size-multiplier it already
+            # feeds into entry sizing reflects live volatility spikes instead of
+            # a permanent 1.0.  Throttled so the read stays cheap.
+            if ctx is not None:
+                self._run_system_volatility_update(ctx)
+
             _time.sleep(10.0)
+
+    def _run_system_volatility_update(self, ctx: SystemContext) -> None:
+        """Feed the SystemVolatilityMonitor with per-symbol regime analyses."""
+        monitor = getattr(ctx, "system_volatility_monitor", None)
+        if monitor is None or self._wm_store is None:
+            return
+        now = _time.monotonic()
+        last = getattr(self, "_last_sysvol_update", 0.0)
+        if (now - last) < 60.0:
+            return
+        self._last_sysvol_update = now
+        try:
+            analyses = []
+            for wm in self._wm_store.snapshot().values():
+                ra = getattr(wm, "regime_analysis", None)
+                if ra is not None:
+                    analyses.append(ra)
+            if analyses:
+                state = monitor.update(analyses)
+                if state is not None and state.state != "NORMAL":
+                    logger.info(
+                        "[event-driven] system volatility {} — size×{:.2f} ({})",
+                        state.state, state.size_multiplier, state.note,
+                    )
+        except Exception as exc:
+            logger.debug("[event-driven] system volatility update failed: {}", exc)
 
     def _run_portfolio_heat_check(self, ctx: SystemContext) -> None:
         # Drive the portfolio risk state machine + per-account heat gate from

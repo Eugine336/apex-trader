@@ -56,6 +56,11 @@ class ManagementState:
     strategic_assessment_time: Optional[datetime] = None
     last_eval_time: Optional[datetime] = None
     score_history: list = field(default_factory=list)
+    # Entry-time setup quality (OQ/EQ), captured on the first management eval
+    # so the decision engine can measure quality decay since entry. Mirrors the
+    # backtest plane, which captures entry OQ/EQ from the WorldModel at open.
+    entry_oq: Optional[float] = None
+    entry_eq: Optional[float] = None
 
 
 _DB_DIR = Path(__file__).resolve().parent.parent / "data"

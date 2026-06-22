@@ -283,6 +283,11 @@ def _rich_wm():
         candidates_list=lambda: [
             SimpleNamespace(direction="LONG", confidence=0.4, coherence=0.5),
         ],
+        # Shared quality layer carries OQ/EQ directly on the WorldModel now
+        # (read identically by live + backtest management).
+        opportunity_quality=4.0,
+        entry_quality_long=6.0,
+        entry_quality_short=3.0,
         entry_zones_list=lambda: [
             SimpleNamespace(direction="LONG", conviction=90),
         ],
@@ -343,7 +348,7 @@ def test_trade_context_computes_oq_decay_and_dollars():
                         "open": 1.10, "high": 1.101, "low": 1.099, "close": 1.1005})
     ctx = eng._build_trade_context(trade, candle, _rich_wm(),
                                    {"M1": _h1_slice(), "H1": _h1_slice()}, "EURUSD")
-    # live_oq = candidate.confidence×10 = 4.0; entry_oq = 8.0 → decay = +4.0
+    # live_oq = wm.opportunity_quality = 4.0; entry_oq = 8.0 → decay = +4.0
     assert ctx.live_oq == pytest.approx(4.0)
     assert ctx.oq_decay == pytest.approx(4.0)
     # pnl_dollars = pnl_pips × pip_value × lots × open fraction (all > 0 here)

@@ -14,7 +14,7 @@ def main():
         StructureEngine, LiquidityMapper, FVGDetector,
         OrderBlockDetector, CurrencyStrengthMeter, SessionEngine, NewsGuard,
         RegimeDetector, VolumeAnalyzer, InducementDetector, WyckoffEngine,
-        MTFOrchestrator, TradeJournal, DrawdownGuard, ExecutionMonitor,
+        TradeJournal, DrawdownGuard, ExecutionMonitor,
         CorrelationEngine, BacktestEngine, BrokerDataLoader,
     )
     print("  ✅ 18 modules loaded")

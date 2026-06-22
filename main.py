@@ -84,7 +84,7 @@ def main() -> None:
         StructureEngine, LiquidityMapper, FVGDetector,
         OrderBlockDetector, CurrencyStrengthMeter, SessionEngine, NewsGuard,
         RegimeDetector, VolumeAnalyzer, InducementDetector, WyckoffEngine,
-        MTFOrchestrator, TradeJournal, DrawdownGuard, ExecutionMonitor,
+        TradeJournal, DrawdownGuard, ExecutionMonitor,
         CorrelationEngine, BacktestEngine,
     )
     logger.info("Phase 1 — Brain loaded (17 modules)")
