@@ -803,6 +803,7 @@ class BacktestEngine:
                 pair,
                 {"H4": h4, "H1": h1, "M15": m15, "M5": m5},
                 timestamp=now,
+                consensus_config=getattr(self.config, "consensus", None),
             )
             result = _world_model_to_scan_view(wm)
         except Exception as exc:

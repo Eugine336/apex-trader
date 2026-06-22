@@ -12,10 +12,35 @@ dependency in the math itself.
 from __future__ import annotations
 
 import math
+import time as _time
 from dataclasses import dataclass, field
 from typing import Optional
 
 from loguru import logger
+
+
+# ── Throttled extractor-failure visibility ───────────────────────────────
+# Vote extractors run per candle-close for every symbol/TF. A failing
+# extractor must be *visible* (no silent ``except: pass`` — a broken analyst
+# is otherwise indistinguishable from "no signal"), but a per-cycle WARNING
+# would flood the log. Log the first failure of each (module, stage) at
+# WARNING with the exception, then throttle repeats to once per interval.
+_WARN_THROTTLE_S = 300.0
+_last_extractor_warn: dict[str, float] = {}
+
+
+def _warn_extractor_failure(module: str, exc: Exception, *, stage: str = "") -> None:
+    key = f"{module}:{stage}" if stage else module
+    now = _time.monotonic()
+    if now - _last_extractor_warn.get(key, 0.0) >= _WARN_THROTTLE_S:
+        _last_extractor_warn[key] = now
+        logger.warning(
+            "[consensus] vote_from_{} extractor failed{}: {} — {}",
+            module,
+            f" ({stage})" if stage else "",
+            type(exc).__name__,
+            exc,
+        )
 
 
 class VoteResult(tuple):
@@ -631,7 +656,8 @@ def vote_from_liquidity(liq_mapper, m5_df, pip_size: float = 0.0001) -> VoteResu
     """
     try:
         kind, direction, conf = liq_mapper.classify_sweep_reaction(m5_df, pip_size)
-    except Exception:
+    except Exception as exc:
+        _warn_extractor_failure("liquidity", exc)
         return VoteResult("NEUTRAL", 0.0)
 
     ev = {"sweep_kind": kind, "sweep_direction": direction, "sweep_confidence": conf}
@@ -678,8 +704,8 @@ def vote_from_momentum(
                 rsi_dir = "SHORT"
             elif rsi < 30:
                 rsi_dir = "LONG"
-    except Exception:
-        pass
+    except Exception as exc:
+        _warn_extractor_failure("momentum", exc, stage="rsi")
 
     try:
         result = calculate_macd(m5_df["close"], macd_fast, macd_slow, macd_signal)
@@ -689,8 +715,8 @@ def vote_from_momentum(
                 macd_dir = "LONG"
             elif ml < sl:
                 macd_dir = "SHORT"
-    except Exception:
-        pass
+    except Exception as exc:
+        _warn_extractor_failure("momentum", exc, stage="macd")
 
     # ── Continuous component strengths in [0, 1] ──────────────────────────
     # RSI: distance past the 70/30 extreme (71 → ~0.03, 100/0 → 1.0).
@@ -762,7 +788,8 @@ def vote_from_vwap(
         vwap = compute_session_vwap(m5_df, session_open_minutes)
         if vwap is None or vwap <= 0:
             return VoteResult("NEUTRAL", 0.0)
-    except Exception:
+    except Exception as exc:
+        _warn_extractor_failure("vwap", exc)
         return VoteResult("NEUTRAL", 0.0)
 
     pip_size = abs(current_price - vwap)
@@ -851,7 +878,8 @@ def vote_from_volatility(
             return VoteResult("NEUTRAL", 0.0, ev)
         atr_recent = float(recent.iloc[-1])
         atr_base = float(base.iloc[-1])
-    except Exception:
+    except Exception as exc:
+        _warn_extractor_failure("volatility", exc)
         return VoteResult("NEUTRAL", 0.0, ev)
 
     if (

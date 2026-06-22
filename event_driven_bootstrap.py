@@ -757,8 +757,11 @@ class PositionEvaluator:
                         analysis = engine.analyze(closed.iloc[-min(len(closed), 100):])
                         out["m1_event"] = analysis.last_event.value
                         out["m1_trend"] = analysis.trend.value
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug(
+                            "[de-mgmt] M1 structure read failed for {}: {}",
+                            symbol, exc,
+                        )
         except Exception as exc:
             logger.debug("[de-mgmt] M1 momentum read failed for {}: {}", symbol, exc)
 
@@ -1680,6 +1683,7 @@ class EventDrivenSystem:
             vote_calibrator=getattr(ctx, "vote_calibrator", None) if ctx else None,
             module_governor=getattr(ctx, "module_governor", None) if ctx else None,
             win_rate_provider=getattr(ctx, "win_rate_provider", None) if ctx else None,
+            consensus_config=getattr(self._config, "consensus", None),
         )
 
         # ── Execution plane ──────────────────────────────────────────

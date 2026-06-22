@@ -17,9 +17,9 @@ from brain.decision_core import build_consensus
 class _FakeWM:
     """Minimal duck-typed WorldModel exposing only what build_consensus reads.
 
-    Produces a single bullish structure vote (weight 3.0) and a single bullish
-    volume vote (weight 1.0); everything else returns empty so the panel is
-    deterministic and easy to assert on.
+    Produces a single bullish structure vote and a single bullish volume vote
+    (both at the unbiased default base weight 1.0); everything else returns
+    empty so the panel is deterministic and easy to assert on.
     """
 
     def bias_dict(self) -> dict:
@@ -74,7 +74,8 @@ class TestVoteCalibratorWiring:
     def test_baseline_weights_without_calibrator(self):
         votes, _ = build_consensus("EURUSD", _FakeWM(), 1.10)
         vm = _vote_map(votes)
-        assert vm["structure"].weight == 3.0
+        # Unbiased default: every module starts on equal footing (1.0).
+        assert vm["structure"].weight == 1.0
         assert vm["volume"].weight == 1.0
 
     def test_calibrated_weights_applied(self):
@@ -85,7 +86,7 @@ class TestVoteCalibratorWiring:
             vote_calibrator=_Calibrator(),
         )
         vm = _vote_map(votes)
-        assert vm["structure"].weight == 6.0  # 3.0 × 2.0
+        assert vm["structure"].weight == 2.0  # 1.0 × 2.0
         assert vm["volume"].weight == 0.5  # 1.0 × 0.5
 
     def test_disabled_calibrator_is_neutral(self):
@@ -96,7 +97,7 @@ class TestVoteCalibratorWiring:
             vote_calibrator=_Calibrator(enabled=False),
         )
         vm = _vote_map(votes)
-        assert vm["structure"].weight == 3.0
+        assert vm["structure"].weight == 1.0
         assert vm["volume"].weight == 1.0
 
     def test_calibrator_exception_falls_back_to_base(self):
@@ -112,7 +113,7 @@ class TestVoteCalibratorWiring:
         )
         vm = _vote_map(votes)
         # Failure must not drop or corrupt the vote — base weight preserved.
-        assert vm["structure"].weight == 3.0
+        assert vm["structure"].weight == 1.0
         assert vm["volume"].weight == 1.0
 
 
@@ -168,7 +169,52 @@ class TestCombinedHooks:
         vm = _vote_map(votes)
         # volume suppressed entirely; structure still calibrated ×2.0
         assert "volume" not in vm
-        assert vm["structure"].weight == 6.0
+        assert vm["structure"].weight == 2.0
+
+
+class TestConsensusWeightWiring:
+    """The per-module base weights come from ConsensusConfig.weights, so the
+    operator can retune the panel without a code edit and no module carries a
+    hardcoded advantage by default."""
+
+    def test_config_weights_override_defaults(self):
+        votes, _ = build_consensus(
+            "EURUSD",
+            _FakeWM(),
+            1.10,
+            weights={"structure": 3.0, "volume": 0.25},
+        )
+        vm = _vote_map(votes)
+        assert vm["structure"].weight == 3.0
+        assert vm["volume"].weight == 0.25
+
+    def test_partial_weights_fall_back_to_unit_default(self):
+        # Only structure overridden; volume falls back to the 1.0 default.
+        votes, _ = build_consensus(
+            "EURUSD",
+            _FakeWM(),
+            1.10,
+            weights={"structure": 5.0},
+        )
+        vm = _vote_map(votes)
+        assert vm["structure"].weight == 5.0
+        assert vm["volume"].weight == 1.0
+
+    def test_calibrator_composes_on_top_of_config_weight(self):
+        votes, _ = build_consensus(
+            "EURUSD",
+            _FakeWM(),
+            1.10,
+            weights={"structure": 3.0},
+            vote_calibrator=_Calibrator(),  # structure ×2.0
+        )
+        vm = _vote_map(votes)
+        assert vm["structure"].weight == 6.0  # 3.0 (config) × 2.0 (calibrator)
+
+    def test_default_panel_is_equal_weighted(self):
+        votes, _ = build_consensus("EURUSD", _FakeWM(), 1.10)
+        assert votes
+        assert all(v.weight == 1.0 for v in votes)
 
 
 class _WinRateProvider:
