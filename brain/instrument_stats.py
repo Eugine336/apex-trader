@@ -48,6 +48,7 @@ _ATR_MEDIAN_BARS = 200        # bars used for the "normal" ATR baseline
 _SPREAD_SAMPLES = 500         # live spread readings retained for median / p95
 _HOUR_EMA_ALPHA = 2.0 / (20 + 1)   # ~20-day EMA of per-hour range (rolling)
 _OUTCOME_WINDOW = 200         # structure/zone outcome memory
+_NEWS_EMA_ALPHA = 2.0 / (20 + 1)   # ~20-event EMA of news impact per currency
 
 
 def _percentile(sorted_vals: list[float], pct: float) -> float:
@@ -148,6 +149,12 @@ class InstrumentStats:
     _zone_touch_outcomes: Deque[bool] = field(default_factory=lambda: deque(maxlen=_OUTCOME_WINDOW))
     _zone_hold_outcomes: Deque[bool] = field(default_factory=lambda: deque(maxlen=_OUTCOME_WINDOW))
 
+    # Learned news sensitivity per currency: EMA of |price move over the event
+    # window| / ATR.  The news guard can read this to weight a currency's events
+    # by how much THIS instrument actually reacts, instead of a hardcoded flag.
+    news_impact_by_currency: dict[str, float] = field(default_factory=dict)
+    _news_count: dict[str, int] = field(default_factory=dict)
+
     samples: int = 0
 
     # ── Updates ───────────────────────────────────────────────────────────
@@ -220,6 +227,33 @@ class InstrumentStats:
         if touched and held is not None:
             self._zone_hold_outcomes.append(bool(held))
 
+    def record_news_impact(self, currency: str, move_pips: float, atr_pips: float) -> None:
+        """Fold one measured news reaction into the per-currency EMA.
+
+        ``move_pips`` is ``|price_after - price_at_event|`` in pips and is
+        normalised by ``atr_pips`` so the stored sensitivity is comparable
+        across instruments (a 50-pip gold move and a 5-pip EURUSD move are both
+        '≈1 ATR').  Guarded; a non-positive ATR or bad input is ignored.
+        """
+        cur = str(currency or "").upper()
+        if not cur or atr_pips is None or atr_pips <= 0:
+            return
+        try:
+            impact = max(0.0, float(move_pips)) / float(atr_pips)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(impact):
+            return
+        n = self._news_count.get(cur, 0)
+        if n == 0:
+            self.news_impact_by_currency[cur] = impact
+        else:
+            a = _NEWS_EMA_ALPHA
+            self.news_impact_by_currency[cur] = (
+                (1.0 - a) * self.news_impact_by_currency.get(cur, 0.0) + a * impact
+            )
+        self._news_count[cur] = n + 1
+
     # ── Reads ─────────────────────────────────────────────────────────────
 
     def atr_pips(self, tf: str = "M5") -> float:
@@ -287,6 +321,77 @@ class InstrumentStats:
         win = self._atr_pips_window.get(tf)
         return bool(win) and len(win) >= min_samples and self.atr_pips(tf) > 0
 
+    def news_sensitivity(self, currency: str) -> Optional[float]:
+        """Learned reaction (ATR multiples) of this symbol to a currency's news.
+
+        ``None`` until at least one event has been measured for the currency.
+        """
+        cur = str(currency or "").upper()
+        if cur not in self.news_impact_by_currency:
+            return None
+        return float(self.news_impact_by_currency[cur])
+
+    # ── Persistence ───────────────────────────────────────────────────────
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-safe snapshot of all rolling state (for cross-restart persistence)."""
+        return {
+            "symbol": self.symbol,
+            "pip_size": self.pip_size,
+            "atr_by_tf": dict(self.atr_by_tf),
+            "atr_pips_by_tf": dict(self.atr_pips_by_tf),
+            "atr_pips_window": {tf: list(w) for tf, w in self._atr_pips_window.items()},
+            "spread_samples": list(self._spread_samples),
+            "vol_by_hour": list(self.vol_by_hour),
+            "hour_seen": list(self._hour_seen),
+            "structure_outcomes": [int(x) for x in self._structure_outcomes],
+            "zone_touch_outcomes": [int(x) for x in self._zone_touch_outcomes],
+            "zone_hold_outcomes": [int(x) for x in self._zone_hold_outcomes],
+            "news_impact_by_currency": dict(self.news_impact_by_currency),
+            "news_count": dict(self._news_count),
+            "samples": self.samples,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "InstrumentStats":
+        """Rebuild an ``InstrumentStats`` from a :meth:`to_dict` snapshot."""
+        st = cls(
+            symbol=str(data.get("symbol", "")),
+            pip_size=float(data.get("pip_size", 0.0001) or 0.0001),
+        )
+        st.atr_by_tf = {str(k): float(v) for k, v in (data.get("atr_by_tf") or {}).items()}
+        st.atr_pips_by_tf = {str(k): float(v) for k, v in (data.get("atr_pips_by_tf") or {}).items()}
+        for tf, vals in (data.get("atr_pips_window") or {}).items():
+            st._atr_pips_window[str(tf)] = deque(
+                (float(v) for v in vals), maxlen=_ATR_MEDIAN_BARS
+            )
+        st._spread_samples = deque(
+            (float(v) for v in (data.get("spread_samples") or [])), maxlen=_SPREAD_SAMPLES
+        )
+        vbh = data.get("vol_by_hour") or []
+        if len(vbh) == 24:
+            st.vol_by_hour = [float(v) for v in vbh]
+        hs = data.get("hour_seen") or []
+        if len(hs) == 24:
+            st._hour_seen = [bool(v) for v in hs]
+        st._structure_outcomes = deque(
+            (bool(v) for v in (data.get("structure_outcomes") or [])), maxlen=_OUTCOME_WINDOW
+        )
+        st._zone_touch_outcomes = deque(
+            (bool(v) for v in (data.get("zone_touch_outcomes") or [])), maxlen=_OUTCOME_WINDOW
+        )
+        st._zone_hold_outcomes = deque(
+            (bool(v) for v in (data.get("zone_hold_outcomes") or [])), maxlen=_OUTCOME_WINDOW
+        )
+        st.news_impact_by_currency = {
+            str(k): float(v) for k, v in (data.get("news_impact_by_currency") or {}).items()
+        }
+        st._news_count = {
+            str(k): int(v) for k, v in (data.get("news_count") or {}).items()
+        }
+        st.samples = int(data.get("samples", 0) or 0)
+        return st
+
 
 class InstrumentStatsStore:
     """Thread-safe per-symbol ``InstrumentStats`` registry.
@@ -321,3 +426,25 @@ class InstrumentStatsStore:
     def clear(self) -> None:
         with self._lock:
             self._store.clear()
+
+    def to_dict(self) -> dict[str, Any]:
+        """Snapshot every symbol's stats (for persistence)."""
+        with self._lock:
+            return {sym: st.to_dict() for sym, st in self._store.items()}
+
+    def load_dict(self, data: dict[str, Any]) -> int:
+        """Replace the store contents from a :meth:`to_dict` snapshot.
+
+        Returns the number of symbols loaded. Best-effort per symbol so one bad
+        entry never aborts the whole reload.
+        """
+        loaded = 0
+        with self._lock:
+            self._store.clear()
+            for sym, blob in (data or {}).items():
+                try:
+                    self._store[str(sym).upper()] = InstrumentStats.from_dict(blob)
+                    loaded += 1
+                except Exception:  # noqa: BLE001 — skip a corrupt entry
+                    continue
+        return loaded

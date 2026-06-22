@@ -93,6 +93,9 @@ class CandleCloseHandler:
         module_governor: Optional[Any] = None,
         win_rate_provider: Optional[Any] = None,
         consensus_config: Optional[Any] = None,
+        calibration_engine: Optional[Any] = None,
+        get_spread_pips: Optional[Callable[[str], float]] = None,
+        calibration_spread_tf: str = "M5",
     ) -> None:
         self._bus = event_bus
         self._store = world_model_store
@@ -123,6 +126,12 @@ class CandleCloseHandler:
         # config is not supplied.
         from config import ConsensusConfig as _ConsensusConfig
         self._consensus_config = consensus_config or _ConsensusConfig()
+        # CalibrationEngine feed (default-neutral when None): on each candle
+        # close the handler hands the SAME candles/spread it already fetched to
+        # the single-writer CalibrationEngine so per-symbol stats stay live.
+        self._calibration_engine = calibration_engine
+        self._get_spread_pips = get_spread_pips
+        self._calibration_spread_tf = calibration_spread_tf
         self._pool = ThreadPoolExecutor(
             max_workers=max(1, max_workers),
             thread_name_prefix="cc-handler",
@@ -279,6 +288,19 @@ class CandleCloseHandler:
                 self._last_bar_hash[(symbol, tf)] = bh
 
             results = self._run_modules(symbol, tf, df)
+            # Spread sample — fed once per configured TF close (live only; the
+            # getter reads the cached broker tick) so spread median/p95 calibrate.
+            if (
+                self._calibration_engine is not None
+                and self._get_spread_pips is not None
+                and tf == self._calibration_spread_tf
+            ):
+                try:
+                    self._calibration_engine.update_spread(
+                        symbol, float(self._get_spread_pips(symbol) or 0.0),
+                    )
+                except Exception as exc:
+                    logger.debug("[cc-handler] calibration spread feed failed: {}", exc)
             if results:
                 current_price = 0.0
                 try:
@@ -306,6 +328,18 @@ class CandleCloseHandler:
         self, symbol: str, tf: str, df: pd.DataFrame,
     ) -> dict[str, Any]:
         """Delegate to the shared decision core (reusing this handler's engines)."""
+        # CalibrationEngine feed — the single writer ingests the freshly-fetched
+        # candles to keep per-symbol ATR / session stats live (covers warmup too).
+        if self._calibration_engine is not None:
+            try:
+                from config import get_pip_size
+                try:
+                    pip = get_pip_size(symbol)
+                except Exception:
+                    pip = 0.0001
+                self._calibration_engine.update_candles(symbol, tf, df, pip)
+            except Exception as exc:
+                logger.debug("[cc-handler] calibration candle feed failed: {}", exc)
         return run_tf_modules(
             symbol, tf, df,
             structure=self._structure,

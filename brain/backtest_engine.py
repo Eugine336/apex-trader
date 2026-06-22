@@ -516,6 +516,27 @@ class BacktestEngine:
 
         self.config = config or AppConfig()
 
+        # CalibrationEngine (single writer) — opt-in via config.calibration.enabled.
+        # When on, the backtest feeds the SAME candle slices it analyses into the
+        # engine and registers it as the get_profile provider, so replayed
+        # decisions use self-calibrating geometry exactly as live would. When off,
+        # no provider is registered and the hardcoded constants are used.
+        self._calibration_engine = None
+        _calib_cfg = getattr(self.config, "calibration", None)
+        if _calib_cfg is not None and getattr(_calib_cfg, "enabled", False):
+            try:
+                from brain.calibration_engine import CalibrationEngine
+                from brain.instrument_profile import set_stats_provider
+                self._calibration_engine = CalibrationEngine(
+                    state_path=getattr(
+                        _calib_cfg, "state_path", "data/calibration_state.json"
+                    ),
+                )
+                set_stats_provider(self._calibration_engine)
+            except Exception as exc:
+                logger.warning("[backtest] CalibrationEngine init failed: {}", exc)
+                self._calibration_engine = None
+
         # Decision engine: the shared ED core (brain.decision_core.analyze_window)
         # drives backtest decisions — identical to the live plane.  ``scanner``
         # is retained only as an optional injected override (default unused); the
@@ -1037,6 +1058,20 @@ class BacktestEngine:
 
         try:
             from brain.decision_core import analyze_window
+            # CalibrationEngine feed — hand the analysed slices to the single
+            # writer so per-symbol ATR / session / spread stats calibrate during
+            # replay (no-op when calibration is disabled). Fed once per bar here
+            # on the analysis path; the management path reuses the same stats.
+            if self._calibration_engine is not None:
+                pip = getattr(self, "pip_size", 0.0001) or 0.0001
+                for _tf, _df in (("H4", h4), ("H1", h1), ("M15", m15), ("M5", m5)):
+                    self._calibration_engine.update_candles(pair, _tf, _df, pip)
+                try:
+                    spread = float(getattr(self.config.backtest, "default_spread_pips", 0.0) or 0.0)
+                    if spread > 0:
+                        self._calibration_engine.update_spread(pair, spread, pip)
+                except Exception:
+                    pass
             wm = analyze_window(
                 pair,
                 {"H4": h4, "H1": h1, "M15": m15, "M5": m5},
