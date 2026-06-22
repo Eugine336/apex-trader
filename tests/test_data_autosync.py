@@ -166,6 +166,8 @@ class TestCleanStart:
             d = Path(tmp) / "data"
             version_file = Path(tmp) / ".schema_version"
             d.mkdir()
+            version_file = Path(tmp) / ".local_schema_version"
+            version_file.write_text("1\n")
             (d / "scoring_weights.json").write_text("{}")
             (d / "zone_edge.json").write_text("{}")
             (d / "apex_positions.db").write_text("live")  # must be preserved
@@ -281,4 +283,67 @@ class TestCleanStart:
         assert (
             sync_clean_state_from_remote("/nope/missing/dir")
             == "no data directory"
+        )
+
+    def test_sync_uses_fetch_then_hard_reset(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            calls = []
+
+            def _fake_run(cmd, capture_output, text):  # noqa: ANN001
+                calls.append(cmd)
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+            with patch("platforms.clean_start._is_git_repo", return_value=True), patch(
+                "platforms.clean_start.subprocess.run", side_effect=_fake_run,
+            ):
+                result = sync_clean_state_from_remote(str(d), branch="main")
+
+            assert result == "synced remote state (main)"
+            assert calls[0][-2:] == ["fetch", "origin"]
+            assert calls[1][-3:] == ["reset", "--hard", "origin/main"]
+
+    def test_sync_falls_back_to_master_when_main_missing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+
+            responses = [
+                subprocess.CompletedProcess(["git"], 0, stdout="", stderr=""),
+                subprocess.CompletedProcess(
+                    ["git"],
+                    1,
+                    stdout="",
+                    stderr="fatal: ambiguous argument 'origin/main'",
+                ),
+                subprocess.CompletedProcess(["git"], 0, stdout="", stderr=""),
+            ]
+
+            with patch("platforms.clean_start._is_git_repo", return_value=True), patch(
+                "platforms.clean_start.subprocess.run", side_effect=responses,
+            ):
+                result = sync_clean_state_from_remote(str(d), branch="main")
+
+            assert result == "synced remote state (master)"
+
+    def test_startup_runner_is_context_free(self):
+        with patch(
+            "platforms.clean_start.sync_clean_state_from_remote",
+            return_value="synced remote state (main)",
+        ) as mock_sync, patch(
+            "platforms.clean_start.purge_stale_learned_data",
+            return_value="already clean",
+        ) as mock_purge:
+            result = run_startup_clean_start(
+                data_dir="data",
+                branch="main",
+                schema_version="2",
+                local_schema_version_file=".local_schema_version",
+            )
+
+        assert result == ("synced remote state (main)", "already clean")
+        mock_sync.assert_called_once_with(data_dir="data", branch="main")
+        mock_purge.assert_called_once_with(
+            data_dir="data",
+            schema_version="2",
+            local_schema_version_file=".local_schema_version",
         )

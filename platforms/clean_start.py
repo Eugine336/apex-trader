@@ -1,8 +1,7 @@
 """
 APEX TRADER — Clean-Start Helpers
 
-Two best-effort, non-fatal startup steps that keep the data junction in sync
-with the cleared remote after the equal-weight migration:
+Two best-effort, non-fatal startup steps:
 
 1. ``sync_clean_state_from_remote`` — ``git fetch`` + ``git reset --hard`` the
    data repo so the local working tree matches the remote branch exactly.
@@ -23,6 +22,8 @@ from pathlib import Path
 
 from config import SCHEMA_VERSION
 from loguru import logger
+
+from config import SCHEMA_VERSION
 
 # Learned / adaptive artifacts that encoded the old structure-biased weights.
 # These are safe to delete — they are regenerated empty on first write.
@@ -66,6 +67,27 @@ def _is_git_repo(data_dir: Path) -> bool:
         )
         return out.returncode == 0 and out.stdout.strip() == "true"
     except (FileNotFoundError, OSError):
+        return False
+
+
+def _read_local_schema_version(version_file: Path) -> str | None:
+    try:
+        value = version_file.read_text(encoding="utf-8").strip()
+        return value or None
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        logger.warning("[clean-start] schema-version read failed: {}", exc)
+        return None
+
+
+def _write_local_schema_version(version_file: Path, schema_version: str) -> bool:
+    try:
+        version_file.parent.mkdir(parents=True, exist_ok=True)
+        version_file.write_text(f"{schema_version}\n", encoding="utf-8")
+        return True
+    except OSError as exc:
+        logger.warning("[clean-start] schema-version write failed: {}", exc)
         return False
 
 
