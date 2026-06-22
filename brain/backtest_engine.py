@@ -3,9 +3,17 @@ APEX TRADER — Backtest Engine
 Replays historical candles candle-by-candle so every decision can be stress-tested
 before real capital is exposed.
 
-Drives the shared ED decision core (``brain.decision_core.analyze_window``) →
-EntryEngine — the same decision path the live event-driven system uses — so
-backtest results are representative of the strategy actually traded.
+Drives the shared ED decision core (``brain.decision_core.analyze_window``) and the
+SAME adjudication / management / sizing engines the live event-driven plane uses
+(``form_thesis`` → ``EntryGate`` → ``SituationEngine``/``DecisionEngine`` →
+``RiskGovernor`` → ``PortfolioDivision``/``PositionSizer``) — so backtest results
+reflect the system actually traded, not a simpler parallel implementation.
+
+The only deliberate divergence from live is broker mechanics: fills, slippage and
+SL/TP detection come from candle OHLC instead of a live broker.  Set
+``legacy_mode=True`` to restore the original geometry-only behaviour (flat
+R-multiple sizing, SL/TP + 180-minute time stop, no thesis re-validation) for
+side-by-side comparison.
 """
 
 import asyncio
@@ -92,6 +100,18 @@ class BacktestSetup:
     opportunity_quality: float = 0.0
     entry_quality: float = 0.0
     consensus_agreement: float = 0.0
+    # ── Full-parity adjudication + sizing (non-legacy mode) ──────────────
+    # Carried from the live decision path so the simulation manages and sizes
+    # the trade with the SAME engines the live plane uses, not flat R-multiples.
+    zone_type: str = ""
+    is_counter_trend: bool = False
+    bias_direction: str = ""
+    de_size_mult: float = 1.0
+    de_conviction: float = 0.0
+    lots: float = 0.0
+    max_loss: float = 0.0
+    risk_amount: float = 0.0
+    pip_value_per_lot: float = 10.0
 
 
 @dataclass
@@ -157,6 +177,35 @@ def _world_model_to_scan_view(wm) -> "_ScanView":
         opportunity_quality=opportunity_quality,
         consensus_agreement=consensus_agreement,
     )
+
+
+def _struct_trend_conf(struct_by_tf: dict, tf: str) -> tuple[str, float]:
+    """Read ``(trend, confidence)`` for a timeframe from a WorldModel's
+    ``structure_by_tf()`` mapping of ``StructureAnalysis`` objects.
+
+    Mirrors ``event_driven_bootstrap._struct_trend_conf`` so the backtest reads
+    the WorldModel structure layer exactly as the live plane does.
+    """
+    sa = struct_by_tf.get(tf)
+    if sa is None:
+        return "UNKNOWN", 0.0
+    trend = sa.trend.value if hasattr(sa.trend, "value") else str(sa.trend)
+    return trend, float(getattr(sa, "confidence", 0.0) or 0.0)
+
+
+def _struct_event(struct_by_tf: dict, tf: str) -> str:
+    """Read the last structural event (BOS/CHOCH) for a timeframe from a
+    WorldModel's ``structure_by_tf()`` mapping of ``StructureAnalysis``.
+
+    Mirrors ``event_driven_bootstrap._struct_event``.
+    """
+    sa = struct_by_tf.get(tf)
+    if sa is None:
+        return "NONE"
+    ev = getattr(sa, "last_event", None)
+    if ev is None:
+        return "NONE"
+    return ev.value if hasattr(ev, "value") else str(ev)
 
 
 class DataLoader:
@@ -360,6 +409,8 @@ class BacktestEngine:
         slippage_pips: float = 1.0,
         commission_per_lot: float = 3.5,
         broker_loader: Optional[BrokerDataLoader] = None,
+        legacy_mode: bool = False,
+        pip_value_per_lot: float = 10.0,
     ):
         from config import AppConfig
 
@@ -399,6 +450,52 @@ class BacktestEngine:
         self.slippage_pips = slippage_pips
         self.commission_per_lot = commission_per_lot
         self.broker_loader = broker_loader or BrokerDataLoader()
+        # ``legacy_mode`` restores the original geometry-only path (no live
+        # adjudication, management or sizing) for side-by-side comparison.
+        self.legacy_mode = bool(legacy_mode)
+        self.pip_value_per_lot = float(pip_value_per_lot)
+
+        # ── Live adjudication / management / sizing engines ──────────────
+        # Constructed with the same defaults the live plane uses so the
+        # backtest exercises identical decision logic.  Guarded so a missing
+        # dependency degrades to legacy mode rather than crashing.
+        self.situation_engine = None
+        self.decision_engine = None
+        self.risk_governor = None
+        self.position_sizer = None
+        self.portfolio = None
+        self.entry_gate = None
+        if not self.legacy_mode:
+            try:
+                self._build_live_engines()
+            except Exception as exc:
+                logger.warning(
+                    "[backtest] live engines unavailable ({}); falling back to "
+                    "legacy geometry mode", exc,
+                )
+                self.legacy_mode = True
+
+    def _build_live_engines(self) -> None:
+        """Construct the live adjudication/management/sizing engines.
+
+        Mirrors the live plane's construction so the backtest runs the SAME
+        SituationEngine → DecisionEngine → RiskGovernor adjudication and the
+        SAME PortfolioDivision → PositionSizer sizing.
+        """
+        from decision.situation import SituationEngine
+        from decision.engine import DecisionEngine
+        from decision.governor import RiskGovernor
+        from risk.position_sizer import PositionSizer
+        from portfolio.division import PortfolioDivision
+        from entry.entry_gate import EntryGate
+        from entry.models import EntryConfig
+
+        self.situation_engine = SituationEngine()
+        self.decision_engine = DecisionEngine()
+        self.risk_governor = RiskGovernor()
+        self.position_sizer = PositionSizer()
+        self.portfolio = PortfolioDivision(position_sizer=self.position_sizer)
+        self.entry_gate = EntryGate(config=EntryConfig())
 
     def _require_decision_engine(self) -> None:
         """Raise loudly if the live decision engine is unavailable."""
@@ -470,6 +567,7 @@ class BacktestEngine:
                 setup = self._decide_setup(pair, slices, now, balance)
                 if setup:
                     open_trade = self._open_trade(setup, now)
+                    open_trade["symbol"] = pair
 
                     if compare_atr_stop and open_trade is not None:
                         m1_slice = slices.get("M1")
@@ -504,10 +602,13 @@ class BacktestEngine:
                             atr_skipped += 1
                 continue
 
-            close_event = self._evaluate_trade(open_trade, candle)
+            close_event = self._evaluate_trade(
+                open_trade, candle,
+                slices=slices, pair=pair, now=now, manage=True,
+            )
 
             if compare_atr_stop and atr_open_trade is not None:
-                atr_close = self._evaluate_trade(atr_open_trade, candle)
+                atr_close = self._evaluate_trade(atr_open_trade, candle, manage=False)
                 if atr_close is not None:
                     atr_returns.append(atr_close["pnl_r"])
                     atr_outcomes.append(atr_close["outcome"])
@@ -531,11 +632,9 @@ class BacktestEngine:
 
             pnl_r = close_event["pnl_r"]
             trade_returns_gross.append(pnl_r)
-            commission_cost = self.commission_per_lot / balance if balance > 0 else 0
-            total_commission += self.commission_per_lot
+            balance, commission = self._apply_pnl(balance, pnl_r, open_trade)
+            total_commission += commission
             total_slippage_cost += open_trade.get("slippage_cost", 0.0)
-            pnl_pct = pnl_r * self.risk_per_trade - commission_cost
-            balance *= max(1.0 + pnl_pct, 0.01)
             equity_curve.append(balance)
             trade_returns_r.append(pnl_r)
             hold_times.append(close_event["hold_minutes"])
@@ -566,8 +665,7 @@ class BacktestEngine:
                     atr_open_trade = None
 
             pnl_r = forced_close["pnl_r"]
-            pnl_pct = pnl_r * self.risk_per_trade
-            balance *= max(1.0 + pnl_pct, 0.01)
+            balance, _commission = self._apply_pnl(balance, pnl_r, open_trade)
             equity_curve.append(balance)
             trade_returns_r.append(pnl_r)
             hold_times.append(forced_close["hold_minutes"])
@@ -784,7 +882,13 @@ class BacktestEngine:
         now: datetime,
         balance: float,
     ) -> Optional[BacktestSetup]:
-        """Run the two-phase decision: shared ED decision core → EntryEngine."""
+        """Run the shared ED decision core, then adjudicate the entry.
+
+        Non-legacy: mirrors the live entry path — ``form_thesis`` trigger →
+        zone-geometry score → ``EntryGate`` (score≥85) → ``SituationEngine`` /
+        ``DecisionEngine`` adjudication → ``RiskGovernor`` → portfolio sizing.
+        Legacy: the original scan-view + EntryEngine path (geometry only).
+        """
         if self.entry_engine is None:
             return None
 
@@ -805,36 +909,29 @@ class BacktestEngine:
                 timestamp=now,
                 consensus_config=getattr(self.config, "consensus", None),
             )
-            result = _world_model_to_scan_view(wm)
         except Exception as exc:
             logger.warning("[backtest] decision core failed for {}: {}", pair, exc)
             return None
 
+        if getattr(self, "legacy_mode", False) or getattr(self, "decision_engine", None) is None:
+            return self._decide_setup_legacy(pair, wm, slices, now, balance)
+        return self._decide_setup_live(pair, wm, slices, now, balance)
+
+    def _decide_setup_legacy(
+        self,
+        pair: str,
+        wm,
+        slices: dict[str, pd.DataFrame],
+        now: datetime,
+        balance: float,
+    ) -> Optional[BacktestSetup]:
+        """Original geometry-only path: scan-view bias gate → EntryEngine."""
+        result = _world_model_to_scan_view(wm)
         if result.status != "READY" or result.direction not in ("LONG", "SHORT"):
             return None
 
-        try:
-            from trigger.entry_engine import EntrySignal, EntryRejection
-
-            signal = self.entry_engine.calculate_entry(
-                pair=pair,
-                direction=result.direction,
-                m5_df=m5,
-                m1_df=m1,
-                h1_df=h1,
-                scan_result=result,
-                account_balance=balance,
-                h4_df=h4,
-                m15_df=m15,
-            )
-        except Exception as exc:
-            logger.warning("[backtest] calculate_entry failed for {}: {}", pair, exc)
-            return None
-
-        from trigger.entry_engine import EntrySignal, EntryRejection
-
-        if isinstance(signal, EntryRejection):
-            # backtest: live-equivalent rejection, skip bar
+        signal = self._calculate_entry(pair, result.direction, slices, balance, result)
+        if signal is None:
             return None
 
         return BacktestSetup(
@@ -854,6 +951,349 @@ class BacktestEngine:
             consensus_agreement=getattr(result, "consensus_agreement", 0.0),
         )
 
+    def _decide_setup_live(
+        self,
+        pair: str,
+        wm,
+        slices: dict[str, pd.DataFrame],
+        now: datetime,
+        balance: float,
+    ) -> Optional[BacktestSetup]:
+        """Full-parity entry adjudication — the SAME engines the live plane uses."""
+        votes = wm.votes_list()
+        if not votes:
+            return None
+
+        cfg = getattr(self.config, "consensus", None)
+        if cfg is None:
+            return None
+
+        # ── Consensus thesis trigger (same call as the live consensus path) ──
+        try:
+            from brain.directional_consensus import form_thesis
+            thesis = form_thesis(
+                votes,
+                min_net_score=cfg.min_net_score,
+                min_agreement=cfg.min_agreement,
+                high_authority_modules=list(cfg.high_authority_modules),
+                high_authority_oppose_confidence=cfg.high_authority_oppose_confidence,
+                min_contributors=cfg.min_contributors,
+                conviction_threshold=cfg.conviction_threshold,
+                net_scale=cfg.net_scale,
+            )
+        except Exception as exc:
+            logger.warning("[backtest] form_thesis failed for {}: {}", pair, exc)
+            return None
+
+        if not thesis.trigger:
+            return None
+        direction = thesis.direction
+        if direction not in ("LONG", "SHORT"):
+            return None
+
+        # ── Score = zone geometry (70/80/100), NOT bias confidence ──────────
+        zone = self._select_zone(wm, direction)
+        if zone is None:
+            return None
+        score = int(getattr(zone, "conviction", 0) or 0)
+
+        # ── Entry prices from the shared EntryEngine ────────────────────────
+        signal = self._calculate_entry(pair, direction, slices, balance, wm)
+        if signal is None:
+            return None
+
+        # ── EntryGate (score ≥ 85 floor, same gate as the live zone path) ───
+        try:
+            passed, results = self.entry_gate.validate_all(
+                symbol=pair,
+                direction=direction,
+                entry_price=signal.entry_price,
+                stop_loss=signal.stop_loss,
+                tp1=signal.tp1,
+                tp2=signal.tp2,
+                score=score,
+                current_spread_pips=0.0,
+                zone=zone,
+                is_instrument_known=True,
+                is_market_open=True,
+                is_session_active=True,
+                is_news_clear=True,
+                is_drawdown_ok=True,
+                utc_now=now,
+            )
+        except Exception as exc:
+            logger.warning("[backtest] entry gate failed for {}: {}", pair, exc)
+            return None
+        if not passed:
+            failed = [r.gate_name for r in results if not r.passed]
+            logger.debug("[backtest] {} {} gate rejected: {}", pair, direction, failed)
+            return None
+
+        # ── DecisionEngine adjudication (consensus-opposition SKIP) ─────────
+        entry_ctx = self._build_entry_context(
+            pair, direction, signal, score, zone, slices, wm, balance, votes,
+        )
+        sa = self.situation_engine.assess_entry(entry_ctx)
+        de_result = self.decision_engine.decide_entry(entry_ctx, sa)
+        if not de_result.should_enter:
+            logger.debug("[backtest] {} {} DE SKIP: {}", pair, direction, de_result.reason)
+            return None
+        de_size_mult = de_result.size_multiplier
+
+        # ── RiskGovernor entry review (graded/legacy veto) ──────────────────
+        try:
+            gov = self.risk_governor.review_entry(de_result, entry_ctx, sa)
+            if not gov.should_enter:
+                logger.debug("[backtest] {} {} governor veto: {}", pair, direction,
+                             getattr(gov, "governor_reason", ""))
+                return None
+            if gov is not de_result:
+                de_size_mult = gov.size_multiplier
+                risk_mult = getattr(gov, "risk_multiplier", 1.0)
+                if risk_mult < 1.0:
+                    de_size_mult = round(de_size_mult * risk_mult, 3)
+        except Exception as exc:
+            logger.debug("[backtest] governor review failed for {}: {}", pair, exc)
+
+        # ── Position sizing via PortfolioDivision → PositionSizer ───────────
+        sized = self._size_trade(
+            pair, direction, signal, de_size_mult, de_result.conviction, balance,
+        )
+        if sized is None:
+            return None
+        lots, max_loss, risk_amount = sized
+
+        zone_type = getattr(zone, "zone_type", "")
+        zone_type = str(getattr(zone_type, "value", zone_type) or "")
+        regimes = wm.regime_by_tf()
+        return BacktestSetup(
+            direction=signal.direction,
+            entry_price=signal.entry_price,
+            stop_loss=signal.stop_loss,
+            tp1=signal.tp1,
+            tp2=signal.tp2,
+            score=score,
+            confluences=list(signal.confluences),
+            regime=regimes.get("H1") or next(iter(regimes.values()), "UNKNOWN"),
+            bias_strength=str(wm.bias_dict().get("strength", "") or ""),
+            timestamp=now,
+            entry_type=getattr(signal, "entry_type", "MARKET"),
+            consensus_agreement=float(getattr(thesis, "conviction", 0.0) or 0.0),
+            zone_type=zone_type,
+            is_counter_trend=bool(getattr(zone, "is_counter_trend", False)),
+            bias_direction=str(getattr(zone, "bias_direction", "") or ""),
+            de_size_mult=de_size_mult,
+            de_conviction=float(de_result.conviction),
+            lots=lots,
+            max_loss=max_loss,
+            risk_amount=risk_amount,
+            pip_value_per_lot=self.pip_value_per_lot,
+        )
+
+    def _calculate_entry(
+        self,
+        pair: str,
+        direction: str,
+        slices: dict[str, pd.DataFrame],
+        balance: float,
+        scan_result,
+    ):
+        """Shared EntryEngine call (prices/targets). Returns an EntrySignal or None."""
+        h4 = slices.get("H4")
+        h1 = slices.get("H1")
+        m15 = slices.get("M15")
+        m5 = slices.get("M5")
+        m1 = slices.get("M1")
+        try:
+            from trigger.entry_engine import EntryRejection
+            signal = self.entry_engine.calculate_entry(
+                pair=pair,
+                direction=direction,
+                m5_df=m5,
+                m1_df=m1,
+                h1_df=h1,
+                scan_result=scan_result,
+                account_balance=balance,
+                h4_df=h4,
+                m15_df=m15,
+            )
+        except Exception as exc:
+            logger.warning("[backtest] calculate_entry failed for {}: {}", pair, exc)
+            return None
+        if isinstance(signal, EntryRejection):
+            return None
+        return signal
+
+    def _select_zone(self, wm, direction: str):
+        """Highest-conviction WorldModel entry zone matching the thesis direction.
+
+        Zone conviction (70/80/100 geometry prior) is the live entry score —
+        the same metric ``EntryGate`` gates at ≥ 85 in the live zone path.
+        """
+        best = None
+        best_score = -1
+        for zone in wm.entry_zones_list():
+            if str(getattr(zone, "direction", "") or "") != direction:
+                continue
+            conv = int(getattr(zone, "conviction", 0) or 0)
+            if conv > best_score:
+                best_score = conv
+                best = zone
+        return best
+
+    def _build_entry_context(
+        self,
+        pair: str,
+        direction: str,
+        signal,
+        score: int,
+        zone,
+        slices: dict[str, pd.DataFrame],
+        wm,
+        balance: float,
+        votes: list,
+    ):
+        """Build the EntryContext the live SituationEngine/DecisionEngine read."""
+        from decision.context import EntryContext
+
+        structure = wm.structure_by_tf()
+        d1_trend, d1_conf = _struct_trend_conf(structure, "D1")
+        h4_trend, h4_conf = _struct_trend_conf(structure, "H4")
+        h1_trend, h1_conf = _struct_trend_conf(structure, "H1")
+        d1_event = _struct_event(structure, "D1")
+        h4_event = _struct_event(structure, "H4")
+        h1_event = _struct_event(structure, "H1")
+
+        is_long = direction == "LONG"
+        micro = self._micro_from_slice(slices.get("M1"), is_long)
+
+        sl = signal.stop_loss
+        entry_price = signal.entry_price
+        risk_pips = abs(entry_price - sl) / self.pip_size if sl else 0.0
+        rr2 = (
+            abs(signal.tp2 - entry_price) / max(abs(entry_price - sl), 1e-8)
+            if sl else 0.0
+        )
+        zone_type = getattr(zone, "zone_type", "")
+        zone_type = str(getattr(zone_type, "value", zone_type) or "")
+
+        return EntryContext(
+            symbol=pair,
+            direction=direction,
+            scan_score=score,
+            scan_direction=direction,
+            entry_type=zone_type,
+            entry_price=entry_price,
+            stop_loss=sl,
+            tp1=signal.tp1,
+            tp2=signal.tp2,
+            risk_reward_2=rr2,
+            risk_pips=risk_pips,
+            account_balance=balance,
+            risk_pct=self.risk_per_trade,
+            d1_trend=d1_trend, d1_confidence=d1_conf, d1_event=d1_event,
+            h4_trend=h4_trend, h4_confidence=h4_conf, h4_event=h4_event,
+            h1_trend=h1_trend, h1_confidence=h1_conf, h1_event=h1_event,
+            m1_trend=micro["m1_trend"],
+            m1_event=micro["m1_event"],
+            m1_aligned_count=micro["m1_aligned_count"],
+            is_counter_trend=bool(getattr(zone, "is_counter_trend", False)),
+            bias_direction=str(getattr(zone, "bias_direction", "") or ""),
+            open_trade_count=0,
+            max_open_trades=getattr(self.config.risk, "max_open_trades", 5),
+            regime=wm.regime_by_tf().get("H1", "") or "",
+            confluences=list(signal.confluences),
+            consensus_votes=list(votes),
+        )
+
+    def _size_trade(
+        self,
+        pair: str,
+        direction: str,
+        signal,
+        de_size_mult: float,
+        conviction: float,
+        balance: float,
+    ):
+        """Size the trade through PortfolioDivision → PositionSizer (live path).
+
+        Returns ``(lots, max_loss, risk_amount)`` or ``None`` when the portfolio
+        rejects the trade or sizes it to zero.
+        """
+        try:
+            from portfolio.models import (
+                PortfolioCandidate, PortfolioAccount, SizingFactors,
+            )
+            candidate = PortfolioCandidate(
+                symbol=pair,
+                direction=direction,
+                entry_price=signal.entry_price,
+                stop_loss=signal.stop_loss,
+                conviction=float(conviction or 0.0),
+                context=None,
+                pip_size=self.pip_size,
+                pip_value_per_lot=self.pip_value_per_lot,
+            )
+            account = PortfolioAccount(
+                balance=balance or 0.0,
+                account_key="backtest",
+                daily_pnl=0.0,
+                daily_loss_cap_pct=0.0,
+            )
+            factors = SizingFactors(
+                base_risk_pct=self.risk_per_trade,
+                de_size_mult=de_size_mult,
+            )
+            verdict = self.portfolio.evaluate(candidate, [], account, factors)
+        except Exception as exc:
+            logger.warning("[backtest] portfolio sizing failed for {}: {}", pair, exc)
+            return None
+
+        if not getattr(verdict, "approved", False):
+            logger.debug("[backtest] {} {} portfolio rejected: {}", pair, direction,
+                         getattr(verdict, "reason", ""))
+            return None
+        lots = float(getattr(verdict, "lots", 0.0) or 0.0)
+        if lots <= 0:
+            return None
+        max_loss = float(getattr(verdict, "max_loss", 0.0) or 0.0)
+        risk_amount = round((balance or 0.0) * float(getattr(verdict, "risk_pct", 0.0) or 0.0), 2)
+        if max_loss <= 0:
+            max_loss = round(lots * (abs(signal.entry_price - signal.stop_loss) / self.pip_size)
+                             * self.pip_value_per_lot, 2)
+        return lots, max_loss, risk_amount
+
+    def _micro_from_slice(self, m1_df, is_long: bool) -> dict:
+        """M1 alignment count + micro-structure event/trend from a candle slice.
+
+        Mirrors the live ``_management_micro_context`` (last-5 closed-candle
+        alignment + ``StructureEngine`` micro read) but sources candles from the
+        replay slice instead of a broker fetch.
+        """
+        out = {"m1_aligned_count": 0, "m1_event": "NONE", "m1_trend": "UNKNOWN"}
+        if m1_df is None or len(m1_df) < 5:
+            return out
+        try:
+            last5 = m1_df.iloc[-5:]
+            closes = last5["close"].values
+            opens = last5["open"].values
+            if is_long:
+                aligned = sum(1 for c, o in zip(closes, opens) if c > o)
+            else:
+                aligned = sum(1 for c, o in zip(closes, opens) if c < o)
+            out["m1_aligned_count"] = int(aligned)
+        except Exception:
+            return out
+        try:
+            from brain.structure_engine import StructureEngine
+            engine = StructureEngine(swing_lookback=3, pip_size=self.pip_size)
+            analysis = engine.analyze(m1_df.iloc[-min(len(m1_df), 100):])
+            out["m1_event"] = analysis.last_event.value
+            out["m1_trend"] = analysis.trend.value
+        except Exception as exc:
+            logger.debug("[backtest] M1 micro-structure read failed: {}", exc)
+        return out
+
     def _open_trade(self, setup: BacktestSetup, now: datetime) -> dict:
         slippage_distance = self.slippage_pips * self.pip_size
         if setup.direction == "LONG":
@@ -867,6 +1307,8 @@ class BacktestEngine:
 
         return {
             "setup": setup,
+            "symbol": "",
+            "order_id": f"bt-{int(pd.Timestamp(now).value)}",
             "entry_time": now,
             "entry_price": actual_entry,
             "stop_loss": setup.stop_loss,
@@ -874,13 +1316,64 @@ class BacktestEngine:
             "tp2": setup.tp2,
             "risk": risk,
             "tp1_hit": False,
+            "at_breakeven": False,
             "realized_r": 0.0,
             "session": self.session_engine.get_status(now).current_session,
             "entry_type": self._resolve_entry_type(setup),
             "slippage_cost": slippage_distance,
+            # ── Live-parity sizing + management state ────────────────────
+            "lots": float(getattr(setup, "lots", 0.0) or 0.0),
+            "max_loss": float(getattr(setup, "max_loss", 0.0) or 0.0),
+            "risk_amount": float(getattr(setup, "risk_amount", 0.0) or 0.0),
+            "fast_opp": 0,
         }
 
-    def _evaluate_trade(self, trade: dict, candle: pd.Series) -> Optional[dict]:
+    def _evaluate_trade(
+        self,
+        trade: dict,
+        candle: pd.Series,
+        *,
+        slices: Optional[dict[str, pd.DataFrame]] = None,
+        pair: str = "",
+        now: Optional[datetime] = None,
+        manage: bool = False,
+    ) -> Optional[dict]:
+        """Evaluate one open trade against a candle.
+
+        Broker mechanics first (SL/TP detection from OHLC — the acceptable
+        divergence). When ``manage`` and not legacy, the live management engines
+        (SituationEngine → DecisionEngine → RiskGovernor) run on a fresh
+        WorldModel each bar and may CLOSE / SECURE / tighten — exactly as the
+        live plane re-validates the thesis on every cycle.
+        """
+        geom = self._evaluate_geometry(trade, candle)
+        if geom is not None:
+            return geom
+
+        legacy = getattr(self, "legacy_mode", False)
+        managed = (
+            manage
+            and not legacy
+            and getattr(self, "decision_engine", None) is not None
+            and slices is not None
+        )
+        if managed:
+            de_close = self._run_management(trade, candle, slices, pair, now)
+            if de_close is not None:
+                return de_close
+
+        # Legacy / unmanaged time stop (live management replaces this when on).
+        if legacy or not manage:
+            hold_minutes = (
+                pd.Timestamp(candle["time"]).to_pydatetime() - trade["entry_time"]
+            ).total_seconds() / 60.0
+            if hold_minutes >= 180:
+                return self._time_close(trade, candle, hold_minutes)
+
+        return None
+
+    def _evaluate_geometry(self, trade: dict, candle: pd.Series) -> Optional[dict]:
+        """Broker-mechanics SL/TP detection from candle OHLC (no time stop)."""
         direction = trade["setup"].direction
         entry = trade["entry_price"]
         stop = trade["stop_loss"]
@@ -906,6 +1399,7 @@ class BacktestEngine:
                 if tp1_hit:
                     trade["tp1_hit"] = True
                     trade["stop_loss"] = entry
+                    trade["at_breakeven"] = True
                     trade["realized_r"] += 0.5 * ((tp1 - entry) / risk)
                     return None
 
@@ -940,6 +1434,7 @@ class BacktestEngine:
                 if tp1_hit:
                     trade["tp1_hit"] = True
                     trade["stop_loss"] = entry
+                    trade["at_breakeven"] = True
                     trade["realized_r"] += 0.5 * ((entry - tp1) / risk)
                     return None
 
@@ -959,10 +1454,181 @@ class BacktestEngine:
                         "outcome": "WIN",
                     }
 
-        if hold_minutes >= 180:
-            return self._time_close(trade, candle, hold_minutes)
-
         return None
+
+    def _run_management(
+        self,
+        trade: dict,
+        candle: pd.Series,
+        slices: dict[str, pd.DataFrame],
+        pair: str,
+        now: Optional[datetime],
+    ) -> Optional[dict]:
+        """Live thesis re-validation for one open trade on one bar.
+
+        Rebuilds a fresh WorldModel (so HTF structure + live bias update on the
+        trade's timescale), builds a TradeContext, runs the SAME
+        SituationEngine → DecisionEngine → RiskGovernor path the live plane
+        uses, and acts on the verdict (CLOSE / SECURE / tighten). Returns a
+        close-event dict when the engine closes the trade, else None.
+        """
+        h4 = slices.get("H4")
+        h1 = slices.get("H1")
+        m15 = slices.get("M15")
+        m5 = slices.get("M5")
+        if h4 is None or h1 is None or m15 is None or m5 is None:
+            return None
+        try:
+            from brain.decision_core import analyze_window
+            wm = analyze_window(
+                pair,
+                {"H4": h4, "H1": h1, "M15": m15, "M5": m5},
+                timestamp=now,
+                consensus_config=getattr(self.config, "consensus", None),
+            )
+        except Exception as exc:
+            logger.debug("[backtest] management analyze_window failed for {}: {}", pair, exc)
+            return None
+
+        try:
+            ctx = self._build_trade_context(trade, candle, wm, slices, pair)
+            sa = self.situation_engine.assess_open_trade(ctx)
+            de = self.decision_engine.decide_management(ctx, sa)
+            try:
+                de = self.risk_governor.review(de, ctx, sa)
+            except Exception as exc:
+                logger.debug("[backtest] governor management review failed: {}", exc)
+        except Exception as exc:
+            logger.debug("[backtest] management decision failed for {}: {}", pair, exc)
+            return None
+
+        # Update the fast-opposition streak for the NEXT cycle (corrected sign).
+        self._update_fast_opposition(trade, sa)
+
+        from decision.actions import Action
+
+        action = de.action
+        if action == Action.CLOSE:
+            return self._de_close(trade, candle, de)
+        if action in (Action.TIGHTEN_SL, Action.SET_PROTECTIVE_STOP, Action.MOVE_TO_BREAKEVEN):
+            new_sl = de.new_sl
+            if action == Action.MOVE_TO_BREAKEVEN and (new_sl is None or new_sl <= 0):
+                new_sl = trade["entry_price"]
+            if new_sl and new_sl > 0:
+                trade["stop_loss"] = float(new_sl)
+                if action == Action.MOVE_TO_BREAKEVEN:
+                    trade["at_breakeven"] = True
+        return None
+
+    def _build_trade_context(
+        self,
+        trade: dict,
+        candle: pd.Series,
+        wm,
+        slices: dict[str, pd.DataFrame],
+        pair: str,
+    ):
+        """Build the TradeContext the live management DecisionEngine reads.
+
+        Same fields as ``event_driven_bootstrap._run_decision_engine_management``,
+        sourced from candle/WorldModel data instead of live ticks. ``scan_direction``
+        comes from the live WorldModel bias (not the trade's own direction), so the
+        opposing-bias CLOSE term can actually fire.
+        """
+        from decision.context import TradeContext
+
+        setup = trade["setup"]
+        direction = setup.direction
+        norm_dir = "BUY" if direction.upper() in ("BUY", "LONG") else "SELL"
+        is_long = norm_dir == "BUY"
+
+        entry = trade["entry_price"]
+        price = float(candle["close"])
+        sl = trade["stop_loss"]
+        if is_long:
+            pnl_pips = (price - entry) / self.pip_size
+        else:
+            pnl_pips = (entry - price) / self.pip_size
+        risk_pips = trade["risk"] / self.pip_size if self.pip_size else 0.0
+        hold_minutes = (
+            pd.Timestamp(candle["time"]).to_pydatetime() - trade["entry_time"]
+        ).total_seconds() / 60.0
+
+        structure = wm.structure_by_tf()
+        d1_trend, d1_conf = _struct_trend_conf(structure, "D1")
+        h4_trend, h4_conf = _struct_trend_conf(structure, "H4")
+        h1_trend, h1_conf = _struct_trend_conf(structure, "H1")
+        d1_event = _struct_event(structure, "D1")
+        h4_event = _struct_event(structure, "H4")
+        h1_event = _struct_event(structure, "H1")
+
+        micro = self._micro_from_slice(slices.get("M1"), is_long)
+        bias = wm.bias_dict()
+        scan_direction = str(bias.get("direction", "") or "")
+
+        return TradeContext(
+            symbol=pair,
+            order_id=trade.get("order_id", ""),
+            direction=norm_dir,
+            entry_type=trade.get("entry_type", "") or getattr(setup, "zone_type", ""),
+            entry_price=entry,
+            current_price=price,
+            current_sl=sl,
+            pnl_pips=pnl_pips,
+            hold_minutes=hold_minutes,
+            at_breakeven=bool(trade.get("at_breakeven", False)),
+            tp1_hit=bool(trade.get("tp1_hit", False)),
+            lots=float(trade.get("lots", 0.0) or 0.0),
+            original_risk_pips=risk_pips,
+            scan_score=int(getattr(setup, "score", 0) or 0),
+            scan_direction=scan_direction,
+            d1_trend=d1_trend, d1_confidence=d1_conf, d1_event=d1_event,
+            h4_trend=h4_trend, h4_confidence=h4_conf, h4_event=h4_event,
+            h1_trend=h1_trend, h1_confidence=h1_conf, h1_event=h1_event,
+            m1_trend=micro["m1_trend"],
+            m1_event=micro["m1_event"],
+            m1_aligned_count=micro["m1_aligned_count"],
+            fast_opposition_streak=int(trade.get("fast_opp", 0) or 0),
+            max_open_trades=getattr(self.config.risk, "max_open_trades", 5),
+        )
+
+    def _update_fast_opposition(self, trade: dict, sa) -> None:
+        """Maintain the per-trade fast-opposition streak (corrected sign).
+
+        ``tf_alignment`` from ``assess_open_trade`` is direction-normalized
+        (positive = supports the open trade), so opposition is the SAME test for
+        longs and shorts — this fixes the live short-side sign inversion where
+        HTF *support* was counted as opposition.
+        """
+        tf_align = float(getattr(sa, "tf_alignment", 0.0) or 0.0)
+        momentum = float(getattr(sa, "momentum", 0.0) or 0.0)
+        if tf_align < -0.2 or momentum < -0.3:
+            trade["fast_opp"] = int(trade.get("fast_opp", 0) or 0) + 1
+        else:
+            trade["fast_opp"] = 0
+
+    def _de_close(self, trade: dict, candle: pd.Series, de) -> dict:
+        """Close at the current candle close on a DecisionEngine CLOSE verdict."""
+        direction = trade["setup"].direction
+        entry = trade["entry_price"]
+        close_price = float(candle["close"])
+        risk = trade["risk"]
+        if direction == "LONG":
+            remaining = (close_price - entry) / risk
+        else:
+            remaining = (entry - close_price) / risk
+        pnl = trade["realized_r"] + (0.5 * remaining if trade["tp1_hit"] else remaining)
+        outcome = "WIN" if pnl > 0 else ("LOSS" if pnl < 0 else "BREAKEVEN")
+        hold_minutes = (
+            pd.Timestamp(candle["time"]).to_pydatetime() - trade["entry_time"]
+        ).total_seconds() / 60.0
+        return {
+            "pnl_r": pnl,
+            "hold_minutes": hold_minutes,
+            "outcome": outcome,
+            "exit_reason": getattr(de, "reason", "decision_engine"),
+            "exit_cause": getattr(de, "exit_cause", None),
+        }
 
     def _time_close(self, trade: dict, candle: pd.Series, hold_minutes: float) -> dict:
         direction = trade["setup"].direction
@@ -982,6 +1648,34 @@ class BacktestEngine:
             pd.Timestamp(candle["time"]).to_pydatetime() - trade["entry_time"]
         ).total_seconds() / 60.0
         return self._time_close(trade, candle, hold_minutes)
+
+    def _apply_pnl(
+        self, balance: float, pnl_r: float, trade: dict,
+    ) -> tuple[float, float]:
+        """Apply a closed trade's P&L to the running balance.
+
+        Non-legacy: realistic lot-based accounting — dollar P&L is
+        ``pnl_r × max_loss`` (the live dollar risk at the sized lots) and
+        commission scales with lots. Legacy: the original flat R-multiple
+        compounding (``pnl_r × risk_per_trade``). Returns ``(new_balance,
+        commission)``.
+        """
+        if getattr(self, "legacy_mode", False):
+            commission = self.commission_per_lot
+            commission_cost = commission / balance if balance > 0 else 0.0
+            pnl_pct = pnl_r * self.risk_per_trade - commission_cost
+            return balance * max(1.0 + pnl_pct, 0.01), commission
+
+        lots = float(trade.get("lots", 0.0) or 0.0)
+        max_loss = float(trade.get("max_loss", 0.0) or 0.0)
+        if max_loss <= 0:
+            max_loss = float(trade.get("risk_amount", 0.0) or 0.0)
+        if max_loss <= 0:
+            max_loss = balance * self.risk_per_trade
+        gross_pnl = pnl_r * max_loss
+        commission = self.commission_per_lot * max(lots, 0.0)
+        new_balance = max(balance + gross_pnl - commission, balance * 0.01)
+        return new_balance, commission
 
     def _journal_trade(
         self, pair: str, trade: dict, close_event: dict, now: datetime
