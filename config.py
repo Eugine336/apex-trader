@@ -328,6 +328,16 @@ class ConsensusConfig:
     # discarding it at the (direction, confidence) collapse. Additive context for
     # the ranker / orchestrator / dashboard — never changes the consensus verdict.
     carry_vote_evidence: bool = True
+    # ── Concept direction flip (Intelligence de-biasing) ──────────────────
+    # ``blend_concepts`` normally only nudges the bias *score* and can never
+    # flip the structural *direction*. That makes structure authoritative even
+    # when the non-ICT concept panel overwhelmingly disagrees. When the absolute
+    # net concept vote clears this threshold AND the concept direction opposes
+    # structure, the blended bias is allowed to flip to the concept direction —
+    # so strong, convergent market evidence is no longer discarded. The default
+    # is conservative: it takes ~3 full-strength concepts agreeing on the
+    # opposite side to flip. Set to 0 to disable flipping (legacy nudge-only).
+    concept_flip_threshold: float = 3.0
     # ── Active market-driven trigger (Phase 4 — the "big flip") ───────────
     # When enabled, the Consensus Division stops being a passive confirmer and
     # becomes the ACTIVE entry trigger: on every analysis cycle it forms a
@@ -411,6 +421,15 @@ class ConsensusConfig:
             raise ValueError(
                 f"ConsensusConfig.trigger_cooldown_seconds must be >= 0, "
                 f"got {self.trigger_cooldown_seconds!r}"
+            )
+        if (
+            not isinstance(self.concept_flip_threshold, (int, float))
+            or not math.isfinite(self.concept_flip_threshold)
+            or self.concept_flip_threshold < 0
+        ):
+            raise ValueError(
+                f"ConsensusConfig.concept_flip_threshold must be finite >= 0, "
+                f"got {self.concept_flip_threshold!r}"
             )
 
 

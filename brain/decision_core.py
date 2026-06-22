@@ -37,7 +37,7 @@ from brain.volume_analyzer import VolumeAnalyzer
 from brain.wyckoff_engine import WyckoffEngine
 from brain.world_model import WorldModel, build_world_model
 from brain.concept_modules import run_concepts
-from config import get_pip_size
+from config import get_pip_size, ConsensusConfig, _DEFAULT_CONSENSUS_WEIGHTS
 from entry.models import EntryConfig
 from entry.zone_watcher import extract_entry_zones
 
@@ -219,14 +219,21 @@ def blend_concepts(
     concepts_by_tf: dict[str, list],
     regime_by_tf: dict[str, str],
     concept_weight: Optional[Callable[..., float]] = None,
+    *,
+    concept_flip_threshold: float = 0.0,
 ) -> dict[str, Any]:
     """Blend non-ICT concept signals into the structural bias.
 
     Each directional concept votes (LONG/SHORT) weighted by its strength and
     learned per-concept edge.  The net vote nudges the bias ``score`` within a
-    bounded range and is recorded for observability — it never flips the
-    structural ``direction`` or ``tradeable`` decision, so the ICT plane stays
-    authoritative and the blend is default-neutral when concepts are neutral.
+    bounded range and is recorded for observability.
+
+    By default (``concept_flip_threshold <= 0``) the blend never flips the
+    structural ``direction`` — it only nudges the score, keeping the ICT plane
+    authoritative.  When ``concept_flip_threshold > 0`` and the absolute net
+    concept vote clears it while opposing structure, the bias direction is
+    allowed to flip to the concept direction: overwhelming, convergent market
+    evidence is no longer discarded in favour of the structural label.
     """
     try:
         long_w = 0.0
@@ -263,6 +270,29 @@ def blend_concepts(
         out["score"] = int(round(score))
         out["concept_direction"] = concept_dir
         out["concept_score"] = round(magnitude, 2)
+        out["concept_net"] = round(net, 4)
+        out["concept_flip"] = False
+
+        # Direction flip: when the concept panel overwhelmingly disagrees with
+        # structure (|net| past the configured threshold), let the market
+        # evidence flip the blended direction instead of merely shaving score.
+        if (
+            concept_flip_threshold
+            and concept_flip_threshold > 0
+            and direction
+            and concept_dir
+            and concept_dir != direction
+            and abs(net) >= concept_flip_threshold
+        ):
+            out["direction"] = concept_dir
+            out["score"] = int(round(min(100.0, magnitude)))
+            out["concept_flip"] = True
+            out["concept_flip_from"] = direction
+            logger.info(
+                "[concepts] bias flipped {}→{} on concept net={:+.2f} "
+                "(threshold {:.2f})",
+                direction, concept_dir, net, concept_flip_threshold,
+            )
         return out
     except Exception:  # noqa: BLE001 — blending must never break analysis
         return bias
@@ -297,6 +327,7 @@ def build_consensus(
     vote_calibrator: Any = None,
     module_governor: Any = None,
     win_rate_provider: Any = None,
+    weights: Optional[dict[str, float]] = None,
 ) -> tuple[list, list]:
     """Derive per-module directional votes + ranked opportunities from a WM.
 
@@ -344,6 +375,21 @@ def build_consensus(
         vote_from_correlation,
         decide_opportunities,
     )
+
+    # Per-module base weights come from ``ConsensusConfig.weights`` so the panel
+    # is operator-tunable and unbiased by default (every module starts at 1.0 —
+    # equal footing). Falls back to the config defaults when no override is
+    # passed, so structure no longer carries a hardcoded structural advantage.
+    base_weights = dict(_DEFAULT_CONSENSUS_WEIGHTS)
+    if weights:
+        for k, v in weights.items():
+            try:
+                base_weights[k] = float(v)
+            except (TypeError, ValueError):
+                continue
+
+    def _wt(module: str) -> float:
+        return float(base_weights.get(module, 1.0))
 
     votes: list = []
 
@@ -397,7 +443,7 @@ def build_consensus(
             {"direction": sdir,
              "confidence": float(b.get("confidence", 0.0) or 0.0)}
         )
-        _add_vote("structure", r[0], r[1], 3.0)
+        _add_vote("structure", r[0], r[1], _wt("structure"))
     except Exception as exc:
         _warn_module_failure("consensus", "structure", symbol, exc)
 
@@ -406,7 +452,7 @@ def build_consensus(
         va = vbt.get("M5") or vbt.get("H1")
         if va is not None:
             r = vote_from_volume(va)
-            _add_vote("volume", r[0], r[1], 1.0)
+            _add_vote("volume", r[0], r[1], _wt("volume"))
     except Exception as exc:
         _warn_module_failure("consensus", "volume", symbol, exc)
 
@@ -414,7 +460,7 @@ def build_consensus(
         wy = wm.wyckoff_by_tf().get("H1")
         if wy is not None:
             r = vote_from_wyckoff(wy)
-            _add_vote("wyckoff", r[0], r[1], 1.5)
+            _add_vote("wyckoff", r[0], r[1], _wt("wyckoff"))
     except Exception as exc:
         _warn_module_failure("consensus", "wyckoff", symbol, exc)
 
@@ -428,7 +474,7 @@ def build_consensus(
         if ia is not None:
             r = vote_from_inducement(ia)
             _add_vote(
-                "inducement", r[0], r[1], 1.5,
+                "inducement", r[0], r[1], _wt("inducement"),
                 evidence=getattr(r, "evidence", {}) or {},
             )
     except Exception as exc:
@@ -439,14 +485,14 @@ def build_consensus(
             obs = wm.all_order_blocks()
             if obs:
                 r = vote_from_order_blocks(list(obs), current_price)
-                _add_vote("order_block", r[0], r[1], 1.0)
+                _add_vote("order_block", r[0], r[1], _wt("order_block"))
         except Exception as exc:
             _warn_module_failure("consensus", "order_block", symbol, exc)
         try:
             fvgs = wm.all_fvgs()
             if fvgs:
                 r = vote_from_fvg(list(fvgs), current_price, fvg_proximity(symbol))
-                _add_vote("fvg", r[0], r[1], 1.0)
+                _add_vote("fvg", r[0], r[1], _wt("fvg"))
         except Exception as exc:
             _warn_module_failure("consensus", "fvg", symbol, exc)
 
@@ -459,7 +505,7 @@ def build_consensus(
                     pip_size = 0.0001
                 r = vote_from_liquidity(liquidity_mapper, m5_df, pip_size)
                 _add_vote(
-                    "liquidity", r[0], r[1], 1.0, timeframe="M5",
+                    "liquidity", r[0], r[1], _wt("liquidity"), timeframe="M5",
                     evidence=getattr(r, "evidence", {}) or {},
                 )
         except Exception as exc:
@@ -467,7 +513,7 @@ def build_consensus(
         try:
             r = vote_from_momentum(m5_df, h1_df)
             _add_vote(
-                "momentum", r[0], r[1], 1.0, timeframe="M5",
+                "momentum", r[0], r[1], _wt("momentum"), timeframe="M5",
                 evidence=getattr(r, "evidence", {}) or {},
             )
         except Exception as exc:
@@ -478,7 +524,7 @@ def build_consensus(
                 m5_df, mins, float(current_price or 0.0),
             )
             _add_vote(
-                "vwap", r[0], r[1], 1.0, timeframe="M5",
+                "vwap", r[0], r[1], _wt("vwap"), timeframe="M5",
                 evidence=getattr(r, "evidence", {}) or {},
             )
         except Exception as exc:
@@ -487,7 +533,7 @@ def build_consensus(
             bdir = str(wm.bias_dict().get("direction", "") or "").upper()
             r = vote_from_volatility(m5_df, bdir)
             _add_vote(
-                "volatility", r[0], r[1], 1.0, timeframe="M5",
+                "volatility", r[0], r[1], _wt("volatility"), timeframe="M5",
                 evidence=getattr(r, "evidence", {}) or {},
             )
         except Exception as exc:
@@ -501,17 +547,20 @@ def build_consensus(
                 currency_pairs or {},
             )
             _add_vote(
-                "currency_strength", r[0], r[1], 2.0,
+                "currency_strength", r[0], r[1], _wt("currency_strength"),
                 evidence=getattr(r, "evidence", {}) or {},
             )
         except Exception as exc:
             _warn_module_failure("consensus", "currency_strength", symbol, exc)
 
+    # Correlation is a placeholder voter: the per-symbol WorldModel carries no
+    # cross-pair ``correlation_signal`` today, so this block never executes live
+    # and the module always abstains until an intermarket feed is wired in.
     if correlation_signal is not None:
         try:
             r = vote_from_correlation(correlation_signal)
             _add_vote(
-                "correlation", r[0], r[1], 1.0,
+                "correlation", r[0], r[1], _wt("correlation"),
                 evidence=getattr(r, "evidence", {}) or {},
             )
         except Exception as exc:
@@ -566,6 +615,7 @@ def analyze_window(
     structure: Optional[StructureEngine] = None,
     liquidity: Optional[LiquidityMapper] = None,
     volume: Optional[VolumeAnalyzer] = None,
+    consensus_config: Optional[ConsensusConfig] = None,
 ) -> WorldModel:
     """One-shot: build a fully-populated WorldModel from a multi-TF candle set.
 
@@ -578,6 +628,7 @@ def analyze_window(
     liquidity = liquidity or LiquidityMapper()
     volume = volume or VolumeAnalyzer()
     cfg = entry_config or EntryConfig()
+    cc = consensus_config or ConsensusConfig()
 
     fvgs: dict[str, list] = {}
     obs: dict[str, list] = {}
@@ -628,7 +679,10 @@ def analyze_window(
                 continue
 
     bias = compute_bias(struct)
-    bias = blend_concepts(bias, concepts, regime, concept_weight)
+    bias = blend_concepts(
+        bias, concepts, regime, concept_weight,
+        concept_flip_threshold=cc.concept_flip_threshold,
+    )
 
     wm = build_world_model(
         symbol=symbol,
@@ -658,6 +712,7 @@ def analyze_window(
             m5_df=candles_by_tf.get("M5"),
             h1_df=candles_by_tf.get("H1"),
             liquidity_mapper=liquidity,
+            weights=cc.weights,
         )
         if votes or candidates:
             wm = replace(wm, votes=tuple(votes), candidates=tuple(candidates))

@@ -259,8 +259,11 @@ class ZoneWatcher:
     def _extract_zones(self, model: WorldModel) -> list[EntryZone]:
         """Derive entry zones from a WorldModel snapshot.
 
-        Thin wrapper around the canonical module-level
-        :func:`extract_entry_zones` so there is a single implementation.
+        DEPRECATED / unused: the analysis plane populates
+        ``WorldModel.entry_zones`` via the canonical module-level
+        :func:`extract_entry_zones` at publish time, and ``ZoneWatcher`` reads
+        that stored result rather than re-deriving. Kept only as a thin wrapper
+        for backward compatibility; no live code path calls it.
         """
         return extract_entry_zones(model, self._config)
 

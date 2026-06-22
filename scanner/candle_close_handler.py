@@ -92,6 +92,7 @@ class CandleCloseHandler:
         vote_calibrator: Optional[Any] = None,
         module_governor: Optional[Any] = None,
         win_rate_provider: Optional[Any] = None,
+        consensus_config: Optional[Any] = None,
     ) -> None:
         self._bus = event_bus
         self._store = world_model_store
@@ -115,6 +116,13 @@ class CandleCloseHandler:
         # the ranker a calibrated per-pair win probability so candidate EV is
         # learned, not the hardcoded prior.
         self._win_rate_provider = win_rate_provider
+        # Consensus tuning (operator-tunable, unbiased by default): the
+        # per-module vote weights and the concept direction-flip threshold are
+        # sourced from ``ConsensusConfig`` so structure no longer carries a
+        # hardcoded advantage. Falls back to defaults (all weights 1.0) when the
+        # config is not supplied.
+        from config import ConsensusConfig as _ConsensusConfig
+        self._consensus_config = consensus_config or _ConsensusConfig()
         self._pool = ThreadPoolExecutor(
             max_workers=max(1, max_workers),
             thread_name_prefix="cc-handler",
@@ -470,6 +478,7 @@ class CandleCloseHandler:
             vote_calibrator=self._vote_calibrator,
             module_governor=self._module_governor,
             win_rate_provider=self._win_rate_provider,
+            weights=self._consensus_config.weights,
         )
 
     def _currency_strength_analysis(self) -> Optional[Any]:
@@ -516,7 +525,10 @@ class CandleCloseHandler:
         ICT plane stays authoritative and the blend is default-neutral when
         concepts are neutral or unproven.
         """
-        return blend_concepts(bias, concepts_by_tf, regime_by_tf, self._concept_weight)
+        return blend_concepts(
+            bias, concepts_by_tf, regime_by_tf, self._concept_weight,
+            concept_flip_threshold=self._consensus_config.concept_flip_threshold,
+        )
 
     # ------------------------------------------------------------------
     # Observability
