@@ -9,7 +9,7 @@ from brain.order_block import OrderBlock, OBStatus
 from brain.structure_engine import StructureAnalysis, StructureEvent, Trend
 from brain.world_model import WorldModelStore, build_world_model
 from entry.models import EntryConfig, ZoneType
-from entry.zone_watcher import ZoneWatcher
+from entry.zone_watcher import ZoneWatcher, extract_entry_zones
 
 import pandas as pd
 
@@ -210,3 +210,67 @@ class TestZoneWatcherBias:
         syms = watcher.all_symbols_with_zones()
         assert "EURUSD" in syms
         assert "GBPUSD" in syms
+
+
+class TestCounterTrendConvictionPenalty:
+    """Bug #4 — counter-trend zones get a conviction penalty so geometry-only
+    counter-trend setups fall below the score gate."""
+
+    def _model(self, store, fvgs=None, order_blocks=None, structure=None):
+        return build_world_model(
+            symbol="EURUSD",
+            version=store.next_version(),
+            fvgs=fvgs,
+            order_blocks=order_blocks,
+            structure=structure,
+        )
+
+    def test_counter_trend_overlap_penalised(self):
+        store = WorldModelStore()
+        # Bearish FVG+OB overlap under BULLISH HTF bias → counter-trend SHORT.
+        fvg = _make_fvg(kind="BEARISH", top=1.0850, bottom=1.0840)
+        ob = _make_ob(kind="BEARISH", top=1.0855, bottom=1.0835)
+        model = self._model(
+            store,
+            fvgs={"M5": [fvg]},
+            order_blocks={"H1": [ob]},
+            structure={"H4": _make_structure(Trend.BULLISH)},
+        )
+        zones = extract_entry_zones(model, EntryConfig())
+        overlap = [z for z in zones if z.zone_type == ZoneType.FVG_OB_OVERLAP]
+        assert len(overlap) == 1
+        assert overlap[0].is_counter_trend is True
+        # 100 * 0.70 = 70 → below the 85 score gate.
+        assert overlap[0].conviction == 70
+
+    def test_with_trend_overlap_unpenalised(self):
+        store = WorldModelStore()
+        # Bullish FVG+OB overlap under BULLISH HTF bias → with-trend LONG.
+        fvg = _make_fvg(kind="BULLISH", top=1.0850, bottom=1.0840)
+        ob = _make_ob(kind="BULLISH", top=1.0855, bottom=1.0835)
+        model = self._model(
+            store,
+            fvgs={"M5": [fvg]},
+            order_blocks={"H1": [ob]},
+            structure={"H4": _make_structure(Trend.BULLISH)},
+        )
+        zones = extract_entry_zones(model, EntryConfig())
+        overlap = [z for z in zones if z.zone_type == ZoneType.FVG_OB_OVERLAP]
+        assert len(overlap) == 1
+        assert overlap[0].is_counter_trend is False
+        assert overlap[0].conviction == 100
+
+    def test_penalty_multiplier_configurable(self):
+        store = WorldModelStore()
+        fvg = _make_fvg(kind="BEARISH", top=1.0850, bottom=1.0840)
+        ob = _make_ob(kind="BEARISH", top=1.0855, bottom=1.0835)
+        model = self._model(
+            store,
+            fvgs={"M5": [fvg]},
+            order_blocks={"H1": [ob]},
+            structure={"H4": _make_structure(Trend.BULLISH)},
+        )
+        cfg = EntryConfig(counter_trend_conviction_mult=0.5)
+        zones = extract_entry_zones(model, cfg)
+        overlap = [z for z in zones if z.zone_type == ZoneType.FVG_OB_OVERLAP]
+        assert overlap[0].conviction == 50
