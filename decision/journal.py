@@ -107,7 +107,7 @@ class DecisionJournal:
             sa.primary_label, decision.action.value,
             "GOVERNOR" if governor_changed else "ENGINE",
             ctx.pnl_dollars, ctx.pnl_pips, sa.tf_alignment, sa.structure_integrity,
-            decision.reason[:120],
+            decision.reason[:200],
         )
 
     def log_entry(
@@ -187,7 +187,7 @@ class DecisionJournal:
             "GOVERNOR" if governor_changed else "ENGINE",
             ctx.scan_score, sa.tf_alignment, sa.structure_integrity,
             decision.conviction,
-            decision.reason[:120],
+            decision.reason[:200],
         )
 
     def _rotate_file(self, date_str: str) -> None:

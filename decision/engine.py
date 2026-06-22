@@ -94,7 +94,7 @@ class DecisionEngine:
         fast_opposition_decay_enabled: bool = True,
         fast_opposition_min_streak: int = 3,
         fast_opposition_max_streak: int = 8,
-        fast_opposition_decay_weight: float = 0.15,
+        fast_opposition_decay_weight: float = 0.30,
         fast_opposition_profit_threshold: float = 0.3,
         tf_conflict_aware: bool = False,
         soften_gate: bool = False,
@@ -559,8 +559,24 @@ class DecisionEngine:
                     f"opposing scan signal ({ctx.scan_direction} score={ctx.scan_score})"
                 )
 
+        # Live directional consensus — the unbiased module panel re-voted on
+        # fresh data. When it now OPPOSES the open position the thesis that
+        # justified the trade no longer stands, so add bounded CLOSE pressure
+        # (additive, capped — never dominates the trade's own structure/R). The
+        # full panel is in sa.consensus_components; this reads the signed scalar.
+        if self.consensus_aware:
+            consensus_align = float(getattr(sa, "consensus_alignment", 0.0) or 0.0)
+            if consensus_align < -self.consensus_min_alignment:
+                penalty = min(abs(consensus_align) * self.consensus_skip_weight, 0.30)
+                close_score += penalty
+                comps = sa.consensus_vector() if hasattr(sa, "consensus_vector") else {}
+                against = list(comps.get("against", []) or [])
+                close_reason_parts.append(
+                    f"consensus opposes ({consensus_align:+.2f})"
+                    + (f" [{', '.join(against)}]" if against else "")
+                )
+
         # Live OQ/EQ decay — the conditions/geometry that justified this trade
-        # have deteriorated since entry (P3). Bounded additive pressure.
         if oq_close_pressure > 0.0:
             close_score += oq_close_pressure
             close_reason_parts.extend(oq_eq_reasons)

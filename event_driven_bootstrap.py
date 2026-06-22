@@ -758,7 +758,7 @@ class PositionEvaluator:
                         out["m1_event"] = analysis.last_event.value
                         out["m1_trend"] = analysis.trend.value
                     except Exception as exc:
-                        logger.debug(
+                        logger.warning(
                             "[de-mgmt] M1 structure read failed for {}: {}",
                             symbol, exc,
                         )
@@ -827,12 +827,36 @@ class PositionEvaluator:
             d1_trend, d1_conf = _struct_trend_conf(structure, "D1")
             h4_trend, h4_conf = _struct_trend_conf(structure, "H4")
             h1_trend, h1_conf = _struct_trend_conf(structure, "H1")
+            # M5 structure is the fast feed (refreshes every 5 min via
+            # TF_MODULE_MAP), un-freezing alignment/integrity between the much
+            # slower H1/H4/D1 closes that otherwise pin the in-trade thesis read.
+            m5_trend, m5_conf = _struct_trend_conf(structure, "M5")
             # Structural break events (BOS/CHOCH) per timeframe — feed the
             # DecisionEngine's structure-integrity dimension so CLOSE can
             # outscore HOLD when structure breaks against an open position.
             d1_event = _struct_event(structure, "D1")
             h4_event = _struct_event(structure, "H4")
             h1_event = _struct_event(structure, "H1")
+            m5_event = _struct_event(structure, "M5")
+            # Live directional consensus panel from the current WorldModel — the
+            # unbiased module votes, carried into the in-trade thesis check so
+            # management revalidates against the same panel the entry used.
+            consensus_votes = wm.votes_list() if wm is not None else []
+            # Current WorldModel bias direction — feeds scan_direction so the
+            # engine's opposing-scan CLOSE term can actually fire when the live
+            # bias flips against the open trade (previously self-referential: it
+            # was set to the trade's own direction and could never oppose).
+            bias_scan_dir = ""
+            if wm is not None:
+                try:
+                    bias_scan_dir = str(
+                        wm.bias_dict().get("direction", "") or ""
+                    ).upper()
+                except Exception as exc:
+                    logger.warning(
+                        "[de-mgmt] bias direction read failed for {}: {}",
+                        symbol, exc,
+                    )
             score_hist = getattr(mgmt, "score_history", []) or []
             current_score = 0
             if wm is not None:
@@ -940,7 +964,7 @@ class PositionEvaluator:
                 lots=getattr(pos, "lots", 0.0) or 0.0,
                 original_risk_pips=risk_pips,
                 scan_score=current_score,
-                scan_direction=norm_dir.replace("BUY", "LONG").replace("SELL", "SHORT"),
+                scan_direction=bias_scan_dir,
                 live_oq=live_oq,
                 live_eq=live_eq,
                 entry_oq=entry_oq,
@@ -961,6 +985,9 @@ class PositionEvaluator:
                 m1_trend=micro["m1_trend"],
                 m1_event=micro["m1_event"],
                 m1_aligned_count=micro["m1_aligned_count"],
+                m5_trend=m5_trend,
+                m5_confidence=m5_conf,
+                m5_event=m5_event,
                 fast_opposition_streak=fast_opp,
                 score_history=list(score_hist[-10:]),
                 open_trade_count=len(open_positions),
@@ -968,6 +995,7 @@ class PositionEvaluator:
                 session_name=session_name,
                 session_tradeable=session_tradeable,
                 minutes_to_high_impact_news=news_mins,
+                consensus_votes=consensus_votes,
             )
             sa = ctx.situation_engine.assess_open_trade(trade_ctx)
             de_result = ctx.decision_engine.decide_management(trade_ctx, sa)
@@ -1121,15 +1149,22 @@ class PositionEvaluator:
 
             tf_align = getattr(sa, "tf_alignment", 0.0)
             momentum = getattr(sa, "momentum", 0.0)
-            is_long = norm_dir == "BUY"
-            if (is_long and (tf_align < -0.2 or momentum < -0.3)) or \
-               (not is_long and (tf_align > 0.2 or momentum > 0.3)):
+            # tf_alignment and momentum are direction-normalised (positive always
+            # SUPPORTS this trade, regardless of long/short), so the opposition
+            # test is identical for both sides. The previous short branch tested
+            # ``> 0.2`` — which is SUPPORT for a short — and so counted support as
+            # opposition (phantom streaks) while never firing on genuine
+            # opposition. One sign convention for both fixes that inversion.
+            if tf_align < -0.2 or momentum < -0.3:
                 self._fast_opposition[order_id] = fast_opp + 1
             else:
                 self._fast_opposition[order_id] = 0
 
         except Exception as exc:
-            logger.debug("[de-mgmt] DecisionEngine management failed for {}: {}", order_id, exc)
+            logger.warning(
+                "[de-mgmt] DecisionEngine management failed for {}: {}",
+                order_id, exc,
+            )
 
     # ── Scale-in / partial-close handlers (V13) ──────────────────────
     def _scale_in_position(

@@ -1256,7 +1256,7 @@ class DecisionConfig:
     fast_opposition_decay_enabled: bool = True
     fast_opposition_min_streak: int = 3      # cycles of opposition before pressure starts
     fast_opposition_max_streak: int = 8      # streak at which the pressure ramp caps
-    fast_opposition_decay_weight: float = 0.15  # max CLOSE pressure at full ramp
+    fast_opposition_decay_weight: float = 0.30  # max CLOSE pressure at full ramp
     fast_opposition_profit_threshold: float = 0.3  # only applies below this R
 
 

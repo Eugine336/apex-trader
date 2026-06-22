@@ -78,6 +78,14 @@ class TradeContext:
     m1_event: str = "NONE"
     m1_aligned_count: int = 0     # 0-5 candles aligned
 
+    # ── Fast structural feed (M5) ────────────────────────────────────────
+    # M5 structure refreshes every 5 minutes (it is in TF_MODULE_MAP), giving
+    # management a fast structural read between the much slower H1/H4/D1 closes
+    # that otherwise pin tf_alignment / structure_integrity for a whole bar.
+    m5_trend: str = "UNKNOWN"
+    m5_confidence: float = 0.0
+    m5_event: str = "NONE"
+
     # ── Fast-cluster opposition streak (PR10) ────────────────────────────
     # Consecutive management cycles the fast-evidence cluster (momentum + M1
     # alignment) has opposed the open position. Maintained by the main loop
@@ -106,6 +114,14 @@ class TradeContext:
 
     # ── Confluences from scan ────────────────────────────────────────────
     confluences: list[str] = field(default_factory=list)
+
+    # ── Directional consensus panel (full, uncompressed) ─────────────────
+    # The live per-module directional votes from the current WorldModel. Carried
+    # into the in-trade thesis check so management revalidates against the SAME
+    # unbiased panel the entry plane used — not a structure-only re-derivation.
+    # The SituationEngine folds it into a signed consensus dimension while
+    # keeping the full for/against panel intact.
+    consensus_votes: list = field(default_factory=list)
 
     @property
     def is_long(self) -> bool:

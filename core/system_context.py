@@ -353,6 +353,21 @@ class SystemContext:
                     range_edge_consensus_min=getattr(
                         de_cfg, "range_edge_consensus_min", 0.40,
                     ),
+                    fast_opposition_decay_enabled=getattr(
+                        de_cfg, "fast_opposition_decay_enabled", True,
+                    ),
+                    fast_opposition_min_streak=getattr(
+                        de_cfg, "fast_opposition_min_streak", 3,
+                    ),
+                    fast_opposition_max_streak=getattr(
+                        de_cfg, "fast_opposition_max_streak", 8,
+                    ),
+                    fast_opposition_decay_weight=getattr(
+                        de_cfg, "fast_opposition_decay_weight", 0.30,
+                    ),
+                    fast_opposition_profit_threshold=getattr(
+                        de_cfg, "fast_opposition_profit_threshold", 0.3,
+                    ),
                 )
             else:
                 ctx.decision_engine = _DecisionEngine(soften_gate=True)
