@@ -97,6 +97,21 @@ def main() -> None:
 
     logger.info("Phase 8 — Dashboard available (--dashboard to launch)")
 
+    # ── Clean-start before any subsystem opens SQLite handles ───────────
+    try:
+        from platforms.clean_start import run_startup_clean_start
+
+        db_cfg = getattr(config, "data_backup", None)
+        branch = getattr(db_cfg, "sync_branch", "main") if db_cfg else "main"
+        pull_res, purge_res = run_startup_clean_start(branch=branch)
+        logger.info(
+            "[event-driven] clean-start — pull: {} | purge: {}",
+            pull_res,
+            purge_res,
+        )
+    except Exception as exc:
+        logger.debug("[startup] clean-start step skipped: {}", exc)
+
     # ── Build SystemContext (all subsystems) ─────────────────────────
     from core.system_context import SystemContext
     platform_manager = PlatformManager(config)
