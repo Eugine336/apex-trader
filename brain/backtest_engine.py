@@ -125,8 +125,9 @@ class BacktestSetup:
     max_loss: float = 0.0
     risk_amount: float = 0.0
     pip_value_per_lot: float = 10.0
-    # Entry-time layered-decision quality (OQ/EQ), carried so management can
-    # compute decay (entry_* − live_*) exactly as the live plane does.
+    # Live OQ/EQ captured at entry (conf×10 / coherence×10 of the matching
+    # WorldModel candidate) so management can compute oq_decay/eq_decay against
+    # the same baseline the live plane stores on the position record.
     entry_oq: Optional[float] = None
     entry_eq: Optional[float] = None
 
@@ -226,35 +227,56 @@ def _struct_event(struct_by_tf: dict, tf: str) -> str:
 
 
 def _oq_eq_from_wm(wm, direction: str) -> tuple[Optional[float], Optional[float]]:
-    """Derive ``(opportunity_quality, entry_quality)`` for a direction from a
-    WorldModel's candidate list.
+    """Live OQ/EQ for ``direction`` from a WorldModel's ranked candidates.
 
-    Mirrors ``event_driven_bootstrap._run_decision_engine_management`` (the live
-    OQ/EQ read): the first candidate matching the trade direction yields
-    ``oq = confidence*10`` and ``eq = coherence*10`` (both clamped to 0–10).
-    Returns ``(None, None)`` when no matching candidate exists, exactly as the
-    live path leaves them unset so no quality pressure is applied that cycle.
+    Mirrors the live management read in
+    ``event_driven_bootstrap._run_decision_engine_management``: the first
+    candidate matching the trade direction yields ``OQ = confidence×10`` and
+    ``EQ = coherence×10`` (both clamped 0–10). Returns ``(None, None)`` when no
+    matching candidate / no candidate list is available — exactly the live
+    "not recomputed this cycle" semantics that apply no quality pressure.
     """
-    if wm is None:
-        return None, None
-    want_dir = direction.upper().replace("BUY", "LONG").replace("SELL", "SHORT")
+    want = "LONG" if str(direction).upper() in ("BUY", "LONG") else "SHORT"
     try:
-        candidates = (
-            wm.candidates_list()
-            if hasattr(wm, "candidates_list")
-            else list(getattr(wm, "candidates", ()) or [])
-        )
-        for cand in candidates:
-            if str(getattr(cand, "direction", "")).upper() != want_dir:
-                continue
-            conf = float(getattr(cand, "confidence", 0.0) or 0.0)
-            coh = float(getattr(cand, "coherence", 0.0) or 0.0)
-            oq = max(0.0, min(10.0, conf * 10.0))
-            eq = max(0.0, min(10.0, coh * 10.0))
-            return oq, eq
+        if hasattr(wm, "candidates_list"):
+            candidates = wm.candidates_list()
+        else:
+            candidates = list(getattr(wm, "candidates", ()) or [])
     except Exception:
         return None, None
+    for cand in candidates:
+        if str(getattr(cand, "direction", "")).upper() != want:
+            continue
+        conf = float(getattr(cand, "confidence", 0.0) or 0.0)
+        coh = float(getattr(cand, "coherence", 0.0) or 0.0)
+        oq = max(0.0, min(10.0, conf * 10.0))
+        eq = max(0.0, min(10.0, coh * 10.0))
+        return oq, eq
     return None, None
+
+
+def _h1_candle_context(h1_df, is_long: bool) -> dict:
+    """Last-closed H1 candle bearish/doji flags for structure integrity.
+
+    Mirrors the live ``_management_micro_context`` H1 read. The replay slice
+    holds only closed candles, so the last row is the last closed H1 candle.
+    Returns the same safe defaults the ``TradeContext`` carries when the feed
+    is unavailable.
+    """
+    out = {"h1_last_candle_bearish": None, "h1_last_candle_doji": False}
+    if h1_df is None or len(h1_df) < 1:
+        return out
+    try:
+        last = h1_df.iloc[-1]
+        o = float(last["open"])
+        c = float(last["close"])
+        rng = float(last["high"]) - float(last["low"])
+        body = abs(c - o)
+        out["h1_last_candle_bearish"] = c < o
+        out["h1_last_candle_doji"] = rng > 0 and (body / rng) < 0.1
+    except Exception:
+        return out
+    return out
 
 
 class DataLoader:
@@ -1141,7 +1163,8 @@ class BacktestEngine:
         zone_type = getattr(zone, "zone_type", "")
         zone_type = str(getattr(zone_type, "value", zone_type) or "")
         regimes = wm.regime_by_tf()
-        # Entry-time OQ/EQ (same derivation the live management decay uses).
+        # Capture entry-time OQ/EQ (same formula the live plane stores on the
+        # position) so management can score oq_decay/eq_decay against it.
         entry_oq, entry_eq = _oq_eq_from_wm(wm, direction)
         return BacktestSetup(
             direction=signal.direction,
@@ -1419,17 +1442,20 @@ class BacktestEngine:
             "max_loss": float(getattr(setup, "max_loss", 0.0) or 0.0),
             "risk_amount": float(getattr(setup, "risk_amount", 0.0) or 0.0),
             "fast_opp": 0,
-            # Fraction of the position still open (1.0 = full). Reduced by the
-            # TP1 partial (PositionWorker mechanic) and management PARTIAL_CLOSE
-            # so close P&L is banked-plus-remaining, not a hardcoded 50/50.
-            "remaining_fraction": 1.0,
-            "partial_closed": False,
-            "trailing": False,
-            # Rolling setup-score history (feeds the conviction-collapse term).
-            "score_history": [int(getattr(setup, "score", 0) or 0)],
-            # Entry-time OQ/EQ so management can compute live decay.
+            # Rolling per-trade score history (zone conviction each management
+            # cycle) — feeds the DecisionEngine momentum-trajectory + confidence
+            # + thesis-deterioration reads, exactly as live's mgmt.score_history.
+            "score_history": [],
+            # Entry-time OQ/EQ baseline for live oq_decay/eq_decay scoring.
             "entry_oq": getattr(setup, "entry_oq", None),
             "entry_eq": getattr(setup, "entry_eq", None),
+            # Management lifecycle flags the live TradeContext carries.
+            "partial_closed": False,
+            "trailing": False,
+            # Fraction of the position still open (1.0 = full). A management
+            # PARTIAL_CLOSE banks part of it; geometry TP1/TP2 fractions compose
+            # with this so total banked R never exceeds the realised position.
+            "remaining_fraction": 1.0,
         }
 
     def _evaluate_trade(
@@ -1643,96 +1669,44 @@ class BacktestEngine:
                 trade["stop_loss"] = float(new_sl)
                 if action == Action.MOVE_TO_BREAKEVEN:
                     trade["at_breakeven"] = True
-                else:
-                    # A protective/tighten stop beyond entry means the runner is
-                    # being trailed — mirror the live ``trailing`` flag.
-                    trade["trailing"] = True
         elif action == Action.PARTIAL_CLOSE:
-            self._apply_partial_close(trade, candle, de)
+            # Bank part of the open remainder at the current close — mirrors the
+            # live ``_partial_close_position`` (same default ratio / clamps). The
+            # banked R is added to realized_r and the open fraction shrinks so the
+            # geometry TP1/TP2 fractions only ever bank what is still open.
+            self._de_partial_close(trade, candle, de)
         elif action == Action.SCALE_IN:
-            self._apply_scale_in(trade, candle, de)
+            # Accepted simplification: the replay is single-position-serial, so it
+            # cannot pyramid an add-on the way the live plane does (live routes a
+            # scale-in through Compliance → Portfolio as a duplicate). Log and
+            # hold the base position rather than silently dropping the verdict.
+            logger.debug(
+                "[backtest] {} SCALE_IN verdict not modelled (single-position serial replay)",
+                pair,
+            )
         return None
 
-    def _apply_partial_close(self, trade: dict, candle: pd.Series, de) -> None:
-        """Bank part of the still-open position on a PARTIAL_CLOSE verdict.
-
-        Mirrors ``event_driven_bootstrap._partial_close_position``: the close
-        fraction comes from the verdict's ``partial_ratio`` (clamped 0.05–0.95),
-        else ``_DEFAULT_PARTIAL_CLOSE_RATIO``. The banked profit is credited in R
-        from the current close, open lots and ``remaining_fraction`` are reduced,
-        and ``partial_closed`` is set so the panel/state reflect it.
-        """
-        remaining = float(trade.get("remaining_fraction", 1.0) or 0.0)
-        if remaining <= 0.0:
-            return
+    def _de_partial_close(self, trade: dict, candle: pd.Series, de) -> None:
+        """Bank a fraction of the open remainder on a PARTIAL_CLOSE verdict."""
         ratio = float(getattr(de, "partial_ratio", 0.0) or 0.0)
         if ratio <= 0.0:
-            ratio = _DEFAULT_PARTIAL_CLOSE_RATIO
+            ratio = 0.5  # mirrors live _DEFAULT_PARTIAL_CLOSE_RATIO
         ratio = max(0.05, min(0.95, ratio))
-
+        remaining = float(trade.get("remaining_fraction", 1.0) or 1.0)
+        if remaining <= 0.0:
+            return
         direction = trade["setup"].direction
         entry = trade["entry_price"]
-        risk = trade["risk"]
         close_price = float(candle["close"])
-        cur_r = (close_price - entry) / risk if direction == "LONG" else (entry - close_price) / risk
-
-        banked = ratio * remaining
-        trade["realized_r"] += banked * cur_r
-        trade["remaining_fraction"] = max(0.0, remaining - banked)
-        trade["lots"] = float(trade.get("lots", 0.0) or 0.0) * (1.0 - ratio)
+        risk = trade["risk"]
+        if direction == "LONG":
+            r_now = (close_price - entry) / risk
+        else:
+            r_now = (entry - close_price) / risk
+        banked_fraction = remaining * ratio
+        trade["realized_r"] += banked_fraction * r_now
+        trade["remaining_fraction"] = remaining - banked_fraction
         trade["partial_closed"] = True
-
-    def _apply_scale_in(self, trade: dict, candle: pd.Series, de) -> None:
-        """Add to the open position on a SCALE_IN verdict.
-
-        Mirrors the intent of ``event_driven_bootstrap._scale_in_position``:
-        size the add-on through the same PortfolioDivision → PositionSizer path
-        (at ``_SCALE_IN_RISK_FRACTION`` of base risk so it never re-risks a full
-        position), then blend into the position by lots-weighted average entry
-        and recompute the risk distance + dollar risk. The Portfolio verdict is
-        the authoritative size (the DE's advisory ``scale_lots`` is not trusted
-        directly), keeping the no-parallel-implementation contract.
-        """
-        from types import SimpleNamespace
-
-        cur_lots = float(trade.get("lots", 0.0) or 0.0)
-        if cur_lots <= 0:
-            return
-        direction = trade["setup"].direction
-        entry = trade["entry_price"]
-        sl = trade["stop_loss"]
-        price = float(candle["close"])
-        balance = float(getattr(self, "starting_balance", 0.0) or 0.0)
-
-        signal = SimpleNamespace(entry_price=price, stop_loss=sl, tp2=trade.get("tp2", 0.0))
-        prev_risk = self.risk_per_trade
-        try:
-            # Reduced base risk for the add-on (same fraction the live plane uses).
-            self.risk_per_trade = prev_risk * _SCALE_IN_RISK_FRACTION
-            sized = self._size_trade(
-                trade.get("symbol", ""), direction, signal,
-                de_size_mult=1.0,
-                conviction=float(getattr(de, "confidence", 0.0) or 0.0),
-                balance=balance,
-            )
-        finally:
-            self.risk_per_trade = prev_risk
-        if sized is None:
-            return
-        add_lots, add_max_loss, _add_risk = sized
-        if add_lots <= 0:
-            return
-
-        new_lots = cur_lots + add_lots
-        # Lots-weighted average entry; recompute the risk distance off it.
-        avg_entry = (entry * cur_lots + price * add_lots) / new_lots
-        trade["entry_price"] = avg_entry
-        trade["lots"] = new_lots
-        new_risk = abs(avg_entry - sl)
-        if new_risk > 0:
-            trade["risk"] = new_risk
-        trade["max_loss"] = float(trade.get("max_loss", 0.0) or 0.0) + float(add_max_loss or 0.0)
-        trade["scaled_in"] = True
 
     def _build_trade_context(
         self,
@@ -1744,12 +1718,15 @@ class BacktestEngine:
     ):
         """Build the TradeContext the live management DecisionEngine reads.
 
-        Feeds the SAME fields ``event_driven_bootstrap._run_decision_engine_
-        management`` sets (consensus panel, M5 fast feed, OQ/EQ decay, score
-        history, session/news, dollar P&L, trailing/partial flags), sourced from
-        candle/WorldModel data instead of live ticks. ``scan_direction`` comes
-        from the live WorldModel bias (not the trade's own direction), so the
-        opposing-bias CLOSE term can actually fire.
+        Mirrors ``event_driven_bootstrap._run_decision_engine_management`` field
+        for field, sourced from candle/WorldModel data instead of live ticks so
+        the SituationEngine/DecisionEngine see the SAME inputs they do live:
+        M5 fast structure, H1 last-candle context, the live consensus panel,
+        live OQ/EQ decay, rolling score history and session state. The only
+        accepted simplifications are the broker-tick-only feeds the replay has
+        no source for (news timing, intra-bar P&L precision); each is flagged.
+        ``scan_direction`` comes from the live WorldModel bias (not the trade's
+        own direction) so the opposing-bias CLOSE term can actually fire.
         """
         from decision.context import TradeContext
 
@@ -1766,6 +1743,11 @@ class BacktestEngine:
         else:
             pnl_pips = (entry - price) / self.pip_size
         risk_pips = trade["risk"] / self.pip_size if self.pip_size else 0.0
+        # Dollar P&L on the OPEN remainder — mirrors live ``pnl_dollars`` (read
+        # by the thesis-secure path). pip P&L × pip-value × open lots.
+        lots = float(trade.get("lots", 0.0) or 0.0)
+        remaining_fraction = float(trade.get("remaining_fraction", 1.0) or 1.0)
+        pnl_dollars = pnl_pips * self.pip_value_per_lot * lots * remaining_fraction
         hold_minutes = (
             pd.Timestamp(candle["time"]).to_pydatetime() - trade["entry_time"]
         ).total_seconds() / 60.0
@@ -1777,18 +1759,64 @@ class BacktestEngine:
         d1_trend, d1_conf = _struct_trend_conf(structure, "D1")
         h4_trend, h4_conf = _struct_trend_conf(structure, "H4")
         h1_trend, h1_conf = _struct_trend_conf(structure, "H1")
+        # M5 fast structural feed — refreshes every 5 min (in TF_MODULE_MAP),
+        # un-freezing tf_alignment / structure_integrity between the slower
+        # H1/H4/D1 closes. This is the dimension the live management fix added.
+        m5_trend, m5_conf = _struct_trend_conf(structure, "M5")
         d1_event = _struct_event(structure, "D1")
         h4_event = _struct_event(structure, "H4")
         h1_event = _struct_event(structure, "H1")
-        # M5 fast structural feed (refreshes every 5 min via TF_MODULE_MAP) —
-        # un-freezes tf_alignment / structure_integrity between the slower
-        # H1/H4/D1 closes that otherwise pin the in-trade thesis read.
-        m5_trend, m5_conf = _struct_trend_conf(structure, "M5")
         m5_event = _struct_event(structure, "M5")
 
         micro = self._micro_from_slice(slices.get("M1"), is_long)
+        h1_candle = _h1_candle_context(slices.get("H1"), is_long)
         bias = wm.bias_dict()
-        scan_direction = str(bias.get("direction", "") or "")
+        scan_direction = str(bias.get("direction", "") or "").upper()
+
+        # Live directional consensus panel (unbiased module votes) — re-voted on
+        # fresh data and folded into the in-trade thesis check, exactly as live.
+        try:
+            consensus_votes = wm.votes_list() if hasattr(wm, "votes_list") else []
+        except Exception:
+            consensus_votes = []
+
+        # Current zone conviction → rolling score_history (trajectory/confidence
+        # /thesis-deterioration). Mirrors live's per-cycle score append.
+        current_score = 0
+        try:
+            zones = (
+                wm.entry_zones_list() if hasattr(wm, "entry_zones_list")
+                else list(getattr(wm, "entry_zones", ()) or [])
+            )
+            want_dir = "LONG" if is_long else "SHORT"
+            for z in zones:
+                if str(getattr(z, "direction", "") or "").upper() == want_dir:
+                    current_score = max(current_score, int(getattr(z, "conviction", 0) or 0))
+        except Exception:
+            current_score = 0
+        hist = trade.setdefault("score_history", [])
+        hist.append(current_score)
+
+        # Live OQ/EQ decay — recompute on this cycle's WorldModel candidates and
+        # diff against the entry baseline (positive decay = deterioration).
+        entry_oq = trade.get("entry_oq")
+        entry_eq = trade.get("entry_eq")
+        live_oq, live_eq = _oq_eq_from_wm(wm, norm_dir)
+        oq_decay = (entry_oq - live_oq) if (entry_oq is not None and live_oq is not None) else None
+        eq_decay = (entry_eq - live_eq) if (entry_eq is not None and live_eq is not None) else None
+
+        # Session tradeable state (urgency). Backtest has no news feed, so
+        # minutes_to_high_impact_news keeps the safe 999 default (accepted
+        # simplification — no historical news calendar in replay).
+        session_tradeable = True
+        try:
+            if self.session_engine is not None:
+                ss = self.session_engine.get_status(
+                    pd.Timestamp(candle["time"]).to_pydatetime()
+                )
+                session_tradeable = bool(getattr(ss, "is_tradeable", True))
+        except Exception:
+            session_tradeable = True
 
         # Live directional consensus panel from this bar's WorldModel — the same
         # unbiased module votes the entry used, so management revalidates the
@@ -1857,18 +1885,17 @@ class BacktestEngine:
             d1_trend=d1_trend, d1_confidence=d1_conf, d1_event=d1_event,
             h4_trend=h4_trend, h4_confidence=h4_conf, h4_event=h4_event,
             h1_trend=h1_trend, h1_confidence=h1_conf, h1_event=h1_event,
+            h1_last_candle_bearish=h1_candle["h1_last_candle_bearish"],
+            h1_last_candle_doji=h1_candle["h1_last_candle_doji"],
             m1_trend=micro["m1_trend"],
             m1_event=micro["m1_event"],
             m1_aligned_count=micro["m1_aligned_count"],
             m5_trend=m5_trend, m5_confidence=m5_conf, m5_event=m5_event,
             fast_opposition_streak=int(trade.get("fast_opp", 0) or 0),
             score_history=list(hist[-10:]),
-            open_trade_count=1,
-            session_name=session_name,
-            session_tradeable=session_tradeable,
-            # No economic-news calendar in backtest — news is always clear.
-            minutes_to_high_impact_news=999.0,
             consensus_votes=list(consensus_votes),
+            session_tradeable=session_tradeable,
+            open_trade_count=1,
             max_open_trades=getattr(self.config.risk, "max_open_trades", 5),
         )
 
