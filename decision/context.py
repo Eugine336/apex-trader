@@ -151,6 +151,12 @@ class EntryContext:
     risk_pips: float = 0.0
     entry_mode: str = "PENDING"   # from EntryEngine
     micro_confirmation: str = ""
+    # Opportunity-first: this setup's direction opposes the HTF bias. The zone
+    # is no longer dropped upstream — it is tagged so the decision engine treats
+    # it as a counter-trend / reversal candidate (sized down, evidence-gated)
+    # rather than never seeing it. Defaults preserve with-trend behaviour.
+    is_counter_trend: bool = False
+    bias_direction: str = ""      # HTF bias at zone extraction ("LONG"/"SHORT"/"")
 
     # ── Position sizing inputs ───────────────────────────────────────────
     base_lots: float = 0.0

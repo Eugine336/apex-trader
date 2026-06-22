@@ -44,6 +44,11 @@ class EntryZone:
     expires_at: datetime
     timeframe: str
     has_sweep: bool = False
+    # Opportunity-first context: a zone whose direction opposes the HTF bias
+    # is NOT dropped — it is tagged so downstream departments can size it down
+    # (counter-trend / reversal treatment) rather than blocking it outright.
+    is_counter_trend: bool = False
+    bias_direction: str = ""  # HTF bias at extraction time ("LONG"/"SHORT"/"")
 
 
 @dataclass(frozen=True)

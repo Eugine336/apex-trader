@@ -4696,6 +4696,8 @@ class EventDrivenSystem:
                         h1_confidence=h1_conf,
                         m1_aligned_count=decision.get("m1_aligned", 3),
                         m1_event=decision.get("m1_event", ""),
+                        is_counter_trend=bool(decision.get("is_counter_trend", False)),
+                        bias_direction=decision.get("bias_direction", ""),
                         open_trade_count=len(open_positions),
                         max_open_trades=self._config.risk.max_open_trades,
                         portfolio_heat_pct=de_heat_pct,

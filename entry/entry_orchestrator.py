@@ -269,6 +269,8 @@ class EntryOrchestrator:
                 "risk_pips": risk_pips,
                 "spread_pips": spread_pips,
                 "has_sweep": zone.has_sweep,
+                "is_counter_trend": getattr(zone, "is_counter_trend", False),
+                "bias_direction": getattr(zone, "bias_direction", ""),
             }
 
             logger.info(
