@@ -12,6 +12,82 @@ from dataclasses import dataclass, field
 from decision.context import EntryContext, TradeContext
 
 
+def compute_in_trade_context_pressure(ctx: TradeContext) -> tuple[int, int, list[str]]:
+    """Summarise the independent signals currently OPPOSING an open trade.
+
+    Diagnostic aggregation of evidence the management builders already gather:
+    opposing HTF/M5 structure breaks, an opposing scanner bias, an opposing live
+    consensus panel, a sustained fast-opposition streak, and being in loss.
+    Returns ``(context_pressure, opposing_boost, details)`` where
+    ``context_pressure`` is the count of opposing signals, ``opposing_boost`` is
+    the subset that are structural breaks, and ``details`` lists each.
+
+    This populates the previously-dead ``TradeContext.context_pressure`` /
+    ``opposing_boost`` / ``pressure_details`` fields with real values for
+    journaling and dashboards.  It is intentionally NOT added as a separate
+    CLOSE term in :meth:`DecisionEngine.decide_management` — those same opposing
+    signals are already scored individually there (structure, consensus,
+    fast-opposition, OQ/EQ decay), so re-scoring this aggregate would
+    double-count and over-close a trade.
+    """
+    is_long = ctx.is_long
+    details: list[str] = []
+
+    def _opposes(event: str) -> bool:
+        ev = str(event or "").upper()
+        directional = ("BEARISH" in ev) if is_long else ("BULLISH" in ev)
+        return directional and ("BOS" in ev or "CHOCH" in ev)
+
+    structural = 0
+    for tf, ev in (
+        ("D1", ctx.d1_event), ("H4", ctx.h4_event),
+        ("H1", ctx.h1_event), ("M5", ctx.m5_event),
+    ):
+        if _opposes(ev):
+            structural += 1
+            details.append(f"{tf} {ev}")
+
+    pressure = structural
+
+    scan_opposing = (
+        (is_long and ctx.scan_direction == "SHORT")
+        or (not is_long and ctx.scan_direction == "LONG")
+    )
+    if scan_opposing and ctx.scan_score >= 65:
+        pressure += 1
+        details.append(f"scan {ctx.scan_direction} {ctx.scan_score}")
+
+    votes = list(getattr(ctx, "consensus_votes", None) or [])
+    if votes:
+        trade_dir = "LONG" if is_long else "SHORT"
+        for_mag = 0.0
+        against_mag = 0.0
+        for v in votes:
+            vdir = str(getattr(v, "direction", "") or "").upper()
+            if vdir not in ("LONG", "SHORT"):
+                continue
+            mag = max(0.0, float(getattr(v, "confidence", 0.0) or 0.0)) * max(
+                0.0, float(getattr(v, "weight", 1.0) or 0.0)
+            )
+            if vdir == trade_dir:
+                for_mag += mag
+            else:
+                against_mag += mag
+        if against_mag > for_mag and against_mag > 0:
+            pressure += 1
+            details.append("consensus opposes")
+
+    if ctx.fast_opposition_streak >= 3:
+        pressure += 1
+        details.append(f"fast-opp streak {ctx.fast_opposition_streak}")
+
+    if ctx.profit_r < -0.3:
+        pressure += 1
+        details.append(f"loss {ctx.profit_r:.1f}R")
+
+    return int(pressure), int(structural), details
+
+
 @dataclass
 class SituationAssessment:
     """Continuous-valued read of the current market situation for one trade."""
@@ -322,6 +398,29 @@ class SituationEngine:
                 round(sum(_quality_vals) / len(_quality_vals), 4) if _quality_vals else 0.0
             ),
         }
+
+        # ── 7b. Setup-quality (OQ/EQ) read ───────────────────────────────
+        # OQ/EQ gate the setup READY in the scanner; here their influence is
+        # carried into the entry read instead of being discarded after the gate.
+        # A high entry-quality setup earns confidence; a low opportunity-quality
+        # setup loses some. ``0.0`` means "not computed this cycle" (the quality
+        # layer did not run) → no adjustment, mirroring the management plane's
+        # ``None = no quality pressure`` semantics. Bounded and additive so it
+        # nudges confidence, never hard-gates the entry.
+        oq = float(getattr(ctx, "oq", 0.0) or 0.0)
+        eq = float(getattr(ctx, "eq", 0.0) or 0.0)
+        quality_adj = 0.0
+        if eq > 6.0:
+            quality_adj += min((eq - 6.0) / 4.0 * 0.10, 0.10)
+            evidence.append(f"entry quality high ({eq:.1f}/10)")
+        if 0.0 < oq < 3.0:
+            quality_adj -= min((3.0 - oq) / 3.0 * 0.10, 0.10)
+            evidence.append(f"opportunity quality low ({oq:.1f}/10)")
+        if quality_adj:
+            sa.read_confidence = max(0.0, min(1.0, sa.read_confidence + quality_adj))
+            sa.confidence_components["quality_oq"] = round(oq, 2)
+            sa.confidence_components["quality_eq"] = round(eq, 2)
+            sa.confidence_components["quality_adj"] = round(quality_adj, 4)
 
         # ── 8. Directional consensus panel ──────────────────────────────
         # Fold the per-module vote panel into a signed alignment relative to

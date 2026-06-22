@@ -122,11 +122,13 @@ def _compute_m1_micro(pm, symbol: str, norm_dir: str, pip_size: float) -> dict:
         "m1_aligned_count": 0,
         "m1_event": "NONE",
         "m1_trend": "UNKNOWN",
+        "m1_pattern": "",
     }
     is_long = norm_dir.upper() in ("BUY", "LONG")
     try:
         from brain.market_data_utils import drop_forming_bar
         from brain.structure_engine import StructureEngine
+        from entry.m1_patterns import detect_m1_pattern
 
         m1_data = pm.fetch_market_data(symbol, ["M1"], 100)
         m1_df = m1_data.get("M1") if m1_data else None
@@ -141,6 +143,7 @@ def _compute_m1_micro(pm, symbol: str, norm_dir: str, pip_size: float) -> dict:
                 else:
                     aligned = sum(1 for c, o in zip(closes, opens) if c < o)
                 out["m1_aligned_count"] = int(aligned)
+                out["m1_pattern"] = detect_m1_pattern(closed, is_long)
                 try:
                     engine = StructureEngine(swing_lookback=3, pip_size=pip_size)
                     analysis = engine.analyze(closed.iloc[-min(len(closed), 100):])
@@ -156,21 +159,30 @@ def _compute_m1_micro(pm, symbol: str, norm_dir: str, pip_size: float) -> dict:
     return out
 
 
-def _micro_confirmation_from_event(m1_event: str, direction: str) -> tuple[str, str]:
-    """Derive ``(micro_confirmation, entry_mode)`` from a live M1 structural event.
+def _micro_confirmation_from_event(
+    m1_event: str, direction: str, m1_pattern: str = "",
+) -> tuple[str, str]:
+    """Derive ``(micro_confirmation, entry_mode)`` from live M1 evidence.
 
     An M1 BOS/CHoCH aligned with the trade direction is a market-confirmation
     trigger, so the DecisionEngine's MARKET fast-path becomes reachable instead
-    of every entry defaulting to PENDING.  Returns ``("", "PENDING")`` when the
-    M1 event does not confirm the direction (unchanged behaviour).  Note this
-    only affects the entry-action label (MARKET vs PENDING); both still enter,
-    and the reversal-evidence terms read ``m1_event`` directly.
+    of every entry defaulting to PENDING.  When no structural event confirms,
+    an aligned M1 candle pattern (engulfing / pin bar from
+    ``entry.m1_patterns.detect_m1_pattern``) also confirms the entry — so the
+    ``micro_confirmation`` field and the MARKET path are no longer reachable
+    only via BOS/CHoCH.  Returns ``("", "PENDING")`` when nothing confirms
+    (unchanged behaviour).  This only affects the entry-action label (MARKET vs
+    PENDING); both still enter, and the reversal-evidence terms read
+    ``m1_event``/``micro_confirmation`` directly.
     """
     ev = str(m1_event or "").upper()
     is_long = direction.upper() in ("BUY", "LONG")
     aligned = ("BULLISH" in ev) if is_long else ("BEARISH" in ev)
     if ("BOS" in ev or "CHOCH" in ev) and aligned:
         return "choch_bos", "MARKET"
+    pat = str(m1_pattern or "").strip().lower()
+    if pat in ("engulfing", "pin_bar"):
+        return pat, "MARKET"
     return "", "PENDING"
 
 
@@ -1089,6 +1101,18 @@ class PositionEvaluator:
                 minutes_to_high_impact_news=news_mins,
                 consensus_votes=consensus_votes,
             )
+            # Wire the previously-dead context-pressure fields to real values
+            # (opposing-signal summary for journal/dashboard). Diagnostic only —
+            # the individual opposing signals are already scored in
+            # decide_management, so this is not re-added as a CLOSE term.
+            try:
+                from decision.situation import compute_in_trade_context_pressure
+                _cp, _ob, _pd = compute_in_trade_context_pressure(trade_ctx)
+                trade_ctx.context_pressure = _cp
+                trade_ctx.opposing_boost = _ob
+                trade_ctx.pressure_details = _pd
+            except Exception:
+                pass
             sa = ctx.situation_engine.assess_open_trade(trade_ctx)
             de_result = ctx.decision_engine.decide_management(trade_ctx, sa)
 
@@ -4887,6 +4911,7 @@ class EventDrivenSystem:
                     )
                     micro_conf, entry_mode_v = _micro_confirmation_from_event(
                         m1_micro["m1_event"], direction,
+                        m1_micro.get("m1_pattern", ""),
                     )
                     # Live volatility regime — entry previously always used the
                     # base DecisionWeights (regime=""); feed the same H1 regime
@@ -4897,6 +4922,47 @@ class EventDrivenSystem:
                             entry_regime = wm.regime_by_tf().get("H1", "") or ""
                         except Exception:
                             entry_regime = ""
+
+                    # Setup-quality (OQ/EQ) and ranker horizon — read from the
+                    # SAME WorldModel quality/candidate layer the management
+                    # plane uses, so the entry plane reasons over the same
+                    # second-order signals instead of discarding them. OQ/EQ
+                    # stay 0.0 (= not computed) when the layer did not run;
+                    # horizon stays "" (full HTF authority) when no ranked
+                    # candidate matches this direction.
+                    entry_oq_v = 0.0
+                    entry_eq_v = 0.0
+                    entry_horizon = ""
+                    if wm is not None:
+                        want_dir = (
+                            "LONG" if direction.upper() in ("BUY", "LONG") else "SHORT"
+                        )
+                        try:
+                            from brain.quality_layer import entry_quality_for
+                            _oqv = getattr(wm, "opportunity_quality", None)
+                            if _oqv is not None:
+                                entry_oq_v = max(0.0, min(10.0, float(_oqv)))
+                            _eqv = entry_quality_for(wm, want_dir)
+                            if _eqv is not None:
+                                entry_eq_v = max(0.0, min(10.0, float(_eqv)))
+                        except Exception:
+                            entry_oq_v = entry_oq_v or 0.0
+                            entry_eq_v = entry_eq_v or 0.0
+                        try:
+                            best = None
+                            for opp in (getattr(wm, "candidates", ()) or ()):
+                                if str(getattr(opp, "direction", "")).upper() != want_dir:
+                                    continue
+                                if best is None or float(
+                                    getattr(opp, "expected_value", 0.0) or 0.0
+                                ) > float(getattr(best, "expected_value", 0.0) or 0.0):
+                                    best = opp
+                            if best is not None:
+                                entry_horizon = str(
+                                    getattr(best, "timeframe_class", "") or ""
+                                )
+                        except Exception:
+                            entry_horizon = ""
 
                     entry_ctx = DEContext(
                         symbol=symbol,
@@ -4911,6 +4977,8 @@ class EventDrivenSystem:
                         risk_pips=abs(entry_price - sl) / self._safe_pip_size(symbol) if sl else 0.0,
                         entry_mode=entry_mode_v,
                         micro_confirmation=micro_conf,
+                        oq=entry_oq_v,
+                        eq=entry_eq_v,
                         d1_trend=d1_trend,
                         d1_confidence=d1_conf,
                         d1_event=d1_event,
@@ -4930,6 +4998,7 @@ class EventDrivenSystem:
                         current_spread=de_cur_spread,
                         typical_spread=de_typ_spread,
                         regime=entry_regime,
+                        horizon=entry_horizon,
                         # Full directional-consensus panel synthesized by the
                         # analysis plane — passed uncompressed so the decision
                         # engine reasons over which modules agree/dissent.
