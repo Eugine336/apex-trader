@@ -524,3 +524,49 @@ def test_account_snapshot_after_trades(engine):
     snap = engine.get_account_snapshot()
     assert snap.balance == 10_100.0
     assert snap.risk_mode in {"NORMAL", "CAUTION", "RECOVERY"}
+
+
+# ── reconcile_balance — sanity bound ──────────────────────────────────────
+
+
+def test_reconcile_applies_small_change(engine):
+    engine.balance = 10_000.0
+    engine.reconcile_balance(10_050.0)
+    assert engine.balance == 10_050.0
+
+
+def test_reconcile_applies_zero_broker_balance(engine):
+    engine.balance = 10_000.0
+    engine.reconcile_balance(0.0)
+    assert engine.balance == 0.0
+
+
+def test_reconcile_ignores_none_and_negative(engine):
+    engine.balance = 10_000.0
+    engine.reconcile_balance(None)
+    engine.reconcile_balance(-5.0)
+    assert engine.balance == 10_000.0
+
+
+def test_reconcile_rejects_implausible_swing_until_corroborated(engine):
+    engine.balance = 10_000.0
+    # A reconnecting leg momentarily reports only its tiny standalone balance.
+    engine.reconcile_balance(38.21)
+    assert engine.balance == 10_000.0  # rejected, awaiting corroboration
+
+    # A normal pooled read returns next cycle → candidate cleared, no resync.
+    engine.reconcile_balance(10_010.0)
+    assert engine.balance == 10_010.0
+
+    # The fluke value reappearing once more is still a single occurrence.
+    engine.reconcile_balance(38.21)
+    assert engine.balance == 10_010.0
+
+
+def test_reconcile_applies_large_swing_when_corroborated(engine):
+    engine.balance = 10_000.0
+    # A genuine catastrophic loss reports consistently across two reads.
+    engine.reconcile_balance(40.0)
+    assert engine.balance == 10_000.0  # first read held back
+    engine.reconcile_balance(41.0)
+    assert engine.balance == 41.0  # corroborated → synced
