@@ -1825,6 +1825,32 @@ class EventDrivenSystem:
         self._inflight_manage_lock = threading.Lock()
 
         # ── Analysis plane ───────────────────────────────────────────
+        # CalibrationEngine (single writer of per-instrument stats). Opt-in via
+        # config.calibration.enabled — when off, no provider is registered and
+        # get_profile keeps returning the hardcoded category constants.
+        self._calibration_engine = None
+        _calib_cfg = getattr(self._config, "calibration", None)
+        if _calib_cfg is not None and getattr(_calib_cfg, "enabled", False):
+            try:
+                from brain.calibration_engine import CalibrationEngine
+                from brain.instrument_profile import set_stats_provider
+                self._calibration_engine = CalibrationEngine(
+                    state_path=getattr(
+                        _calib_cfg, "state_path", "data/calibration_state.json"
+                    ),
+                )
+                if getattr(_calib_cfg, "persist", True):
+                    self._calibration_engine.load()
+                set_stats_provider(self._calibration_engine)
+                logger.info(
+                    "[event-driven] CalibrationEngine ACTIVE — get_profile is "
+                    "self-calibrating (state={})",
+                    self._calibration_engine.state_path,
+                )
+            except Exception as exc:
+                logger.warning("[event-driven] CalibrationEngine init failed: {}", exc)
+                self._calibration_engine = None
+
         self._candle_handler = CandleCloseHandler(
             event_bus=self._event_bus,
             world_model_store=self._wm_store,
@@ -1835,6 +1861,9 @@ class EventDrivenSystem:
             module_governor=getattr(ctx, "module_governor", None) if ctx else None,
             win_rate_provider=getattr(ctx, "win_rate_provider", None) if ctx else None,
             consensus_config=getattr(self._config, "consensus", None),
+            calibration_engine=self._calibration_engine,
+            get_spread_pips=self._get_spread_pips,
+            calibration_spread_tf=getattr(_calib_cfg, "spread_sample_tf", "M5"),
         )
 
         # ── Execution plane ──────────────────────────────────────────
@@ -2654,6 +2683,14 @@ class EventDrivenSystem:
         self._deriv_adapter.stop()
         self._tick_router.stop()
         self._candle_handler.shutdown()
+        # Persist learned calibration so warmup history survives a restart.
+        if self._calibration_engine is not None:
+            _calib_cfg = getattr(self._config, "calibration", None)
+            if _calib_cfg is None or getattr(_calib_cfg, "persist", True):
+                try:
+                    self._calibration_engine.save()
+                except Exception as exc:
+                    logger.warning("[event-driven] calibration save failed: {}", exc)
         try:
             self._entry_pool.shutdown(wait=False)
         except Exception:
@@ -6070,6 +6107,13 @@ class EventDrivenSystem:
                 regime=info.get("regime"),
                 concepts=info.get("concepts"),
             )
+            # CalibrationEngine zone outcome — the trade reached its zone (touched)
+            # and "held" if it resolved profitably (≈ reached TP1). Feeds the
+            # learned zone_hold_rate. Single-writer; best-effort.
+            if self._calibration_engine is not None:
+                self._calibration_engine.record_zone_outcome(
+                    symbol, touched=True, held=bool(won),
+                )
         except Exception as exc:
             logger.debug("[close-learn] zone-edge record failed: {}", exc)
 

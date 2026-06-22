@@ -2928,6 +2928,26 @@ class LearningGovernanceConfig:
 
 
 @dataclass
+class CalibrationConfig:
+    """Self-calibrating instrument layer (CalibrationEngine).
+
+    When ``enabled`` is False (default) the system behaves exactly as today:
+    no stats provider is registered, so ``get_profile`` returns the hardcoded
+    per-category constants.  When True, the CalibrationEngine ingests live /
+    backtest candles + spread, and ``get_profile`` returns ATR-normalised,
+    per-symbol geometry once a symbol has warmed up (else the constants).
+    """
+
+    enabled: bool = False
+    state_path: str = "data/calibration_state.json"
+    # Feed a spread sample only on this timeframe's close (avoids hammering the
+    # broker on every TF). M5 is the lowest analysis TF.
+    spread_sample_tf: str = "M5"
+    # Persist learned stats on shutdown / reload on startup.
+    persist: bool = True
+
+
+@dataclass
 class AppConfig:
     # All 4 categories enabled — forex, commodity, index, synthetic
     enabled_categories: list[str] = field(
@@ -2973,6 +2993,7 @@ class AppConfig:
     governor: GovernorConfig = field(default_factory=GovernorConfig)
     performance: PerformanceConfig = field(default_factory=PerformanceConfig)
     ops: OpsConfig = field(default_factory=OpsConfig)
+    calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
     # NOTE: scan cadence is owned by PerformanceConfig.scan_interval_active /
     # scan_interval_with_positions. The old AppConfig.scan_interval_seconds was
     # superseded and never read — removed.
