@@ -2200,8 +2200,10 @@ class EventDrivenSystem:
         logger.info("  APEX TRADER — EVENT-DRIVEN MODE")
         logger.info("=" * 60)
 
-        # Clean-start executes in main() before SystemContext.create(),
-        # so learned DB files are not locked on Windows when purge runs.
+        # NOTE:
+        # clean-start now runs in main.py before SystemContext/bootstrap work so
+        # git sync/reset can touch data/apex_events.db before the EventStore
+        # logger sink opens it on Windows.
 
         # ── Startup recovery: crash marker detection ─────────────────
         try:

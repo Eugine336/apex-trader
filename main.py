@@ -19,14 +19,9 @@ from loguru import logger
 
 load_dotenv()
 
-from persistence.event_sink import event_store_sink, install_stdlib_intercept
-from persistence.event_store import get_event_store, shutdown_event_store
-
-logger.add(event_store_sink, level="DEBUG")
-install_stdlib_intercept()
-atexit.register(shutdown_event_store)
-
 from config import AppConfig, get_instruments_by_category, INSTRUMENT_REGISTRY
+
+_EVENT_STORE_LOGGING_INITIALIZED = False
 
 
 def _apply_log_level(level: str) -> None:
@@ -37,7 +32,21 @@ def _apply_log_level(level: str) -> None:
     except Exception:  # noqa: BLE001
         pass
     logger.add(sys.stderr, level=lvl)
+
+
+def _initialize_event_store_logging() -> None:
+    """Enable EventStore log sinks only after clean-start has completed."""
+    global _EVENT_STORE_LOGGING_INITIALIZED
+    if _EVENT_STORE_LOGGING_INITIALIZED:
+        return
+
+    from persistence.event_sink import event_store_sink, install_stdlib_intercept
+    from persistence.event_store import shutdown_event_store
+
     logger.add(event_store_sink, level="DEBUG")
+    install_stdlib_intercept()
+    atexit.register(shutdown_event_store)
+    _EVENT_STORE_LOGGING_INITIALIZED = True
 
 
 def main() -> None:
@@ -97,20 +106,29 @@ def main() -> None:
 
     logger.info("Phase 8 — Dashboard available (--dashboard to launch)")
 
-    # ── Clean-start before any subsystem opens SQLite handles ───────────
+    # ── Clean-start: sync data junction + one-time learned-data purge ──
+    # Best-effort and non-fatal. Logs before EventStore init stay on stderr,
+    # which avoids opening data/apex_events.db before git sync/reset runs.
     try:
-        from platforms.clean_start import run_startup_clean_start
-
         db_cfg = getattr(config, "data_backup", None)
-        branch = getattr(db_cfg, "sync_branch", "main") if db_cfg else "main"
-        pull_res, purge_res = run_startup_clean_start(branch=branch)
-        logger.info(
-            "[event-driven] clean-start — pull: {} | purge: {}",
-            pull_res,
-            purge_res,
-        )
-    except Exception as exc:
+        if db_cfg is None or getattr(db_cfg, "clean_start_on_first_boot", True):
+            from platforms.clean_start import (
+                purge_stale_learned_data,
+                sync_clean_state_from_remote,
+            )
+
+            branch = getattr(db_cfg, "sync_branch", "main") if db_cfg else "main"
+            pull_res = sync_clean_state_from_remote(branch=branch)
+            purge_res = purge_stale_learned_data()
+            logger.info(
+                "[event-driven] clean-start — pull: {} | purge: {}",
+                pull_res,
+                purge_res,
+            )
+    except Exception as exc:  # noqa: BLE001
         logger.debug("[startup] clean-start step skipped: {}", exc)
+
+    _initialize_event_store_logging()
 
     # ── Build SystemContext (all subsystems) ─────────────────────────
     from core.system_context import SystemContext
