@@ -88,6 +88,92 @@ def _struct_event(struct_by_tf: dict, tf: str) -> str:
     return ev.value if hasattr(ev, "value") else str(ev)
 
 
+def _struct_swings(struct_by_tf: dict, tf: str) -> tuple[Optional[float], Optional[float]]:
+    """Read ``(swing_high, swing_low)`` for a timeframe from a WorldModel's
+    ``structure_by_tf()`` mapping of ``StructureAnalysis`` objects.
+
+    Returns ``(None, None)`` when the timeframe is absent.  Feeds the
+    DecisionEngine's structure-based protective stop for adopted trades, whose
+    candidate swing-level lists were always empty (and so the stop never placed
+    a level) because neither management builder populated these.
+    """
+    sa = struct_by_tf.get(tf)
+    if sa is None:
+        return None, None
+    return getattr(sa, "swing_high", None), getattr(sa, "swing_low", None)
+
+
+def _compute_m1_micro(pm, symbol: str, norm_dir: str, pip_size: float) -> dict:
+    """Live M1 momentum (aligned count + micro-structure event/trend) for one
+    symbol/direction.
+
+    Shared by the in-trade management micro-context AND the entry-side
+    DecisionEngine context so BOTH planes read the SAME live M1 evidence
+    instead of a static default (the entry plane previously pinned
+    ``m1_aligned_count`` at 3, ``m1_event`` at ``""`` and ``m1_trend`` at
+    ``"UNKNOWN"`` because the orchestrator decision dict never carried them).
+
+    Reads go through the cached ``fetch_market_data`` (the M1@100 key the
+    entry/analysis planes already warm), so no extra broker round-trip is
+    added.  Returns the EntryContext/TradeContext safe defaults when data is
+    unavailable, so a missing/short feed never changes behaviour or raises.
+    """
+    out: dict[str, Any] = {
+        "m1_aligned_count": 0,
+        "m1_event": "NONE",
+        "m1_trend": "UNKNOWN",
+    }
+    is_long = norm_dir.upper() in ("BUY", "LONG")
+    try:
+        from brain.market_data_utils import drop_forming_bar
+        from brain.structure_engine import StructureEngine
+
+        m1_data = pm.fetch_market_data(symbol, ["M1"], 100)
+        m1_df = m1_data.get("M1") if m1_data else None
+        if m1_df is not None and len(m1_df) >= 5:
+            closed = drop_forming_bar(m1_df)
+            if closed is not None and len(closed) >= 5:
+                last5 = closed.iloc[-5:]
+                closes = last5["close"].values
+                opens = last5["open"].values
+                if is_long:
+                    aligned = sum(1 for c, o in zip(closes, opens) if c > o)
+                else:
+                    aligned = sum(1 for c, o in zip(closes, opens) if c < o)
+                out["m1_aligned_count"] = int(aligned)
+                try:
+                    engine = StructureEngine(swing_lookback=3, pip_size=pip_size)
+                    analysis = engine.analyze(closed.iloc[-min(len(closed), 100):])
+                    out["m1_event"] = analysis.last_event.value
+                    out["m1_trend"] = analysis.trend.value
+                except Exception as exc:
+                    logger.warning(
+                        "[m1-micro] M1 structure read failed for {}: {}",
+                        symbol, exc,
+                    )
+    except Exception as exc:
+        logger.debug("[m1-micro] M1 momentum read failed for {}: {}", symbol, exc)
+    return out
+
+
+def _micro_confirmation_from_event(m1_event: str, direction: str) -> tuple[str, str]:
+    """Derive ``(micro_confirmation, entry_mode)`` from a live M1 structural event.
+
+    An M1 BOS/CHoCH aligned with the trade direction is a market-confirmation
+    trigger, so the DecisionEngine's MARKET fast-path becomes reachable instead
+    of every entry defaulting to PENDING.  Returns ``("", "PENDING")`` when the
+    M1 event does not confirm the direction (unchanged behaviour).  Note this
+    only affects the entry-action label (MARKET vs PENDING); both still enter,
+    and the reversal-evidence terms read ``m1_event`` directly.
+    """
+    ev = str(m1_event or "").upper()
+    is_long = direction.upper() in ("BUY", "LONG")
+    aligned = ("BULLISH" in ev) if is_long else ("BEARISH" in ev)
+    if ("BOS" in ev or "CHOCH" in ev) and aligned:
+        return "choch_bos", "MARKET"
+    return "", "PENDING"
+
+
 # ── Broker-truth field readers ───────────────────────────────────────
 # Open positions returned by the platform layer are broker ``PositionInfo``
 # objects (fields: ``pnl``, ``lots``, ``open_price``, ``current_price``,
@@ -731,39 +817,14 @@ class PositionEvaluator:
             "h1_last_candle_bearish": None,
             "h1_last_candle_doji": False,
         }
-        is_long = norm_dir.upper() in ("BUY", "LONG")
 
         # ── M1 momentum (alignment count + micro-structure event) ────────
-        try:
-            from brain.market_data_utils import drop_forming_bar
-            from brain.structure_engine import StructureEngine
-
-            m1_data = self._pm.fetch_market_data(symbol, ["M1"], 100)
-            m1_df = m1_data.get("M1") if m1_data else None
-            if m1_df is not None and len(m1_df) >= 5:
-                closed = drop_forming_bar(m1_df)
-                if closed is not None and len(closed) >= 5:
-                    last5 = closed.iloc[-5:]
-                    closes = last5["close"].values
-                    opens = last5["open"].values
-                    if is_long:
-                        aligned = sum(1 for c, o in zip(closes, opens) if c > o)
-                    else:
-                        aligned = sum(1 for c, o in zip(closes, opens) if c < o)
-                    out["m1_aligned_count"] = int(aligned)
-                    try:
-                        pip_size = self._safe_pip_size(symbol)
-                        engine = StructureEngine(swing_lookback=3, pip_size=pip_size)
-                        analysis = engine.analyze(closed.iloc[-min(len(closed), 100):])
-                        out["m1_event"] = analysis.last_event.value
-                        out["m1_trend"] = analysis.trend.value
-                    except Exception as exc:
-                        logger.warning(
-                            "[de-mgmt] M1 structure read failed for {}: {}",
-                            symbol, exc,
-                        )
-        except Exception as exc:
-            logger.debug("[de-mgmt] M1 momentum read failed for {}: {}", symbol, exc)
+        m1 = _compute_m1_micro(
+            self._pm, symbol, norm_dir, self._safe_pip_size(symbol),
+        )
+        out["m1_aligned_count"] = m1["m1_aligned_count"]
+        out["m1_event"] = m1["m1_event"]
+        out["m1_trend"] = m1["m1_trend"]
 
         # ── H1 last-closed-candle context (count matches analysis plane) ─
         try:
@@ -838,6 +899,13 @@ class PositionEvaluator:
             h4_event = _struct_event(structure, "H4")
             h1_event = _struct_event(structure, "H1")
             m5_event = _struct_event(structure, "M5")
+            # Structural swing levels per timeframe — the DecisionEngine's
+            # protective-stop placement for adopted trades picks the nearest of
+            # these; without them its candidate lists were always empty and it
+            # could never place a structure-based level.
+            d1_swing_high, d1_swing_low = _struct_swings(structure, "D1")
+            h4_swing_high, h4_swing_low = _struct_swings(structure, "H4")
+            h1_swing_high, h1_swing_low = _struct_swings(structure, "H1")
             # Live directional consensus panel from the current WorldModel — the
             # unbiased module votes, carried into the in-trade thesis check so
             # management revalidates against the same panel the entry used.
@@ -982,12 +1050,18 @@ class PositionEvaluator:
                 d1_trend=d1_trend,
                 d1_confidence=d1_conf,
                 d1_event=d1_event,
+                d1_swing_high=d1_swing_high,
+                d1_swing_low=d1_swing_low,
                 h4_trend=h4_trend,
                 h4_confidence=h4_conf,
                 h4_event=h4_event,
+                h4_swing_high=h4_swing_high,
+                h4_swing_low=h4_swing_low,
                 h1_trend=h1_trend,
                 h1_confidence=h1_conf,
                 h1_event=h1_event,
+                h1_swing_high=h1_swing_high,
+                h1_swing_low=h1_swing_low,
                 h1_last_candle_bearish=micro["h1_last_candle_bearish"],
                 h1_last_candle_doji=micro["h1_last_candle_doji"],
                 m1_trend=micro["m1_trend"],
@@ -999,7 +1073,17 @@ class PositionEvaluator:
                 fast_opposition_streak=fast_opp,
                 score_history=list(score_hist[-10:]),
                 open_trade_count=len(open_positions),
+                max_open_trades=(
+                    self._config.risk.max_open_trades
+                    if self._config is not None else 5
+                ),
                 portfolio_heat_pct=de_heat_pct,
+                # Broker PositionInfo carries no entry zone type and the live
+                # path has no orphan-adoption tagging (recovery only reports
+                # orphans, never adopts), so this is "" for genuine APEX entries
+                # — is_adopted stays False, which is correct. getattr keeps it
+                # forward-compatible if a future PositionInfo carries entry_type.
+                entry_type=getattr(pos, "entry_type", "") or "",
                 session_name=session_name,
                 session_tradeable=session_tradeable,
                 minutes_to_high_impact_news=news_mins,
@@ -4789,6 +4873,31 @@ class EventDrivenSystem:
                     except Exception:
                         pass
 
+                    # Live M1 evidence — the orchestrator decision dict never
+                    # carried m1_aligned/m1_event, so the entry plane defaulted
+                    # candle momentum to a constant and the momentum-event /
+                    # read-confidence terms never fired. Read the SAME live M1
+                    # data management uses so both planes agree.
+                    norm_entry_dir = (
+                        "BUY" if direction.upper() in ("BUY", "LONG") else "SELL"
+                    )
+                    m1_micro = _compute_m1_micro(
+                        self._pm, symbol, norm_entry_dir,
+                        self._safe_pip_size(symbol),
+                    )
+                    micro_conf, entry_mode_v = _micro_confirmation_from_event(
+                        m1_micro["m1_event"], direction,
+                    )
+                    # Live volatility regime — entry previously always used the
+                    # base DecisionWeights (regime=""); feed the same H1 regime
+                    # the backtest entry uses so weighting matches across planes.
+                    entry_regime = ""
+                    if wm is not None:
+                        try:
+                            entry_regime = wm.regime_by_tf().get("H1", "") or ""
+                        except Exception:
+                            entry_regime = ""
+
                     entry_ctx = DEContext(
                         symbol=symbol,
                         direction="LONG" if direction.upper() in ("BUY", "LONG") else "SHORT",
@@ -4800,6 +4909,8 @@ class EventDrivenSystem:
                         tp2=tp2,
                         risk_reward_2=abs(tp2 - entry_price) / max(abs(entry_price - sl), 1e-8) if sl else 0.0,
                         risk_pips=abs(entry_price - sl) / self._safe_pip_size(symbol) if sl else 0.0,
+                        entry_mode=entry_mode_v,
+                        micro_confirmation=micro_conf,
                         d1_trend=d1_trend,
                         d1_confidence=d1_conf,
                         d1_event=d1_event,
@@ -4808,9 +4919,9 @@ class EventDrivenSystem:
                         h4_event=h4_event,
                         h1_trend=h1_trend,
                         h1_confidence=h1_conf,
-                        h1_event=h1_event,
-                        m1_aligned_count=decision.get("m1_aligned", 3),
-                        m1_event=decision.get("m1_event", ""),
+                        m1_trend=m1_micro["m1_trend"],
+                        m1_aligned_count=m1_micro["m1_aligned_count"],
+                        m1_event=m1_micro["m1_event"],
                         is_counter_trend=bool(decision.get("is_counter_trend", False)),
                         bias_direction=decision.get("bias_direction", ""),
                         open_trade_count=len(open_positions),
@@ -4818,6 +4929,7 @@ class EventDrivenSystem:
                         portfolio_heat_pct=de_heat_pct,
                         current_spread=de_cur_spread,
                         typical_spread=de_typ_spread,
+                        regime=entry_regime,
                         # Full directional-consensus panel synthesized by the
                         # analysis plane — passed uncompressed so the decision
                         # engine reasons over which modules agree/dissent.
