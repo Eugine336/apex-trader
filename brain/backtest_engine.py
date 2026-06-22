@@ -1068,7 +1068,12 @@ class BacktestEngine:
         score = int(getattr(zone, "conviction", 0) or 0)
 
         # ── Entry prices from the shared EntryEngine ────────────────────────
-        signal = self._calculate_entry(pair, direction, slices, balance, wm)
+        # EntryEngine.calculate_entry reads scan_result.score/.confluences, which
+        # the WorldModel does not expose — feed it the same scan-view adapter the
+        # geometry path uses, carrying the zone conviction as the entry score.
+        scan_view = _world_model_to_scan_view(wm)
+        scan_view.score = score
+        signal = self._calculate_entry(pair, direction, slices, balance, scan_view)
         if signal is None:
             return None
 
