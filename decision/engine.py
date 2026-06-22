@@ -110,6 +110,10 @@ class DecisionEngine:
         consensus_min_alignment: float = 0.15,
         consensus_conviction_weight: float = 0.15,
         consensus_high_authority_veto: bool = True,
+        range_edge_required: bool = False,
+        range_edge_htf_min: float = 0.20,
+        range_edge_consensus_min: float = 0.40,
+        range_edge_skip_penalty: float = 0.10,
     ) -> None:
         self.weights = weights or DecisionWeights()
         # Roadmap D — regime-dependent weighting.
@@ -213,6 +217,20 @@ class DecisionEngine:
         self.consensus_min_alignment = max(0.0, float(consensus_min_alignment))
         self.consensus_conviction_weight = max(0.0, float(consensus_conviction_weight))
         self.consensus_high_authority_veto = bool(consensus_high_authority_veto)
+        # ── No-directional-edge range guard ──────────────────────────────
+        # A flat "range" setup (|tf_alignment| < range_edge_htf_min) with no
+        # strong directional consensus has no statistical reason to favour
+        # either side, yet the baseline ENTER inclination + zone-shape / R:R
+        # bonuses can still net a positive margin and open a directional trade
+        # on noise — the dominant slow-bleed loss pattern. When enabled, such
+        # no-edge ranges are forced to a non-softenable SKIP unless real
+        # direction is present: the HTF stack (|tf_alignment| ≥ range_edge_htf_min)
+        # or the module panel (consensus_alignment ≥ range_edge_consensus_min).
+        # Inert by default → legacy "trade the zone on R:R alone" behaviour.
+        self.range_edge_required = bool(range_edge_required)
+        self.range_edge_htf_min = max(0.0, float(range_edge_htf_min))
+        self.range_edge_consensus_min = max(0.0, float(range_edge_consensus_min))
+        self.range_edge_skip_penalty = max(0.0, float(range_edge_skip_penalty))
 
     @staticmethod
     def _tf_conflict_opposition(sa: SituationAssessment) -> float:
@@ -1070,6 +1088,31 @@ class DecisionEngine:
                         f"+{self.reversal_no_evidence_skip_penalty:.2f}"
                     )
 
+        # ── No-directional-edge range guard ──────────────────────────────
+        # When neither the HTF stack nor a strong module-panel consensus
+        # supplies direction, a flat "range" setup is being entered on zone
+        # shape + R:R alone — no statistical edge, just transaction-cost decay.
+        # Neutralise the accumulated ENTER inclination and force a SKIP. A
+        # qualified reversal carries an HTF lean (handled above) and is exempt.
+        range_no_edge = False
+        if (
+            self.range_edge_required
+            and not is_reversal
+            and abs(sa.tf_alignment) < self.range_edge_htf_min
+        ):
+            has_consensus_edge = (
+                self.consensus_aware
+                and consensus_align >= self.range_edge_consensus_min
+            )
+            if not has_consensus_edge:
+                range_no_edge = True
+                penalty = enter_score + self.range_edge_skip_penalty
+                skip_score += penalty
+                skip_parts.append(
+                    f"no directional edge (range align {sa.tf_alignment:+.2f}, "
+                    f"consensus {consensus_align:+.2f}) +{penalty:.2f}"
+                )
+
         # ── Pick winner ──────────────────────────────────────────────────
         margin = enter_score - skip_score
         gate_softened = False
@@ -1087,6 +1130,10 @@ class DecisionEngine:
             try:
                 soften = self.soften_gate and margin > self.gate_safety_margin
             except Exception:
+                soften = False
+            # A no-edge range never softens — there is no thesis for the
+            # orchestrator round table to size; it is a genuine no-trade.
+            if range_no_edge:
                 soften = False
             if not soften:
                 reason = (
