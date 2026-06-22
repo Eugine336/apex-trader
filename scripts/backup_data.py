@@ -186,6 +186,66 @@ def run_backup(
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def sync_data_repo(
+    *,
+    commit_message: str,
+    exclude_patterns: list[str] | None = None,
+    remote: str = "origin",
+    branch: str = "main",
+    push: bool = True,
+) -> str:
+    """Commit + push the live ``data/`` junction to its own GitHub remote.
+
+    Unlike :func:`run_backup` (which force-pushes a filtered snapshot to the
+    ``data-backup`` orphan branch), this commits the data repository in place on
+    its working branch — the everyday auto-sync. Raw market CSVs (and anything
+    matching ``exclude_patterns``) are kept out of the commit via git pathspec
+    exclusion. Idempotent: returns ``"no changes"`` when the tree is clean.
+
+    Non-fatal by contract — callers should treat any non-success string as a
+    soft warning and keep running.
+    """
+    if exclude_patterns is None:
+        exclude_patterns = list(_DEFAULT_EXCLUDE_PATTERNS)
+
+    if not _DATA_DIR.is_dir():
+        return "no data directory"
+
+    data_dir = str(_DATA_DIR.resolve())
+
+    ok, _ = _run_git(["rev-parse", "--is-inside-work-tree"], data_dir)
+    if not ok:
+        return "data dir is not a git repo"
+
+    # Stage everything except excluded patterns. Default git pathspec matching
+    # treats '*' as crossing '/', so ':(exclude)*.csv' drops CSVs at any depth.
+    add_args = ["add", "-A", "."]
+    add_args += [f":(exclude){pat}" for pat in exclude_patterns]
+    ok, add_out = _run_git(add_args, data_dir)
+    if not ok:
+        logger.warning("[data-sync] stage failed: {}", add_out)
+        return f"stage failed: {add_out.splitlines()[0] if add_out else 'unknown'}"
+
+    ok, diff_out = _run_git(["diff", "--cached", "--stat"], data_dir)
+    if ok and not diff_out.strip():
+        return "no changes"
+
+    ok, commit_out = _run_git(["commit", "-m", commit_message], data_dir)
+    if not ok:
+        logger.warning("[data-sync] commit failed: {}", commit_out)
+        return f"commit failed: {commit_out.splitlines()[0] if commit_out else 'unknown'}"
+
+    if not push:
+        return "committed (push skipped)"
+
+    ok, push_out = _run_git(["push", remote, branch], data_dir)
+    if not ok:
+        logger.warning("[data-sync] push failed: {}", push_out)
+        return f"push failed: {push_out.splitlines()[0] if push_out else 'unknown'}"
+
+    return f"synced → {remote}/{branch}"
+
+
 # ── CLI ──────────────────────────────────────────────────────────────────
 
 

@@ -765,7 +765,21 @@ class SystemContext:
         # ── DailyMaintenance ────────────────────────────────────────
         try:
             from platforms.maintenance import DailyMaintenance as _DailyMaint
-            ctx.daily_maintenance = _DailyMaint()
+            db_cfg = getattr(config, "data_backup", None)
+            ctx.daily_maintenance = _DailyMaint(
+                auto_sync_data_repo=bool(
+                    getattr(db_cfg, "auto_sync_data_repo", True) if db_cfg else True
+                ),
+                sync_branch=str(
+                    getattr(db_cfg, "sync_branch", "main") if db_cfg else "main"
+                ),
+                sync_orphan_branch=bool(
+                    getattr(db_cfg, "sync_orphan_branch", True) if db_cfg else True
+                ),
+                sync_exclude_patterns=list(
+                    getattr(db_cfg, "exclude_patterns", ["*.csv"]) if db_cfg else ["*.csv"]
+                ),
+            )
         except Exception as exc:
             logger.warning("[SystemContext] DailyMaintenance init failed: {}", exc)
 

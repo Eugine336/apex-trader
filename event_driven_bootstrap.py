@@ -2200,6 +2200,28 @@ class EventDrivenSystem:
         logger.info("  APEX TRADER — EVENT-DRIVEN MODE")
         logger.info("=" * 60)
 
+        # ── Clean-start: sync the cleared data junction + one-time purge ──
+        # Keep the local data junction in step with the cleared remote and, on
+        # the first boot after the equal-weight migration, sweep away any
+        # residual learned/adaptive artifacts so the system relearns from
+        # scratch. Both steps are best-effort and never abort startup.
+        try:
+            db_cfg = getattr(self._config, "data_backup", None)
+            if db_cfg is None or getattr(db_cfg, "clean_start_on_first_boot", True):
+                from platforms.clean_start import (
+                    purge_stale_learned_data,
+                    sync_clean_state_from_remote,
+                )
+                branch = getattr(db_cfg, "sync_branch", "main") if db_cfg else "main"
+                pull_res = sync_clean_state_from_remote(branch=branch)
+                purge_res = purge_stale_learned_data()
+                logger.info(
+                    "[event-driven] clean-start — pull: {} | purge: {}",
+                    pull_res, purge_res,
+                )
+        except Exception as exc:
+            logger.debug("[startup] clean-start step skipped: {}", exc)
+
         # ── Startup recovery: crash marker detection ─────────────────
         try:
             from ops.lifecycle import StartupRecovery
@@ -2763,7 +2785,12 @@ class EventDrivenSystem:
             if ctx is not None and ctx.daily_maintenance is not None:
                 try:
                     if ctx.daily_maintenance.should_run():
-                        result = ctx.daily_maintenance.run()
+                        event_count = None
+                        try:
+                            event_count = get_event_store().count()
+                        except Exception:
+                            event_count = None
+                        result = ctx.daily_maintenance.run(event_count=event_count)
                         logger.info("[event-driven] daily maintenance — {}", result)
                         # Day-roll → reset the daily risk silos (portfolio
                         # governor daily P&L/halt + per-account daily loss caps).

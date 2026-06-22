@@ -1270,6 +1270,21 @@ class DataBackupConfig:
     interval_hours: int = 1
     max_file_size_mb: float = 95.0
     exclude_patterns: list[str] = field(default_factory=lambda: ["*.csv"])
+    # Auto-sync the data junction to its own GitHub remote after the daily
+    # local backup. Commits + pushes the working tree (DBs, journals, ML
+    # profiles, backups) to ``sync_branch``; raw market CSVs are excluded via
+    # ``exclude_patterns``. Non-blocking — a failed push logs a warning and the
+    # trading loop continues.
+    auto_sync_data_repo: bool = True
+    sync_branch: str = "main"
+    # Also refresh the ``data-backup`` orphan branch during daily maintenance so
+    # ``scripts/restore_data.py`` restores the current (clean) state rather than
+    # stale pre-migration data.
+    sync_orphan_branch: bool = True
+    # One-time clean-start safety net: on first boot after deploying this build,
+    # pull the cleared remote state and purge any residual learned/adaptive
+    # artifacts so the equal-weight system learns from scratch.
+    clean_start_on_first_boot: bool = True
 
 
 # ---------------------------------------------------------------------------
