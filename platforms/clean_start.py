@@ -1,20 +1,15 @@
 """
 APEX TRADER — Clean-Start Helpers
 
-Two best-effort, non-fatal startup steps that keep the data junction in sync
-with the cleared remote after the equal-weight migration:
+Two best-effort, non-fatal startup steps:
 
-1. ``sync_clean_state_from_remote`` — ``git pull`` the data repo so the local
-   working tree matches the (cleared) remote. Only touches tracked files; live
-   runtime DBs written since the last commit are untracked and survive.
+1. ``sync_clean_state_from_remote`` — ``git fetch`` + ``git reset --hard`` the
+   data repo so the local working tree matches the remote branch exactly.
 
-2. ``purge_stale_learned_data`` — a ONE-TIME safety net. On the first boot after
-   this build is deployed it removes any residual learned/adaptive artifacts
-   (scoring weights, ML profiles, edge trackers, tuner/discovery DBs) so the
-   equal-weight system learns from scratch. Operational stores that carry live
-   position/recovery state (positions, events, shadow, deriv, management) are
-   deliberately left untouched. Guarded by a sentinel file so it never runs
-   twice.
+2. ``purge_stale_learned_data`` — schema-version-gated cleanup. If the local
+   schema version file does not match ``config.SCHEMA_VERSION``, remove residual
+   learned/adaptive artifacts (scoring weights, ML profiles, edge trackers,
+   tuner/discovery DBs) so the equal-weight system learns from scratch.
 
 Both functions swallow their own errors and return a short summary string;
 callers should log the result and continue regardless.
@@ -25,7 +20,10 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
+from config import SCHEMA_VERSION
 from loguru import logger
+
+from config import SCHEMA_VERSION
 
 # Learned / adaptive artifacts that encoded the old structure-biased weights.
 # These are safe to delete — they are regenerated empty on first write.
@@ -56,7 +54,8 @@ _STALE_LEARNED_FILES: tuple[str, ...] = (
     "behavior_discovery.db",
 )
 
-_SENTINEL_NAME = ".clean_start_done"
+_CODE_REPO_ROOT = Path(__file__).resolve().parent.parent
+_LOCAL_SCHEMA_VERSION_NAME = ".local_schema_version"
 
 
 def _is_git_repo(data_dir: Path) -> bool:
@@ -71,75 +70,140 @@ def _is_git_repo(data_dir: Path) -> bool:
         return False
 
 
+def _read_local_schema_version(version_file: Path) -> str | None:
+    try:
+        value = version_file.read_text(encoding="utf-8").strip()
+        return value or None
+    except FileNotFoundError:
+        return None
+    except OSError as exc:
+        logger.warning("[clean-start] schema-version read failed: {}", exc)
+        return None
+
+
+def _write_local_schema_version(version_file: Path, schema_version: str) -> bool:
+    try:
+        version_file.parent.mkdir(parents=True, exist_ok=True)
+        version_file.write_text(f"{schema_version}\n", encoding="utf-8")
+        return True
+    except OSError as exc:
+        logger.warning("[clean-start] schema-version write failed: {}", exc)
+        return False
+
+
 def sync_clean_state_from_remote(
     data_dir: str = "data",
     *,
     remote: str = "origin",
     branch: str = "main",
 ) -> str:
-    """``git pull`` the data junction so it matches the cleared remote.
-
-    Non-fatal. Returns a short summary string.
-    """
+    """Fetch + hard-reset the data junction to the remote state."""
     d = Path(data_dir)
     if not d.is_dir():
         return "no data directory"
     if not _is_git_repo(d):
         return "data dir is not a git repo"
     try:
-        out = subprocess.run(
-            ["git", "-C", str(d.resolve()), "pull", "--ff-only", remote, branch],
+        fetch = subprocess.run(
+            ["git", "-C", str(d.resolve()), "fetch", remote],
             capture_output=True,
             text=True,
         )
-        if out.returncode != 0:
-            msg = (out.stderr or out.stdout or "unknown").strip().splitlines()
+        if fetch.returncode != 0:
+            msg = (fetch.stderr or fetch.stdout or "unknown").strip().splitlines()
             reason = msg[0] if msg else "unknown"
-            logger.warning("[clean-start] data-repo pull failed: {}", reason)
-            return f"pull failed: {reason}"
-        return "pulled remote state"
+            logger.warning("[clean-start] data-repo fetch failed: {}", reason)
+            return f"fetch failed: {reason}"
+
+        targets = [branch]
+        if branch == "main":
+            targets.append("master")
+
+        last_reason = "unknown"
+        for idx, target in enumerate(targets):
+            reset = subprocess.run(
+                ["git", "-C", str(d.resolve()), "reset", "--hard", f"{remote}/{target}"],
+                capture_output=True,
+                text=True,
+            )
+            if reset.returncode == 0:
+                if idx == 0:
+                    return f"reset to {remote}/{target}"
+                logger.warning(
+                    "[clean-start] data-repo branch '{}' missing, fell back to '{}/{}'",
+                    branch,
+                    remote,
+                    target,
+                )
+                return f"reset to {remote}/{target} (fallback)"
+
+            msg = (reset.stderr or reset.stdout or "unknown").strip().splitlines()
+            last_reason = msg[0] if msg else "unknown"
+            if idx == 0 and branch == "main":
+                logger.warning(
+                    "[clean-start] data-repo reset failed for {}/{}: {} — trying {}/master fallback",
+                    remote,
+                    target,
+                    last_reason,
+                    remote,
+                )
+            else:
+                logger.warning(
+                    "[clean-start] data-repo reset failed for {}/{}: {}",
+                    remote,
+                    target,
+                    last_reason,
+                )
+        return f"reset failed: {last_reason}"
     except Exception as exc:
-        logger.warning("[clean-start] data-repo pull errored: {}", exc)
+        logger.warning("[clean-start] data-repo sync errored: {}", exc)
         return f"error: {exc}"
 
 
-def purge_stale_learned_data(data_dir: str = "data") -> str:
-    """One-time removal of residual learned/adaptive artifacts.
+def _resolve_local_schema_version_file(local_schema_version_file: str | Path | None) -> Path:
+    if local_schema_version_file is None:
+        return _CODE_REPO_ROOT / _LOCAL_SCHEMA_VERSION_NAME
+    return Path(local_schema_version_file)
 
-    Idempotent via a sentinel file — after the first successful run it returns
-    ``"already clean"`` and deletes nothing. Non-fatal.
-    """
-    d = Path(data_dir)
-    sentinel = d / _SENTINEL_NAME
-    if sentinel.exists():
+
+def purge_stale_learned_data(
+    data_dir: str = "data",
+    *,
+    schema_version: str = SCHEMA_VERSION,
+    local_schema_version_file: str | Path | None = None,
+) -> str:
+    """Schema-version-gated removal of residual learned/adaptive artifacts."""
+    version_file = _resolve_local_schema_version_file(local_schema_version_file)
+    target_schema = str(schema_version)
+    try:
+        current_schema = version_file.read_text(encoding="utf-8").strip() if version_file.exists() else ""
+    except Exception as exc:
+        logger.warning("[clean-start] local schema version read failed: {}", exc)
+        current_schema = ""
+
+    if current_schema == target_schema:
         return "already clean"
 
+    d = Path(data_dir)
     if not d.is_dir():
-        # Nothing to purge yet, but still mark done so we don't re-scan forever
-        # once the directory appears with freshly-learned (valid) data.
-        try:
-            d.mkdir(parents=True, exist_ok=True)
-            sentinel.write_text("clean-start: no data dir at first boot\n")
-        except Exception as exc:
-            logger.warning("[clean-start] sentinel write failed: {}", exc)
-        return "no data directory"
-
-    removed: list[str] = []
-    for name in _STALE_LEARNED_FILES:
-        target = d / name
-        if target.exists():
-            try:
-                target.unlink()
-                removed.append(name)
-            except Exception as exc:
-                logger.warning("[clean-start] could not remove {}: {}", name, exc)
+        logger.warning("[clean-start] data directory missing during purge: {}", d)
+        removed = []
+    else:
+        removed: list[str] = []
+        for name in _STALE_LEARNED_FILES:
+            target = d / name
+            if target.exists():
+                try:
+                    target.unlink()
+                    removed.append(name)
+                except Exception as exc:
+                    logger.warning("[clean-start] could not remove {}: {}", name, exc)
 
     try:
-        sentinel.write_text(
-            f"clean-start complete — purged {len(removed)} learned artifact(s)\n"
-        )
+        version_file.parent.mkdir(parents=True, exist_ok=True)
+        version_file.write_text(target_schema, encoding="utf-8")
     except Exception as exc:
-        logger.warning("[clean-start] sentinel write failed: {}", exc)
+        logger.warning("[clean-start] local schema version write failed: {}", exc)
 
     if removed:
         logger.warning(
@@ -149,4 +213,23 @@ def purge_stale_learned_data(data_dir: str = "data") -> str:
             ", ".join(removed),
         )
         return f"purged {len(removed)}: {', '.join(removed)}"
+    if not d.is_dir():
+        return "no data directory"
     return "nothing stale to purge"
+
+
+def run_startup_clean_start(
+    *,
+    data_dir: str = "data",
+    branch: str = "main",
+    schema_version: str = SCHEMA_VERSION,
+    local_schema_version_file: str | Path | None = None,
+) -> tuple[str, str]:
+    """Convenience wrapper: sync remote state, then run schema-gated purge."""
+    pull_res = sync_clean_state_from_remote(data_dir=data_dir, branch=branch)
+    purge_res = purge_stale_learned_data(
+        data_dir=data_dir,
+        schema_version=schema_version,
+        local_schema_version_file=local_schema_version_file,
+    )
+    return pull_res, purge_res

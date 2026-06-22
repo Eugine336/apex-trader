@@ -11,6 +11,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from loguru import logger
 
+SCHEMA_VERSION = "1"
+
 
 class InstrumentCategory(Enum):
     FOREX = "forex"
@@ -1281,10 +1283,6 @@ class DataBackupConfig:
     # ``scripts/restore_data.py`` restores the current (clean) state rather than
     # stale pre-migration data.
     sync_orphan_branch: bool = True
-    # One-time clean-start safety net: on first boot after deploying this build,
-    # pull the cleared remote state and purge any residual learned/adaptive
-    # artifacts so the equal-weight system learns from scratch.
-    clean_start_on_first_boot: bool = True
 
 
 # ---------------------------------------------------------------------------
