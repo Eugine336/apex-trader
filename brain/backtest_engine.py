@@ -32,6 +32,19 @@ from brain.trade_journal import TradeJournal, TradeRecord
 from loguru import logger
 
 
+# ── Live-plane management constants (single source of truth) ─────────────
+# Mirror the live event-driven plane so the backtest banks/scales exactly as
+# it does.  TP1 partial + breakeven are tick mechanics owned by
+# ``execution.position_worker`` (``_check_tp1``/``_check_breakeven``,
+# default ``partial_close_ratio = 0.5``) — the backtest models that here, it is
+# NOT a DecisionEngine action.  ``_DEFAULT_PARTIAL_CLOSE_RATIO`` and
+# ``_SCALE_IN_RISK_FRACTION`` mirror ``event_driven_bootstrap`` for the
+# strategic PARTIAL_CLOSE / SCALE_IN verdicts the governor/DE can emit.
+_TP1_PARTIAL_RATIO = 0.5          # execution.position_worker WorkerConfig.partial_close_ratio
+_DEFAULT_PARTIAL_CLOSE_RATIO = 0.5  # event_driven_bootstrap._DEFAULT_PARTIAL_CLOSE_RATIO
+_SCALE_IN_RISK_FRACTION = 0.5     # event_driven_bootstrap._SCALE_IN_RISK_FRACTION
+
+
 @dataclass
 class ATRComparisonResult:
     """Side-by-side metrics: structure-stop vs ATR-stop on the same setups.
@@ -513,6 +526,13 @@ class BacktestEngine:
         self.legacy_mode = bool(legacy_mode)
         self.pip_value_per_lot = float(pip_value_per_lot)
 
+        # ── Daily realized-P&L tracking (live-parity portfolio sizing) ───
+        # Reset per calendar day in ``run`` and accumulated on each close, so
+        # PortfolioDivision sees the real remaining daily-loss budget instead of
+        # a hardcoded 0.0 (which neutered the daily-loss throttle).
+        self._bt_day = None
+        self._bt_daily_pnl = 0.0
+
         # ── Live adjudication / management / sizing engines ──────────────
         # Constructed with the same defaults the live plane uses so the
         # backtest exercises identical decision logic.  Guarded so a missing
@@ -596,6 +616,10 @@ class BacktestEngine:
         total_commission = 0.0
         total_slippage_cost = 0.0
 
+        # Reset daily realized-P&L tracking for this run (fed into sizing).
+        self._bt_day = None
+        self._bt_daily_pnl = 0.0
+
         atr_compared = 0
         atr_skipped = 0
         struct_returns: list[float] = []
@@ -616,6 +640,12 @@ class BacktestEngine:
         for i in range(start_index, end_index + 1):
             candle = m1.iloc[i]
             now = pd.Timestamp(candle["time"]).to_pydatetime()
+
+            # Roll the daily realized-P&L budget at each calendar-day boundary.
+            day = now.date()
+            if self._bt_day != day:
+                self._bt_day = day
+                self._bt_daily_pnl = 0.0
 
             slices = self._build_slices(data_by_timeframe, now)
             if not slices:
@@ -690,7 +720,11 @@ class BacktestEngine:
 
             pnl_r = close_event["pnl_r"]
             trade_returns_gross.append(pnl_r)
+            _bal_before = balance
             balance, commission = self._apply_pnl(balance, pnl_r, open_trade)
+            # Accumulate realized $ P&L into the day's budget (net of costs) so
+            # PortfolioDivision sees the real remaining daily-loss allowance.
+            self._bt_daily_pnl += (balance - _bal_before)
             total_commission += commission
             total_slippage_cost += open_trade.get("slippage_cost", 0.0)
             equity_curve.append(balance)
@@ -1056,7 +1090,12 @@ class BacktestEngine:
         score = int(getattr(zone, "conviction", 0) or 0)
 
         # ── Entry prices from the shared EntryEngine ────────────────────────
-        signal = self._calculate_entry(pair, direction, slices, balance, wm)
+        # EntryEngine.calculate_entry reads scan_result.score/.confluences, which
+        # the WorldModel does not expose — feed it the same scan-view adapter the
+        # geometry path uses, carrying the zone conviction as the entry score.
+        scan_view = _world_model_to_scan_view(wm)
+        scan_view.score = score
+        signal = self._calculate_entry(pair, direction, slices, balance, scan_view)
         if signal is None:
             return None
 
@@ -1277,11 +1316,19 @@ class BacktestEngine:
         de_size_mult: float,
         conviction: float,
         balance: float,
+        existing: Optional[list] = None,
     ):
         """Size the trade through PortfolioDivision → PositionSizer (live path).
 
         Returns ``(lots, max_loss, risk_amount)`` or ``None`` when the portfolio
         rejects the trade or sizes it to zero.
+
+        ``daily_pnl`` (realized $ so far today) and ``daily_loss_cap_pct`` (the
+        live governor cap) are fed in so PortfolioDivision's daily-loss throttle
+        actually binds — previously both arrived as 0.0, neutering it.
+        ``existing`` is the list of currently-open positions (empty in the
+        single-position serial model, since sizing only happens with no open
+        trade — matching reality).
         """
         try:
             from portfolio.models import (
@@ -1297,17 +1344,23 @@ class BacktestEngine:
                 pip_size=self.pip_size,
                 pip_value_per_lot=self.pip_value_per_lot,
             )
+            daily_cap = 0.0
+            gov = getattr(self.config, "governor", None)
+            if gov is not None:
+                daily_cap = float(getattr(gov, "daily_loss_cap_pct", 0.0) or 0.0)
             account = PortfolioAccount(
                 balance=balance or 0.0,
                 account_key="backtest",
-                daily_pnl=0.0,
-                daily_loss_cap_pct=0.0,
+                daily_pnl=float(getattr(self, "_bt_daily_pnl", 0.0) or 0.0),
+                daily_loss_cap_pct=daily_cap,
             )
             factors = SizingFactors(
                 base_risk_pct=self.risk_per_trade,
                 de_size_mult=de_size_mult,
             )
-            verdict = self.portfolio.evaluate(candidate, [], account, factors)
+            verdict = self.portfolio.evaluate(
+                candidate, list(existing or []), account, factors,
+            )
         except Exception as exc:
             logger.warning("[backtest] portfolio sizing failed for {}: {}", pair, exc)
             return None
@@ -1450,7 +1503,14 @@ class BacktestEngine:
         return None
 
     def _evaluate_geometry(self, trade: dict, candle: pd.Series) -> Optional[dict]:
-        """Broker-mechanics SL/TP detection from candle OHLC (no time stop)."""
+        """Broker/tick-mechanics SL/TP detection from candle OHLC (no time stop).
+
+        The TP1 partial (``_TP1_PARTIAL_RATIO`` off, stop→breakeven) models the
+        live ``execution.position_worker`` tick mechanics (``_check_tp1`` /
+        ``_check_breakeven``) — it is a faithful broker-mechanics simulation, not
+        a parallel strategy. Banking uses ``remaining_fraction`` so any prior
+        management PARTIAL_CLOSE composes correctly with the TP1 partial.
+        """
         direction = trade["setup"].direction
         entry = trade["entry_price"]
         stop = trade["stop_loss"]
@@ -1460,6 +1520,7 @@ class BacktestEngine:
         hold_minutes = (
             pd.Timestamp(candle["time"]).to_pydatetime() - trade["entry_time"]
         ).total_seconds() / 60.0
+        remaining = float(trade.get("remaining_fraction", 1.0) or 0.0)
 
         if direction == "LONG":
             low_hit = candle["low"] <= stop
@@ -1469,27 +1530,25 @@ class BacktestEngine:
             if not trade["tp1_hit"]:
                 if low_hit:
                     return {
-                        "pnl_r": -1.0,
+                        "pnl_r": remaining * -1.0,
                         "hold_minutes": hold_minutes,
                         "outcome": "LOSS",
                     }
                 if tp1_hit:
-                    trade["tp1_hit"] = True
-                    trade["stop_loss"] = entry
-                    trade["at_breakeven"] = True
-                    trade["realized_r"] += 0.5 * ((tp1 - entry) / risk)
+                    self._bank_tp1_partial(trade, (tp1 - entry) / risk, entry)
                     return None
 
             if trade["tp1_hit"]:
                 stop_be_hit = candle["low"] <= trade["stop_loss"]
                 if stop_be_hit:
+                    pnl = trade["realized_r"] + remaining * ((trade["stop_loss"] - entry) / risk)
                     return {
-                        "pnl_r": trade["realized_r"],
+                        "pnl_r": pnl,
                         "hold_minutes": hold_minutes,
-                        "outcome": "BREAKEVEN",
+                        "outcome": "BREAKEVEN" if abs(pnl) < 1e-9 or pnl <= trade["realized_r"] else "WIN",
                     }
                 if tp2_hit:
-                    pnl = trade["realized_r"] + 0.5 * ((tp2 - entry) / risk)
+                    pnl = trade["realized_r"] + remaining * ((tp2 - entry) / risk)
                     return {
                         "pnl_r": pnl,
                         "hold_minutes": hold_minutes,
@@ -1504,27 +1563,25 @@ class BacktestEngine:
             if not trade["tp1_hit"]:
                 if high_hit:
                     return {
-                        "pnl_r": -1.0,
+                        "pnl_r": remaining * -1.0,
                         "hold_minutes": hold_minutes,
                         "outcome": "LOSS",
                     }
                 if tp1_hit:
-                    trade["tp1_hit"] = True
-                    trade["stop_loss"] = entry
-                    trade["at_breakeven"] = True
-                    trade["realized_r"] += 0.5 * ((entry - tp1) / risk)
+                    self._bank_tp1_partial(trade, (entry - tp1) / risk, entry)
                     return None
 
             if trade["tp1_hit"]:
                 stop_be_hit = candle["high"] >= trade["stop_loss"]
                 if stop_be_hit:
+                    pnl = trade["realized_r"] + remaining * ((entry - trade["stop_loss"]) / risk)
                     return {
-                        "pnl_r": trade["realized_r"],
+                        "pnl_r": pnl,
                         "hold_minutes": hold_minutes,
-                        "outcome": "BREAKEVEN",
+                        "outcome": "BREAKEVEN" if abs(pnl) < 1e-9 or pnl <= trade["realized_r"] else "WIN",
                     }
                 if tp2_hit:
-                    pnl = trade["realized_r"] + 0.5 * ((entry - tp2) / risk)
+                    pnl = trade["realized_r"] + remaining * ((entry - tp2) / risk)
                     return {
                         "pnl_r": pnl,
                         "hold_minutes": hold_minutes,
@@ -1532,6 +1589,23 @@ class BacktestEngine:
                     }
 
         return None
+
+    def _bank_tp1_partial(self, trade: dict, tp1_r: float, entry: float) -> None:
+        """Bank the TP1 partial and move the stop to breakeven.
+
+        Mirrors ``execution.position_worker`` tick mechanics: take
+        ``_TP1_PARTIAL_RATIO`` of the still-open fraction at TP1, credit the
+        realized R, reduce open lots, and snap the stop to entry (breakeven).
+        """
+        remaining = float(trade.get("remaining_fraction", 1.0) or 0.0)
+        banked = _TP1_PARTIAL_RATIO * remaining
+        trade["tp1_hit"] = True
+        trade["stop_loss"] = entry
+        trade["at_breakeven"] = True
+        trade["partial_closed"] = True
+        trade["realized_r"] += banked * tp1_r
+        trade["remaining_fraction"] = max(0.0, remaining - banked)
+        trade["lots"] = float(trade.get("lots", 0.0) or 0.0) * (1.0 - _TP1_PARTIAL_RATIO)
 
     def _run_management(
         self,
@@ -1677,6 +1751,9 @@ class BacktestEngine:
         hold_minutes = (
             pd.Timestamp(candle["time"]).to_pydatetime() - trade["entry_time"]
         ).total_seconds() / 60.0
+        lots = float(trade.get("lots", 0.0) or 0.0)
+        # Dollar P&L from current open lots (matches the live broker-P&L feed).
+        pnl_dollars = pnl_pips * self.pip_value_per_lot * lots
 
         structure = wm.structure_by_tf()
         d1_trend, d1_conf = _struct_trend_conf(structure, "D1")
@@ -1741,6 +1818,45 @@ class BacktestEngine:
         except Exception:
             session_tradeable = True
 
+        # Live directional consensus panel from this bar's WorldModel — the same
+        # unbiased module votes the entry used, so management revalidates the
+        # thesis against the panel instead of a structure-only re-derivation.
+        consensus_votes = wm.votes_list() if hasattr(wm, "votes_list") else []
+
+        # Current setup score from the live WorldModel zones (matching direction)
+        # appended to the rolling history that feeds the conviction-collapse term.
+        want_dir = norm_dir.replace("BUY", "LONG").replace("SELL", "SHORT")
+        current_score = 0
+        try:
+            for z in wm.entry_zones_list():
+                if str(getattr(z, "direction", "") or "").upper() == want_dir:
+                    current_score = max(current_score, int(getattr(z, "conviction", 0) or 0))
+        except Exception:
+            current_score = 0
+        hist = trade.setdefault("score_history", [])
+        hist.append(current_score if current_score > 0 else int(getattr(setup, "score", 0) or 0))
+
+        # Live OQ/EQ + decay (entry_* − live_*) — same derivation as the live
+        # management path; None when no matching candidate this bar.
+        live_oq, live_eq = _oq_eq_from_wm(wm, norm_dir)
+        entry_oq = trade.get("entry_oq")
+        entry_eq = trade.get("entry_eq")
+        oq_decay = (entry_oq - live_oq) if (entry_oq is not None and live_oq is not None) else None
+        eq_decay = (entry_eq - live_eq) if (entry_eq is not None and live_eq is not None) else None
+
+        # Session from the candle timestamp (replaces the live SessionEngine
+        # status feed). No news calendar in backtest → news is always clear.
+        session_name = "UNKNOWN"
+        session_tradeable = True
+        try:
+            ss = self.session_engine.get_status(
+                pd.Timestamp(candle["time"]).to_pydatetime()
+            )
+            session_name = getattr(ss, "current_session", "UNKNOWN")
+            session_tradeable = bool(getattr(ss, "is_tradeable", True))
+        except Exception:
+            pass
+
         return TradeContext(
             symbol=pair,
             order_id=trade.get("order_id", ""),
@@ -1758,7 +1874,7 @@ class BacktestEngine:
             partial_closed=bool(trade.get("partial_closed", False)),
             lots=lots,
             original_risk_pips=risk_pips,
-            scan_score=int(getattr(setup, "score", 0) or 0),
+            scan_score=current_score or int(getattr(setup, "score", 0) or 0),
             scan_direction=scan_direction,
             live_oq=live_oq,
             live_eq=live_eq,
@@ -1805,10 +1921,11 @@ class BacktestEngine:
         close_price = float(candle["close"])
         risk = trade["risk"]
         if direction == "LONG":
-            remaining = (close_price - entry) / risk
+            remaining_r = (close_price - entry) / risk
         else:
-            remaining = (entry - close_price) / risk
-        pnl = trade["realized_r"] + (0.5 * remaining if trade["tp1_hit"] else remaining)
+            remaining_r = (entry - close_price) / risk
+        frac = float(trade.get("remaining_fraction", 1.0) or 0.0)
+        pnl = trade["realized_r"] + frac * remaining_r
         outcome = "WIN" if pnl > 0 else ("LOSS" if pnl < 0 else "BREAKEVEN")
         hold_minutes = (
             pd.Timestamp(candle["time"]).to_pydatetime() - trade["entry_time"]
@@ -1827,10 +1944,11 @@ class BacktestEngine:
         close_price = float(candle["close"])
         risk = trade["risk"]
         if direction == "LONG":
-            remaining = (close_price - entry) / risk
+            remaining_r = (close_price - entry) / risk
         else:
-            remaining = (entry - close_price) / risk
-        pnl = trade["realized_r"] + (0.5 * remaining if trade["tp1_hit"] else remaining)
+            remaining_r = (entry - close_price) / risk
+        frac = float(trade.get("remaining_fraction", 1.0) or 0.0)
+        pnl = trade["realized_r"] + frac * remaining_r
         outcome = "WIN" if pnl > 0 else ("LOSS" if pnl < 0 else "BREAKEVEN")
         return {"pnl_r": pnl, "hold_minutes": hold_minutes, "outcome": outcome}
 
