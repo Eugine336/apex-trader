@@ -17,6 +17,7 @@ import threading
 import time as _time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Optional
 
 from loguru import logger as _pm_logger
@@ -139,6 +140,7 @@ class PlatformManager:
             account_type=os.getenv("DERIV_ACCOUNT_TYPE", "demo"),
             token_expires_in=float(os.getenv("DERIV_TOKEN_EXPIRES_IN", "3600")),
             app_id=os.getenv("DERIV_APP_ID", ""),
+            token_refresh_callback=self._refresh_deriv_token,
             max_tick_age_seconds=self.config.risk.max_tick_age_seconds,
             reconnect_max_attempts=getattr(self.config.ops, "reconnect_max_retries", 10),
             reconnect_base_delay=getattr(self.config.ops, "reconnect_base_delay_seconds", 5.0),
@@ -756,6 +758,31 @@ class PlatformManager:
         return snap
 
     # ── Account ──────────────────────────────────────────────────────────
+
+    def _refresh_deriv_token(self) -> tuple[str, float]:
+        """Source a rotated Deriv access token for the connector's proactive refresh.
+
+        Deriv OAuth2 has no refresh-token grant, so a fresh token must be
+        supplied out-of-band. ``DERIV_ACCESS_TOKEN_FILE`` (preferred — a
+        secret-manager mount that can be updated while the process runs) is read
+        first, falling back to the ``DERIV_ACCESS_TOKEN`` env var. Returns
+        ``(token, expires_in)``; the connector ignores the result when the
+        token is unchanged, so re-reading the same source is a safe no-op.
+        """
+        token = ""
+        token_file = os.getenv("DERIV_ACCESS_TOKEN_FILE", "").strip()
+        if token_file:
+            try:
+                token = Path(token_file).read_text(encoding="utf-8").strip()
+            except OSError as exc:
+                logger.warning("Deriv token file {} unreadable: {}", token_file, exc)
+        if not token:
+            token = os.getenv("DERIV_ACCESS_TOKEN", "").strip()
+        try:
+            expires_in = float(os.getenv("DERIV_TOKEN_EXPIRES_IN", "3600") or 3600.0)
+        except (TypeError, ValueError):
+            expires_in = 3600.0
+        return token, expires_in
 
     def get_account_summary(self) -> dict[str, AccountInfo]:
         summary: dict[str, AccountInfo] = {}

@@ -413,6 +413,12 @@ class DerivConnector(BaseConnector):
         if not new_token:
             logger.critical("Deriv token refresh returned an empty token — keeping current token")
             return False
+        if new_token == self._access_token:
+            # No rotated token available yet (source unchanged). Keep counting
+            # down toward expiry so the monitor's warn/wind-down escalation
+            # still fires, rather than falsely resetting the TTL clock on the
+            # token that is actually about to die.
+            return False
         self.set_access_token(new_token, expires_in)
         return True
 

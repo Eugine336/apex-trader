@@ -94,6 +94,9 @@ class RiskEngine:
             if starting_balance is not None
             else self.risk_cfg.backtest_starting_balance_usd
         )
+        # Pending broker balance awaiting a second corroborating read before an
+        # implausibly large single-cycle swing is trusted (see reconcile_balance).
+        self._balance_resync_candidate: float | None = None
 
         self.drawdown_guard = DrawdownGuard(
             base_risk_pct=self.risk_cfg.risk_per_trade_pct / 100.0,
@@ -677,7 +680,10 @@ class RiskEngine:
                 logger.debug("[RiskEngine] pnl tracker restore failed: {}", exc)
 
     def reconcile_balance(
-        self, broker_balance: float | None, divergence_warn_pct: float = 1.0,
+        self,
+        broker_balance: float | None,
+        divergence_warn_pct: float = 1.0,
+        max_jump_pct: float = 50.0,
     ) -> None:
         """Sync the internal balance to broker truth.
 
@@ -687,19 +693,50 @@ class RiskEngine:
         logs a warning when the pre-sync divergence exceeds the threshold so a
         persistent desync is visible. A broker balance of exactly 0.0 is a valid
         state and is applied; only None/negative is ignored.
+
+        A single-cycle swing larger than ``max_jump_pct`` is treated as suspect
+        (e.g. a reconnecting platform leg momentarily reporting only its own
+        standalone balance instead of the pooled multi-platform figure) and is
+        NOT applied until a second consecutive read corroborates it, so a
+        one-cycle fluke cannot silently corrupt downstream sizing / drawdown
+        state.
         """
         if broker_balance is None or broker_balance < 0:
             return
+        broker_balance = float(broker_balance)
         prev = self.balance
-        if prev and prev > 0:
-            divergence_pct = abs(prev - broker_balance) / broker_balance * 100.0 if broker_balance > 0 else 100.0
-            if divergence_pct >= divergence_warn_pct:
+        if prev and prev > 0 and broker_balance > 0:
+            divergence_pct = abs(prev - broker_balance) / broker_balance * 100.0
+            if divergence_pct >= max_jump_pct:
+                candidate = self._balance_resync_candidate
+                corroborated = (
+                    candidate is not None
+                    and candidate > 0
+                    and abs(candidate - broker_balance) / broker_balance * 100.0
+                    < max_jump_pct
+                )
+                if not corroborated:
+                    self._balance_resync_candidate = broker_balance
+                    logger.warning(
+                        "[RiskEngine] implausible balance swing {:.2f}% rejected — "
+                        "internal ${:,.2f} vs broker ${:,.2f}; awaiting a second "
+                        "corroborating read before resyncing",
+                        divergence_pct, prev, broker_balance,
+                    )
+                    return
+                logger.warning(
+                    "[RiskEngine] balance swing {:.2f}% corroborated over two reads "
+                    "— syncing to broker ${:,.2f}",
+                    divergence_pct, broker_balance,
+                )
+            elif divergence_pct >= divergence_warn_pct:
                 logger.warning(
                     "[RiskEngine] balance desync {:.2f}% — internal ${:,.2f} vs "
                     "broker ${:,.2f}; syncing to broker truth",
                     divergence_pct, prev, broker_balance,
                 )
-        self.balance = float(broker_balance)
+        self._balance_resync_candidate = None
+        self.balance = broker_balance
 
     # Hard ceiling on per-trade risk regardless of any scaling factor.
     _RISK_PCT_CAP = 0.025
