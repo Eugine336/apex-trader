@@ -121,6 +121,13 @@ class SituationEngine:
     _H4_WEIGHT = 0.35
     _H1_WEIGHT = 0.25
 
+    # In-trade management reweights to give the fast M5 structure a real voice
+    # so the thesis read is not pinned between slow H1/H4/D1 closes. Sum = 1.0.
+    _MGMT_D1_WEIGHT = 0.35
+    _MGMT_H4_WEIGHT = 0.30
+    _MGMT_H1_WEIGHT = 0.20
+    _MGMT_M5_WEIGHT = 0.15
+
     def __init__(self, adopted_observation_minutes: float = 10.0) -> None:
         # Observation window for adopted/orphan trades before a real label is
         # derived (config-driven; was a hardcoded 10-minute literal).
@@ -136,6 +143,7 @@ class SituationEngine:
             "D1": round(self._trend_alignment_score(ctx.d1_trend, ctx.d1_confidence, ctx.is_long), 4),
             "H4": round(self._trend_alignment_score(ctx.h4_trend, ctx.h4_confidence, ctx.is_long), 4),
             "H1": round(self._trend_alignment_score(ctx.h1_trend, ctx.h1_confidence, ctx.is_long), 4),
+            "M5": round(self._trend_alignment_score(ctx.m5_trend, ctx.m5_confidence, ctx.is_long), 4),
         }
 
         # ── 2. Momentum ─────────────────────────────────────────────────
@@ -161,6 +169,13 @@ class SituationEngine:
 
         # ── 7. Read confidence ───────────────────────────────────────────
         sa.read_confidence = self._compute_confidence(ctx, sa.confidence_components)
+
+        # ── 7b. Directional consensus panel (live, in-trade) ─────────────
+        # The same unbiased module vote panel the entry plane used, re-voted on
+        # fresh data and folded into a signed alignment relative to the open
+        # position — so the in-trade thesis check sees the whole market panel,
+        # not a structure-only re-derivation. Full for/against breakdown kept.
+        self._assess_consensus(sa, ctx, evidence, ctx.is_long)
 
         # ── 8. Derive label ──────────────────────────────────────────────
         sa.primary_label = self._derive_label(sa, ctx)
@@ -424,11 +439,13 @@ class SituationEngine:
         d1 = self._trend_alignment_score(ctx.d1_trend, ctx.d1_confidence, is_long)
         h4 = self._trend_alignment_score(ctx.h4_trend, ctx.h4_confidence, is_long)
         h1 = self._trend_alignment_score(ctx.h1_trend, ctx.h1_confidence, is_long)
+        m5 = self._trend_alignment_score(ctx.m5_trend, ctx.m5_confidence, is_long)
 
         alignment = (
-            d1 * self._D1_WEIGHT
-            + h4 * self._H4_WEIGHT
-            + h1 * self._H1_WEIGHT
+            d1 * self._MGMT_D1_WEIGHT
+            + h4 * self._MGMT_H4_WEIGHT
+            + h1 * self._MGMT_H1_WEIGHT
+            + m5 * self._MGMT_M5_WEIGHT
         )
 
         parts = []
@@ -438,6 +455,8 @@ class SituationEngine:
             parts.append(f"H4={'support' if h4>0 else 'oppose'}({ctx.h4_confidence:.2f})")
         if abs(h1) > 0.1:
             parts.append(f"H1={'support' if h1>0 else 'oppose'}({ctx.h1_confidence:.2f})")
+        if abs(m5) > 0.1:
+            parts.append(f"M5={'support' if m5>0 else 'oppose'}({ctx.m5_confidence:.2f})")
         if parts:
             evidence.append(f"tf_alignment={alignment:+.2f} [{', '.join(parts)}]")
 
@@ -511,6 +530,7 @@ class SituationEngine:
         h4_contrib = 0.0
         h1_contrib = 0.0
         h1_candle_contrib = 0.0
+        m5_contrib = 0.0
         d1_contrib = 0.0
 
         # H4 structure events
@@ -556,6 +576,24 @@ class SituationEngine:
                 integrity += h1_candle_contrib
                 evidence.append("H1 last candle opposing")
 
+        # M5 structure events — the fast structural signal. Refreshes every 5
+        # minutes (vs hourly H1), so a thesis break shows here first. Lower
+        # authority than H1/H4 (smaller magnitude) but un-freezes the read.
+        m5_opposing = (
+            (is_long and ctx.m5_event in ("BOS_BEARISH", "CHOCH_BEARISH"))
+            or (not is_long and ctx.m5_event in ("BOS_BULLISH", "CHOCH_BULLISH"))
+        )
+        m5_supporting = (
+            (is_long and ctx.m5_event in ("BOS_BULLISH", "CHOCH_BULLISH"))
+            or (not is_long and ctx.m5_event in ("BOS_BEARISH", "CHOCH_BEARISH"))
+        )
+        if m5_opposing:
+            m5_contrib = -0.20
+            evidence.append(f"M5 structure broken ({ctx.m5_event})")
+        elif m5_supporting:
+            m5_contrib = 0.10
+        integrity += m5_contrib
+
         # D1 structure events
         d1_opposing = (
             (is_long and ctx.d1_event in ("BOS_BEARISH", "CHOCH_BEARISH"))
@@ -573,6 +611,7 @@ class SituationEngine:
                 "H4": round(h4_contrib, 4),
                 "H1": round(h1_contrib, 4),
                 "H1_candle": round(h1_candle_contrib, 4),
+                "M5": round(m5_contrib, 4),
                 "D1": round(d1_contrib, 4),
             })
 
