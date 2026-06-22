@@ -7,6 +7,7 @@
 *.key
 secrets.json
 access-token.py
+.local_schema_version
 
 # Python
 __pycache__/

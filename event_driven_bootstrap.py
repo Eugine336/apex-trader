@@ -2200,27 +2200,8 @@ class EventDrivenSystem:
         logger.info("  APEX TRADER — EVENT-DRIVEN MODE")
         logger.info("=" * 60)
 
-        # ── Clean-start: sync the cleared data junction + one-time purge ──
-        # Keep the local data junction in step with the cleared remote and, on
-        # the first boot after the equal-weight migration, sweep away any
-        # residual learned/adaptive artifacts so the system relearns from
-        # scratch. Both steps are best-effort and never abort startup.
-        try:
-            db_cfg = getattr(self._config, "data_backup", None)
-            if db_cfg is None or getattr(db_cfg, "clean_start_on_first_boot", True):
-                from platforms.clean_start import (
-                    purge_stale_learned_data,
-                    sync_clean_state_from_remote,
-                )
-                branch = getattr(db_cfg, "sync_branch", "main") if db_cfg else "main"
-                pull_res = sync_clean_state_from_remote(branch=branch)
-                purge_res = purge_stale_learned_data()
-                logger.info(
-                    "[event-driven] clean-start — pull: {} | purge: {}",
-                    pull_res, purge_res,
-                )
-        except Exception as exc:
-            logger.debug("[startup] clean-start step skipped: {}", exc)
+        # Clean-start executes in ``main()`` before ``SystemContext.create()``,
+        # so learned DB files are not locked on Windows when purge runs.
 
         # ── Startup recovery: crash marker detection ─────────────────
         try:
