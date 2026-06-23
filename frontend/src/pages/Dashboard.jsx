@@ -2,21 +2,36 @@ import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
 import { extractError } from "../api/client";
-import { getEquityCurve, getHistory, getSummary } from "../api/dashboard";
+import {
+  getDailyPnl,
+  getEquityCurve,
+  getHistory,
+  getPositions,
+  getSummary,
+} from "../api/dashboard";
 import { start as startInstance, stop as stopInstance } from "../api/trading";
 import ConfirmDialog from "../components/ConfirmDialog";
+import DailyPnLChart from "../components/DailyPnLChart";
 import EquityChart from "../components/EquityChart";
+import PositionsTable from "../components/PositionsTable";
 import StatusBadge from "../components/StatusBadge";
 import SummaryCard from "../components/SummaryCard";
 import TradesTable from "../components/TradesTable";
-import { formatMoney, formatPercent, pnlColor } from "../utils/format";
+import {
+  formatDuration,
+  formatMoney,
+  formatPercent,
+  pnlColor,
+} from "../utils/format";
 
 const RUNNING_STATES = new Set(["RUNNING", "STARTING"]);
 
 export default function Dashboard() {
   const [summary, setSummary] = useState(null);
   const [equity, setEquity] = useState([]);
+  const [daily, setDaily] = useState([]);
   const [recent, setRecent] = useState([]);
+  const [positions, setPositions] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
   const [actionLoading, setActionLoading] = useState(false);
@@ -24,14 +39,18 @@ export default function Dashboard() {
 
   const load = useCallback(async () => {
     try {
-      const [s, e, h] = await Promise.all([
+      const [s, e, d, h, p] = await Promise.all([
         getSummary(),
         getEquityCurve(500),
+        getDailyPnl(30),
         getHistory({ limit: 10 }),
+        getPositions(),
       ]);
       setSummary(s);
       setEquity(e);
+      setDaily(d);
       setRecent(h);
+      setPositions(p);
       setError("");
     } catch (err) {
       setError(extractError(err, "Failed to load dashboard"));
@@ -109,16 +128,53 @@ export default function Dashboard() {
           value={formatPercent(summary?.win_rate)}
           sub={`${summary?.wins ?? 0}W / ${summary?.losses ?? 0}L`}
         />
-        <SummaryCard label="Total Trades" value={summary?.total_trades ?? 0} />
         <SummaryCard
-          label="Instance"
-          value={<StatusBadge status={summary?.instance_status} size="lg" />}
+          label="Total Trades"
+          value={summary?.total_trades ?? 0}
+          sub={
+            summary?.avg_duration_minutes
+              ? `avg hold ${formatDuration(summary.avg_duration_minutes * 60)}`
+              : null
+          }
+        />
+        <SummaryCard
+          label="Max Drawdown"
+          value={formatMoney(summary?.max_drawdown)}
+          accent={summary?.max_drawdown ? "text-red-400" : "text-gray-100"}
         />
       </div>
 
-      <div className="rounded-lg border border-gray-700 bg-gray-800 p-5 shadow-lg">
-        <h2 className="mb-4 text-lg font-semibold text-gray-100">Equity Curve</h2>
-        <EquityChart data={equity} />
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="rounded-lg border border-gray-700 bg-gray-800 p-5 shadow-lg">
+          <h2 className="mb-4 text-lg font-semibold text-gray-100">Equity Curve</h2>
+          <EquityChart data={equity} />
+        </div>
+        <div className="rounded-lg border border-gray-700 bg-gray-800 p-5 shadow-lg">
+          <h2 className="mb-4 text-lg font-semibold text-gray-100">
+            Daily P&amp;L (30d)
+          </h2>
+          <DailyPnLChart data={daily} />
+        </div>
+      </div>
+
+      <div>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-gray-100">Open Positions</h2>
+          <Link
+            to="/positions"
+            className="text-sm font-medium text-emerald-400 hover:text-emerald-300"
+          >
+            View all →
+          </Link>
+        </div>
+        <PositionsTable
+          positions={positions}
+          emptyMessage={
+            isRunning
+              ? "No open positions right now."
+              : "Instance is stopped — start it to open positions."
+          }
+        />
       </div>
 
       <div>

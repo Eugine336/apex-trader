@@ -114,6 +114,8 @@ class DashboardSummary(BaseModel):
     losses: int
     best_trade: float
     worst_trade: float
+    max_drawdown: float = 0.0
+    avg_duration_minutes: float = 0.0
     instance_status: str
     instance_alive: bool
 
@@ -147,6 +149,12 @@ class TradeResponse(BaseModel):
 class EquityPoint(BaseModel):
     closed_at: Optional[str]
     equity: float
+
+
+class DailyPnLPoint(BaseModel):
+    date: Optional[str]
+    pnl: float
+    trades: int
 
 
 # ── admin ────────────────────────────────────────────────────────────────
@@ -195,3 +203,23 @@ class AdminStatsResponse(BaseModel):
     trades_today: int
     total_pnl: float
     system_uptime_seconds: float
+
+
+class AdminAggregateResponse(BaseModel):
+    """System-wide trading analytics for the admin overview charts."""
+
+    equity_curve: list[EquityPoint]
+    daily_pnl: list[DailyPnLPoint]
+
+
+class AdminUserPerformance(BaseModel):
+    """Per-user trade performance for the admin overview / top-performers."""
+
+    user_id: int
+    email: str
+    total_trades: int
+    total_pnl: float
+    win_rate: float
+    last_trade_at: Optional[str] = None
+    status: str = "STOPPED"
+    alive: bool = False

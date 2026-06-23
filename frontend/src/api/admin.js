@@ -6,6 +6,20 @@ export async function getStats() {
   return data;
 }
 
+// GET /api/admin/aggregate → { equity_curve, daily_pnl }
+export async function getAggregate({ equityLimit = 1000, days = 30 } = {}) {
+  const { data } = await client.get("/api/admin/aggregate", {
+    params: { equity_limit: equityLimit, days },
+  });
+  return data;
+}
+
+// GET /api/admin/users/performance → list[AdminUserPerformance]
+export async function getUsersPerformance() {
+  const { data } = await client.get("/api/admin/users/performance");
+  return data;
+}
+
 // GET /api/admin/users → list[UserResponse]
 export async function getUsers() {
   const { data } = await client.get("/api/admin/users");

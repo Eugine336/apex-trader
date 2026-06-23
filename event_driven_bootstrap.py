@@ -5874,6 +5874,7 @@ class EventDrivenSystem:
                         "regime": regime,
                         "concepts": sorted(set(concept_names)),
                         "entry_price": fill_price,
+                        "entry_time": datetime.now(timezone.utc).isoformat(),
                         "sl": float(sl or 0.0),
                         "tp": float(tp1 or 0.0),
                         "risk_pips": (
@@ -6453,6 +6454,7 @@ class EventDrivenSystem:
                 entry_price=float(info.get("entry_price", 0.0) or 0.0),
                 exit_price=float(_exit_px or 0.0),
                 exit_reason=cause_value,
+                opened_at=info.get("entry_time"),
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug("[close-report] multi-tenant trade report skipped: {}", exc)

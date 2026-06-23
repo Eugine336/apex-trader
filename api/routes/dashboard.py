@@ -22,6 +22,7 @@ from api.auth import get_config, get_current_user, get_db, get_process_manager
 from api.config import ApiConfig
 from api.database import Database
 from api.models import (
+    DailyPnLPoint,
     DashboardSummary,
     EquityPoint,
     PositionResponse,
@@ -38,8 +39,9 @@ async def summary(
     db: Database = Depends(get_db),
     pm: ProcessManager = Depends(get_process_manager),
 ) -> DashboardSummary:
-    stats = db.trade_stats(int(user["id"]))
-    inst = pm.instance_status(int(user["id"]))
+    uid = int(user["id"])
+    stats = db.trade_stats(uid)
+    inst = pm.instance_status(uid)
     return DashboardSummary(
         total_trades=int(stats.get("total", 0) or 0),
         total_pnl=round(float(stats.get("total_pnl", 0.0) or 0.0), 2),
@@ -48,6 +50,8 @@ async def summary(
         losses=int(stats.get("losses", 0) or 0),
         best_trade=round(float(stats.get("best", 0.0) or 0.0), 2),
         worst_trade=round(float(stats.get("worst", 0.0) or 0.0), 2),
+        max_drawdown=db.realized_drawdown(uid),
+        avg_duration_minutes=db.avg_trade_duration_minutes(uid),
         instance_status=inst.get("status", "STOPPED"),
         instance_alive=bool(inst.get("alive", False)),
     )
@@ -98,6 +102,15 @@ async def equity_curve(
     db: Database = Depends(get_db),
 ) -> list[EquityPoint]:
     return [EquityPoint(**p) for p in db.equity_curve(int(user["id"]), limit=limit)]
+
+
+@router.get("/daily-pnl", response_model=list[DailyPnLPoint])
+async def daily_pnl(
+    days: int = Query(default=30, ge=1, le=365),
+    user: dict[str, Any] = Depends(get_current_user),
+    db: Database = Depends(get_db),
+) -> list[DailyPnLPoint]:
+    return [DailyPnLPoint(**p) for p in db.daily_pnl(int(user["id"]), days=days)]
 
 
 @router.get("/stats")

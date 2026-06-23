@@ -104,6 +104,19 @@ def _utcnow() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _duration_minutes(opened_at: Optional[str], closed_at: Optional[str]) -> Optional[float]:
+    """Minutes between two ISO timestamps, or None if either can't be parsed."""
+    if not opened_at or not closed_at:
+        return None
+    try:
+        start = datetime.fromisoformat(opened_at)
+        end = datetime.fromisoformat(closed_at)
+    except (TypeError, ValueError):
+        return None
+    delta = (end - start).total_seconds() / 60.0
+    return delta if delta >= 0 else None
+
+
 class Database:
     """Thread-safe SQLite access layer for the API control plane."""
 
@@ -414,6 +427,73 @@ class Database:
             curve.append({"closed_at": r["closed_at"], "equity": round(cumulative, 2)})
         return curve
 
+    def realized_drawdown(self, user_id: int) -> float:
+        """Max peak-to-trough decline of the cumulative realized-P&L curve.
+
+        Returned as a positive magnitude in account currency (0.0 if the curve
+        never dipped below a prior peak).
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT pnl FROM trade_history WHERE user_id = ? "
+                "ORDER BY closed_at ASC, id ASC",
+                (user_id,),
+            ).fetchall()
+        cumulative = 0.0
+        peak = 0.0
+        max_dd = 0.0
+        for r in rows:
+            cumulative += float(r["pnl"] or 0.0)
+            if cumulative > peak:
+                peak = cumulative
+            drawdown = peak - cumulative
+            if drawdown > max_dd:
+                max_dd = drawdown
+        return round(max_dd, 2)
+
+    def avg_trade_duration_minutes(self, user_id: int) -> float:
+        """Average hold time in minutes across trades that have both an
+        ``opened_at`` and ``closed_at`` timestamp. Rows missing ``opened_at``
+        (older/legacy rows) are skipped. Returns 0.0 when none qualify."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT opened_at, closed_at FROM trade_history "
+                "WHERE user_id = ? AND opened_at IS NOT NULL AND opened_at != ''",
+                (user_id,),
+            ).fetchall()
+        total = 0.0
+        count = 0
+        for r in rows:
+            mins = _duration_minutes(r["opened_at"], r["closed_at"])
+            if mins is not None:
+                total += mins
+                count += 1
+        return round(total / count, 1) if count else 0.0
+
+    def daily_pnl(self, user_id: int, days: int = 30) -> list[dict[str, Any]]:
+        """Realized P&L and trade count grouped by UTC date (oldest → newest)."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT substr(closed_at, 1, 10) AS day,
+                       COALESCE(SUM(pnl), 0.0)   AS pnl,
+                       COUNT(*)                  AS trades
+                FROM trade_history
+                WHERE user_id = ?
+                GROUP BY day
+                ORDER BY day DESC
+                LIMIT ?
+                """,
+                (user_id, days),
+            ).fetchall()
+        out = [
+            {"date": r["day"], "pnl": round(float(r["pnl"] or 0.0), 2),
+             "trades": int(r["trades"] or 0)}
+            for r in rows
+        ]
+        out.reverse()  # oldest → newest for charting
+        return out
+
     # ── admin: cross-user trade queries ──────────────────────────────────
     def list_all_trades(
         self,
@@ -459,6 +539,78 @@ class Database:
                 "total": int(data.get("total", 0) or 0),
                 "total_pnl": round(float(data.get("total_pnl", 0.0) or 0.0), 2),
             }
+
+    def global_equity_curve(self, limit: int = 1000) -> list[dict[str, Any]]:
+        """Cumulative realized P&L across ALL users, ordered oldest → newest."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT closed_at, pnl FROM trade_history "
+                "ORDER BY closed_at ASC, id ASC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        cumulative = 0.0
+        curve: list[dict[str, Any]] = []
+        for r in rows:
+            cumulative += float(r["pnl"] or 0.0)
+            curve.append({"closed_at": r["closed_at"], "equity": round(cumulative, 2)})
+        return curve
+
+    def global_daily_pnl(self, days: int = 30) -> list[dict[str, Any]]:
+        """Realized P&L + trade volume per UTC date across all users."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT substr(closed_at, 1, 10) AS day,
+                       COALESCE(SUM(pnl), 0.0)   AS pnl,
+                       COUNT(*)                  AS trades
+                FROM trade_history
+                GROUP BY day
+                ORDER BY day DESC
+                LIMIT ?
+                """,
+                (days,),
+            ).fetchall()
+        out = [
+            {"date": r["day"], "pnl": round(float(r["pnl"] or 0.0), 2),
+             "trades": int(r["trades"] or 0)}
+            for r in rows
+        ]
+        out.reverse()
+        return out
+
+    def users_performance(self) -> list[dict[str, Any]]:
+        """Per-user trade totals for the admin overview / top-performers table.
+
+        Returns one row per user that has at least one trade: user_id,
+        total_trades, total_pnl, wins, win_rate, last_trade_at.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT user_id,
+                       COUNT(*)                                            AS total_trades,
+                       COALESCE(SUM(pnl), 0.0)                             AS total_pnl,
+                       COALESCE(SUM(CASE WHEN pnl > 0 THEN 1 ELSE 0 END), 0) AS wins,
+                       MAX(closed_at)                                      AS last_trade_at
+                FROM trade_history
+                GROUP BY user_id
+                """,
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for r in rows:
+            total = int(r["total_trades"] or 0)
+            wins = int(r["wins"] or 0)
+            out.append(
+                {
+                    "user_id": int(r["user_id"]),
+                    "total_trades": total,
+                    "total_pnl": round(float(r["total_pnl"] or 0.0), 2),
+                    "wins": wins,
+                    "win_rate": round(wins / total, 4) if total else 0.0,
+                    "last_trade_at": r["last_trade_at"],
+                }
+            )
+        return out
 
     # ── user config ──────────────────────────────────────────────────────
     def set_user_config(self, user_id: int, config_json: str) -> None:

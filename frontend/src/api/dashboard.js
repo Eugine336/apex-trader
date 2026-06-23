@@ -27,6 +27,14 @@ export async function getEquityCurve(limit = 500) {
   return data;
 }
 
+// GET /api/dashboard/daily-pnl → list[DailyPnLPoint { date, pnl, trades }]
+export async function getDailyPnl(days = 30) {
+  const { data } = await client.get("/api/dashboard/daily-pnl", {
+    params: { days },
+  });
+  return data;
+}
+
 // GET /api/dashboard/stats → { total_trades, total_pnl, win_rate, best_trade, worst_trade, by_symbol }
 export async function getStats() {
   const { data } = await client.get("/api/dashboard/stats");
