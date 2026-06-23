@@ -268,3 +268,17 @@ async def aggregate(
         equity_curve=[EquityPoint(**p) for p in db.global_equity_curve(limit=equity_limit)],
         daily_pnl=[DailyPnLPoint(**p) for p in db.global_daily_pnl(days=days)],
     )
+
+
+# ── data sync ────────────────────────────────────────────────────────────
+@router.post("/data-sync")
+async def trigger_data_sync(
+    _admin: dict[str, Any] = Depends(get_current_admin),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> dict[str, str]:
+    """Manually mirror every per-user instance's data into the shared data-repo
+    junction and commit + push once. Mirrors the background sync task that runs
+    on ``ApiConfig.data_sync_interval_seconds``. Non-fatal — returns a status
+    string (e.g. ``"synced → origin/main (users=3, files=42, skipped=0)"``).
+    """
+    return {"result": pm.sync_now()}

@@ -128,6 +128,22 @@ class ApiConfig:
     # Auto-restart backoff schedule (seconds) for crashed instances.
     restart_backoff_seconds: tuple[int, ...] = (5, 15, 60, 300)
 
+    # ── Per-user data sync (instances → shared data-repo junction) ────────
+    # Each spawned instance writes to an isolated, non-git working dir. A
+    # background task in the control plane mirrors every user's data into the
+    # shared data-repo junction under ``instances/user_<id>/`` (no user can
+    # overwrite another) and commits+pushes once per interval — restoring the
+    # auto-backup that single-user mode had, namespaced for multi-tenant.
+    data_sync_enabled: bool = field(
+        default_factory=lambda: _env_bool("APEX_API_DATA_SYNC", True)
+    )
+    data_sync_interval_seconds: int = field(
+        default_factory=lambda: _env_int("APEX_API_DATA_SYNC_INTERVAL", 3600)
+    )
+    data_sync_branch: str = field(
+        default_factory=lambda: _env("APEX_API_DATA_SYNC_BRANCH") or "main"
+    )
+
     # ── Server bind ───────────────────────────────────────────────────────
     host: str = field(default_factory=lambda: _env("APEX_API_HOST") or "127.0.0.1")
     port: int = field(default_factory=lambda: _env_int("APEX_API_PORT", 8080))

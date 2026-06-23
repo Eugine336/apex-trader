@@ -2954,14 +2954,21 @@ class LearningGovernanceConfig:
 class CalibrationConfig:
     """Self-calibrating instrument layer (CalibrationEngine).
 
-    When ``enabled`` is False (default) the system behaves exactly as today:
-    no stats provider is registered, so ``get_profile`` returns the hardcoded
-    per-category constants.  When True, the CalibrationEngine ingests live /
-    backtest candles + spread, and ``get_profile`` returns ATR-normalised,
-    per-symbol geometry once a symbol has warmed up (else the constants).
+    When ``enabled`` is True (default) the CalibrationEngine ingests live /
+    backtest candles + spread and registers a per-process stats provider, so
+    ``get_profile`` returns ATR-normalised, per-symbol geometry once a symbol
+    has warmed up (until then it falls back to the hardcoded per-category
+    constants, so cold-start behaviour is unchanged).  Set to False to revert
+    to the old behaviour where no provider is registered and ``get_profile``
+    always returns the hardcoded per-category constants.
+
+    The stats provider is a module-level global in ``brain.instrument_profile``;
+    because every user's engine runs as a separate OS process in multi-tenant
+    mode, the provider and the on-disk ``calibration_state.json`` are inherently
+    per-user isolated.
     """
 
-    enabled: bool = False
+    enabled: bool = True
     state_path: str = "data/calibration_state.json"
     # Feed a spread sample only on this timeframe's close (avoids hammering the
     # broker on every TF). M5 is the lowest analysis TF.
@@ -2995,6 +3002,7 @@ class AppConfig:
     pair_learner: PairLearnerConfig = field(default_factory=PairLearnerConfig)
     vote_calibrator: VoteCalibratorConfig = field(default_factory=VoteCalibratorConfig)
     module_governor: ModuleGovernorConfig = field(default_factory=ModuleGovernorConfig)
+    calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
     tuner_agent: TunerAgentConfig = field(default_factory=TunerAgentConfig)
     counterfactual: CounterfactualConfig = field(default_factory=CounterfactualConfig)
     interaction: InteractionConfig = field(default_factory=InteractionConfig)

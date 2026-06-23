@@ -1,7 +1,8 @@
 """Tests for the CalibrationEngine end-to-end wiring.
 
 Covers news-impact learning, JSON persistence round-trip, the provider hook,
-and the config-flag default (calibration off → behaviour unchanged).
+and the config-flag default (calibration on, with cold-start fallback to the
+hardcoded category constants until a symbol warms up).
 """
 
 from collections import deque
@@ -94,8 +95,11 @@ def test_load_missing_file_is_zero(tmp_path):
 # ── Config flag default + provider opt-in ──────────────────────────────────
 
 
-def test_calibration_disabled_by_default():
-    assert AppConfig().calibration.enabled is False
+def test_calibration_enabled_by_default():
+    # Per-symbol calibration is now wired into AppConfig and enabled by default.
+    # Cold-start behaviour is still unchanged (the provider falls back to the
+    # hardcoded category constants until a symbol warms up).
+    assert AppConfig().calibration.enabled is True
 
 
 def test_get_profile_unchanged_without_provider():
