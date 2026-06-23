@@ -33,6 +33,9 @@ logs/
 *.log
 authority.db
 
+# Multi-tenant API runtime state (DB, secrets, per-user instance workdirs)
+api_data/
+
 # ML Models (too large for git — use releases)
 ml/models/*.pkl
 ml/models/*.h5
