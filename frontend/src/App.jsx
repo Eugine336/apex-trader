@@ -9,12 +9,19 @@ import AdminTrades from "./pages/AdminTrades";
 import AdminUsers from "./pages/AdminUsers";
 import BrokerSettings from "./pages/BrokerSettings";
 import Dashboard from "./pages/Dashboard";
+import ActiveTrades from "./pages/engine/ActiveTrades";
 import Decisions from "./pages/engine/Decisions";
 import DecisionTrace from "./pages/engine/DecisionTrace";
+import Governor from "./pages/engine/Governor";
 import ModuleVotes from "./pages/engine/ModuleVotes";
+import Operations from "./pages/engine/Operations";
 import Orchestrator from "./pages/engine/Orchestrator";
+import Planner from "./pages/engine/Planner";
+import PositionHealth from "./pages/engine/PositionHealth";
 import Ranker from "./pages/engine/Ranker";
+import RiskMonitor from "./pages/engine/RiskMonitor";
 import Scanner from "./pages/engine/Scanner";
+import TradeHistory from "./pages/engine/TradeHistory";
 import InstanceControl from "./pages/InstanceControl";
 import Login from "./pages/Login";
 import Positions from "./pages/Positions";
@@ -48,6 +55,14 @@ export default function App() {
         <Route path="/engine/decisions" element={<Decisions />} />
         <Route path="/engine/trace" element={<DecisionTrace />} />
         <Route path="/engine/orchestrator" element={<Orchestrator />} />
+
+        <Route path="/engine/risk" element={<RiskMonitor />} />
+        <Route path="/engine/governor" element={<Governor />} />
+        <Route path="/engine/planner" element={<Planner />} />
+        <Route path="/engine/operations" element={<Operations />} />
+        <Route path="/engine/active-trades" element={<ActiveTrades />} />
+        <Route path="/engine/position-health" element={<PositionHealth />} />
+        <Route path="/engine/history" element={<TradeHistory />} />
 
         <Route
           path="/admin"

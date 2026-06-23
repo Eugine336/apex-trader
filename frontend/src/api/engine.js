@@ -41,3 +41,51 @@ export async function getOrchestrator(params = {}) {
   const { data } = await client.get("/api/engine/orchestrator", { params });
   return data;
 }
+
+// GET /api/engine/risk
+export async function getRisk() {
+  const { data } = await client.get("/api/engine/risk");
+  return data;
+}
+
+// GET /api/engine/governor
+export async function getGovernor() {
+  const { data } = await client.get("/api/engine/governor");
+  return data;
+}
+
+// GET /api/engine/planner?limit=&symbol=
+export async function getPlanner(params = {}) {
+  const { data } = await client.get("/api/engine/planner", { params });
+  return data;
+}
+
+// GET /api/engine/operations
+export async function getOperations() {
+  const { data } = await client.get("/api/engine/operations");
+  return data;
+}
+
+// GET /api/engine/active-trades
+export async function getActiveTrades() {
+  const { data } = await client.get("/api/engine/active-trades");
+  return data;
+}
+
+// GET /api/engine/position-health?limit=&symbol=
+export async function getPositionHealth(params = {}) {
+  const { data } = await client.get("/api/engine/position-health", { params });
+  return data;
+}
+
+// GET /api/engine/history
+export async function getTradeHistory() {
+  const { data } = await client.get("/api/engine/history");
+  return data;
+}
+
+// GET /api/engine/performance
+export async function getPerformance() {
+  const { data } = await client.get("/api/engine/performance");
+  return data;
+}

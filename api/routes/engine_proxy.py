@@ -154,3 +154,89 @@ async def orchestrator(
         path="/api/orchestrator",
         params={"limit": limit, "symbol": symbol},
     )
+
+
+@router.get("/risk")
+async def risk(
+    user: dict[str, Any] = Depends(get_current_user),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> Any:
+    """Compliance risk monitor — mode, drawdown, exposure, execution quality."""
+    return await _proxy(user=user, pm=pm, path="/api/risk")
+
+
+@router.get("/governor")
+async def governor(
+    user: dict[str, Any] = Depends(get_current_user),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> Any:
+    """Portfolio governor — daily loss cap, exposure caps, recent blocks."""
+    return await _proxy(user=user, pm=pm, path="/api/governor")
+
+
+@router.get("/planner")
+async def planner(
+    limit: int = Query(default=100, ge=1, le=500),
+    symbol: str = Query(default=""),
+    user: dict[str, Any] = Depends(get_current_user),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> Any:
+    """Trade planner journal — recent plans, outcomes, strategy distributions."""
+    return await _proxy(
+        user=user,
+        pm=pm,
+        path="/api/planner",
+        params={"limit": limit, "symbol": symbol},
+    )
+
+
+@router.get("/operations")
+async def operations(
+    user: dict[str, Any] = Depends(get_current_user),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> Any:
+    """Ops control room — health, drawdown, exposure, regime, tick latency."""
+    return await _proxy(user=user, pm=pm, path="/api/operations")
+
+
+@router.get("/active-trades")
+async def active_trades(
+    user: dict[str, Any] = Depends(get_current_user),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> Any:
+    """Currently open positions with live P&L, SL/TP, lots, score and stage."""
+    return await _proxy(user=user, pm=pm, path="/api/trades")
+
+
+@router.get("/position-health")
+async def position_health(
+    limit: int = Query(default=200, ge=1, le=1000),
+    symbol: str = Query(default=""),
+    user: dict[str, Any] = Depends(get_current_user),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> Any:
+    """Per-position health scores, dimension breakdowns and management actions."""
+    return await _proxy(
+        user=user,
+        pm=pm,
+        path="/api/position-health",
+        params={"limit": limit, "symbol": symbol},
+    )
+
+
+@router.get("/history")
+async def history(
+    user: dict[str, Any] = Depends(get_current_user),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> Any:
+    """Closed-trade history rows for the engine's own trade journal."""
+    return await _proxy(user=user, pm=pm, path="/api/history")
+
+
+@router.get("/performance")
+async def performance(
+    user: dict[str, Any] = Depends(get_current_user),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> Any:
+    """Aggregate performance — win rate, profit factor, equity curve, extremes."""
+    return await _proxy(user=user, pm=pm, path="/api/performance")
