@@ -89,6 +89,8 @@ class ProcessManager:
         self._lock = threading.RLock()
         self._monitor_thread: Optional[threading.Thread] = None
         self._monitor_stop = threading.Event()
+        self._sync_thread: Optional[threading.Thread] = None
+        self._sync_stop = threading.Event()
         self._repo_root = Path(__file__).resolve().parent.parent
         self._created_at = time.time()
 
@@ -105,9 +107,67 @@ class ProcessManager:
             self._monitor_thread.start()
             logger.info("[proc-mgr] instance monitor started")
 
+    def start_data_sync(self) -> None:
+        """Start the background per-user data-sync thread (idempotent).
+
+        Mirrors every running/stopped user's isolated ``data/`` into the shared
+        data-repo junction under ``instances/user_<id>/`` and commits+pushes on
+        an interval. Disabled when ``ApiConfig.data_sync_enabled`` is False.
+        Non-fatal by contract — a failed git push never disrupts trading.
+        """
+        if not getattr(self._config, "data_sync_enabled", True):
+            logger.info("[proc-mgr] per-user data sync disabled by config")
+            return
+        with self._lock:
+            if self._sync_thread and self._sync_thread.is_alive():
+                return
+            self._sync_stop.clear()
+            self._sync_thread = threading.Thread(
+                target=self._data_sync_loop, name="apex-data-sync", daemon=True
+            )
+            self._sync_thread.start()
+            logger.info(
+                "[proc-mgr] per-user data sync started (interval={}s)",
+                getattr(self._config, "data_sync_interval_seconds", 3600),
+            )
+
+    def _data_sync_loop(self) -> None:
+        interval = max(60, int(getattr(self._config, "data_sync_interval_seconds", 3600)))
+        while not self._sync_stop.wait(interval):
+            try:
+                result = self.sync_now()
+                logger.info("[proc-mgr] per-user data sync — {}", result)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[proc-mgr] data sync iteration failed: {}", exc)
+
+    def sync_now(self) -> str:
+        """Mirror per-user instance data into the shared junction and push once.
+
+        Returns a status string; non-success values are soft warnings. Safe to
+        call manually (e.g. from an admin endpoint) or from the sync loop.
+        """
+        try:
+            from scripts.backup_data import sync_instances_to_data_repo
+        except Exception as exc:  # noqa: BLE001
+            return f"import failed: {exc}"
+
+        junction = self._repo_root / "data"
+        branch = str(getattr(self._config, "data_sync_branch", "main") or "main")
+        stamp = time.strftime("%Y-%m-%d %H:%M", time.gmtime())
+        try:
+            return sync_instances_to_data_repo(
+                instances_dir=self._config.instances_dir,
+                junction_dir=junction,
+                commit_message=f"auto-sync(instances): {stamp}",
+                branch=branch,
+            )
+        except Exception as exc:  # noqa: BLE001
+            return f"error: {exc}"
+
     def shutdown(self) -> None:
         """Stop the monitor and terminate all running instances."""
         self._monitor_stop.set()
+        self._sync_stop.set()
         with self._lock:
             user_ids = list(self._instances.keys())
         for uid in user_ids:
@@ -117,6 +177,8 @@ class ProcessManager:
                 logger.warning("[proc-mgr] shutdown stop failed for {}: {}", uid, exc)
         if self._monitor_thread:
             self._monitor_thread.join(timeout=5)
+        if self._sync_thread:
+            self._sync_thread.join(timeout=5)
 
     # ── start ─────────────────────────────────────────────────────────────
     def start_instance(

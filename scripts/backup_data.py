@@ -193,8 +193,9 @@ def sync_data_repo(
     remote: str = "origin",
     branch: str = "main",
     push: bool = True,
+    data_dir: Path | str | None = None,
 ) -> str:
-    """Commit + push the live ``data/`` junction to its own GitHub remote.
+    """Commit + push a ``data/`` git work tree to its GitHub remote.
 
     Unlike :func:`run_backup` (which force-pushes a filtered snapshot to the
     ``data-backup`` orphan branch), this commits the data repository in place on
@@ -202,18 +203,23 @@ def sync_data_repo(
     matching ``exclude_patterns``) are kept out of the commit via git pathspec
     exclusion. Idempotent: returns ``"no changes"`` when the tree is clean.
 
+    *data_dir* selects which work tree to sync. It defaults to the module-level
+    single-user junction (``data/``). The multi-tenant sync passes the shared
+    data-repo junction here after mirroring per-user instance data into it.
+
     Non-fatal by contract — callers should treat any non-success string as a
     soft warning and keep running.
     """
     if exclude_patterns is None:
         exclude_patterns = list(_DEFAULT_EXCLUDE_PATTERNS)
 
-    if not _DATA_DIR.is_dir():
+    base = Path(data_dir) if data_dir is not None else _DATA_DIR
+    if not base.is_dir():
         return "no data directory"
 
-    data_dir = str(_DATA_DIR.resolve())
+    work_tree = str(base.resolve())
 
-    ok, _ = _run_git(["rev-parse", "--is-inside-work-tree"], data_dir)
+    ok, _ = _run_git(["rev-parse", "--is-inside-work-tree"], work_tree)
     if not ok:
         return "data dir is not a git repo"
 
@@ -221,16 +227,16 @@ def sync_data_repo(
     # treats '*' as crossing '/', so ':(exclude)*.csv' drops CSVs at any depth.
     add_args = ["add", "-A", "."]
     add_args += [f":(exclude){pat}" for pat in exclude_patterns]
-    ok, add_out = _run_git(add_args, data_dir)
+    ok, add_out = _run_git(add_args, work_tree)
     if not ok:
         logger.warning("[data-sync] stage failed: {}", add_out)
         return f"stage failed: {add_out.splitlines()[0] if add_out else 'unknown'}"
 
-    ok, diff_out = _run_git(["diff", "--cached", "--stat"], data_dir)
+    ok, diff_out = _run_git(["diff", "--cached", "--stat"], work_tree)
     if ok and not diff_out.strip():
         return "no changes"
 
-    ok, commit_out = _run_git(["commit", "-m", commit_message], data_dir)
+    ok, commit_out = _run_git(["commit", "-m", commit_message], work_tree)
     if not ok:
         logger.warning("[data-sync] commit failed: {}", commit_out)
         return f"commit failed: {commit_out.splitlines()[0] if commit_out else 'unknown'}"
@@ -238,12 +244,100 @@ def sync_data_repo(
     if not push:
         return "committed (push skipped)"
 
-    ok, push_out = _run_git(["push", remote, branch], data_dir)
+    ok, push_out = _run_git(["push", remote, branch], work_tree)
     if not ok:
         logger.warning("[data-sync] push failed: {}", push_out)
         return f"push failed: {push_out.splitlines()[0] if push_out else 'unknown'}"
 
     return f"synced → {remote}/{branch}"
+
+
+# ── Multi-tenant: per-user namespaced sync ────────────────────────────────
+
+
+def mirror_instances(
+    instances_dir: Path | str,
+    dest_root: Path | str,
+    *,
+    max_file_size_mb: float = _DEFAULT_MAX_FILE_SIZE_MB,
+    exclude_patterns: list[str] | None = None,
+) -> tuple[int, int, int]:
+    """Mirror each per-user instance's ``data/`` into a per-user namespace.
+
+    Copies ``<instances_dir>/user_<id>/data`` → ``<dest_root>/instances/user_<id>/data``
+    for every user. The per-user namespace guarantees one user can never
+    overwrite another user's data inside the shared data repo. Oversized /
+    excluded files are skipped.
+
+    Returns ``(users, copied, skipped)``.
+    """
+    if exclude_patterns is None:
+        exclude_patterns = list(_DEFAULT_EXCLUDE_PATTERNS)
+
+    src_root = Path(instances_dir)
+    dst_base = Path(dest_root)
+    if not src_root.is_dir():
+        return (0, 0, 0)
+
+    max_bytes = int(max_file_size_mb * 1024 * 1024)
+    users = copied = skipped = 0
+    for child in sorted(src_root.iterdir()):
+        if not child.is_dir() or not child.name.startswith("user_"):
+            continue
+        src_data = child / "data"
+        if not src_data.is_dir():
+            continue
+        users += 1
+        dest_data = dst_base / "instances" / child.name / "data"
+        dest_data.mkdir(parents=True, exist_ok=True)
+        c, s = _copy_filtered(src_data, dest_data, max_bytes, exclude_patterns)
+        copied += c
+        skipped += s
+    return (users, copied, skipped)
+
+
+def sync_instances_to_data_repo(
+    *,
+    instances_dir: Path | str,
+    junction_dir: Path | str,
+    commit_message: str,
+    exclude_patterns: list[str] | None = None,
+    remote: str = "origin",
+    branch: str = "main",
+    push: bool = True,
+    max_file_size_mb: float = _DEFAULT_MAX_FILE_SIZE_MB,
+) -> str:
+    """Mirror every per-user instance's data into the shared data-repo junction
+    (under ``instances/user_<id>/``), then commit + push the junction once.
+
+    This is the multi-tenant analogue of the single-user :func:`sync_data_repo`:
+    each spawned instance writes to an isolated, non-git working dir, so the
+    control plane gathers those dirs into the one git-backed junction without
+    any user overwriting another. Non-fatal by contract — returns a status
+    string; callers treat any non-success value as a soft warning.
+    """
+    junction = Path(junction_dir)
+    if not junction.is_dir():
+        return "no data junction"
+
+    users, copied, skipped = mirror_instances(
+        instances_dir,
+        junction,
+        max_file_size_mb=max_file_size_mb,
+        exclude_patterns=exclude_patterns,
+    )
+    if users == 0:
+        return "no instances"
+
+    result = sync_data_repo(
+        commit_message=commit_message,
+        exclude_patterns=exclude_patterns,
+        remote=remote,
+        branch=branch,
+        push=push,
+        data_dir=junction,
+    )
+    return f"{result} (users={users}, files={copied}, skipped={skipped})"
 
 
 # ── CLI ──────────────────────────────────────────────────────────────────

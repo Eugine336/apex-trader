@@ -51,6 +51,7 @@ def create_app(config: ApiConfig | None = None) -> FastAPI:
         # Startup: reconcile orphaned instance rows + start the supervisor.
         process_manager.reconcile_on_startup()
         process_manager.start_monitor()
+        process_manager.start_data_sync()
         logger.info(
             "[api] APEX multi-tenant API ready — db={} instances_dir={}",
             config.database_path,
