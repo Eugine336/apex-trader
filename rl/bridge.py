@@ -382,10 +382,20 @@ def resolve_rl_checkpoint(explicit: Optional[str] = None) -> str:
     If *explicit* is given it is used as-is. Otherwise prefer the curriculum
     /multi-timeframe output (``apex_rl_mtf_best.pt``) when present and fall back
     to ``apex_rl_best.pt`` so either filename works without a manual rename.
+
+    Checkpoints are shared, read-only artifacts anchored to the repo root (via
+    ``runtime_paths.checkpoints_dir``) — never the per-user, isolated data
+    directory. A multi-tenant instance runs with its cwd set to its own
+    working directory, so a bare ``Path("checkpoints")`` would resolve to an
+    empty per-user folder and the trained model would silently never load.
     """
     if explicit:
         return explicit
-    ckpt_dir = Path("checkpoints")
+    try:
+        from runtime_paths import checkpoints_dir
+        ckpt_dir = checkpoints_dir()
+    except Exception:  # noqa: BLE001 — never let path resolution break startup
+        ckpt_dir = Path("checkpoints")
     mtf_best = ckpt_dir / "apex_rl_mtf_best.pt"
     if mtf_best.exists():
         return str(mtf_best)

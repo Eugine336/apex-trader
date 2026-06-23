@@ -206,6 +206,7 @@ class ProcessManager:
             api_db_path=self._config.database_path,
             broker_credentials=broker_credentials,
             dashboard_port=dashboard_port,
+            repo_root=self._repo_root,
         )
         # Force the per-instance dashboard onto loopback and disable its API-key
         # auth so the local control plane can proxy live panels without a shared
@@ -235,6 +236,14 @@ class ProcessManager:
         log_handle.flush()
 
         # New session/process-group so we can signal the whole tree on stop.
+        #
+        # cwd MUST be the per-user working directory (NOT the repo root). The
+        # engine has many state files addressed by the relative path "data/..."
+        # which resolve against the cwd; pinning cwd to ``workdir`` guarantees
+        # they land in this user's isolated ``workdir/data`` (== APEX_DATA_DIR),
+        # never in the operator's shared, git-backed ``<repo>/data`` junction.
+        # Shared read-only resources are located via APEX_REPO_DIR instead (see
+        # runtime_paths.repo_root), so they remain reachable despite this cwd.
         popen_kwargs: dict[str, Any] = {
             "cwd": str(inst.workdir),
             "env": env,

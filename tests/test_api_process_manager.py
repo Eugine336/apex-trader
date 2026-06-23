@@ -30,6 +30,7 @@ def test_build_instance_environment_isolation(tmp_path):
     api_db = tmp_path / "apex_api.db"
     workdir = tmp_path / "user_1"
     cfg = workdir / "user_config.json"
+    repo_root = tmp_path / "code_repo"
     env = build_instance_environment(
         user_id=1,
         workdir=workdir,
@@ -40,12 +41,18 @@ def test_build_instance_environment_isolation(tmp_path):
             "deriv": {"access_token": "tok", "app_id": "9", "account_type": "demo"},
         },
         base_env={},
+        repo_root=repo_root,
     )
     assert env["APEX_USER_ID"] == "1"
     assert env["APEX_DATA_DIR"].endswith("data")
     assert env["APEX_LOG_DIR"].endswith("logs")
     assert env["APEX_TRADE_REPORT_DB"] == str(api_db.resolve())
     assert env["USE_EVENT_DRIVEN"] == "true"
+    # Repo root exported so the isolated instance can find shared, read-only
+    # resources (data junction, checkpoints) despite its per-user cwd.
+    assert env["APEX_REPO_DIR"] == str(repo_root.resolve())
+    # APEX_DATA_DIR (isolated writes) must not be the repo's shared data dir.
+    assert env["APEX_DATA_DIR"] != str((repo_root / "data").resolve())
     # MT5 creds serialised into the engine's MT5_BROKERS JSON + legacy vars.
     assert '"login": 111' in env["MT5_BROKERS"]
     assert env["MT5_PASSWORD"] == "pw"
@@ -56,6 +63,19 @@ def test_build_instance_environment_isolation(tmp_path):
     # Per-user data/log dirs were created.
     assert (workdir / "data").is_dir()
     assert (workdir / "logs").is_dir()
+
+
+def test_build_instance_environment_repo_root_optional(tmp_path):
+    """APEX_REPO_DIR is omitted (not blank) when no repo root is supplied."""
+    env = build_instance_environment(
+        user_id=2,
+        workdir=tmp_path / "user_2",
+        config_path=tmp_path / "user_2" / "user_config.json",
+        api_db_path=tmp_path / "apex_api.db",
+        broker_credentials={"mt5": {"login": 1, "password": "p", "server": "s"}},
+        base_env={},
+    )
+    assert "APEX_REPO_DIR" not in env
 
 
 def _point_to_fake_main(pm: ProcessManager, tmp_path: Path) -> None:
