@@ -147,3 +147,51 @@ class TradeResponse(BaseModel):
 class EquityPoint(BaseModel):
     closed_at: Optional[str]
     equity: float
+
+
+# ── admin ────────────────────────────────────────────────────────────────
+class AdminUserUpdate(BaseModel):
+    """Partial update for a user from the admin panel."""
+
+    is_active: Optional[bool] = None
+    is_admin: Optional[bool] = None
+
+
+class AdminInstanceResponse(BaseModel):
+    user_id: int
+    email: str
+    status: str
+    pid: Optional[int] = None
+    alive: bool = False
+    restarts: int = 0
+    last_error: str = ""
+    started_at: Optional[str] = None
+    stopped_at: Optional[str] = None
+    uptime_seconds: float = 0.0
+
+
+class AdminTradeResponse(BaseModel):
+    id: int
+    user_id: int
+    ticket: str
+    symbol: str
+    direction: str
+    entry_price: float
+    exit_price: float
+    pnl: float
+    pnl_pips: float
+    exit_reason: str
+    opened_at: Optional[str]
+    closed_at: str
+
+
+class AdminStatsResponse(BaseModel):
+    total_users: int
+    active_users: int
+    admin_users: int
+    active_instances: int
+    total_instances: int
+    total_trades: int
+    trades_today: int
+    total_pnl: float
+    system_uptime_seconds: float
