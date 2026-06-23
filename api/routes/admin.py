@@ -17,10 +17,14 @@ from api.broker_vault import BrokerVault
 from api.credentials import load_decrypted_credentials
 from api.database import Database
 from api.models import (
+    AdminAggregateResponse,
     AdminInstanceResponse,
     AdminStatsResponse,
     AdminTradeResponse,
+    AdminUserPerformance,
     AdminUserUpdate,
+    DailyPnLPoint,
+    EquityPoint,
     InstanceStatusResponse,
     UserResponse,
 )
@@ -46,6 +50,40 @@ async def list_users(
     db: Database = Depends(get_db),
 ) -> list[UserResponse]:
     return [_user_response(row) for row in db.list_users()]
+
+
+@router.get("/users/performance", response_model=list[AdminUserPerformance])
+async def users_performance(
+    _admin: dict[str, Any] = Depends(get_current_admin),
+    db: Database = Depends(get_db),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> list[AdminUserPerformance]:
+    """Per-user trade performance + live instance status (admin overview).
+
+    Registered before ``/users/{user_id}`` so the literal path wins over the
+    integer path parameter.
+    """
+    emails = {int(u["id"]): u["email"] for u in db.list_users()}
+    perf = {int(p["user_id"]): p for p in db.users_performance()}
+    out: list[AdminUserPerformance] = []
+    for uid, email in emails.items():
+        p = perf.get(uid, {})
+        st = pm.instance_status(uid)
+        out.append(
+            AdminUserPerformance(
+                user_id=uid,
+                email=email,
+                total_trades=int(p.get("total_trades", 0) or 0),
+                total_pnl=float(p.get("total_pnl", 0.0) or 0.0),
+                win_rate=float(p.get("win_rate", 0.0) or 0.0),
+                last_trade_at=p.get("last_trade_at"),
+                status=st.get("status", "STOPPED"),
+                alive=bool(st.get("alive", False)),
+            )
+        )
+    # Most active / most profitable first.
+    out.sort(key=lambda u: (u.total_pnl, u.total_trades), reverse=True)
+    return out
 
 
 @router.get("/users/{user_id}", response_model=UserResponse)
@@ -215,4 +253,18 @@ async def system_stats(
         trades_today=db.count_trades_since(midnight.isoformat()),
         total_pnl=float(totals.get("total_pnl", 0.0)),
         system_uptime_seconds=pm.system_uptime_seconds(),
+    )
+
+
+@router.get("/aggregate", response_model=AdminAggregateResponse)
+async def aggregate(
+    equity_limit: int = Query(default=1000, ge=1, le=5000),
+    days: int = Query(default=30, ge=1, le=365),
+    _admin: dict[str, Any] = Depends(get_current_admin),
+    db: Database = Depends(get_db),
+) -> AdminAggregateResponse:
+    """System-wide equity curve + daily P&L/volume across all users."""
+    return AdminAggregateResponse(
+        equity_curve=[EquityPoint(**p) for p in db.global_equity_curve(limit=equity_limit)],
+        daily_pnl=[DailyPnLPoint(**p) for p in db.global_daily_pnl(days=days)],
     )

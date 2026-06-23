@@ -1,23 +1,46 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 
-import { getInstances, getStats } from "../api/admin";
+import {
+  getAggregate,
+  getInstances,
+  getStats,
+  getUsersPerformance,
+} from "../api/admin";
 import { extractError } from "../api/client";
+import DailyPnLChart from "../components/DailyPnLChart";
+import EquityChart from "../components/EquityChart";
 import StatusBadge from "../components/StatusBadge";
 import SummaryCard from "../components/SummaryCard";
-import { formatDuration, formatMoney, pnlColor } from "../utils/format";
+import TradeVolumeChart from "../components/TradeVolumeChart";
+import {
+  formatDateTime,
+  formatDuration,
+  formatMoney,
+  formatPercent,
+  pnlColor,
+} from "../utils/format";
 
 export default function AdminDashboard() {
   const [stats, setStats] = useState(null);
   const [instances, setInstances] = useState([]);
+  const [aggregate, setAggregate] = useState({ equity_curve: [], daily_pnl: [] });
+  const [performance, setPerformance] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
   const load = useCallback(async () => {
     try {
-      const [s, inst] = await Promise.all([getStats(), getInstances()]);
+      const [s, inst, agg, perf] = await Promise.all([
+        getStats(),
+        getInstances(),
+        getAggregate({ days: 30 }),
+        getUsersPerformance(),
+      ]);
       setStats(s);
       setInstances(inst);
+      setAggregate(agg);
+      setPerformance(perf);
       setError("");
     } catch (err) {
       setError(extractError(err, "Failed to load admin overview"));
@@ -37,6 +60,7 @@ export default function AdminDashboard() {
   }
 
   const running = instances.filter((i) => i.alive);
+  const topPerformers = performance.filter((p) => p.total_trades > 0).slice(0, 5);
 
   return (
     <div className="space-y-6">
@@ -60,17 +84,127 @@ export default function AdminDashboard() {
           sub={`${stats?.total_instances ?? 0} total`}
         />
         <SummaryCard
-          label="Trades Today"
-          value={stats?.trades_today ?? 0}
-          sub={`${stats?.total_trades ?? 0} all-time`}
+          label="System Uptime"
+          value={formatDuration(stats?.system_uptime_seconds)}
         />
         <SummaryCard
-          label="Total P&L"
-          value={formatMoney(stats?.total_pnl)}
+          label="Total Trades"
+          value={stats?.total_trades ?? 0}
+          sub={`${stats?.trades_today ?? 0} today · P&L ${formatMoney(stats?.total_pnl)}`}
           accent={pnlColor(stats?.total_pnl)}
-          sub={`uptime ${formatDuration(stats?.system_uptime_seconds)}`}
         />
       </div>
+
+      <div className="grid grid-cols-1 gap-4 lg:grid-cols-2">
+        <div className="rounded-lg border border-gray-700 bg-gray-800 p-5 shadow-lg">
+          <h2 className="mb-4 text-lg font-semibold text-gray-100">
+            Combined Equity Curve
+          </h2>
+          <EquityChart data={aggregate.equity_curve} />
+        </div>
+        <div className="rounded-lg border border-gray-700 bg-gray-800 p-5 shadow-lg">
+          <h2 className="mb-4 text-lg font-semibold text-gray-100">
+            Trade Volume (30d)
+          </h2>
+          <TradeVolumeChart data={aggregate.daily_pnl} />
+        </div>
+      </div>
+
+      <div className="rounded-lg border border-gray-700 bg-gray-800 p-5 shadow-lg">
+        <h2 className="mb-4 text-lg font-semibold text-gray-100">
+          Aggregate Daily P&amp;L (30d)
+        </h2>
+        <DailyPnLChart data={aggregate.daily_pnl} />
+      </div>
+
+      <div>
+        <div className="mb-3 flex items-center justify-between">
+          <h2 className="text-lg font-semibold text-gray-100">User Performance</h2>
+          <Link
+            to="/admin/users"
+            className="text-sm font-medium text-emerald-400 hover:text-emerald-300"
+          >
+            Manage users →
+          </Link>
+        </div>
+        {performance.length === 0 ? (
+          <div className="rounded-lg border border-gray-700 bg-gray-800 p-8 text-center text-sm text-gray-500">
+            No users yet.
+          </div>
+        ) : (
+          <div className="apex-scroll overflow-x-auto rounded-lg border border-gray-700">
+            <table className="min-w-full divide-y divide-gray-700 text-sm">
+              <thead className="bg-gray-800">
+                <tr className="text-left text-xs uppercase tracking-wider text-gray-400">
+                  <th className="px-4 py-3">User</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3 text-right">Trades</th>
+                  <th className="px-4 py-3 text-right">Win Rate</th>
+                  <th className="px-4 py-3 text-right">P&amp;L</th>
+                  <th className="px-4 py-3">Last Active</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-700">
+                {performance.map((p, i) => (
+                  <tr
+                    key={p.user_id}
+                    className={i % 2 === 0 ? "bg-gray-800" : "bg-gray-750"}
+                  >
+                    <td className="px-4 py-3 text-gray-100">
+                      {p.email || `user #${p.user_id}`}
+                    </td>
+                    <td className="px-4 py-3">
+                      <StatusBadge status={p.status} />
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums text-gray-300">
+                      {p.total_trades}
+                    </td>
+                    <td className="px-4 py-3 text-right tabular-nums text-gray-300">
+                      {formatPercent(p.win_rate)}
+                    </td>
+                    <td
+                      className={`px-4 py-3 text-right tabular-nums font-semibold ${pnlColor(
+                        p.total_pnl
+                      )}`}
+                    >
+                      {formatMoney(p.total_pnl)}
+                    </td>
+                    <td className="px-4 py-3 text-gray-400">
+                      {p.last_trade_at ? formatDateTime(p.last_trade_at) : "—"}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {topPerformers.length > 0 && (
+        <div>
+          <h2 className="mb-3 text-lg font-semibold text-gray-100">Top Performers</h2>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {topPerformers.map((p, i) => (
+              <div
+                key={p.user_id}
+                className="rounded-lg border border-gray-700 bg-gray-800 p-4 shadow-lg"
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-gray-300">
+                    #{i + 1} · {p.email || `user #${p.user_id}`}
+                  </span>
+                  <span className={`text-sm font-semibold ${pnlColor(p.total_pnl)}`}>
+                    {formatMoney(p.total_pnl)}
+                  </span>
+                </div>
+                <p className="mt-1 text-xs text-gray-500">
+                  {p.total_trades} trades · {formatPercent(p.win_rate)} win rate
+                </p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div>
         <div className="mb-3 flex items-center justify-between">
