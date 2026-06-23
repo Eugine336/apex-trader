@@ -358,3 +358,44 @@ class TestMTFObsIntegration:
         assert result.pair == "EURUSD"
         assert result.authority_stage == 1
         assert result.final_score == 80.0
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# F) Checkpoint resolution is anchored to the repo root (not the cwd)
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestCheckpointResolution:
+    def test_resolve_uses_repo_root_not_cwd(self, tmp_path, monkeypatch):
+        """A multi-tenant instance runs with cwd set to its isolated workdir;
+        the shared checkpoint must still resolve under the repo root so the
+        trained model is reachable instead of silently 'missing'."""
+        from rl.bridge import resolve_rl_checkpoint
+
+        repo = tmp_path / "code_repo"
+        (repo / "checkpoints").mkdir(parents=True)
+        monkeypatch.setenv("APEX_REPO_DIR", str(repo))
+        # Simulate the per-user cwd being elsewhere (no checkpoints/ here).
+        monkeypatch.chdir(tmp_path)
+
+        resolved = Path(resolve_rl_checkpoint())
+        assert resolved.parent == (repo / "checkpoints")
+        assert resolved.name == "apex_rl_best.pt"
+
+    def test_resolve_prefers_mtf_checkpoint(self, tmp_path, monkeypatch):
+        from rl.bridge import resolve_rl_checkpoint
+
+        repo = tmp_path / "code_repo"
+        ckpts = repo / "checkpoints"
+        ckpts.mkdir(parents=True)
+        (ckpts / "apex_rl_mtf_best.pt").write_bytes(b"x")
+        monkeypatch.setenv("APEX_REPO_DIR", str(repo))
+
+        resolved = Path(resolve_rl_checkpoint())
+        assert resolved == ckpts / "apex_rl_mtf_best.pt"
+
+    def test_resolve_honours_explicit_override(self):
+        from rl.bridge import resolve_rl_checkpoint
+
+        assert resolve_rl_checkpoint("/tmp/explicit.pt") == "/tmp/explicit.pt"
+

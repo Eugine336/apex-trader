@@ -155,6 +155,29 @@ class ProcessManager:
             self._spawn(inst, broker_credentials)
             self._instances[user_id] = inst
 
+        # Surface an immediate startup crash (bad import, instant config error)
+        # right at the Start call instead of silently flipping to CRASHED and
+        # entering an auto-restart loop. Probe briefly for an early exit and, if
+        # the process died, raise with the captured log tail so the API returns
+        # the real reason to the caller.
+        early_rc = self._await_early_exit(inst.process, timeout=2.0)
+        if early_rc is not None:
+            with self._lock:
+                inst.user_stopped = True  # don't auto-restart a broken boot
+                self._close_log(inst)
+                inst.process = None
+            tail = "".join(self.tail_log(user_id, lines=25)).strip()
+            self._db.update_instance_status(
+                user_id,
+                STATUS_CRASHED,
+                pid=None,
+                last_error=f"exited rc={early_rc} during startup",
+            )
+            raise RuntimeError(
+                f"trading instance exited immediately (rc={early_rc}). "
+                f"Recent log:\n{tail}"
+            )
+
         self._db.update_instance_status(
             user_id, STATUS_RUNNING, pid=inst.process.pid if inst.process else None
         )
@@ -183,12 +206,22 @@ class ProcessManager:
             api_db_path=self._config.database_path,
             broker_credentials=broker_credentials,
             dashboard_port=dashboard_port,
+            repo_root=self._repo_root,
         )
-        # Force the per-instance dashboard onto loopback and strip any inherited
-        # API key so the local proxy can read it without a shared secret. Never
-        # publicly exposed — bound to 127.0.0.1 only.
+        # Force the per-instance dashboard onto loopback and disable its API-key
+        # auth so the local control plane can proxy live panels without a shared
+        # secret. The proxy already authenticates the owner via JWT before
+        # forwarding, and the dashboard is bound to 127.0.0.1 only (never public),
+        # so a second auth layer on this hop is redundant.
+        #
+        # Set the key to an EMPTY STRING rather than popping it: main.py calls
+        # load_dotenv() at import, which would re-inject DD_DASHBOARD_API_KEY from
+        # the repo-root .env if the variable were merely absent. load_dotenv uses
+        # override=False, so it skips any key already present in the environment —
+        # an empty value survives and keeps the dashboard in keyless (read-only)
+        # mode, which is exactly what the GET-only proxy needs.
         env["DD_DASHBOARD_BIND_HOST"] = "127.0.0.1"
-        env.pop("DD_DASHBOARD_API_KEY", None)
+        env["DD_DASHBOARD_API_KEY"] = ""
 
         python_exe = self._config.instance_python or sys.executable or "python"
         main_script = str(self._repo_root / "main.py")
@@ -203,6 +236,14 @@ class ProcessManager:
         log_handle.flush()
 
         # New session/process-group so we can signal the whole tree on stop.
+        #
+        # cwd MUST be the per-user working directory (NOT the repo root). The
+        # engine has many state files addressed by the relative path "data/..."
+        # which resolve against the cwd; pinning cwd to ``workdir`` guarantees
+        # they land in this user's isolated ``workdir/data`` (== APEX_DATA_DIR),
+        # never in the operator's shared, git-backed ``<repo>/data`` junction.
+        # Shared read-only resources are located via APEX_REPO_DIR instead (see
+        # runtime_paths.repo_root), so they remain reachable despite this cwd.
         popen_kwargs: dict[str, Any] = {
             "cwd": str(inst.workdir),
             "env": env,
@@ -466,6 +507,22 @@ class ProcessManager:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind(("127.0.0.1", 0))
             return int(sock.getsockname()[1])
+
+    @staticmethod
+    def _await_early_exit(
+        proc: Optional[subprocess.Popen], timeout: float
+    ) -> Optional[int]:
+        """Wait up to *timeout*s for *proc* to exit; return its rc or None.
+
+        Used right after spawn to catch a process that dies on startup so the
+        failure can be surfaced to the caller instead of being swallowed.
+        """
+        if proc is None:
+            return None
+        try:
+            return proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return None
 
     @staticmethod
     def _is_alive(inst: _Instance) -> bool:

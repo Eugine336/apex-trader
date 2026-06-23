@@ -125,6 +125,7 @@ def build_instance_environment(
     broker_credentials: dict[str, dict[str, Any]],
     base_env: Optional[dict[str, str]] = None,
     dashboard_port: Optional[int] = None,
+    repo_root: Optional[Path] = None,
 ) -> dict[str, str]:
     """Build the environment for a user's isolated trading subprocess.
 
@@ -132,6 +133,12 @@ def build_instance_environment(
     The returned env isolates data/log directories, injects broker creds via the
     exact variables ``platforms.platform_manager`` consumes, and enables trade
     reporting back to the API database.
+
+    *repo_root* is the code-repository root. It is exported as ``APEX_REPO_DIR``
+    so the spawned engine can locate *shared, read-only* repo-relative resources
+    (the data junction, ``checkpoints/``, ``config/brokers/``) regardless of its
+    current working directory — which is the per-user, isolated ``workdir`` and
+    therefore cannot be used to find them.
     """
     env: dict[str, str] = dict(base_env if base_env is not None else os.environ)
 
@@ -141,6 +148,9 @@ def build_instance_environment(
     log_dir.mkdir(parents=True, exist_ok=True)
 
     # ── Isolation: per-user state + logs ──────────────────────────────────
+    # APEX_DATA_DIR drives ALL writeable engine state (positions, journals,
+    # calibration, learned weights) so per-user data never leaks into the
+    # operator's git-backed data junction. See runtime_paths.data_dir().
     env["APEX_USER_ID"] = str(user_id)
     env["APEX_DATA_DIR"] = str(data_dir.resolve())
     env["APEX_LOG_DIR"] = str(log_dir.resolve())

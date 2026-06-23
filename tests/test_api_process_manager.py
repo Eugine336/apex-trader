@@ -30,6 +30,7 @@ def test_build_instance_environment_isolation(tmp_path):
     api_db = tmp_path / "apex_api.db"
     workdir = tmp_path / "user_1"
     cfg = workdir / "user_config.json"
+    repo_root = tmp_path / "code_repo"
     env = build_instance_environment(
         user_id=1,
         workdir=workdir,
@@ -40,12 +41,18 @@ def test_build_instance_environment_isolation(tmp_path):
             "deriv": {"access_token": "tok", "app_id": "9", "account_type": "demo"},
         },
         base_env={},
+        repo_root=repo_root,
     )
     assert env["APEX_USER_ID"] == "1"
     assert env["APEX_DATA_DIR"].endswith("data")
     assert env["APEX_LOG_DIR"].endswith("logs")
     assert env["APEX_TRADE_REPORT_DB"] == str(api_db.resolve())
     assert env["USE_EVENT_DRIVEN"] == "true"
+    # Repo root exported so the isolated instance can find shared, read-only
+    # resources (data junction, checkpoints) despite its per-user cwd.
+    assert env["APEX_REPO_DIR"] == str(repo_root.resolve())
+    # APEX_DATA_DIR (isolated writes) must not be the repo's shared data dir.
+    assert env["APEX_DATA_DIR"] != str((repo_root / "data").resolve())
     # MT5 creds serialised into the engine's MT5_BROKERS JSON + legacy vars.
     assert '"login": 111' in env["MT5_BROKERS"]
     assert env["MT5_PASSWORD"] == "pw"
@@ -56,6 +63,19 @@ def test_build_instance_environment_isolation(tmp_path):
     # Per-user data/log dirs were created.
     assert (workdir / "data").is_dir()
     assert (workdir / "logs").is_dir()
+
+
+def test_build_instance_environment_repo_root_optional(tmp_path):
+    """APEX_REPO_DIR is omitted (not blank) when no repo root is supplied."""
+    env = build_instance_environment(
+        user_id=2,
+        workdir=tmp_path / "user_2",
+        config_path=tmp_path / "user_2" / "user_config.json",
+        api_db_path=tmp_path / "apex_api.db",
+        broker_credentials={"mt5": {"login": 1, "password": "p", "server": "s"}},
+        base_env={},
+    )
+    assert "APEX_REPO_DIR" not in env
 
 
 def _point_to_fake_main(pm: ProcessManager, tmp_path: Path) -> None:
@@ -119,6 +139,45 @@ def test_reconcile_marks_running_as_stopped(config, db):
     db.upsert_instance(5, "RUNNING", pid=12345)
     pm.reconcile_on_startup()
     assert db.get_instance(5)["status"] == STATUS_STOPPED
+
+
+def test_spawn_disables_dashboard_api_key(config, db, tmp_path, monkeypatch):
+    """The spawned instance must run its loopback dashboard with auth disabled.
+
+    Regression: the proxy forwards keyless GETs to the per-user dashboard. If the
+    subprocess inherits / re-loads DD_DASHBOARD_API_KEY (main.py calls
+    load_dotenv at import), the dashboard returns 401 and the proxy 502s. We set
+    the key to an empty string (present, not absent) so load_dotenv(override=False)
+    cannot re-inject it from .env.
+    """
+    # Simulate an operator .env / shell that exported a dashboard key.
+    monkeypatch.setenv("DD_DASHBOARD_API_KEY", "operator-secret")
+
+    pm = ProcessManager(config, db)
+    _point_to_fake_main(pm, tmp_path)
+
+    captured: dict[str, dict] = {}
+
+    real_popen = ProcessManager._spawn.__globals__["subprocess"].Popen
+
+    def _capture_popen(args, **kwargs):
+        captured["env"] = kwargs.get("env", {})
+        return real_popen(args, **kwargs)
+
+    monkeypatch.setattr(
+        ProcessManager._spawn.__globals__["subprocess"], "Popen", _capture_popen
+    )
+
+    pm.start_instance(1, {"mt5": {"login": 1, "password": "p", "server": "s"}})
+    try:
+        env = captured["env"]
+        # Present but empty → load_dotenv(override=False) leaves it untouched,
+        # dashboard stays in keyless read-only mode for the local proxy.
+        assert env.get("DD_DASHBOARD_API_KEY") == ""
+        # Dashboard pinned to loopback (never public).
+        assert env.get("DD_DASHBOARD_BIND_HOST") == "127.0.0.1"
+    finally:
+        pm.stop_instance(1, user_initiated=True)
 
 
 def test_credential_loader_used_for_autorestart(config, db, tmp_path):
