@@ -6435,6 +6435,28 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[close-journal] TradeJournal write failed: {}", exc)
 
+        # ── MULTI-TENANT REPORTING (best-effort, no-op standalone) ───
+        # When this instance was spawned by the multi-tenant API (env vars
+        # APEX_TRADE_REPORT_DB + APEX_USER_ID set), mirror the closed trade into
+        # the API's shared trade_history table so the dashboard can serve it.
+        # Fully decoupled and non-fatal — never disturbs the close path.
+        try:
+            from api.trade_reporter import report_trade_close
+            _tick = self._tick_store.get_latest(symbol)
+            _exit_px = close_price or (_tick.mid if _tick else 0.0)
+            report_trade_close(
+                symbol=symbol,
+                direction=direction,
+                pnl_dollars=float(pnl_dollars),
+                pnl_pips=float(pnl_pips),
+                ticket=str(ticket),
+                entry_price=float(info.get("entry_price", 0.0) or 0.0),
+                exit_price=float(_exit_px or 0.0),
+                exit_reason=cause_value,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[close-report] multi-tenant trade report skipped: {}", exc)
+
         # ── EVOLUTION ENGINES (Phase 6) ──────────────────────────────
 
         # CapitalAllocator — record outcome for fingerprint-based capital

@@ -69,7 +69,9 @@ def _quiet_replay():
         for name in _REPLAY_LOGGERS:
             logger.enable(name)
 
-_DB_DIR = Path(__file__).parent.parent / "data"
+from runtime_paths import data_dir as _data_dir  # noqa: E402
+
+_DB_DIR = _data_dir()
 _DB_PATH = _DB_DIR / "param_evolution.db"
 
 # Where each evolvable parameter lives in the replay snapshot: the ``decide``

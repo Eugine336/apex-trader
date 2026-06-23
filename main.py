@@ -60,6 +60,25 @@ def main() -> None:
     config = AppConfig()
     _apply_log_level(config.log_level)
 
+    # ── Multi-tenant: apply per-user trading overrides when this instance was
+    # launched by the API control plane (APEX_USER_CONFIG points at a JSON file
+    # of saved preferences). No-op for standalone single-user runs.
+    try:
+        from api.instance_config import (
+            apply_user_overrides,
+            load_user_overrides_from_env,
+        )
+        _user_overrides = load_user_overrides_from_env()
+        if _user_overrides:
+            apply_user_overrides(config, _user_overrides)
+            _apply_log_level(config.log_level)
+            logger.info(
+                "[multi-tenant] applied per-user config overrides ({} keys)",
+                len(_user_overrides),
+            )
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[multi-tenant] per-user override step skipped: {}", exc)
+
     try:
         from ops.logging_config import configure_structured_logging
         configure_structured_logging(getattr(config, "ops", None))

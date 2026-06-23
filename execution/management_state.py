@@ -63,7 +63,9 @@ class ManagementState:
     entry_eq: Optional[float] = None
 
 
-_DB_DIR = Path(__file__).resolve().parent.parent / "data"
+from runtime_paths import data_dir as _data_dir  # noqa: E402
+
+_DB_DIR = _data_dir()
 
 _CREATE_TABLE = """
 CREATE TABLE IF NOT EXISTS management_state (

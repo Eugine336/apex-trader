@@ -37,7 +37,9 @@ from persistence.shadow_store import (
     ShadowStore,
 )
 
-_DATA_DIR = Path(__file__).parent.parent / "data"
+from runtime_paths import data_dir as _data_dir  # noqa: E402
+
+_DATA_DIR = _data_dir()
 
 
 def _load_forward_bars(

@@ -51,7 +51,9 @@ from adaptive.tunable import TuningGuardMixin
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
 
-_DB_DIR = Path(__file__).parent.parent / "data"
+from runtime_paths import data_dir as _data_dir  # noqa: E402
+
+_DB_DIR = _data_dir()
 _DB_PATH = _DB_DIR / "execution_profiles.db"
 
 # Trailing methods a profile may request. ``breakeven_only`` keeps the
