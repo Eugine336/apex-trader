@@ -474,16 +474,39 @@ class SystemContext:
         # ── Learning + Feedback (Phase 4) ────────────────────────────
 
         # ── OutcomeFeedback ─────────────────────────────────────────
+        # Reads enabled/journal_path/accuracy_lookback off the config handed in.
+        # Those live on the nested OutcomeFeedbackConfig — pass that, not the
+        # top-level AppConfig, or every field falls through to its constructor
+        # default and the configured values never take effect.
         try:
             from brain.outcome_feedback import OutcomeFeedback as _OutcomeFeedback
-            ctx.outcome_feedback = _OutcomeFeedback(config=config)
+            ctx.outcome_feedback = _OutcomeFeedback(
+                config=getattr(config, "outcome_feedback", config),
+            )
         except Exception as exc:
             logger.warning("[SystemContext] OutcomeFeedback init failed: {}", exc)
 
         # ── SignalLedger ────────────────────────────────────────────
         try:
             from adaptive.signal_ledger import SignalLedger as _SignalLedger
-            ctx.signal_ledger = _SignalLedger()
+            # SignalLedger took no config, so its grading delay / intervals /
+            # min-move / lookback used the constructor defaults and the
+            # SignalLedgerConfig values were silently ignored. Wire the nested
+            # config so operator settings actually take effect.
+            sl_cfg = getattr(config, "signal_ledger", None)
+            if sl_cfg is not None:
+                ctx.signal_ledger = _SignalLedger(
+                    grading_delay_minutes=float(
+                        getattr(sl_cfg, "signal_grading_delay_minutes", 30.0)
+                    ),
+                    check_intervals=list(
+                        getattr(sl_cfg, "signal_grading_check_intervals", [5, 15, 30, 60])
+                    ),
+                    min_move_pct=float(getattr(sl_cfg, "signal_min_move_pct", 0.1)),
+                    accuracy_lookback=int(getattr(sl_cfg, "accuracy_lookback", 100)),
+                )
+            else:
+                ctx.signal_ledger = _SignalLedger()
         except Exception as exc:
             logger.warning("[SystemContext] SignalLedger init failed: {}", exc)
 
@@ -496,13 +519,17 @@ class SystemContext:
             logger.warning("[SystemContext] EmitterFeedbackService init failed: {}", exc)
 
         # ── CounterfactualEngine ────────────────────────────────────
+        # The nested CounterfactualConfig names its fields counterfactual_enabled
+        # / attribution_lookback / attribution_interval — reading enabled /
+        # lookback / interval silently missed all three and used the getattr
+        # fallbacks. Read the real field names so the config is authoritative.
         try:
             from adaptive.counterfactual import CounterfactualEngine as _Counterfactual
             cf_cfg = getattr(config, "counterfactual", None)
             ctx.counterfactual_engine = _Counterfactual(
-                enabled=getattr(cf_cfg, "enabled", True) if cf_cfg else True,
-                attribution_lookback=getattr(cf_cfg, "lookback", 500) if cf_cfg else 500,
-                attribution_interval=getattr(cf_cfg, "interval", 100) if cf_cfg else 100,
+                enabled=getattr(cf_cfg, "counterfactual_enabled", True) if cf_cfg else True,
+                attribution_lookback=getattr(cf_cfg, "attribution_lookback", 500) if cf_cfg else 500,
+                attribution_interval=getattr(cf_cfg, "attribution_interval", 100) if cf_cfg else 100,
             )
         except Exception as exc:
             logger.warning("[SystemContext] CounterfactualEngine init failed: {}", exc)
@@ -602,9 +629,17 @@ class SystemContext:
                 )
         except Exception as exc:
             logger.warning("[SystemContext] SymbolConvictionStore init failed: {}", exc)
+        # ── PostCloseTracker ────────────────────────────────────────
+        # Reads enabled/check_intervals_minutes/max_retries off the config it is
+        # handed. Those live on the nested PostCloseTrackerConfig — passing the
+        # top-level AppConfig made every field fall through to its constructor
+        # default (so the tracker ran with the in-code default enabled=True and
+        # ignored the configured intervals/retries). Pass the nested config.
         try:
             from adaptive.post_close_tracker import PostCloseTracker as _PostClose
-            ctx.post_close_tracker = _PostClose(config=config)
+            ctx.post_close_tracker = _PostClose(
+                config=getattr(config, "post_close_tracker", config),
+            )
         except Exception as exc:
             logger.warning("[SystemContext] PostCloseTracker init failed: {}", exc)
 
@@ -628,11 +663,15 @@ class SystemContext:
             from adaptive.interaction_discovery import InteractionAnalyzer as _Interaction
             if ctx.counterfactual_engine is not None:
                 ia_cfg = getattr(config, "interaction", None)
+                # InteractionConfig fields are interaction_discovery_enabled /
+                # interaction_lookback / interaction_interval — reading enabled /
+                # lookback / interval missed them and used the fallbacks, so the
+                # config never reached the analyzer. Read the real field names.
                 ctx.interaction_analyzer = _Interaction(
                     ctx.counterfactual_engine,
-                    enabled=getattr(ia_cfg, "enabled", True) if ia_cfg else True,
-                    lookback=getattr(ia_cfg, "lookback", 500) if ia_cfg else 500,
-                    interval=getattr(ia_cfg, "interval", 500) if ia_cfg else 500,
+                    enabled=getattr(ia_cfg, "interaction_discovery_enabled", True) if ia_cfg else True,
+                    lookback=getattr(ia_cfg, "interaction_lookback", 500) if ia_cfg else 500,
+                    interval=getattr(ia_cfg, "interaction_interval", 500) if ia_cfg else 500,
                 )
                 # Toxic module-pair findings flow to Governance as recommendations.
                 if ctx.recommendation_gateway is not None:
@@ -688,7 +727,12 @@ class SystemContext:
         # at cold start (resolves to the same 0.40 prior until real history
         # exists).
         try:
-            if bool(getattr(config, "adaptive_win_rate_provider_enabled", True)):
+            # ``adaptive_win_rate_provider_enabled`` lives on the nested
+            # OpportunityRankerConfig, NOT the top-level AppConfig — reading it
+            # off AppConfig always hit the True fallback, so the configured flag
+            # (e.g. set False to fall back to the cold-start prior) was ignored.
+            _rank_cfg = getattr(config, "opportunity_ranker", None)
+            if bool(getattr(_rank_cfg, "adaptive_win_rate_provider_enabled", True)):
                 from adaptive.win_rate_provider import AdaptiveWinRateProvider as _WRP
                 pair_learner = (
                     getattr(ctx.ml_adapter, "pair_learner", None)
@@ -706,11 +750,25 @@ class SystemContext:
             logger.warning("[SystemContext] AdaptiveWinRateProvider init failed: {}", exc)
 
         # ── TunerAgent ──────────────────────────────────────────────
+        # The nested config lives on AppConfig.tuner_agent (TunerAgentConfig) —
+        # the old getattr(config, "tuner", …) key never matched, so tuner_cfg was
+        # always None and every field (duration cap, failure cap, audit path, …)
+        # used the constructor defaults. Read the correct key and wire all fields.
         try:
             from adaptive.tuner_agent import TunerAgent as _TunerAgent
-            tuner_cfg = getattr(config, "tuner", None)
+            tuner_cfg = getattr(config, "tuner_agent", None)
             ctx.tuner_agent = _TunerAgent(
                 enabled=getattr(tuner_cfg, "enabled", True) if tuner_cfg else True,
+                audit_db_path=getattr(tuner_cfg, "audit_db_path", None) if tuner_cfg else None,
+                max_tune_duration_seconds=float(
+                    getattr(tuner_cfg, "max_tune_duration_seconds", 30.0)
+                ) if tuner_cfg else 30.0,
+                max_consecutive_failures=int(
+                    getattr(tuner_cfg, "max_consecutive_failures", 3)
+                ) if tuner_cfg else 3,
+                log_all_skips=bool(
+                    getattr(tuner_cfg, "log_all_skips", False)
+                ) if tuner_cfg else False,
             )
         except Exception as exc:
             logger.warning("[SystemContext] TunerAgent init failed: {}", exc)
@@ -843,23 +901,67 @@ class SystemContext:
         # ── Evolution Engines (Phase 6) ──────────────────────────────
 
         # ── CapitalAllocator (L5.5a) ───────────────────────────────
+        # Took no config, so CapitalAllocationConfig (horizons, weights,
+        # rebalance cadence, enabled flag) was ignored and the constructor
+        # defaults were used. Wire the nested config so operator tuning of the
+        # capital-allocation sizing multiplier actually takes effect. Defaults
+        # coincide with the constructor, so this is behaviour-neutral by default.
         try:
             from adaptive.capital_allocator import CapitalAllocator as _CapAlloc
-            ctx.capital_allocator = _CapAlloc()
+            ca_cfg = getattr(config, "capital_allocation", None)
+            if ca_cfg is not None:
+                ctx.capital_allocator = _CapAlloc(
+                    db_path=getattr(ca_cfg, "capital_allocation_db_path", None),
+                    enabled=bool(getattr(ca_cfg, "enabled", True)),
+                    short_horizon_trades=int(getattr(ca_cfg, "short_horizon_trades", 50)),
+                    medium_horizon_trades=int(getattr(ca_cfg, "medium_horizon_trades", 500)),
+                    long_horizon_trades=int(getattr(ca_cfg, "long_horizon_trades", 5000)),
+                    short_weight=float(getattr(ca_cfg, "short_weight", 0.2)),
+                    medium_weight=float(getattr(ca_cfg, "medium_weight", 0.3)),
+                    long_weight=float(getattr(ca_cfg, "long_weight", 0.5)),
+                    rebalance_interval_trades=int(getattr(ca_cfg, "rebalance_interval_trades", 25)),
+                    max_allocation_shift=float(getattr(ca_cfg, "max_allocation_shift", 0.10)),
+                    min_allocation=float(getattr(ca_cfg, "min_allocation", 0.05)),
+                    min_trades_for_scoring=int(getattr(ca_cfg, "min_trades_for_scoring", 50)),
+                    bayesian_prior_trades=int(getattr(ca_cfg, "bayesian_prior_trades", 100)),
+                    allocation_temperature=float(getattr(ca_cfg, "allocation_temperature", 0.5)),
+                )
+            else:
+                ctx.capital_allocator = _CapAlloc()
         except Exception as exc:
             logger.warning("[SystemContext] CapitalAllocator init failed: {}", exc)
 
         # ── ExecutionProfileManager (L5.5b) ────────────────────────
+        # Took no config, so ExecutionProfileConfig was ignored and the
+        # constructor defaults were used. Wire the nested config (defaults
+        # coincide → behaviour-neutral) so profile selection is config-driven.
         try:
             from adaptive.execution_profiles import ExecutionProfileManager as _ExecProf
-            ctx.execution_profiles = _ExecProf()
+            ep_cfg = getattr(config, "execution_profiles", None)
+            if ep_cfg is not None:
+                ctx.execution_profiles = _ExecProf(
+                    db_path=getattr(ep_cfg, "execution_profiles_db_path", None),
+                    enabled=bool(getattr(ep_cfg, "enabled", True)),
+                    default_profile=str(getattr(ep_cfg, "default_profile", "standard_swing")),
+                    allow_profile_creation=bool(getattr(ep_cfg, "allow_profile_creation", True)),
+                    max_active_profiles=int(getattr(ep_cfg, "max_active_profiles", 10)),
+                    min_trades_for_scoring=int(getattr(ep_cfg, "min_trades_for_scoring", 30)),
+                    strong_consensus_threshold=float(getattr(ep_cfg, "strong_consensus_threshold", 0.75)),
+                    weak_consensus_threshold=float(getattr(ep_cfg, "weak_consensus_threshold", 0.45)),
+                )
+            else:
+                ctx.execution_profiles = _ExecProf()
         except Exception as exc:
             logger.warning("[SystemContext] ExecutionProfileManager init failed: {}", exc)
 
         # ── RegimeDetector (L7 adaptive) ───────────────────────────
+        # AppConfig exposes this as ``regime_detection`` (RegimeDetectionConfig);
+        # the old getattr(config, "regime_detector", …) key never matched, so
+        # rd_cfg was always None and lookback/hysteresis used the constructor
+        # defaults instead of the configured values. Read the correct key.
         try:
             from adaptive.regime_detector import RegimeDetector as _RegimeDetL7
-            rd_cfg = getattr(config, "regime_detector", None)
+            rd_cfg = getattr(config, "regime_detection", None)
             ctx.regime_detector = _RegimeDetL7(
                 lookback_bars=getattr(rd_cfg, "lookback_bars", 50) if rd_cfg else 50,
                 hysteresis_bars=getattr(rd_cfg, "hysteresis_bars", 5) if rd_cfg else 5,
@@ -875,10 +977,37 @@ class SystemContext:
             logger.warning("[SystemContext] BehaviorDiscoveryEngine init failed: {}", exc)
 
         # ── SignalDiscoveryEngine (L5c) ────────────────────────────
+        # Took no config, so its enabled flag used the constructor default
+        # (False) and every mining parameter (lookback, interval, support,
+        # thresholds) ignored SignalDiscoveryConfig. Wire the nested config so
+        # the advisory miner is config-authoritative. enabled is sourced from
+        # signal_discovery_enabled which defaults OFF (per the config docstring),
+        # so the engine stays dormant until an operator enables it.
         try:
             from adaptive.signal_discovery import SignalDiscoveryEngine as _SigDisc
             if ctx.counterfactual_engine is not None:
-                ctx.signal_discovery = _SigDisc(ctx.counterfactual_engine)
+                sd_cfg = getattr(config, "signal_discovery", None)
+                if sd_cfg is not None:
+                    ctx.signal_discovery = _SigDisc(
+                        ctx.counterfactual_engine,
+                        enabled=bool(getattr(sd_cfg, "signal_discovery_enabled", False)),
+                        db_path=getattr(sd_cfg, "signal_discovery_db_path", None),
+                        lookback=int(getattr(sd_cfg, "discovery_lookback", 1000)),
+                        interval=int(getattr(sd_cfg, "discovery_interval", 200)),
+                        min_trades=int(getattr(sd_cfg, "min_trades_for_discovery", 100)),
+                        min_support=int(getattr(sd_cfg, "min_rule_support", 15)),
+                        max_conditions=int(getattr(sd_cfg, "max_rule_conditions", 3)),
+                        min_edge_r=float(getattr(sd_cfg, "min_edge_r", 0.10)),
+                        walk_forward_split=float(getattr(sd_cfg, "discovery_walk_forward_split", 0.7)),
+                        bonferroni_alpha=float(getattr(sd_cfg, "bonferroni_alpha", 0.05)),
+                        walk_forward_ratio_threshold=float(
+                            getattr(sd_cfg, "walk_forward_ratio_threshold", 0.6)
+                        ),
+                        score_decay_rate=float(getattr(sd_cfg, "score_decay_rate", 0.05)),
+                        max_active_signals=int(getattr(sd_cfg, "max_active_signals", 5)),
+                    )
+                else:
+                    ctx.signal_discovery = _SigDisc(ctx.counterfactual_engine)
         except Exception as exc:
             logger.warning("[SystemContext] SignalDiscoveryEngine init failed: {}", exc)
 
@@ -974,9 +1103,19 @@ class SystemContext:
         try:
             from adaptive.virtual_promotion import VirtualSignalManager as _VSM
             if ctx.virtual_module_registry is not None:
+                # The manager reads virtual_promotion_enabled /
+                # signal_discovery_enabled / feedback_lookback off the config it
+                # is handed. Those live on the nested SignalDiscoveryConfig — the
+                # old config=config (top-level AppConfig) made both flags fall
+                # through to False, so the whole virtual shadow→promote→retire
+                # lifecycle was permanently inert (same class of bug as the
+                # Governor). Pass the nested config so it is config-authoritative.
+                # NOTE: SignalDiscoveryConfig defaults these flags OFF (per its
+                # docstring), so this is behaviour-neutral — the cluster stays
+                # dormant until an operator explicitly flips the flags on.
                 ctx.virtual_signal_manager = _VSM(
                     registry=ctx.virtual_module_registry,
-                    config=config,
+                    config=getattr(config, "signal_discovery", config),
                     signal_discovery=ctx.signal_discovery,
                     emitter_feedback=ctx.emitter_feedback,
                     counterfactual=ctx.counterfactual_engine,
