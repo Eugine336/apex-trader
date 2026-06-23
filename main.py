@@ -159,55 +159,83 @@ def main() -> None:
     platform_manager = PlatformManager(config)
     sys_ctx = SystemContext.create(config, platform_manager)
 
-    logger.info("Connecting to platforms…")
-    connection_status = platform_manager.connect_all()
+    def _connect_and_bootstrap() -> dict:
+        """Connect brokers + bootstrap spreads + log the LIVE banner.
 
-    try:
-        from risk.spread_bootstrap import bootstrap_spreads
-        if connection_status.get("mt5") or connection_status.get("deriv"):
-            bootstrap_spreads(platform_manager=platform_manager)
-    except Exception as exc:
-        logger.warning("Spread bootstrap failed (hardcoded values used): {}", exc)
+        Shared by headless and dashboard modes. Returns the connection status.
+        """
+        logger.info("Connecting to platforms…")
+        connection_status = platform_manager.connect_all()
 
-    logger.info("-" * 60)
-    logger.info("APEX TRADER IS LIVE")
-    if connection_status.get("mt5"):
-        logger.info("  MT5   — ONLINE")
-    else:
-        logger.info("  MT5   — OFFLINE")
-    if connection_status.get("deriv"):
-        logger.info("  Deriv — ONLINE")
-    else:
-        logger.info("  Deriv — OFFLINE")
-    logger.info("-" * 60)
+        try:
+            from risk.spread_bootstrap import bootstrap_spreads
+            if connection_status.get("mt5") or connection_status.get("deriv"):
+                bootstrap_spreads(platform_manager=platform_manager)
+        except Exception as exc:
+            logger.warning("Spread bootstrap failed (hardcoded values used): {}", exc)
+
+        logger.info("-" * 60)
+        logger.info("APEX TRADER IS LIVE")
+        logger.info("  MT5   — {}", "ONLINE" if connection_status.get("mt5") else "OFFLINE")
+        logger.info("  Deriv — {}", "ONLINE" if connection_status.get("deriv") else "OFFLINE")
+        logger.info("-" * 60)
+        return connection_status
+
+    def _run_startup_self_test() -> bool:
+        """Run the pre-trade self-test, logging each check. Returns pass/fail."""
+        from platforms.startup_check import StartupCheck
+        passed, results = StartupCheck().run_all()
+        for r in results:
+            lvl = "INFO" if r.passed else "ERROR"
+            logger.log(lvl, "  [{}] {} — {} ({:.0f}ms)", "✅" if r.passed else "❌", r.name, r.message, r.duration_ms)
+        return passed
 
     if dashboard_mode:
+        import threading
         import uvicorn
         from dashboard.state import LiveState
         from dashboard.api import create_app
-        from platforms.startup_check import StartupCheck
 
+        # Bind the read-only dashboard server FIRST, then boot the trading engine
+        # in the background. The control-plane proxy (api/routes/engine_proxy.py)
+        # can only serve the live panels once this port is listening, so binding
+        # must not wait on — or be blocked forever by — a slow broker connect or
+        # a failed startup self-test. LiveState serves stable fallback shapes
+        # until the engine attaches via set_event_driven_system().
         state = LiveState()
-        state.attach(None, platform_manager, connection_status,
-                     system_context=sys_ctx)
+        state.attach(None, platform_manager, {}, system_context=sys_ctx)
 
-        ed_system = None
-        if platform_manager.any_connected:
-            passed, results = StartupCheck().run_all()
-            for r in results:
-                lvl = "INFO" if r.passed else "ERROR"
-                logger.log(lvl, "  [{}] {} — {} ({:.0f}ms)", "✅" if r.passed else "❌", r.name, r.message, r.duration_ms)
-            if not passed:
-                logger.error("Startup self-test FAILED — refusing to start trading to protect capital")
-                return
+        engine_holder: dict = {"ed_system": None}
 
-            from event_driven_bootstrap import EventDrivenSystem
-            ed_system = EventDrivenSystem(config, platform_manager, ctx=sys_ctx)
-            ed_system.start()
-            state.set_event_driven_system(ed_system)
-            logger.info("Event-driven system started in dashboard mode")
-        else:
-            logger.warning("No platforms connected — dashboard will show empty data")
+        def _boot_engine() -> None:
+            try:
+                connection_status = _connect_and_bootstrap()
+                state.attach(
+                    None, platform_manager, connection_status, system_context=sys_ctx
+                )
+                if not platform_manager.any_connected:
+                    logger.warning(
+                        "No platforms connected — dashboard will show empty data"
+                    )
+                    return
+                if not _run_startup_self_test():
+                    logger.error(
+                        "Startup self-test FAILED — engine not started; dashboard "
+                        "stays up for diagnostics"
+                    )
+                    return
+                from event_driven_bootstrap import EventDrivenSystem
+                ed_system = EventDrivenSystem(config, platform_manager, ctx=sys_ctx)
+                ed_system.start()
+                engine_holder["ed_system"] = ed_system
+                state.set_event_driven_system(ed_system)
+                logger.info("Event-driven system started in dashboard mode")
+            except Exception as exc:  # noqa: BLE001
+                logger.exception("[dashboard] trading-engine boot failed: {}", exc)
+
+        threading.Thread(
+            target=_boot_engine, name="apex-engine-boot", daemon=True
+        ).start()
 
         app = create_app(state)
         bind_host = os.getenv("DD_DASHBOARD_BIND_HOST", "127.0.0.1")
@@ -225,18 +253,15 @@ def main() -> None:
         try:
             uvicorn.run(app, host=bind_host, port=bind_port, log_level="info")
         finally:
+            ed_system = engine_holder.get("ed_system")
             if ed_system is not None:
                 ed_system.stop()
     else:
+        _connect_and_bootstrap()
         if not platform_manager.any_connected:
             logger.error("No platforms connected — cannot trade. Set DERIV_CLIENT_ID and DERIV_ACCESS_TOKEN in .env")
             return
-        from platforms.startup_check import StartupCheck
-        passed, results = StartupCheck().run_all()
-        for r in results:
-            lvl = "INFO" if r.passed else "ERROR"
-            logger.log(lvl, "  [{}] {} — {} ({:.0f}ms)", "✅" if r.passed else "❌", r.name, r.message, r.duration_ms)
-        if not passed:
+        if not _run_startup_self_test():
             logger.error("Startup self-test FAILED — refusing to start trading to protect capital")
             return
         from event_driven_bootstrap import EventDrivenSystem
