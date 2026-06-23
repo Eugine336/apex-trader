@@ -52,6 +52,27 @@ const icons = {
   orchestrator: (
     <path d="M12 2a2 2 0 0 1 2 2 2 2 0 0 1-1 1.73V8h3a3 3 0 0 1 3 3v1.27A2 2 0 0 1 20 14a2 2 0 1 1-2.73-1.86V11a1 1 0 0 0-1-1h-3v2.27a2 2 0 1 1-2 0V10H8a1 1 0 0 0-1 1v1.14A2 2 0 1 1 4 14a2 2 0 0 1 1-1.73V11a3 3 0 0 1 3-3h3V5.73A2 2 0 0 1 10 4a2 2 0 0 1 2-2z" />
   ),
+  risk: (
+    <path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-1 5h2v6h-2V6zm0 8h2v2h-2v-2z" />
+  ),
+  governor: (
+    <path d="M12 2 4 5v6c0 5 3.4 9.7 8 11 4.6-1.3 8-6 8-11V5l-8-3zm0 5a3 3 0 0 1 3 3c0 1.3-.8 2.4-2 2.8V16h-2v-3.2c-1.2-.4-2-1.5-2-2.8a3 3 0 0 1 3-3z" />
+  ),
+  planner: (
+    <path d="M19 3h-1V1h-2v2H8V1H6v2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2zm0 16H5V9h14v10zM7 11h5v5H7v-5z" />
+  ),
+  operations: (
+    <path d="M19.14 12.94a7.49 7.49 0 0 0 0-1.88l2.03-1.58-2-3.46-2.39.96a7.03 7.03 0 0 0-1.62-.94L14.8 2.4h-4l-.36 2.64c-.58.24-1.12.56-1.62.94l-2.39-.96-2 3.46 2.03 1.58a7.49 7.49 0 0 0 0 1.88L4.43 14.5l2 3.46 2.39-.96c.5.38 1.04.7 1.62.94l.36 2.66h4l.36-2.64c.58-.24 1.12-.56 1.62-.94l2.39.96 2-3.46-2.03-1.58zM12 15.6A3.6 3.6 0 1 1 12 8.4a3.6 3.6 0 0 1 0 7.2z" />
+  ),
+  activeTrades: (
+    <path d="M3.5 18.49l6-6.01 4 4L22 6.92l-1.41-1.41-7.09 7.97-4-4L2 16.99z" />
+  ),
+  health: (
+    <path d="M20.84 4.61a5.5 5.5 0 0 0-7.78 0L12 5.67l-1.06-1.06a5.5 5.5 0 0 0-7.78 7.78l1.06 1.06L12 21.23l7.78-7.78 1.06-1.06a5.5 5.5 0 0 0 0-7.78z" />
+  ),
+  history: (
+    <path d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6a7 7 0 1 1 7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.97 8.97 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z" />
+  ),
   logout: (
     <path d="M16 13v-2H7V8l-5 4 5 4v-3h9zm3-10H10a2 2 0 0 0-2 2v3h2V5h9v14h-9v-3H8v3a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z" />
   ),
@@ -89,6 +110,22 @@ const engineItems = [
   { to: "/engine/decisions", label: "Decisions", icon: "decisions" },
   { to: "/engine/trace", label: "Decision Trace", icon: "trace" },
   { to: "/engine/orchestrator", label: "Orchestrator", icon: "orchestrator" },
+];
+
+const complianceItems = [
+  { to: "/engine/risk", label: "Risk Monitor", icon: "risk" },
+  { to: "/engine/governor", label: "Governor", icon: "governor" },
+];
+
+const portfolioItems = [
+  { to: "/engine/planner", label: "Planner", icon: "planner" },
+  { to: "/engine/operations", label: "Operations", icon: "operations" },
+];
+
+const executionItems = [
+  { to: "/engine/active-trades", label: "Active Trades", icon: "activeTrades" },
+  { to: "/engine/position-health", label: "Position Health", icon: "health" },
+  { to: "/engine/history", label: "Trade History", icon: "history" },
 ];
 
 const RUNNING_STATES = new Set(["RUNNING", "STARTING"]);
@@ -163,6 +200,51 @@ export default function Layout() {
               Intelligence
             </p>
             {engineItems.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={linkClass}
+                onClick={() => setSidebarOpen(false)}
+              >
+                <Icon name={item.icon} />
+                {item.label}
+              </NavLink>
+            ))}
+
+            <p className="px-3 pb-1 pt-5 text-xs font-semibold uppercase tracking-wider text-gray-600">
+              Compliance
+            </p>
+            {complianceItems.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={linkClass}
+                onClick={() => setSidebarOpen(false)}
+              >
+                <Icon name={item.icon} />
+                {item.label}
+              </NavLink>
+            ))}
+
+            <p className="px-3 pb-1 pt-5 text-xs font-semibold uppercase tracking-wider text-gray-600">
+              Portfolio
+            </p>
+            {portfolioItems.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={linkClass}
+                onClick={() => setSidebarOpen(false)}
+              >
+                <Icon name={item.icon} />
+                {item.label}
+              </NavLink>
+            ))}
+
+            <p className="px-3 pb-1 pt-5 text-xs font-semibold uppercase tracking-wider text-gray-600">
+              Execution
+            </p>
+            {executionItems.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}
