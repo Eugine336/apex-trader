@@ -38,6 +38,10 @@ from loguru import logger
 
 from adaptive.tunable import TuneContext, TuneFrequency, TuneResult, Tunable
 
+# Per-user writeable state — the tuner audit DB resolves under the owning user's
+# data tree (APEX_DATA_DIR) rather than a bare cwd-relative ``data/`` path.
+from runtime_paths import data_dir as _data_dir
+
 
 # Canonical names of every component that should be visible to the agent when
 # it owns tuning — the 19 from the learning-layer audit. Used by
@@ -113,7 +117,7 @@ class TunerAgent:
         self,
         *,
         enabled: bool = False,
-        audit_db_path: str = "data/tuner_audit.db",
+        audit_db_path: str | None = None,
         max_tune_duration_seconds: float = 30.0,
         max_consecutive_failures: int = 3,
         log_all_skips: bool = False,
@@ -137,7 +141,7 @@ class TunerAgent:
         self._bypass_log: list[dict] = []
         self._max_bypass_log = 200
 
-        self._db_path = Path(audit_db_path)
+        self._db_path = Path(audit_db_path) if audit_db_path else (_data_dir() / "tuner_audit.db")
         self._conn: Optional[sqlite3.Connection] = None
         self._init_db()
 

@@ -29,6 +29,44 @@ _REPO_ROOT = Path(__file__).resolve().parent
 _DATA_DIR_ENV = "APEX_DATA_DIR"
 _LOG_DIR_ENV = "APEX_LOG_DIR"
 _USER_ID_ENV = "APEX_USER_ID"
+_REPO_DIR_ENV = "APEX_REPO_DIR"
+
+
+def repo_root() -> Path:
+    """Return the repository root holding the engine code + shared resources.
+
+    Resolution order:
+      1. ``APEX_REPO_DIR`` environment variable (set by the multi-tenant process
+         manager so spawned instances — whose cwd is the per-user workdir — can
+         still locate shared, read-only assets that live with the code).
+      2. ``<repo>`` (this file's directory; correct for single-user runs).
+
+    Use this ONLY for read-only resources shipped with the code (trained RL
+    checkpoints, reference configs). Mutable per-user state must use
+    :func:`data_dir`.
+    """
+    override = os.getenv(_REPO_DIR_ENV, "").strip()
+    return Path(override) if override else _REPO_ROOT
+
+
+def shared_data_dir() -> Path:
+    """Return the repo-anchored ``data`` dir for SHARED, read-only reference data.
+
+    Distinct from :func:`data_dir`, which is the per-user *writeable* tree. This
+    is for assets that ship with the code and are identical for every user.
+    """
+    return repo_root() / "data"
+
+
+def checkpoints_dir() -> Path:
+    """Return the repo-anchored ``checkpoints`` dir (shared, read-only).
+
+    Trained RL models are a shared resource: every per-user instance reads the
+    same checkpoint. They must NOT resolve against the per-user cwd, or a
+    spawned instance would look in ``<workdir>/checkpoints`` (which never exists)
+    and the RL subsystem would stay permanently INACTIVE_NO_CHECKPOINT.
+    """
+    return repo_root() / "checkpoints"
 
 
 def data_dir() -> Path:

@@ -84,8 +84,8 @@ class RLBridge:
     def __init__(
         self,
         checkpoint:   str,
-        shadow_db:    str = "shadow_journal.db",
-        authority_db: str = "authority.db",
+        shadow_db:    Optional[str] = None,
+        authority_db: Optional[str] = None,
         enabled:      bool = True,
     ):
         self.checkpoint_path   = checkpoint
@@ -382,10 +382,22 @@ def resolve_rl_checkpoint(explicit: Optional[str] = None) -> str:
     If *explicit* is given it is used as-is. Otherwise prefer the curriculum
     /multi-timeframe output (``apex_rl_mtf_best.pt``) when present and fall back
     to ``apex_rl_best.pt`` so either filename works without a manual rename.
+
+    The checkpoint is a SHARED, read-only asset that ships with the code, so it
+    resolves against the repo root (``runtime_paths.checkpoints_dir()``) rather
+    than the process cwd. In multi-tenant mode each instance's cwd is its
+    per-user workdir, where ``checkpoints/`` does not exist — resolving relative
+    to cwd would leave the RL subsystem permanently INACTIVE_NO_CHECKPOINT even
+    when a trained model is present.
     """
     if explicit:
         return explicit
-    ckpt_dir = Path("checkpoints")
+    try:
+        from runtime_paths import checkpoints_dir
+        ckpt_dir = checkpoints_dir()
+    except Exception:
+        # Defensive fallback to the legacy cwd-relative path.
+        ckpt_dir = Path("checkpoints")
     mtf_best = ckpt_dir / "apex_rl_mtf_best.pt"
     if mtf_best.exists():
         return str(mtf_best)

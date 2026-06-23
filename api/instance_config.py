@@ -20,6 +20,8 @@ import os
 from pathlib import Path
 from typing import Any, Optional
 
+from runtime_paths import repo_root as _repo_root
+
 # Keys accepted in a user's saved trading config (subset of AppConfig surface).
 # Each maps to a setter applied to the constructed AppConfig instance.
 _KNOWN_KEYS = {
@@ -143,6 +145,14 @@ def build_instance_environment(
     env["APEX_DATA_DIR"] = str(data_dir.resolve())
     env["APEX_LOG_DIR"] = str(log_dir.resolve())
     env["APEX_USER_CONFIG"] = str(config_path.resolve())
+
+    # ── Shared read-only resources (anchored to the code repo) ────────────
+    # The subprocess runs with cwd = per-user workdir, so relative paths like
+    # ``checkpoints/...`` would resolve under the workdir and miss the shared,
+    # repo-shipped assets (trained RL models, reference configs). Pin the repo
+    # root explicitly so ``runtime_paths.repo_root()`` / ``checkpoints_dir()``
+    # resolve to the shared location for every instance.
+    env["APEX_REPO_DIR"] = str(_repo_root().resolve())
 
     # ── Trade reporting bridge → API database ─────────────────────────────
     env["APEX_TRADE_REPORT_DB"] = str(api_db_path.resolve())

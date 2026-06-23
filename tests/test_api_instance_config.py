@@ -79,6 +79,30 @@ def test_build_environment_without_deriv(tmp_path):
     assert env["MT5_LOGIN"] == "5"
 
 
+def test_build_environment_isolation_and_shared_repo(tmp_path):
+    """Each instance gets a per-user writeable data/log tree (APEX_DATA_DIR) and
+    an explicit shared, read-only repo anchor (APEX_REPO_DIR) so it can locate
+    shared assets (RL checkpoints) despite running with cwd = per-user workdir."""
+    from runtime_paths import repo_root
+
+    workdir = tmp_path / "u9"
+    env = build_instance_environment(
+        user_id=9,
+        workdir=workdir,
+        config_path=workdir / "cfg.json",
+        api_db_path=tmp_path / "api.db",
+        broker_credentials={"mt5": {"login": 5, "password": "p", "server": "s"}},
+        base_env={},
+    )
+    # Per-user writeable state is isolated under the user's own workdir.
+    assert env["APEX_DATA_DIR"] == str((workdir / "data").resolve())
+    assert env["APEX_LOG_DIR"] == str((workdir / "logs").resolve())
+    assert env["APEX_USER_ID"] == "9"
+    # Shared, read-only resources resolve to the code repo (not the per-user cwd).
+    assert env["APEX_REPO_DIR"] == str(repo_root().resolve())
+
+
+
 def test_build_environment_strips_whitespace_credentials(tmp_path):
     """Defense-in-depth: padded credentials (e.g. stored pre-fix) are cleaned
     before being injected into the trading subprocess environment."""

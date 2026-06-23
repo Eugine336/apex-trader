@@ -19,12 +19,17 @@ from loguru import logger
 
 from planning.models import TradePlan, TradePlanContext
 
+# Per-user writeable state — the plan→outcome journal (the dataset the Calibrator
+# learns from) resolves under the owning user's data tree (APEX_DATA_DIR) rather
+# than a bare cwd-relative ``data/`` path.
+from runtime_paths import data_dir as _data_dir
+
 
 class OutcomeLogger:
-    """Persists plan→outcome pairs to ``data/plan_journal.jsonl``."""
+    """Persists plan→outcome pairs to ``<data_dir>/plan_journal.jsonl``."""
 
-    def __init__(self, journal_path: str = "data/plan_journal.jsonl") -> None:
-        self._path = Path(journal_path)
+    def __init__(self, journal_path: str | None = None) -> None:
+        self._path = Path(journal_path) if journal_path else (_data_dir() / "plan_journal.jsonl")
         self._path.parent.mkdir(parents=True, exist_ok=True)
 
     # ── Writing ──────────────────────────────────────────────────────────

@@ -107,12 +107,21 @@ class ShadowEngine:
     # How many recent bars to retain per pair for swing-extreme detection.
     STRUCT_WINDOW        = 50
 
-    def __init__(self, checkpoint_path: str, db_path: str = "shadow_journal.db"):
+    def __init__(self, checkpoint_path: str, db_path: str | None = None):
         self.agent: ApexRLAgent | None = None
         self._meta: dict = {}
         self._load(checkpoint_path)
         self.agent.eval()
 
+        # Per-user writeable state — the shadow journal DB resolves under the
+        # owning user's data tree (APEX_DATA_DIR) rather than a bare cwd-relative
+        # filename, so RL shadow trades stay isolated per instance.
+        if not db_path:
+            try:
+                from runtime_paths import data_dir as _data_dir
+                db_path = str(_data_dir() / "shadow_journal.db")
+            except Exception:
+                db_path = "shadow_journal.db"
         self.db_path = db_path
         self._init_db()
 
