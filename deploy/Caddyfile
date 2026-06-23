@@ -1,0 +1,16 @@
+apex-trader.live {
+	# Serve the built frontend (Vite output)
+	root * /opt/apex-trader/frontend/dist
+	file_server
+
+	# Proxy API requests to the FastAPI backend
+	handle /api/* {
+		reverse_proxy localhost:8080
+	}
+
+	# SPA fallback — serve index.html for client-side routes
+	try_files {path} /index.html
+
+	# Cloudflare origin certificate (use with Cloudflare SSL "Full (Strict)")
+	tls /etc/ssl/apex-trader/cert.pem /etc/ssl/apex-trader/key.pem
+}

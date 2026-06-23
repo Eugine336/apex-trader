@@ -100,7 +100,8 @@ class ApiConfig:
             o.strip()
             for o in _env(
                 "APEX_API_CORS_ORIGINS",
-                "http://localhost:3000,http://127.0.0.1:3000",
+                "http://localhost:3000,http://127.0.0.1:3000,"
+                "https://apex-trader.live,https://www.apex-trader.live",
             ).split(",")
             if o.strip()
         ]

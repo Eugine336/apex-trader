@@ -4,6 +4,10 @@
 !.env.example
 .env.local
 .env.production
+# Frontend build-time env files are non-secret (only VITE_API_URL) and must be
+# committed so production/development builds resolve the correct API base URL.
+!frontend/.env.production
+!frontend/.env.development
 *.key
 secrets.json
 access-token.py

@@ -1,0 +1,27 @@
+# Cloudflare Tunnel config for apex-trader.live
+# Works identically on Windows (local dev) and Linux (VPS).
+#
+# Setup:
+#   1. cloudflared tunnel login
+#   2. cloudflared tunnel create apex-trader
+#   3. Add a DNS CNAME: apex-trader.live -> <tunnel-id>.cfargotunnel.com
+#      (cloudflared tunnel route dns apex-trader apex-trader.live)
+#   4. cloudflared tunnel --config deploy/cloudflared-config.yml run apex-trader
+#
+tunnel: REPLACE_WITH_TUNNEL_ID
+credentials-file: REPLACE_WITH_CREDENTIALS_PATH
+
+ingress:
+  # API requests -> FastAPI backend
+  - hostname: apex-trader.live
+    path: /api/*
+    service: http://localhost:8080
+
+  # Everything else -> frontend.
+  #   Tunnel-only (no Caddy): point at the Vite preview/static server on :3000.
+  #   With Caddy in front:    change this to http://localhost:8443 (Caddy).
+  - hostname: apex-trader.live
+    service: http://localhost:3000
+
+  # Catch-all (required by cloudflared)
+  - service: http_status:404
