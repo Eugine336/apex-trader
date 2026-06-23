@@ -96,6 +96,7 @@ class CandleCloseHandler:
         calibration_engine: Optional[Any] = None,
         get_spread_pips: Optional[Callable[[str], float]] = None,
         calibration_spread_tf: str = "M5",
+        news_impact_tracker: Optional[Any] = None,
     ) -> None:
         self._bus = event_bus
         self._store = world_model_store
@@ -132,6 +133,11 @@ class CandleCloseHandler:
         self._calibration_engine = calibration_engine
         self._get_spread_pips = get_spread_pips
         self._calibration_spread_tf = calibration_spread_tf
+        # News-impact measurement trigger (default-neutral when None): on each
+        # configured-TF close it captures price at high-impact news events and
+        # measures the realised reaction ~30 min later, feeding the
+        # CalibrationEngine's learned news sensitivity.
+        self._news_impact_tracker = news_impact_tracker
         self._pool = ThreadPoolExecutor(
             max_workers=max(1, max_workers),
             thread_name_prefix="cc-handler",
@@ -301,6 +307,20 @@ class CandleCloseHandler:
                     )
                 except Exception as exc:
                     logger.debug("[cc-handler] calibration spread feed failed: {}", exc)
+            # News-impact measurement — piggybacks on the same configured-TF
+            # close (M5 by default). Captures price at fired high-impact events
+            # and measures the reaction once matured, feeding learned news
+            # sensitivity. Best-effort; never breaks the feed.
+            if (
+                self._news_impact_tracker is not None
+                and tf == self._calibration_spread_tf
+            ):
+                try:
+                    self._news_impact_tracker.on_m5_close(
+                        symbol, float(df["close"].iloc[-1]), now=event.close_time,
+                    )
+                except Exception as exc:
+                    logger.debug("[cc-handler] news-impact feed failed: {}", exc)
             if results:
                 current_price = 0.0
                 try:
