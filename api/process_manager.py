@@ -155,6 +155,29 @@ class ProcessManager:
             self._spawn(inst, broker_credentials)
             self._instances[user_id] = inst
 
+        # Surface an immediate startup crash (bad import, instant config error)
+        # right at the Start call instead of silently flipping to CRASHED and
+        # entering an auto-restart loop. Probe briefly for an early exit and, if
+        # the process died, raise with the captured log tail so the API returns
+        # the real reason to the caller.
+        early_rc = self._await_early_exit(inst.process, timeout=2.0)
+        if early_rc is not None:
+            with self._lock:
+                inst.user_stopped = True  # don't auto-restart a broken boot
+                self._close_log(inst)
+                inst.process = None
+            tail = "".join(self.tail_log(user_id, lines=25)).strip()
+            self._db.update_instance_status(
+                user_id,
+                STATUS_CRASHED,
+                pid=None,
+                last_error=f"exited rc={early_rc} during startup",
+            )
+            raise RuntimeError(
+                f"trading instance exited immediately (rc={early_rc}). "
+                f"Recent log:\n{tail}"
+            )
+
         self._db.update_instance_status(
             user_id, STATUS_RUNNING, pid=inst.process.pid if inst.process else None
         )
@@ -466,6 +489,22 @@ class ProcessManager:
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.bind(("127.0.0.1", 0))
             return int(sock.getsockname()[1])
+
+    @staticmethod
+    def _await_early_exit(
+        proc: Optional[subprocess.Popen], timeout: float
+    ) -> Optional[int]:
+        """Wait up to *timeout*s for *proc* to exit; return its rc or None.
+
+        Used right after spawn to catch a process that dies on startup so the
+        failure can be surfaced to the caller instead of being swallowed.
+        """
+        if proc is None:
+            return None
+        try:
+            return proc.wait(timeout=timeout)
+        except subprocess.TimeoutExpired:
+            return None
 
     @staticmethod
     def _is_alive(inst: _Instance) -> bool:
