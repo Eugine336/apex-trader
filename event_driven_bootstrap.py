@@ -42,7 +42,9 @@ from execution.intents import Intent, IntentType
 from execution.intent_aggregator import IntentAggregator, AggregatorConfig
 from execution.action_executor import ActionExecutor, ExecutorConfig
 from execution.risk_gate import GateConfig
-from execution.position_worker import PositionWorker, WorkerConfig, ScanContext, MarketContext
+from execution.position_worker import (
+    PositionWorker, WorkerConfig, ScanContext, MarketContext, sl_within_min_room,
+)
 from execution.position_snapshot import PositionSnapshot, build_position_snapshot
 from execution.management_state import ManagementStateStore
 from execution.management_scheduler import ManagementScheduler
@@ -1199,7 +1201,9 @@ class PositionEvaluator:
                 )
             elif action_name == Action.TIGHTEN_SL.value:
                 new_sl = getattr(de_result, "new_sl", None)
-                if new_sl and new_sl > 0:
+                if new_sl and new_sl > 0 and not self._sl_move_too_close(
+                    symbol, price, new_sl, pip_size, "TIGHTEN_SL",
+                ):
                     pip_s = pip_size
                     self._aggregator.register_position(
                         ticket=order_id, direction=direction,
@@ -1214,7 +1218,9 @@ class PositionEvaluator:
                     )])
             elif action_name == Action.SET_PROTECTIVE_STOP.value:
                 new_sl = getattr(de_result, "new_sl", None)
-                if new_sl and new_sl > 0:
+                if new_sl and new_sl > 0 and not self._sl_move_too_close(
+                    symbol, price, new_sl, pip_size, "SET_PROTECTIVE_STOP",
+                ):
                     pip_s = pip_size
                     self._aggregator.register_position(
                         ticket=order_id, direction=direction,
@@ -1235,7 +1241,9 @@ class PositionEvaluator:
                 be_sl = getattr(de_result, "new_sl", None)
                 if not be_sl or be_sl <= 0:
                     be_sl = entry_price
-                if be_sl and be_sl > 0:
+                if be_sl and be_sl > 0 and not self._sl_move_too_close(
+                    symbol, price, be_sl, pip_size, "MOVE_TO_BREAKEVEN",
+                ):
                     pip_s = pip_size
                     self._aggregator.register_position(
                         ticket=order_id, direction=direction,
@@ -1281,6 +1289,28 @@ class PositionEvaluator:
                 "[de-mgmt] DecisionEngine management failed for {}: {}",
                 order_id, exc,
             )
+
+    def _sl_move_too_close(
+        self, symbol: str, current_price: float, new_sl: float,
+        pip_size: float, source: str,
+    ) -> bool:
+        """True when a DE-requested SL move sits within the broker minimum room.
+
+        Mirrors the PositionWorker guard so DecisionEngine TIGHTEN_SL /
+        SET_PROTECTIVE_STOP / MOVE_TO_BREAKEVEN moves that land within
+        ``min_sl_modify_room_pips`` of price are DEFERRED (not submitted) rather
+        than clamped to a forced level that pins the stop near breakeven. The
+        move re-emits next cycle once price has cleared enough room.
+        """
+        room = getattr(self._worker.cfg, "min_sl_modify_room_pips", 0.0)
+        too_close = sl_within_min_room(current_price, new_sl, pip_size, room)
+        if too_close:
+            logger.debug(
+                "[de-mgmt] deferring {} SL move for {} — {:.5f} within {:.1f}pip "
+                "of price {:.5f}",
+                source, symbol, new_sl, room, current_price,
+            )
+        return too_close
 
     # ── Scale-in / partial-close handlers (V13) ──────────────────────
     def _scale_in_position(
@@ -4901,6 +4931,16 @@ class EventDrivenSystem:
                     d1_trend, d1_conf = _struct_trend_conf(structure, "D1")
                     h4_trend, h4_conf = _struct_trend_conf(structure, "H4")
                     h1_trend, h1_conf = _struct_trend_conf(structure, "H1")
+                    # Kill-switch for the entry/management data-path alignment
+                    # fixes. When disabled (default) the live entry builder keeps
+                    # the original behaviour — HTF events default to "NONE", M1
+                    # evidence falls through to the legacy decision-dict defaults,
+                    # and regime stays "" — so the operator can revert to pre-fix
+                    # behaviour without rolling back code.
+                    data_path_fixes = bool(getattr(
+                        getattr(self._config, "features", None),
+                        "data_path_fixes_enabled", False,
+                    ))
                     # Structural break events (BOS/CHOCH) per timeframe — the
                     # entry plane previously omitted these, so assess_entry saw
                     # every HTF event as "NONE" and structure integrity froze at
@@ -4908,9 +4948,12 @@ class EventDrivenSystem:
                     # break. Management already feeds them; mirroring it here so
                     # the entry read matches what management would immediately
                     # see (no more enter-then-instant-close on opposing HTF).
-                    d1_event = _struct_event(structure, "D1")
-                    h4_event = _struct_event(structure, "H4")
-                    h1_event = _struct_event(structure, "H1")
+                    if data_path_fixes:
+                        d1_event = _struct_event(structure, "D1")
+                        h4_event = _struct_event(structure, "H4")
+                        h1_event = _struct_event(structure, "H1")
+                    else:
+                        d1_event = h4_event = h1_event = "NONE"
 
                     # Live graded-risk inputs — the RiskGovernor's graded entry
                     # path measures portfolio heat + spread; previously these
@@ -4938,23 +4981,34 @@ class EventDrivenSystem:
                     # carried m1_aligned/m1_event, so the entry plane defaulted
                     # candle momentum to a constant and the momentum-event /
                     # read-confidence terms never fired. Read the SAME live M1
-                    # data management uses so both planes agree.
+                    # data management uses so both planes agree. Gated by the
+                    # data-path kill-switch: when disabled, fall through to the
+                    # original decision-dict defaults (m1_aligned=3, m1_event="",
+                    # m1_trend="UNKNOWN", no micro-confirmation MARKET fast-path).
                     norm_entry_dir = (
                         "BUY" if direction.upper() in ("BUY", "LONG") else "SELL"
                     )
-                    m1_micro = _compute_m1_micro(
-                        self._pm, symbol, norm_entry_dir,
-                        self._safe_pip_size(symbol),
-                    )
-                    micro_conf, entry_mode_v = _micro_confirmation_from_event(
-                        m1_micro["m1_event"], direction,
-                        m1_micro.get("m1_pattern", ""),
-                    )
+                    if data_path_fixes:
+                        m1_micro = _compute_m1_micro(
+                            self._pm, symbol, norm_entry_dir,
+                            self._safe_pip_size(symbol),
+                        )
+                        m1_trend_v = m1_micro["m1_trend"]
+                        m1_aligned_v = m1_micro["m1_aligned_count"]
+                        m1_event_v = m1_micro["m1_event"]
+                        micro_conf, entry_mode_v = _micro_confirmation_from_event(
+                            m1_event_v, direction,
+                        )
+                    else:
+                        m1_trend_v = "UNKNOWN"
+                        m1_aligned_v = int(decision.get("m1_aligned", 3))
+                        m1_event_v = decision.get("m1_event", "")
+                        micro_conf, entry_mode_v = "", "PENDING"
                     # Live volatility regime — entry previously always used the
                     # base DecisionWeights (regime=""); feed the same H1 regime
                     # the backtest entry uses so weighting matches across planes.
                     entry_regime = ""
-                    if wm is not None:
+                    if data_path_fixes and wm is not None:
                         try:
                             entry_regime = wm.regime_by_tf().get("H1", "") or ""
                         except Exception:
@@ -5024,9 +5078,10 @@ class EventDrivenSystem:
                         h4_event=h4_event,
                         h1_trend=h1_trend,
                         h1_confidence=h1_conf,
-                        m1_trend=m1_micro["m1_trend"],
-                        m1_aligned_count=m1_micro["m1_aligned_count"],
-                        m1_event=m1_micro["m1_event"],
+                        h1_event=h1_event,
+                        m1_trend=m1_trend_v,
+                        m1_aligned_count=m1_aligned_v,
+                        m1_event=m1_event_v,
                         is_counter_trend=bool(decision.get("is_counter_trend", False)),
                         bias_direction=decision.get("bias_direction", ""),
                         open_trade_count=len(open_positions),

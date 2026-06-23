@@ -1295,6 +1295,23 @@ class DataBackupConfig:
     sync_orphan_branch: bool = True
 
 
+@dataclass
+class FeatureFlags:
+    """Runtime kill-switches for recently-shipped behaviour changes.
+
+    Lets the operator revert to pre-fix behaviour without rolling back code.
+    """
+
+    # Entry/management data-path alignment fixes (HTF break events, live M1
+    # evidence, and volatility regime fed into the LIVE entry context). When
+    # False (default) the live entry builder keeps the original behaviour:
+    # HTF events default to "NONE", M1 evidence falls through to the legacy
+    # decision-dict defaults, and regime stays "" (base DecisionWeights).
+    # When True the entry plane reads the same live data management uses,
+    # closing the enter-then-instant-close gap.
+    data_path_fixes_enabled: bool = False
+
+
 # ---------------------------------------------------------------------------
 # Performance — hot-path latency controls (Phase 5).
 # Caches and parallelism that cut the scan-cycle floor (dominated by throttled
@@ -2993,7 +3010,7 @@ class AppConfig:
     governor: GovernorConfig = field(default_factory=GovernorConfig)
     performance: PerformanceConfig = field(default_factory=PerformanceConfig)
     ops: OpsConfig = field(default_factory=OpsConfig)
-    calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
+    features: FeatureFlags = field(default_factory=FeatureFlags)
     # NOTE: scan cadence is owned by PerformanceConfig.scan_interval_active /
     # scan_interval_with_positions. The old AppConfig.scan_interval_seconds was
     # superseded and never read — removed.
