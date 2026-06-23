@@ -8,6 +8,7 @@ import AdminInstances from "./pages/AdminInstances";
 import AdminTrades from "./pages/AdminTrades";
 import AdminUsers from "./pages/AdminUsers";
 import BrokerSettings from "./pages/BrokerSettings";
+import CommandCenter from "./pages/CommandCenter";
 import Dashboard from "./pages/Dashboard";
 import ActiveTrades from "./pages/engine/ActiveTrades";
 import Decisions from "./pages/engine/Decisions";
@@ -49,7 +50,8 @@ export default function App() {
           </ProtectedRoute>
         }
       >
-        <Route path="/" element={<Dashboard />} />
+        <Route path="/" element={<CommandCenter />} />
+        <Route path="/overview" element={<Dashboard />} />
         <Route path="/trades" element={<Trades />} />
         <Route path="/positions" element={<Positions />} />
         <Route path="/settings/broker" element={<BrokerSettings />} />

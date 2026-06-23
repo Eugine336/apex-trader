@@ -10,9 +10,70 @@ body,
 
 body {
   margin: 0;
+  background-color: #0b1019;
+  color: #e6eaf2;
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
     Helvetica, Arial, sans-serif;
   -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Numbers/prices use a tabular monospace so columns align and digits don't
+   jitter as values tick. Apply `.num` (or Tailwind font-mono) to figures. */
+.num {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Roboto Mono",
+    monospace;
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* Value-change flash. Applied for ~0.9s when a live figure moves. */
+.flash-up {
+  animation: flashUp 0.9s ease-out;
+}
+.flash-down {
+  animation: flashDown 0.9s ease-out;
+}
+@keyframes flashUp {
+  0% {
+    background-color: rgba(34, 197, 94, 0.28);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+@keyframes flashDown {
+  0% {
+    background-color: rgba(239, 68, 68, 0.28);
+  }
+  100% {
+    background-color: transparent;
+  }
+}
+
+/* A soft pulse for "live" connection dots. */
+.pulse-dot {
+  position: relative;
+}
+.pulse-dot::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  border-radius: 9999px;
+  background: inherit;
+  opacity: 0.55;
+  animation: livePing 1.8s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+@keyframes livePing {
+  0% {
+    transform: scale(1);
+    opacity: 0.55;
+  }
+  70%,
+  100% {
+    transform: scale(2.4);
+    opacity: 0;
+  }
 }
 
 /* Thin scrollbar for log/table panels. */
@@ -21,12 +82,37 @@ body {
   height: 8px;
 }
 .apex-scroll::-webkit-scrollbar-track {
-  background: #1f2937;
+  background: #111726;
 }
 .apex-scroll::-webkit-scrollbar-thumb {
-  background: #4b5563;
+  background: #3b4660;
   border-radius: 4px;
 }
 .apex-scroll::-webkit-scrollbar-thumb:hover {
-  background: #6b7280;
+  background: #5c6880;
+}
+
+/* Data tables: sticky header + zebra hover used across department panels. */
+.data-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.data-table thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #141a27;
+}
+.data-table tbody tr:hover {
+  background: rgba(59, 130, 246, 0.06);
+}
+
+/* Reserve space for the mobile bottom tab bar so content never hides behind it. */
+.has-bottom-nav {
+  padding-bottom: 4.5rem;
+}
+@media (min-width: 1024px) {
+  .has-bottom-nav {
+    padding-bottom: 0;
+  }
 }

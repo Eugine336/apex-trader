@@ -1,18 +1,17 @@
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { NavLink, Outlet, useNavigate } from "react-router-dom";
 
-import { getStatus } from "../api/trading";
 import { useAuth } from "../context/AuthContext";
-import StatusBadge from "./StatusBadge";
+import { RealtimeProvider, useRealtime } from "../context/RealtimeContext";
+import { formatMoney, formatPercent, pnlColor } from "../utils/format";
 
 // Inline icons (no icon dependency).
 const icons = {
+  command: <path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z" />,
   dashboard: (
     <path d="M3 13h8V3H3v10zm0 8h8v-6H3v6zm10 0h8V11h-8v10zm0-18v6h8V3h-8z" />
   ),
-  trades: (
-    <path d="M3 5h18v2H3V5zm0 6h18v2H3v-2zm0 6h18v2H3v-2z" />
-  ),
+  trades: <path d="M3 5h18v2H3V5zm0 6h18v2H3v-2zm0 6h18v2H3v-2z" />,
   positions: (
     <path d="M3 3v18h18v-2H5V3H3zm14 5l-4 4-2-2-4 4 1.41 1.41L11 13l2 2 5-5L17 8z" />
   ),
@@ -37,15 +36,9 @@ const icons = {
   scanner: (
     <path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z" />
   ),
-  votes: (
-    <path d="M3 3h8v8H3V3zm10 0h8v8h-8V3zM3 13h8v8H3v-8zm10 0h8v8h-8v-8z" />
-  ),
-  ranker: (
-    <path d="M5 9.2h3V19H5V9.2zM10.6 5h2.8v14h-2.8V5zm5.6 8H19v6h-2.8v-6z" />
-  ),
-  decisions: (
-    <path d="M3 5h18v2H3V5zm0 6h18v2H3v-2zm0 6h12v2H3v-2z" />
-  ),
+  votes: <path d="M3 3h8v8H3V3zm10 0h8v8h-8V3zM3 13h8v8H3v-8zm10 0h8v8h-8v-8z" />,
+  ranker: <path d="M5 9.2h3V19H5V9.2zM10.6 5h2.8v14h-2.8V5zm5.6 8H19v6h-2.8v-6z" />,
+  decisions: <path d="M3 5h18v2H3V5zm0 6h18v2H3v-2zm0 6h12v2H3v-2z" />,
   trace: (
     <path d="M4 4h4v4H4V4zm6 1h10v2H10V5zM4 10h4v4H4v-4zm6 1h10v2H10v-2zM4 16h4v4H4v-4zm6 1h10v2H10v-2z" />
   ),
@@ -98,12 +91,15 @@ const icons = {
     <path d="M16 13v-2H7V8l-5 4 5 4v-3h9zm3-10H10a2 2 0 0 0-2 2v3h2V5h9v14h-9v-3H8v3a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z" />
   ),
   menu: <path d="M3 6h18v2H3V6zm0 5h18v2H3v-2zm0 5h18v2H3v-2z" />,
+  more: (
+    <path d="M6 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z" />
+  ),
   close: (
     <path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z" />
   ),
 };
 
-function Icon({ name, className = "h-5 w-5" }) {
+function Icon({ name, className = "h-[18px] w-[18px]" }) {
   return (
     <svg viewBox="0 0 24 24" fill="currentColor" className={className}>
       {icons[name]}
@@ -111,10 +107,80 @@ function Icon({ name, className = "h-5 w-5" }) {
   );
 }
 
-const navItems = [
-  { to: "/", label: "Dashboard", icon: "dashboard", end: true },
+// Core nav — always visible.
+const coreItems = [
+  { to: "/", label: "Command Center", icon: "command", end: true },
   { to: "/trades", label: "Trades", icon: "trades" },
   { to: "/positions", label: "Positions", icon: "positions" },
+];
+
+// The 9-department signal flow. Engine groups only render while the instance
+// runs; each carries a `dept` key matching the live snapshot health map.
+const departmentGroups = [
+  {
+    dept: "intelligence",
+    label: "① Intelligence",
+    items: [
+      { to: "/engine/scanner", label: "Scanner", icon: "scanner" },
+      { to: "/engine/votes", label: "Module Votes", icon: "votes" },
+    ],
+  },
+  {
+    dept: "consensus",
+    label: "② Consensus",
+    items: [
+      { to: "/engine/ranker", label: "Ranker", icon: "ranker" },
+      { to: "/engine/decisions", label: "Decisions", icon: "decisions" },
+      { to: "/engine/trace", label: "Decision Trace", icon: "trace" },
+      { to: "/engine/orchestrator", label: "Orchestrator", icon: "orchestrator" },
+    ],
+  },
+  {
+    dept: "compliance",
+    label: "③ Compliance",
+    items: [
+      { to: "/engine/risk", label: "Risk Monitor", icon: "risk" },
+      { to: "/engine/governor", label: "Governor", icon: "governor" },
+    ],
+  },
+  {
+    dept: "portfolio",
+    label: "④ Portfolio",
+    items: [{ to: "/engine/planner", label: "Planner", icon: "planner" }],
+  },
+  {
+    dept: "execution",
+    label: "⑤ Execution",
+    items: [
+      { to: "/engine/active-trades", label: "Active Trades", icon: "activeTrades" },
+      { to: "/engine/position-health", label: "Position Health", icon: "health" },
+      { to: "/engine/history", label: "Trade History", icon: "history" },
+    ],
+  },
+  {
+    dept: "operations",
+    label: "⑥ Operations",
+    items: [{ to: "/engine/operations", label: "Operations", icon: "operations" }],
+  },
+  {
+    dept: "learning",
+    label: "⑦ Learning",
+    items: [
+      { to: "/engine/learning", label: "Learning Layer", icon: "learning" },
+      { to: "/engine/feedback", label: "Outcome Feedback", icon: "feedback" },
+      { to: "/engine/ml", label: "ML Insights", icon: "ml" },
+      { to: "/engine/evolution", label: "Evolution", icon: "evolution" },
+    ],
+  },
+  {
+    dept: "governance",
+    label: "⑧ Governance",
+    items: [
+      { to: "/engine/shadow", label: "Shadow Outcomes", icon: "shadow" },
+      { to: "/engine/reconciliation", label: "Reconciliation", icon: "reconciliation" },
+      { to: "/engine/module-governor", label: "Module Governor", icon: "moduleGovernor" },
+    ],
+  },
 ];
 
 const settingsItems = [
@@ -123,47 +189,6 @@ const settingsItems = [
   { to: "/settings/instance", label: "Instance", icon: "instance" },
 ];
 
-// Live engine-state pages — only meaningful while the user's instance runs.
-const engineItems = [
-  { to: "/engine/scanner", label: "Scanner", icon: "scanner" },
-  { to: "/engine/votes", label: "Module Votes", icon: "votes" },
-  { to: "/engine/ranker", label: "Ranker", icon: "ranker" },
-  { to: "/engine/decisions", label: "Decisions", icon: "decisions" },
-  { to: "/engine/trace", label: "Decision Trace", icon: "trace" },
-  { to: "/engine/orchestrator", label: "Orchestrator", icon: "orchestrator" },
-];
-
-const complianceItems = [
-  { to: "/engine/risk", label: "Risk Monitor", icon: "risk" },
-  { to: "/engine/governor", label: "Governor", icon: "governor" },
-];
-
-const portfolioItems = [
-  { to: "/engine/planner", label: "Planner", icon: "planner" },
-  { to: "/engine/operations", label: "Operations", icon: "operations" },
-];
-
-const executionItems = [
-  { to: "/engine/active-trades", label: "Active Trades", icon: "activeTrades" },
-  { to: "/engine/position-health", label: "Position Health", icon: "health" },
-  { to: "/engine/history", label: "Trade History", icon: "history" },
-];
-
-const learningItems = [
-  { to: "/engine/learning", label: "Learning Layer", icon: "learning" },
-  { to: "/engine/feedback", label: "Outcome Feedback", icon: "feedback" },
-  { to: "/engine/ml", label: "ML Insights", icon: "ml" },
-  { to: "/engine/evolution", label: "Evolution", icon: "evolution" },
-];
-
-const governanceItems = [
-  { to: "/engine/shadow", label: "Shadow Outcomes", icon: "shadow" },
-  { to: "/engine/reconciliation", label: "Reconciliation", icon: "reconciliation" },
-  { to: "/engine/module-governor", label: "Module Governor", icon: "moduleGovernor" },
-];
-
-const RUNNING_STATES = new Set(["RUNNING", "STARTING"]);
-
 const adminItems = [
   { to: "/admin", label: "Overview", icon: "admin", end: true },
   { to: "/admin/users", label: "Users", icon: "users" },
@@ -171,166 +196,134 @@ const adminItems = [
   { to: "/admin/trades", label: "All Trades", icon: "trades" },
 ];
 
-export default function Layout() {
-  const { user, logout } = useAuth();
-  const navigate = useNavigate();
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [status, setStatus] = useState("STOPPED");
+// Mobile bottom-tab targets.
+const bottomTabs = [
+  { to: "/", label: "Command", icon: "command", end: true },
+  { to: "/engine/operations", label: "Ops", icon: "operations" },
+  { to: "/trades", label: "Trades", icon: "trades" },
+  { to: "/engine/scanner", label: "Intel", icon: "scanner" },
+];
 
-  // Poll the instance status for the topbar indicator.
-  const refreshStatus = useCallback(async () => {
-    try {
-      const s = await getStatus();
-      setStatus(s.status || "STOPPED");
-    } catch {
-      // Non-fatal — leave the last known status.
-    }
-  }, []);
+const RUNNING_STATES = new Set(["RUNNING", "STARTING"]);
 
-  useEffect(() => {
-    refreshStatus();
-    const id = setInterval(refreshStatus, 10000);
-    return () => clearInterval(id);
-  }, [refreshStatus]);
+const DEPT_DOT = {
+  active: "bg-emerald-500",
+  degraded: "bg-amber-400",
+  error: "bg-red-500",
+  offline: "bg-gray-600",
+};
 
-  const handleLogout = () => {
-    logout();
-    navigate("/login", { replace: true });
-  };
+const navLinkClass = ({ isActive }) =>
+  `flex items-center gap-3 rounded-md px-3 py-2 text-[13px] font-medium transition-colors ${
+    isActive
+      ? "bg-accent/10 text-accent-soft ring-1 ring-inset ring-accent/30"
+      : "text-gray-400 hover:bg-gray-700/50 hover:text-gray-100"
+  }`;
 
-  const linkClass = ({ isActive }) =>
-    `flex items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors duration-200 ${
-      isActive
-        ? "bg-emerald-600/15 text-emerald-400"
-        : "text-gray-400 hover:bg-gray-700/60 hover:text-gray-100"
-    }`;
+function NavSection({ label, dot }) {
+  return (
+    <div className="flex items-center gap-2 px-3 pb-1 pt-4">
+      {dot && <span className={`h-1.5 w-1.5 rounded-full ${dot}`} />}
+      <p className="text-[10px] font-semibold uppercase tracking-[0.12em] text-gray-600">
+        {label}
+      </p>
+    </div>
+  );
+}
 
-  const sidebar = (
+function ConnectionPill({ connected, transport }) {
+  const label =
+    transport === "sse" ? "LIVE" : transport === "poll" ? "POLL" : "OFF";
+  const tone = connected
+    ? transport === "sse"
+      ? "text-emerald-400"
+      : "text-amber-300"
+    : "text-gray-500";
+  const dot = connected
+    ? transport === "sse"
+      ? "bg-emerald-500 pulse-dot"
+      : "bg-amber-400"
+    : "bg-gray-600";
+  return (
+    <span className="inline-flex items-center gap-1.5" title={`Realtime: ${label}`}>
+      <span className={`h-2 w-2 rounded-full ${dot}`} />
+      <span className={`text-[10px] font-semibold tracking-[0.08em] ${tone}`}>
+        {label}
+      </span>
+    </span>
+  );
+}
+
+function TickerMetric({ label, value, accent = "text-gray-100" }) {
+  return (
+    <div className="flex flex-col leading-tight">
+      <span className="text-[9px] font-medium uppercase tracking-[0.1em] text-gray-500">
+        {label}
+      </span>
+      <span className={`num text-sm font-semibold ${accent}`}>{value}</span>
+    </div>
+  );
+}
+
+function Sidebar({ user, running, deptState, onNavigate, onLogout }) {
+  return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 px-5 py-5">
-        <div className="flex h-8 w-8 items-center justify-center rounded-md bg-emerald-600 font-bold text-white">
+      <div className="flex items-center gap-2.5 px-4 py-4">
+        <div className="flex h-8 w-8 items-center justify-center rounded bg-accent font-bold text-white">
           A
         </div>
-        <span className="text-lg font-semibold text-gray-100">APEX Trader</span>
+        <div className="leading-tight">
+          <div className="text-sm font-semibold tracking-tight text-gray-100">
+            APEX Trader
+          </div>
+          <div className="text-[10px] uppercase tracking-[0.14em] text-gray-500">
+            Trading Desk
+          </div>
+        </div>
       </div>
 
-      <nav className="flex-1 space-y-1 px-3">
-        {navItems.map((item) => (
+      <nav className="apex-scroll flex-1 space-y-0.5 overflow-y-auto px-2.5 pb-4">
+        {coreItems.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
             end={item.end}
-            className={linkClass}
-            onClick={() => setSidebarOpen(false)}
+            className={navLinkClass}
+            onClick={onNavigate}
           >
             <Icon name={item.icon} />
             {item.label}
           </NavLink>
         ))}
 
-        {RUNNING_STATES.has(status) && (
-          <>
-            <p className="px-3 pb-1 pt-5 text-xs font-semibold uppercase tracking-wider text-gray-600">
-              Intelligence
-            </p>
-            {engineItems.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                className={linkClass}
-                onClick={() => setSidebarOpen(false)}
-              >
-                <Icon name={item.icon} />
-                {item.label}
-              </NavLink>
-            ))}
+        {running &&
+          departmentGroups.map((group) => (
+            <div key={group.dept}>
+              <NavSection
+                label={group.label}
+                dot={DEPT_DOT[deptState[group.dept]] || DEPT_DOT.offline}
+              />
+              {group.items.map((item) => (
+                <NavLink
+                  key={item.to}
+                  to={item.to}
+                  className={navLinkClass}
+                  onClick={onNavigate}
+                >
+                  <Icon name={item.icon} />
+                  {item.label}
+                </NavLink>
+              ))}
+            </div>
+          ))}
 
-            <p className="px-3 pb-1 pt-5 text-xs font-semibold uppercase tracking-wider text-gray-600">
-              Compliance
-            </p>
-            {complianceItems.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                className={linkClass}
-                onClick={() => setSidebarOpen(false)}
-              >
-                <Icon name={item.icon} />
-                {item.label}
-              </NavLink>
-            ))}
-
-            <p className="px-3 pb-1 pt-5 text-xs font-semibold uppercase tracking-wider text-gray-600">
-              Portfolio
-            </p>
-            {portfolioItems.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                className={linkClass}
-                onClick={() => setSidebarOpen(false)}
-              >
-                <Icon name={item.icon} />
-                {item.label}
-              </NavLink>
-            ))}
-
-            <p className="px-3 pb-1 pt-5 text-xs font-semibold uppercase tracking-wider text-gray-600">
-              Execution
-            </p>
-            {executionItems.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                className={linkClass}
-                onClick={() => setSidebarOpen(false)}
-              >
-                <Icon name={item.icon} />
-                {item.label}
-              </NavLink>
-            ))}
-
-            <p className="px-3 pb-1 pt-5 text-xs font-semibold uppercase tracking-wider text-gray-600">
-              Learning
-            </p>
-            {learningItems.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                className={linkClass}
-                onClick={() => setSidebarOpen(false)}
-              >
-                <Icon name={item.icon} />
-                {item.label}
-              </NavLink>
-            ))}
-
-            <p className="px-3 pb-1 pt-5 text-xs font-semibold uppercase tracking-wider text-gray-600">
-              Governance
-            </p>
-            {governanceItems.map((item) => (
-              <NavLink
-                key={item.to}
-                to={item.to}
-                className={linkClass}
-                onClick={() => setSidebarOpen(false)}
-              >
-                <Icon name={item.icon} />
-                {item.label}
-              </NavLink>
-            ))}
-          </>
-        )}
-
-        <p className="px-3 pb-1 pt-5 text-xs font-semibold uppercase tracking-wider text-gray-600">
-          Settings
-        </p>
+        <NavSection label="Settings" />
         {settingsItems.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}
-            className={linkClass}
-            onClick={() => setSidebarOpen(false)}
+            className={navLinkClass}
+            onClick={onNavigate}
           >
             <Icon name={item.icon} />
             {item.label}
@@ -339,16 +332,14 @@ export default function Layout() {
 
         {user?.is_admin && (
           <>
-            <p className="px-3 pb-1 pt-5 text-xs font-semibold uppercase tracking-wider text-gray-600">
-              Admin
-            </p>
+            <NavSection label="Admin" />
             {adminItems.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}
                 end={item.end}
-                className={linkClass}
-                onClick={() => setSidebarOpen(false)}
+                className={navLinkClass}
+                onClick={onNavigate}
               >
                 <Icon name={item.icon} />
                 {item.label}
@@ -358,14 +349,14 @@ export default function Layout() {
         )}
       </nav>
 
-      <div className="border-t border-gray-700 p-4">
-        <p className="truncate text-sm text-gray-300" title={user?.email}>
+      <div className="border-t border-gray-700/70 p-3">
+        <p className="truncate text-xs text-gray-400" title={user?.email}>
           {user?.email}
         </p>
         <button
           type="button"
-          onClick={handleLogout}
-          className="mt-3 flex w-full items-center gap-2 rounded-md px-3 py-2 text-sm font-medium text-gray-400 transition-colors duration-200 hover:bg-gray-700/60 hover:text-red-400"
+          onClick={onLogout}
+          className="mt-2 flex w-full items-center gap-2 rounded-md px-3 py-2 text-[13px] font-medium text-gray-400 transition-colors hover:bg-gray-700/50 hover:text-red-400"
         >
           <Icon name="logout" />
           Logout
@@ -373,53 +364,169 @@ export default function Layout() {
       </div>
     </div>
   );
+}
+
+function LayoutShell() {
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+  const { snapshot, connected, transport } = useRealtime();
+  const [drawerOpen, setDrawerOpen] = useState(false);
+
+  const status = snapshot?.instance?.status || "STOPPED";
+  const running = RUNNING_STATES.has(String(status).toUpperCase());
+
+  const deptState = {};
+  (snapshot?.departments || []).forEach((d) => {
+    deptState[d.key] = d.state;
+  });
+
+  const summary = snapshot?.summary || {};
+  const totalPnl = summary.total_pnl ?? 0;
+  const openPnl = snapshot?.open_pnl ?? 0;
+  const openCount = snapshot?.open_positions_count ?? 0;
+  const winRate = summary.win_rate ?? 0;
+
+  const handleLogout = () => {
+    logout();
+    navigate("/login", { replace: true });
+  };
 
   return (
     <div className="flex h-full bg-gray-900 text-gray-100">
       {/* Desktop sidebar */}
-      <aside className="hidden w-64 shrink-0 border-r border-gray-700 bg-gray-800 md:block">
-        {sidebar}
+      <aside className="hidden w-60 shrink-0 border-r border-gray-700/70 bg-gray-850 lg:block">
+        <Sidebar
+          user={user}
+          running={running}
+          deptState={deptState}
+          onNavigate={() => {}}
+          onLogout={handleLogout}
+        />
       </aside>
 
-      {/* Mobile sidebar drawer */}
-      {sidebarOpen && (
-        <div className="fixed inset-0 z-40 md:hidden">
+      {/* Mobile slide-over drawer (full nav) */}
+      {drawerOpen && (
+        <div className="fixed inset-0 z-50 lg:hidden">
           <div
-            className="absolute inset-0 bg-black/60"
-            onClick={() => setSidebarOpen(false)}
+            className="absolute inset-0 bg-black/70"
+            onClick={() => setDrawerOpen(false)}
           />
-          <aside className="absolute left-0 top-0 h-full w-64 border-r border-gray-700 bg-gray-800">
-            {sidebar}
+          <aside className="absolute right-0 top-0 h-full w-72 border-l border-gray-700/70 bg-gray-850 shadow-2xl">
+            <div className="flex justify-end p-2">
+              <button
+                type="button"
+                onClick={() => setDrawerOpen(false)}
+                className="rounded p-1 text-gray-400 hover:text-gray-100"
+                aria-label="Close navigation"
+              >
+                <Icon name="close" className="h-6 w-6" />
+              </button>
+            </div>
+            <div className="h-[calc(100%-3rem)]">
+              <Sidebar
+                user={user}
+                running={running}
+                deptState={deptState}
+                onNavigate={() => setDrawerOpen(false)}
+                onLogout={handleLogout}
+              />
+            </div>
           </aside>
         </div>
       )}
 
       {/* Main column */}
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between border-b border-gray-700 bg-gray-800 px-4 py-3">
-          <div className="flex items-center gap-3">
+        <header className="flex h-14 items-center justify-between gap-3 border-b border-gray-700/70 bg-gray-850/80 px-3 backdrop-blur md:px-5">
+          <div className="flex min-w-0 items-center gap-2.5">
+            <div className="flex h-7 w-7 items-center justify-center rounded bg-accent text-sm font-bold text-white lg:hidden">
+              A
+            </div>
+            {/* Live metrics ticker */}
+            <div className="flex items-center gap-4 overflow-x-auto md:gap-6">
+              <TickerMetric
+                label="Total P&L"
+                value={formatMoney(totalPnl)}
+                accent={pnlColor(totalPnl)}
+              />
+              <TickerMetric
+                label="Open P&L"
+                value={formatMoney(openPnl)}
+                accent={pnlColor(openPnl)}
+              />
+              <TickerMetric label="Open" value={openCount} />
+              <div className="hidden sm:block">
+                <TickerMetric label="Win Rate" value={formatPercent(winRate)} />
+              </div>
+            </div>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-3">
+            <ConnectionPill connected={connected} transport={transport} />
+            <span className="hidden items-center gap-1.5 sm:inline-flex">
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  running ? "bg-emerald-500 pulse-dot" : "bg-gray-600"
+                }`}
+              />
+              <span
+                className={`text-[11px] font-semibold uppercase tracking-[0.06em] ${
+                  running ? "text-emerald-400" : "text-gray-400"
+                }`}
+              >
+                {String(status)}
+              </span>
+            </span>
             <button
               type="button"
-              className="text-gray-400 hover:text-gray-100 md:hidden"
-              onClick={() => setSidebarOpen((v) => !v)}
-              aria-label="Toggle navigation"
+              className="rounded p-1 text-gray-400 hover:text-gray-100 lg:hidden"
+              onClick={() => setDrawerOpen(true)}
+              aria-label="Open navigation"
             >
-              <Icon name={sidebarOpen ? "close" : "menu"} className="h-6 w-6" />
+              <Icon name="menu" className="h-6 w-6" />
             </button>
-            <span className="text-base font-semibold text-gray-100 md:hidden">
-              APEX Trader
-            </span>
-          </div>
-          <div className="flex items-center gap-3">
-            <span className="text-xs text-gray-500">Instance</span>
-            <StatusBadge status={status} />
           </div>
         </header>
 
-        <main className="apex-scroll flex-1 overflow-y-auto p-4 md:p-6">
+        <main className="apex-scroll has-bottom-nav flex-1 overflow-y-auto p-3 md:p-5">
           <Outlet />
         </main>
+
+        {/* Mobile bottom tab bar */}
+        <nav className="fixed inset-x-0 bottom-0 z-40 flex h-16 items-stretch border-t border-gray-700/70 bg-gray-850/95 backdrop-blur lg:hidden">
+          {bottomTabs.map((tab) => (
+            <NavLink
+              key={tab.to}
+              to={tab.to}
+              end={tab.end}
+              className={({ isActive }) =>
+                `flex flex-1 flex-col items-center justify-center gap-1 text-[10px] font-medium ${
+                  isActive ? "text-accent-soft" : "text-gray-400"
+                }`
+              }
+            >
+              <Icon name={tab.icon} className="h-5 w-5" />
+              {tab.label}
+            </NavLink>
+          ))}
+          <button
+            type="button"
+            onClick={() => setDrawerOpen(true)}
+            className="flex flex-1 flex-col items-center justify-center gap-1 text-[10px] font-medium text-gray-400"
+          >
+            <Icon name="more" className="h-5 w-5" />
+            More
+          </button>
+        </nav>
       </div>
     </div>
+  );
+}
+
+export default function Layout() {
+  return (
+    <RealtimeProvider>
+      <LayoutShell />
+    </RealtimeProvider>
   );
 }
