@@ -2872,22 +2872,45 @@ class EventDrivenSystem:
         """
         prof = self._tick_eval_loop.get_profile()
         slow = prof.pop("slow_ticks", [])
+        samples = int(prof.get("samples", 0) or 0)
+        ticks_routed = int(getattr(self._tick_router, "ticks_routed", 0) or 0)
+        candle_events = int(getattr(self._candle_detector, "events_emitted", 0) or 0)
+        # Tick block uses the legacy TickProfiler key names (tick_count /
+        # slow_tick_count) so the operations page renders it identically.
+        tick = {
+            "samples": samples,
+            "last_ms": prof.get("last_ms", 0.0),
+            "avg_ms": prof.get("avg_ms", 0.0),
+            "p50_ms": prof.get("p50_ms", 0.0),
+            "p95_ms": prof.get("p95_ms", 0.0),
+            "max_ms": prof.get("max_ms", 0.0),
+            "tick_count": samples,
+            "slow_tick_count": len(slow),
+        }
+        # Component rows use the legacy field names (component / calls / avg_ms);
+        # the throughput counters have no per-call latency so report zeros there.
         components = [
-            {"name": "position_eval", "p50_ms": prof.get("p50_ms", 0.0),
-             "p95_ms": prof.get("p95_ms", 0.0), "max_ms": prof.get("max_ms", 0.0),
-             "samples": prof.get("samples", 0)},
-            {"name": "ticks_routed", "count": self._tick_router.ticks_routed},
-            {"name": "candle_events", "count": self._candle_detector.events_emitted},
+            {"component": "position_eval", "calls": samples, "samples": samples,
+             "avg_ms": prof.get("avg_ms", 0.0), "p50_ms": prof.get("p50_ms", 0.0),
+             "p95_ms": prof.get("p95_ms", 0.0), "max_ms": prof.get("max_ms", 0.0)},
+            {"component": "ticks_routed", "calls": ticks_routed, "samples": ticks_routed,
+             "avg_ms": 0.0, "p50_ms": 0.0, "p95_ms": 0.0, "max_ms": 0.0},
+            {"component": "candle_events", "calls": candle_events, "samples": candle_events,
+             "avg_ms": 0.0, "p50_ms": 0.0, "p95_ms": 0.0, "max_ms": 0.0},
         ]
-        recommendations: list[str] = []
+        recommendations: list[dict[str, Any]] = []
         if prof.get("p95_ms", 0.0) >= self._tick_eval_loop._slow_threshold_ms:
-            recommendations.append(
-                "position-eval p95 latency is high — consider raising the "
-                "tick-eval interval or reducing per-position work",
-            )
+            recommendations.append({
+                "component": "position_eval",
+                "severity": "high",
+                "suggestion": (
+                    "position-eval p95 latency is high — consider raising the "
+                    "tick-eval interval or reducing per-position work"
+                ),
+            })
         return {
-            "enabled": prof.get("samples", 0) > 0,
-            "tick": prof,
+            "enabled": samples > 0,
+            "tick": tick,
             "components": components,
             "slow_ticks": slow,
             "recommendations": recommendations,

@@ -1609,8 +1609,8 @@ export function BehaviorDiscovery({ d }) {
                   >
                     {b.state}
                   </td>
-                  <td className="py-2 pr-2 text-gray-200">{cat.PROFILE || "—"}</td>
-                  <td className="py-2 pr-2 text-gray-200">{cat.HORIZON || "—"}</td>
+                  <td className="py-2 pr-2 text-gray-200">{cat.profile || "—"}</td>
+                  <td className="py-2 pr-2 text-gray-200">{cat.horizon || "—"}</td>
                   <td className="py-2 pr-2 text-right text-gray-200">{b.trades}</td>
                   <td className="py-2 pr-2 text-right text-gray-200">
                     {pct(b.win_rate)}

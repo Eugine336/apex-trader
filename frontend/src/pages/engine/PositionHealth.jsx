@@ -62,6 +62,32 @@ function DimBar({ d }) {
   );
 }
 
+// Normalize a health report's dimension breakdown for <DimBar>. The
+// orchestrator emitter ships a `dimensions` array, while the live
+// decision-engine management emitter ships a `dimension_scores` dict
+// ({tf_alignment, momentum, structure_integrity}); accept both.
+function dimsFromReport(r) {
+  if (Array.isArray(r.dimensions) && r.dimensions.length) return r.dimensions;
+  const scores = r.dimension_scores;
+  if (scores && typeof scores === "object") {
+    return Object.entries(scores).map(([name, multiplier]) => ({
+      name: name.replace(/_/g, " "),
+      multiplier,
+    }));
+  }
+  return [];
+}
+
+// Thesis-change notes: the orchestrator emitter ships a `thesis_changes`
+// array; the live management emitter ships a scalar `reason` — fall back to it.
+function changesFromReport(r) {
+  if (Array.isArray(r.thesis_changes) && r.thesis_changes.length) {
+    return r.thesis_changes;
+  }
+  if (r.reason) return [r.reason];
+  return [];
+}
+
 // Compact health-over-time sparkline (no chart-lib dependency).
 function Spark({ series }) {
   const pts = (series || []).map((s) => s.health_score ?? 0);
@@ -244,31 +270,38 @@ export default function PositionHealth() {
                         <tr>
                           <td colSpan={7} className="bg-gray-900/40">
                             <div className="p-3">
-                              {latest.entry_health_at_open != null && (
-                                <div className="mb-2 text-xs text-gray-400">
-                                  Entry health{" "}
-                                  <b>{Number(latest.entry_health_at_open).toFixed(2)}</b>{" "}
-                                  → now{" "}
-                                  <b style={{ color: healthHex(latest.health_score) }}>
-                                    {Number(latest.health_score || 0).toFixed(2)}
-                                  </b>{" "}
-                                  (Δ {Number(latest.health_delta || 0).toFixed(2)})
-                                </div>
-                              )}
-                              {(latest.dimensions || []).map((d, i) => (
-                                <DimBar key={i} d={d} />
-                              ))}
-                              {(latest.thesis_changes || []).length > 0 && (
-                                <div className="mt-1.5 text-[11px] text-gray-500">
-                                  Changes since entry:{" "}
-                                  {(latest.thesis_changes || []).join("; ")}
-                                </div>
-                              )}
-                              {(latest.dimensions || []).length === 0 && (
-                                <div className="text-xs text-gray-500">
-                                  No dimension detail recorded.
-                                </div>
-                              )}
+                              {(() => {
+                                const dims = dimsFromReport(latest);
+                                const changes = changesFromReport(latest);
+                                return (
+                                  <>
+                                    {latest.entry_health_at_open != null && (
+                                      <div className="mb-2 text-xs text-gray-400">
+                                        Entry health{" "}
+                                        <b>{Number(latest.entry_health_at_open).toFixed(2)}</b>{" "}
+                                        → now{" "}
+                                        <b style={{ color: healthHex(latest.health_score) }}>
+                                          {Number(latest.health_score || 0).toFixed(2)}
+                                        </b>{" "}
+                                        (Δ {Number(latest.health_delta || 0).toFixed(2)})
+                                      </div>
+                                    )}
+                                    {dims.map((d, i) => (
+                                      <DimBar key={i} d={d} />
+                                    ))}
+                                    {changes.length > 0 && (
+                                      <div className="mt-1.5 text-[11px] text-gray-500">
+                                        Changes since entry: {changes.join("; ")}
+                                      </div>
+                                    )}
+                                    {dims.length === 0 && (
+                                      <div className="text-xs text-gray-500">
+                                        No dimension detail recorded.
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              })()}
                             </div>
                           </td>
                         </tr>
@@ -319,7 +352,7 @@ export default function PositionHealth() {
                       </span>
                     </td>
                     <td className="py-2 pr-2 text-xs text-gray-400">
-                      {(r.thesis_changes || []).join("; ") || "—"}
+                      {changesFromReport(r).join("; ") || "—"}
                     </td>
                   </tr>
                 ))}

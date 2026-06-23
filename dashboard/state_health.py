@@ -163,6 +163,14 @@ class HealthMixin:
         stats = ed.stats() if hasattr(ed, "stats") else {}
         cfg = getattr(ed, "_config", None)
 
+        memory_mb = None
+        try:
+            from ops.lifecycle import _process_memory_mb
+
+            memory_mb = _process_memory_mb()
+        except Exception:
+            pass
+
         return {
             "status": status,
             "ts": datetime.now(timezone.utc).isoformat(),
@@ -173,6 +181,7 @@ class HealthMixin:
             "drawdown": drawdown,
             "watchdog": watchdog_state,
             "ed_stats": stats,
+            "memory_mb": memory_mb,
             "adaptive_layers": _ed_adaptive_layers(ctx),
             "store_sizes_mb": _ed_store_sizes_mb(cfg),
             "last_tick_age_seconds": (watchdog_state or {}).get("seconds_since_tick"),
