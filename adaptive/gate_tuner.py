@@ -24,6 +24,12 @@ from loguru import logger
 
 from adaptive.tunable import TuningGuardMixin
 
+# Per-user writeable state. Anchored through runtime_paths.data_dir() (honours
+# APEX_DATA_DIR in multi-tenant mode) rather than a bare ``data/`` relative path,
+# so the learned offsets land in the owning user's isolated tree regardless of
+# the process cwd.
+from runtime_paths import data_dir as _data_dir
+
 
 class GateTuner(TuningGuardMixin):
     """Learns bounded threshold offsets for quality gates from shadow outcomes."""
@@ -47,8 +53,8 @@ class GateTuner(TuningGuardMixin):
     LOOSEN_WINRATE = 0.55   # rejected setups winning ≥ this → gate too strict
     TIGHTEN_WINRATE = 0.40  # rejected setups winning ≤ this → gate is right
 
-    def __init__(self, path: str = "data/gate_tuning.json") -> None:
-        self._path = Path(path)
+    def __init__(self, path: str | None = None) -> None:
+        self._path = Path(path) if path else (_data_dir() / "gate_tuning.json")
         self._offsets: dict[str, float] = {}
         self._load()
 

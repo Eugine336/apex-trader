@@ -26,6 +26,10 @@ from typing import Optional
 
 from loguru import logger
 
+# Per-user writeable state — learned scoring weights resolve under the owning
+# user's data tree (APEX_DATA_DIR) instead of a bare cwd-relative ``data/`` path.
+from runtime_paths import data_dir as _data_dir
+
 
 FACTOR_KEYS = [
     "structure",
@@ -172,6 +176,9 @@ class ScoreOptimizer:
     authority — the post-clamp total may differ from 123.
     """
 
+    # Default filename only. The directory is resolved at call time through
+    # runtime_paths.data_dir() (per-user writeable tree) — see load_weights /
+    # save_weights — so DEFAULT_PATH itself is never opened directly.
     DEFAULT_PATH = "data/scoring_weights.json"
     MAX_SHIFT = 3
     MIN_WEIGHT = 3
@@ -525,7 +532,7 @@ class ScoreOptimizer:
         weights: Optional[ScoringWeights] = None,
         filepath: Optional[str] = None,
     ) -> None:
-        filepath = filepath or self.DEFAULT_PATH
+        filepath = filepath or str(_data_dir() / "scoring_weights.json")
         p = Path(filepath)
         p.parent.mkdir(parents=True, exist_ok=True)
 
@@ -568,7 +575,7 @@ class ScoreOptimizer:
         return any(isinstance(v, dict) for v in data.values())
 
     def load_weights(self, filepath: Optional[str] = None) -> ScoringWeights:
-        filepath = filepath or self.DEFAULT_PATH
+        filepath = filepath or str(_data_dir() / "scoring_weights.json")
         p = Path(filepath)
         if not p.exists():
             logger.info("No saved weights found — using defaults")
@@ -634,7 +641,7 @@ def _migrate_old_weights(data: dict) -> dict:
     return out
 
 
-def load_saved_weights(filepath: str = "data/scoring_weights.json") -> ScoringWeights:
+def load_saved_weights(filepath: Optional[str] = None) -> ScoringWeights:
     """Load OOS-validated weights from disk, migrating old schemas if needed.
     Falls back to canonical defaults if absent or corrupt.
     Shared by the backtest orchestrator and the live scanner.
@@ -643,6 +650,7 @@ def load_saved_weights(filepath: str = "data/scoring_weights.json") -> ScoringWe
     profile is returned — single-profile consumers stay correct without
     needing to know about per-class mode.
     """
+    filepath = filepath or str(_data_dir() / "scoring_weights.json")
     p = Path(filepath)
     if not p.exists():
         return ScoringWeights()

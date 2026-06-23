@@ -131,7 +131,16 @@ class AuthorityManager:
     # value must not surface as a phantom 100% drawdown failure (cold start).
     COLD_START_MIN_TRADES       = 10
 
-    def __init__(self, db_path: str = "authority.db"):
+    def __init__(self, db_path: str | None = None):
+        # Per-user writeable state — the RL authority ladder DB resolves under
+        # the owning user's data tree (APEX_DATA_DIR), so each user earns RL
+        # authority independently rather than against a shared/cwd-relative DB.
+        if not db_path:
+            try:
+                from runtime_paths import data_dir as _data_dir
+                db_path = str(_data_dir() / "authority.db")
+            except Exception:
+                db_path = "authority.db"
         self.db_path = db_path
         self._init_db()          # creates tables + seeds row
         self._current_stage = self._load_stage()  # now safe to read

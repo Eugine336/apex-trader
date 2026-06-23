@@ -40,6 +40,10 @@ from typing import Any, Callable, Optional
 
 from loguru import logger
 
+# Per-user writeable state — the post-close tracker DB resolves under the owning
+# user's data tree (APEX_DATA_DIR) rather than a bare cwd-relative ``data/`` path.
+from runtime_paths import data_dir as _data_dir
+
 _DEFAULT_INTERVALS = [5, 15, 30, 60]
 _MAX_RETRIES = 3
 # Bounds for how many M1 bars to request when reconstructing the excursion
@@ -285,7 +289,7 @@ class PostCloseTracker:
     def __init__(
         self,
         config=None,
-        db_path: str = "data/trade_journal.db",
+        db_path: str | None = None,
         clock: Optional[Callable[[], datetime]] = None,
     ) -> None:
         self._enabled = bool(getattr(config, "enabled", True)) if config is not None else True
@@ -293,7 +297,7 @@ class PostCloseTracker:
         self.intervals = [int(x) for x in intervals] if intervals else list(_DEFAULT_INTERVALS)
         self.max_retries = int(getattr(config, "max_retries", _MAX_RETRIES)) if config is not None else _MAX_RETRIES
         self._clock = clock or _utcnow
-        self.db_path = Path(db_path)
+        self.db_path = Path(db_path) if db_path else (_data_dir() / "trade_journal.db")
         self._pending: dict[str, PendingCheck] = {}
         self._init_db()
         self._load_pending()

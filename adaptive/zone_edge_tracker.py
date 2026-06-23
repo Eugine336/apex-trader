@@ -26,9 +26,13 @@ import json
 import os
 import tempfile
 import threading
+from pathlib import Path
 from typing import Any, Optional
 
 from loguru import logger
+
+# Per-user writeable state — see runtime_paths for the per-user / shared split.
+from runtime_paths import data_dir as _data_dir
 
 
 def _norm_direction(direction: str) -> str:
@@ -40,7 +44,7 @@ class ZoneEdgeTracker:
 
     def __init__(
         self,
-        db_path: str = "data/zone_edge.json",
+        db_path: str | None = None,
         *,
         min_samples: int = 20,
         window: int = 300,
@@ -49,7 +53,7 @@ class ZoneEdgeTracker:
         weight_floor: float = 0.6,
         weight_ceil: float = 1.4,
     ) -> None:
-        self._path = db_path
+        self._path = db_path if db_path else str(_data_dir() / "zone_edge.json")
         self._min_samples = max(1, int(min_samples))
         self._window = max(self._min_samples, int(window))
         self._baseline = float(baseline_win_rate)

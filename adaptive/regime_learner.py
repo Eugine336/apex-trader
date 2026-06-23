@@ -12,6 +12,10 @@ from pathlib import Path
 import numpy as np
 from loguru import logger
 
+# Per-user writeable state — resolve the learned-profile file under the owning
+# user's data tree (APEX_DATA_DIR) rather than a bare cwd-relative ``data/`` path.
+from runtime_paths import data_dir as _data_dir
+
 
 @dataclass
 class RegimeStrategy:
@@ -77,13 +81,13 @@ class RegimeLearner:
     def _save(self) -> None:
         from persistence.atomic_write import atomic_write_text
 
-        p = Path(self.SAVE_PATH)
+        p = _data_dir() / Path(self.SAVE_PATH).name
         data = {k: asdict(v) for k, v in self._strategies.items()}
         atomic_write_text(p, json.dumps(data, indent=2, default=str))
         logger.info(f"Regime strategies saved to {self.SAVE_PATH}")
 
     def _load(self) -> None:
-        p = Path(self.SAVE_PATH)
+        p = _data_dir() / Path(self.SAVE_PATH).name
         if not p.exists():
             return
         try:
