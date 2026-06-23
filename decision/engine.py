@@ -328,8 +328,16 @@ class DecisionEngine:
 
     @staticmethod
     def _is_counter_htf(ctx: EntryContext) -> bool:
-        """True when the trade direction opposes the H4 trend (continuation vs
-        reversal). Uses the H4 trend string, tolerating enum/`Trend.X` forms."""
+        """True when the trade direction opposes the higher-timeframe bias.
+
+        Honours the zone's ``is_counter_trend`` flag first — it is computed at
+        zone extraction against the full HTF stack (H4→H1→D1 via
+        ``_resolve_bias``), so it is a more complete read than the H4-only
+        derivation. Falls back to the H4 trend string (tolerating enum/`Trend.X`
+        forms) when the flag is unset, preserving the previous behaviour.
+        """
+        if getattr(ctx, "is_counter_trend", False):
+            return True
         h4 = str(ctx.h4_trend).upper()
         return ("BEARISH" in h4) if ctx.is_long else ("BULLISH" in h4)
 

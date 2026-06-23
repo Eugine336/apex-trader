@@ -240,18 +240,25 @@ def _struct_swings(struct_by_tf: dict, tf: str) -> tuple[Optional[float], Option
     return getattr(sa, "swing_high", None), getattr(sa, "swing_low", None)
 
 
-def _micro_confirmation_from_event(m1_event: str, direction: str) -> tuple[str, str]:
-    """Derive ``(micro_confirmation, entry_mode)`` from a live M1 structural event.
+def _micro_confirmation_from_event(
+    m1_event: str, direction: str, m1_pattern: str = "",
+) -> tuple[str, str]:
+    """Derive ``(micro_confirmation, entry_mode)`` from M1 evidence.
 
     Mirrors ``event_driven_bootstrap._micro_confirmation_from_event`` so the
     backtest entry plane reaches the MARKET fast-path on the same M1 BOS/CHoCH
-    confirmation the live plane uses. Returns ``("", "PENDING")`` otherwise.
+    confirmation the live plane uses, and — when no event confirms — on the same
+    aligned M1 candle pattern (engulfing / pin bar). Returns ``("", "PENDING")``
+    otherwise.
     """
     ev = str(m1_event or "").upper()
     is_long = direction.upper() in ("BUY", "LONG")
     aligned = ("BULLISH" in ev) if is_long else ("BEARISH" in ev)
     if ("BOS" in ev or "CHOCH" in ev) and aligned:
         return "choch_bos", "MARKET"
+    pat = str(m1_pattern or "").strip().lower()
+    if pat in ("engulfing", "pin_bar"):
+        return pat, "MARKET"
     return "", "PENDING"
 
 
@@ -508,6 +515,27 @@ class BacktestEngine:
         from config import AppConfig
 
         self.config = config or AppConfig()
+
+        # CalibrationEngine (single writer) — opt-in via config.calibration.enabled.
+        # When on, the backtest feeds the SAME candle slices it analyses into the
+        # engine and registers it as the get_profile provider, so replayed
+        # decisions use self-calibrating geometry exactly as live would. When off,
+        # no provider is registered and the hardcoded constants are used.
+        self._calibration_engine = None
+        _calib_cfg = getattr(self.config, "calibration", None)
+        if _calib_cfg is not None and getattr(_calib_cfg, "enabled", False):
+            try:
+                from brain.calibration_engine import CalibrationEngine
+                from brain.instrument_profile import set_stats_provider
+                self._calibration_engine = CalibrationEngine(
+                    state_path=getattr(
+                        _calib_cfg, "state_path", "data/calibration_state.json"
+                    ),
+                )
+                set_stats_provider(self._calibration_engine)
+            except Exception as exc:
+                logger.warning("[backtest] CalibrationEngine init failed: {}", exc)
+                self._calibration_engine = None
 
         # Decision engine: the shared ED core (brain.decision_core.analyze_window)
         # drives backtest decisions — identical to the live plane.  ``scanner``
@@ -1030,6 +1058,20 @@ class BacktestEngine:
 
         try:
             from brain.decision_core import analyze_window
+            # CalibrationEngine feed — hand the analysed slices to the single
+            # writer so per-symbol ATR / session / spread stats calibrate during
+            # replay (no-op when calibration is disabled). Fed once per bar here
+            # on the analysis path; the management path reuses the same stats.
+            if self._calibration_engine is not None:
+                pip = getattr(self, "pip_size", 0.0001) or 0.0001
+                for _tf, _df in (("H4", h4), ("H1", h1), ("M15", m15), ("M5", m5)):
+                    self._calibration_engine.update_candles(pair, _tf, _df, pip)
+                try:
+                    spread = float(getattr(self.config.backtest, "default_spread_pips", 0.0) or 0.0)
+                    if spread > 0:
+                        self._calibration_engine.update_spread(pair, spread, pip)
+                except Exception:
+                    pass
             wm = analyze_window(
                 pair,
                 {"H4": h4, "H1": h1, "M15": m15, "M5": m5},
@@ -1321,7 +1363,7 @@ class BacktestEngine:
         is_long = direction == "LONG"
         micro = self._micro_from_slice(slices.get("M1"), is_long)
         micro_conf, entry_mode_v = _micro_confirmation_from_event(
-            micro["m1_event"], direction,
+            micro["m1_event"], direction, micro.get("m1_pattern", ""),
         )
 
         sl = signal.stop_loss
@@ -1353,6 +1395,28 @@ class BacktestEngine:
             except Exception:
                 session_tradeable = True
 
+        # Setup-quality (OQ/EQ) and ranker horizon from the SAME WorldModel
+        # layers the live entry plane reads — keeps the planes in parity. OQ/EQ
+        # default to 0.0 (= not computed); horizon to "" (full HTF authority)
+        # when no ranked candidate matches this direction.
+        bt_oq, bt_eq = _oq_eq_from_wm(wm, direction)
+        entry_oq_v = float(bt_oq) if bt_oq is not None else 0.0
+        entry_eq_v = float(bt_eq) if bt_eq is not None else 0.0
+        entry_horizon = ""
+        try:
+            best = None
+            for opp in (getattr(wm, "candidates", ()) or ()):
+                if str(getattr(opp, "direction", "")).upper() != direction.upper():
+                    continue
+                if best is None or float(
+                    getattr(opp, "expected_value", 0.0) or 0.0
+                ) > float(getattr(best, "expected_value", 0.0) or 0.0):
+                    best = opp
+            if best is not None:
+                entry_horizon = str(getattr(best, "timeframe_class", "") or "")
+        except Exception:
+            entry_horizon = ""
+
         return EntryContext(
             symbol=pair,
             direction=direction,
@@ -1367,6 +1431,8 @@ class BacktestEngine:
             risk_pips=risk_pips,
             entry_mode=entry_mode_v,
             micro_confirmation=micro_conf,
+            oq=entry_oq_v,
+            eq=entry_eq_v,
             account_balance=balance,
             risk_pct=self.risk_per_trade,
             d1_trend=d1_trend, d1_confidence=d1_conf, d1_event=d1_event,
@@ -1383,6 +1449,7 @@ class BacktestEngine:
             typical_spread=typical_spread,
             session_tradeable=session_tradeable,
             regime=wm.regime_by_tf().get("H1", "") or "",
+            horizon=entry_horizon,
             confluences=list(signal.confluences),
             consensus_votes=list(votes),
         )
@@ -1496,7 +1563,7 @@ class BacktestEngine:
         alignment + ``StructureEngine`` micro read) but sources candles from the
         replay slice instead of a broker fetch.
         """
-        out = {"m1_aligned_count": 0, "m1_event": "NONE", "m1_trend": "UNKNOWN"}
+        out = {"m1_aligned_count": 0, "m1_event": "NONE", "m1_trend": "UNKNOWN", "m1_pattern": ""}
         if m1_df is None or len(m1_df) < 5:
             return out
         try:
@@ -1510,6 +1577,11 @@ class BacktestEngine:
             out["m1_aligned_count"] = int(aligned)
         except Exception:
             return out
+        try:
+            from entry.m1_patterns import detect_m1_pattern
+            out["m1_pattern"] = detect_m1_pattern(m1_df, is_long)
+        except Exception:
+            out["m1_pattern"] = ""
         try:
             from brain.structure_engine import StructureEngine
             engine = StructureEngine(swing_lookback=3, pip_size=self.pip_size)
@@ -1984,7 +2056,7 @@ class BacktestEngine:
         except Exception:
             pass
 
-        return TradeContext(
+        tc = TradeContext(
             symbol=pair,
             order_id=trade.get("order_id", ""),
             direction=norm_dir,
@@ -2032,6 +2104,17 @@ class BacktestEngine:
             open_trade_count=1,
             max_open_trades=getattr(self.config.risk, "max_open_trades", 5),
         )
+        # Populate the context-pressure diagnostic fields the same way live does
+        # (opposing-signal summary) so both planes carry identical state.
+        try:
+            from decision.situation import compute_in_trade_context_pressure
+            cp, ob, details = compute_in_trade_context_pressure(tc)
+            tc.context_pressure = cp
+            tc.opposing_boost = ob
+            tc.pressure_details = details
+        except Exception:
+            pass
+        return tc
 
     def _update_fast_opposition(self, trade: dict, sa) -> None:
         """Maintain the per-trade fast-opposition streak (corrected sign).
