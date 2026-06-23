@@ -240,3 +240,69 @@ async def performance(
 ) -> Any:
     """Aggregate performance — win rate, profit factor, equity curve, extremes."""
     return await _proxy(user=user, pm=pm, path="/api/performance")
+
+
+@router.get("/learning")
+async def learning(
+    user: dict[str, Any] = Depends(get_current_user),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> Any:
+    """Adaptive learning layer — every self-tuning producer (signal ledger,
+    emitter feedback, vote calibration, score optimizer, pair learner,
+    counterfactual attribution, interactions, parameter/signal/behaviour
+    discovery, virtual modules, capital allocation, execution profiles,
+    regime detection, risk management, tuner agent)."""
+    return await _proxy(user=user, pm=pm, path="/api/learning")
+
+
+@router.get("/outcome-feedback")
+async def outcome_feedback(
+    user: dict[str, Any] = Depends(get_current_user),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> Any:
+    """Per-module / per-horizon accuracy + confidence calibration from closed trades."""
+    return await _proxy(user=user, pm=pm, path="/api/outcome-feedback")
+
+
+@router.get("/ml")
+async def ml_insights(
+    user: dict[str, Any] = Depends(get_current_user),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> Any:
+    """Adaptive optimizer insights — score weight adjustments, regime / session /
+    pair performance stats."""
+    return await _proxy(user=user, pm=pm, path="/api/ml")
+
+
+@router.get("/shadow")
+async def shadow_outcomes(
+    user: dict[str, Any] = Depends(get_current_user),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> Any:
+    """Rejected/skipped setup counterfactual outcomes grouped by rejecting gate."""
+    return await _proxy(user=user, pm=pm, path="/api/shadow")
+
+
+@router.get("/reconciliation")
+async def reconciliation(
+    user: dict[str, Any] = Depends(get_current_user),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> Any:
+    """Broker-reported vs derived exit-reason discrepancies and anomalies."""
+    return await _proxy(user=user, pm=pm, path="/api/reconciliation")
+
+
+@router.get("/module-governor")
+async def module_governor(
+    limit: int = Query(default=100, ge=1, le=500),
+    user: dict[str, Any] = Depends(get_current_user),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> Any:
+    """Module shadow-mode governor — per-module ACTIVE/SHADOW/DISABLED state +
+    transition history."""
+    return await _proxy(
+        user=user,
+        pm=pm,
+        path="/api/module-governor",
+        params={"limit": limit},
+    )
