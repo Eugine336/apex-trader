@@ -34,6 +34,27 @@ from config import is_always_open, is_session_gated
 from management.trailing_stop import StructureTrailingStop
 
 
+def sl_within_min_room(
+    current_price: float,
+    new_sl: float,
+    pip_size: float,
+    min_room_pips: float,
+) -> bool:
+    """True when an SL at ``new_sl`` sits within ``min_room_pips`` of price.
+
+    A MODIFY_SL whose level is this close to the current price cannot be placed
+    by the broker (it falls inside the minimum stop distance); honouring it
+    would force a clamp that pins the stop near breakeven. Callers use this to
+    DEFER such moves (drop the intent) rather than emit a stop that chokes a
+    still-running trade — it re-emits next cycle once price has cleared room.
+    """
+    if pip_size <= 0 or current_price <= 0 or not new_sl or new_sl <= 0:
+        return False
+    if min_room_pips <= 0:
+        return False
+    return abs(current_price - new_sl) < (min_room_pips * pip_size)
+
+
 @dataclass
 class WorkerConfig:
     """Configuration for PositionWorker management checks.
@@ -103,6 +124,16 @@ class WorkerConfig:
     dynamic_sl_tightening_enabled: bool = True
     dynamic_sl_tighten_at_r: float = 2.0
     dynamic_sl_tighten_ratio: float = 0.5
+
+    # ── SL-modify minimum room ───────────────────────────────────────
+    # A breakeven / trailing / profit-protection SL move that lands within
+    # this many pips of the CURRENT price cannot be honoured by the broker
+    # (it sits inside the minimum stop distance) — the connector would clamp
+    # it to a forced level, pinning the stop at ~breakeven and choking a
+    # still-running trade. Such MODIFY_SL intents are dropped here so they
+    # re-emit on a later cycle once price has cleared enough room. Expressed
+    # in pips and scaled by the instrument pip size, so it is broker-agnostic.
+    min_sl_modify_room_pips: float = 2.0
 
     # ── Absolute profit protection ───────────────────────────────────
     absolute_profit_protection_enabled: bool = True
@@ -242,7 +273,37 @@ class PositionWorker:
             self._check_session_close(snap, now, intents)
             self._check_opportunity_cost(snap, now, market, intents)
 
-        return intents
+        return self._drop_too_close_sl_moves(snap, intents)
+
+    def _drop_too_close_sl_moves(
+        self, snap: PositionSnapshot, intents: list[Intent],
+    ) -> list[Intent]:
+        """Drop MODIFY_SL intents whose level is within the broker minimum room.
+
+        A breakeven / trailing / profit-protection move that lands within
+        ``min_sl_modify_room_pips`` of the current price would be clamped by the
+        broker connector to a forced level (pinning the stop near breakeven and
+        choking a still-running trade). Defer it instead — it re-emits next cycle
+        once price has cleared enough room. CLOSE / PARTIAL_CLOSE / MODIFY_TP are
+        never touched, so protective exits are unaffected.
+        """
+        room = self.cfg.min_sl_modify_room_pips
+        if room <= 0:
+            return intents
+        kept: list[Intent] = []
+        for intent in intents:
+            if intent.intent_type == IntentType.MODIFY_SL and sl_within_min_room(
+                snap.current_price, intent.new_sl or 0.0, snap.pip_size, room,
+            ):
+                logger.debug(
+                    "[pos-worker] deferring SL move for {} — {} @ {:.5f} within "
+                    "{:.1f}pip of price {:.5f} (source={})",
+                    snap.symbol, intent.intent_type.name, intent.new_sl or 0.0,
+                    room, snap.current_price, getattr(intent, "source", ""),
+                )
+                continue
+            kept.append(intent)
+        return kept
 
     # ──────────────────────────────────────────────────────────────────
     # Layer 1: Tick-level checks (mirrors TradeManager.update)
