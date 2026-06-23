@@ -1,5 +1,9 @@
 import client from "./client";
 
+// Trim copy-paste whitespace before it ever reaches the API/vault — leading or
+// trailing spaces are the most common cause of "correct credentials" failing.
+const clean = (value) => (typeof value === "string" ? value.trim() : value);
+
 // GET /api/broker → list[BrokerCredentialResponse]
 export async function listCredentials() {
   const { data } = await client.get("/api/broker");
@@ -11,10 +15,10 @@ export async function listCredentials() {
 export async function setMT5({ login, password, server, label = "" }) {
   const { data } = await client.put("/api/broker/mt5", {
     broker_type: "mt5",
-    login: Number(login),
-    password,
-    server,
-    label,
+    login: Number(clean(login)),
+    password: clean(password),
+    server: clean(server),
+    label: clean(label),
   });
   return data;
 }
@@ -30,11 +34,11 @@ export async function setDeriv({
 }) {
   const { data } = await client.put("/api/broker/deriv", {
     broker_type: "deriv",
-    access_token,
-    app_id,
-    account_type,
-    client_id,
-    label,
+    access_token: clean(access_token),
+    app_id: clean(app_id),
+    account_type: clean(account_type),
+    client_id: clean(client_id),
+    label: clean(label),
   });
   return data;
 }

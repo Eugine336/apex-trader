@@ -106,9 +106,9 @@ def _mt5_brokers_env(creds: dict[str, Any]) -> str:
     return json.dumps(
         [
             {
-                "login": int(creds["login"]),
-                "password": str(creds["password"]),
-                "server": str(creds["server"]),
+                "login": int(str(creds["login"]).strip()),
+                "password": str(creds["password"]).strip(),
+                "server": str(creds["server"]).strip(),
             }
         ]
     )
@@ -155,21 +155,24 @@ def build_instance_environment(
     env.pop("DD_DASHBOARD_BIND_HOST", None)
 
     # ── Broker credentials (consumed by platforms.platform_manager) ───────
+    # Strip on consumption as defense-in-depth: credentials stored before the
+    # vault began trimming the password (or any stray whitespace) are cleaned
+    # here too, since decrypt() does not re-validate.
     mt5 = broker_credentials.get("mt5")
     if mt5:
         env["MT5_BROKERS"] = _mt5_brokers_env(mt5)
         # Also set legacy single-broker vars for any code path that reads them.
-        env["MT5_LOGIN"] = str(int(mt5["login"]))
-        env["MT5_PASSWORD"] = str(mt5["password"])
-        env["MT5_SERVER"] = str(mt5["server"])
+        env["MT5_LOGIN"] = str(int(str(mt5["login"]).strip()))
+        env["MT5_PASSWORD"] = str(mt5["password"]).strip()
+        env["MT5_SERVER"] = str(mt5["server"]).strip()
 
     deriv = broker_credentials.get("deriv")
     if deriv:
-        env["DERIV_ACCESS_TOKEN"] = str(deriv["access_token"])
-        env["DERIV_APP_ID"] = str(deriv["app_id"])
-        env["DERIV_ACCOUNT_TYPE"] = str(deriv.get("account_type", "demo"))
-        if deriv.get("client_id"):
-            env["DERIV_CLIENT_ID"] = str(deriv["client_id"])
+        env["DERIV_ACCESS_TOKEN"] = str(deriv["access_token"]).strip()
+        env["DERIV_APP_ID"] = str(deriv["app_id"]).strip()
+        env["DERIV_ACCOUNT_TYPE"] = str(deriv.get("account_type", "demo")).strip()
+        if str(deriv.get("client_id", "")).strip():
+            env["DERIV_CLIENT_ID"] = str(deriv["client_id"]).strip()
 
     if dashboard_port is not None:
         env["DD_DASHBOARD_PORT"] = str(dashboard_port)

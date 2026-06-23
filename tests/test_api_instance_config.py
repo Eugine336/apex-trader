@@ -77,3 +77,34 @@ def test_build_environment_without_deriv(tmp_path):
     )
     assert "DERIV_ACCESS_TOKEN" not in env
     assert env["MT5_LOGIN"] == "5"
+
+
+def test_build_environment_strips_whitespace_credentials(tmp_path):
+    """Defense-in-depth: padded credentials (e.g. stored pre-fix) are cleaned
+    before being injected into the trading subprocess environment."""
+    env = build_instance_environment(
+        user_id=4,
+        workdir=tmp_path / "u4",
+        config_path=tmp_path / "u4" / "cfg.json",
+        api_db_path=tmp_path / "api.db",
+        broker_credentials={
+            "mt5": {"login": " 5 ", "password": "  p \n", "server": " Broker-Live "},
+            "deriv": {
+                "access_token": "  tok\t",
+                "app_id": " 1089 ",
+                "account_type": " demo ",
+                "client_id": "  cid ",
+            },
+        },
+        base_env={},
+    )
+    assert env["MT5_LOGIN"] == "5"
+    assert env["MT5_PASSWORD"] == "p"
+    assert env["MT5_SERVER"] == "Broker-Live"
+    assert json.loads(env["MT5_BROKERS"]) == [
+        {"login": 5, "password": "p", "server": "Broker-Live"}
+    ]
+    assert env["DERIV_ACCESS_TOKEN"] == "tok"
+    assert env["DERIV_APP_ID"] == "1089"
+    assert env["DERIV_ACCOUNT_TYPE"] == "demo"
+    assert env["DERIV_CLIENT_ID"] == "cid"
