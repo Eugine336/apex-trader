@@ -14,7 +14,7 @@ from __future__ import annotations
 import math
 import time as _time
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import Any, Optional
 
 from loguru import logger
 
@@ -302,6 +302,9 @@ class ConsensusThesis:
     opposing: list[Vote] = field(default_factory=list)
     abstaining: list[Vote] = field(default_factory=list)
     trigger: bool = False
+    # The conviction BEFORE symbol-relative normalization (1B). Equals
+    # ``conviction`` when no SymbolConvictionStore is applied (cold start / off).
+    raw_conviction: float = 0.0
 
     @property
     def supporting_modules(self) -> list[str]:
@@ -334,6 +337,8 @@ def form_thesis(
     conviction_threshold: float = 0.62,
     net_scale: float = 0.0,
     log_suppressed_minorities: bool = False,
+    symbol: Optional[str] = None,
+    conviction_store: Any = None,
 ) -> ConsensusThesis:
     """Turn a vote panel into an actionable :class:`ConsensusThesis`.
 
@@ -349,6 +354,15 @@ def form_thesis(
     ``net_scale<=0`` derives a sane scale from ``min_net_score``). Both inputs
     are in ``[0, 1]`` so conviction is too. NEUTRAL theses carry conviction 0.0
     and never trigger.
+
+    When ``symbol`` and a ``conviction_store`` (a
+    :class:`~adaptive.symbol_conviction.SymbolConvictionStore`) are supplied, the
+    raw conviction is recorded for that symbol and re-expressed *relative to the
+    symbol's own conviction distribution* before the ``trigger`` comparison — so
+    ``conviction_threshold`` means the same thing across instruments. Cold-start
+    neutral: until the symbol warms up the store returns the raw value, so the
+    trigger is unchanged. Both the live and backtest planes pass the same store,
+    so this stays parity-preserving.
     """
     decision = decide(
         votes,
@@ -365,6 +379,7 @@ def form_thesis(
         return ConsensusThesis(
             direction="NEUTRAL",
             conviction=0.0,
+            raw_conviction=0.0,
             decision=decision,
             supporting=[],
             opposing=[v for v in decision.votes if v.direction not in ("NEUTRAL", direction)],
@@ -374,7 +389,22 @@ def form_thesis(
 
     scale = net_scale if net_scale and net_scale > 0 else max(min_net_score * 2.0, 1e-9)
     net_sat = min(1.0, abs(decision.net_score) / scale)
-    conviction = round(min(1.0, 0.5 * decision.agreement + 0.5 * net_sat), 4)
+    raw_conviction = round(min(1.0, 0.5 * decision.agreement + 0.5 * net_sat), 4)
+
+    # 1B — symbol-relative conviction. Record the raw value and re-express it
+    # against this symbol's own distribution. Guarded: any fault leaves the raw
+    # conviction in place (behaviour-neutral).
+    conviction = raw_conviction
+    if conviction_store is not None and symbol:
+        try:
+            conviction = round(
+                float(conviction_store.record_and_normalize(symbol, raw_conviction)), 4
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[consensus] {} conviction normalization failed: {}", symbol, exc
+            )
+            conviction = raw_conviction
 
     supporting = [v for v in decision.votes if v.direction == direction]
     opposing = [
@@ -388,6 +418,7 @@ def form_thesis(
     return ConsensusThesis(
         direction=direction,
         conviction=conviction,
+        raw_conviction=raw_conviction,
         decision=decision,
         supporting=supporting,
         opposing=opposing,

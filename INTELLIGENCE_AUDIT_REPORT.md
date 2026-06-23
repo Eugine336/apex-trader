@@ -373,3 +373,32 @@ The entire `ml/` package; `mtf_orchestrator`; `RegimeDetector` scoring path; RL 
 7. `DecisionEngine` (entry conviction + management thesis-secure) — situation-aware sizing and the genuinely-smart profit protection.
 
 Everything else — RL, the learner zoo, the orchestrators, the second governor — is **defense-in-depth, decoration, or dormant**, and the system would still trade and (more importantly) still *survive* without it.
+
+---
+
+## UPDATE — Instrument-awareness layer wired (Governor + 1B + 1C)
+
+The instrument-blindness called out above has been addressed end-to-end
+(see `SYSTEM_ARCHITECTURE.md` §3 for the full account):
+
+* **ModuleGovernor + VoteCalibrator enabled.** Both were silently inert: their
+  `enabled` flag was read off the top-level `AppConfig` instead of the nested
+  `ModuleGovernorConfig` / `VoteCalibratorConfig`, so it always resolved `False`.
+  `core/system_context.py` now passes the nested config — the Governor's
+  shadow/disable machine and the calibrator's accuracy weighting are live
+  (cold-start neutral until graded data accrues).
+* **1B — Symbol-relative conviction.** `adaptive/symbol_conviction.\
+SymbolConvictionStore` re-expresses each `form_thesis` conviction relative to the
+  symbol's own distribution; wired identically into the live and backtest planes.
+  `EURUSD 0.82` and `XAUUSD 0.82` no longer mean the same thing once each symbol
+  warms up.
+* **1C — Per-symbol sharding.** VoteCalibrator multipliers and ModuleGovernor
+  suppression are now computed per symbol from that symbol's own graded accuracy
+  (the `SignalLedger` per-pair query), with global fallback. GBPJPY's track record
+  no longer recalibrates or shadows a module on EURUSD.
+
+**Revised grade:** **B → approaching A.** Conviction is symbol-relative, the two
+accuracy-driven learners isolate per symbol, and the per-symbol CalibrationEngine
+is already enabled. Remaining toward a full **A**: shard `GateTuner` by gate-family
+× symbol once per-symbol shadow-outcome volume supports it, and surface the
+per-symbol overlays on the Learning dashboard.

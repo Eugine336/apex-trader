@@ -1760,6 +1760,19 @@ class VoteCalibratorConfig:
     # (else that module keeps its accuracy-only multiplier).
     counterfactual_weight_min_trades: int = 100
 
+    # ── Per-symbol sharding (1C — instrument isolation) ──────────────────
+    # When on, the calibrator ALSO maintains a per-symbol multiplier overlay,
+    # computed from that symbol's own graded accuracy (SignalLedger supports a
+    # per-pair query). A module that is reliable on EURUSD but noisy on GBPJPY
+    # is then re-weighted independently per symbol, so one instrument's track
+    # record never shifts another's weights. Cold-start neutral: a symbol with
+    # fewer than two qualifying modules falls back to the global multiplier
+    # (which is itself neutral until the panel accumulates graded signals).
+    per_symbol_enabled: bool = True
+    # Seconds between per-symbol overlay recomputes (lazy, throttled — the
+    # consensus path is per-candle, not per-tick, so this is cheap).
+    per_symbol_recompute_seconds: float = 300.0
+
     def __post_init__(self) -> None:
         if self.vote_weight_method not in ("softmax", "proportional", "log_odds"):
             raise ValueError(
@@ -1871,6 +1884,18 @@ class ModuleGovernorConfig:
     marginal_r_reactivation_threshold: float = 0.0
     # Minimum attributed trades before the counterfactual signal is trusted.
     marginal_r_min_trades: int = 100
+
+    # ── Per-symbol sharding (1C — instrument isolation) ──────────────────
+    # When on, the governor ALSO computes a per-symbol suppression overlay from
+    # that symbol's own graded accuracy (SignalLedger supports a per-pair query).
+    # A module poor on GBPJPY but reliable on EURUSD is then shadowed ONLY on the
+    # symbols where it is actually harmful — one instrument's losses no longer
+    # shadow the module everywhere. The global state machine (with its SHADOW→
+    # DISABLED hysteresis + audit) is unchanged and remains the fallback for
+    # symbols without enough per-symbol data. Cold-start neutral.
+    per_symbol_enabled: bool = True
+    # Seconds between per-symbol overlay recomputes (lazy, throttled).
+    per_symbol_recompute_seconds: float = 300.0
 
     def __post_init__(self) -> None:
         for name in ("shadow_threshold", "reactivation_threshold", "disable_threshold"):
@@ -2951,9 +2976,54 @@ class LearningGovernanceConfig:
 
 
 @dataclass
+class ConvictionNormalizationConfig:
+    """Symbol-relative conviction normalization (Learning ⑦ → Consensus ②).
+
+    Raw consensus conviction is computed identically for every instrument, so a
+    flat ``conviction_threshold`` treats ``EURUSD 0.82`` and ``XAUUSD 0.82`` as
+    the same strength even though each symbol has its own conviction
+    distribution. When ``enabled`` the :class:`~adaptive.symbol_conviction.\
+SymbolConvictionStore` re-expresses each raw conviction relative to that
+    symbol's own recent history (its percentile rank), blended back toward the
+    raw value by ``blend``.
+
+    Cold-start neutral: until a symbol has ``min_samples`` recorded convictions
+    the raw value passes through unchanged, so a fresh install behaves exactly
+    as before until each symbol warms up. ``blend=0`` also disables the effect.
+    """
+
+    enabled: bool = True
+    # Recorded convictions a symbol needs before normalization kicks in.
+    min_samples: int = 30
+    # Bounded per-symbol history (oldest dropped) so the distribution tracks the
+    # recent regime rather than the full history.
+    max_history: int = 300
+    # 0.0 = raw passthrough (off); 1.0 = fully symbol-relative (percentile);
+    # in between blends the absolute and relative signals.
+    blend: float = 0.5
+    # Persist per-symbol history to data_dir() (per-user isolated) across runs.
+    persist: bool = True
+    state_path: str = "data/symbol_conviction.json"
+
+    def __post_init__(self) -> None:
+        if int(self.min_samples) < 1:
+            raise ValueError(
+                f"ConvictionNormalizationConfig.min_samples must be >= 1, got {self.min_samples!r}"
+            )
+        if int(self.max_history) < int(self.min_samples):
+            raise ValueError(
+                "ConvictionNormalizationConfig.max_history must be >= min_samples, "
+                f"got max_history={self.max_history!r} min_samples={self.min_samples!r}"
+            )
+        if not (0.0 <= float(self.blend) <= 1.0):
+            raise ValueError(
+                f"ConvictionNormalizationConfig.blend must be in [0, 1], got {self.blend!r}"
+            )
+
+
+@dataclass
 class CalibrationConfig:
     """Self-calibrating instrument layer (CalibrationEngine).
-
     When ``enabled`` is True (default) the CalibrationEngine ingests live /
     backtest candles + spread and registers a per-process stats provider, so
     ``get_profile`` returns ATR-normalised, per-symbol geometry once a symbol
@@ -3003,6 +3073,9 @@ class AppConfig:
     vote_calibrator: VoteCalibratorConfig = field(default_factory=VoteCalibratorConfig)
     module_governor: ModuleGovernorConfig = field(default_factory=ModuleGovernorConfig)
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
+    conviction_normalization: ConvictionNormalizationConfig = field(
+        default_factory=ConvictionNormalizationConfig
+    )
     tuner_agent: TunerAgentConfig = field(default_factory=TunerAgentConfig)
     counterfactual: CounterfactualConfig = field(default_factory=CounterfactualConfig)
     interaction: InteractionConfig = field(default_factory=InteractionConfig)

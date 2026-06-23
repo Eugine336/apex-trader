@@ -93,39 +93,66 @@ trigger/visibility of the new sync.
 
 ---
 
-## 3. Remaining roadmap (deliberately NOT done here — and why)
+## 3. Instrument-awareness layer — IMPLEMENTED (Governor + 1B + 1C)
 
-These were scoped but are intentionally deferred because a careless half-fix on a
-live trading system would be worse than none. Each needs a dedicated, tested PR.
+The items below were previously deferred; this PR implements them end-to-end,
+each behaviour-neutral at cold start and backward-compatible.
 
-### 1B — Symbol-relative conviction
-`form_thesis` (`brain/directional_consensus.py:375`) computes
-`conviction = 0.5·agreement + 0.5·net_sat` with **no symbol awareness**, even
-though `symbol` is in scope at every call site
-(`event_driven_bootstrap.py:~4538`, `brain/backtest_engine.py:~1142`). To make
-0.82 mean something relative to a symbol's own history we must first **add a
-per-symbol conviction distribution store** (rolling mean/percentile) — none
-exists today. `adaptive/pair_learner.PairLearner.get_profile` (win_rate) and
-`adaptive/zone_edge_tracker.ZoneEdgeTracker.snapshot` (per-`(symbol,dir,zone,regime)`
-win_rate) provide per-symbol signals to seed it, but not a conviction range.
-Touching the raw conviction also shifts the entry trigger gate and the 0–100
-score that flows into DecisionEngine/RL/sizing, so it needs its own validation.
+### Fix 1 — ModuleGovernor (and VoteCalibrator) actually enabled
+Both learners read their master switch + thresholds off the config object handed
+to them, but `core/system_context.py` passed the **top-level `AppConfig`** while
+those fields live on the nested `ModuleGovernorConfig` / `VoteCalibratorConfig`.
+`getattr(config, "module_governor_enabled", False)` therefore resolved to the
+`False` default and the Governor was **permanently inert** (no module ever
+shadowed) despite `module_governor_enabled=True`. The VoteCalibrator had the same
+latent bug. Fix: pass `config.module_governor` / `config.vote_calibrator`. Both
+are cold-start neutral (the Governor leaves every module ACTIVE until it has
+enough graded signals; the calibrator returns neutral 1.0 until ≥2 modules
+qualify), so enabling them changes nothing until real graded data accrues.
 
-### 1C — Shard global learners by symbol
-`VoteCalibrator`, `ModuleGovernor`, `GateTuner` are **module/family-keyed
-globals** (single shared instance/store each, built in `core/system_context.py`).
-The two hot read hooks where `symbol` is already available are
-`brain/decision_core.py:413` (`module_governor.is_suppressed`) and `:425`
-(`vote_calibrator.calibrated_weight`). BUT their **record** paths
-(`recalibrate`/`evaluate_transitions`/`calibrate`, driven by `TunerAgent`) are fed
-by emitter-feedback aggregated **across all symbols**. Adding per-symbol read
-buckets without first sharding the feedback source would leave those buckets
-permanently empty → always fall back to global → zero behavior change but added
-complexity. The correct order is: (1) record emitter feedback per `(symbol, module)`,
-(2) shard the stores with old flat payloads as a `__global__` fallback, (3) thread
-`symbol` through the read hooks. `ScoreOptimizer` is the cheap win — it already
-keys per asset-class and its trades carry `t['pair']`, so a `symbol_weights`
-bucket (symbol → class → global lookup) is low-risk and format-compatible.
+### 1B — Symbol-relative conviction (Learning ⑦ → Consensus ②)
+New leaf `adaptive/symbol_conviction.SymbolConvictionStore` keeps a bounded,
+per-symbol history of raw `form_thesis` convictions and exposes
+`record_and_normalize(symbol, raw)` → the raw value re-expressed as its percentile
+rank within that symbol's own distribution, blended back toward raw by
+`ConvictionNormalizationConfig.blend` (default 0.5). Wired into
+`brain/directional_consensus.form_thesis` via optional `symbol` + `conviction_store`
+params, applied identically on the **live** path
+(`event_driven_bootstrap._evaluate_consensus_entry`, store from
+`ctx.symbol_conviction`) and the **backtest** path (`brain/backtest_engine`, a
+non-persistent store that warms within the run) — so the planes stay parity-
+preserving. Cold-start neutral: until a symbol reaches `min_samples` (30) the raw
+conviction passes through unchanged, so the trigger gate is identical to before.
+`ConsensusThesis.raw_conviction` preserves the pre-normalization value for audit.
+Per-user isolated persistence under `runtime_paths.data_dir()`.
+
+### 1C — Shard global learners by symbol (instrument isolation)
+The accuracy-driven learners are sharded by reusing the per-pair query the
+`SignalLedger`/`EmitterFeedbackService` already support
+(`EmitterFeedbackRequest.pair`):
+
+* **VoteCalibrator** — `multiplier_for(module, symbol=None)` /
+  `calibrated_weight(module, base_weight, symbol=None)` consult a per-symbol
+  multiplier overlay computed (throttled, accuracy-only) from that symbol's own
+  graded accuracy. A symbol with <2 qualifying modules falls back to the global
+  (neutral) multiplier.
+* **ModuleGovernor** — `is_suppressed(module, symbol=None)` consults a per-symbol
+  suppression overlay: a module poor on THIS symbol is shadowed here even if
+  globally ACTIVE, and a module reliable here is allowed even if globally
+  SHADOWED. Symbols without enough per-symbol data defer to the global state
+  machine (whose SHADOW→DISABLED hysteresis + audit are untouched).
+
+`symbol` is threaded through `brain/decision_core._add_vote` (already in scope),
+with a `TypeError` fallback so older/stub learners stay compatible. Result:
+GBPJPY's losses no longer recalibrate or shadow a module on EURUSD. `ScoreOptimizer`
+already keys per asset-class, so it is left as-is. The global record paths
+(`recalibrate`/`evaluate_transitions`, TunerAgent-driven) are unchanged.
+
+**Instrument-intelligence grade:** moves from **B (partially instrument aware)**
+toward **A** — conviction is now symbol-relative and the two accuracy-driven
+learners isolate per symbol, on top of the already-enabled per-symbol
+CalibrationEngine.
+
 
 ### Dept verification (multi-tenant awareness)
 Per-process isolation makes every department's LiveState per-user by construction

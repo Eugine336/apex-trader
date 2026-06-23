@@ -633,6 +633,26 @@ class BacktestEngine:
         self.portfolio = PortfolioDivision(position_sizer=self.position_sizer)
         self.entry_gate = EntryGate(config=EntryConfig())
 
+        # 1B — symbol-relative conviction. A NON-persistent store so the backtest
+        # warms up its own per-symbol conviction distribution within the replay
+        # (it must NOT read/write the live per-user state). Same normalization
+        # code path as live form_thesis, so the two planes stay parity-preserving:
+        # cold-start raw passthrough, then symbol-relative once each symbol warms.
+        self.symbol_conviction = None
+        try:
+            cn_cfg = getattr(self.config, "conviction_normalization", None)
+            if cn_cfg is None or bool(getattr(cn_cfg, "enabled", True)):
+                from adaptive.symbol_conviction import SymbolConvictionStore
+                self.symbol_conviction = SymbolConvictionStore(
+                    enabled=bool(getattr(cn_cfg, "enabled", True)) if cn_cfg else True,
+                    min_samples=int(getattr(cn_cfg, "min_samples", 30)) if cn_cfg else 30,
+                    max_history=int(getattr(cn_cfg, "max_history", 300)) if cn_cfg else 300,
+                    blend=float(getattr(cn_cfg, "blend", 0.5)) if cn_cfg else 0.5,
+                    persist=False,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[backtest] SymbolConvictionStore unavailable: {}", exc)
+
     def _require_decision_engine(self) -> None:
         """Raise loudly if the live decision engine is unavailable."""
         if self.entry_engine is None:
@@ -1149,6 +1169,8 @@ class BacktestEngine:
                 min_contributors=cfg.min_contributors,
                 conviction_threshold=cfg.conviction_threshold,
                 net_scale=cfg.net_scale,
+                symbol=pair,
+                conviction_store=getattr(self, "symbol_conviction", None),
             )
         except Exception as exc:
             logger.warning("[backtest] form_thesis failed for {}: {}", pair, exc)
