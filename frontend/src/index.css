@@ -1,0 +1,32 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Thin scrollbar for log/table panels. */
+.apex-scroll::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+.apex-scroll::-webkit-scrollbar-track {
+  background: #1f2937;
+}
+.apex-scroll::-webkit-scrollbar-thumb {
+  background: #4b5563;
+  border-radius: 4px;
+}
+.apex-scroll::-webkit-scrollbar-thumb:hover {
+  background: #6b7280;
+}
