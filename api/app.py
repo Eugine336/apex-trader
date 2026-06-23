@@ -99,3 +99,8 @@ def create_app(config: ApiConfig | None = None) -> FastAPI:
         return {"status": "ok"}
 
     return app
+
+
+# Module-level ASGI app so `uvicorn api.app:app` (and `--reload`) can import it
+# directly. The canonical entry point remains `python -m api.run`.
+app = create_app()
