@@ -97,17 +97,17 @@ export function truncate(s, len) {
 
 // Tailwind classes for the small status/action pills used across the pages.
 const BADGE = {
-  green: "bg-emerald-500/15 text-emerald-400",
-  red: "bg-red-500/15 text-red-400",
-  yellow: "bg-yellow-500/15 text-yellow-400",
-  blue: "bg-sky-500/15 text-sky-400",
-  orange: "bg-orange-500/15 text-orange-400",
-  purple: "bg-purple-500/15 text-purple-400",
-  muted: "bg-gray-700/60 text-gray-300",
+  green: "bg-emerald-500/10 text-emerald-400 ring-1 ring-inset ring-emerald-500/25",
+  red: "bg-red-500/10 text-red-400 ring-1 ring-inset ring-red-500/25",
+  yellow: "bg-amber-500/10 text-amber-300 ring-1 ring-inset ring-amber-500/25",
+  blue: "bg-sky-500/10 text-sky-300 ring-1 ring-inset ring-sky-500/25",
+  orange: "bg-orange-500/10 text-orange-300 ring-1 ring-inset ring-orange-500/25",
+  purple: "bg-purple-500/10 text-purple-300 ring-1 ring-inset ring-purple-500/25",
+  muted: "bg-gray-700/50 text-gray-300 ring-1 ring-inset ring-gray-600/40",
 };
 
 export function badgeClass(variant) {
-  return `inline-block rounded px-2 py-0.5 text-xs font-semibold ${
+  return `inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.04em] ${
     BADGE[variant] || BADGE.muted
   }`;
 }
