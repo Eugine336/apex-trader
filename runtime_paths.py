@@ -66,7 +66,7 @@ def repo_root() -> Path:
     :func:`data_dir`.
     """
     override = os.getenv(_REPO_DIR_ENV, "").strip()
-    return Path(override) if override else _REPO_ROOT
+    return Path(override) if override else _FALLBACK_REPO_ROOT
 
 
 def shared_data_dir() -> Path:
