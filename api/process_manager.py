@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import os
 import signal
+import socket
 import subprocess
 import sys
 import threading
@@ -58,6 +59,7 @@ class _Instance:
         "next_backoff_idx",
         "user_stopped",
         "last_exit_at",
+        "dashboard_port",
     )
 
     def __init__(self, user_id: int, workdir: Path, log_path: Path) -> None:
@@ -71,6 +73,10 @@ class _Instance:
         self.next_backoff_idx: int = 0
         self.user_stopped: bool = False
         self.last_exit_at: float = 0.0
+        # Loopback port the instance's read-only dashboard API listens on, used
+        # by the API control plane to proxy live engine-state panels. Allocated
+        # per spawn so a restarted instance never collides with a stale binding.
+        self.dashboard_port: Optional[int] = None
 
 
 class ProcessManager:
@@ -162,13 +168,27 @@ class ProcessManager:
         config_path = inst.workdir / "user_config.json"
         write_user_config(config_path, overrides)
 
+        # Allocate a fresh loopback port for this instance's read-only dashboard
+        # API. The engine serves the live-state panels (scanner, votes, ranker,
+        # decisions, traces, orchestrator) there; the API control plane proxies
+        # them to the authenticated owner. Bound to 127.0.0.1, so only reachable
+        # from this host (the API server).
+        dashboard_port = self._alloc_loopback_port()
+        inst.dashboard_port = dashboard_port
+
         env = build_instance_environment(
             user_id=inst.user_id,
             workdir=inst.workdir,
             config_path=config_path,
             api_db_path=self._config.database_path,
             broker_credentials=broker_credentials,
+            dashboard_port=dashboard_port,
         )
+        # Force the per-instance dashboard onto loopback and strip any inherited
+        # API key so the local proxy can read it without a shared secret. Never
+        # publicly exposed — bound to 127.0.0.1 only.
+        env["DD_DASHBOARD_BIND_HOST"] = "127.0.0.1"
+        env.pop("DD_DASHBOARD_API_KEY", None)
 
         python_exe = self._config.instance_python or sys.executable or "python"
         main_script = str(self._repo_root / "main.py")
@@ -178,7 +198,7 @@ class ProcessManager:
         log_handle = open(inst.log_path, "a", buffering=1, encoding="utf-8")
         log_handle.write(
             f"\n===== instance start {time.strftime('%Y-%m-%dT%H:%M:%S%z')} "
-            f"(restart #{inst.restart_count}) =====\n"
+            f"(restart #{inst.restart_count}, dashboard :{dashboard_port}) =====\n"
         )
         log_handle.flush()
 
@@ -197,15 +217,20 @@ class ProcessManager:
                 subprocess, "CREATE_NEW_PROCESS_GROUP", 0
             )
 
-        proc = subprocess.Popen([python_exe, main_script], **popen_kwargs)
+        # ``--dashboard`` starts the engine's read-only state API alongside the
+        # (unchanged) trading loop, so the control plane can proxy live panels.
+        proc = subprocess.Popen(
+            [python_exe, main_script, "--dashboard"], **popen_kwargs
+        )
         inst.process = proc
         inst.log_handle = log_handle
         inst.started_at = time.time()
         logger.info(
-            "[proc-mgr] launched instance user={} pid={} cwd={}",
+            "[proc-mgr] launched instance user={} pid={} cwd={} dashboard=:{}",
             inst.user_id,
             proc.pid,
             inst.workdir,
+            dashboard_port,
         )
 
     # ── stop / restart ──────────────────────────────────────────────────
@@ -283,6 +308,18 @@ class ProcessManager:
             if inst and self._is_alive(inst) and inst.started_at:
                 return round(time.time() - inst.started_at, 1)
         return 0.0
+
+    def instance_dashboard_port(self, user_id: int) -> Optional[int]:
+        """Loopback port of a live instance's read-only dashboard API.
+
+        Returns ``None`` when the user has no running instance (so the engine
+        state panels cannot be served yet).
+        """
+        with self._lock:
+            inst = self._instances.get(user_id)
+            if inst and self._is_alive(inst):
+                return inst.dashboard_port
+        return None
 
     # ── admin / system-wide views ─────────────────────────────────────────
     def system_uptime_seconds(self) -> float:
@@ -417,6 +454,19 @@ class ProcessManager:
                 )
 
     # ── helpers ───────────────────────────────────────────────────────────
+    @staticmethod
+    def _alloc_loopback_port() -> int:
+        """Reserve a free ephemeral TCP port on loopback and return it.
+
+        Binds to ('127.0.0.1', 0) to let the OS pick a free port, then releases
+        it so the spawned instance can claim it. A brief race window exists
+        between release and re-bind, acceptable here because instances start
+        infrequently and the engine simply errors+restarts on the rare clash.
+        """
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+            sock.bind(("127.0.0.1", 0))
+            return int(sock.getsockname()[1])
+
     @staticmethod
     def _is_alive(inst: _Instance) -> bool:
         return inst.process is not None and inst.process.poll() is None

@@ -26,6 +26,7 @@ from api.routes import auth as auth_routes
 from api.routes import broker as broker_routes
 from api.routes import config as config_routes
 from api.routes import dashboard as dashboard_routes
+from api.routes import engine_proxy as engine_proxy_routes
 from api.routes import trading as trading_routes
 from api.routes import users as users_routes
 
@@ -90,6 +91,7 @@ def create_app(config: ApiConfig | None = None) -> FastAPI:
     app.include_router(trading_routes.router)
     app.include_router(config_routes.router)
     app.include_router(dashboard_routes.router)
+    app.include_router(engine_proxy_routes.router)
     app.include_router(admin_routes.router)
 
     @app.get("/api/health", tags=["health"])

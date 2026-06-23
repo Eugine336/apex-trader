@@ -147,11 +147,12 @@ def build_instance_environment(
     # ── Trade reporting bridge → API database ─────────────────────────────
     env["APEX_TRADE_REPORT_DB"] = str(api_db_path.resolve())
 
-    # ── Event-driven engine on; clear inherited dashboard bind ────────────
+    # ── Event-driven engine on; dashboard bind managed by the proc manager ─
     env["USE_EVENT_DRIVEN"] = "true"
-    # Each instance runs headless (no per-instance dashboard); the API serves
-    # the UI. Drop any inherited public bind host to avoid an accidental
-    # keyless public dashboard inside the subprocess.
+    # Each instance runs its read-only dashboard API on a private loopback port
+    # (set via DD_DASHBOARD_PORT below) so the control plane can proxy live
+    # engine panels. Drop any inherited public bind host here; the process
+    # manager pins it back to 127.0.0.1 so the dashboard is never public.
     env.pop("DD_DASHBOARD_BIND_HOST", None)
 
     # ── Broker credentials (consumed by platforms.platform_manager) ───────
