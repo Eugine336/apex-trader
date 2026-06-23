@@ -163,3 +163,75 @@ confirmed the feedback→learning→evolution stores resolve through
 `api/instance_config.py` sets `APEX_REPO_DIR` from `runtime_paths.repo_root()`
 rather than the passed `repo_root` param (the two `test_api_process_manager.py`
 failures above pin this).
+
+## 4. Nested-config-passthrough audit (system-wide sweep)
+
+After the Governor/VoteCalibrator/CalibrationEngine fixes, every component that
+`core/system_context.py` builds with a config object was swept for the same
+bug class: a subsystem reads `self.config.<field>`, but it was handed the
+top-level `AppConfig` (or read a field/key that does not exist on what it was
+handed), so the value silently fell through to a constructor/`getattr` default
+and the operator's configured value never took effect.
+
+All instantiation is centralized in `core/system_context.py` — there are no
+component constructions in `main.py` or `event_driven_bootstrap.py` for these
+(bootstrap only builds `CalibrationEngine`, `ZoneEdgeTracker`, `NewsImpactTracker`).
+
+### Fixed (config now authoritative)
+
+| Component | Bug | Fix |
+|---|---|---|
+| `OutcomeFeedback` | passed top-level `AppConfig`; `accuracy_lookback`/`journal_path`/`enabled` fell to defaults | pass `config.outcome_feedback` |
+| `PostCloseTracker` | passed `AppConfig`; `enabled`/`check_intervals_minutes`/`max_retries` fell to defaults (ran with in-code default, ignored config) | pass `config.post_close_tracker` |
+| `CounterfactualEngine` | correct object, wrong field names (`enabled`/`lookback`/`interval`) | read `counterfactual_enabled`/`attribution_lookback`/`attribution_interval` |
+| `InteractionAnalyzer` | correct object, wrong field names (`enabled`/`lookback`/`interval`) | read `interaction_discovery_enabled`/`interaction_lookback`/`interaction_interval` |
+| `TunerAgent` | wrong key `getattr(config, "tuner")` (field is `tuner_agent`) → `None` → all params default | read `config.tuner_agent`; wire all fields |
+| `RegimeDetector` (adaptive, L7) | wrong key `getattr(config, "regime_detector")` (field is `regime_detection`) → `None` → lookback/hysteresis default | read `config.regime_detection` |
+| `AdaptiveWinRateProvider` | read `adaptive_win_rate_provider_enabled` off `AppConfig` (field is on `OpportunityRankerConfig`) | read `config.opportunity_ranker.adaptive_win_rate_provider_enabled` |
+| `SignalLedger` | constructed with no config; `SignalLedgerConfig` grading delay/intervals/min-move/lookback ignored | wire `config.signal_ledger` params |
+| `VirtualSignalManager` | passed `AppConfig`; `virtual_promotion_enabled`/`signal_discovery_enabled`/`feedback_lookback` fell to `False`/default → cluster permanently inert (the Governor symptom) | pass `config.signal_discovery` |
+| `SignalDiscoveryEngine` | constructed with no config; `enabled` + all mining params used constructor defaults | wire `config.signal_discovery` |
+| `CapitalAllocator` | constructed with no config; `CapitalAllocationConfig` ignored | wire `config.capital_allocation` (defaults coincide → behaviour-neutral) |
+| `ExecutionProfileManager` | constructed with no config; `ExecutionProfileConfig` ignored | wire `config.execution_profiles` (behaviour-neutral) |
+
+### Config-default alignments (preserve current runtime; make config authoritative)
+
+- `PostCloseTrackerConfig.enabled`: `False` → `True`. The tracker had been running
+  (silently `True`) and is purely observational (MFE/MAE; never changes a live
+  decision). Setting the default `True` preserves runtime and keeps feeding the
+  learning layer; the docstring was updated to match.
+- `SignalDiscoveryConfig.signal_discovery_enabled` and `virtual_promotion_enabled`:
+  `True` → `False`. The dataclass values contradicted the class docstrings
+  ("Defaults OFF"). Because the live consumer read them off the wrong object, the
+  cluster has always run dormant. Fixing the passthrough alone would have flipped
+  on live promotion of auto-discovered vote modules to live trading weight — a
+  risky behaviour change the docstrings explicitly warn against. The defaults are
+  aligned to the documented OFF intent so the fix is behaviour-neutral (cluster
+  stays dormant) while becoming config-authoritative. Operators flip
+  `signal_discovery.virtual_promotion_enabled = True` to activate.
+
+### Confirmed correct (no change)
+
+`VoteCalibrator`, `ModuleGovernor` (prior fixes), `CalibrationEngine`,
+`SymbolConvictionStore`, `ScoreOptimizer` (`config.scoring`), `PairLearner`
+(`config.pair_learner`), `EntryEngine` (reads `config.risk`/`config.scoring`…),
+`DecisionEngine`, `OpportunityExecutor`, `Orchestrator`, `ParameterEvolver`,
+`RecommendationGateway`, `GovernanceDivision`, `ComplianceDivision`,
+`DailyMaintenance`, `ProcessWatchdog`. `GateTuner`/`ZoneEdgeTracker` take no
+config object and have no `enabled` gate (passive per-symbol stores) — not
+applicable.
+
+### Noted, benign (out of the bug class)
+
+- `event_driven_bootstrap.py` reads `getattr(_calib_cfg, "persist", True)` but
+  `CalibrationConfig` has no `persist` field → always loads (the intended
+  behaviour); harmless.
+- `event_driven_bootstrap.py` reads `getattr(self._config, "ed_warmup_on_start", True)`
+  — a vestigial flag with no config field anywhere; defaults `True` (warmup runs).
+
+### Tests
+
+`tests/test_config_passthrough_wiring.py` builds a real `AppConfig` with
+distinctive non-default nested values and asserts each fixed component reflects
+its nested config (proving the nested config reaches the component), plus the two
+default-alignment guards.

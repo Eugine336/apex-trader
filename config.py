@@ -1948,10 +1948,11 @@ class PostCloseTrackerConfig:
     from ENTRY and measures Maximum Favorable / Adverse Excursion, deriving
     signal-quality vs management-quality so the learning layer can tell a bad
     read apart from a stop placed too tight. Purely observational — it never
-    changes a live decision. Defaults OFF so it stays dormant until enabled.
+    changes a live decision. Defaults ON: it is behaviour-safe (read-only) and
+    feeds the learning layer; set ``enabled=False`` to make it dormant.
     """
 
-    enabled: bool = False
+    enabled: bool = True
     db_path: str = "data/trade_journal.db"
     check_intervals_minutes: list[int] = field(
         default_factory=lambda: [5, 15, 30, 60]
@@ -2285,7 +2286,10 @@ class SignalDiscoveryConfig:
     """
 
     # Master switch: mine + OOS-validate candidate signal rules.
-    signal_discovery_enabled: bool = True
+    # Defaults OFF (per the class docstring) — the live consumer
+    # (VirtualSignalManager) is now wired to read this off the nested config, so
+    # this stays the authoritative kill switch. Flip True to enable discovery.
+    signal_discovery_enabled: bool = False
     # How many recent closed trades each mining pass uses.
     discovery_lookback: int = 1000
     # Recompute every N closed trades.
@@ -2324,7 +2328,10 @@ class SignalDiscoveryConfig:
     # degrade. Defaults OFF — discovery stays purely advisory until flipped on.
     # NOTE: ``signal_discovery_enabled`` is the kill switch on top of this — when
     # it is off, every virtual module is forced to weight 0.0 regardless.
-    virtual_promotion_enabled: bool = True
+    # (Default now matches the documented OFF intent; the live consumer reads
+    # this off the nested config, so flipping it True is what activates live
+    # promotion of auto-discovered modules.)
+    virtual_promotion_enabled: bool = False
     # Trades a module must spend in SHADOW (since registration) before it is
     # eligible for promotion.
     shadow_trades_required: int = 50
