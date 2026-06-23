@@ -2282,14 +2282,19 @@ class SignalDiscoveryConfig:
     momentum absent") whose win-rate / expectancy edge persists out-of-sample —
     rules nobody wrote, found in the data. It guards against overfitting with a
     train/test split and a minimum-support floor, and only *recommends*
-    candidate rules. It never auto-creates a live signal. Defaults OFF.
+    candidate rules. It never auto-creates a live signal directly — discovered
+    rules are registered as SHADOW virtual modules and only gain live trading
+    weight after Governance (#8) authorises their promotion. Enabled by default.
     """
 
     # Master switch: mine + OOS-validate candidate signal rules.
-    # Defaults OFF (per the class docstring) — the live consumer
-    # (VirtualSignalManager) is now wired to read this off the nested config, so
-    # this stays the authoritative kill switch. Flip True to enable discovery.
-    signal_discovery_enabled: bool = False
+    # Enabled by default — the live consumer (VirtualSignalManager) reads this
+    # off the nested config and it remains the authoritative kill switch. When
+    # off, every virtual module is forced to weight 0.0 regardless of promotion.
+    # Discovery itself is purely advisory (mines + validates rules); the live
+    # promotion of discovered rules to trading weight is the separate
+    # ``virtual_promotion_enabled`` gate below, which is Governance-authorised.
+    signal_discovery_enabled: bool = True
     # How many recent closed trades each mining pass uses.
     discovery_lookback: int = 1000
     # Recompute every N closed trades.
@@ -2325,13 +2330,17 @@ class SignalDiscoveryConfig:
     # Master switch for the LIVE promotion pipeline: when on, qualifying
     # discovered rules are registered as virtual voting modules (always in
     # SHADOW first), promoted to ACTIVE once they earn it, and retired when they
-    # degrade. Defaults OFF — discovery stays purely advisory until flipped on.
+    # degrade. Enabled by default — this is SAFE because every shadow→ACTIVE
+    # promotion is gated by the Governance department (#8): the
+    # VirtualSignalManager routes each promotion through
+    # ``GovernanceDivision.authorize_promotion`` (requesting the strictest
+    # FULL-authority bar) and only promotes on an AUTHORIZED verdict,
+    # fail-closed on any error. Promotions are also TunerAgent-guarded. A
+    # module therefore cannot reach live trading weight without an explicit
+    # Governance sign-off against its graded accuracy + marginal-R evidence.
     # NOTE: ``signal_discovery_enabled`` is the kill switch on top of this — when
     # it is off, every virtual module is forced to weight 0.0 regardless.
-    # (Default now matches the documented OFF intent; the live consumer reads
-    # this off the nested config, so flipping it True is what activates live
-    # promotion of auto-discovered modules.)
-    virtual_promotion_enabled: bool = False
+    virtual_promotion_enabled: bool = True
     # Trades a module must spend in SHADOW (since registration) before it is
     # eligible for promotion.
     shadow_trades_required: int = 50

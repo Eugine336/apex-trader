@@ -100,7 +100,7 @@ def built_ctx():
     cfg.capital_allocation.short_horizon_trades = 13
     cfg.execution_profiles.max_active_profiles = 4
 
-    # Prove the virtual cluster flag reaches the manager (defaults OFF).
+    # Prove the virtual cluster flag reaches the manager (enabled by default).
     cfg.signal_discovery.virtual_promotion_enabled = True
 
     pm = MagicMock()
@@ -185,13 +185,14 @@ def test_virtual_manager_reads_signal_discovery_config(built_ctx):
     assert ctx.virtual_signal_manager.enabled is True
 
 
-def test_signal_discovery_cluster_defaults_off():
-    """Dormant-by-default: the live consumer reads the cluster flags off the
-    nested config, and those defaults are OFF (documented intent)."""
+def test_signal_discovery_cluster_enabled_by_default():
+    """The discovery cluster is enabled by default. This is safe because every
+    shadow→ACTIVE promotion is Governance-authorised (fail-closed) — discovered
+    rules cannot reach live trading weight without an explicit sign-off."""
     from config import AppConfig
     cfg = AppConfig()
-    assert cfg.signal_discovery.signal_discovery_enabled is False
-    assert cfg.signal_discovery.virtual_promotion_enabled is False
+    assert cfg.signal_discovery.signal_discovery_enabled is True
+    assert cfg.signal_discovery.virtual_promotion_enabled is True
 
 
 def test_post_close_tracker_default_enabled():

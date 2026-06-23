@@ -201,14 +201,40 @@ component constructions in `main.py` or `event_driven_bootstrap.py` for these
   decision). Setting the default `True` preserves runtime and keeps feeding the
   learning layer; the docstring was updated to match.
 - `SignalDiscoveryConfig.signal_discovery_enabled` and `virtual_promotion_enabled`:
-  `True` → `False`. The dataclass values contradicted the class docstrings
-  ("Defaults OFF"). Because the live consumer read them off the wrong object, the
-  cluster has always run dormant. Fixing the passthrough alone would have flipped
-  on live promotion of auto-discovered vote modules to live trading weight — a
-  risky behaviour change the docstrings explicitly warn against. The defaults are
-  aligned to the documented OFF intent so the fix is behaviour-neutral (cluster
-  stays dormant) while becoming config-authoritative. Operators flip
-  `signal_discovery.virtual_promotion_enabled = True` to activate.
+  both `True` (enabled by default). Enabling live promotion of auto-discovered
+  vote modules is safe because the promotion path is **Governance-gated** (see
+  the VirtualSignalManager governance trace below) — a discovered rule cannot
+  reach live trading weight without an explicit AUTHORIZED verdict. The kill
+  switch `signal_discovery_enabled` forces every virtual module to weight 0.0
+  when off; setting it `False` is the operator's one-flip dormant mode.
+
+### VirtualSignalManager → Governance promotion path (traced)
+
+The shadow→ACTIVE promotion of auto-discovered vote modules is **not**
+self-promoting — it routes through the Governance department (#8):
+
+1. `VirtualSignalManager._promote_eligible` ([adaptive/virtual_promotion.py:214](adaptive/virtual_promotion.py))
+   computes each shadow module's graded accuracy (read-only `EmitterFeedback`)
+   and marginal R (read-only `CounterfactualEngine` cache), applies its own
+   thresholds, then calls `_governance_authorizes(...)` before any promotion.
+2. `_governance_authorizes` ([adaptive/virtual_promotion.py:343](adaptive/virtual_promotion.py))
+   calls `GovernanceDivision.authorize_promotion(name, PromotionStage.LIMITED, metrics)`
+   — requesting the strictest **FULL-authority** bar — and only promotes on an
+   `AUTHORIZED` verdict. It is **fail-closed**: any error → no promotion.
+3. `GovernanceDivision.authorize_promotion` ([governance/division.py:357](governance/division.py))
+   evaluates the FULL-stage thresholds (min signals, min accuracy, min
+   marginal R) and rejects outright when the evidence is harmful
+   (`better_off_without` + negative marginal R).
+4. The wiring is real: `core/system_context.py:1128` calls
+   `virtual_signal_manager.set_governance(ctx.governance)` whenever
+   `ctx.governance` exists (it is constructed unconditionally at
+   `core/system_context.py:789`). Promotions are additionally **TunerAgent-guarded**
+   (must flow through the central tuner).
+
+**Conclusion:** because every promotion to live weight is authorised by the
+Governance department against graded evidence (fail-closed), `virtual_promotion_enabled`
+is safe to enable by default. Discovered modules always register as SHADOW first
+(zero decision influence), and degraded ACTIVE modules are auto-retired.
 
 ### Confirmed correct (no change)
 
@@ -233,5 +259,6 @@ applicable.
 
 `tests/test_config_passthrough_wiring.py` builds a real `AppConfig` with
 distinctive non-default nested values and asserts each fixed component reflects
-its nested config (proving the nested config reaches the component), plus the two
-default-alignment guards.
+its nested config (proving the nested config reaches the component), plus the
+default-alignment guards (incl. `test_signal_discovery_cluster_enabled_by_default`,
+which asserts both discovery-cluster flags now default `True`).
