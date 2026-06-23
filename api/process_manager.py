@@ -207,11 +207,20 @@ class ProcessManager:
             broker_credentials=broker_credentials,
             dashboard_port=dashboard_port,
         )
-        # Force the per-instance dashboard onto loopback and strip any inherited
-        # API key so the local proxy can read it without a shared secret. Never
-        # publicly exposed — bound to 127.0.0.1 only.
+        # Force the per-instance dashboard onto loopback and disable its API-key
+        # auth so the local control plane can proxy live panels without a shared
+        # secret. The proxy already authenticates the owner via JWT before
+        # forwarding, and the dashboard is bound to 127.0.0.1 only (never public),
+        # so a second auth layer on this hop is redundant.
+        #
+        # Set the key to an EMPTY STRING rather than popping it: main.py calls
+        # load_dotenv() at import, which would re-inject DD_DASHBOARD_API_KEY from
+        # the repo-root .env if the variable were merely absent. load_dotenv uses
+        # override=False, so it skips any key already present in the environment —
+        # an empty value survives and keeps the dashboard in keyless (read-only)
+        # mode, which is exactly what the GET-only proxy needs.
         env["DD_DASHBOARD_BIND_HOST"] = "127.0.0.1"
-        env.pop("DD_DASHBOARD_API_KEY", None)
+        env["DD_DASHBOARD_API_KEY"] = ""
 
         python_exe = self._config.instance_python or sys.executable or "python"
         main_script = str(self._repo_root / "main.py")
