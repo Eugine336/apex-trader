@@ -12,15 +12,22 @@ import Dashboard from "./pages/Dashboard";
 import ActiveTrades from "./pages/engine/ActiveTrades";
 import Decisions from "./pages/engine/Decisions";
 import DecisionTrace from "./pages/engine/DecisionTrace";
+import Evolution from "./pages/engine/Evolution";
+import Feedback from "./pages/engine/Feedback";
 import Governor from "./pages/engine/Governor";
+import Learning from "./pages/engine/Learning";
+import MLInsights from "./pages/engine/MLInsights";
+import ModuleGovernor from "./pages/engine/ModuleGovernor";
 import ModuleVotes from "./pages/engine/ModuleVotes";
 import Operations from "./pages/engine/Operations";
 import Orchestrator from "./pages/engine/Orchestrator";
 import Planner from "./pages/engine/Planner";
 import PositionHealth from "./pages/engine/PositionHealth";
 import Ranker from "./pages/engine/Ranker";
+import Reconciliation from "./pages/engine/Reconciliation";
 import RiskMonitor from "./pages/engine/RiskMonitor";
 import Scanner from "./pages/engine/Scanner";
+import ShadowOutcomes from "./pages/engine/ShadowOutcomes";
 import TradeHistory from "./pages/engine/TradeHistory";
 import InstanceControl from "./pages/InstanceControl";
 import Login from "./pages/Login";
@@ -63,6 +70,15 @@ export default function App() {
         <Route path="/engine/active-trades" element={<ActiveTrades />} />
         <Route path="/engine/position-health" element={<PositionHealth />} />
         <Route path="/engine/history" element={<TradeHistory />} />
+
+        <Route path="/engine/learning" element={<Learning />} />
+        <Route path="/engine/feedback" element={<Feedback />} />
+        <Route path="/engine/ml" element={<MLInsights />} />
+        <Route path="/engine/evolution" element={<Evolution />} />
+
+        <Route path="/engine/shadow" element={<ShadowOutcomes />} />
+        <Route path="/engine/reconciliation" element={<Reconciliation />} />
+        <Route path="/engine/module-governor" element={<ModuleGovernor />} />
 
         <Route
           path="/admin"

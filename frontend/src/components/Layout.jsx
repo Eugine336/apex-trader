@@ -73,6 +73,27 @@ const icons = {
   history: (
     <path d="M13 3a9 9 0 0 0-9 9H1l3.89 3.89.07.14L9 12H6a7 7 0 1 1 7 7c-1.93 0-3.68-.79-4.94-2.06l-1.42 1.42A8.97 8.97 0 0 0 13 21a9 9 0 0 0 0-18zm-1 5v5l4.28 2.54.72-1.21-3.5-2.08V8H12z" />
   ),
+  learning: (
+    <path d="M12 3 1 9l11 6 9-4.91V17h2V9L12 3zM5 13.18v4L12 21l7-3.82v-4L12 17l-7-3.82z" />
+  ),
+  feedback: (
+    <path d="M20 2H4c-1.1 0-2 .9-2 2v18l4-4h14c1.1 0 2-.9 2-2V4c0-1.1-.9-2-2-2zm-7 12h-2v-2h2v2zm0-4h-2V6h2v4z" />
+  ),
+  ml: (
+    <path d="M9 2a3 3 0 0 0-3 3 3 3 0 0 0 0 .27A3 3 0 0 0 4 8a3 3 0 0 0 1 2.22V11a3 3 0 0 0 0 5.66V17a3 3 0 1 0 5.83 1H12V4.83A3 3 0 0 0 9 2zm6 0a3 3 0 0 0-3 2.83V18h1.17A3 3 0 1 0 19 17v-.34A3 3 0 0 0 20 11v-.78A3 3 0 0 0 20 5.27 3 3 0 0 0 18 2.27 3 3 0 0 0 15 2z" />
+  ),
+  evolution: (
+    <path d="M3 17h2v-2H3v2zm0-4h2V5H3v8zm4 4h2V9H7v8zm0-10h2V5H7v2zm4 10h2V3h-2v14zm4 0h2v-6h-2v6zm0-8h2V5h-2v4zm4 8h2V7h-2v10z" />
+  ),
+  shadow: (
+    <path d="M12 2a10 10 0 1 0 0 20 10 10 0 0 0 0-20zm0 18V4a8 8 0 0 1 0 16z" />
+  ),
+  reconciliation: (
+    <path d="M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4z" />
+  ),
+  moduleGovernor: (
+    <path d="M12 2 4 6v6c0 5 3.4 9.4 8 10 4.6-.6 8-5 8-10V6l-8-4zm0 4a2 2 0 1 1 0 4 2 2 0 0 1 0-4zm0 6c2 0 4 1 4 3v1H8v-1c0-2 2-3 4-3z" />
+  ),
   logout: (
     <path d="M16 13v-2H7V8l-5 4 5 4v-3h9zm3-10H10a2 2 0 0 0-2 2v3h2V5h9v14h-9v-3H8v3a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z" />
   ),
@@ -126,6 +147,19 @@ const executionItems = [
   { to: "/engine/active-trades", label: "Active Trades", icon: "activeTrades" },
   { to: "/engine/position-health", label: "Position Health", icon: "health" },
   { to: "/engine/history", label: "Trade History", icon: "history" },
+];
+
+const learningItems = [
+  { to: "/engine/learning", label: "Learning Layer", icon: "learning" },
+  { to: "/engine/feedback", label: "Outcome Feedback", icon: "feedback" },
+  { to: "/engine/ml", label: "ML Insights", icon: "ml" },
+  { to: "/engine/evolution", label: "Evolution", icon: "evolution" },
+];
+
+const governanceItems = [
+  { to: "/engine/shadow", label: "Shadow Outcomes", icon: "shadow" },
+  { to: "/engine/reconciliation", label: "Reconciliation", icon: "reconciliation" },
+  { to: "/engine/module-governor", label: "Module Governor", icon: "moduleGovernor" },
 ];
 
 const RUNNING_STATES = new Set(["RUNNING", "STARTING"]);
@@ -245,6 +279,36 @@ export default function Layout() {
               Execution
             </p>
             {executionItems.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={linkClass}
+                onClick={() => setSidebarOpen(false)}
+              >
+                <Icon name={item.icon} />
+                {item.label}
+              </NavLink>
+            ))}
+
+            <p className="px-3 pb-1 pt-5 text-xs font-semibold uppercase tracking-wider text-gray-600">
+              Learning
+            </p>
+            {learningItems.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={linkClass}
+                onClick={() => setSidebarOpen(false)}
+              >
+                <Icon name={item.icon} />
+                {item.label}
+              </NavLink>
+            ))}
+
+            <p className="px-3 pb-1 pt-5 text-xs font-semibold uppercase tracking-wider text-gray-600">
+              Governance
+            </p>
+            {governanceItems.map((item) => (
               <NavLink
                 key={item.to}
                 to={item.to}

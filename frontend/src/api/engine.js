@@ -89,3 +89,39 @@ export async function getPerformance() {
   const { data } = await client.get("/api/engine/performance");
   return data;
 }
+
+// GET /api/engine/learning
+export async function getLearning() {
+  const { data } = await client.get("/api/engine/learning");
+  return data;
+}
+
+// GET /api/engine/outcome-feedback
+export async function getOutcomeFeedback() {
+  const { data } = await client.get("/api/engine/outcome-feedback");
+  return data;
+}
+
+// GET /api/engine/ml
+export async function getMLInsights() {
+  const { data } = await client.get("/api/engine/ml");
+  return data;
+}
+
+// GET /api/engine/shadow
+export async function getShadowOutcomes() {
+  const { data } = await client.get("/api/engine/shadow");
+  return data;
+}
+
+// GET /api/engine/reconciliation
+export async function getReconciliation() {
+  const { data } = await client.get("/api/engine/reconciliation");
+  return data;
+}
+
+// GET /api/engine/module-governor?limit=
+export async function getModuleGovernor(params = {}) {
+  const { data } = await client.get("/api/engine/module-governor", { params });
+  return data;
+}
