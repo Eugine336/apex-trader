@@ -9,6 +9,12 @@ import AdminTrades from "./pages/AdminTrades";
 import AdminUsers from "./pages/AdminUsers";
 import BrokerSettings from "./pages/BrokerSettings";
 import Dashboard from "./pages/Dashboard";
+import Decisions from "./pages/engine/Decisions";
+import DecisionTrace from "./pages/engine/DecisionTrace";
+import ModuleVotes from "./pages/engine/ModuleVotes";
+import Orchestrator from "./pages/engine/Orchestrator";
+import Ranker from "./pages/engine/Ranker";
+import Scanner from "./pages/engine/Scanner";
 import InstanceControl from "./pages/InstanceControl";
 import Login from "./pages/Login";
 import Positions from "./pages/Positions";
@@ -35,6 +41,13 @@ export default function App() {
         <Route path="/settings/broker" element={<BrokerSettings />} />
         <Route path="/settings/config" element={<TradingConfig />} />
         <Route path="/settings/instance" element={<InstanceControl />} />
+
+        <Route path="/engine/scanner" element={<Scanner />} />
+        <Route path="/engine/votes" element={<ModuleVotes />} />
+        <Route path="/engine/ranker" element={<Ranker />} />
+        <Route path="/engine/decisions" element={<Decisions />} />
+        <Route path="/engine/trace" element={<DecisionTrace />} />
+        <Route path="/engine/orchestrator" element={<Orchestrator />} />
 
         <Route
           path="/admin"

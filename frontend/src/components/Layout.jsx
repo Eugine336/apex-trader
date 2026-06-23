@@ -34,6 +34,24 @@ const icons = {
   monitor: (
     <path d="M21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h6v2h6v-2h6c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 14H3V5h18v12z" />
   ),
+  scanner: (
+    <path d="M15.5 14h-.79l-.28-.27a6.5 6.5 0 1 0-.7.7l.27.28v.79l5 4.99L20.49 19l-4.99-5zm-6 0A4.5 4.5 0 1 1 14 9.5 4.5 4.5 0 0 1 9.5 14z" />
+  ),
+  votes: (
+    <path d="M3 3h8v8H3V3zm10 0h8v8h-8V3zM3 13h8v8H3v-8zm10 0h8v8h-8v-8z" />
+  ),
+  ranker: (
+    <path d="M5 9.2h3V19H5V9.2zM10.6 5h2.8v14h-2.8V5zm5.6 8H19v6h-2.8v-6z" />
+  ),
+  decisions: (
+    <path d="M3 5h18v2H3V5zm0 6h18v2H3v-2zm0 6h12v2H3v-2z" />
+  ),
+  trace: (
+    <path d="M4 4h4v4H4V4zm6 1h10v2H10V5zM4 10h4v4H4v-4zm6 1h10v2H10v-2zM4 16h4v4H4v-4zm6 1h10v2H10v-2z" />
+  ),
+  orchestrator: (
+    <path d="M12 2a2 2 0 0 1 2 2 2 2 0 0 1-1 1.73V8h3a3 3 0 0 1 3 3v1.27A2 2 0 0 1 20 14a2 2 0 1 1-2.73-1.86V11a1 1 0 0 0-1-1h-3v2.27a2 2 0 1 1-2 0V10H8a1 1 0 0 0-1 1v1.14A2 2 0 1 1 4 14a2 2 0 0 1 1-1.73V11a3 3 0 0 1 3-3h3V5.73A2 2 0 0 1 10 4a2 2 0 0 1 2-2z" />
+  ),
   logout: (
     <path d="M16 13v-2H7V8l-5 4 5 4v-3h9zm3-10H10a2 2 0 0 0-2 2v3h2V5h9v14h-9v-3H8v3a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z" />
   ),
@@ -62,6 +80,18 @@ const settingsItems = [
   { to: "/settings/config", label: "Config", icon: "config" },
   { to: "/settings/instance", label: "Instance", icon: "instance" },
 ];
+
+// Live engine-state pages — only meaningful while the user's instance runs.
+const engineItems = [
+  { to: "/engine/scanner", label: "Scanner", icon: "scanner" },
+  { to: "/engine/votes", label: "Module Votes", icon: "votes" },
+  { to: "/engine/ranker", label: "Ranker", icon: "ranker" },
+  { to: "/engine/decisions", label: "Decisions", icon: "decisions" },
+  { to: "/engine/trace", label: "Decision Trace", icon: "trace" },
+  { to: "/engine/orchestrator", label: "Orchestrator", icon: "orchestrator" },
+];
+
+const RUNNING_STATES = new Set(["RUNNING", "STARTING"]);
 
 const adminItems = [
   { to: "/admin", label: "Overview", icon: "admin", end: true },
@@ -126,6 +156,25 @@ export default function Layout() {
             {item.label}
           </NavLink>
         ))}
+
+        {RUNNING_STATES.has(status) && (
+          <>
+            <p className="px-3 pb-1 pt-5 text-xs font-semibold uppercase tracking-wider text-gray-600">
+              Intelligence
+            </p>
+            {engineItems.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                className={linkClass}
+                onClick={() => setSidebarOpen(false)}
+              >
+                <Icon name={item.icon} />
+                {item.label}
+              </NavLink>
+            ))}
+          </>
+        )}
 
         <p className="px-3 pb-1 pt-5 text-xs font-semibold uppercase tracking-wider text-gray-600">
           Settings
