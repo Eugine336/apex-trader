@@ -14,6 +14,26 @@ without forking the codebase.
 
 Modules that previously hard-coded ``Path(__file__).parent.parent / "data"``
 should call :func:`data_dir` instead so they honour the override transparently.
+
+The data junction
+-----------------
+On the operator's machine ``<repo>/data`` is a directory junction/symlink that
+points at the separate ``apex-trader-data`` git repo. Two distinct concerns are
+served out of it, and they must NOT be conflated in multi-tenant mode:
+
+* **Writeable per-user state** (positions, journals, calibration, learned
+  weights). In single-user mode this lands in the junction and is git-synced /
+  backed up. In multi-tenant mode it must be *isolated per user* — every
+  instance writes to its own ``APEX_DATA_DIR`` and the junction / git-sync is
+  deliberately bypassed (you cannot have N users sharing one git data repo).
+  Resolve this via :func:`data_dir`.
+
+* **Shared read-only reference data** (e.g. the trained RL checkpoint, a swap
+  rate table). This is the *same* for every user and lives at the repo root
+  (junction-adjacent). It must stay reachable even when a per-user instance has
+  an isolated, empty ``APEX_DATA_DIR``. Resolve this via :func:`shared_data_dir`
+  / :func:`checkpoints_dir`, which always anchor to the repo root regardless of
+  the per-user override or the process's current working directory.
 """
 
 from __future__ import annotations
@@ -24,23 +44,68 @@ from pathlib import Path
 # Repository root — this file lives at ``<repo>/runtime_paths.py`` (top-level,
 # deliberately NOT inside a package, so importing it never triggers a package
 # ``__init__`` and cannot create import cycles with the trading engine).
-_REPO_ROOT = Path(__file__).resolve().parent
+_FALLBACK_REPO_ROOT = Path(__file__).resolve().parent
 
 _DATA_DIR_ENV = "APEX_DATA_DIR"
 _LOG_DIR_ENV = "APEX_LOG_DIR"
 _USER_ID_ENV = "APEX_USER_ID"
+_REPO_DIR_ENV = "APEX_REPO_DIR"
+
+
+def repo_root() -> Path:
+    """Return the code repository root.
+
+    Resolution order:
+      1. ``APEX_REPO_DIR`` environment variable — set by the multi-tenant
+         process manager so a per-user instance can locate repo-relative,
+         shared resources (the data junction, ``checkpoints/``, ``config/``)
+         regardless of its current working directory.
+      2. The directory containing this file (always correct for a normal
+         checkout, independent of the process cwd).
+
+    This is intentionally cwd-independent: a per-user instance runs with its
+    cwd set to its isolated working directory, so resolving repo resources
+    relative to ``Path.cwd()`` would silently miss them.
+    """
+    override = os.getenv(_REPO_DIR_ENV, "").strip()
+    return Path(override) if override else _FALLBACK_REPO_ROOT
 
 
 def data_dir() -> Path:
-    """Return the active data directory.
+    """Return the active (writeable, per-user-isolated) data directory.
 
     Resolution order:
       1. ``APEX_DATA_DIR`` environment variable (multi-tenant per-user override)
-      2. ``<repo>/data`` (single-user default)
+      2. ``<repo>/data`` (single-user default — the data junction)
     """
     override = os.getenv(_DATA_DIR_ENV, "").strip()
-    base = Path(override) if override else (_REPO_ROOT / "data")
+    base = Path(override) if override else (repo_root() / "data")
     return base
+
+
+def shared_data_dir() -> Path:
+    """Return the shared, read-only reference data directory (the junction).
+
+    Always ``<repo>/data`` regardless of ``APEX_DATA_DIR`` — so reference data
+    that is identical for every user (and lives in the junction) stays reachable
+    from per-user instances whose writeable :func:`data_dir` is isolated and
+    empty.
+
+    In single-user mode this equals :func:`data_dir`; in multi-tenant mode it
+    points at the operator's junction while :func:`data_dir` points at the
+    per-user isolated tree.
+    """
+    return repo_root() / "data"
+
+
+def checkpoints_dir() -> Path:
+    """Return the directory holding trained model checkpoints (repo-relative).
+
+    Checkpoints are shared, read-only artifacts produced by training and are the
+    same for every user, so they are anchored to the repo root rather than the
+    per-user (isolated) data directory.
+    """
+    return repo_root() / "checkpoints"
 
 
 def log_dir() -> Path:
@@ -51,7 +116,7 @@ def log_dir() -> Path:
       2. ``<repo>/logs`` (single-user default)
     """
     override = os.getenv(_LOG_DIR_ENV, "").strip()
-    base = Path(override) if override else (_REPO_ROOT / "logs")
+    base = Path(override) if override else (repo_root() / "logs")
     return base
 
 
