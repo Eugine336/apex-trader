@@ -4537,6 +4537,8 @@ class EventDrivenSystem:
 
         from brain.directional_consensus import form_thesis
 
+        _conv_store = getattr(self._ctx, "symbol_conviction", None) if self._ctx else None
+
         try:
             thesis = form_thesis(
                 votes,
@@ -4547,6 +4549,8 @@ class EventDrivenSystem:
                 min_contributors=cfg.min_contributors,
                 conviction_threshold=cfg.conviction_threshold,
                 net_scale=cfg.net_scale,
+                symbol=symbol,
+                conviction_store=_conv_store,
             )
         except Exception as exc:
             logger.debug("[consensus-trigger] {} thesis failed: {}", symbol, exc)

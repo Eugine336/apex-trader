@@ -408,9 +408,17 @@ def build_consensus(
         block the panel: on any error the module is kept with its base weight.
         """
         # Module Governor: exclude SHADOWED / DISABLED modules from the panel.
+        # Pass ``symbol`` so the governor can apply its per-symbol isolation
+        # overlay (1C) — a module is suppressed only where it is actually
+        # harmful, not globally because of another instrument's track record.
         if module_governor is not None:
             try:
-                if module_governor.is_suppressed(module):
+                try:
+                    suppressed = module_governor.is_suppressed(module, symbol)
+                except TypeError:
+                    # Older governor without the per-symbol parameter.
+                    suppressed = module_governor.is_suppressed(module)
+                if suppressed:
                     return
             except Exception as exc:  # noqa: BLE001
                 logger.debug(
@@ -418,11 +426,16 @@ def build_consensus(
                     symbol, module, exc,
                 )
         # Vote Calibrator: scale the static consensus weight by the learned,
-        # bounded, mean-1.0 multiplier (unchanged when calibration is off).
+        # bounded, mean-1.0 multiplier (unchanged when calibration is off). The
+        # ``symbol`` lets the calibrator prefer its per-symbol overlay (1C).
         weight = base_weight
         if vote_calibrator is not None:
             try:
-                weight = vote_calibrator.calibrated_weight(module, base_weight)
+                try:
+                    weight = vote_calibrator.calibrated_weight(module, base_weight, symbol)
+                except TypeError:
+                    # Older calibrator without the per-symbol parameter.
+                    weight = vote_calibrator.calibrated_weight(module, base_weight)
             except Exception as exc:  # noqa: BLE001
                 logger.debug(
                     "[consensus] {} calibrate failed for {}: {}",

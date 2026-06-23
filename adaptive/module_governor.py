@@ -216,6 +216,12 @@ class ModuleGovernor(TuningGuardMixin):
         self._modes: Dict[str, str] = {m: ModuleMode.ACTIVE.value for m in self._modules}
         # Full state records (mode + bookkeeping), guarded by _lock for writes.
         self._state: Dict[str, ModuleStateRecord] = {}
+        # 1C — per-symbol suppression overlay. ``{symbol: {module: bool|None}}``
+        # derived from that symbol's own graded accuracy. True/False override the
+        # global mode for that symbol; None means "not enough per-symbol data,
+        # use the global decision". Refreshed lazily on a throttle.
+        self._symbol_suppress: Dict[str, Dict[str, Optional[bool]]] = {}
+        self._symbol_last_compute: Dict[str, float] = {}
         self._lock = threading.Lock()
         self._db_path = Path(db_path) if db_path is not None else _DB_PATH
         self._conn: Optional[sqlite3.Connection] = None
@@ -388,16 +394,111 @@ class ModuleGovernor(TuningGuardMixin):
         """True when the module has been fully DISABLED."""
         return self.mode_for(module) == ModuleMode.DISABLED
 
-    def is_suppressed(self, module: str) -> bool:
+    def is_suppressed(self, module: str, symbol: Optional[str] = None) -> bool:
         """True when the module must NOT influence a live decision.
 
         SHADOW and DISABLED both suppress the vote (weight forced to 0.0); only
         ACTIVE modules contribute. Always ``False`` when the feature is off, so
         the consensus path is unchanged. This is the single hook the scanner
         calls per vote.
+
+        When ``symbol`` is given and per-symbol sharding is on (1C), the symbol's
+        own graded accuracy can override the global mode: a module poor on THIS
+        symbol is suppressed here even if globally ACTIVE, and a module reliable
+        on THIS symbol is allowed here even if globally SHADOWED — so one
+        instrument's losses no longer suppress a module everywhere. Falls back to
+        the global decision when the symbol lacks enough graded data (cold-start
+        neutral).
         """
-        m = self.mode_for(module)
-        return m in (ModuleMode.SHADOW, ModuleMode.DISABLED)
+        global_suppressed = self.mode_for(module) in (ModuleMode.SHADOW, ModuleMode.DISABLED)
+        if not self.enabled or not symbol or not self._per_symbol_enabled():
+            return global_suppressed
+        try:
+            self._ensure_symbol_overlay(symbol)
+            override = self._symbol_suppress.get(symbol, {}).get(module)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[module-governor] per-symbol suppress failed ({} {}): {}",
+                symbol, module, exc,
+            )
+            override = None
+        if override is None:
+            return global_suppressed
+        return bool(override)
+
+    # ── Per-symbol overlay (1C — instrument isolation, read-only) ─────────
+
+    def _per_symbol_enabled(self) -> bool:
+        return bool(getattr(self._config, "per_symbol_enabled", False))
+
+    def _ensure_symbol_overlay(self, symbol: str) -> None:
+        """Lazily (re)compute ``symbol``'s suppression overlay on a throttle.
+
+        For each governed module, reads that symbol's own graded accuracy/count
+        (read-only EmitterFeedback per-pair query) and derives an isolated
+        verdict for the symbol:
+
+        * suppress (True) when accuracy is poor over enough per-symbol signals,
+        * allow (False) when accuracy is clearly good over enough signals
+          (explicitly NOT suppressed here, even if globally shadowed),
+        * defer (None) otherwise — the global decision stands.
+
+        Never raises. Does not touch the global SHADOW/DISABLED state machine.
+        """
+        if self._emitter_feedback is None:
+            return
+        interval = float(getattr(self._config, "per_symbol_recompute_seconds", 300.0))
+        now = time.time()
+        last = self._symbol_last_compute.get(symbol, 0.0)
+        if interval > 0 and (now - last) < interval and symbol in self._symbol_suppress:
+            return
+        self._symbol_last_compute[symbol] = now
+
+        cfg = self._config
+        shadow_threshold = float(getattr(cfg, "shadow_threshold", 0.35))
+        shadow_lookback = int(getattr(cfg, "shadow_lookback", 50))
+        reactivation_threshold = float(getattr(cfg, "reactivation_threshold", 0.50))
+        reactivation_min = int(getattr(cfg, "reactivation_min_signals", 30))
+
+        verdicts: Dict[str, Optional[bool]] = {}
+        for module in self._modules:
+            try:
+                acc, n = self._accuracy_and_count_for_pair(module, symbol)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "[module-governor] per-symbol accuracy failed ({} {}): {}",
+                    symbol, module, exc,
+                )
+                verdicts[module] = None
+                continue
+            if n >= shadow_lookback and acc < shadow_threshold:
+                verdicts[module] = True
+            elif n >= reactivation_min and acc >= reactivation_threshold:
+                verdicts[module] = False
+            else:
+                verdicts[module] = None
+        with self._lock:
+            self._symbol_suppress[symbol] = verdicts
+
+    def _accuracy_and_count_for_pair(self, module: str, pair: str) -> tuple[float, int]:
+        """Read a module's graded accuracy + sample size FOR ONE PAIR.
+
+        Mirrors :meth:`_accuracy_and_count` but scoped to ``pair`` via the
+        per-pair EmitterFeedback query. Returns ``(0.0, 0)`` when no feedback is
+        wired or the module has no graded signals on that pair yet.
+        """
+        fb = self._emitter_feedback
+        if fb is None:
+            return 0.0, 0
+        lookback = int(getattr(self._config, "feedback_lookback", 500))
+        from adaptive.emitter_feedback import EmitterFeedbackRequest
+
+        resp = fb.request_feedback(
+            EmitterFeedbackRequest(emitter=module, pair=pair, lookback=lookback)
+        )
+        accuracy = float(getattr(resp, "accuracy_all", 0.0) or 0.0)
+        n = int(getattr(resp, "total_signals", 0) or 0)
+        return accuracy, n
 
     # ── Manual override ────────────────────────────────────────────────────
 

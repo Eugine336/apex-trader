@@ -140,6 +140,12 @@ class VoteCalibrator(TuningGuardMixin):
         # atomically on recalibrate so concurrent scanner reads are safe).
         self._multipliers: Dict[str, float] = {}
         self._last_calibration: Optional[VoteCalibration] = None
+        # 1C — per-symbol multiplier overlay. ``{symbol: {module: multiplier}}``
+        # computed lazily from that symbol's own graded accuracy (per-pair
+        # SignalLedger query) and refreshed on a throttle. Empty for any symbol
+        # without ≥2 qualifying modules, so reads fall back to the global map.
+        self._symbol_multipliers: Dict[str, Dict[str, float]] = {}
+        self._symbol_last_compute: Dict[str, float] = {}
         # Only guards the recompute / snapshot bookkeeping, not the hot reads.
         self._lock = threading.Lock()
 
@@ -179,22 +185,43 @@ class VoteCalibrator(TuningGuardMixin):
 
     # ── Hot path: weight lookup (thread-safe, lock-free) ──────────────────
 
-    def multiplier_for(self, module: str) -> float:
+    def multiplier_for(self, module: str, symbol: Optional[str] = None) -> float:
         """Return the cached weight multiplier for ``module`` (1.0 default).
 
         Always safe to call from any thread — reads the atomically-published
-        map and never recomputes. Returns 1.0 (neutral) when calibration is
-        disabled, the module is unknown, or no calibration has run yet.
+        map and never recomputes synchronously beyond a throttled per-symbol
+        refresh. Returns 1.0 (neutral) when calibration is disabled, the module
+        is unknown, or no calibration has run yet.
+
+        When ``symbol`` is given and per-symbol sharding is on, the symbol's own
+        overlay multiplier is returned if available; otherwise it falls back to
+        the global multiplier (which is itself neutral at cold start). This is
+        the 1C isolation hook: a module's weight on one instrument no longer
+        depends on its track record on others.
         """
         if not self.enabled:
             return 1.0
+        if symbol and self._per_symbol_enabled():
+            try:
+                self._ensure_symbol_overlay(symbol)
+                sm = self._symbol_multipliers.get(symbol)
+                if sm is not None and module in sm:
+                    return float(sm[module])
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "[vote-calibrator] per-symbol multiplier failed ({} {}): {}",
+                    symbol, module, exc,
+                )
         return float(self._multipliers.get(module, 1.0))
 
-    def calibrated_weight(self, module: str, base_weight: float) -> float:
+    def calibrated_weight(
+        self, module: str, base_weight: float, symbol: Optional[str] = None,
+    ) -> float:
         """Scale a base consensus weight by the module's calibrated multiplier.
 
         When calibration is disabled this returns ``base_weight`` unchanged, so
-        callers can wire it in unconditionally with zero behaviour change.
+        callers can wire it in unconditionally with zero behaviour change. When
+        ``symbol`` is supplied the per-symbol overlay is preferred (1C).
         """
         try:
             base = float(base_weight)
@@ -202,7 +229,7 @@ class VoteCalibrator(TuningGuardMixin):
             return base_weight
         if not self.enabled:
             return base
-        return base * self.multiplier_for(module)
+        return base * self.multiplier_for(module, symbol)
 
     def get_weight_multipliers(self) -> Dict[str, float]:
         """A copy of the current published multiplier map."""
@@ -332,6 +359,59 @@ class VoteCalibrator(TuningGuardMixin):
                 ) or "none",
             )
         return cal
+
+    # ── Per-symbol overlay (1C — instrument isolation, read-only) ─────────
+
+    def _per_symbol_enabled(self) -> bool:
+        return bool(getattr(self._config, "per_symbol_enabled", False))
+
+    def _ensure_symbol_overlay(self, symbol: str) -> None:
+        """Lazily (re)compute ``symbol``'s multiplier overlay on a throttle.
+
+        Reads that symbol's own per-module graded accuracy (via the read-only
+        EmitterFeedback per-pair query) and runs the SAME calibration math used
+        globally, but accuracy-only (no global counterfactual blend, which would
+        re-introduce cross-symbol coupling). Stores nothing when the symbol has
+        fewer than two qualifying modules — reads then fall back to the global
+        map. Never raises.
+        """
+        if self._emitter_feedback is None:
+            return
+        interval = float(getattr(self._config, "per_symbol_recompute_seconds", 300.0))
+        now = time.time()
+        last = self._symbol_last_compute.get(symbol, 0.0)
+        if interval > 0 and (now - last) < interval and symbol in self._symbol_multipliers:
+            return
+        self._symbol_last_compute[symbol] = now
+
+        from adaptive.emitter_feedback import EmitterFeedbackRequest
+
+        lb = int(getattr(self._config, "vote_calibration_lookback", 100))
+        accuracy_data: Dict[str, dict] = {}
+        for module in self._modules:
+            try:
+                resp = self._emitter_feedback.request_feedback(
+                    EmitterFeedbackRequest(emitter=module, pair=symbol, lookback=lb)
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "[vote-calibrator] per-symbol feedback failed ({} {}): {}",
+                    symbol, module, exc,
+                )
+                continue
+            accuracy_data[module] = {
+                "accuracy": float(getattr(resp, "accuracy_all", 0.0) or 0.0),
+                "n": int(getattr(resp, "total_signals", 0) or 0),
+            }
+        # Accuracy-only per-symbol calibration (cf blend deliberately omitted).
+        cal = self._compute_calibration(accuracy_data, None)
+        with self._lock:
+            if cal.skipped:
+                # Not enough per-symbol evidence — drop any stale overlay so the
+                # read falls back to the global (neutral) multiplier.
+                self._symbol_multipliers.pop(symbol, None)
+            else:
+                self._symbol_multipliers[symbol] = dict(cal.multipliers)
 
     def _publish_approved(self, cal: "VoteCalibration") -> bool:
         """Submit the new multiplier map to the recommendation gateway.

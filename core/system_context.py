@@ -117,6 +117,7 @@ class SystemContext:
     emitter_feedback: Optional[EmitterFeedbackService] = None
     vote_calibrator: Optional[VoteCalibrator] = None
     module_governor: Optional[ModuleGovernor] = None
+    symbol_conviction: Optional[Any] = None
     post_close_tracker: Optional[PostCloseTracker] = None
     gate_tuner: Optional[GateTuner] = None
     counterfactual_engine: Optional[CounterfactualEngine] = None
@@ -526,10 +527,15 @@ class SystemContext:
             logger.warning("[SystemContext] RecommendationGateway init failed: {}", exc)
 
         # ── VoteCalibrator ──────────────────────────────────────────
+        # The calibrator reads its master switch and hyperparameters off the
+        # config object handed in (vote_calibration_enabled, vote_weight_*, …).
+        # Those live on the nested ``VoteCalibratorConfig`` — pass that, not the
+        # top-level AppConfig, or ``enabled`` resolves to its False default and
+        # the calibrator stays inert despite the config saying it is on.
         try:
             from adaptive.vote_calibrator import VoteCalibrator as _VoteCalib
             ctx.vote_calibrator = _VoteCalib(
-                config=config,
+                config=getattr(config, "vote_calibrator", config),
                 emitter_feedback=ctx.emitter_feedback,
             )
             if ctx.counterfactual_engine is not None:
@@ -558,17 +564,44 @@ class SystemContext:
             logger.warning("[SystemContext] VoteCalibrator init failed: {}", exc)
 
         # ── ModuleGovernor ──────────────────────────────────────────
+        # The governor reads ``module_governor_enabled`` and every transition
+        # threshold off the config it is handed. Those fields live on the nested
+        # ``ModuleGovernorConfig`` (config.module_governor), NOT the top-level
+        # AppConfig — passing the AppConfig made ``enabled`` fall through to its
+        # False default, so the governor was permanently inert (no module ever
+        # shadowed) even though the config flag was True. Pass the nested config.
         try:
             from adaptive.module_governor import ModuleGovernor as _ModGov
             ctx.module_governor = _ModGov(
-                config=config,
+                config=getattr(config, "module_governor", config),
                 emitter_feedback=ctx.emitter_feedback,
                 counterfactual=ctx.counterfactual_engine,
             )
+            if ctx.module_governor is not None:
+                logger.info(
+                    "[SystemContext] ModuleGovernor enabled={}",
+                    ctx.module_governor.enabled,
+                )
         except Exception as exc:
             logger.warning("[SystemContext] ModuleGovernor init failed: {}", exc)
 
-        # ── PostCloseTracker ────────────────────────────────────────
+        # ── SymbolConvictionStore (1B — symbol-relative conviction) ──
+        # Learning ⑦ produces the per-symbol conviction distribution; Consensus
+        # ② consumes the normalized value at form_thesis. Cold-start neutral
+        # (raw passthrough until a symbol warms up) and per-user isolated.
+        try:
+            cn_cfg = getattr(config, "conviction_normalization", None)
+            if cn_cfg is None or bool(getattr(cn_cfg, "enabled", True)):
+                from adaptive.symbol_conviction import SymbolConvictionStore as _SymConv
+                ctx.symbol_conviction = _SymConv(
+                    enabled=bool(getattr(cn_cfg, "enabled", True)) if cn_cfg else True,
+                    min_samples=int(getattr(cn_cfg, "min_samples", 30)) if cn_cfg else 30,
+                    max_history=int(getattr(cn_cfg, "max_history", 300)) if cn_cfg else 300,
+                    blend=float(getattr(cn_cfg, "blend", 0.5)) if cn_cfg else 0.5,
+                    persist=bool(getattr(cn_cfg, "persist", True)) if cn_cfg else True,
+                )
+        except Exception as exc:
+            logger.warning("[SystemContext] SymbolConvictionStore init failed: {}", exc)
         try:
             from adaptive.post_close_tracker import PostCloseTracker as _PostClose
             ctx.post_close_tracker = _PostClose(config=config)
