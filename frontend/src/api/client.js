@@ -4,7 +4,12 @@ import axios from "axios";
 export const ACCESS_TOKEN_KEY = "apex_access_token";
 export const REFRESH_TOKEN_KEY = "apex_refresh_token";
 
-const BASE_URL = import.meta.env.VITE_API_URL || "http://localhost:8080";
+// In production (behind Cloudflare) VITE_API_URL is set to an empty string so
+// the app uses same-origin relative paths (/api/...). Use ?? (not ||) so an
+// explicit empty string is preserved instead of falling back to localhost.
+// When the var is undefined (plain `npm run dev` with no env file) we default
+// to the local API server.
+const BASE_URL = import.meta.env.VITE_API_URL ?? "http://localhost:8080";
 
 export function getAccessToken() {
   return localStorage.getItem(ACCESS_TOKEN_KEY);
