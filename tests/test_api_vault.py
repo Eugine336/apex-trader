@@ -87,3 +87,42 @@ def test_mask_credentials_hides_secrets():
 def test_mask_short_secret():
     masked = mask_credentials(BROKER_DERIV, {"access_token": "ab", "app_id": "1"})
     assert masked["access_token"] == "****"
+
+
+def test_validate_strips_whitespace_mt5():
+    """Copy-paste whitespace must not survive into stored MT5 credentials."""
+    cleaned = BrokerVault.validate(
+        BROKER_MT5,
+        {"login": "  12345678 ", "password": "  s3cret \n", "server": " Broker-Live "},
+    )
+    assert cleaned["login"] == 12345678
+    assert cleaned["password"] == "s3cret"
+    assert cleaned["server"] == "Broker-Live"
+
+
+def test_validate_strips_whitespace_deriv():
+    cleaned = BrokerVault.validate(
+        BROKER_DERIV,
+        {"access_token": "  ory_at_abc\t", "app_id": " 1234 "},
+    )
+    assert cleaned["access_token"] == "ory_at_abc"
+    assert cleaned["app_id"] == "1234"
+
+
+def test_encrypt_decrypt_roundtrip_strips_password():
+    """End-to-end: whitespace-padded password decrypts back clean."""
+    vault = BrokerVault(_MASTER)
+    token = vault.encrypt(
+        1, BROKER_MT5, {"login": "1", "password": "  pad  ", "server": " s "}
+    )
+    out = vault.decrypt(1, token)
+    assert out["password"] == "pad"
+    assert out["server"] == "s"
+
+
+def test_validate_rejects_whitespace_only_password():
+    """A password that is only whitespace is empty after stripping → rejected."""
+    with pytest.raises(VaultError):
+        BrokerVault.validate(
+            BROKER_MT5, {"login": "1", "password": "   ", "server": "s"}
+        )

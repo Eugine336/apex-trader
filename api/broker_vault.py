@@ -88,7 +88,9 @@ class BrokerVault:
                 cleaned["login"] = int(str(credentials["login"]).strip())
             except (TypeError, ValueError) as exc:
                 raise VaultError("mt5 login must be an integer") from exc
-            cleaned["password"] = str(credentials["password"])
+            # Strip the password too: copy-paste whitespace is the most common
+            # cause of "correct credentials but auth failure".
+            cleaned["password"] = str(credentials["password"]).strip()
             cleaned["server"] = str(credentials["server"]).strip()
         else:  # deriv
             cleaned["access_token"] = str(credentials["access_token"]).strip()
