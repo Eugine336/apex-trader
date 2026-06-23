@@ -5,8 +5,9 @@ the broker minimum stop distance of the current price must be DEFERRED (dropped)
 rather than emitted, otherwise the connector clamps it to a forced level that
 pins the stop near breakeven and chokes a still-running trade.
 
-Fix 2 — ``AppConfig.features.data_path_fixes_enabled`` defaults OFF so the live
-entry builder keeps its original pre-fix behaviour until explicitly enabled.
+Fix 2 — ``AppConfig.features.data_path_fixes_enabled`` defaults ON so the live
+entry builder reads the same HTF/M1/regime data management uses; the flag remains
+a kill-switch to revert to the pre-fix behaviour.
 """
 
 from datetime import datetime, timezone
@@ -123,8 +124,10 @@ def test_worker_config_default_room():
 
 # ── FeatureFlags kill-switch ────────────────────────────────────────────────
 
-def test_feature_flag_defaults_off():
+def test_feature_flag_data_path_fixes_default_on():
     from config import AppConfig, FeatureFlags
 
-    assert FeatureFlags().data_path_fixes_enabled is False
-    assert AppConfig().features.data_path_fixes_enabled is False
+    # The data-path alignment fixes are now ON by default; the flag remains as
+    # a kill-switch so the operator can revert to pre-fix behaviour.
+    assert FeatureFlags().data_path_fixes_enabled is True
+    assert AppConfig().features.data_path_fixes_enabled is True

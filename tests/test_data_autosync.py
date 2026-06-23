@@ -347,3 +347,13 @@ class TestCleanStart:
             schema_version="2",
             local_schema_version_file=".local_schema_version",
         )
+
+
+class TestStartupPurgeToggle:
+    """The learned-data purge is opt-in (default OFF) — a normal restart only
+    syncs the data junction and never wipes adaptive state."""
+
+    def test_startup_purge_disabled_by_default(self):
+        from config import DataBackupConfig
+
+        assert DataBackupConfig().startup_purge_enabled is False

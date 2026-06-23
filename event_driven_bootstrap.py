@@ -1881,6 +1881,21 @@ class EventDrivenSystem:
                 logger.warning("[event-driven] CalibrationEngine init failed: {}", exc)
                 self._calibration_engine = None
 
+        # News-impact measurement trigger — only active when the CalibrationEngine
+        # is on. It captures price at high-impact news events on the M5 heartbeat
+        # and measures the reaction ~30 min later to feed learned news sensitivity.
+        self._news_impact_tracker = None
+        if self._calibration_engine is not None:
+            try:
+                from brain.news_impact_tracker import NewsImpactTracker
+                self._news_impact_tracker = NewsImpactTracker(
+                    self._calibration_engine,
+                    news_guard=getattr(ctx, "news_guard", None) if ctx else None,
+                )
+            except Exception as exc:
+                logger.warning("[event-driven] NewsImpactTracker init failed: {}", exc)
+                self._news_impact_tracker = None
+
         self._candle_handler = CandleCloseHandler(
             event_bus=self._event_bus,
             world_model_store=self._wm_store,
@@ -1894,6 +1909,7 @@ class EventDrivenSystem:
             calibration_engine=self._calibration_engine,
             get_spread_pips=self._get_spread_pips,
             calibration_spread_tf=getattr(_calib_cfg, "spread_sample_tf", "M5"),
+            news_impact_tracker=self._news_impact_tracker,
         )
 
         # ── Execution plane ──────────────────────────────────────────
@@ -2721,6 +2737,13 @@ class EventDrivenSystem:
                     self._calibration_engine.save()
                 except Exception as exc:
                     logger.warning("[event-driven] calibration save failed: {}", exc)
+        # Persist pending news-impact baselines so a restart inside the
+        # measurement window does not lose the captured price_at_event.
+        if self._news_impact_tracker is not None:
+            try:
+                self._news_impact_tracker.save()
+            except Exception as exc:
+                logger.warning("[event-driven] news-impact save failed: {}", exc)
         try:
             self._entry_pool.shutdown(wait=False)
         except Exception:

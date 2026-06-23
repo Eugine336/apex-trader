@@ -1293,6 +1293,11 @@ class DataBackupConfig:
     # ``scripts/restore_data.py`` restores the current (clean) state rather than
     # stale pre-migration data.
     sync_orphan_branch: bool = True
+    # One-time schema-gated purge of stale learned/adaptive artifacts at startup.
+    # Default OFF: a normal restart only syncs the data junction from the remote
+    # and never wipes learned state. Flip to True deliberately (e.g. after a
+    # migration that invalidates learned data) to let the schema-gated purge run.
+    startup_purge_enabled: bool = False
 
 
 @dataclass
@@ -1304,12 +1309,13 @@ class FeatureFlags:
 
     # Entry/management data-path alignment fixes (HTF break events, live M1
     # evidence, and volatility regime fed into the LIVE entry context). When
-    # False (default) the live entry builder keeps the original behaviour:
-    # HTF events default to "NONE", M1 evidence falls through to the legacy
-    # decision-dict defaults, and regime stays "" (base DecisionWeights).
-    # When True the entry plane reads the same live data management uses,
-    # closing the enter-then-instant-close gap.
-    data_path_fixes_enabled: bool = False
+    # False the live entry builder keeps the original behaviour: HTF events
+    # default to "NONE", M1 evidence falls through to the legacy decision-dict
+    # defaults, and regime stays "" (base DecisionWeights). When True (default)
+    # the entry plane reads the same live data management uses, closing the
+    # enter-then-instant-close gap. Flip to False only to revert to the
+    # pre-fix behaviour without rolling back code.
+    data_path_fixes_enabled: bool = True
 
 
 # ---------------------------------------------------------------------------

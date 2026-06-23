@@ -119,7 +119,12 @@ def main() -> None:
 
             branch = getattr(db_cfg, "sync_branch", "main") if db_cfg else "main"
             pull_res = sync_clean_state_from_remote(branch=branch)
-            purge_res = purge_stale_learned_data()
+            # The learned-data purge is opt-in (default OFF) so a normal restart
+            # never wipes adaptive state — only the data-junction sync runs.
+            if db_cfg is not None and getattr(db_cfg, "startup_purge_enabled", False):
+                purge_res = purge_stale_learned_data()
+            else:
+                purge_res = "skipped (disabled)"
             logger.info(
                 "[event-driven] clean-start — pull: {} | purge: {}",
                 pull_res,
