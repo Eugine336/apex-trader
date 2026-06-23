@@ -84,6 +84,7 @@ class ProcessManager:
         self._monitor_thread: Optional[threading.Thread] = None
         self._monitor_stop = threading.Event()
         self._repo_root = Path(__file__).resolve().parent.parent
+        self._created_at = time.time()
 
     # ── lifecycle ─────────────────────────────────────────────────────────
     def start_monitor(self) -> None:
@@ -272,7 +273,35 @@ class ProcessManager:
             "last_error": row.get("last_error", ""),
             "started_at": row.get("started_at"),
             "stopped_at": row.get("stopped_at"),
+            "uptime_seconds": self._uptime_seconds(user_id),
         }
+
+    def _uptime_seconds(self, user_id: int) -> float:
+        """Seconds since the live process for *user_id* started (0 if not alive)."""
+        with self._lock:
+            inst = self._instances.get(user_id)
+            if inst and self._is_alive(inst) and inst.started_at:
+                return round(time.time() - inst.started_at, 1)
+        return 0.0
+
+    # ── admin / system-wide views ─────────────────────────────────────────
+    def system_uptime_seconds(self) -> float:
+        """Seconds since this process manager (the API server) started."""
+        return round(time.time() - self._created_at, 1)
+
+    def active_count(self) -> int:
+        """Number of currently-alive trading instances."""
+        with self._lock:
+            return sum(1 for i in self._instances.values() if self._is_alive(i))
+
+    def all_statuses(self) -> list[dict[str, Any]]:
+        """Status of every instance known to the DB or held in memory."""
+        user_ids: set[int] = set()
+        for row in self._db.list_instances():
+            user_ids.add(int(row["user_id"]))
+        with self._lock:
+            user_ids.update(self._instances.keys())
+        return [self.instance_status(uid) for uid in sorted(user_ids)]
 
     def tail_log(self, user_id: int, lines: int = 200) -> list[str]:
         """Return the last *lines* of the user's instance log file."""

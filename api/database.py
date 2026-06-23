@@ -172,9 +172,32 @@ class Database:
                 (int(active), user_id),
             )
 
+    def set_user_admin(self, user_id: int, admin: bool) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE users SET is_admin = ? WHERE id = ?",
+                (int(admin), user_id),
+            )
+
+    def list_users(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, email, is_active, is_admin, created_at "
+                "FROM users ORDER BY id"
+            ).fetchall()
+            return [dict(r) for r in rows]
+
     def count_users(self) -> int:
         with self._connect() as conn:
             return int(conn.execute("SELECT COUNT(*) FROM users").fetchone()[0])
+
+    def count_admins(self) -> int:
+        with self._connect() as conn:
+            return int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM users WHERE is_admin = 1"
+                ).fetchone()[0]
+            )
 
     # ── broker credentials ───────────────────────────────────────────────
     def upsert_broker_credentials(
@@ -390,6 +413,52 @@ class Database:
             cumulative += float(r["pnl"] or 0.0)
             curve.append({"closed_at": r["closed_at"], "equity": round(cumulative, 2)})
         return curve
+
+    # ── admin: cross-user trade queries ──────────────────────────────────
+    def list_all_trades(
+        self,
+        user_id: Optional[int] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> list[dict[str, Any]]:
+        """List trades across all users, optionally filtered to one user."""
+        clauses: list[str] = []
+        params: list[Any] = []
+        if user_id is not None:
+            clauses.append("user_id = ?")
+            params.append(user_id)
+        where = f"WHERE {' AND '.join(clauses)} " if clauses else ""
+        params.extend([limit, offset])
+        with self._connect() as conn:
+            rows = conn.execute(
+                f"SELECT * FROM trade_history {where}"
+                "ORDER BY closed_at DESC, id DESC LIMIT ? OFFSET ?",
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def count_trades_since(self, since: str) -> int:
+        """Count trades closed at/after the ISO timestamp *since* (all users)."""
+        with self._connect() as conn:
+            return int(
+                conn.execute(
+                    "SELECT COUNT(*) FROM trade_history WHERE closed_at >= ?",
+                    (since,),
+                ).fetchone()[0]
+            )
+
+    def global_trade_totals(self) -> dict[str, Any]:
+        """Aggregate trade count + realized P&L across all users."""
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS total, COALESCE(SUM(pnl), 0.0) AS total_pnl "
+                "FROM trade_history"
+            ).fetchone()
+            data = dict(row) if row else {}
+            return {
+                "total": int(data.get("total", 0) or 0),
+                "total_pnl": round(float(data.get("total_pnl", 0.0) or 0.0), 2),
+            }
 
     # ── user config ──────────────────────────────────────────────────────
     def set_user_config(self, user_id: int, config_json: str) -> None:

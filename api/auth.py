@@ -17,16 +17,16 @@ from collections import deque
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
+import bcrypt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jose import JWTError, jwt
-from passlib.context import CryptContext
 
 from api.config import ApiConfig, get_api_config
 from api.database import Database
 
-# bcrypt has a 72-byte input limit; passlib handles truncation transparently.
-_pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# bcrypt rejects inputs longer than 72 bytes; truncate to stay within the limit.
+_BCRYPT_MAX_BYTES = 72
 
 _bearer = HTTPBearer(auto_error=False)
 
@@ -36,15 +36,20 @@ TOKEN_RESET = "reset"
 
 
 # ── password hashing ─────────────────────────────────────────────────────
+def _encode_secret(password: str) -> bytes:
+    """Encode *password* to UTF-8, truncated to bcrypt's 72-byte limit."""
+    return password.encode("utf-8")[:_BCRYPT_MAX_BYTES]
+
+
 def hash_password(password: str) -> str:
     """Return a bcrypt hash for *password*."""
-    return _pwd_context.hash(password)
+    return bcrypt.hashpw(_encode_secret(password), bcrypt.gensalt()).decode("utf-8")
 
 
 def verify_password(password: str, password_hash: str) -> bool:
     """Constant-time verify of *password* against a stored bcrypt hash."""
     try:
-        return _pwd_context.verify(password, password_hash)
+        return bcrypt.checkpw(_encode_secret(password), password_hash.encode("utf-8"))
     except (ValueError, TypeError):
         return False
 

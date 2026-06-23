@@ -35,3 +35,18 @@ export function directionBadgeClass(direction) {
   }
   return "bg-gray-600/30 text-gray-300 border border-gray-600";
 }
+
+// Human-readable duration from a seconds count (e.g. 3725 → "1h 2m").
+export function formatDuration(seconds) {
+  const total = Math.max(0, Math.floor(Number(seconds || 0)));
+  if (total === 0) return "—";
+  const d = Math.floor(total / 86400);
+  const h = Math.floor((total % 86400) / 3600);
+  const m = Math.floor((total % 3600) / 60);
+  const s = total % 60;
+  if (d > 0) return `${d}d ${h}h`;
+  if (h > 0) return `${h}h ${m}m`;
+  if (m > 0) return `${m}m ${s}s`;
+  return `${s}s`;
+}
+

@@ -25,6 +25,15 @@ const icons = {
   instance: (
     <path d="M13 3v2h4.59l-9.83 9.83 1.41 1.41L19 6.41V11h2V3h-8zM5 5h6V3H3v18h18v-8h-2v6H5V5z" />
   ),
+  admin: (
+    <path d="M12 1 3 5v6c0 5.55 3.84 10.74 9 12 5.16-1.26 9-6.45 9-12V5l-9-4zm-1 6h2v2h-2V7zm0 4h2v6h-2v-6z" />
+  ),
+  users: (
+    <path d="M16 11c1.66 0 2.99-1.34 2.99-3S17.66 5 16 5c-1.66 0-3 1.34-3 3s1.34 3 3 3zm-8 0c1.66 0 2.99-1.34 2.99-3S9.66 5 8 5C6.34 5 5 6.34 5 8s1.34 3 3 3zm0 2c-2.33 0-7 1.17-7 3.5V19h14v-2.5c0-2.33-4.67-3.5-7-3.5zm8 0c-.29 0-.62.02-.97.05 1.16.84 1.97 1.97 1.97 3.45V19h6v-2.5c0-2.33-4.67-3.5-7-3.5z" />
+  ),
+  monitor: (
+    <path d="M21 3H3c-1.1 0-2 .9-2 2v12c0 1.1.9 2 2 2h6v2h6v-2h6c1.1 0 2-.9 2-2V5c0-1.1-.9-2-2-2zm0 14H3V5h18v12z" />
+  ),
   logout: (
     <path d="M16 13v-2H7V8l-5 4 5 4v-3h9zm3-10H10a2 2 0 0 0-2 2v3h2V5h9v14h-9v-3H8v3a2 2 0 0 0 2 2h9a2 2 0 0 0 2-2V5a2 2 0 0 0-2-2z" />
   ),
@@ -52,6 +61,13 @@ const settingsItems = [
   { to: "/settings/broker", label: "Broker", icon: "broker" },
   { to: "/settings/config", label: "Config", icon: "config" },
   { to: "/settings/instance", label: "Instance", icon: "instance" },
+];
+
+const adminItems = [
+  { to: "/admin", label: "Overview", icon: "admin", end: true },
+  { to: "/admin/users", label: "Users", icon: "users" },
+  { to: "/admin/instances", label: "Instances", icon: "monitor" },
+  { to: "/admin/trades", label: "All Trades", icon: "trades" },
 ];
 
 export default function Layout() {
@@ -125,6 +141,26 @@ export default function Layout() {
             {item.label}
           </NavLink>
         ))}
+
+        {user?.is_admin && (
+          <>
+            <p className="px-3 pb-1 pt-5 text-xs font-semibold uppercase tracking-wider text-gray-600">
+              Admin
+            </p>
+            {adminItems.map((item) => (
+              <NavLink
+                key={item.to}
+                to={item.to}
+                end={item.end}
+                className={linkClass}
+                onClick={() => setSidebarOpen(false)}
+              >
+                <Icon name={item.icon} />
+                {item.label}
+              </NavLink>
+            ))}
+          </>
+        )}
       </nav>
 
       <div className="border-t border-gray-700 p-4">

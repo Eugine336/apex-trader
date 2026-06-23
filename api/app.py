@@ -21,6 +21,7 @@ from api.config import ApiConfig, get_api_config
 from api.credentials import load_decrypted_credentials
 from api.database import Database
 from api.process_manager import ProcessManager
+from api.routes import admin as admin_routes
 from api.routes import auth as auth_routes
 from api.routes import broker as broker_routes
 from api.routes import config as config_routes
@@ -89,6 +90,7 @@ def create_app(config: ApiConfig | None = None) -> FastAPI:
     app.include_router(trading_routes.router)
     app.include_router(config_routes.router)
     app.include_router(dashboard_routes.router)
+    app.include_router(admin_routes.router)
 
     @app.get("/api/health", tags=["health"])
     async def health() -> dict[str, str]:
