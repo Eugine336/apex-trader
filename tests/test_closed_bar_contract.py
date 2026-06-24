@@ -53,9 +53,11 @@ class _RecordMap:
 class _RecordVolume:
     def __init__(self) -> None:
         self.seen: int | None = None
+        self.closed_seen: int | None = None
 
-    def analyze(self, df):
+    def analyze(self, df, closed_df=None):
         self.seen = len(df)
+        self.closed_seen = len(closed_df) if closed_df is not None else None
         return {}
 
 
@@ -103,8 +105,11 @@ def test_structural_modules_get_closed_bar_observational_get_live(monkeypatch):
     assert fvg_seen["n"] == n - 1
     assert ob_seen["n"] == n - 1
     assert liquidity.seen == n - 1
-    # Observational + self-dropping StructureEngine → live frame.
+    # Volume receives BOTH views: the live frame for observational reads and
+    # the closed frame for structural verdicts (dual-output contract).
     assert volume.seen == n
+    assert volume.closed_seen == n - 1
+    # Self-dropping StructureEngine → live frame.
     assert structure.seen == n
 
 
@@ -130,6 +135,39 @@ def test_inducement_gets_closed_bar(monkeypatch):
     )
 
     assert ind_seen["n"] == n - 1
+
+
+def test_volume_dual_output_structural_from_closed():
+    """Volume keeps live observation but derives structural verdicts from closed.
+
+    A forming-bar volume spike must NOT trip ``has_spike`` (a structural
+    verdict) when a closed frame is supplied, while ``volume_ratio`` (the live
+    observation) still reflects the developing bar.
+    """
+    from brain.volume_analyzer import VolumeAnalyzer
+    from brain.market_data_utils import drop_forming_bar
+
+    n = 40
+    flat = [100.0] * n
+    vols = [100.0] * (n - 1) + [1000.0]  # huge partial spike on the forming bar
+    df = pd.DataFrame(
+        {
+            "open": flat,
+            "high": [c + 1 for c in flat],
+            "low": [c - 1 for c in flat],
+            "close": flat,
+            "volume": vols,
+        }
+    )
+    closed = drop_forming_bar(df)
+    va = VolumeAnalyzer()
+
+    legacy = va.analyze(df)                       # structural read off forming bar
+    dual = va.analyze(df, closed_df=closed)        # structural read off closed bar
+
+    assert legacy.has_spike is True               # phantom spike trips the old path
+    assert dual.has_spike is False                # closed-bar structural ignores it
+    assert dual.volume_ratio == legacy.volume_ratio  # live observation preserved
 
 
 def test_wyckoff_no_double_drop():

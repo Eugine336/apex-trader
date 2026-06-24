@@ -436,3 +436,50 @@ class TestEndToEndSwapNetting:
         self._run(journal.log_trade(remainder))
         stats = self._run(journal.get_performance_stats())
         assert stats["avg_rr"] == pytest.approx(90.0, abs=0.01)
+
+
+class TestEntrySourceTracking:
+    """Bug #16 — the entry-source path is persisted and queryable for learning."""
+
+    @pytest.fixture
+    def journal(self, tmp_path):
+        from brain.trade_journal import TradeJournal
+        return TradeJournal(db_path=str(tmp_path / "src.db"))
+
+    @staticmethod
+    def _run(coro):
+        loop = asyncio.new_event_loop()
+        try:
+            return loop.run_until_complete(coro)
+        finally:
+            loop.close()
+
+    def test_source_roundtrips_and_groups_by_path(self, journal):
+        from brain.trade_journal import TradeRecord
+        from adaptive.trade_analyzer import TradeAnalyzer
+
+        def _rec(source: str, pnl: float) -> TradeRecord:
+            return TradeRecord(
+                pair="EURUSD", direction="LONG", entry=1.10, exit=1.20,
+                pnl=pnl, score=80, confluences=[], regime="TRENDING",
+                session="LONDON", spread=1.0, slippage=0.0,
+                entry_type="event_driven", time_to_tp1=0.0, time_to_exit=0.0,
+                outcome="WIN" if pnl > 0 else "LOSS", pnl_dollars=pnl,
+                source=source,
+            )
+
+        self._run(journal.initialize())
+        for source, pnl in [
+            ("zone", 10.0), ("zone", -5.0), ("zone", 8.0),
+            ("consensus", -3.0), ("consensus", -4.0), ("consensus", 2.0),
+        ]:
+            self._run(journal.log_trade(_rec(source, pnl)))
+
+        trades = self._run(journal.get_all_trades_as_dicts())
+        assert all("source" in t for t in trades)
+
+        by_source = TradeAnalyzer().analyze_by_source(trades)
+        assert by_source["zone"].total_trades == 3
+        assert by_source["consensus"].total_trades == 3
+        # zone path (2W/1L) outperforms consensus path (1W/2L).
+        assert by_source["zone"].win_rate > by_source["consensus"].win_rate
