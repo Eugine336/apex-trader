@@ -31,6 +31,7 @@ from brain.fvg_detector import FVGDetector
 from brain.inducement_detector import InducementDetector
 from brain.instrument_profile import get_profile
 from brain.liquidity_mapper import LiquidityMapper
+from brain.market_data_utils import drop_forming_bar
 from brain.order_block import OrderBlockDetector
 from brain.structure_engine import StructureEngine, StructureAnalysis
 from brain.volume_analyzer import VolumeAnalyzer
@@ -177,6 +178,13 @@ def run_tf_modules(
     profile = get_profile(symbol)
     results: dict[str, Any] = {}
 
+    # Closed-bar contract (brain/market_data_utils.py): modules that emit
+    # confirmed structural artifacts (entry zones, traps, liquidity pools) must
+    # reason over CLOSED candles only, never the still-forming bar. Route those
+    # to ``closed_df``. Observational reads (live momentum/regime, accumulated
+    # volume) and the self-dropping StructureEngine keep the live ``df``.
+    closed_df = drop_forming_bar(df)
+
     for mod in modules:
         try:
             if mod == "fvg":
@@ -185,25 +193,29 @@ def run_tf_modules(
                     proximity_pips=profile.fvg_proximity_pips,
                     min_size_pips=profile.fvg_min_size_pips,
                 )
-                results["fvg"] = det.detect(df, timeframe=tf)
+                results["fvg"] = det.detect(closed_df, timeframe=tf)
             elif mod == "order_block":
                 det = OrderBlockDetector(
                     pip_size=pip_size,
                     min_impulse_pips=profile.ob_min_impulse_pips,
                     buffer_pips=profile.ob_buffer_pips,
                 )
-                results["order_block"] = det.detect(df, timeframe=tf)
+                results["order_block"] = det.detect(closed_df, timeframe=tf)
             elif mod == "liquidity":
-                results["liquidity"] = liquidity.map(df, pip_size)
+                results["liquidity"] = liquidity.map(closed_df, pip_size)
             elif mod == "volume":
                 results["volume"] = volume.analyze(df)
             elif mod == "wyckoff":
                 if profile.wyckoff_enabled:
                     wyck = WyckoffEngine(pip_size=pip_size)
+                    # WyckoffEngine self-drops the forming bar for its pattern
+                    # reads and feeds its inner StructureEngine the live frame
+                    # (which self-drops), so it receives the live ``df`` here to
+                    # avoid a double-drop.
                     results["wyckoff"] = wyck.analyze(df)
             elif mod == "inducement":
                 det = InducementDetector(pip_size=pip_size)
-                results["inducement"] = det.analyze(df)
+                results["inducement"] = det.analyze(closed_df)
             elif mod == "structure":
                 results["structure"] = structure.analyze(df, pip_size=pip_size)
         except Exception as exc:
