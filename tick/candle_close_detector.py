@@ -19,6 +19,7 @@ and is fully testable with synthetic tick sequences.
 from __future__ import annotations
 
 import threading
+import time
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -64,9 +65,20 @@ class CandleCloseDetector:
     per-TF subscribers).
 
     Thread-safe: ``on_tick`` may be called from any thread.
+
+    A background **watchdog timer** (started via :meth:`start`) fires overdue
+    closes for illiquid symbols where no tick arrives to cross the boundary.
+    It is fully complementary to the tick path: whichever path observes the
+    crossed boundary first advances ``_next_close`` under ``_lock``, so the
+    other path sees the future boundary and does nothing — no double-fire.
     """
 
-    def __init__(self, event_bus: EventBus) -> None:
+    def __init__(
+        self,
+        event_bus: EventBus,
+        watchdog_interval: float = 5.0,
+        max_catchup_periods: int = 5,
+    ) -> None:
         self._bus = event_bus
         self._lock = threading.Lock()
         # (symbol, timeframe) → epoch of the next candle close
@@ -74,6 +86,15 @@ class CandleCloseDetector:
         self._timeframes: set[str] = set()
         self._symbols: set[str] = set()
         self._events_emitted: int = 0
+        # ── Watchdog timer (close-detection fallback) ────────────────
+        self._watchdog_interval = float(watchdog_interval)
+        # Cap on how many missed periods a single sweep will fire for one
+        # pair. Beyond this (e.g. a multi-day market closure) the pair is
+        # re-based to the current boundary instead of emitting a storm of
+        # stale closes.
+        self._max_catchup_periods = int(max_catchup_periods)
+        self._running = False
+        self._watchdog_thread: Optional[threading.Thread] = None
 
     def register(
         self,
@@ -133,6 +154,111 @@ class CandleCloseDetector:
                     events.append(event)
                     self._events_emitted += 1
                     self._next_close[key] = _next_close(epoch, tf_secs)
+
+        for ev in events:
+            self._bus.publish("candle_close", ev)
+            self._bus.publish(f"candle_close:{ev.timeframe}", ev)
+
+        return events
+
+    # ── Watchdog timer fallback ──────────────────────────────────────
+
+    def start(self) -> None:
+        """Start the background watchdog timer thread.
+
+        Idempotent — calling ``start`` on an already-running detector is a
+        no-op. The thread is a daemon so it never blocks process shutdown.
+        """
+        with self._lock:
+            if self._running:
+                return
+            self._running = True
+            self._watchdog_thread = threading.Thread(
+                target=self._watchdog_loop,
+                name="candle-close-watchdog",
+                daemon=True,
+            )
+            self._watchdog_thread.start()
+        logger.info(
+            "[candle-close] watchdog started (interval={}s, max_catchup={})",
+            self._watchdog_interval,
+            self._max_catchup_periods,
+        )
+
+    def stop(self) -> None:
+        """Stop the watchdog timer thread."""
+        thread = None
+        with self._lock:
+            if not self._running:
+                return
+            self._running = False
+            thread = self._watchdog_thread
+            self._watchdog_thread = None
+        if thread is not None:
+            thread.join(timeout=self._watchdog_interval + 1.0)
+        logger.info("[candle-close] watchdog stopped")
+
+    def _watchdog_loop(self) -> None:
+        """Sweep loop: fire any overdue closes the tick path missed."""
+        while self._running:
+            time.sleep(self._watchdog_interval)
+            if not self._running:
+                break
+            try:
+                self.fire_overdue_closes()
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(
+                    "[candle-close] watchdog sweep error: {} — {}",
+                    type(exc).__name__,
+                    exc,
+                )
+
+    def fire_overdue_closes(self, now: Optional[float] = None) -> list[CandleClose]:
+        """Fire closes for any (symbol, tf) whose boundary has passed.
+
+        Used by the watchdog thread (and directly testable). For each tracked
+        pair where wall-clock ``now`` is at or past ``_next_close``, a
+        ``CandleClose`` is emitted with ``last_tick=None`` (timer-triggered).
+        Missed periods are fired sequentially — one event per boundary — up to
+        ``max_catchup_periods``; beyond that the pair is re-based to avoid an
+        event storm after a prolonged gap. The boundary check-and-advance runs
+        under ``_lock`` so it can never double-fire with the tick path.
+        """
+        if now is None:
+            now = time.time()
+
+        events: list[CandleClose] = []
+
+        with self._lock:
+            for key, nc in list(self._next_close.items()):
+                if nc is None or now < nc:
+                    continue
+                symbol, tf = key
+                tf_secs = _TF_SECONDS[tf]
+                overdue = int((now - nc) // tf_secs) + 1
+                if overdue > self._max_catchup_periods:
+                    # Prolonged gap — skip the stale closes and re-base.
+                    self._next_close[key] = _next_close(now, tf_secs)
+                    logger.debug(
+                        "[candle-close] watchdog re-based {} {} after {} missed "
+                        "periods (> max_catchup {})",
+                        symbol, tf, overdue, self._max_catchup_periods,
+                    )
+                    continue
+                boundary = nc
+                while now >= boundary:
+                    close_time = datetime.fromtimestamp(boundary, tz=timezone.utc)
+                    events.append(
+                        CandleClose(
+                            symbol=symbol,
+                            timeframe=tf,
+                            close_time=close_time,
+                            last_tick=None,
+                        )
+                    )
+                    self._events_emitted += 1
+                    boundary += tf_secs
+                self._next_close[key] = boundary
 
         for ev in events:
             self._bus.publish("candle_close", ev)

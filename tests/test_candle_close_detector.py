@@ -1,6 +1,7 @@
 """Tests for tick.candle_close_detector and tick.tick_router."""
 
 import threading
+import time
 from datetime import datetime, timezone
 from unittest.mock import MagicMock
 
@@ -284,3 +285,119 @@ class TestTickRouterThreadSafety:
             t.join(timeout=5)
         assert errors == []
         assert router.ticks_routed == 100
+
+
+class TestCloseDetectionDecoupledFromCoalescing:
+    """Bug #14: a boundary-crossing tick must still fire close detection
+    even when the coalescing filter drops it from the store."""
+
+    def test_coalesced_boundary_tick_still_fires_close(self):
+        bus = EventBus()
+        closes = []
+        bus.subscribe("candle_close", lambda e: closes.append(e))
+        # max_hz=1.0 => any tick within 1s of the previous is coalesced.
+        store = TickStore(max_hz=1.0)
+        det = CandleCloseDetector(bus)
+        det.register("EURUSD", ["M1"])
+        router = TickRouter(store, det, bus)
+
+        # First tick initialises the M1 boundary (no close yet).
+        router.on_tick(_tick(ts=1700000000.0))
+        # Second tick crosses the M1 boundary but is within 1s wall-rate of the
+        # first => coalesced (not stored). It must still fire the close.
+        router.on_tick(_tick(ts=1700000060.0, bid=1.10005))
+
+        assert len(closes) == 1
+        assert closes[0].timeframe == "M1"
+
+    def test_coalesced_tick_still_not_stored(self):
+        # Layer 1 must not change coalescing semantics for the store/bus.
+        bus = EventBus()
+        store = TickStore(max_hz=1.0)
+        det = CandleCloseDetector(bus)
+        router = TickRouter(store, det, bus)
+        tick_events = []
+        bus.subscribe("tick", lambda e: tick_events.append(e))
+        router.on_tick(_tick(ts=1700000000.0))
+        router.on_tick(_tick(ts=1700000000.05))
+        assert len(tick_events) == 1
+
+
+class TestWatchdogTimerFallback:
+    """Bug #15: closes must fire for illiquid symbols even when no tick
+    arrives to cross the boundary."""
+
+    def test_timer_fires_overdue_close(self):
+        bus = EventBus()
+        closes = []
+        bus.subscribe("candle_close", lambda e: closes.append(e))
+        det = CandleCloseDetector(bus, watchdog_interval=0.1)
+        det.register("EURUSD", ["M1"])
+        now = time.time()
+        # Seed an already-overdue boundary (one M1 period in the past).
+        det._next_close[("EURUSD", "M1")] = now - 1.0
+        det.start()
+        try:
+            deadline = time.time() + 3.0
+            while not closes and time.time() < deadline:
+                time.sleep(0.05)
+        finally:
+            det.stop()
+        assert len(closes) >= 1
+        assert closes[0].timeframe == "M1"
+        assert closes[0].last_tick is None
+
+    def test_no_double_fire_between_tick_and_timer(self):
+        bus = EventBus()
+        closes = []
+        bus.subscribe("candle_close", lambda e: closes.append(e))
+        det = CandleCloseDetector(bus)
+        det.register("EURUSD", ["M5"])
+        # Tick path fires the close and advances the boundary.
+        det.on_tick(_tick(ts=1700000100.0))
+        tick_events = det.on_tick(_tick(ts=1700000400.0))
+        assert len(tick_events) == 1
+        # A subsequent watchdog sweep at the same wall-clock must NOT re-fire
+        # the boundary the tick path already advanced past.
+        timer_events = det.fire_overdue_closes(now=1700000400.0)
+        assert timer_events == []
+        assert len(closes) == 1
+
+    def test_multi_period_gap_fires_sequentially(self):
+        bus = EventBus()
+        closes = []
+        bus.subscribe("candle_close", lambda e: closes.append(e))
+        det = CandleCloseDetector(bus, max_catchup_periods=5)
+        det.register("EURUSD", ["M1"])
+        tf_secs = 60
+        now = 1700000300.0
+        # Boundary is 2.5 periods in the past => exactly 3 overdue closes.
+        det._next_close[("EURUSD", "M1")] = now - (2 * tf_secs + tf_secs / 2)
+        events = det.fire_overdue_closes(now=now)
+        assert len(events) == 3
+        # Sequential boundaries, one period apart, none collapsed.
+        times = [e.close_time.timestamp() for e in events]
+        assert times == sorted(times)
+        assert times[1] - times[0] == tf_secs
+        assert times[2] - times[1] == tf_secs
+
+    def test_prolonged_gap_rebases_without_storm(self):
+        bus = EventBus()
+        det = CandleCloseDetector(bus, max_catchup_periods=5)
+        det.register("EURUSD", ["M1"])
+        now = time.time()
+        # 100 periods overdue — far beyond max_catchup.
+        det._next_close[("EURUSD", "M1")] = now - 100 * 60
+        events = det.fire_overdue_closes(now=now)
+        assert events == []
+        # Boundary re-based into the future.
+        assert det._next_close[("EURUSD", "M1")] > now
+
+    def test_start_stop_idempotent(self):
+        bus = EventBus()
+        det = CandleCloseDetector(bus, watchdog_interval=0.1)
+        det.start()
+        det.start()  # second start is a no-op
+        det.stop()
+        det.stop()  # second stop is a no-op
+
