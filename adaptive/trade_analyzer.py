@@ -56,6 +56,14 @@ class TradeAnalyzer:
     def analyze_by_entry_type(self, trades: list[dict]) -> dict[str, PerformanceProfile]:
         return self._group_and_analyze(trades, "entry_type")
 
+    def analyze_by_source(self, trades: list[dict]) -> dict[str, PerformanceProfile]:
+        """Per entry-source-path performance (e.g. "zone" vs "consensus").
+
+        Lets the learning loop compare how the structural zone path and the
+        zoneless consensus trigger actually perform once their trades close.
+        """
+        return self._group_and_analyze(trades, "source")
+
     def analyze_by_day_of_week(self, trades: list[dict]) -> dict[str, PerformanceProfile]:
         return self._group_and_analyze(trades, "day_of_week")
 

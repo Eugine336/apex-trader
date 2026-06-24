@@ -204,7 +204,9 @@ def run_tf_modules(
             elif mod == "liquidity":
                 results["liquidity"] = liquidity.map(closed_df, pip_size)
             elif mod == "volume":
-                results["volume"] = volume.analyze(df)
+                # Live ``df`` drives observational reads (developing volume);
+                # ``closed_df`` drives structural verdicts (spike/climax/bias).
+                results["volume"] = volume.analyze(df, closed_df=closed_df)
             elif mod == "wyckoff":
                 if profile.wyckoff_enabled:
                     wyck = WyckoffEngine(pip_size=pip_size)

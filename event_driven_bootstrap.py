@@ -4706,6 +4706,16 @@ class EventDrivenSystem:
         tp1 = decision.get("tp1", 0.0)
         tp2 = decision.get("tp2", 0.0)
         conviction = decision.get("conviction", 0)
+        # Entry-source attribution: "zone" (structural zone→M1→gate path) or
+        # "consensus" (zoneless thesis trigger). Grep-able from production logs
+        # and carried into the trade journal so the learning loop can compare
+        # per-path win rates.
+        source = decision.get("source", "zone") or "zone"
+
+        logger.info(
+            "ENTRY_SOURCE | source={} symbol={} direction={} conviction={}",
+            source, symbol, direction, conviction,
+        )
 
         logger.info(
             "EVENT-DRIVEN ENTRY | {} {} @ {:.5f} SL={:.5f} TP={:.5f} score={}",
@@ -5914,6 +5924,7 @@ class EventDrivenSystem:
                         fill_price = float(entry_price or 0.0)
                     self._entry_context[result.order_id] = {
                         "zone_type": decision.get("zone_type", ""),
+                        "source": decision.get("source", "zone") or "zone",
                         "regime": regime,
                         "concepts": sorted(set(concept_names)),
                         "entry_price": fill_price,
@@ -6469,6 +6480,7 @@ class EventDrivenSystem:
                     outcome=outcome,
                     pnl_dollars=round(float(pnl_dollars), 2),
                     exit_cause=cause_value,
+                    source=info.get("source", "") or "",
                 )
                 try:
                     _loop = asyncio.new_event_loop()

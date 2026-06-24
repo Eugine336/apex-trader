@@ -293,6 +293,11 @@ class EntryOrchestrator:
                 "conviction": zone.conviction,
                 "zone_type": zone.zone_type.value,
                 "timeframe": zone.timeframe,
+                # Entry-source attribution: this is the structural zone path
+                # (zone touch → M1 confirm → gate). The consensus zoneless
+                # trigger tags its own decisions source="consensus". Recorded
+                # downstream so the learning loop can split win rates per path.
+                "source": "zone",
                 "gates_passed": [g.gate_name for g in results if g.passed],
                 "risk_pips": risk_pips,
                 "spread_pips": spread_pips,

@@ -41,6 +41,7 @@ class TradeRecord:
     broker_swap: Optional[float] = None
     broker_commission: Optional[float] = None
     broker_fee: Optional[float] = None
+    source: str = ""  # entry-source path: "zone" | "consensus" | ""
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -99,6 +100,7 @@ class TradeJournal:
                         broker_swap REAL,
                         broker_commission REAL,
                         broker_fee REAL,
+                        source TEXT DEFAULT '',
                         timestamp TEXT NOT NULL
                     )
                     """
@@ -164,6 +166,12 @@ class TradeJournal:
                 except Exception as exc:
                     logger.debug("[trade_journal] broker_fee column migration skipped (likely already exists): {}", exc)
                     pass
+                try:
+                    await db.execute("ALTER TABLE trades ADD COLUMN source TEXT DEFAULT ''")
+                    await db.commit()
+                except Exception as exc:
+                    logger.debug("[trade_journal] source column migration skipped (likely already exists): {}", exc)
+                    pass
             self._initialized = True
 
     async def log_trade(self, trade: TradeRecord) -> None:
@@ -176,8 +184,9 @@ class TradeJournal:
                         pair, direction, entry, exit, pnl, score, confluences, regime,
                         session, spread, slippage, entry_type, time_to_tp1, time_to_exit,
                         outcome, pnl_dollars, swap_modeled, swap_status, risk_dollars,
-                        exit_cause, broker_swap, broker_commission, broker_fee, timestamp
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        exit_cause, broker_swap, broker_commission, broker_fee, source,
+                        timestamp
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         trade.pair,
@@ -203,6 +212,7 @@ class TradeJournal:
                         trade.broker_swap,
                         trade.broker_commission,
                         trade.broker_fee,
+                        trade.source,
                         trade.timestamp.isoformat(),
                     ),
                 )
@@ -352,14 +362,15 @@ class TradeJournal:
                 cursor = await db.execute(
                     "SELECT pair, direction, pnl, score, confluences, regime, "
                     "session, spread, entry_type, time_to_exit, outcome, pnl_dollars, "
-                    "timestamp, swap_modeled, swap_status, risk_dollars, id, entry, exit FROM trades"
+                    "timestamp, swap_modeled, swap_status, risk_dollars, id, entry, exit, "
+                    "source FROM trades"
                 )
             except Exception:
                 cursor = await db.execute(
                     "SELECT pair, direction, pnl, score, confluences, regime, "
                     "session, spread, entry_type, time_to_exit, outcome, timestamp, "
                     "NULL as swap_modeled, 'unavailable' as swap_status, NULL as risk_dollars, "
-                    "rowid as id, NULL as entry, NULL as exit FROM trades"
+                    "rowid as id, NULL as entry, NULL as exit, '' as source FROM trades"
                 )
             rows = await cursor.fetchall()
         result = []
@@ -384,6 +395,7 @@ class TradeJournal:
                 "id": r[16] if len(r) > 16 else None,
                 "entry": r[17] if len(r) > 17 else None,
                 "exit": r[18] if len(r) > 18 else None,
+                "source": (r[19] if len(r) > 19 and r[19] is not None else ""),
             })
         return self._consolidate_partial_dicts(result)
 
