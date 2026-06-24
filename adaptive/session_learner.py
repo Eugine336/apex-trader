@@ -92,7 +92,10 @@ class SessionLearner:
         pnls = [float(t.get("pnl", 0)) for t in trades]
         n = len(pnls)
         wins = [p for p in pnls if p > 0]
-        wr = len(wins) / n if n else 0.0
+        losses = [p for p in pnls if p < 0]
+        # Scratch trades (pnl == 0) are excluded from the win-rate denominator.
+        decided = len(wins) + len(losses)
+        wr = len(wins) / decided if decided else 0.0
         avg_pnl = float(np.mean(pnls)) if pnls else 0.0
 
         pair_pnl: dict[str, list[float]] = {}

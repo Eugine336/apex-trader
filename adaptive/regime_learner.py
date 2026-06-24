@@ -106,7 +106,9 @@ class RegimeLearner:
         winners = [p for p in pnls if p > 0]
         losers = [p for p in pnls if p < 0]
         n = len(pnls)
-        wr = len(winners) / n if n else 0.0
+        # Scratch trades (pnl == 0) are excluded from the win-rate denominator.
+        decided = len(winners) + len(losers)
+        wr = len(winners) / decided if decided else 0.0
         confidence = min(1.0, n / self.CONFIDENCE_FULL)
 
         avg_win = float(np.mean(winners)) if winners else 0.0

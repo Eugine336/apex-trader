@@ -127,7 +127,9 @@ class EVEstimator:
         wins = [v for v in values if v > 0]
         losses = [abs(v) for v in values if v < 0]
 
-        win_rate = len(wins) / n if n else 0.0
+        # Scratch trades (v == 0) are excluded from the win-rate denominator.
+        decided = len(wins) + len(losses)
+        win_rate = len(wins) / decided if decided else 0.0
         avg_win = float(np.mean(wins)) if wins else 0.0
         avg_loss = float(np.mean(losses)) if losses else 0.0
 

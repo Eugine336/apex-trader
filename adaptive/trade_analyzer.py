@@ -77,7 +77,9 @@ class TradeAnalyzer:
                     if len(group) < 10:
                         continue
                     wins = sum(1 for t in group if t.get("pnl", 0) > 0)
-                    wr = wins / len(group)
+                    losses = sum(1 for t in group if t.get("pnl", 0) < 0)
+                    decided = wins + losses  # exclude scratch (pnl == 0)
+                    wr = wins / decided if decided else 0.0
                     if wr < 0.45:
                         patterns.append({
                             "dimensions": {dim_a: val_a, dim_b: val_b},
@@ -295,8 +297,11 @@ class TradeAnalyzer:
         if total == 0:
             return PerformanceProfile()
 
-        win_rate = len(winners) / total
-        loss_rate = 1.0 - win_rate
+        # Scratch trades (pnl == 0) are excluded from the win/loss split so
+        # breakeven outcomes are not miscounted as losses.
+        decided = len(winners) + len(losers)
+        win_rate = len(winners) / decided if decided else 0.0
+        loss_rate = 1.0 - win_rate if decided else 0.0
         avg_win = float(np.mean(winners)) if winners else 0.0
         avg_loss = float(np.mean(losers)) if losers else 0.0
         gross_wins = sum(winners)

@@ -29,8 +29,14 @@ class InducementDetector:
         self,
         sweep_buffer_pips: float = 2.0,
         turtle_break_pips: float = 5.0,
-        pip_size: float = 0.0001,
+        pip_size: Optional[float] = None,
     ):
+        if pip_size is None:
+            raise ValueError(
+                "InducementDetector requires an explicit pip_size; the 0.0001 "
+                "FX-major default silently corrupts geometry on JPY/metals/"
+                "indices/synthetics. Pass get_pip_size(symbol)."
+            )
         self.sweep_buffer = sweep_buffer_pips * pip_size
         self.turtle_break = turtle_break_pips * pip_size
         self.pip_size = pip_size

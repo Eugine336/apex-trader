@@ -168,44 +168,53 @@ class TradeJournal:
 
     async def log_trade(self, trade: TradeRecord) -> None:
         await self.initialize()
-        async with aiosqlite.connect(self.db_path) as db:
-            await db.execute(
-                """
-                INSERT INTO trades (
-                    pair, direction, entry, exit, pnl, score, confluences, regime,
-                    session, spread, slippage, entry_type, time_to_tp1, time_to_exit,
-                    outcome, pnl_dollars, swap_modeled, swap_status, risk_dollars,
-                    exit_cause, broker_swap, broker_commission, broker_fee, timestamp
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    trade.pair,
-                    trade.direction,
-                    trade.entry,
-                    trade.exit,
-                    trade.pnl,
-                    trade.score,
-                    json.dumps(trade.confluences),
-                    trade.regime,
-                    trade.session,
-                    trade.spread,
-                    trade.slippage,
-                    trade.entry_type,
-                    trade.time_to_tp1,
-                    trade.time_to_exit,
-                    trade.outcome,
-                    trade.pnl_dollars,
-                    trade.swap_modeled,
-                    trade.swap_status,
-                    trade.risk_dollars,
-                    trade.exit_cause,
-                    trade.broker_swap,
-                    trade.broker_commission,
-                    trade.broker_fee,
-                    trade.timestamp.isoformat(),
-                ),
+        try:
+            async with aiosqlite.connect(self.db_path) as db:
+                await db.execute(
+                    """
+                    INSERT INTO trades (
+                        pair, direction, entry, exit, pnl, score, confluences, regime,
+                        session, spread, slippage, entry_type, time_to_tp1, time_to_exit,
+                        outcome, pnl_dollars, swap_modeled, swap_status, risk_dollars,
+                        exit_cause, broker_swap, broker_commission, broker_fee, timestamp
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        trade.pair,
+                        trade.direction,
+                        trade.entry,
+                        trade.exit,
+                        trade.pnl,
+                        trade.score,
+                        json.dumps(trade.confluences),
+                        trade.regime,
+                        trade.session,
+                        trade.spread,
+                        trade.slippage,
+                        trade.entry_type,
+                        trade.time_to_tp1,
+                        trade.time_to_exit,
+                        trade.outcome,
+                        trade.pnl_dollars,
+                        trade.swap_modeled,
+                        trade.swap_status,
+                        trade.risk_dollars,
+                        trade.exit_cause,
+                        trade.broker_swap,
+                        trade.broker_commission,
+                        trade.broker_fee,
+                        trade.timestamp.isoformat(),
+                    ),
+                )
+                await db.commit()
+        except Exception as exc:
+            # The learning loop trains on this corpus — a dropped write must be
+            # loud, not silently lost (these often run as fire-and-forget tasks).
+            logger.error(
+                "[trade_journal] FAILED to persist trade {} {}: {}",
+                trade.pair, trade.direction, exc,
             )
-            await db.commit()
+            raise
 
     async def log_decision(self, decision: DecisionRecord) -> None:
         await self.initialize()
@@ -285,7 +294,10 @@ class TradeJournal:
         pnl_net = [self._swap_net_pnl(row) for row in rows]
         wins = [p for p in pnl_net if p > 0]
         losses = [p for p in pnl_net if p < 0]
-        win_rate = (len(wins) / len(pnl_net)) * 100
+        # Scratch trades (net == 0) are excluded from the win-rate denominator
+        # so breakeven outcomes are not miscounted as losses.
+        decided = len(wins) + len(losses)
+        win_rate = (len(wins) / decided) * 100 if decided else 0.0
         avg_rr = float(np.mean(pnl_net))  # mean dollar P&L — NOT reward/risk
         profit_factor = sum(wins) / abs(sum(losses)) if losses else float("inf")
         sharpe_ratio = self._sharpe_ratio(pnl_net)
@@ -306,9 +318,11 @@ class TradeJournal:
         if r_values:
             mean_r = float(np.mean(r_values))
             r_wins = [rv for rv in r_values if rv > 0]
-            r_losses = [rv for rv in r_values if rv <= 0]
-            win_pct = len(r_wins) / len(r_values)
-            loss_pct = 1.0 - win_pct
+            r_losses = [rv for rv in r_values if rv < 0]
+            # Scratch trades (R == 0) are excluded from the win/loss split.
+            decided_r = len(r_wins) + len(r_losses)
+            win_pct = len(r_wins) / decided_r if decided_r else 0.0
+            loss_pct = 1.0 - win_pct if decided_r else 0.0
             avg_win_r = float(np.mean(r_wins)) if r_wins else 0.0
             avg_loss_r = float(np.mean(r_losses)) if r_losses else 0.0
             expectancy_r = win_pct * avg_win_r + loss_pct * avg_loss_r
@@ -578,8 +592,21 @@ class TradeJournal:
         ``net = pnl_dollars + swap_modeled``.  Rows with swap_status !=
         "modeled" are returned at their raw dollar value — unknown swap
         is never treated as zero.
+
+        Dollar P&L resolution: ``pnl_dollars`` (col 5) is the source of
+        truth.  When it is missing (``None``) or an unpopulated ``0.0`` —
+        as written by the backtest path, which records the R-multiple in
+        the pips column (col 2) and leaves ``pnl_dollars`` at its 0.0
+        default — we fall back to the pips/R value rather than silently
+        treating the trade as a breakeven.  A genuine scratch (both the
+        dollar and pips columns are zero) stays at 0.0.
         """
-        raw = float(row[5]) if row[5] is not None else float(row[2])
+        pips = float(row[2]) if row[2] is not None else 0.0
+        pnl_dollars = row[5]
+        if pnl_dollars is None or (float(pnl_dollars) == 0.0 and pips != 0.0):
+            raw = pips
+        else:
+            raw = float(pnl_dollars)
         if len(row) > 7 and row[7] == "modeled" and row[6] is not None:
             return raw + float(row[6])
         return raw

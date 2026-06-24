@@ -197,21 +197,30 @@ class OutcomeFeedback:
         horizons: dict[str, dict] = {}
         total = 0
         wins = 0
+        decided = 0
         r_sum = 0.0
 
         for rec in completed:
             attr = rec.get("attribution", {}) or {}
             out = rec.get("outcome", {}) or {}
             pnl_r = _safe_float(out.get("pnl_r"))
-            won = bool(out.get("won")) if "won" in out else (pnl_r > 0)
+            if "won" in out:
+                won = bool(out.get("won"))
+                is_scratch = False
+            else:
+                won = pnl_r > 0
+                # Scratch trades (R == 0) are excluded from win-rate denominators.
+                is_scratch = pnl_r == 0
             total += 1
             wins += 1 if won else 0
+            decided += 0 if is_scratch else 1
             r_sum += pnl_r
 
             horizon = str(attr.get("horizon", "") or "UNKNOWN").upper() or "UNKNOWN"
-            h = horizons.setdefault(horizon, {"trades": 0, "wins": 0, "r_sum": 0.0})
+            h = horizons.setdefault(horizon, {"trades": 0, "wins": 0, "decided": 0, "r_sum": 0.0})
             h["trades"] += 1
             h["wins"] += 1 if won else 0
+            h["decided"] += 0 if is_scratch else 1
             h["r_sum"] += pnl_r
 
             votes = attr.get("votes", {}) or {}
@@ -222,10 +231,11 @@ class OutcomeFeedback:
             for name in module_names:
                 m = modules.setdefault(
                     name,
-                    {"trades": 0, "wins": 0, "r_sum": 0.0, "conf_sum": 0.0, "conf_cnt": 0},
+                    {"trades": 0, "wins": 0, "decided": 0, "r_sum": 0.0, "conf_sum": 0.0, "conf_cnt": 0},
                 )
                 m["trades"] += 1
                 m["wins"] += 1 if won else 0
+                m["decided"] += 0 if is_scratch else 1
                 m["r_sum"] += pnl_r
                 conf = _module_conf(votes.get(name))
                 if conf is not None:
@@ -235,7 +245,8 @@ class OutcomeFeedback:
         module_rows = []
         for name, m in modules.items():
             t = m["trades"]
-            win_rate = m["wins"] / t if t else 0.0
+            dcd = m["decided"]
+            win_rate = m["wins"] / dcd if dcd else 0.0
             avg_conf = m["conf_sum"] / m["conf_cnt"] if m["conf_cnt"] else None
             module_rows.append({
                 "module": name,
@@ -257,7 +268,7 @@ class OutcomeFeedback:
                 "horizon": h,
                 "trades": v["trades"],
                 "wins": v["wins"],
-                "win_rate": round(v["wins"] / v["trades"], 4) if v["trades"] else 0.0,
+                "win_rate": round(v["wins"] / v["decided"], 4) if v["decided"] else 0.0,
                 "avg_r": round(v["r_sum"] / v["trades"], 4) if v["trades"] else 0.0,
             }
             for h, v in horizons.items()
@@ -268,7 +279,7 @@ class OutcomeFeedback:
             "modules": module_rows,
             "horizons": horizon_rows,
             "total_trades": total,
-            "overall_win_rate": round(wins / total, 4) if total else 0.0,
+            "overall_win_rate": round(wins / decided, 4) if decided else 0.0,
             "overall_avg_r": round(r_sum / total, 4) if total else 0.0,
         }
 
