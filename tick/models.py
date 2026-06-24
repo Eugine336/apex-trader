@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from typing import Optional
 
 
 @dataclass(frozen=True)
@@ -45,9 +46,13 @@ class CandleClose:
 
     Emitted by ``CandleCloseDetector`` when a tick's timestamp crosses a
     candle boundary.  Consumers (Phase 3) use this to trigger analysis.
+
+    ``last_tick`` is ``None`` when the close was fired by the detector's
+    watchdog timer (no tick arrived to cross the boundary) rather than by
+    the tick stream.
     """
 
     symbol: str
     timeframe: str
     close_time: datetime
-    last_tick: Tick
+    last_tick: Optional[Tick] = None

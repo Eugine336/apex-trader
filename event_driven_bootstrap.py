@@ -2506,6 +2506,7 @@ class EventDrivenSystem:
                 )
 
         self._tick_router.start()
+        self._candle_detector.start()
         self._mt5_poller.start()
         self._deriv_adapter.start()
         self._flush_loop.start()
@@ -2728,6 +2729,7 @@ class EventDrivenSystem:
         self._mt5_poller.stop()
         self._deriv_adapter.stop()
         self._tick_router.stop()
+        self._candle_detector.stop()
         self._candle_handler.shutdown()
         # Persist learned calibration so warmup history survives a restart.
         if self._calibration_engine is not None:

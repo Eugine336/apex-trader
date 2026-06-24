@@ -63,11 +63,18 @@ class TickRouter:
         Called by MT5 poll thread or Deriv WS subscription handler.
         Thread-safe.
         """
+        # Candle-close detection runs on EVERY tick, BEFORE the coalescing
+        # gate. Boundary detection only reads ``tick.epoch`` (one int compare
+        # per tracked timeframe) and has no side effect on the tick itself, so
+        # it is safe and cheap to run unconditionally. Running it here ensures a
+        # boundary-crossing tick is never missed just because the 15Hz
+        # coalescing filter dropped it from the store.
+        self._detector.on_tick(tick)
+
         stored = self._store.put(tick)
         self._ticks_routed += 1
 
         if stored:
-            self._detector.on_tick(tick)
             self._bus.publish("tick", tick)
             self._bus.publish(f"tick:{tick.symbol}", tick)
 
