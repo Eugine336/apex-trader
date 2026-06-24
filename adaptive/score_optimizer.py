@@ -487,10 +487,12 @@ class ScoreOptimizer:
         for t in trades:
             tags = t.get("confluences_tags", [])
             score = sum(weight_dict.get(tag, 0) for tag in tags)
-            if t.get("pnl", 0) > 0:
+            pnl = t.get("pnl", 0)
+            if pnl > 0:
                 win_scores.append(score)
-            else:
+            elif pnl < 0:
                 loss_scores.append(score)
+            # Scratch trades (pnl == 0) are excluded from the separation metric.
 
         if not win_scores or not loss_scores:
             return 0.0
@@ -613,7 +615,10 @@ class ScoreOptimizer:
         if not trades:
             return 0.0
         wins = sum(1 for t in trades if t.get("pnl", 0) > 0)
-        return wins / len(trades)
+        losses = sum(1 for t in trades if t.get("pnl", 0) < 0)
+        # Scratch trades (pnl == 0) are excluded from the win-rate denominator.
+        decided = wins + losses
+        return wins / decided if decided else 0.0
 
 
 def _migrate_old_weights(data: dict) -> dict:

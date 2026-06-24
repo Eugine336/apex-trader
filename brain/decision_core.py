@@ -167,8 +167,13 @@ def run_tf_modules(
 
     try:
         pip_size = get_pip_size(symbol)
-    except KeyError:
-        pip_size = 0.0001
+    except KeyError as exc:
+        logger.error(
+            "[decision-core] no registered pip_size for {} — refusing to run "
+            "tf modules with a wrong default (would corrupt geometry): {}",
+            symbol, exc,
+        )
+        raise
     profile = get_profile(symbol)
     results: dict[str, Any] = {}
 
@@ -302,8 +307,12 @@ def fvg_proximity(symbol: str) -> float:
     """FVG proximity (price units), matching the detector the ED path uses."""
     try:
         pip_size = get_pip_size(symbol)
-    except KeyError:
-        pip_size = 0.0001
+    except KeyError as exc:
+        logger.error(
+            "[decision-core] no registered pip_size for {} — cannot compute "
+            "fvg proximity with a wrong default: {}", symbol, exc,
+        )
+        raise
     profile = get_profile(symbol)
     return FVGDetector(
         pip_size=pip_size,
@@ -514,8 +523,13 @@ def build_consensus(
             if liquidity_mapper is not None:
                 try:
                     pip_size = get_pip_size(symbol)
-                except Exception:
-                    pip_size = 0.0001
+                except Exception as exc:
+                    logger.error(
+                        "[decision-core] no registered pip_size for {} — "
+                        "skipping liquidity vote rather than using a wrong "
+                        "default: {}", symbol, exc,
+                    )
+                    raise
                 r = vote_from_liquidity(liquidity_mapper, m5_df, pip_size)
                 _add_vote(
                     "liquidity", r[0], r[1], _wt("liquidity"), timeframe="M5",

@@ -44,10 +44,16 @@ class WyckoffEngine:
         lookback: int = 40,
         range_window: int = 24,
         spring_buffer_pips: float = 3.0,
-        pip_size: float = 0.0001,
+        pip_size: Optional[float] = None,
         volume_analyzer: Optional[VolumeAnalyzer] = None,
         structure_engine: Optional[StructureEngine] = None,
     ):
+        if pip_size is None:
+            raise ValueError(
+                "WyckoffEngine requires an explicit pip_size; the 0.0001 "
+                "FX-major default silently corrupts geometry on JPY/metals/"
+                "indices/synthetics. Pass get_pip_size(symbol)."
+            )
         self.lookback = lookback
         self.range_window = range_window
         self.spring_buffer = spring_buffer_pips * pip_size
