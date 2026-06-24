@@ -58,13 +58,24 @@ class StructureEngine:
     def __init__(self, swing_lookback: int = 5, min_swing_size_pips: float = 3.0,
                  pip_size: float = 0.0001):
         self.swing_lookback = swing_lookback  # candles each side to confirm swing
+        self.min_swing_size_pips = min_swing_size_pips
+        self.pip_size = pip_size
+        # Default geometry baked from the construction pip_size. ``analyze`` can
+        # override this per-call with the symbol's true pip_size — the shared
+        # singleton in the candle-close handler is reused across instruments with
+        # different pip sizes (JPY/metals/indices/synthetics), so the geometry
+        # must be passed per-call rather than baked once at construction.
         self.min_swing_size = min_swing_size_pips * pip_size
 
-    def analyze(self, df: pd.DataFrame) -> StructureAnalysis:
+    def analyze(self, df: pd.DataFrame, pip_size: Optional[float] = None) -> StructureAnalysis:
         """
         Full structure analysis on a DataFrame.
         Expects columns: open, high, low, close, time
         Returns StructureAnalysis dataclass.
+
+        ``pip_size`` overrides the construction default for this call only so a
+        shared engine can be reused thread-safely across instruments — it is
+        never written back to ``self``.
         """
         if len(df) < self.swing_lookback * 2 + 1:
             logger.warning("Not enough candles for structure analysis")
@@ -72,8 +83,14 @@ class StructureEngine:
 
         df = df.copy().reset_index(drop=True)
 
+        min_swing_size = (
+            self.min_swing_size_pips * pip_size
+            if pip_size is not None
+            else self.min_swing_size
+        )
+
         # Step 1: Find all swing highs and lows
-        swings = self._find_swings(df)
+        swings = self._find_swings(df, min_swing_size)
 
         if len(swings) < 4:
             return self._empty_analysis()
@@ -110,7 +127,7 @@ class StructureEngine:
             confidence=confidence,
         )
 
-    def _find_swings(self, df: pd.DataFrame) -> list:
+    def _find_swings(self, df: pd.DataFrame, min_swing_size: Optional[float] = None) -> list:
         """Find pivot highs and lows using lookback window.
 
         Identical logic to the original per-candle scan, but the window
@@ -120,7 +137,13 @@ class StructureEngine:
         neighbours (the original combined the ``== window.max()`` gate with the
         prominence filter — equivalent to ``centre >= neighbour_extreme`` plus
         the prominence threshold).
+
+        ``min_swing_size`` is supplied by ``analyze`` (computed from the
+        per-call pip_size when provided); it falls back to the construction
+        default so direct callers keep working unchanged.
         """
+        if min_swing_size is None:
+            min_swing_size = self.min_swing_size
         swings = []
         n = len(df)
         lb = self.swing_lookback
@@ -134,7 +157,7 @@ class StructureEngine:
             nbr_high_max = max(highs[i - lb: i].max(), highs[i + 1: i + lb + 1].max())
             if h_center >= nbr_high_max:
                 prominence = h_center - nbr_high_max
-                if prominence >= self.min_swing_size:
+                if prominence >= min_swing_size:
                     swings.append({
                         "index": i,
                         "price": df["high"].iloc[i],
@@ -147,7 +170,7 @@ class StructureEngine:
             nbr_low_min = min(lows[i - lb: i].min(), lows[i + 1: i + lb + 1].min())
             if l_center <= nbr_low_min:
                 prominence = nbr_low_min - l_center
-                if prominence >= self.min_swing_size:
+                if prominence >= min_swing_size:
                     swings.append({
                         "index": i,
                         "price": df["low"].iloc[i],

@@ -59,7 +59,9 @@ class WyckoffEngine:
         self.spring_buffer = spring_buffer_pips * pip_size
         self.pip_size = pip_size
         self.volume_analyzer = volume_analyzer or VolumeAnalyzer()
-        self.structure_engine = structure_engine or StructureEngine(swing_lookback=2)
+        self.structure_engine = structure_engine or StructureEngine(
+            swing_lookback=2, pip_size=pip_size
+        )
 
     def analyze(self, df: pd.DataFrame) -> WyckoffAnalysis:
         if len(df) < self.lookback:
