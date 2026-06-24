@@ -644,6 +644,69 @@ def build_consensus(
     return votes, candidates
 
 
+def decide_candidates(
+    votes: list,
+    *,
+    regime_context: str = "",
+    min_candidate_score: float = 0.0,
+    min_vote_count: int = 1,
+    win_rate_provider: Any = None,
+    **ranker_kwargs: Any,
+) -> list:
+    """Multi-candidate decision entry point — the open-ended counterpart to the
+    scalar ``decide`` consensus collapse.
+
+    Where :func:`brain.directional_consensus.decide` net-sums every vote into a
+    single LONG/SHORT/NEUTRAL direction (discarding every opposing or
+    alternative idea), this returns a ranked list of independent
+    :class:`~brain.candidate_models.Candidate` objects — one per coherent vote
+    cluster (direction × timeframe class) — each carrying its own conviction,
+    expected value, provenance, and a stable ``candidate_id`` so a single idea
+    can be tracked from here through entry, portfolio selection, execution and
+    management.
+
+    It reuses the existing :func:`decide_opportunities` / ``rank_opportunities``
+    scoring (never re-implements the math) and never mutates the votes. The
+    scalar ``decide`` is left fully intact for any consumer that still wants the
+    legacy single-direction verdict — this is purely additive.
+
+    Candidates below ``min_candidate_score`` (cluster confidence) or with fewer
+    than ``min_vote_count`` contributing votes are filtered out. An empty vote
+    panel yields an empty list — the safe "no trade" answer.
+    """
+    from brain.directional_consensus import decide_opportunities
+    from brain.candidate_models import Candidate
+
+    if not votes:
+        return []
+
+    opportunities = decide_opportunities(
+        votes, win_rate_provider=win_rate_provider, **ranker_kwargs,
+    )
+
+    candidates: list = []
+    for opp in opportunities:
+        cand = Candidate.from_opportunity(opp, regime_context=regime_context)
+        if cand.score < min_candidate_score:
+            continue
+        if cand.vote_count < min_vote_count:
+            continue
+        candidates.append(cand)
+    return candidates
+
+
+def select_top_candidate(candidates: list):
+    """Return the single best candidate (or ``None``) from a candidate list.
+
+    A convenience for legacy consumers that still expect one direction during
+    the multi-opportunity transition: candidates are ranked best-first (highest
+    EV, then confidence), so the head is the most defensible idea.
+    """
+    if not candidates:
+        return None
+    return candidates[0]
+
+
 def analyze_window(
     symbol: str,
     candles_by_tf: dict[str, pd.DataFrame],
