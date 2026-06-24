@@ -116,7 +116,11 @@ class TickEntryDetector:
                 continue
 
             spread = abs(tick.ask - tick.bid)
-            max_spread = self._config.max_spread_multiplier * pip_size * 10
+            # Spread ceiling unified with EntryGate._check_spread (the
+            # authoritative check): max spread = max_spread_multiplier * 5 pips.
+            # Convert to price units here since this detector compares raw
+            # bid/ask price distance, not pips.
+            max_spread = self._config.max_spread_multiplier * 5.0 * pip_size
             if spread > max_spread:
                 continue
 

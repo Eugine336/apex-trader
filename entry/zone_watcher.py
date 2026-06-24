@@ -12,6 +12,7 @@ handlers and the analysis plane can read/write concurrently.
 from __future__ import annotations
 
 import threading
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from typing import Callable, Optional
 
@@ -43,6 +44,17 @@ def _invalidation(direction: str, bottom: float, top: float) -> float:
     if direction == "LONG":
         return bottom - buffer
     return top + buffer
+
+
+def _zone_identity(z: EntryZone) -> tuple:
+    """Stable identity for a zone: price level + direction + source TF.
+
+    Used to recognise the SAME zone across successive WorldModel publishes so
+    its original ``created_at``/``expires_at`` survive — otherwise re-deriving
+    zones every timeframe close perpetually resets the expiry clock and zones
+    never age out of the 15-minute window.
+    """
+    return (z.direction, z.zone_type, round(z.top, 5), round(z.bottom, 5), z.timeframe)
 
 
 def extract_entry_zones(
@@ -233,7 +245,23 @@ class ZoneWatcher:
             zones = extract_entry_zones(model, self._config)
         with self._lock:
             if zones:
-                self._zones[symbol] = zones
+                # Preserve the original created_at/expires_at for any zone whose
+                # identity already existed. extract_entry_zones stamps a fresh
+                # ``now`` expiry on every publish; without this carry-over the
+                # 900s expiry would be perpetually refreshed and zones would
+                # never age out.
+                prev = {_zone_identity(z): z for z in self._zones.get(symbol, [])}
+                merged: list[EntryZone] = []
+                for z in zones:
+                    old = prev.get(_zone_identity(z))
+                    if old is not None:
+                        z = replace(
+                            z,
+                            created_at=old.created_at,
+                            expires_at=old.expires_at,
+                        )
+                    merged.append(z)
+                self._zones[symbol] = merged
             else:
                 self._zones.pop(symbol, None)
 

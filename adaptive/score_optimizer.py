@@ -55,11 +55,6 @@ ADAPTIVE_WEIGHT_ENVELOPE_PCT = 0.25
 # unknown symbols and as the Bayesian-shrinkage prior for thin classes.
 DEFAULT_CLASS = "default"
 
-_OLD_TO_NEW_KEY_MAP = {
-    "order_block_weight": ("ob_h1_weight", "ob_m5_weight"),
-    "m1_trigger_weight": None,
-}
-
 
 def classify_asset_class(symbol: str) -> str:
     """Return the asset-class key for a symbol.
@@ -131,7 +126,17 @@ class ScoringWeights:
         baseline: "ScoringWeights",
         pct: float = ADAPTIVE_WEIGHT_ENVELOPE_PCT,
     ) -> "ScoringWeights":
-        """Return a copy with every factor clamped to [baseline*(1-pct), baseline*(1+pct)]."""
+        """Return a copy with every factor clamped to [baseline*(1-pct), baseline*(1+pct)].
+
+        The envelope is the final authority. The previous implementation
+        absorbed the post-clamp remainder by dumping it into the LARGEST
+        weight, which could push that weight back OUTSIDE its own ±pct bound —
+        defeating the very envelope it was meant to enforce. The remainder is
+        now left unallocated: every weight is guaranteed to stay within its
+        bound, and the post-clamp total may differ slightly from
+        ``baseline.total`` (acceptable — the weights are used as relative
+        magnitudes, not a fixed-sum budget).
+        """
         base_d = baseline.as_dict()
         self_d = self.as_dict()
         clamped: dict[str, int] = {}
@@ -140,10 +145,6 @@ class ScoringWeights:
             lo = round(b * (1.0 - pct))
             hi = round(b * (1.0 + pct))
             clamped[key] = max(lo, min(hi, self_d[key]))
-        remainder = baseline.total - sum(clamped.values())
-        if remainder != 0:
-            best_key = max(clamped, key=lambda k: clamped[k])
-            clamped[best_key] += remainder
         return ScoringWeights(
             structure_weight=clamped["structure"],
             ob_h1_weight=clamped["ob_h1"],
@@ -237,14 +238,14 @@ class ScoreOptimizer:
         candidate_metric = self._compute_validation_metric(candidate, validation)
         incumbent_metric = self._compute_validation_metric(self.current_weights, validation)
 
-        if candidate_metric >= incumbent_metric:
+        if candidate_metric > incumbent_metric:
             baseline = ScoringWeights()
             clamped = candidate.clamped_to_envelope(baseline)
             self.current_weights = clamped
             self.save_weights()
             logger.info(
                 "Weights ADOPTED — OOS separation: "
-                f"candidate={candidate_metric:.4f} >= "
+                f"candidate={candidate_metric:.4f} > "
                 f"incumbent={incumbent_metric:.4f} | "
                 f"train={len(train)} validation={len(validation)} | "
                 f"total={clamped.total} (pre-clamp={candidate.total})"
@@ -406,7 +407,7 @@ class ScoreOptimizer:
 
         candidate_metric = self._compute_validation_metric(candidate, validation)
         incumbent_metric = self._compute_validation_metric(incumbent, validation)
-        if candidate_metric >= incumbent_metric:
+        if candidate_metric > incumbent_metric:
             return candidate.clamped_to_envelope(baseline)
         return incumbent
 
