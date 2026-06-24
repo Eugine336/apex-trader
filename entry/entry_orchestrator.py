@@ -183,6 +183,76 @@ class EntryOrchestrator:
                 "touch_time": pending.touch_time,
             }
 
+    def _match_candidate_for_zone(
+        self, symbol: str, direction: str, timeframe: str,
+    ):
+        """Find the ranked Candidate that best explains this zone, or ``None``.
+
+        A zone is the structural "price comes to the setup" expression of an
+        idea; the WorldModel's ranked candidates are the same intelligence
+        expressed as independent (direction × timeframe-class) clusters. Matching
+        the fired zone back to its candidate attaches full provenance to the
+        emitted decision so portfolio selection (Session 3), candidate-scoped
+        management (Session 4) and the learning loop can track one idea from the
+        zone path the same way they do from the consensus path.
+
+        Prefers a candidate whose timeframe class matches the zone's timeframe;
+        falls back to any same-direction candidate. Best-effort and fully
+        guarded — a miss simply returns ``None`` and the zone entry proceeds with
+        no candidate attached (legacy behaviour).
+        """
+        if self._wm_store is None:
+            return None
+        try:
+            wm = self._wm_store.get(symbol)
+            if wm is None:
+                return None
+            cands = (
+                wm.candidates_list()
+                if hasattr(wm, "candidates_list")
+                else list(getattr(wm, "candidates", ()) or [])
+            )
+            if not cands:
+                return None
+
+            want = direction.upper()
+            same_dir = [
+                c for c in cands
+                if str(getattr(c, "direction", "")).upper() == want
+            ]
+            if not same_dir:
+                return None
+
+            from brain.candidate_models import Candidate
+            from brain.opportunity_ranker import classify_timeframe
+
+            zone_class = classify_timeframe("", (), (), timeframe or "")
+            best = None
+            for c in same_dir:
+                if str(getattr(c, "timeframe_class", "")).upper() == zone_class:
+                    best = c
+                    break
+            if best is None:
+                best = same_dir[0]
+
+            regime = ""
+            try:
+                rbtf = wm.regime_by_tf()
+                regime = str(
+                    rbtf.get("H1")
+                    or rbtf.get("H4")
+                    or next(iter(rbtf.values()), "")
+                    or ""
+                )
+            except Exception:
+                regime = ""
+            return Candidate.from_opportunity(best, regime_context=regime)
+        except Exception as exc:
+            logger.debug(
+                "[entry-orch] candidate match failed for {}: {}", symbol, exc,
+            )
+            return None
+
     def _htf_alignment(self, symbol: str, direction: str) -> Optional[float]:
         """Signed HTF alignment for a trade direction from the WorldModel bias.
 
@@ -283,6 +353,13 @@ class EntryOrchestrator:
             self._stats["gate_passes"] += 1
             self._stats["entries_emitted"] += 1
 
+            # Attach the ranked Candidate that explains this zone (if any) so the
+            # zone path carries the same end-to-end provenance as the consensus
+            # path — best-effort; a miss leaves the legacy fields blank.
+            candidate = self._match_candidate_for_zone(
+                symbol, direction, zone.timeframe,
+            )
+
             decision = {
                 "symbol": symbol,
                 "direction": direction,
@@ -304,6 +381,29 @@ class EntryOrchestrator:
                 "has_sweep": zone.has_sweep,
                 "is_counter_trend": getattr(zone, "is_counter_trend", False),
                 "bias_direction": getattr(zone, "bias_direction", ""),
+                # ── Candidate provenance (Session 2 multi-opportunity) ──────
+                "candidate_id": (
+                    getattr(candidate, "candidate_id", "") if candidate else ""
+                ),
+                "timeframe_class": (
+                    getattr(candidate, "timeframe_class", "") if candidate else ""
+                ),
+                "candidate_score": (
+                    float(getattr(candidate, "score", 0.0) or 0.0)
+                    if candidate else 0.0
+                ),
+                "candidate_ev": (
+                    float(getattr(candidate, "ev_estimate", 0.0) or 0.0)
+                    if candidate else 0.0
+                ),
+                "contributing_modules": (
+                    list(getattr(candidate, "contributing_modules", []) or [])
+                    if candidate else []
+                ),
+                "contributing_timeframes": (
+                    list(getattr(candidate, "contributing_timeframes", []) or [])
+                    if candidate else []
+                ),
             }
 
             logger.info(

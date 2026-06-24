@@ -1793,6 +1793,48 @@ class TickEvalLoop:
 # ── Main orchestrator ────────────────────────────────────────────────
 
 
+def select_cycle_candidates(items: list) -> tuple[list, list, str]:
+    """Pure cycle-boundary selector for per-candidate entry decisions.
+
+    ``items`` is a list of ``(CandidateEntryDecision, decision_dict)`` tuples
+    collected from BOTH entry paths during one analysis cycle. Candidates are
+    ranked best-first by their composite ``score`` (expected value as the
+    stable tie-break), and the top candidate's direction wins this cycle:
+    opposing-direction candidates are dropped so a single analysis cycle never
+    submits both a LONG and a SHORT on the same symbol at once.
+
+    Returns ``(survivors, dropped, winning_direction)``. ``survivors`` keeps the
+    best-first order so the caller dispatches the strongest idea first.
+
+    Session note: this within-cycle direction lock is intentionally simple. It
+    is replaced in Session 3 by ``PortfolioGovernor.allocate`` which can fund
+    opposing horizons (a LONG swing alongside a capped SHORT scalp) under a net
+    exposure budget. Keeping the lock here prevents over-trading until those
+    capital-allocation caps exist.
+    """
+    if not items:
+        return [], [], ""
+
+    def _rank_key(item):
+        cand = item[0].candidate
+        return (
+            float(getattr(cand, "score", 0.0) or 0.0),
+            float(getattr(cand, "ev_estimate", 0.0) or 0.0),
+        )
+
+    ranked = sorted(items, key=_rank_key, reverse=True)
+    winning_direction = str(getattr(ranked[0][0].candidate, "direction", "") or "")
+    survivors = [
+        it for it in ranked
+        if str(getattr(it[0].candidate, "direction", "") or "") == winning_direction
+    ]
+    dropped = [
+        it for it in ranked
+        if str(getattr(it[0].candidate, "direction", "") or "") != winning_direction
+    ]
+    return survivors, dropped, winning_direction
+
+
 class EventDrivenSystem:
     """Wires and manages the entire event-driven trading system.
 
@@ -4560,10 +4602,151 @@ class EventDrivenSystem:
         if not votes:
             return
 
+        # Regime at discovery, carried onto every Candidate so management
+        # (Session 4) and the learning loop can attribute outcomes per regime.
+        regime_context = ""
+        try:
+            rbtf = wm.regime_by_tf()
+            regime_context = str(
+                rbtf.get("H1")
+                or rbtf.get("H4")
+                or next(iter(rbtf.values()), "")
+                or ""
+            )
+        except Exception:
+            regime_context = ""
+
+        # ── Multi-opportunity: evaluate EACH candidate independently ──────
+        # The ranker already split the panel into coherent (direction ×
+        # timeframe) clusters on the WorldModel. We form a thesis from EACH
+        # cluster's OWN votes — never the net sum — so a LONG swing and a SHORT
+        # scalp can BOTH survive as separate candidate entries instead of one
+        # net-summing the other out of existence. No analysis is collapsed into
+        # a single direction here.
+        try:
+            candidates = (
+                wm.candidates_list()
+                if hasattr(wm, "candidates_list")
+                else list(getattr(wm, "candidates", ()) or [])
+            )
+        except Exception:
+            candidates = []
+
+        items: list = []  # list[(CandidateEntryDecision, decision_dict)]
+        if candidates:
+            from brain.candidate_models import Candidate
+
+            for opp in candidates:
+                try:
+                    cand = Candidate.from_opportunity(
+                        opp, regime_context=regime_context,
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "[consensus-trigger] {} candidate wrap failed: {}",
+                        symbol, exc,
+                    )
+                    continue
+                item = self._build_consensus_candidate_item(symbol, cand, cfg)
+                if item is not None:
+                    items.append(item)
+        else:
+            # LEGACY FALLBACK — remove after Session 4. No ranked candidates on
+            # the WorldModel (older producer / cold start): fall back to the
+            # single net-summed thesis so the consensus trigger still works.
+            item = self._build_legacy_consensus_item(
+                symbol, votes, cfg, regime_context,
+            )
+            if item is not None:
+                items.append(item)
+
+        if not items:
+            return
+
+        self._select_and_execute(symbol, items, cfg)
+
+    def _build_consensus_candidate_item(
+        self, symbol: str, candidate: Any, cfg: Any,
+    ) -> Optional[tuple]:
+        """Form a thesis from THIS candidate's OWN votes and build its entry.
+
+        The thesis is derived only from the candidate's contributing votes (one
+        coherent cluster), so its conviction reflects that idea alone and is not
+        diluted or vetoed by opposing votes that belong to a different trade.
+        Returns ``(CandidateEntryDecision, decision_dict)`` or ``None`` when the
+        candidate does not convict enough to trigger or geometry is unavailable.
+        """
         from brain.directional_consensus import form_thesis
+        from brain.candidate_models import CandidateEntryDecision
 
-        _conv_store = getattr(self._ctx, "symbol_conviction", None) if self._ctx else None
+        cand_votes = list(getattr(candidate, "contributing_votes", []) or [])
+        if not cand_votes:
+            return None
 
+        _conv_store = (
+            getattr(self._ctx, "symbol_conviction", None) if self._ctx else None
+        )
+        try:
+            thesis = form_thesis(
+                cand_votes,
+                min_net_score=cfg.min_net_score,
+                min_agreement=cfg.min_agreement,
+                high_authority_modules=list(cfg.high_authority_modules),
+                high_authority_oppose_confidence=cfg.high_authority_oppose_confidence,
+                min_contributors=cfg.min_contributors,
+                conviction_threshold=cfg.conviction_threshold,
+                net_scale=cfg.net_scale,
+                symbol=symbol,
+                conviction_store=_conv_store,
+            )
+        except Exception as exc:
+            logger.debug(
+                "[consensus-trigger] {} candidate {} thesis failed: {}",
+                symbol, getattr(candidate, "candidate_id", "?"), exc,
+            )
+            return None
+
+        logger.debug(
+            "[consensus-trigger] {} candidate {} {}",
+            symbol, getattr(candidate, "candidate_id", "?"), thesis.summary,
+        )
+        if not thesis.trigger:
+            return None
+        direction = thesis.direction
+        if direction not in ("LONG", "SHORT"):
+            return None
+
+        decision = self._build_consensus_decision_dict(
+            symbol, candidate, thesis, direction, cfg,
+        )
+        if decision is None:
+            return None
+
+        envelope = CandidateEntryDecision(
+            symbol=symbol,
+            candidate=candidate,
+            thesis=thesis,
+            source="consensus",
+            sl=float(decision.get("stop_loss", 0.0) or 0.0),
+            tp=float(decision.get("tp1", 0.0) or 0.0),
+        )
+        return (envelope, decision)
+
+    def _build_legacy_consensus_item(
+        self, symbol: str, votes: list, cfg: Any, regime_context: str,
+    ) -> Optional[tuple]:
+        """LEGACY FALLBACK — remove after Session 4.
+
+        Used only when the WorldModel carries no ranked candidates. Forms the
+        single net-summed thesis (legacy behaviour) and wraps it as a synthetic
+        Candidate so the rest of the cycle pipeline is uniform.
+        """
+        from brain.directional_consensus import form_thesis
+        from brain.candidate_models import Candidate, CandidateEntryDecision
+
+        _conv_store = (
+            getattr(self._ctx, "symbol_conviction", None) if self._ctx else None
+        )
         try:
             thesis = form_thesis(
                 votes,
@@ -4579,62 +4762,72 @@ class EventDrivenSystem:
             )
         except Exception as exc:
             logger.debug("[consensus-trigger] {} thesis failed: {}", symbol, exc)
-            return
+            return None
 
-        # Always log the thesis (visibility) — even when it does not trigger.
         logger.debug("[consensus-trigger] {} {}", symbol, thesis.summary)
         if not thesis.trigger:
-            return
+            return None
+        direction = thesis.direction
+        if direction not in ("LONG", "SHORT"):
+            return None
 
-        direction = thesis.direction  # "LONG" | "SHORT"
+        supporting = list(getattr(thesis, "supporting", []) or [])
+        cand = Candidate(
+            direction=direction,
+            timeframe_class="",
+            score=float(max(0.0, min(1.0, thesis.conviction))),
+            contributing_votes=supporting,
+            regime_context=regime_context,
+            ev_estimate=0.0,
+            vote_count=len(supporting),
+        )
+        decision = self._build_consensus_decision_dict(
+            symbol, cand, thesis, direction, cfg,
+        )
+        if decision is None:
+            return None
+        envelope = CandidateEntryDecision(
+            symbol=symbol,
+            candidate=cand,
+            thesis=thesis,
+            source="consensus",
+            sl=float(decision.get("stop_loss", 0.0) or 0.0),
+            tp=float(decision.get("tp1", 0.0) or 0.0),
+        )
+        return (envelope, decision)
 
-        # Re-fire debounce: avoid resubmitting the same standing thesis every
-        # candle. Compliance still enforces the authoritative duplicate veto.
-        now = _time.time()
-        if now < self._consensus_entry_cooldown.get(symbol, 0.0):
-            return
+    def _build_consensus_decision_dict(
+        self, symbol: str, candidate: Any, thesis: Any, direction: str, cfg: Any,
+    ) -> Optional[dict]:
+        """Build the dispatch dict for one consensus candidate (ATR geometry).
 
-        # Cheap pre-check: skip if we already hold this pair in this direction.
-        try:
-            long_aliases = {"LONG", "BUY"}
-            short_aliases = {"SHORT", "SELL"}
-            want = long_aliases if direction == "LONG" else short_aliases
-            for p in (self._pm.get_all_open_positions() or []):
-                if isinstance(p, dict):
-                    psym = str(p.get("symbol", ""))
-                    pdir = str(p.get("direction", "") or p.get("type", ""))
-                else:
-                    psym = str(getattr(p, "symbol", ""))
-                    pdir = str(getattr(p, "direction", "") or getattr(p, "type", ""))
-                if psym == symbol and pdir.upper() in want:
-                    return
-        except Exception:
-            pass
-
-        # Reference price + ATR for a zoneless SL/TP. The order fills at market;
-        # these define risk geometry only.
+        Reference price + ATR define the zoneless SL/TP risk geometry for THIS
+        candidate's direction; the order still fills at market. Carries full
+        candidate provenance so portfolio selection (Session 3), management
+        (Session 4) and the learning loop can track this one idea end-to-end.
+        """
         m5 = self._fetch_candles(symbol, "M5", max(60, int(cfg.atr_period) + 20))
         if m5 is None or len(m5) < max(15, int(cfg.atr_period) + 1):
-            return
+            return None
         try:
             entry_price = float(m5["close"].iloc[-1])
         except Exception:
-            return
+            return None
         if entry_price <= 0:
-            return
+            return None
 
         try:
             from brain.volatility_stop import latest_atr
             atr = latest_atr(m5, int(cfg.atr_period))
         except Exception as exc:
             logger.debug("[consensus-trigger] {} ATR failed: {}", symbol, exc)
-            return
+            return None
         if not atr or atr <= 0:
-            return
+            return None
 
         sl_dist = float(atr) * float(cfg.atr_sl_mult)
         if sl_dist <= 0:
-            return
+            return None
         if direction == "LONG":
             sl = entry_price - sl_dist
             tp1 = entry_price + sl_dist * float(cfg.atr_tp1_rr)
@@ -4654,7 +4847,7 @@ class EventDrivenSystem:
         except Exception:
             spread_pips = 0.0
 
-        decision = {
+        return {
             "symbol": symbol,
             "direction": direction,
             "entry_price": entry_price,
@@ -4668,20 +4861,100 @@ class EventDrivenSystem:
             "consensus_conviction": thesis.conviction,
             "risk_pips": risk_pips,
             "spread_pips": spread_pips,
+            # ── Candidate provenance (Session 2 multi-opportunity) ──────
+            "candidate_id": getattr(candidate, "candidate_id", ""),
+            "timeframe_class": getattr(candidate, "timeframe_class", ""),
+            "candidate_score": float(getattr(candidate, "score", 0.0) or 0.0),
+            "candidate_ev": float(getattr(candidate, "ev_estimate", 0.0) or 0.0),
+            "contributing_modules": list(
+                getattr(candidate, "contributing_modules", []) or []
+            ),
+            "contributing_timeframes": list(
+                getattr(candidate, "contributing_timeframes", []) or []
+            ),
         }
 
-        logger.info(
-            "[consensus-trigger] {} {} thesis conviction={:.2f} → ENTRY @ {:.5f} "
-            "SL={:.5f} TP={:.5f} (zoneless, market-driven)",
-            symbol, direction, thesis.conviction, entry_price, sl, tp1,
-        )
-        self._consensus_entry_cooldown[symbol] = now + float(
-            getattr(cfg, "trigger_cooldown_seconds", 300.0)
-        )
+    def _already_holding_direction(self, symbol: str, direction: str) -> bool:
+        """Cheap pre-check: do we already hold ``symbol`` in ``direction``?
+
+        Compliance still owns the authoritative duplicate veto; this only avoids
+        the dispatch overhead for an obvious same-direction re-entry.
+        """
         try:
-            self._on_entry_decision(decision)
+            long_aliases = {"LONG", "BUY"}
+            short_aliases = {"SHORT", "SELL"}
+            want = long_aliases if direction == "LONG" else short_aliases
+            for p in (self._pm.get_all_open_positions() or []):
+                if isinstance(p, dict):
+                    psym = str(p.get("symbol", ""))
+                    pdir = str(p.get("direction", "") or p.get("type", ""))
+                else:
+                    psym = str(getattr(p, "symbol", ""))
+                    pdir = str(getattr(p, "direction", "") or getattr(p, "type", ""))
+                if psym == symbol and pdir.upper() in want:
+                    return True
         except Exception:
-            logger.exception("[consensus-trigger] {} entry dispatch failed", symbol)
+            pass
+        return False
+
+    def _select_and_execute(
+        self, symbol: str, items: list, cfg: Any = None,
+    ) -> None:
+        """Cycle boundary: select among per-candidate entries and dispatch.
+
+        Collects every ``(CandidateEntryDecision, decision_dict)`` produced this
+        analysis cycle, applies the within-cycle direction lock via the pure
+        :func:`select_cycle_candidates`, then dispatches survivors best-first
+        through the unchanged ``_on_entry_decision`` permit/sizing pipeline.
+
+        Session 3 replaces the direction lock with ``PortfolioGovernor.allocate``
+        (capital-aware, V2 hedging). The per-symbol re-fire debounce and the
+        cheap held-direction pre-check are preserved from the legacy path; the
+        authoritative duplicate / risk vetoes still live in Compliance.
+        """
+        if not items:
+            return
+
+        now = _time.time()
+        if now < self._consensus_entry_cooldown.get(symbol, 0.0):
+            return
+
+        survivors, dropped, winning_direction = select_cycle_candidates(items)
+        if dropped:
+            logger.info(
+                "[multi-opp] {} cycle: {} candidate(s) survive {}, "
+                "{} opposing dropped this cycle",
+                symbol, len(survivors), winning_direction, len(dropped),
+            )
+
+        dispatched = 0
+        for envelope, decision in survivors:
+            direction = str(decision.get("direction", "") or "")
+            if self._already_holding_direction(symbol, direction):
+                continue
+            logger.info(
+                "[consensus-trigger] {} {} candidate {} conviction={} "
+                "→ ENTRY @ {:.5f} SL={:.5f} TP={:.5f} (zoneless, market-driven)",
+                symbol, direction,
+                decision.get("candidate_id", "?"),
+                decision.get("conviction", 0),
+                float(decision.get("entry_price", 0.0) or 0.0),
+                float(decision.get("stop_loss", 0.0) or 0.0),
+                float(decision.get("tp1", 0.0) or 0.0),
+            )
+            try:
+                self._on_entry_decision(decision)
+                dispatched += 1
+            except Exception:
+                logger.exception(
+                    "[consensus-trigger] {} entry dispatch failed", symbol,
+                )
+
+        if dispatched:
+            cooldown = 300.0
+            if cfg is not None:
+                cooldown = float(getattr(cfg, "trigger_cooldown_seconds", 300.0))
+            self._consensus_entry_cooldown[symbol] = now + cooldown
 
     def _on_entry_decision(self, decision: dict[str, Any]) -> None:
         """Handle entry decisions from EntryOrchestrator.
