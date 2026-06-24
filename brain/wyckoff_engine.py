@@ -11,6 +11,7 @@ from typing import Optional
 import pandas as pd
 from loguru import logger
 
+from brain.market_data_utils import drop_forming_bar
 from brain.structure_engine import StructureEngine, Trend
 from brain.volume_analyzer import VolumeAnalysis, VolumeAnalyzer
 
@@ -64,7 +65,12 @@ class WyckoffEngine:
         )
 
     def analyze(self, df: pd.DataFrame) -> WyckoffAnalysis:
-        if len(df) < self.lookback:
+        # Closed-bar contract: spring/upthrust/range/trend are confirmed
+        # structural artifacts and must read closed candles only. The inner
+        # StructureEngine self-drops the forming bar in _detect_structure_event,
+        # so it receives the live ``df`` to avoid a double-drop.
+        closed = drop_forming_bar(df)
+        if len(closed) < self.lookback:
             logger.warning("Not enough candles for Wyckoff analysis")
             return WyckoffAnalysis(
                 phase=WyckoffPhase.UNKNOWN.value,
@@ -75,12 +81,12 @@ class WyckoffEngine:
                 expected_direction="NONE",
             )
 
-        volume = self.volume_analyzer.analyze(df)
+        volume = self.volume_analyzer.analyze(closed)
         structure = self.structure_engine.analyze(df)
-        range_high, range_low, in_range = self._range_state(df)
-        spring = self._is_spring(df, range_low)
-        upthrust = self._is_upthrust(df, range_high)
-        trend_return = self._trend_return(df)
+        range_high, range_low, in_range = self._range_state(closed)
+        spring = self._is_spring(closed, range_low)
+        upthrust = self._is_upthrust(closed, range_high)
+        trend_return = self._trend_return(closed)
 
         phase, sub_phase, direction, confidence = self._classify(
             in_range=in_range,
