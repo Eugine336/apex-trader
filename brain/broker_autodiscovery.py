@@ -223,7 +223,14 @@ class BrokerAutoDiscovery:
         Resolution order:
         1. Exact match (case-insensitive) against any alias
         2. Normalised match (strip suffixes, remove separators)
-        3. Substring match — broker symbol contains our alias core
+        3. Token match — alias appears in the broker symbol as a whole token,
+           bounded by string start/end or a non-alphanumeric separator.
+
+        Greedy substring matching is deliberately avoided: a bare ``in`` test
+        let "US30" swallow "US300"/"US3000" and "OIL" swallow "OILGBP", silently
+        mapping the wrong instrument. Token matching plus an ambiguity guard
+        (multiple distinct broker symbols matching the same APEX name → skip)
+        means an uncertain mapping is never written.
         """
         broker_lower = {s.lower(): s for s in broker_symbols}
 
@@ -238,16 +245,38 @@ class BrokerAutoDiscovery:
             if norm in normalised:
                 return normalised[norm]
 
-        # 3. Substring / contains match — catches "XAUUSD.raw", "NAS100m" etc.
+        # 3. Token match — catches "XAUUSD.raw", "GOLD.spot" etc. where the
+        #    alias is a whole token, but never a numeric-suffixed neighbour.
+        candidates: dict[str, str] = {}  # lower-key → original broker symbol
         for alias in aliases:
-            alias_core = self._normalise(alias)
-            for broker_norm, broker_orig in normalised.items():
-                if alias_core and alias_core in broker_norm:
-                    return broker_orig
-                if broker_norm and broker_norm in alias_core:
-                    return broker_orig
+            for broker_orig in broker_symbols:
+                if self._token_match(alias, broker_orig):
+                    candidates[broker_orig.lower()] = broker_orig
+        if len(candidates) == 1:
+            return next(iter(candidates.values()))
+        if len(candidates) > 1:
+            logger.warning(
+                "[autodiscovery] ambiguous match for '{}' — {} broker symbols "
+                "matched ({}); skipping to avoid a wrong mapping",
+                apex_name, len(candidates), ", ".join(sorted(candidates.values())),
+            )
 
         return None
+
+    @staticmethod
+    def _token_match(alias: str, broker_symbol: str) -> bool:
+        """True if *alias* occurs in *broker_symbol* as a whole token.
+
+        The alias must be bounded on both sides by the string start/end or a
+        non-alphanumeric character, so "US30" matches "US30.cash" but never
+        "US300", and "OIL" matches "OIL_USD" but never "OILGBP". Separator
+        characters inside the alias (e.g. "EUR/USD") are matched literally.
+        """
+        a = alias.upper().strip()
+        if not a:
+            return False
+        pattern = r"(?<![A-Z0-9])" + re.escape(a) + r"(?![A-Z0-9])"
+        return re.search(pattern, broker_symbol.upper()) is not None
 
     def _normalise(self, symbol: str) -> str:
         """Strip prefixes, suffixes, separators, case — down to a bare core."""

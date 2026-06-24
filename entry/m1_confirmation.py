@@ -67,7 +67,7 @@ class M1CandleConfirmer:
         self._pending_candle_counts[symbol] = count
 
         timeout = self._config.m1_confirmation_timeout_candles
-        if count > timeout:
+        if count >= timeout:
             self.clear(symbol)
             return ConfirmationResult(
                 confirmed=False,
@@ -148,9 +148,14 @@ class M1CandleConfirmer:
                     return ConfirmationResult(True, "choch", "M1 CHoCH bullish")
                 if event == StructureEvent.BOS_BULLISH:
                     return ConfirmationResult(True, "bos", "M1 BOS bullish")
+                # The CHoCH-level fallback requires the M1 trend to actually
+                # match the entry direction. A RANGING M1 has no direction, so
+                # it must NOT confirm — previously RANGING satisfied BOTH the
+                # LONG and SHORT branches, confirming entries in both directions
+                # from the same neutral structure.
                 if (
                     analysis.last_choch_level is not None
-                    and trend in (Trend.BULLISH, Trend.RANGING)
+                    and trend == Trend.BULLISH
                 ):
                     return ConfirmationResult(True, "choch_level", "M1 CHoCH level + trend aligned")
             else:
@@ -160,7 +165,7 @@ class M1CandleConfirmer:
                     return ConfirmationResult(True, "bos", "M1 BOS bearish")
                 if (
                     analysis.last_choch_level is not None
-                    and trend in (Trend.BEARISH, Trend.RANGING)
+                    and trend == Trend.BEARISH
                 ):
                     return ConfirmationResult(True, "choch_level", "M1 CHoCH level + trend aligned")
 

@@ -62,6 +62,13 @@ PHYSICS_VETOES: tuple[str, ...] = (
     VETO_BELOW_MIN_LOT,
 )
 
+# ── Analytical veto — not physics, but the one analytical "no" the round
+# table honours: a setup whose EVERY graded dimension is pinned at (or below)
+# its floor is uniformly bad on all evidence, not merely weak on one axis.
+# Refusing it outright is the analytical veto the graded sizer otherwise
+# lacked (without it, the worst possible setup still traded at the size floor).
+VETO_UNIFORMLY_WEAK = "uniformly_weak_all_dimensions_at_floor"
+
 
 def gate_quality_multiplier(
     measures: list[tuple[float, float]], floor: float = 0.15
@@ -569,6 +576,25 @@ class Orchestrator:
         product = 1.0
         for d in dims:
             product *= d.multiplier
+
+        # ── Analytical veto (#10) — refuse a uniformly bad setup ──────────
+        # Each dimension independently only *dims* size; individually a weak
+        # one never kills the trade. But when EVERY graded dimension is pinned
+        # at (or below) its floor, the setup is bad on all evidence at once —
+        # the one analytical case the round table refuses rather than trading
+        # at the size floor. Neutral (absent) dimensions read 1.0, so this can
+        # only fire when the whole evidence picture is genuinely bad.
+        dim_floor = self._dim_floor()
+        if dims and all(d.multiplier <= dim_floor + 1e-9 for d in dims):
+            return OrchestratorVerdict(
+                pair=proposal.pair,
+                direction=proposal.direction,
+                horizon=proposal.horizon,
+                size_multiplier=0.0,
+                vetoed=True,
+                veto_reason=VETO_UNIFORMLY_WEAK,
+                dimensions=dims,
+            )
 
         # ── Upstream gate-softening multipliers (Phase 9) ─────────────────
         # When an upstream QUALITY gate (scanner READY / OQ-EQ revalidation,

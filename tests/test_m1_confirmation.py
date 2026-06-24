@@ -86,7 +86,9 @@ class TestM1ConfirmationTimeout:
         confirmer = M1CandleConfirmer(config=cfg)
         zone = _make_zone("LONG")
         df = _flat_m1()
-        for i in range(3):
+        # The first (timeout - 1) candles are still "waiting"; the timeout-th
+        # candle gives up (count >= timeout).
+        for i in range(2):
             result = confirmer.on_m1_close("EURUSD", "LONG", zone, df)
             assert result.confirmed is False
         result = confirmer.on_m1_close("EURUSD", "LONG", zone, df)
@@ -94,7 +96,7 @@ class TestM1ConfirmationTimeout:
         assert "timeout" in result.reason.lower()
 
     def test_clear_resets_candle_count(self):
-        cfg = EntryConfig(m1_confirmation_timeout_candles=2)
+        cfg = EntryConfig(m1_confirmation_timeout_candles=3)
         confirmer = M1CandleConfirmer(config=cfg)
         zone = _make_zone("LONG")
         df = _flat_m1()

@@ -30,12 +30,6 @@ from loguru import logger
 
 from entry.models import EntryConfig, EntryZone, GateResult
 
-_HARD_GATES = frozenset({
-    "instrument_known",
-    "price_finite",
-    "market_open",
-})
-
 
 class EntryGate:
     """Runs all pre-entry validation checks.  Fail-closed by default."""

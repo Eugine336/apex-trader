@@ -615,6 +615,13 @@ class TunerAgent:
                         row["changed"],
                     ),
                 )
+                # Keep the audit table bounded — only the most recent 500 rows
+                # are retained (other adaptive DBs trim similarly). Prevents
+                # unbounded growth over a long-running session.
+                self._conn.execute(
+                    """DELETE FROM tuner_audit WHERE id NOT IN
+                       (SELECT id FROM tuner_audit ORDER BY id DESC LIMIT 500)"""
+                )
                 self._conn.commit()
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[tuner-agent] audit write failed: {}", exc)

@@ -1948,16 +1948,15 @@ class BacktestEngine:
             pnl_pips = (entry - price) / self.pip_size
         risk_pips = trade["risk"] / self.pip_size if self.pip_size else 0.0
         # Dollar P&L on the OPEN remainder — mirrors live ``pnl_dollars`` (read
-        # by the thesis-secure path). pip P&L × pip-value × open lots.
+        # by the thesis-secure path). pip P&L × pip-value × open lots × the
+        # still-open fraction, so a half-closed position reports the P&L of the
+        # remaining half rather than the full position.
         lots = float(trade.get("lots", 0.0) or 0.0)
         remaining_fraction = float(trade.get("remaining_fraction", 1.0) or 1.0)
         pnl_dollars = pnl_pips * self.pip_value_per_lot * lots * remaining_fraction
         hold_minutes = (
             pd.Timestamp(candle["time"]).to_pydatetime() - trade["entry_time"]
         ).total_seconds() / 60.0
-        lots = float(trade.get("lots", 0.0) or 0.0)
-        # Dollar P&L from current open lots (matches the live broker-P&L feed).
-        pnl_dollars = pnl_pips * self.pip_value_per_lot * lots
 
         structure = wm.structure_by_tf()
         d1_trend, d1_conf = _struct_trend_conf(structure, "D1")
