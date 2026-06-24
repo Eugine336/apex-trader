@@ -61,10 +61,15 @@ class EmitterFeedbackResponse:
 
 
 def _accuracy(rows: List[dict]) -> float:
-    if not rows:
+    # Only graded rows (direction_correct is True/False) belong in the
+    # denominator. Ungraded rows (direction_correct is None — signal not yet
+    # evaluated) must be excluded, or a burst of recent signals drags accuracy
+    # toward zero and can wrongly trip a module into SHADOW/DISABLED.
+    graded = [r for r in rows if r.get("direction_correct") is not None]
+    if not graded:
         return 0.0
-    correct = sum(1 for r in rows if r.get("direction_correct"))
-    return round(correct / len(rows), 4)
+    correct = sum(1 for r in graded if r.get("direction_correct"))
+    return round(correct / len(graded), 4)
 
 
 def _context_frequencies(rows: List[dict], top: int = 8) -> dict:
@@ -163,6 +168,21 @@ class EmitterFeedbackService:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[EmitterFeedback] get_all_emitter_summaries failed: {}", exc)
             return {}
+
+    def graded_count_since(
+        self, emitter: str, since_ts: float, pair: Optional[str] = None,
+    ) -> int:
+        """Count an emitter's graded signals at/after ``since_ts`` (0 on error).
+
+        An absolute time count (not the rolling most-recent-N window), so a
+        consumer can measure graded signals accrued *since* an event without
+        being capped by the lookback. Never raises.
+        """
+        try:
+            return int(self._ledger.count_graded_since(emitter, since_ts, pair=pair))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[EmitterFeedback] graded_count_since failed: {}", exc)
+            return 0
 
     def get_gate_effectiveness(self, lookback: int = 500) -> dict:
         """Per-gate verdict: what % of the signals each gate blocked would have

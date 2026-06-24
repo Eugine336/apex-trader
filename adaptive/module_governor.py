@@ -235,20 +235,36 @@ class ModuleGovernor(TuningGuardMixin):
     # ── Lifecycle / persistence ──────────────────────────────────────────
 
     def _connect(self) -> None:
-        try:
-            self._conn = sqlite3.connect(
-                str(self._db_path), timeout=10, check_same_thread=False,
-            )
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA synchronous=NORMAL")
-            self._conn.execute(_CREATE_STATE)
-            self._conn.execute(_CREATE_TRANSITIONS)
-            self._conn.execute(_CREATE_TRANS_IDX)
-            self._migrate_transitions()
-            self._conn.commit()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[module-governor] DB connect/init failed ({}): {}", self._db_path, exc)
-            self._conn = None
+        # Connect with one retry on failure, then raise. A silent in-memory
+        # fallback would lose governor state on restart — DISABLED modules would
+        # resurrect as ACTIVE. Raising lets the caller leave the subsystem None
+        # visibly instead of running a zombie governor.
+        last_exc: Optional[Exception] = None
+        for attempt in (1, 2):
+            try:
+                self._conn = sqlite3.connect(
+                    str(self._db_path), timeout=10, check_same_thread=False,
+                )
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA synchronous=NORMAL")
+                self._conn.execute(_CREATE_STATE)
+                self._conn.execute(_CREATE_TRANSITIONS)
+                self._conn.execute(_CREATE_TRANS_IDX)
+                self._migrate_transitions()
+                self._conn.commit()
+                return
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                self._conn = None
+                logger.error(
+                    "[module-governor] DB connect/init failed (attempt {}/2) ({}): {}",
+                    attempt, self._db_path, exc,
+                )
+                if attempt == 1:
+                    time.sleep(1.0)
+        raise RuntimeError(
+            f"ModuleGovernor DB connect failed after retry ({self._db_path}): {last_exc}"
+        )
 
     def _migrate_transitions(self) -> None:
         """Add post-release columns to the transitions table if missing.
@@ -660,8 +676,20 @@ class ModuleGovernor(TuningGuardMixin):
                 )
 
             if mode == ModuleMode.SHADOW:
-                # Only count signals accrued DURING the shadow period.
-                shadow_n = max(0, sample_size - int(rec.shadow_baseline_signals))
+                # Count signals accrued DURING the shadow period. Prefer an
+                # absolute time count (graded signals since shadow_start_time)
+                # over the windowed delta: the rolling EmitterFeedback window is
+                # capped at the lookback, so for a high-volume module the
+                # windowed total can never grow past the baseline captured at
+                # shadow entry — leaving ``total - baseline`` pinned at 0 and the
+                # module trapped in SHADOW forever. The time count grows
+                # correctly. Falls back to the windowed delta when no start time
+                # / feedback is available. When it is 0 the module simply stays
+                # in SHADOW (not enough new graded signals to judge yet).
+                shadow_n = self._shadow_graded_count(
+                    module, rec.shadow_start_time,
+                    fallback=max(0, sample_size - int(rec.shadow_baseline_signals)),
+                )
                 # Recovered → reactivate (BOTH signals must be acceptable).
                 acc_recovered = (
                     shadow_n >= reactivation_min and accuracy >= reactivation_threshold
@@ -763,6 +791,31 @@ class ModuleGovernor(TuningGuardMixin):
         )
         self._record_transition(t)
         return t
+
+    def _shadow_graded_count(
+        self, module: str, shadow_start_time: Optional[float], *, fallback: int,
+    ) -> int:
+        """Graded signals accrued for ``module`` since it entered SHADOW.
+
+        Uses the EmitterFeedback absolute time count when a shadow start time is
+        known, avoiding the rolling-window saturation trap where a module's
+        windowed total can never grow past the baseline. Returns ``fallback``
+        (the windowed delta) when no start time / feedback is available. Never
+        raises.
+        """
+        fb = self._emitter_feedback
+        if fb is None or not shadow_start_time:
+            return max(0, int(fallback))
+        counter = getattr(fb, "graded_count_since", None)
+        if not callable(counter):
+            return max(0, int(fallback))
+        try:
+            return max(0, int(counter(module, float(shadow_start_time))))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[module-governor] shadow graded count failed for {}: {}", module, exc,
+            )
+            return max(0, int(fallback))
 
     def _accuracy_and_count(self, module: str) -> tuple[float, int]:
         """Read a module's graded accuracy + sample size from EmitterFeedback.

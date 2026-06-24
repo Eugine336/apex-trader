@@ -9,6 +9,7 @@ Platform-aware:
 """
 
 from dataclasses import dataclass
+import math
 from typing import Optional
 
 from loguru import logger
@@ -159,6 +160,25 @@ class PositionSizer:
             )
 
         lots = risk_amount / (risk_pips * pip_value_per_lot)
+        # Last line of defence before a lot size leaves for the broker: a
+        # non-finite size (NaN/inf from an upstream learned multiplier) must
+        # never be sent — skip the trade rather than clamp it to a min lot.
+        if not math.isfinite(lots):
+            logger.error(
+                "[PositionSizer] computed non-finite lots for {} "
+                "(risk_amount={!r}, risk_pips={!r}, pip_value={!r}) — skipping trade",
+                symbol or "trade", risk_amount, risk_pips, pip_value_per_lot,
+            )
+            return SizeResult(
+                lots=0.0,
+                stake_usd=0.0,
+                risk_amount=round(risk_amount, 2) if math.isfinite(risk_amount) else 0.0,
+                risk_pips=round(risk_pips, 2) if math.isfinite(risk_pips) else 0.0,
+                pip_value=pip_value_per_lot,
+                max_loss=0.0,
+                margin_estimate=0.0,
+                sizing_mode="skip_non_finite",
+            )
         lots = round(max(self.MIN_LOT, min(lots, self.MAX_LOT)), 2)
         max_loss = lots * risk_pips * pip_value_per_lot
         margin_estimate = self.calculate_margin(lots, entry_price, leverage)

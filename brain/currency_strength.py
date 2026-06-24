@@ -166,10 +166,15 @@ class CurrencyStrengthMeter:
         avg_gain = gains.rolling(period).mean().iloc[-1]
         avg_loss = losses.rolling(period).mean().iloc[-1]
 
-        if avg_loss == 0:
+        if avg_loss == 0 or not np.isfinite(avg_loss) or not np.isfinite(avg_gain):
+            # Zero (or non-finite) average loss ⇒ no downside in the window:
+            # treat as maximum strength rather than dividing by zero (inf/NaN).
             return 100.0
         rs = avg_gain / avg_loss
-        return round(100 - (100 / (1 + rs)), 2)
+        rsi = 100 - (100 / (1 + rs))
+        if not np.isfinite(rsi):
+            return 100.0
+        return round(float(rsi), 2)
 
     def _price_change(self, df: pd.DataFrame, periods: int) -> float:
         """Calculate % price change over N periods."""

@@ -389,21 +389,34 @@ class CounterfactualEngine:
     # ── Lifecycle ────────────────────────────────────────────────────────
 
     def _connect(self) -> None:
-        try:
-            self._conn = sqlite3.connect(
-                str(self._db_path), timeout=10, check_same_thread=False,
-            )
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA synchronous=NORMAL")
-            self._conn.execute(_CREATE_ATTRIBUTION)
-            self._conn.execute(_CREATE_CACHE)
-            self._conn.execute(_CREATE_IDX_CLOSED)
-            self._conn.commit()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[counterfactual] DB connect/init failed ({}): {}", self._db_path, exc,
-            )
-            self._conn = None
+        # Connect with one retry on failure, then raise rather than silently
+        # degrading to an in-memory zombie (which would lose the attribution
+        # cache on restart). The caller leaves the subsystem None on failure.
+        last_exc: Optional[Exception] = None
+        for attempt in (1, 2):
+            try:
+                self._conn = sqlite3.connect(
+                    str(self._db_path), timeout=10, check_same_thread=False,
+                )
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA synchronous=NORMAL")
+                self._conn.execute(_CREATE_ATTRIBUTION)
+                self._conn.execute(_CREATE_CACHE)
+                self._conn.execute(_CREATE_IDX_CLOSED)
+                self._conn.commit()
+                return
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                self._conn = None
+                logger.error(
+                    "[counterfactual] DB connect/init failed (attempt {}/2) ({}): {}",
+                    attempt, self._db_path, exc,
+                )
+                if attempt == 1:
+                    time.sleep(1.0)
+        raise RuntimeError(
+            f"CounterfactualEngine DB connect failed after retry ({self._db_path}): {last_exc}"
+        )
 
     def close(self) -> None:
         with self._lock:
