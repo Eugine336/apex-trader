@@ -4734,6 +4734,20 @@ class EventDrivenSystem:
                 logger.info("EVENT-DRIVEN ENTRY SKIPPED | {} — system paused", symbol)
                 return
 
+            # ── Gate 0b2: Safety degraded ────────────────────────────
+            # A CRITICAL safety subsystem (DrawdownGuard / AccountRiskManager /
+            # ComplianceDivision / GovernanceDivision / RiskEngine) failed to
+            # initialise, so one or more risk gates are absent. Refuse NEW
+            # entries — existing-position management (SL moves / closes) runs on
+            # a separate path and is intentionally unaffected.
+            if ctx is not None and getattr(ctx, "safety_degraded", False):
+                logger.critical(
+                    "EVENT-DRIVEN ENTRY REFUSED | {} — SAFETY DEGRADED ({}); "
+                    "new entries blocked until restart",
+                    symbol, ctx.safety_degraded_reason,
+                )
+                return
+
             # ── Gate 0c: Zone re-entry cooldown ──────────────────────
             # Applies to the ZONE entry path only — prevents re-arming the
             # same symbol on the next M1 close after any exit. Consensus /

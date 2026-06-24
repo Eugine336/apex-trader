@@ -196,22 +196,38 @@ class SignalLedger(TuningGuardMixin):
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
     def _connect(self) -> None:
-        try:
-            self._conn = sqlite3.connect(
-                str(self._db_path), timeout=10, check_same_thread=False,
-            )
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA synchronous=NORMAL")
-            self._conn.execute(_CREATE_SIGNALS)
-            self._conn.execute(_CREATE_OUTCOMES)
-            self._conn.execute(_CREATE_IDX_EMITTER)
-            self._conn.execute(_CREATE_IDX_PAIR)
-            self._conn.execute(_CREATE_IDX_TS)
-            self._conn.execute(_CREATE_IDX_GRADED)
-            self._conn.commit()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[SignalLedger] DB connect/init failed ({}): {}", self._db_path, exc)
-            self._conn = None
+        # Connect with one retry on failure, then raise. A silent in-memory
+        # fallback would make every persistence op a DEBUG-level no-op and lose
+        # the full signal history on restart; raising lets the caller leave the
+        # subsystem None visibly instead of running a zombie ledger.
+        last_exc: Optional[Exception] = None
+        for attempt in (1, 2):
+            try:
+                self._conn = sqlite3.connect(
+                    str(self._db_path), timeout=10, check_same_thread=False,
+                )
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA synchronous=NORMAL")
+                self._conn.execute(_CREATE_SIGNALS)
+                self._conn.execute(_CREATE_OUTCOMES)
+                self._conn.execute(_CREATE_IDX_EMITTER)
+                self._conn.execute(_CREATE_IDX_PAIR)
+                self._conn.execute(_CREATE_IDX_TS)
+                self._conn.execute(_CREATE_IDX_GRADED)
+                self._conn.commit()
+                return
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                self._conn = None
+                logger.error(
+                    "[SignalLedger] DB connect/init failed (attempt {}/2) ({}): {}",
+                    attempt, self._db_path, exc,
+                )
+                if attempt == 1:
+                    time.sleep(1.0)
+        raise RuntimeError(
+            f"SignalLedger DB connect failed after retry ({self._db_path}): {last_exc}"
+        )
 
     def close(self) -> None:
         with self._lock:
@@ -819,6 +835,39 @@ class SignalLedger(TuningGuardMixin):
             e: self.get_emitter_accuracy(e, lookback_trades=lb)
             for e in emitters
         }
+
+    def count_graded_since(
+        self, emitter: str, since_ts: float, pair: Optional[str] = None,
+    ) -> int:
+        """Count an emitter's GRADED signals emitted at/after ``since_ts``.
+
+        Unlike :meth:`get_graded_signals` (a fixed most-recent-N window), this is
+        an absolute time count, so a consumer can measure how many graded signals
+        accrued *since* an event (e.g. a module entering SHADOW) without being
+        capped by the rolling lookback. Returns 0 when no DB / on error.
+        """
+        if self._conn is None or not emitter:
+            return 0
+        with self._lock:
+            try:
+                clauses = ["o.graded=1", "s.emitter=?", "s.timestamp>=?"]
+                params: list = [str(emitter), float(since_ts or 0.0)]
+                if pair:
+                    clauses.append("s.pair=?")
+                    params.append(str(pair))
+                where = " AND ".join(clauses)
+                cur = self._conn.execute(
+                    f"""SELECT COUNT(*)
+                        FROM signal_ledger s
+                        JOIN signal_outcomes o ON o.signal_id = s.signal_id
+                        WHERE {where}""",
+                    params,
+                )
+                row = cur.fetchone()
+                return int(row[0]) if row and row[0] is not None else 0
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[SignalLedger] count_graded_since failed: {}", exc)
+                return 0
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

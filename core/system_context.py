@@ -154,6 +154,28 @@ class SystemContext:
     # ── Account key cache (symbol → broker:account_id) ───────────────
     _account_key_cache: dict[str, str] = field(default_factory=dict)
 
+    # ── Safety degradation tracking ──────────────────────────────────
+    # Names of CRITICAL safety subsystems that failed to initialise. When
+    # non-empty the system runs WITHOUT one or more risk gates; new OPEN
+    # entries are refused (existing-position management still runs) until
+    # restarted with a clean init.
+    _safety_degraded_subsystems: list = field(default_factory=list)
+
+    def _mark_safety_degraded(self, name: str) -> None:
+        """Record that a CRITICAL safety subsystem failed to initialise."""
+        if name not in self._safety_degraded_subsystems:
+            self._safety_degraded_subsystems.append(name)
+
+    @property
+    def safety_degraded(self) -> bool:
+        """True when any CRITICAL safety subsystem failed to initialise."""
+        return bool(self._safety_degraded_subsystems)
+
+    @property
+    def safety_degraded_reason(self) -> str:
+        """Comma-separated names of the failed CRITICAL safety subsystems."""
+        return ", ".join(self._safety_degraded_subsystems)
+
     @classmethod
     def create(
         cls,
@@ -183,7 +205,8 @@ class SystemContext:
                 rolling_window_days=risk_cfg.drawdown_rolling_window_days,
             )
         except Exception as exc:
-            logger.warning("[SystemContext] DrawdownGuard init failed: {}", exc)
+            logger.critical("[SystemContext] DrawdownGuard init failed — SAFETY DEGRADED: {}", exc)
+            ctx._mark_safety_degraded("DrawdownGuard")
 
         # ── CorrelationEngine ────────────────────────────────────────
         try:
@@ -199,7 +222,8 @@ class SystemContext:
         try:
             ctx.risk_engine = RiskEngine(config=config)
         except Exception as exc:
-            logger.warning("[SystemContext] RiskEngine init failed: {}", exc)
+            logger.critical("[SystemContext] RiskEngine init failed — SAFETY DEGRADED: {}", exc)
+            ctx._mark_safety_degraded("RiskEngine")
 
         # ── PortfolioRiskStateMachine ────────────────────────────────
         try:
@@ -233,7 +257,8 @@ class SystemContext:
                 daily_loss_flatten_pct=getattr(risk_cfg, "daily_loss_flatten_pct", 5.0),
             )
         except Exception as exc:
-            logger.warning("[SystemContext] AccountRiskManager init failed: {}", exc)
+            logger.critical("[SystemContext] AccountRiskManager init failed — SAFETY DEGRADED: {}", exc)
+            ctx._mark_safety_degraded("AccountRiskManager")
 
         # ── RiskReporter ─────────────────────────────────────────────
         try:
@@ -319,7 +344,8 @@ class SystemContext:
                 max_open_positions=max_pos,
             )
         except Exception as exc:
-            logger.warning("[SystemContext] ComplianceDivision init failed: {}", exc)
+            logger.critical("[SystemContext] ComplianceDivision init failed — SAFETY DEGRADED: {}", exc)
+            ctx._mark_safety_degraded("ComplianceDivision")
 
         # ── SituationEngine ─────────────────────────────────────────
         try:
@@ -810,7 +836,27 @@ class SystemContext:
                     bool(getattr(lg_cfg, "governance_required", True) if lg_cfg else True)
                 )
         except Exception as exc:
-            logger.warning("[SystemContext] GovernanceDivision init failed: {}", exc)
+            logger.critical(
+                "[SystemContext] GovernanceDivision init failed — SAFETY DEGRADED; "
+                "Learning recommendations will be REJECTED (fail-closed): {}", exc,
+            )
+            ctx._mark_safety_degraded("GovernanceDivision")
+            # Fail-CLOSED: with no authoriser the gateway would otherwise
+            # auto-approve every learning recommendation (fail-OPEN). Install a
+            # rejecting authoriser and require authorisation so a governance
+            # wiring fault cannot silently let unvetted recommendations through.
+            gw = ctx.recommendation_gateway
+            if gw is not None:
+                try:
+                    gw.set_authorizer(
+                        lambda rec: (False, "governance unavailable — fail-closed")
+                    )
+                    gw.set_governance_required(True)
+                except Exception as wire_exc:  # noqa: BLE001
+                    logger.error(
+                        "[SystemContext] failed to set fail-closed gateway authoriser: {}",
+                        wire_exc,
+                    )
 
         logger.info(
             "[SystemContext] learning layer initialized — outcome_fb={} "

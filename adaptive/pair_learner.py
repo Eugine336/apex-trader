@@ -64,7 +64,17 @@ def sigmoid_multiplier(
         logistic = 1.0 / (1.0 + math.exp(-steepness * (win_rate - midpoint)))
     except OverflowError:
         logistic = 0.0 if win_rate < midpoint else 1.0
-    return floor + span * logistic
+    result = floor + span * logistic
+    # A NaN win_rate (e.g. 0/0 when every trade was a scratch) propagates
+    # through math.exp without raising; never let a non-finite multiplier reach
+    # position sizing — fall back to a neutral 1.0.
+    if not math.isfinite(result):
+        logger.warning(
+            "[pair_learner] sigmoid_multiplier non-finite (win_rate={!r}) — "
+            "returning neutral 1.0", win_rate,
+        )
+        return 1.0
+    return result
 
 
 def compute_capture_ratio(
@@ -172,7 +182,16 @@ class PairLearner:
         if self.continuous_enabled:
             if profile is None:
                 return self.cold_start_multiplier
-            return round(self._continuous_multiplier(profile), 4)
+            mult = self._continuous_multiplier(profile)
+            # Last line of defence before this feeds position sizing: a
+            # non-finite multiplier (NaN/inf) must never reach the sizer.
+            if not math.isfinite(mult):
+                logger.warning(
+                    "[pair_learner] non-finite multiplier for {} — "
+                    "returning neutral 1.0", pair,
+                )
+                return 1.0
+            return round(mult, 4)
         # Legacy 4-bucket behaviour (flag off).
         if profile is None or profile.total_trades < self.MIN_TRADES:
             return 0.8
@@ -226,10 +245,16 @@ class PairLearner:
         rescued so the pair is not avoided for a problem the read didn't cause.
         """
         wr = float(profile.win_rate or 0.0)
+        if not math.isfinite(wr):
+            wr = 0.0
         if not self.entry_management_split_enabled or profile.entry_accuracy is None:
             return wr
         w = self.entry_accuracy_blend_weight
-        return (1.0 - w) * wr + w * float(profile.entry_accuracy)
+        ea = float(profile.entry_accuracy)
+        if not math.isfinite(ea):
+            return wr
+        blended = (1.0 - w) * wr + w * ea
+        return blended if math.isfinite(blended) else wr
 
     def get_profile(self, pair: str) -> Optional[PairProfile]:
         """Read-only accessor for a learned pair profile (``None`` if unseen).

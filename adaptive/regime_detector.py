@@ -256,21 +256,37 @@ class RegimeDetector(TuningGuardMixin):
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
     def _connect(self) -> None:
-        try:
-            self._conn = sqlite3.connect(
-                str(self._db_path), timeout=10, check_same_thread=False,
-            )
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA synchronous=NORMAL")
-            self._conn.execute(_CREATE_STATES)
-            self._conn.execute(_CREATE_TRANSITIONS)
-            self._conn.execute(_CREATE_PERFORMANCE)
-            self._conn.execute(_CREATE_IDX_TRANS)
-            self._conn.execute(_CREATE_IDX_PERF)
-            self._conn.commit()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[RegimeDetector] DB connect/init failed ({}): {}", self._db_path, exc)
-            self._conn = None
+        # Connect with one retry on failure. A persistent connect/init failure
+        # raises rather than silently degrading to an in-memory zombie: the
+        # caller (SystemContext.create) catches it and leaves the subsystem
+        # None, which loses no durable state silently and is visible at startup.
+        last_exc: Optional[Exception] = None
+        for attempt in (1, 2):
+            try:
+                self._conn = sqlite3.connect(
+                    str(self._db_path), timeout=10, check_same_thread=False,
+                )
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA synchronous=NORMAL")
+                self._conn.execute(_CREATE_STATES)
+                self._conn.execute(_CREATE_TRANSITIONS)
+                self._conn.execute(_CREATE_PERFORMANCE)
+                self._conn.execute(_CREATE_IDX_TRANS)
+                self._conn.execute(_CREATE_IDX_PERF)
+                self._conn.commit()
+                return
+            except Exception as exc:  # noqa: BLE001
+                last_exc = exc
+                self._conn = None
+                logger.error(
+                    "[RegimeDetector] DB connect/init failed (attempt {}/2) ({}): {}",
+                    attempt, self._db_path, exc,
+                )
+                if attempt == 1:
+                    time.sleep(1.0)
+        raise RuntimeError(
+            f"RegimeDetector DB connect failed after retry ({self._db_path}): {last_exc}"
+        )
 
     def close(self) -> None:
         with self._lock:
