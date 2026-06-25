@@ -289,6 +289,14 @@ class MT5TickPoller:
         last_error_log: dict[str, float] = {}
         remove_after = 500
         removed: set[str] = set()
+        # Transient failures (terminal hiccup, stale tick during a broker
+        # reconnect) must NOT permanently retire a symbol — that silently
+        # un-polls the FX book until a restart. Instead, after `remove_after`
+        # consecutive errors a symbol enters a bounded cooldown and is retried
+        # once it elapses. Only symbols the broker confirms are *not available*
+        # are removed permanently (they will never recover this process).
+        cooldown_until: dict[str, float] = {}
+        COOLDOWN_SECONDS = 60.0
 
         while self._running:
             for sym in list(self._symbols):
@@ -301,6 +309,16 @@ class MT5TickPoller:
                 # count — polling resumes automatically when the market reopens.
                 if not self._should_poll(sym):
                     continue
+                # Honour an active cooldown: a symbol that recently tripped the
+                # failure threshold is paused (not removed) and retried once the
+                # backoff window elapses.
+                cd = cooldown_until.get(sym, 0.0)
+                if cd:
+                    if _time.monotonic() < cd:
+                        continue
+                    # Cooldown elapsed — give the symbol a fresh chance.
+                    cooldown_until.pop(sym, None)
+                    error_counts[sym] = 0
                 try:
                     td = self._pm.get_price(sym)
                     if td is not None and td.bid > 0:
@@ -337,12 +355,15 @@ class MT5TickPoller:
                         continue
 
                 if error_counts.get(sym, 0) >= remove_after:
+                    # Bounded backoff instead of permanent removal: pause the
+                    # symbol for COOLDOWN_SECONDS, then retry. Keeps the FX book
+                    # polled across transient broker disconnects/reconnects.
+                    cooldown_until[sym] = _time.monotonic() + COOLDOWN_SECONDS
                     logger.warning(
-                        "[mt5-poller] {} removed from poll — {} consecutive failures (symbol not on broker)",
-                        sym, remove_after,
+                        "[mt5-poller] {} paused for {:.0f}s — {} consecutive "
+                        "failures (will retry after cooldown)",
+                        sym, COOLDOWN_SECONDS, remove_after,
                     )
-                    self._symbols.remove(sym)
-                    removed.add(sym)
             _time.sleep(self._interval)
 
 
@@ -565,8 +586,14 @@ class PositionEvaluator:
         try:
             with self._inflight_manage_lock:
                 self._inflight_manage[(str(ticket), int(intent_type))] = prev
-        except Exception:
-            pass
+        except Exception as exc:
+            # A failure here means the optimistic mutation has no rollback
+            # snapshot — surface it (this is the exact condition that previously
+            # silently disabled the phantom-SL guard) instead of passing.
+            logger.warning(
+                "[pos-eval] failed to record inflight rollback for {} {}: {}",
+                ticket, intent_type, exc,
+            )
 
     def evaluate_all(
         self, scheduler: Optional[ManagementScheduler] = None,
@@ -718,11 +745,62 @@ class PositionEvaluator:
             # phantom stop-loss CLOSE.
             mgmt.sl_pending_confirmation = mgmt.sl_modify_pending_until > now_mono
 
+            # If a prior optimistic SL move's pending-confirmation window has
+            # elapsed with no broker result, the aggregator dropped/deduped the
+            # intent (so _handle_manage_result never fired to commit or roll it
+            # back). The optimistic at_breakeven / stop_loss were never confirmed
+            # and its inflight rollback snapshot still lingers — restore the
+            # pre-mutation values so a phantom breakeven flag or unconfirmed SL
+            # cannot persist. A live, still-pending move is left untouched.
+            if mgmt.sl_modify_pending_until and not mgmt.sl_pending_confirmation:
+                _sl_key = (str(order_id), int(IntentType.MODIFY_SL))
+                with self._inflight_manage_lock:
+                    _stale = self._inflight_manage.pop(_sl_key, None)
+                if _stale is not None:
+                    for _field, _value in _stale.items():
+                        try:
+                            setattr(mgmt, _field, _value)
+                        except Exception:
+                            pass
+                    logger.warning(
+                        "[pos-eval] {} optimistic SL move never confirmed "
+                        "(dropped by aggregator) — rolled back optimistic state",
+                        order_id,
+                    )
+                mgmt.sl_modify_pending_until = 0.0
+
             snap = build_position_snapshot(
                 pos, tm_trade=mgmt, current_price=price,
                 score_history=tuple(mgmt.score_history),
             )
             intents = self._worker.evaluate(snap, now, scan=scan_ctx, market=market_ctx)
+
+            # Collapse multiple MODIFY_SL intents for this ticket to the single
+            # tightest one BEFORE any optimistic mutation, mirroring the
+            # IntentAggregator's tightest-SL resolution (LONG → highest new_sl,
+            # SHORT → lowest). The worker can emit several SL moves per cycle
+            # (profit-protection + dynamic-tighten + trail); without collapsing,
+            # each overwrites mgmt.stop_loss AND the rollback baseline, so a later
+            # rollback would restore an unconfirmed level instead of the original.
+            if intents:
+                _sl_intents = [
+                    i for i in intents if i.intent_type == IntentType.MODIFY_SL
+                ]
+                if len(_sl_intents) > 1:
+                    if direction.upper() in ("BUY", "LONG"):
+                        _best_sl = max(
+                            _sl_intents,
+                            key=lambda i: i.new_sl if i.new_sl is not None else 0.0,
+                        )
+                    else:
+                        _best_sl = min(
+                            _sl_intents,
+                            key=lambda i: i.new_sl if i.new_sl is not None else float("inf"),
+                        )
+                    intents = [
+                        i for i in intents
+                        if i.intent_type != IntentType.MODIFY_SL or i is _best_sl
+                    ]
 
             if intents:
                 self._aggregator.register_position(
@@ -2840,6 +2918,14 @@ class EventDrivenSystem:
             }
             broker_ids = [t for t in pos_by_ticket if t]
             report = run_startup_recovery(get_event_store(), broker_ids)
+            # A corrupt event DB makes crash-window reconciliation unreliable
+            # (a malformed DB folds to zero open positions and looks "clean").
+            # Degrade safety so new OPEN entries are refused until restarted on
+            # a clean DB; existing-position management continues.
+            if report is not None and getattr(report, "store_degraded", False):
+                ctx = self._ctx
+                if ctx is not None and hasattr(ctx, "_mark_safety_degraded"):
+                    ctx._mark_safety_degraded("EventStore")
             # Adopt broker orphans (positions with no entry in the event log,
             # e.g. opened during a crash window) into the log so the persistent
             # lifecycle projection is consistent and the mismatch does not recur
@@ -3427,6 +3513,29 @@ class EventDrivenSystem:
                         )
             except Exception as exc:
                 logger.debug("[event-driven] auto-reconnect check failed: {}", exc)
+
+            # ── Deriv token-refresh degradation → safety_degraded ─────
+            # If the Deriv connector reports repeated token-refresh failures, an
+            # expiring token will soon make open contracts unmanageable. Degrade
+            # safety so new OPEN entries are refused (management still runs)
+            # until the token is rotated.
+            try:
+                deriv = getattr(self._pm, "deriv", None)
+                if (
+                    deriv is not None
+                    and getattr(deriv, "token_refresh_degraded", False)
+                    and ctx is not None
+                    and hasattr(ctx, "_mark_safety_degraded")
+                    and not getattr(self, "_deriv_token_degraded_marked", False)
+                ):
+                    ctx._mark_safety_degraded("DerivTokenRefresh")
+                    self._deriv_token_degraded_marked = True
+                    logger.critical(
+                        "[event-driven] Deriv token refresh degraded — SAFETY "
+                        "DEGRADED; new entries refused until token rotates",
+                    )
+            except Exception as exc:
+                logger.debug("[event-driven] deriv token-degrade check failed: {}", exc)
 
             # ── Scanner-blindness watchdog ────────────────────────────
             if ctx is not None and getattr(ctx, "health_watchdog", None) is not None:
@@ -5069,7 +5178,12 @@ class EventDrivenSystem:
         try:
             sym = getattr(event, "symbol", "")
             if sym:
-                self._evaluate_consensus_entry(sym)
+                # Offload to the dedicated entry pool (same as the zone path)
+                # instead of running inline. The consensus entry path makes
+                # blocking broker calls (grade → allocate → execute); running it
+                # on this event-bus thread stalls WorldModel publishing for ALL
+                # symbols for the duration of the broker round-trip.
+                self._entry_pool.submit(self._evaluate_consensus_entry, sym)
         except Exception as exc:
             logger.debug("[consensus-trigger] evaluation failed: {}", exc)
 
@@ -6214,7 +6328,17 @@ class EventDrivenSystem:
                             pass
 
                 except Exception as exc:
-                    logger.debug("[entry-decision] DecisionEngine check failed: {}", exc)
+                    # Fail CLOSED: the DecisionEngine + RiskGovernor are the
+                    # strategic conviction veto. If this block crashes, falling
+                    # through would let the entry proceed at the default
+                    # de_size_mult=1.0 with NO veto applied. Reject the entry
+                    # instead so a crash can never wave a trade through ungated.
+                    logger.warning(
+                        "[entry-decision] DecisionEngine/RiskGovernor check "
+                        "errored for {} — REJECTING entry (fail-closed): {}",
+                        symbol, exc,
+                    )
+                    return
 
             # ── Gate 7: TradePlanner — advisory skip/wait/enter ──────
             if ctx is not None and ctx.trade_planner is not None:

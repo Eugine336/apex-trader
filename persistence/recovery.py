@@ -89,6 +89,7 @@ class ReconciliationReport:
     broker_open: Set[str]
     missing_from_broker: Set[str]  # log says open, broker doesn't show
     orphan_at_broker: Set[str]  # broker shows, no entry in the log
+    store_degraded: bool = False  # backing event DB is corrupt/unwritable
 
     @property
     def is_clean(self) -> bool:
@@ -145,6 +146,19 @@ def run_startup_recovery(
     """
     log_open = build_log_open_set(store, checkpoint_db=checkpoint_db)
     report = reconcile(log_open, broker_order_ids)
+    # If the event DB is corrupt, the folded "open" set is unreliable: a
+    # malformed DB yields zero log-open and would otherwise report "clean".
+    # Surface it loudly so the caller can degrade safety rather than trust an
+    # empty reconciliation.
+    store_degraded = bool(getattr(store, "is_degraded", False))
+    report.store_degraded = store_degraded
+    if store_degraded:
+        logger.critical(
+            "[recovery] event store is DEGRADED (corrupt/unwritable DB) — "
+            "reconciliation against the event log is UNRELIABLE; {} broker "
+            "position(s) seen. Verify open positions manually.",
+            len(report.broker_open),
+        )
     if report.is_clean:
         logger.info(
             "[recovery] event-log reconciliation clean — {} open position(s) "

@@ -65,7 +65,13 @@ class PositionSizer:
         """
         cap = self.max_risk_pct_per_trade / 100.0
         tag = label or "trade"
-        if risk_pct is None or risk_pct <= 0:
+        if risk_pct is None or not math.isfinite(risk_pct):
+            logger.error(
+                "[PositionSizer] {} risk_pct {!r} is non-finite (NaN/inf) — skipping (invalid)",
+                tag, risk_pct,
+            )
+            return 0.0
+        if risk_pct <= 0:
             logger.warning("[PositionSizer] {} risk_pct {!r} ≤ 0 — skipping (invalid)", tag, risk_pct)
             return 0.0
         if risk_pct > 1.0:
@@ -219,6 +225,27 @@ class PositionSizer:
         risk_amount = account_balance * risk_pct
         risk_distance = abs(entry_price - stop_loss)
         stake = round(risk_amount, 2)
+
+        # Last line of defence before a stake leaves for the Deriv broker: a
+        # non-finite stake (NaN/inf from an upstream learned multiplier) must
+        # never be sent — skip the trade rather than dispatch garbage. Mirrors
+        # the MT5 lot path's isfinite guard.
+        if not math.isfinite(stake):
+            logger.error(
+                "[PositionSizer] deriv computed non-finite stake "
+                "(account_balance={!r}, risk_pct={!r}) — skipping trade",
+                account_balance, risk_pct,
+            )
+            return SizeResult(
+                lots=0.0,
+                stake_usd=0.0,
+                risk_amount=round(risk_amount, 2) if math.isfinite(risk_amount) else 0.0,
+                risk_pips=round(risk_distance, 5) if math.isfinite(risk_distance) else 0.0,
+                pip_value=0.0,
+                max_loss=0.0,
+                margin_estimate=0.0,
+                sizing_mode="stake_skip_non_finite",
+            )
 
         if risk_pct <= 0.0 or stake <= 0.0:
             logger.warning(

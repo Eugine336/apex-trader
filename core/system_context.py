@@ -216,7 +216,11 @@ class SystemContext:
                 allow_intentional_hedge=risk_cfg.allow_intentional_hedge,
             )
         except Exception as exc:
-            logger.warning("[SystemContext] CorrelationEngine init failed: {}", exc)
+            logger.critical(
+                "[SystemContext] CorrelationEngine init failed — SAFETY "
+                "DEGRADED (correlation/cluster exposure gate unavailable): {}", exc,
+            )
+            ctx._mark_safety_degraded("CorrelationEngine")
 
         # ── RiskEngine ───────────────────────────────────────────────
         try:
@@ -237,7 +241,11 @@ class SystemContext:
                     heat_emergency_pct=risk_cfg.heat_emergency_pct,
                 )
         except Exception as exc:
-            logger.warning("[SystemContext] PortfolioRiskStateMachine init failed: {}", exc)
+            logger.critical(
+                "[SystemContext] PortfolioRiskStateMachine init failed — "
+                "SAFETY DEGRADED (portfolio risk-state gate unavailable): {}", exc,
+            )
+            ctx._mark_safety_degraded("PortfolioRiskStateMachine")
 
         # ── PortfolioGovernor ────────────────────────────────────────
         try:
@@ -245,7 +253,12 @@ class SystemContext:
             if gcfg is None or gcfg.enabled:
                 ctx.portfolio_governor = PortfolioGovernor(gcfg)
         except Exception as exc:
-            logger.warning("[SystemContext] PortfolioGovernor init failed: {}", exc)
+            logger.critical(
+                "[SystemContext] PortfolioGovernor init failed — SAFETY "
+                "DEGRADED (portfolio concentration/allocation gate unavailable): {}",
+                exc,
+            )
+            ctx._mark_safety_degraded("PortfolioGovernor")
 
         # ── AccountRiskManager ───────────────────────────────────────
         try:
@@ -476,7 +489,11 @@ class SystemContext:
             if ctx.drawdown_guard is not None:
                 ctx.entry_engine.drawdown = ctx.drawdown_guard
         except Exception as exc:
-            logger.warning("[SystemContext] EntryEngine init failed: {}", exc)
+            logger.critical(
+                "[SystemContext] EntryEngine init failed — SAFETY DEGRADED "
+                "(SL/TP refinement + sizing gate unavailable): {}", exc,
+            )
+            ctx._mark_safety_degraded("EntryEngine")
 
         # ── ExecutionMonitor ────────────────────────────────────────
         try:

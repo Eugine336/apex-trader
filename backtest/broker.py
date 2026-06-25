@@ -310,7 +310,7 @@ class SimulatedBroker(BaseConnector):
     def get_spread(self, symbol: str) -> float:
         return self.spread_pips
 
-    def get_ohlcv(self, symbol: str, timeframe: str, count: int = 200) -> pd.DataFrame:
+    def get_ohlcv(self, symbol: str, timeframe: str, count: int = 200, *, include_forming: bool = True) -> pd.DataFrame:
         frames = self._data.get(symbol, {})
         rows = frames.get(timeframe, [])
         cursor = self._cursor.get(symbol)

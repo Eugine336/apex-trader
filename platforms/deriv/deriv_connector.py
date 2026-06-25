@@ -71,6 +71,10 @@ _TOKEN_REFRESH_FRACTION = 0.8
 # Background token-monitor poll interval (seconds).
 _TOKEN_MONITOR_INTERVAL = 30.0
 
+# Consecutive token-refresh failures after which the connector flags itself
+# degraded so the host can escalate to safety_degraded (refuse new entries).
+_TOKEN_REFRESH_FAIL_DEGRADE = 3
+
 _GRANULARITY_MAP: dict[str, int] = {
     "M1": 60,
     "M5": 300,
@@ -158,6 +162,22 @@ class DerivConnector(BaseConnector):
         self._token_lock = threading.Lock()
         self._token_monitor_stop = threading.Event()
         self._token_monitor_thread: Optional[threading.Thread] = None
+        # Consecutive token-refresh failures. After _TOKEN_REFRESH_FAIL_DEGRADE
+        # in a row the connector is flagged degraded so the host watchdog can
+        # escalate to safety_degraded (no new entries) — a token that cannot be
+        # rotated means open Deriv contracts will become unmanageable at expiry.
+        self._token_refresh_fail_streak = 0
+        self._token_refresh_degraded = False
+        # Startup check: with no refresh callback the connector cannot rotate an
+        # expiring token and can only warn + wind down. Surface it loudly at
+        # construction so a misconfigured deployment is visible immediately.
+        if token_refresh_callback is None:
+            logger.warning(
+                "DerivConnector constructed with NO token_refresh_callback — "
+                "an expiring access token cannot be rotated; open contracts will "
+                "become unmanageable at expiry unless DERIV_ACCESS_TOKEN is "
+                "refreshed out-of-band",
+            )
 
         # Reconnect policy — sourced from OpsConfig (reconnect_max_retries /
         # reconnect_base_delay_seconds) by the PlatformManager, falling back to
@@ -196,7 +216,11 @@ class DerivConnector(BaseConnector):
                     len(persisted),
                 )
         except Exception as exc:
-            logger.error("DerivPositionStore init failed — running without Deriv persistence: {}", exc)
+            logger.critical(
+                "DerivPositionStore load failed — Deriv persistence DISABLED; "
+                "any live multiplier contracts may run UNMANAGED (no SL/TP/idem "
+                "metadata restored): {}", exc,
+            )
             self._store = None
         self._mapper = SymbolMapper("deriv")
 
@@ -422,6 +446,7 @@ class DerivConnector(BaseConnector):
         try:
             new_token, expires_in = self._token_refresh_callback()
         except Exception as exc:
+            self._note_token_refresh_failure()
             logger.critical(
                 "Deriv token refresh callback FAILED ({}s of {}s TTL elapsed) — "
                 "connection will halt at expiry unless DERIV_ACCESS_TOKEN is rotated: {}",
@@ -429,6 +454,7 @@ class DerivConnector(BaseConnector):
             )
             return False
         if not new_token:
+            self._note_token_refresh_failure()
             logger.critical("Deriv token refresh returned an empty token — keeping current token")
             return False
         if new_token == self._access_token:
@@ -438,7 +464,30 @@ class DerivConnector(BaseConnector):
             # token that is actually about to die.
             return False
         self.set_access_token(new_token, expires_in)
+        # A real rotation succeeded — clear any degraded state.
+        self._token_refresh_fail_streak = 0
+        self._token_refresh_degraded = False
         return True
+
+    def _note_token_refresh_failure(self) -> None:
+        """Track consecutive refresh failures; flag degraded past the threshold."""
+        self._token_refresh_fail_streak += 1
+        if (
+            not self._token_refresh_degraded
+            and self._token_refresh_fail_streak >= _TOKEN_REFRESH_FAIL_DEGRADE
+        ):
+            self._token_refresh_degraded = True
+            logger.critical(
+                "Deriv token refresh has failed {} times in a row — connector "
+                "flagged DEGRADED; open contracts risk becoming unmanageable at "
+                "token expiry",
+                self._token_refresh_fail_streak,
+            )
+
+    @property
+    def token_refresh_degraded(self) -> bool:
+        """True after _TOKEN_REFRESH_FAIL_DEGRADE consecutive refresh failures."""
+        return self._token_refresh_degraded
 
     def _token_monitor_loop(self) -> None:
         """Background watchdog: refresh before expiry, escalate on expiry.
@@ -1153,7 +1202,8 @@ class DerivConnector(BaseConnector):
         return self.get_price(symbol)
 
     def get_ohlcv(
-        self, symbol: str, timeframe: str, count: int = 200
+        self, symbol: str, timeframe: str, count: int = 200,
+        *, include_forming: bool = True,
     ) -> pd.DataFrame:
         self._require_connection()
         mapped = self.symbol_map(symbol)
@@ -1190,7 +1240,15 @@ class DerivConnector(BaseConnector):
                 "close": float(c["close"]),
                 "volume": int(c.get("volume", 0)),
             })
-        return pd.DataFrame(rows)
+        out = pd.DataFrame(rows)
+        # Deriv ticks_history with end="latest" includes the in-progress candle
+        # as the last row. Callers needing confirmed-closed data can drop it via
+        # include_forming=False (default keeps it to preserve the closed-bar
+        # dual-view: structural modules drop it themselves; live observational
+        # reads legitimately keep it).
+        if not include_forming and len(out) > 1:
+            out = out.iloc[:-1]
+        return out
 
     def get_spread(self, symbol: str) -> float:
         return self.get_price(symbol).spread

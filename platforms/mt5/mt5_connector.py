@@ -355,7 +355,8 @@ class MT5Connector(BaseConnector):
         return self.get_price(symbol)
 
     def get_ohlcv(
-        self, symbol: str, timeframe: str, count: int = 200
+        self, symbol: str, timeframe: str, count: int = 200,
+        *, include_forming: bool = True,
     ) -> pd.DataFrame:
         self._require_connection()
         mapped = self.symbol_map(symbol)
@@ -373,7 +374,15 @@ class MT5Connector(BaseConnector):
         df = df.rename(
             columns={"tick_volume": "volume", "real_volume": "real_volume"}
         )
-        return df[["time", "open", "high", "low", "close", "volume"]]
+        out = df[["time", "open", "high", "low", "close", "volume"]]
+        # MT5 copy_rates_from_pos(..., 0, count) returns the in-progress bar as
+        # the last row. Callers that need confirmed-closed data can request the
+        # forming bar dropped here (default keeps it for the established
+        # closed-bar dual-view: structural modules drop it themselves, live
+        # observational reads legitimately keep it).
+        if not include_forming and len(out) > 1:
+            out = out.iloc[:-1]
+        return out
 
     def get_spread(self, symbol: str) -> float:
         return self.get_price(symbol).spread
