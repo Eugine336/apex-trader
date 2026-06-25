@@ -42,4 +42,11 @@ class GovernorMixin:
             "currency_exposure": {},
             "sector_exposure": {},
             "recent_blocks": [],
+            "max_total_positions": 10,
+            "max_positions_per_symbol": 2,
+            "max_positions_per_tf_class": 3,
+            "max_total_risk_pct": 6.0,
+            "per_trade_max_risk": 2.0,
+            "hedge_ratio_cap": 0.30,
+            "recent_allocations": [],
         }

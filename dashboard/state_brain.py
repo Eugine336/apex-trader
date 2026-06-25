@@ -243,6 +243,7 @@ class BrainMixin:
         try:
             contributors = list(getattr(opp, "contributors", []) or [])
             summary = getattr(opp, "summary", "")
+            votes = list(getattr(opp, "votes", []) or [])
             return {
                 "direction": str(getattr(opp, "direction", "") or "").upper(),
                 "timeframe_class": str(getattr(opp, "timeframe_class", "") or "").upper(),
@@ -253,6 +254,13 @@ class BrainMixin:
                 "reward_risk": _round(getattr(opp, "reward_risk", 0.0), 2),
                 "win_prob": _round(getattr(opp, "win_prob", 0.0), 3),
                 "contributors": contributors,
+                # Multi-opportunity provenance — the distinct real timeframes
+                # behind this idea and how many votes formed it, so the panel
+                # shows WHICH timeframes (not just the SCALP/SWING bucket) and a
+                # stable candidate id where one is attached.
+                "timeframes": [str(t).upper() for t in getattr(opp, "timeframes", []) or []],
+                "vote_count": len(votes),
+                "candidate_id": str(getattr(opp, "candidate_id", "") or ""),
                 "summary": str(summary),
             }
         except Exception as exc:

@@ -114,6 +114,16 @@ class TradesMixin(HelpersMixin):
                 except Exception:
                     pass
 
+            # Multi-opportunity provenance — link the open position back to the
+            # candidate (idea) that opened it, so management is visibly scoped to
+            # the same modules/timeframes. Empty when no provenance was captured.
+            prov = getattr(ed, "_candidate_positions", {}).get(order_id)
+            candidate_id = str(getattr(prov, "candidate_id", "") or "") if prov else ""
+            timeframe_class = str(getattr(prov, "timeframe_class", "") or "") if prov else ""
+            contributing_modules = (
+                list(getattr(prov, "contributing_modules", []) or []) if prov else []
+            )
+
             trades.append({
                 "id": order_id,
                 "instrument": symbol,
@@ -128,6 +138,9 @@ class TradesMixin(HelpersMixin):
                 "lot_size": round(lot_size, 2),
                 "score": int(round(safe_float(getattr(pos, "score", 0), 0.0))),
                 "stage": stage,
+                "candidate_id": candidate_id,
+                "timeframe_class": timeframe_class,
+                "contributing_modules": contributing_modules,
             })
 
         return {"trades": trades, "count": len(trades)}

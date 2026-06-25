@@ -38,6 +38,19 @@ function actionBadge(action) {
   return ACTION_BADGES[action] || "muted";
 }
 
+// Candidate-scoped thesis health (Session 4): the contributing panel that
+// opened the position still supports it (intact), has flipped against it, or
+// went silent. Empty when no candidate provenance was captured.
+const THESIS_BADGES = {
+  intact: "green",
+  flipped: "red",
+  silent: "orange",
+};
+
+function thesisBadge(status) {
+  return THESIS_BADGES[String(status || "").toLowerCase()] || "muted";
+}
+
 function DimBar({ d }) {
   const m = d.multiplier ?? d.avg_multiplier ?? 0;
   const pct = Math.round(m * 100);
@@ -200,6 +213,7 @@ export default function PositionHealth() {
                   <th className="py-2 pr-2">Symbol</th>
                   <th className="py-2 pr-2">Dir</th>
                   <th className="py-2 pr-2">Horizon</th>
+                  <th className="py-2 pr-2">Thesis</th>
                   <th className="py-2 pr-2 text-right">Health</th>
                   <th className="py-2 pr-2">Action</th>
                   <th className="py-2 pr-2 text-right">P&L (R)</th>
@@ -209,7 +223,7 @@ export default function PositionHealth() {
               <tbody>
                 {filteredPos.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="py-12 text-center text-gray-500">
+                    <td colSpan={8} className="py-12 text-center text-gray-500">
                       {loading
                         ? "Loading…"
                         : "No open-position health evaluations yet — they appear as positions are managed."}
@@ -240,7 +254,16 @@ export default function PositionHealth() {
                           {p.direction}
                         </td>
                         <td className="py-2 pr-2 text-gray-400">
-                          {p.horizon || "—"}
+                          {p.horizon || p.timeframe_class || "—"}
+                        </td>
+                        <td className="py-2 pr-2">
+                          {p.thesis_status ? (
+                            <span className={badgeClass(thesisBadge(p.thesis_status))}>
+                              {p.thesis_status}
+                            </span>
+                          ) : (
+                            <span className="text-xs text-gray-600">—</span>
+                          )}
                         </td>
                         <td
                           className="py-2 pr-2 text-right font-mono font-bold"
@@ -268,8 +291,21 @@ export default function PositionHealth() {
                       </tr>
                       {isOpen && (
                         <tr>
-                          <td colSpan={7} className="bg-gray-900/40">
+                          <td colSpan={8} className="bg-gray-900/40">
                             <div className="p-3">
+                              {(p.candidate_id ||
+                                (p.contributing_modules || []).length > 0) && (
+                                <div className="mb-2 text-[11px] text-gray-400">
+                                  Managed by candidate{" "}
+                                  <span className="font-mono text-gray-300">
+                                    {p.candidate_id || "—"}
+                                  </span>
+                                  {p.timeframe_class ? ` · ${p.timeframe_class}` : ""}
+                                  {(p.contributing_modules || []).length
+                                    ? ` · panel: ${p.contributing_modules.join(", ")}`
+                                    : ""}
+                                </div>
+                              )}
                               {(() => {
                                 const dims = dimsFromReport(latest);
                                 const changes = changesFromReport(latest);

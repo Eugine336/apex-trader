@@ -122,8 +122,21 @@ class PositionHealthMixin:
                 "pair": r.get("pair", ""),
                 "direction": r.get("direction", ""),
                 "horizon": r.get("horizon", ""),
+                "candidate_id": r.get("candidate_id", ""),
+                "timeframe_class": r.get("timeframe_class", ""),
+                "contributing_modules": r.get("contributing_modules", []) or [],
+                "thesis_status": r.get("thesis_status", ""),
                 "series": [],
             })
+            # Keep the latest non-empty provenance/thesis read for this position.
+            if r.get("candidate_id"):
+                grp["candidate_id"] = r.get("candidate_id")
+            if r.get("timeframe_class"):
+                grp["timeframe_class"] = r.get("timeframe_class")
+            if r.get("contributing_modules"):
+                grp["contributing_modules"] = r.get("contributing_modules") or []
+            if r.get("thesis_status"):
+                grp["thesis_status"] = r.get("thesis_status")
             grp["series"].append({
                 "ts": r.get("_event_ts", ""),
                 "health_score": r.get("health_score", 0.0),
@@ -135,7 +148,11 @@ class PositionHealthMixin:
             series = grp["series"]
             latest = series[-1] if series else {}
             positions.append({
-                **{k: grp[k] for k in ("order_id", "pair", "direction", "horizon")},
+                **{k: grp[k] for k in (
+                    "order_id", "pair", "direction", "horizon",
+                    "candidate_id", "timeframe_class", "contributing_modules",
+                    "thesis_status",
+                )},
                 "health_score": latest.get("health_score", 0.0),
                 "action": latest.get("action", ""),
                 "profit_r": latest.get("profit_r", 0.0),

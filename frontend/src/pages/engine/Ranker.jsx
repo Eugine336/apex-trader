@@ -37,6 +37,14 @@ function OppRow({ o, best }) {
       </div>
       <div className="mt-0.5 text-[11px] text-gray-400">
         from: {(o.contributors || []).join(", ") || "none"}
+        {(o.timeframes || []).length > 0 && (
+          <span className="ml-1 text-gray-500">
+            · TFs: {o.timeframes.join("/")}
+          </span>
+        )}
+        {o.vote_count > 0 && (
+          <span className="ml-1 text-gray-500">· {o.vote_count} votes</span>
+        )}
       </div>
     </div>
   );
