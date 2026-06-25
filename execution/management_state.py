@@ -10,7 +10,6 @@ Thread-safe: all mutations are guarded by an RLock.
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import threading
 from dataclasses import dataclass, field

@@ -508,8 +508,10 @@ class RiskEngine:
                         f"spread {current_spread_pips:.1f} vs cap "
                         f"{typical * self.risk_cfg.max_spread_multiplier:.1f}",
                     ))
-        except Exception:  # noqa: BLE001
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # Optional risk dimensions failed to build — proceed with whatever
+            # dimensions were collected, but make the degradation visible.
+            logger.debug("[RiskEngine] optional risk dimension build skipped: {}", exc)
         return ra.accumulate(dims)
 
     def record_trade_result(

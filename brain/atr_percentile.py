@@ -14,7 +14,6 @@ from __future__ import annotations
 import math
 
 import pandas as pd
-from loguru import logger
 
 from brain.volatility_stop import atr_series
 

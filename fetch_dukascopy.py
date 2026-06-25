@@ -34,7 +34,7 @@ Notes:
 import time
 import pandas as pd
 from pathlib import Path
-from datetime import datetime, timezone
+from datetime import datetime
 
 try:
     import dukascopy_python as dk

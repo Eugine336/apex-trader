@@ -13,9 +13,8 @@ from __future__ import annotations
 
 import math
 import threading
-import time as _time
 from copy import deepcopy
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
 

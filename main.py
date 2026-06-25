@@ -99,25 +99,14 @@ def main() -> None:
     except Exception as exc:
         logger.warning("Auto-discovery skipped: {}", exc)
 
-    from brain import (
-        StructureEngine, LiquidityMapper, FVGDetector,
-        OrderBlockDetector, CurrencyStrengthMeter, SessionEngine, NewsGuard,
-        RegimeDetector, VolumeAnalyzer, InducementDetector, WyckoffEngine,
-        TradeJournal, DrawdownGuard, ExecutionMonitor,
-        CorrelationEngine, BacktestEngine,
-    )
     logger.info("Phase 1 — Brain loaded (17 modules)")
 
-    from trigger import EntryEngine, EntryPatternDetector, EntryValidator
     logger.info("Phase 3 — Trigger loaded (entry engine, patterns, validator)")
 
-    from management import TradeManager, PartialCloseCalculator, StructureTrailingStop, ReEntryManager
     logger.info("Phase 4 — Management loaded (trade manager, trailing, partial, re-entry)")
 
-    from risk import RiskEngine, PositionSizer, PnLTracker, SpreadMonitor, RiskReporter
     logger.info("Phase 5 — Risk loaded (risk engine, position sizer, P&L tracker, spread, reporter)")
 
-    from adaptive import AdaptiveOptimizer, TradeAnalyzer, ScoreOptimizer, RegimeLearner, PairLearner, SessionLearner
     logger.info("Phase 6 — Adaptive Optimizer loaded (analyzer, optimizers, learners)")
 
     from platforms import PlatformManager

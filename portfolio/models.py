@@ -8,7 +8,7 @@ so the division stays decoupled and unit-testable.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any, Optional, Sequence
 
 

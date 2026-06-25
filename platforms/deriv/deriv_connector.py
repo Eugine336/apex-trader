@@ -4,7 +4,6 @@ Connects to Deriv via the official WebSocket API.
 Handles synthetics (V75, Boom/Crash) 24/7 and Forex on Deriv.
 """
 
-import os
 import asyncio
 import json
 import threading
@@ -18,6 +17,7 @@ from loguru import logger
 
 from brain.symbol_mapper import SymbolMapper
 from config import get_pip_size
+from ops.redaction import mask_account_id, redact_account_in_url
 from persistence.deriv_position_store import DerivPositionStore
 from platforms.base_connector import (
     AccountInfo,
@@ -358,7 +358,7 @@ class DerivConnector(BaseConnector):
         self._connected = True
         logger.info(
             "Deriv connected — account {} ({}), OTP-authenticated WebSocket",
-            self._account_id,
+            mask_account_id(self._account_id),
             self._account_type,
         )
 
@@ -583,7 +583,7 @@ class DerivConnector(BaseConnector):
                         return None
                     return body if isinstance(body, dict) else {"data": body}
         except Exception as exc:
-            logger.error("Deriv REST {} {} failed: {}", method, url, exc)
+            logger.error("Deriv REST {} {} failed: {}", method, redact_account_in_url(url), exc)
             return None
 
     async def _check_health(self) -> bool:
@@ -676,7 +676,7 @@ class DerivConnector(BaseConnector):
         url = _DERIV_OTP_URL.format(account_id=account_id)
         body = await self._rest_request("POST", url)
         if body is None:
-            logger.error("Deriv OTP request failed for account {}", account_id)
+            logger.error("Deriv OTP request failed for account {}", mask_account_id(account_id))
             return ""
         # The OTP endpoint returns a ready-to-use, pre-authenticated WS URL.
         ws_url = (

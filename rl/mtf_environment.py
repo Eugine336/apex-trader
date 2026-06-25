@@ -44,7 +44,7 @@ from .contracts import (
     N_CONTEXT_FEATURES,
     build_symbol_vocab,
 )
-from .multi_tf_obs_builder import MultiTFObservationBuilder, build_context, symbol_id_for
+from .multi_tf_obs_builder import MultiTFObservationBuilder, symbol_id_for
 
 
 SL_ATR_MULT  = 1.5

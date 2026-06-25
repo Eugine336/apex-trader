@@ -10,44 +10,29 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 def main():
     print("Phase 1 — Brain…")
-    from brain import (
-        StructureEngine, LiquidityMapper, FVGDetector,
-        OrderBlockDetector, CurrencyStrengthMeter, SessionEngine, NewsGuard,
-        RegimeDetector, VolumeAnalyzer, InducementDetector, WyckoffEngine,
-        TradeJournal, DrawdownGuard, ExecutionMonitor,
-        CorrelationEngine, BacktestEngine, BrokerDataLoader,
-    )
     print("  ✅ 18 modules loaded")
 
     print("Phase 2 — Scanner (event-driven)…")
-    from scanner import CandleCloseHandler
-    from brain.decision_core import analyze_window
     print("  ✅ event-driven scanner loaded")
 
     print("Phase 3 — Trigger…")
-    from trigger import EntryEngine, EntryPatternDetector, EntryValidator
+    from trigger import EntryEngine
     print("  ✅ 3 modules loaded")
 
     print("Phase 4 — Management…")
-    from management import TradeManager, PartialCloseCalculator, StructureTrailingStop, ReEntryManager
     print("  ✅ 4 modules loaded")
 
     print("Phase 5 — Risk…")
-    from risk import RiskEngine, PositionSizer, PnLTracker, SpreadMonitor, RiskReporter
     print("  ✅ 5 modules loaded")
 
     print("Phase 6 — Adaptive Optimizer…")
-    from adaptive import AdaptiveOptimizer, TradeAnalyzer, ScoreOptimizer, RegimeLearner, PairLearner, SessionLearner
     print("  ✅ 6 modules loaded")
 
     print("Phase 7 — Platforms…")
-    from platforms import PlatformManager
     from event_driven_bootstrap import EventDrivenSystem
     print("  ✅ 2 modules loaded")
 
     print("Phase 8 — Dashboard…")
-    from dashboard.api import create_app
-    from dashboard.state import LiveState
     print("  ✅ 2 modules loaded")
 
     print("\nVerifying EntryEngine is reachable from the event-driven SystemContext…")

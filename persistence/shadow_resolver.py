@@ -14,18 +14,14 @@ Design constraints (binding):
 
 from __future__ import annotations
 
-import json
-import sys
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import pandas as pd
 from loguru import logger
 
-from config import get_pip_size, get_instrument
+from config import get_instrument
 from management.trade_manager import (
-    EntrySignal,
     ManagedTrade,
     TradeManager,
     TradeStatus,

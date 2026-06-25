@@ -26,7 +26,6 @@ import pandas as pd
 
 from rl.contracts import (
     CLOCK_TF,
-    INSTRUMENT_CONTEXT_FEATURES,
     MARKET_FEATURES,
     N_CONTEXT_FEATURES,
     N_MARKET_FEATURES,

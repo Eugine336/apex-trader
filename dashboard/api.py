@@ -251,7 +251,9 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
         symbol: str = "",
     ):
         """Recent decisions from the Decision Intelligence layer."""
-        return _state.get_decisions(limit=limit, decision_type=decision_type, symbol=symbol)
+        return _state.get_decisions(
+            limit=min(max(limit, 1), 500), decision_type=decision_type, symbol=symbol
+        )
 
     @app.get("/api/decisions/stats")
     def decision_stats():
@@ -261,7 +263,7 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
     @app.get("/api/planner")
     def planner(limit: int = 50, symbol: str = ""):
         """Recent trade plans from the Trade Planner with their outcomes."""
-        return _state.get_planner(limit=limit, symbol=symbol)
+        return _state.get_planner(limit=min(max(limit, 1), 500), symbol=symbol)
 
     @app.get("/api/planner/stats")
     def planner_stats():

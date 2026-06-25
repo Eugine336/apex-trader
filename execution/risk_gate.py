@@ -15,7 +15,7 @@ Thread-safe: the gate holds no mutable state of its own.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from threading import Lock
 from typing import Optional
 

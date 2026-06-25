@@ -4,7 +4,6 @@ Connects to MetaTrader 5 via the official Python package.
 Handles Forex, commodities, and indices on MT5.
 """
 
-import os
 import platform as sys_platform
 import time as _time
 from datetime import datetime, timedelta, timezone
@@ -16,6 +15,7 @@ from loguru import logger
 
 from config import get_pip_size
 from brain.symbol_mapper import SymbolMapper
+from ops.redaction import mask_account_id
 from platforms.order_idempotency import build_order_comment, extract_idempotency_key
 from platforms.base_connector import (
     AccountInfo,
@@ -173,7 +173,7 @@ class MT5Connector(BaseConnector):
             self._connected = True
             logger.info(
                 "MT5 connected — account {} | balance {} {}",
-                info.login,
+                mask_account_id(info.login),
                 info.balance,
                 info.currency,
             )

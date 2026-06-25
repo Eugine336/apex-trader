@@ -18,10 +18,9 @@ from __future__ import annotations
 import threading
 import time as _time
 from collections import deque
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Optional
 
-from loguru import logger
 
 from tick.models import Tick
 

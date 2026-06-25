@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Optional
 
 from .shadow import ShadowEngine, RLSignal
-from .authority import AuthorityManager, Permissions
+from .authority import AuthorityManager
 
 logger = logging.getLogger("apex.rl.bridge")
 

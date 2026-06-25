@@ -41,7 +41,7 @@ import math
 import sqlite3
 import threading
 import time
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Dict, List, Optional
 

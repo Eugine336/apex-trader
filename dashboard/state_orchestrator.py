@@ -22,7 +22,6 @@ from __future__ import annotations
 import json
 import time as _time
 from datetime import datetime, timezone
-from typing import Any
 
 from loguru import logger
 

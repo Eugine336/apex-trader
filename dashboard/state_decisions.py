@@ -7,10 +7,8 @@ situation dimension stats, and governor veto counts to the dashboard.
 from __future__ import annotations
 
 import json
-import os
 import time as _time
 from pathlib import Path
-from typing import Any
 
 from loguru import logger
 

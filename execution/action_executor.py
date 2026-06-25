@@ -18,14 +18,13 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
 from threading import Lock
 from typing import Any, Optional, Protocol
 
 from loguru import logger
 
 from execution.intents import Intent, IntentType
-from execution.risk_gate import GateConfig, GateResult, RiskGate
+from execution.risk_gate import GateConfig, RiskGate
 from platforms.circuit_breaker import CircuitBreaker
 
 
