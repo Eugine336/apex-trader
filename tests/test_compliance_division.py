@@ -107,11 +107,16 @@ class TestApproved:
         # Every check ran.
         assert len(verdict.checks_run) == 10
 
-    def test_disabled_subsystems_pass(self):
-        # A division wired with nothing should approve (each check disabled).
+    def test_disabled_subsystems_fail_closed(self):
+        # Bug #31: a division wired with nothing must REJECT — the safety-critical
+        # checks (market_open, broker_available, spread_ok) fail CLOSED when their
+        # source is unbound rather than silently permitting the trade.
         div = ComplianceDivision()
         verdict = div.permit(_candidate(), ComplianceBook([]), _account())
-        assert verdict.approved is True
+        assert verdict.rejected
+        assert any("market_open" in r for r in verdict.reasons)
+        assert any("broker_available" in r for r in verdict.reasons)
+        assert any("spread_ok" in r for r in verdict.reasons)
 
 
 # ── Individual vetoes ────────────────────────────────────────────────────
