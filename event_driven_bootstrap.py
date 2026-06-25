@@ -2555,6 +2555,9 @@ class EventDrivenSystem:
             is_news_clear=self._check_news_clear,
             get_spread_pips=self._get_spread_pips,
             get_m1_dataframe=self._get_m1_dataframe,
+            # Live sub-candle momentum for the A1 direction-flip confirmation —
+            # the flip rides real-time ticks + M5 trend, not a 60s-stale M1 close.
+            get_tick_momentum=self._compute_tick_momentum,
             on_gate_trace=self._on_gate_trace,
             # Wire the shadow-fed GateTuner into the LIVE entry gate so its
             # learned (bounded) score-bar offset actually modifies live entry
