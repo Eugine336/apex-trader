@@ -2400,6 +2400,14 @@ class EventDrivenSystem:
         self._live_candle_aggregator = LiveCandleAggregator(max_candles=200)
         self._tick_router.register_callback(self._live_candle_aggregator.on_tick)
 
+        # ── Developing analysis store (Phase 2 — live/forming-bar view) ──
+        # A SEPARATE WorldModelStore holding the continuously-evolving
+        # developing analysis. The confirmed CandleCloseHandler reads it to
+        # blend developing structure into bias CONFIDENCE (never direction).
+        # Kept distinct from ``self._wm_store`` so developing data can never
+        # corrupt confirmed, non-repainting WorldModels.
+        self._developing_wm_store = WorldModelStore()
+
         # ── Learned analysis edge ────────────────────────────────────
         # Bounded, default-neutral multipliers that make the analysis
         # combination data-driven: zone conviction and per-concept bias are
@@ -2499,7 +2507,33 @@ class EventDrivenSystem:
             get_spread_pips=self._get_spread_pips,
             calibration_spread_tf=getattr(_calib_cfg, "spread_sample_tf", "M5"),
             news_impact_tracker=self._news_impact_tracker,
+            developing_store=self._developing_wm_store,
         )
+
+        # ── Developing analysis loop (Phase 2) ───────────────────────
+        # Background thread that runs the brain modules on forming candles from
+        # the LiveCandleAggregator and publishes to the developing store. Opt-in
+        # via config.developing_analysis.enabled (default True). Purely additive
+        # — failures never affect the confirmed path.
+        self._developing_loop = None
+        _dev_cfg = getattr(self._config, "developing_analysis", None)
+        if _dev_cfg is None:
+            from config import DevelopingAnalysisConfig
+            _dev_cfg = DevelopingAnalysisConfig()
+        if getattr(_dev_cfg, "enabled", False):
+            try:
+                from brain.developing_analysis import DevelopingAnalysisLoop
+                self._developing_loop = DevelopingAnalysisLoop(
+                    candle_aggregator=self._live_candle_aggregator,
+                    developing_store=self._developing_wm_store,
+                    symbols=list(INSTRUMENT_REGISTRY.keys()),
+                    config=_dev_cfg,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[event-driven] DevelopingAnalysisLoop init failed: {}", exc,
+                )
+                self._developing_loop = None
 
         # ── Execution plane ──────────────────────────────────────────
         self._aggregator = IntentAggregator(AggregatorConfig())
@@ -3148,6 +3182,17 @@ class EventDrivenSystem:
         self._flush_loop.start()
         self._tick_eval_loop.start()
 
+        # ── Start developing analysis loop (Phase 2) ─────────────────
+        # Started after the live loops so ticks are already flowing into the
+        # LiveCandleAggregator it reads from.
+        if self._developing_loop is not None:
+            try:
+                self._developing_loop.start()
+            except Exception as exc:
+                logger.warning(
+                    "[event-driven] developing analysis start failed: {}", exc,
+                )
+
         # ── Start ProcessWatchdog heartbeat thread ───────────────────
         ctx = self._ctx
         if ctx is not None and ctx.process_watchdog is not None:
@@ -3395,6 +3440,13 @@ class EventDrivenSystem:
         self._flush_loop.stop()
         self._mt5_poller.stop()
         self._deriv_adapter.stop()
+        # Stop the developing analysis loop before the tick router so it stops
+        # reading the aggregator once ticks stop flowing.
+        if getattr(self, "_developing_loop", None) is not None:
+            try:
+                self._developing_loop.stop()
+            except Exception:
+                pass
         self._tick_router.stop()
         self._candle_detector.stop()
         self._candle_handler.shutdown()

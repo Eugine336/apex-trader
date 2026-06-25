@@ -3110,6 +3110,33 @@ class CalibrationConfig:
 
 
 @dataclass
+class DevelopingAnalysisConfig:
+    """Continuous developing analysis from tick-built candles (Phase 2).
+
+    A background thread reads forming candles from the LiveCandleAggregator
+    (Phase 1) and runs the same brain modules to produce a *developing*
+    structure/bias that evolves between candle closes — instead of the
+    WorldModel only refreshing when a candle closes (up to an hour stale on H1,
+    four hours on H4).  The developing analysis lives in a SEPARATE
+    WorldModelStore and never overwrites confirmed data; its confidence is
+    discounted by ``confidence_discount`` when the confirmed ``compute_bias``
+    blends it in (it adjusts confidence only, never direction).
+
+    Per-TF refresh intervals trade responsiveness for CPU.  M1 is excluded
+    (it is not in ``TF_MODULE_MAP`` — M1 is the entry-confirmation plane only).
+    """
+
+    enabled: bool = True
+    max_workers: int = 4
+    confidence_discount: float = 0.7
+    refresh_m5: float = 10.0
+    refresh_m15: float = 15.0
+    refresh_h1: float = 30.0
+    refresh_h4: float = 60.0
+    refresh_d1: float = 300.0
+
+
+@dataclass
 class AppConfig:
     # All 4 categories enabled — forex, commodity, index, synthetic
     enabled_categories: list[str] = field(
@@ -3135,6 +3162,9 @@ class AppConfig:
     vote_calibrator: VoteCalibratorConfig = field(default_factory=VoteCalibratorConfig)
     module_governor: ModuleGovernorConfig = field(default_factory=ModuleGovernorConfig)
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
+    developing_analysis: DevelopingAnalysisConfig = field(
+        default_factory=DevelopingAnalysisConfig
+    )
     conviction_normalization: ConvictionNormalizationConfig = field(
         default_factory=ConvictionNormalizationConfig
     )
