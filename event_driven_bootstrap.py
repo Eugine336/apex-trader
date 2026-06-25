@@ -4903,14 +4903,25 @@ class EventDrivenSystem:
         """Cycle boundary: select among per-candidate entries and dispatch.
 
         Collects every ``(CandidateEntryDecision, decision_dict)`` produced this
-        analysis cycle, applies the within-cycle direction lock via the pure
-        :func:`select_cycle_candidates`, then dispatches survivors best-first
-        through the unchanged ``_on_entry_decision`` permit/sizing pipeline.
+        analysis cycle and dispatches the survivors through the unchanged
+        ``_on_entry_decision`` permit/sizing pipeline.
 
-        Session 3 replaces the direction lock with ``PortfolioGovernor.allocate``
-        (capital-aware, V2 hedging). The per-symbol re-fire debounce and the
-        cheap held-direction pre-check are preserved from the legacy path; the
-        authoritative duplicate / risk vetoes still live in Compliance.
+        Session 3 — capital-aware selection (Portfolio Division decides which
+        ideas deserve capital):
+
+        1. Each candidate is GRADED by the orchestrator round table
+           (``grade_candidate`` — EV × coherence × confidence); a uniformly weak
+           idea (grade below the orchestrator's dimension floor) is dropped.
+        2. Survivors are ranked best-first by grade (EV as the tie-break).
+        3. Each is offered to ``PortfolioGovernor.allocate`` with the running
+           book (real positions + the ones already funded THIS cycle), which can
+           fund opposing horizons under the V2 hedge cap. Approved candidates
+           carry their risk budget into ``_on_entry_decision``; a global/budget
+           rejection stops the cycle, a per-candidate rejection just skips it.
+
+        When the PortfolioGovernor is unavailable (no ``ctx``) the legacy
+        within-cycle direction lock (:func:`select_cycle_candidates`) is used so
+        behaviour is unchanged without the capital-allocation authority.
         """
         if not items:
             return
@@ -4919,11 +4930,177 @@ class EventDrivenSystem:
         if now < self._consensus_entry_cooldown.get(symbol, 0.0):
             return
 
+        ctx = self._ctx
+        governor = getattr(ctx, "portfolio_governor", None) if ctx is not None else None
+
+        if governor is None:
+            self._select_and_execute_legacy(symbol, items, cfg, now)
+            return
+
+        # ── Session 3: grade → rank → allocate (capital-aware, V2 hedging) ─
+        graded = self._grade_and_rank(symbol, items)
+        if not graded:
+            return
+
+        try:
+            book = list(self._pm.get_all_open_positions() or [])
+        except Exception:
+            book = []
+        try:
+            balance = self._pm.get_platform_balance(symbol) or 0.0
+        except Exception:
+            balance = 0.0
+
+        dispatched = 0
+        for grade, envelope, decision in graded:
+            direction = str(decision.get("direction", "") or "")
+            if self._already_holding_direction(symbol, direction):
+                continue
+            cand = envelope.candidate
+            try:
+                allocation = governor.allocate(
+                    symbol=symbol,
+                    direction=direction,
+                    timeframe_class=str(getattr(cand, "timeframe_class", "") or ""),
+                    open_positions=book,
+                    account_balance=balance,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[multi-opp] {} {} allocate errored, skipping: {}",
+                    symbol, direction, exc,
+                )
+                continue
+            if not allocation.approved:
+                logger.info(
+                    "[multi-opp] {} {} candidate {} NOT funded — {}",
+                    symbol, direction,
+                    decision.get("candidate_id", "?"), allocation.reason,
+                )
+                # A global/budget exhaustion ends the cycle; per-candidate caps
+                # (symbol / tf-class / hedge) only skip this one idea.
+                if allocation.reason.startswith(("global_cap", "risk_budget")):
+                    break
+                continue
+
+            logger.info(
+                "[multi-opp] {} {} candidate {} FUNDED (grade={:.2f} risk≤{:.2f}% — {}) "
+                "→ ENTRY @ {:.5f} SL={:.5f} TP={:.5f}",
+                symbol, direction, decision.get("candidate_id", "?"),
+                grade, allocation.max_risk_pct, allocation.reason,
+                float(decision.get("entry_price", 0.0) or 0.0),
+                float(decision.get("stop_loss", 0.0) or 0.0),
+                float(decision.get("tp1", 0.0) or 0.0),
+            )
+            try:
+                self._on_entry_decision(decision, allocation)
+                dispatched += 1
+                # Project the just-funded idea into the running book so the next
+                # candidate this cycle sees the updated exposure / budget.
+                book = book + [self._projected_position(symbol, direction, cand, allocation)]
+            except Exception:
+                logger.exception(
+                    "[multi-opp] {} entry dispatch failed", symbol,
+                )
+
+        if dispatched:
+            cooldown = 300.0
+            if cfg is not None:
+                cooldown = float(getattr(cfg, "trigger_cooldown_seconds", 300.0))
+            self._consensus_entry_cooldown[symbol] = now + cooldown
+
+    def _grade_and_rank(self, symbol: str, items: list) -> list:
+        """Grade each candidate via the orchestrator round table, drop the
+        uniformly weak, and return survivors ranked best-first.
+
+        Returns ``list[(grade, CandidateEntryDecision, decision_dict)]``. When no
+        orchestrator is wired, the candidate's own ``score`` is the grade and
+        nothing is dropped (grading is additive, never a new hard veto here).
+        """
+        ctx = self._ctx
+        orch = getattr(ctx, "orchestrator", None) if ctx is not None else None
+        try:
+            floor = float(getattr(
+                getattr(self._config, "orchestrator", None), "dimension_floor", 0.6,
+            ))
+        except Exception:
+            floor = 0.6
+
+        graded: list = []
+        for envelope, decision in items:
+            cand = envelope.candidate
+            score = float(getattr(cand, "score", 0.0) or 0.0)
+            ev = float(getattr(cand, "ev_estimate", 0.0) or 0.0)
+            grade = score
+            if orch is not None and hasattr(orch, "grade_candidate"):
+                try:
+                    grade = orch.grade_candidate(
+                        direction=str(getattr(cand, "direction", "") or ""),
+                        horizon=str(getattr(cand, "timeframe_class", "") or ""),
+                        # 0.0 EV is "unknown" (neutral), not "bad"; a real
+                        # negative EV still dims the grade toward the floor.
+                        ranker_ev=ev if ev else None,
+                        ranker_confidence=score if score else None,
+                    )
+                except Exception as exc:
+                    logger.debug(
+                        "[multi-opp] {} grade_candidate failed, using score: {}",
+                        symbol, exc,
+                    )
+                    grade = score
+                if grade < floor - 1e-9:
+                    logger.info(
+                        "[multi-opp] {} {} candidate {} dropped — grade {:.2f} < "
+                        "floor {:.2f} (uniformly weak)",
+                        symbol, getattr(cand, "direction", "?"),
+                        getattr(cand, "candidate_id", "?"), grade, floor,
+                    )
+                    continue
+            graded.append((grade, envelope, decision))
+
+        graded.sort(
+            key=lambda g: (
+                g[0],
+                float(getattr(g[1].candidate, "ev_estimate", 0.0) or 0.0),
+            ),
+            reverse=True,
+        )
+        return graded
+
+    @staticmethod
+    def _projected_position(
+        symbol: str, direction: str, candidate: Any, allocation: Any,
+    ) -> Any:
+        """A lightweight stand-in for an idea funded earlier this cycle.
+
+        Lets ``PortfolioGovernor.allocate`` see within-cycle exposure (counts,
+        risk budget, horizon) before the broker round-trip returns a real
+        position. Carries the granted ``risk_pct`` and ``timeframe_class`` so the
+        per-symbol / tf-class / budget gates stay correct across the cycle.
+        """
+        from brain.candidate_models import CandidatePosition
+
+        return CandidatePosition(
+            symbol=symbol,
+            direction=direction,
+            candidate_id=str(getattr(candidate, "candidate_id", "") or ""),
+            timeframe_class=str(getattr(candidate, "timeframe_class", "") or ""),
+        )
+
+    def _select_and_execute_legacy(
+        self, symbol: str, items: list, cfg: Any, now: float,
+    ) -> None:
+        """LEGACY within-cycle direction lock (no PortfolioGovernor available).
+
+        Preserves the Session-2 behaviour: rank best-first and let the top
+        candidate's direction win the cycle, dropping opposing-direction ideas.
+        Used only when the capital-allocation authority is absent.
+        """
         survivors, dropped, winning_direction = select_cycle_candidates(items)
         if dropped:
             logger.info(
-                "[multi-opp] {} cycle: {} candidate(s) survive {}, "
-                "{} opposing dropped this cycle",
+                "[multi-opp] {} cycle (legacy lock): {} survive {}, "
+                "{} opposing dropped",
                 symbol, len(survivors), winning_direction, len(dropped),
             )
 
@@ -4956,7 +5133,9 @@ class EventDrivenSystem:
                 cooldown = float(getattr(cfg, "trigger_cooldown_seconds", 300.0))
             self._consensus_entry_cooldown[symbol] = now + cooldown
 
-    def _on_entry_decision(self, decision: dict[str, Any]) -> None:
+    def _on_entry_decision(
+        self, decision: dict[str, Any], allocation: Any = None,
+    ) -> None:
         """Handle entry decisions from EntryOrchestrator.
 
         Permit / sizing pipeline before an order is placed:
@@ -5934,6 +6113,23 @@ class EventDrivenSystem:
 
             # ── Position sizing ──────────────────────────────────────
             risk_pct = self._config.risk.risk_per_trade_pct / 100.0
+            # Session 3 — Portfolio Division capital budget. When this entry was
+            # funded by ``PortfolioGovernor.allocate`` the granted ``max_risk_pct``
+            # caps the per-trade risk (e.g. a V2 hedge scalp capped to 30% of the
+            # dominant swing), so the candidate is sized within its allocation.
+            if allocation is not None:
+                try:
+                    alloc_pct = float(getattr(allocation, "max_risk_pct", 0.0) or 0.0)
+                    if alloc_pct > 0:
+                        capped = alloc_pct / 100.0
+                        if capped < risk_pct:
+                            logger.info(
+                                "[multi-opp] {} risk capped {:.2f}%→{:.2f}% by allocation",
+                                symbol, risk_pct * 100.0, alloc_pct,
+                            )
+                            risk_pct = capped
+                except Exception:
+                    pass
             if ctx is not None and ctx.drawdown_guard is not None:
                 try:
                     dd_status = ctx.drawdown_guard.get_status()

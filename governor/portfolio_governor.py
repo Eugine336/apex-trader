@@ -156,6 +156,231 @@ class PortfolioGovernor:
                 f"governor error (fail-closed): {exc}",
             )
 
+    # ── Capital allocation (Session 3 — multi-opportunity) ───────────────
+
+    def allocate(
+        self,
+        *,
+        symbol: str,
+        direction: str,
+        timeframe_class: str = "",
+        proposed_risk_pct: float | None = None,
+        proposed_lots: float = 0.0,
+        open_positions: list[Any] | None = None,
+        account_balance: float = 0.0,
+    ) -> "Any":
+        """Capital verdict for ONE ranked candidate (Portfolio Division, V2).
+
+        The multi-opportunity counterpart to :meth:`check`: instead of ratifying
+        a single pre-collapsed direction with a yes/no, this answers *how much
+        risk* an independent idea may receive given the rest of the book. It
+        returns an :class:`~brain.candidate_models.Allocation` and enforces five
+        gates (caller dispatches candidates best-first, so the strongest idea
+        hits the caps first):
+
+        * **Gate 0 — V2 hedge**: an opposing-direction position on the same
+          symbol is allowed, but capped to ``hedge_ratio_cap`` of the dominant
+          position's size (so a SHORT scalp rides alongside a LONG swing without
+          a net flip). When the candidate's lots are known the cap is enforced on
+          lots; the granted risk budget is also scaled to ``hedge_ratio_cap``.
+        * **Gate 1 — symbol cap** (``max_positions_per_symbol``).
+        * **Gate 2 — timeframe-class cap** (``max_positions_per_tf_class``).
+        * **Gate 3 — global cap** (``max_total_positions``).
+        * **Gate 4 — risk budget** (``max_total_risk_pct`` across the book).
+
+        Fail-closed by default (mirrors :meth:`check`): on an internal error the
+        candidate is denied so a crashing allocator cannot leak risk through.
+        ``check()`` / ``check_exposure_only()`` (concentration analysis) are left
+        intact and complementary — this method is purely additive.
+        """
+        from brain.candidate_models import Allocation  # lazy — avoids import cycle
+
+        try:
+            return self._allocate_inner(
+                Allocation,
+                symbol,
+                direction,
+                timeframe_class,
+                proposed_risk_pct,
+                proposed_lots,
+                open_positions or [],
+                account_balance,
+            )
+        except Exception as exc:  # noqa: BLE001
+            if not getattr(self.config, "fail_closed", True):
+                logger.warning(
+                    "[Governor] allocate error for {} {} — failing OPEN: {}",
+                    direction, symbol, exc,
+                )
+                per_trade = float(getattr(self.config, "per_trade_max_risk", 2.0))
+                return Allocation(
+                    approved=True,
+                    max_risk_pct=per_trade,
+                    reason=f"allocate error (fail-open): {exc}",
+                )
+            logger.error(
+                "[Governor] allocate error for {} {} — failing CLOSED: {}",
+                direction, symbol, exc,
+            )
+            return Allocation(
+                approved=False,
+                max_risk_pct=0.0,
+                reason=f"allocate error (fail-closed): {exc}",
+            )
+
+    def _allocate_inner(
+        self,
+        Allocation: Any,
+        symbol: str,
+        direction: str,
+        timeframe_class: str,
+        proposed_risk_pct: float | None,
+        proposed_lots: float,
+        open_positions: list[Any],
+        account_balance: float,
+    ) -> Any:
+        cfg = self.config
+        if not cfg.enabled:
+            per_trade = float(getattr(cfg, "per_trade_max_risk", 2.0))
+            return Allocation(
+                approved=True, max_risk_pct=per_trade, reason="governor disabled",
+            )
+
+        sym = str(symbol).upper().strip()
+        tfc = str(timeframe_class or "").upper().strip()
+        want_long = self._is_long(direction)
+        per_trade = float(getattr(cfg, "per_trade_max_risk", 2.0))
+        req_risk = per_trade if proposed_risk_pct is None else float(proposed_risk_pct)
+        req_risk = max(0.0, min(req_risk, per_trade))
+
+        views = [self._position_view(p) for p in open_positions]
+        views = [v for v in views if v is not None]
+        same_symbol = [v for v in views if v["symbol"] == sym]
+
+        # ── Gate 3: global position cap ──────────────────────────────────
+        max_total = int(getattr(cfg, "max_total_positions", 10))
+        if len(views) >= max_total:
+            return Allocation(
+                approved=False, max_risk_pct=0.0,
+                reason=f"global_cap_hit ({len(views)}/{max_total})",
+            )
+
+        # ── Gate 1: per-symbol position cap ──────────────────────────────
+        max_sym = int(getattr(cfg, "max_positions_per_symbol", 2))
+        if len(same_symbol) >= max_sym:
+            return Allocation(
+                approved=False, max_risk_pct=0.0,
+                reason=f"symbol_cap_hit {sym} ({len(same_symbol)}/{max_sym})",
+                conflicts=[f"{v['symbol']} {v['direction']}" for v in same_symbol],
+            )
+
+        # ── Gate 2: timeframe-class cap (only when horizon is known) ─────
+        if tfc:
+            max_tf = int(getattr(cfg, "max_positions_per_tf_class", 3))
+            same_tf = [v for v in views if v["timeframe_class"] == tfc]
+            if len(same_tf) >= max_tf:
+                return Allocation(
+                    approved=False, max_risk_pct=0.0,
+                    reason=f"tf_class_cap_hit {tfc} ({len(same_tf)}/{max_tf})",
+                    conflicts=[f"{v['symbol']} {v['direction']}" for v in same_tf],
+                )
+
+        # ── Gate 4: total risk budget ────────────────────────────────────
+        max_total_risk = float(getattr(cfg, "max_total_risk_pct", 6.0))
+        current_risk = sum(v["risk_pct"] for v in views)
+        remaining = max_total_risk - current_risk
+        if remaining <= 1e-9:
+            return Allocation(
+                approved=False, max_risk_pct=0.0,
+                reason=(
+                    f"risk_budget_exhausted ({current_risk:.2f}/{max_total_risk:.1f}%)"
+                ),
+            )
+        grant = min(req_risk, remaining)
+
+        # ── Gate 0: V2 hedge — opposing capped to a fraction of dominant ──
+        conflicts: list[str] = []
+        reason = "approved"
+        if same_symbol:
+            long_lots = sum(v["lots"] for v in same_symbol if self._is_long(v["direction"]))
+            short_lots = sum(v["lots"] for v in same_symbol if not self._is_long(v["direction"]))
+            dom_long = long_lots >= short_lots
+            dom_lots = max(long_lots, short_lots)
+            opp_existing_lots = short_lots if dom_long else long_lots
+            if want_long != dom_long:  # candidate OPPOSES the dominant direction
+                hedge_cap = float(getattr(cfg, "hedge_ratio_cap", 0.30))
+                conflicts = [
+                    f"{v['symbol']} {v['direction']}"
+                    for v in same_symbol
+                    if self._is_long(v["direction"]) == dom_long
+                ]
+                # Risk-budget translation of the hedge ratio (works even when
+                # the candidate's lots are not yet sized).
+                grant = min(grant, per_trade * hedge_cap)
+                # Hard lots cap when the existing dominant size is known.
+                if dom_lots > 0:
+                    allowed_opp_lots = dom_lots * hedge_cap
+                    if opp_existing_lots >= allowed_opp_lots - 1e-9:
+                        return Allocation(
+                            approved=False, max_risk_pct=0.0,
+                            reason=(
+                                f"hedge_cap_exhausted (opposing {opp_existing_lots:.2f} "
+                                f"≥ {allowed_opp_lots:.2f} = {hedge_cap:.0%}×dominant "
+                                f"{dom_lots:.2f})"
+                            ),
+                            conflicts=conflicts,
+                        )
+                    room = allowed_opp_lots - opp_existing_lots
+                    if proposed_lots and proposed_lots > room:
+                        grant *= room / proposed_lots
+                reason = f"hedged (opposing capped to {hedge_cap:.0%} of dominant)"
+
+        if grant <= 1e-9:
+            return Allocation(
+                approved=False, max_risk_pct=0.0,
+                reason="no_risk_budget_after_caps", conflicts=conflicts,
+            )
+        return Allocation(
+            approved=True, max_risk_pct=round(grant, 4),
+            reason=reason, conflicts=conflicts,
+        )
+
+    @staticmethod
+    def _position_view(pos: Any) -> "dict | None":
+        """Normalise one open position into the fields ``allocate`` reasons over.
+
+        Returns ``{symbol, direction, lots, risk_pct, timeframe_class}`` or
+        ``None`` when the object has no usable symbol. Reads defensively so a
+        broker ``ManagedPosition`` / ``OpenTrade`` / dict / a Session-4
+        ``CandidatePosition`` (which carries ``timeframe_class``) all work.
+        """
+        base = PortfolioGovernor._normalize(pos)
+        if base is None:
+            return None
+        sym, pdir = base
+
+        def _g(name: str, default: Any) -> Any:
+            if isinstance(pos, dict):
+                return pos.get(name, default)
+            return getattr(pos, name, default)
+
+        try:
+            lots = float(_g("lots", _g("volume", 0.0)) or 0.0)
+        except (TypeError, ValueError):
+            lots = 0.0
+        try:
+            risk_pct = float(_g("risk_pct", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            risk_pct = 0.0
+        tfc = str(_g("timeframe_class", "") or "").upper().strip()
+        return {
+            "symbol": sym,
+            "direction": pdir,
+            "lots": lots,
+            "risk_pct": risk_pct,
+            "timeframe_class": tfc,
+        }
+
     def _check_inner(
         self,
         symbol: str,
