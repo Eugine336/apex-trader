@@ -1204,6 +1204,8 @@ class BacktestEngine:
         # identically in replay — strongly counter-trend setups are rejected
         # rather than entered and instantly closed.
         gate_alignment: Optional[float] = None
+        gate_long_p: float = 0.0
+        gate_short_p: float = 0.0
         try:
             _bias = wm.bias_dict()
             _bdir = str(_bias.get("direction", "") or "").upper()
@@ -1212,6 +1214,10 @@ class BacktestEngine:
                 gate_alignment = _bscore if _bdir == direction.upper() else -_bscore
             else:
                 gate_alignment = 0.0
+            # Phase 3 probabilistic evidence for the EV gate (default-on),
+            # so replay gates entries identically to the live zone path.
+            gate_long_p = float(_bias.get("long_probability", 0.0) or 0.0)
+            gate_short_p = float(_bias.get("short_probability", 0.0) or 0.0)
         except Exception:
             gate_alignment = None
         try:
@@ -1226,6 +1232,8 @@ class BacktestEngine:
                 current_spread_pips=0.0,
                 zone=zone,
                 alignment=gate_alignment,
+                long_probability=gate_long_p,
+                short_probability=gate_short_p,
                 is_instrument_known=True,
                 is_market_open=True,
                 is_session_active=True,

@@ -296,6 +296,12 @@ def _fire_zone(candidates):
         fvgs={"M5": [_make_fvg()]},
         votes=_long_swing_votes(),
         candidates=candidates,
+        # Phase 4: the default-on EV gate needs a probabilistic edge to pass.
+        # The fired zone is bullish (LONG), so seed a strong-LONG bias.
+        bias={
+            "direction": "LONG", "score": 70,
+            "long_probability": 0.7, "short_probability": 0.1,
+        },
     )
     store.publish(wm)
     orch.on_world_model_update("EURUSD")

@@ -14,8 +14,11 @@ Gate ordering (fail-fast: cheapest checks first):
     6. news_clear           — no high-impact news ±15 min
     7. drawdown_ok          — drawdown guard allows trading
     8. score_minimum        — confluence score meets threshold
-    9. risk_reward_ok       — R:R meets minimum requirement
-   10. zone_valid           — entry zone has not expired / invalidated
+    9. ev_gate / alignment  — directional check: expected-value gate
+                              (default, Phase 4) or the legacy HTF-alignment
+                              floor when ``ev_gate_enabled`` is False
+   10. risk_reward_ok       — R:R meets minimum requirement
+   11. zone_valid           — entry zone has not expired / invalidated
 
 All gates are pure functions of their inputs (no side effects).
 """
@@ -61,6 +64,8 @@ class EntryGate:
         zone: Optional[EntryZone] = None,
         alignment: Optional[float] = None,
         posture: str = "",
+        long_probability: float = 0.0,
+        short_probability: float = 0.0,
         is_instrument_known: bool = True,
         is_market_open: bool = True,
         is_session_active: bool = True,
@@ -72,9 +77,25 @@ class EntryGate:
 
         Every gate runs regardless of earlier failures so the caller
         gets a complete diagnostic.
+
+        The directional gate is the EV gate (``ev_gate_enabled``, default) —
+        ``long_probability``/``short_probability`` are the Phase 3 probabilistic
+        evidence. When the EV gate is disabled the legacy ``alignment`` floor
+        gate runs instead, so callers that only supply ``alignment`` keep their
+        prior behaviour.
         """
         utc_now = utc_now or datetime.now(timezone.utc)
         results: list[GateResult] = []
+
+        if getattr(self._config, "ev_gate_enabled", True):
+            directional_gate = self._check_ev(
+                symbol, direction, entry_price, stop_loss, tp1,
+                long_probability, short_probability,
+            )
+        else:
+            directional_gate = self._check_alignment(
+                symbol, direction, alignment, posture,
+            )
 
         gates = [
             self._check_instrument_known(symbol, is_instrument_known),
@@ -85,7 +106,7 @@ class EntryGate:
             self._check_news(symbol, is_news_clear),
             self._check_drawdown(is_drawdown_ok),
             self._check_score(symbol, score),
-            self._check_alignment(symbol, direction, alignment, posture),
+            directional_gate,
             self._check_risk_reward(entry_price, stop_loss, tp1, tp2, direction),
             self._check_zone_valid(zone, utc_now),
         ]
@@ -199,6 +220,81 @@ class EntryGate:
                 f"Score {score} < minimum {min_score}",
             )
         return GateResult(True, "score_minimum", f"Score {score} OK")
+
+    def _check_ev(
+        self,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        stop_loss: float,
+        tp1: float,
+        long_probability: float,
+        short_probability: float,
+    ) -> GateResult:
+        """Expected-value gate (Phase 4 — Opportunity Engine).
+
+        Replaces the alignment-floor gate as the directional check. Instead of
+        asking "does the HTF bias support this direction?" (a hard veto that
+        blocked every counter-trend idea), it asks "given the probabilistic
+        evidence and this zone's reward:risk, is the expected value positive
+        enough?".
+
+        ``EV = p_win × R:R − p_loss`` (in R-multiples), where ``p_win`` /
+        ``p_loss`` are the Phase 3 long/short probabilities mapped to the trade
+        direction. A counter-trend trade (``p_loss > p_win``) must clear a
+        higher EV bar (``min_entry_ev + counter_trend_ev_premium``) because it
+        fights the predominant flow. The GateTuner can LOWER the EV bar within
+        its bounded ``ev_gate`` envelope when its rejected setups keep winning,
+        but never below zero.
+        """
+        risk = abs(entry_price - stop_loss)
+        if risk <= 0:
+            return GateResult(False, "ev_gate", "Zero risk distance")
+
+        reward = abs(tp1 - entry_price)
+        rr_ratio = reward / risk
+
+        if direction.upper() == "LONG":
+            p_win = float(long_probability)
+            p_loss = float(short_probability)
+        else:
+            p_win = float(short_probability)
+            p_loss = float(long_probability)
+
+        if not (math.isfinite(p_win) and math.isfinite(p_loss) and math.isfinite(rr_ratio)):
+            return GateResult(False, "ev_gate", "Non-finite EV inputs")
+
+        entry_ev = p_win * rr_ratio - p_loss
+
+        is_counter = p_loss > p_win
+        min_ev = float(getattr(self._config, "min_entry_ev", 0.3))
+        if is_counter:
+            min_ev += float(getattr(self._config, "counter_trend_ev_premium", 0.1))
+
+        # Learned GateTuner offset (bounded, loosening-only): lower the EV bar
+        # when the setups this gate rejected keep winning. Never below 0 (a
+        # non-positive-EV trade is never admitted).
+        if self._gate_tuner is not None:
+            try:
+                offset = float(self._gate_tuner.offset("ev_gate"))
+                min_ev = max(0.0, min_ev + offset)
+            except Exception as exc:
+                logger.debug(
+                    "[entry-gate] gate-tuner ev_gate offset unavailable: {}", exc,
+                )
+
+        label = "counter-trend" if is_counter else "with-trend"
+        if entry_ev < min_ev:
+            return GateResult(
+                False, "ev_gate",
+                f"EV {entry_ev:.3f}R < min {min_ev:.3f}R "
+                f"({label}, p_win={p_win:.2f} rr={rr_ratio:.2f})",
+            )
+        return GateResult(
+            True, "ev_gate",
+            f"EV {entry_ev:.3f}R OK "
+            f"({label}, p_win={p_win:.2f} rr={rr_ratio:.2f})",
+        )
 
     def _check_alignment(
         self, symbol: str, direction: str, alignment: Optional[float],

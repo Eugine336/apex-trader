@@ -108,7 +108,15 @@ def extract_entry_zones(
             except Exception:  # noqa: BLE001 — learning must never break analysis
                 val = float(base)
         if is_counter:
-            val *= cfg.counter_trend_conviction_mult
+            # When the EV gate is enabled (Phase 4) it handles directional risk
+            # explicitly, so the conviction haircut is softened — a counter-trend
+            # FVG+OB (100 × 0.85 = 85) can still clear the score gate and reach
+            # the EV gate, which decides on its merits. With the EV gate off, the
+            # legacy haircut (0.70) filters geometry-only counter-trend setups.
+            if getattr(cfg, "ev_gate_enabled", False):
+                val *= cfg.counter_trend_conviction_mult_ev
+            else:
+                val *= cfg.counter_trend_conviction_mult
         return max(1, min(100, int(round(val))))
 
     all_fvgs: list[tuple[str, FairValueGap]] = []

@@ -71,7 +71,7 @@ def _bullish_m1(n=30, base=1.0835) -> pd.DataFrame:
 
 def _setup_orchestrator(
     fvgs=None, obs=None, structure=None,
-    m1_df=None, config=None,
+    m1_df=None, config=None, bias=None,
 ):
     """Build an EntryOrchestrator with a pre-populated WorldModelStore."""
     store = WorldModelStore()
@@ -95,12 +95,21 @@ def _setup_orchestrator(
     if structure:
         wm_struct = {"H4": structure}
 
+    # Phase 4: the default-on EV gate needs a probabilistic edge to pass. The
+    # happy-path zones here are bullish (LONG), so seed a strong-LONG bias.
+    if bias is None:
+        bias = {
+            "direction": "LONG", "score": 70,
+            "long_probability": 0.7, "short_probability": 0.1,
+        }
+
     wm = build_world_model(
         symbol="EURUSD",
         version=store.next_version(),
         fvgs=wm_fvgs or None,
         order_blocks=wm_obs or None,
         structure=wm_struct or None,
+        bias=bias,
     )
     store.publish(wm)
     orch.on_world_model_update("EURUSD")
@@ -215,6 +224,10 @@ class TestEntryOrchestratorMultiSymbol:
                 symbol=sym,
                 version=store.next_version(),
                 fvgs={"M5": [_make_fvg()]},
+                bias={
+                    "direction": "LONG", "score": 70,
+                    "long_probability": 0.7, "short_probability": 0.1,
+                },
             )
             store.publish(wm)
             orch.on_world_model_update(sym)
@@ -315,6 +328,14 @@ def _setup_flip(
         fvgs={"M5": [_make_fvg()]},
         structure=structure,
         votes=votes,
+        # Phase 4: the default-on EV gate needs a probabilistic edge. Seed a
+        # strong-LONG bias so the no-flip LONG entry passes; a flip to SHORT
+        # then maps p_win to the (low) short probability — the flip tests check
+        # the flip/skip stats, not the post-flip gate outcome.
+        bias={
+            "direction": "LONG", "score": 70,
+            "long_probability": 0.7, "short_probability": 0.1,
+        },
     )
     store.publish(wm)
     orch.on_world_model_update("EURUSD")

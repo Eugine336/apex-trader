@@ -282,6 +282,35 @@ class EntryOrchestrator:
             logger.debug("[entry-orch] alignment read failed for {}: {}", symbol, exc)
             return None
 
+    def _entry_probabilities(self, symbol: str) -> tuple[float, float]:
+        """Absolute (long, short) probabilities from the WorldModel bias.
+
+        Reads the Phase 3 probabilistic evidence model's ``long_probability`` /
+        ``short_probability`` from the stored bias dict — the same source the
+        ``_htf_alignment`` read uses. These are direction-agnostic (the EV gate
+        maps them to p_win/p_loss for the trade direction), so the same pair is
+        passed whether the entry is with- or counter-trend, and survives a
+        direction flip unchanged. Returns ``(0.0, 0.0)`` when no
+        WorldModel/bias is available — the EV gate then sees no probabilistic
+        edge (EV ≤ 0) and rejects, which is the opportunistic-correct "no edge,
+        no trade" behaviour.
+        """
+        if self._wm_store is None:
+            return 0.0, 0.0
+        try:
+            wm = self._wm_store.get(symbol)
+            if wm is None:
+                return 0.0, 0.0
+            bias = wm.bias_dict()
+            long_p = float(bias.get("long_probability", 0.0) or 0.0)
+            short_p = float(bias.get("short_probability", 0.0) or 0.0)
+            return long_p, short_p
+        except Exception as exc:
+            logger.debug(
+                "[entry-orch] probability read failed for {}: {}", symbol, exc,
+            )
+            return 0.0, 0.0
+
     def _entry_momentum(self, symbol: str, direction: str) -> Optional[float]:
         """Signed live momentum for a trade direction from the WorldModel.
 
@@ -421,7 +450,7 @@ class EntryOrchestrator:
         except Exception:
             return False, tick_mom, m5_trend
 
-    def _flip_zone(self, zone, new_direction: str):
+    def _flip_zone(self, zone, new_direction: str, entry_price: float = 0.0):
         """Mirror a zone to the opposite trade direction.
 
         The stop (invalidation) is mirrored around the ENTRY (touch) price so a
@@ -461,7 +490,18 @@ class EntryOrchestrator:
 
         conviction = int(getattr(zone, "conviction", 0) or 0)
         if getattr(zone, "is_counter_trend", False):
-            mult = float(getattr(self._config, "counter_trend_conviction_mult", 1.0) or 1.0)
+            # Undo the same haircut the zone was penalised with: the EV-gate
+            # softer multiplier (0.85) when the EV gate is enabled, else the
+            # legacy 0.70. A flipped trade is WITH momentum, so the counter-trend
+            # penalty must not linger on the restored conviction.
+            if getattr(self._config, "ev_gate_enabled", False):
+                mult = float(
+                    getattr(self._config, "counter_trend_conviction_mult_ev", 1.0) or 1.0
+                )
+            else:
+                mult = float(
+                    getattr(self._config, "counter_trend_conviction_mult", 1.0) or 1.0
+                )
             if 0.0 < mult < 1.0:
                 conviction = min(100, int(round(conviction / mult)))
         return replace(
@@ -594,6 +634,9 @@ class EntryOrchestrator:
         spread_pips = self._get_spread(symbol)
 
         alignment = self._htf_alignment(symbol, direction)
+        # Phase 3 probabilistic evidence for the EV gate (direction-agnostic;
+        # the gate maps these to p_win/p_loss for the trade direction).
+        long_p, short_p = self._entry_probabilities(symbol)
         # Situation posture for the gate — a MIXED (no-edge) setup must show real
         # HTF support, not merely escape the permissive alignment floor.
         posture = self._entry_posture(alignment, momentum)
@@ -610,6 +653,8 @@ class EntryOrchestrator:
             zone=zone,
             alignment=alignment,
             posture=posture,
+            long_probability=long_p,
+            short_probability=short_p,
             is_instrument_known=self._is_instrument_known(symbol),
             is_market_open=self._is_market_open(symbol),
             is_session_active=self._is_session_active(symbol),
