@@ -42,6 +42,17 @@ class TradeRecord:
     broker_commission: Optional[float] = None
     broker_fee: Optional[float] = None
     source: str = ""  # entry-source path: "zone" | "consensus" | ""
+    # ── Candidate provenance (Session 4 multi-opportunity) ────────────────
+    # Links a closed trade back to the Candidate that opened it so the learning
+    # loop can attribute outcomes per (idea × timeframe class × source ×
+    # regime). All optional/defaulted — trades opened before the multi-
+    # opportunity pipeline (or without captured provenance) carry empty values.
+    candidate_id: str = ""
+    timeframe_class: str = ""          # "SCALP" | "SWING" | "INTRADAY" | ""
+    candidate_score: float = 0.0       # conviction score at entry time
+    contributing_modules: list[Any] = field(default_factory=list)
+    competing_candidates: int = 0      # candidates evaluated in the opening cycle
+    regime_at_entry: str = ""          # regime when the trade was opened
     timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -101,6 +112,12 @@ class TradeJournal:
                         broker_commission REAL,
                         broker_fee REAL,
                         source TEXT DEFAULT '',
+                        candidate_id TEXT DEFAULT '',
+                        timeframe_class TEXT DEFAULT '',
+                        candidate_score REAL DEFAULT 0.0,
+                        contributing_modules TEXT DEFAULT '[]',
+                        competing_candidates INTEGER DEFAULT 0,
+                        regime_at_entry TEXT DEFAULT '',
                         timestamp TEXT NOT NULL
                     )
                     """
@@ -172,6 +189,23 @@ class TradeJournal:
                 except Exception as exc:
                     logger.debug("[trade_journal] source column migration skipped (likely already exists): {}", exc)
                     pass
+                # ── Candidate provenance columns (Session 4) ──────────────
+                for _col_ddl in (
+                    "ALTER TABLE trades ADD COLUMN candidate_id TEXT DEFAULT ''",
+                    "ALTER TABLE trades ADD COLUMN timeframe_class TEXT DEFAULT ''",
+                    "ALTER TABLE trades ADD COLUMN candidate_score REAL DEFAULT 0.0",
+                    "ALTER TABLE trades ADD COLUMN contributing_modules TEXT DEFAULT '[]'",
+                    "ALTER TABLE trades ADD COLUMN competing_candidates INTEGER DEFAULT 0",
+                    "ALTER TABLE trades ADD COLUMN regime_at_entry TEXT DEFAULT ''",
+                ):
+                    try:
+                        await db.execute(_col_ddl)
+                        await db.commit()
+                    except Exception as exc:
+                        logger.debug(
+                            "[trade_journal] candidate column migration skipped "
+                            "(likely already exists): {}", exc,
+                        )
             self._initialized = True
 
     async def log_trade(self, trade: TradeRecord) -> None:
@@ -185,8 +219,10 @@ class TradeJournal:
                         session, spread, slippage, entry_type, time_to_tp1, time_to_exit,
                         outcome, pnl_dollars, swap_modeled, swap_status, risk_dollars,
                         exit_cause, broker_swap, broker_commission, broker_fee, source,
+                        candidate_id, timeframe_class, candidate_score,
+                        contributing_modules, competing_candidates, regime_at_entry,
                         timestamp
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         trade.pair,
@@ -213,6 +249,12 @@ class TradeJournal:
                         trade.broker_commission,
                         trade.broker_fee,
                         trade.source,
+                        trade.candidate_id,
+                        trade.timeframe_class,
+                        trade.candidate_score,
+                        json.dumps(trade.contributing_modules),
+                        trade.competing_candidates,
+                        trade.regime_at_entry,
                         trade.timestamp.isoformat(),
                     ),
                 )
@@ -363,7 +405,9 @@ class TradeJournal:
                     "SELECT pair, direction, pnl, score, confluences, regime, "
                     "session, spread, entry_type, time_to_exit, outcome, pnl_dollars, "
                     "timestamp, swap_modeled, swap_status, risk_dollars, id, entry, exit, "
-                    "source FROM trades"
+                    "source, candidate_id, timeframe_class, candidate_score, "
+                    "contributing_modules, competing_candidates, regime_at_entry "
+                    "FROM trades"
                 )
             except Exception:
                 cursor = await db.execute(
@@ -396,6 +440,14 @@ class TradeJournal:
                 "entry": r[17] if len(r) > 17 else None,
                 "exit": r[18] if len(r) > 18 else None,
                 "source": (r[19] if len(r) > 19 and r[19] is not None else ""),
+                "candidate_id": (r[20] if len(r) > 20 and r[20] is not None else ""),
+                "timeframe_class": (r[21] if len(r) > 21 and r[21] is not None else ""),
+                "candidate_score": (r[22] if len(r) > 22 and r[22] is not None else 0.0),
+                "contributing_modules": (
+                    json.loads(r[23]) if len(r) > 23 and r[23] else []
+                ),
+                "competing_candidates": (r[24] if len(r) > 24 and r[24] is not None else 0),
+                "regime_at_entry": (r[25] if len(r) > 25 and r[25] is not None else ""),
             })
         return self._consolidate_partial_dicts(result)
 

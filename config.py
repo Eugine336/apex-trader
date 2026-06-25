@@ -1270,6 +1270,21 @@ class DecisionConfig:
     # counter-trend setups are rejected, not merely sized down.
     soften_gate: bool = True
     gate_safety_margin: float = -0.3
+    # ── Candidate-scoped management (Session 4 multi-opportunity) ──────────
+    # A position is opened because specific modules on specific timeframes
+    # voted for it (its Candidate). When this is on, management revalidates an
+    # open position against ONLY those contributing modules' latest votes —
+    # not the latest net-summed consensus direction — so a LONG swing and a
+    # SHORT scalp on one symbol live and die by their own theses. When the
+    # contributing modules flip against the position a thesis-invalidation
+    # CLOSE is raised; when they go silent a conservative CLOSE is raised. Only
+    # acts when candidate provenance was captured at entry — positions without
+    # provenance fall back to the unchanged net-summed management read.
+    candidate_scoped_management_enabled: bool = True
+    # Minimum number of the position's contributing modules that must still be
+    # voting (any direction) for the thesis read to be considered "live". Below
+    # this the contributing panel has gone silent → conservative exit.
+    candidate_thesis_min_live_votes: int = 1
 
 
 # ---------------------------------------------------------------------------
