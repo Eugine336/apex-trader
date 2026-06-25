@@ -42,11 +42,12 @@ class TestTimeframeClassification:
         assert classify_timeframe("x", [], [], "m15") == SCALP
         assert classify_timeframe("x", [], [], " h4 ") == SWING
 
-    def test_vote_timeframe_drives_cluster(self):
-        # An H1 momentum vote clusters as SWING, not SCALP.
+    def test_vote_clusters_by_direction(self):
+        # Clustering is by DIRECTION only now (informational horizon is derived
+        # separately); a single LONG vote forms one LONG cluster.
         votes = [Vote("momentum", "LONG", 0.8, 1.0, timeframe="H1")]
         clusters = cluster_votes(votes)
-        assert list(clusters.keys()) == [("LONG", SWING)]
+        assert list(clusters.keys()) == ["LONG"]
 
     def test_opportunity_exposes_real_timeframes(self):
         votes = [
@@ -107,15 +108,17 @@ class TestWinProbProvenance:
 class TestNoTailTruncation:
     def test_all_clusters_survive_sorted(self):
         votes = [
-            Vote("structure", "LONG", 0.9, 1.0),       # LONG SWING
+            Vote("structure", "LONG", 0.9, 1.0),
             Vote("currency_strength", "LONG", 0.6, 1.0),
-            Vote("momentum", "SHORT", 0.8, 1.0),       # SHORT SCALP
+            Vote("momentum", "SHORT", 0.8, 1.0),
             Vote("volume", "SHORT", 0.7, 1.0),
-            Vote("vwap", "LONG", 0.5, 1.0),            # LONG SCALP
+            Vote("vwap", "LONG", 0.5, 1.0),
         ]
         opps = rank_opportunities(votes)
-        # Three distinct coherent ideas — none dropped, sorted best-first.
-        assert len(opps) == 3
+        # Direction-only clustering: one LONG idea + one SHORT idea — both
+        # survive, sorted best-first (no horizon split, no tail truncation).
+        assert len(opps) == 2
+        assert {o.direction for o in opps} == {"LONG", "SHORT"}
         evs = [o.expected_value for o in opps]
         assert evs == sorted(evs, reverse=True)
 

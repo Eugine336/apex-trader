@@ -48,6 +48,7 @@ class WyckoffEngine:
         pip_size: Optional[float] = None,
         volume_analyzer: Optional[VolumeAnalyzer] = None,
         structure_engine: Optional[StructureEngine] = None,
+        swing_lookback: int = 2,
     ):
         if pip_size is None:
             raise ValueError(
@@ -60,8 +61,11 @@ class WyckoffEngine:
         self.spring_buffer = spring_buffer_pips * pip_size
         self.pip_size = pip_size
         self.volume_analyzer = volume_analyzer or VolumeAnalyzer()
+        # The inner StructureEngine's swing sensitivity is per-instrument, not a
+        # hardcoded 2 — a synthetic index and a JPY cross do not confirm swings
+        # on the same window. Callers pass the instrument profile's swing_lookback.
         self.structure_engine = structure_engine or StructureEngine(
-            swing_lookback=2, pip_size=pip_size
+            swing_lookback=swing_lookback, pip_size=pip_size
         )
 
     def analyze(self, df: pd.DataFrame) -> WyckoffAnalysis:

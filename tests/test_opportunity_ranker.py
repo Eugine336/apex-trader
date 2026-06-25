@@ -37,10 +37,12 @@ class TestClassifyAndCluster:
             Vote("volume", "LONG", 0.7, 1.0),      # kept
         ]
         clusters = cluster_votes(votes)
-        assert list(clusters.keys()) == [("LONG", SCALP)]
+        # Clustering is by DIRECTION only now — no upfront scalp/swing split.
+        assert list(clusters.keys()) == ["LONG"]
 
-    def test_two_independent_clusters_form(self):
-        # Fast modules agree SHORT (scalp); slow modules agree LONG (swing).
+    def test_two_independent_directions_form(self):
+        # Opposing evidence forms two clusters: one per direction. The market
+        # decides; the system no longer pre-sorts into horizon buckets.
         votes = [
             Vote("momentum", "SHORT", 0.8, 1.0),
             Vote("volume", "SHORT", 0.7, 1.0),
@@ -48,8 +50,8 @@ class TestClassifyAndCluster:
             Vote("currency_strength", "LONG", 0.6, 1.0),
         ]
         clusters = cluster_votes(votes)
-        assert ("SHORT", SCALP) in clusters
-        assert ("LONG", SWING) in clusters
+        assert "SHORT" in clusters
+        assert "LONG" in clusters
         assert len(clusters) == 2
 
 
@@ -92,12 +94,16 @@ class TestRanking:
         assert evs == sorted(evs, reverse=True)
         assert opps[0].direction == "SHORT"
 
-    def test_swing_has_higher_rr_than_scalp(self):
-        long_swing = [Vote("structure", "LONG", 0.8, 1.0)]
-        long_scalp = [Vote("momentum", "LONG", 0.8, 1.0)]
-        swing = rank_opportunities(long_swing)[0]
-        scalp = rank_opportunities(long_scalp)[0]
-        assert swing.reward_risk > scalp.reward_risk
+    def test_reward_risk_is_uniform_across_horizons(self):
+        # Opportunistic-trading rewire: reward:risk is a single ranking proxy,
+        # no longer split by a scalp/swing label. The trade's REAL R:R comes
+        # from structural targets at the entry layer, so both ideas rank on the
+        # same reward_risk regardless of which modules produced them.
+        long_a = [Vote("structure", "LONG", 0.8, 1.0)]
+        long_b = [Vote("momentum", "LONG", 0.8, 1.0)]
+        a = rank_opportunities(long_a)[0]
+        b = rank_opportunities(long_b)[0]
+        assert a.reward_risk == b.reward_risk
 
     def test_min_ev_filters_weak_ideas(self):
         votes = [Vote("momentum", "LONG", 0.05, 1.0)]

@@ -72,9 +72,13 @@ class DecisionEngine:
         reversal_momentum_full: float = 0.6,
         htf_aligned_size_bonus: float = 0.15,
         htf_aligned_threshold: float = 0.5,
-        scalp_htf_scale: float = 0.0,
+        # Opportunistic-trading rewire: HTF authority is uniform across horizons
+        # (the market decides the opportunity, not a SCALP/SWING label), so these
+        # default to full authority (1.0) — the horizon-scaling mechanism is
+        # retained but inert. Tunable if an operator wants per-horizon weighting.
+        scalp_htf_scale: float = 1.0,
         swing_htf_scale: float = 1.0,
-        mixed_htf_scale: float = 0.5,
+        mixed_htf_scale: float = 1.0,
         thesis_secure_enabled: bool = True,
         thesis_secure_min_profit_usd: float = 15.0,
         thesis_secure_min_profit_pips: float = 12.0,

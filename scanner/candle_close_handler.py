@@ -93,6 +93,7 @@ class CandleCloseHandler:
         module_governor: Optional[Any] = None,
         win_rate_provider: Optional[Any] = None,
         consensus_config: Optional[Any] = None,
+        ranker_config: Optional[Any] = None,
         calibration_engine: Optional[Any] = None,
         get_spread_pips: Optional[Callable[[str], float]] = None,
         calibration_spread_tf: str = "M5",
@@ -127,6 +128,12 @@ class CandleCloseHandler:
         # config is not supplied.
         from config import ConsensusConfig as _ConsensusConfig
         self._consensus_config = consensus_config or _ConsensusConfig()
+        # Opportunity-ranker tuning (operator-tunable): clustering/EV/horizon
+        # behaviour for the ranked candidates. Threaded into build_consensus so
+        # the config actually drives the live path (previously the ranker used
+        # its own function defaults because the config was never passed through).
+        from config import OpportunityRankerConfig as _OpportunityRankerConfig
+        self._ranker_config = ranker_config or _OpportunityRankerConfig()
         # CalibrationEngine feed (default-neutral when None): on each candle
         # close the handler hands the SAME candles/spread it already fetched to
         # the single-writer CalibrationEngine so per-symbol stats stay live.
@@ -541,6 +548,7 @@ class CandleCloseHandler:
             module_governor=self._module_governor,
             win_rate_provider=self._win_rate_provider,
             weights=self._consensus_config.weights,
+            ranker_config=self._ranker_config,
         )
 
     def _attach_quality(

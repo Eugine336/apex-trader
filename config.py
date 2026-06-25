@@ -459,6 +459,14 @@ class OpportunityRankerConfig:
     execute: bool = True            # LIVE: the executor picks the live direction
     scalp_modules: list[str] = field(default_factory=lambda: list(_DEFAULT_SCALP_MODULES))
     swing_modules: list[str] = field(default_factory=lambda: list(_DEFAULT_SWING_MODULES))
+    # Single EV ranking proxy for every opportunity, regardless of horizon. The
+    # opportunistic-trading rewire no longer splits reward:risk by a SCALP/SWING
+    # label — the MARKET decides the opportunity and the trade's REAL R:R is
+    # derived from structural targets at the entry layer. This value only ranks
+    # candidates by expected value. ``scalp_reward_risk`` / ``swing_reward_risk``
+    # are retained for backward compatibility (counterfactual tuning, older
+    # callers) but no longer drive the ranker.
+    reward_risk: float = 2.0
     scalp_reward_risk: float = 1.5
     swing_reward_risk: float = 2.5
     base_win_rate: float = 0.40
@@ -493,18 +501,16 @@ class OpportunityRankerConfig:
     rescue_neutral_consensus: bool = True
 
     # ── HTF demotion to pure context (per selected-opportunity horizon) ──
-    # When the ranker selects the live direction, the higher-timeframe (H4/D1)
-    # bias downstream is scaled by the opportunity's horizon instead of holding
-    # blanket authority. A SCALP idea (fast modules) should not be suppressed by
-    # an opposing H4 it does not trade on; a SWING idea should still respect it.
-    # These multipliers apply to BOTH the EntryEngine H4 counter-trend penalty
-    # and the DecisionEngine HTF enter/skip/conviction weights. They are inert
-    # (full HTF authority, scale 1.0) for any trade with no ranker horizon —
-    # e.g. the scalar fallback — so behaviour is unchanged when no candidate is
-    # selected. 0.0 = HTF fully demoted to context; 1.0 = full HTF authority.
-    scalp_htf_penalty_scale: float = 0.0
+    # Opportunistic-trading rewire: the system no longer demotes higher-timeframe
+    # authority based on a SCALP/SWING label. The MARKET decides the opportunity,
+    # and HTF context is weighed UNIFORMLY for every trade regardless of which
+    # timeframes produced it. These multipliers default to full authority (1.0)
+    # so the (retained) horizon-scaling mechanism is inert; they remain tunable
+    # for any operator who wants to re-introduce per-horizon HTF weighting.
+    # 0.0 = HTF fully demoted to context; 1.0 = full HTF authority (default).
+    scalp_htf_penalty_scale: float = 1.0
     swing_htf_penalty_scale: float = 1.0
-    mixed_htf_penalty_scale: float = 0.5
+    mixed_htf_penalty_scale: float = 1.0
 
     # ── Adaptive win-rate provider (learning layer #1) ───────────────────
     # The ranker's win probability defaults to a modelled formula built on the
@@ -549,6 +555,7 @@ class OpportunityRankerConfig:
                     f"OpportunityRankerConfig.{label} must be an int >= 1, got {val!r}"
                 )
         for label, val in [
+            ("reward_risk", self.reward_risk),
             ("scalp_reward_risk", self.scalp_reward_risk),
             ("swing_reward_risk", self.swing_reward_risk),
         ]:
@@ -690,7 +697,12 @@ class RiskConfig:
     max_weekly_drawdown_pct: float = 8.0
     max_open_trades: int = 5
     max_correlated_trades: int = 2
-    min_risk_reward: float = 1.8
+    # Single structural reward:risk guardrail (mirrors EntryConfig.min_structural_rr).
+    # The MARKET sets the trade's real R:R via structural targets; this is only
+    # the floor that says "skip a setup whose nearest target is closer than the
+    # stop". Shared by the entry validator and the broker's post-adjustment R:R
+    # check (passed into MT5Connector.min_rr_after_adjust) so there is one number.
+    min_risk_reward: float = 1.0
     # How many times the instrument's typical spread we allow before rejecting.
     # 3.0 gives headroom for indices (US100 widens ~10 pts off-hours vs typical 1.5)
     # and crypto (BTCUSD spreads balloon on thin liquidity).
@@ -1511,8 +1523,11 @@ class OrchestratorConfig:
     # Per-dimension "full credit" reference for the softened-DE quality gradient
     # the orchestrator folds in (the margin-derived multiplier is already bounded
     # in [de_gate_quality_floor, 1.0] by the decision engine).
-    # How much an opposing HTF dims a SCALP (vs a SWING which feels it fully).
-    scalp_htf_opposition_scale: float = 0.3
+    # Opportunistic-trading rewire: an opposing HTF dims EVERY trade uniformly —
+    # the orchestrator no longer softens HTF opposition for a SCALP-labelled
+    # idea. Defaults to 1.0 (full opposition) so the per-horizon discount is
+    # inert; tunable for operators who want to re-introduce it.
+    scalp_htf_opposition_scale: float = 1.0
     # NOTE: per-cycle dispatch capacity is owned by OpportunityRankerConfig
     # (``dispatch_top_n`` / ``slot_aware_dispatch`` / ``max_concurrent``), which
     # is the single authority the main loop consumes. A separate orchestrator

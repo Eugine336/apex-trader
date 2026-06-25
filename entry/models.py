@@ -86,6 +86,14 @@ class EntryConfig:
     max_concurrent_pending: int = 5
     max_spread_multiplier: float = 3.0
     min_risk_reward: float = 1.5
+    # ── Single structural R:R guardrail (opportunistic-trading rewire) ────
+    # The MARKET decides the trade's reward:risk — targets come from structure
+    # ahead (next FVG/OB/liquidity pool), not a hardcoded multiple. This is the
+    # ONE guardrail that says "skip a setup where the nearest structural target
+    # is closer than the stop" and is the single source of truth shared by the
+    # entry gate's TP1/TP2 checks, the entry validator, and the broker's
+    # post-adjustment check (which previously each had their own 1.0/1.5/1.8).
+    min_structural_rr: float = 1.0
     min_entry_score: int = 85
     # Hard floor for the GateTuner-adjusted entry-score bar.  The tuner may
     # LOWER min_entry_score within a bounded envelope when its rejected setups
