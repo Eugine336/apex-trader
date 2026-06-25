@@ -413,6 +413,52 @@ class TestBuyViaProposal:
         buy = [p for p in seen if isinstance(p.get("buy"), str)][0]
         assert "symbol" not in buy and "parameters" not in buy
 
+    def test_symbol_property_error_on_proposal_recorrelates_and_succeeds(self):
+        # A symbol-property error on a PROPOSAL is schema-impossible (symbol is a
+        # valid proposal field), so it signals a mis-correlated/stale frame. The
+        # helper must re-send the proposal (re-correlate) rather than fail.
+        conn = _make_connector()
+        seen = []
+        state = {"proposal_calls": 0}
+
+        def fake_send(payload):
+            seen.append(payload)
+            if payload.get("proposal") == 1:
+                state["proposal_calls"] += 1
+                if state["proposal_calls"] == 1:
+                    return dict(_SYMBOL_PROP_ERROR)
+                return {"proposal": {"id": "PID-RC", "ask_price": payload["amount"]}}
+            return {"buy": {"contract_id": "OK-RC"}}
+
+        conn._sync_send = fake_send
+        result = conn._buy_via_proposal(**self._kwargs())
+
+        assert result.success is True
+        assert result.order_id == "OK-RC"
+        # At least two proposals were sent (the first mis-correlated, the retry).
+        assert state["proposal_calls"] >= 2
+
+    def test_persistent_symbol_property_error_fails_fast(self):
+        # If the symbol-property error never clears, the helper must stop after
+        # the bounded re-correlation budget instead of looping the whole retry
+        # budget, and surface the failure.
+        conn = _make_connector()
+        state = {"proposal_calls": 0}
+
+        def fake_send(payload):
+            if payload.get("proposal") == 1:
+                state["proposal_calls"] += 1
+                return dict(_SYMBOL_PROP_ERROR)
+            return {"buy": {"contract_id": "SHOULD-NOT-HAPPEN"}}
+
+        conn._sync_send = fake_send
+        result = conn._buy_via_proposal(**self._kwargs())
+
+        assert result.success is False
+        assert "symbol" in (result.error or "").lower()
+        # Bounded: initial send + 2 re-correlation retries (not the full budget).
+        assert state["proposal_calls"] == 3
+
     def test_multiplier_self_correction_in_proposal(self):
         conn = _make_connector()
         seen = []
