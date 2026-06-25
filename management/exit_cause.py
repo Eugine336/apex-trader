@@ -39,6 +39,13 @@ class ExitCause(Enum):
     STRATEGIC_CLOSE = "strategic_close"
     FAST_OPPOSITION_DECAY = "fast_opposition_decay"
 
+    # ── Candidate-scoped management (Session 4 multi-opportunity) ─────────
+    # The position's OWN opening panel (the modules + timeframes that voted it
+    # open) flipped against it (invalidated) or went silent — distinct from the
+    # net-summed THESIS_DECAY so the learners can tell them apart as a feature.
+    THESIS_INVALIDATED = "thesis_invalidated"
+    THESIS_SILENT = "thesis_silent"
+
     # ── Protective / guard exits ──────────────────────────────────────────
     NEWS_EXIT = "news_exit"
     SESSION_CLOSE = "session_close"

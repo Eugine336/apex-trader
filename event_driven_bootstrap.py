@@ -868,6 +868,128 @@ class PositionEvaluator:
         except Exception:
             pass
 
+    def _record_candidate_position(
+        self, ticket: str, symbol: str, direction: str, decision: dict,
+    ) -> None:
+        """Capture candidate provenance for an open position (Session 4).
+
+        Stores a :class:`CandidatePosition` keyed by ticket so the management
+        plane can revalidate this position against the SAME modules + timeframes
+        that voted it open. Best-effort: a miss simply leaves the position
+        without provenance, and management falls back to the net-summed read.
+        """
+        try:
+            from brain.candidate_models import CandidatePosition
+            self._candidate_positions[str(ticket)] = CandidatePosition(
+                symbol=symbol,
+                direction=direction,
+                candidate_id=str(decision.get("candidate_id", "") or ""),
+                timeframe_class=str(decision.get("timeframe_class", "") or ""),
+                contributing_modules=list(
+                    decision.get("contributing_modules", []) or []
+                ),
+                contributing_timeframes=list(
+                    decision.get("contributing_timeframes", []) or []
+                ),
+                entry_regime=str(decision.get("regime_at_entry", "") or ""),
+            )
+        except Exception as exc:
+            logger.debug("[candidate-mgmt] provenance capture failed: {}", exc)
+
+    @staticmethod
+    def _scope_votes_to_candidate(votes: list, prov: Any) -> list:
+        """Filter ``votes`` to only those from the position's contributing panel.
+
+        Keeps a vote when its module is one of the candidate's
+        ``contributing_modules`` AND (when timeframes were recorded) its
+        timeframe is one of ``contributing_timeframes``. When the candidate
+        recorded no modules (legacy / synthetic), returns the votes unchanged.
+        """
+        modules = {str(m).strip() for m in (getattr(prov, "contributing_modules", []) or []) if str(m).strip()}
+        if not modules:
+            return list(votes or [])
+        tfs = {
+            str(t).strip().upper()
+            for t in (getattr(prov, "contributing_timeframes", []) or [])
+            if str(t).strip()
+        }
+        scoped: list = []
+        for v in votes or []:
+            if str(getattr(v, "module", "")).strip() not in modules:
+                continue
+            if tfs:
+                vtf = str(getattr(v, "timeframe", "") or "").strip().upper()
+                if vtf and vtf not in tfs:
+                    continue
+            scoped.append(v)
+        return scoped
+
+    def _check_candidate_thesis(
+        self, order_id: str, pos_direction: str, wm: Any,
+    ) -> Optional[tuple[str, Any]]:
+        """Candidate-scoped thesis read for an open position (Session 4).
+
+        Revalidates the position against ONLY the modules + timeframes that
+        voted it open (its Candidate), instead of the latest net-summed
+        direction. Returns one of:
+
+        * ``("CLOSE", reason)`` — the contributing panel flipped against the
+          position (``thesis_invalidated``) or went silent
+          (``thesis_silent``); the caller raises a scoped close.
+        * ``("HOLD", scoped_votes)`` — the panel still supports the position;
+          the caller proceeds with the normal management read but feeds the
+          DecisionEngine the SCOPED votes so its in-trade revalidation matches
+          the same panel.
+        * ``None`` — candidate-scoped management is disabled, no provenance was
+          captured for this position, or the WorldModel carries no votes; the
+          caller falls back to the unchanged net-summed read.
+        """
+        dcfg = getattr(self._config, "decision", None) if self._config else None
+        if dcfg is not None and not getattr(
+            dcfg, "candidate_scoped_management_enabled", True,
+        ):
+            return None
+        prov = self._candidate_positions.get(str(order_id))
+        if prov is None or not getattr(prov, "contributing_modules", None):
+            return None
+        if wm is None:
+            return None
+        try:
+            votes = wm.votes_list()
+        except Exception:
+            return None
+        if not votes:
+            return None
+
+        scoped = self._scope_votes_to_candidate(votes, prov)
+        want = "LONG" if str(pos_direction).upper() in ("LONG", "BUY") else "SHORT"
+        directional = [
+            v for v in scoped
+            if str(getattr(v, "direction", "")).upper() in ("LONG", "SHORT")
+        ]
+
+        min_live = 1
+        if dcfg is not None:
+            try:
+                min_live = max(1, int(getattr(dcfg, "candidate_thesis_min_live_votes", 1)))
+            except Exception:
+                min_live = 1
+        # Contributing panel has gone quiet (no live directional reads from the
+        # modules that opened this trade) → conservative exit.
+        if len(directional) < min_live:
+            return ("CLOSE", "thesis_silent")
+
+        supporting = sum(
+            1 for v in directional
+            if str(getattr(v, "direction", "")).upper() == want
+        )
+        opposing = len(directional) - supporting
+        # Majority of the opening panel now opposes the position → the reason
+        # this trade existed is gone. Raise a scoped invalidation close.
+        if opposing > supporting:
+            return ("CLOSE", "thesis_invalidated")
+        return ("HOLD", scoped)
+
     def _run_decision_engine_management(
         self, pos, price: float, now: datetime, now_mono: float,
         mgmt, order_id: str, snap: PositionSnapshot,
@@ -924,6 +1046,37 @@ class PositionEvaluator:
             # unbiased module votes, carried into the in-trade thesis check so
             # management revalidates against the same panel the entry used.
             consensus_votes = wm.votes_list() if wm is not None else []
+            # ── Candidate-scoped thesis check (Session 4) ─────────────────
+            # Revalidate this position against ONLY the modules + timeframes
+            # that voted it open. A flipped/silent contributing panel raises a
+            # scoped close immediately; otherwise the DecisionEngine sees the
+            # SCOPED votes so its in-trade read matches the opening panel. No
+            # provenance / disabled flag → falls through to the net-summed read.
+            thesis = self._check_candidate_thesis(order_id, direction, wm)
+            if thesis is not None:
+                verdict, payload = thesis
+                if verdict == "CLOSE":
+                    self._aggregator.register_position(
+                        ticket=order_id, direction=direction,
+                        current_sl=sl, pip_size=pip_size,
+                    )
+                    self._aggregator.submit([Intent.close(
+                        symbol=symbol,
+                        ticket=order_id,
+                        source=payload,
+                        reason=f"candidate-scoped: {payload}",
+                    )])
+                    logger.info(
+                        "[candidate-mgmt] {} {} CLOSE — {} (contributing panel "
+                        "{} for candidate {})",
+                        symbol, direction, payload,
+                        "flipped" if payload == "thesis_invalidated" else "silent",
+                        self._candidate_positions.get(order_id).candidate_id
+                        if self._candidate_positions.get(order_id) else "?",
+                    )
+                    return
+                # HOLD — scope the panel the strategic engine revalidates on.
+                consensus_votes = payload
             # Current WorldModel bias direction — feeds scan_direction so the
             # engine's opposing-scan CLOSE term can actually fire when the live
             # bias flips against the open trade (previously self-referential: it
@@ -1875,6 +2028,11 @@ class EventDrivenSystem:
         # fill time so the close path can attribute the outcome to the right
         # learned keys.
         self._entry_context: dict[Any, dict[str, Any]] = {}
+        # Per-ticket candidate provenance (Session 4 multi-opportunity). Links
+        # an open position back to the Candidate (and therefore the exact
+        # modules + timeframes) that voted it open, so management can be scoped
+        # to that same panel rather than the latest net-summed direction.
+        self._candidate_positions: dict[str, "CandidatePosition"] = {}
 
         # Dedup guard so a closed ticket's realized P&L is booked exactly once
         # across the system-close path (_handle_close_result) and the
@@ -4651,9 +4809,11 @@ class EventDrivenSystem:
                 if item is not None:
                     items.append(item)
         else:
-            # LEGACY FALLBACK — remove after Session 4. No ranked candidates on
-            # the WorldModel (older producer / cold start): fall back to the
-            # single net-summed thesis so the consensus trigger still works.
+            # FALLBACK (cold start / older producer): when the WorldModel
+            # carries no ranked candidates yet, fall back to the single
+            # net-summed thesis so the consensus trigger still works. This is a
+            # genuine, retained safety path — it only activates when no ranked
+            # candidates exist, not in normal multi-opportunity operation.
             item = self._build_legacy_consensus_item(
                 symbol, votes, cfg, regime_context,
             )
@@ -4735,11 +4895,13 @@ class EventDrivenSystem:
     def _build_legacy_consensus_item(
         self, symbol: str, votes: list, cfg: Any, regime_context: str,
     ) -> Optional[tuple]:
-        """LEGACY FALLBACK — remove after Session 4.
+        """Net-summed single-thesis FALLBACK (retained safety path).
 
-        Used only when the WorldModel carries no ranked candidates. Forms the
-        single net-summed thesis (legacy behaviour) and wraps it as a synthetic
-        Candidate so the rest of the cycle pipeline is uniform.
+        Used only when the WorldModel carries no ranked candidates (cold start
+        or an older producer). Forms the single net-summed thesis and wraps it
+        as a synthetic Candidate so the rest of the cycle pipeline is uniform.
+        Kept deliberately: it is the cold-start safety net, not dead code — in
+        normal multi-opportunity operation the ranked-candidate path is used.
         """
         from brain.directional_consensus import form_thesis
         from brain.candidate_models import Candidate, CandidateEntryDecision
@@ -4942,6 +5104,15 @@ class EventDrivenSystem:
         if not graded:
             return
 
+        # Stamp how many candidates competed this cycle onto every survivor so
+        # the close path / journal records the opening-cycle breadth (Session 4).
+        _competing = len(graded)
+        for _g, _env, _dec in graded:
+            try:
+                _dec["competing_candidates"] = _competing
+            except Exception:
+                pass
+
         try:
             book = list(self._pm.get_all_open_positions() or [])
         except Exception:
@@ -5104,11 +5275,16 @@ class EventDrivenSystem:
                 symbol, len(survivors), winning_direction, len(dropped),
             )
 
+        _competing = len(survivors)
         dispatched = 0
         for envelope, decision in survivors:
             direction = str(decision.get("direction", "") or "")
             if self._already_holding_direction(symbol, direction):
                 continue
+            try:
+                decision["competing_candidates"] = _competing
+            except Exception:
+                pass
             logger.info(
                 "[consensus-trigger] {} {} candidate {} conviction={} "
                 "→ ENTRY @ {:.5f} SL={:.5f} TP={:.5f} (zoneless, market-driven)",
@@ -6411,7 +6587,38 @@ class EventDrivenSystem:
                         "exec_profile": (
                             getattr(exec_profile, "name", "") or "standard_swing"
                         ),
+                        # ── Candidate provenance (Session 4 multi-opportunity) ──
+                        # Carried so the close path enriches the journal +
+                        # signal-ledger attribution with the exact idea that was
+                        # opened (which modules / timeframe class / regime / how
+                        # many candidates competed in the opening cycle).
+                        "candidate_id": str(decision.get("candidate_id", "") or ""),
+                        "timeframe_class": str(decision.get("timeframe_class", "") or ""),
+                        "candidate_score": float(
+                            decision.get("candidate_score", 0.0) or 0.0
+                        ),
+                        "contributing_modules": list(
+                            decision.get("contributing_modules", []) or []
+                        ),
+                        "contributing_timeframes": list(
+                            decision.get("contributing_timeframes", []) or []
+                        ),
+                        "competing_candidates": int(
+                            decision.get("competing_candidates", 0) or 0
+                        ),
+                        "regime_at_entry": (
+                            str(getattr(regime, "regime", "") or "")
+                            if regime is not None and not isinstance(regime, str)
+                            else str(regime or "")
+                        ),
                     }
+                    # Provenance object for candidate-scoped management — manage
+                    # this position against the modules + timeframes that voted
+                    # it open, not the latest net-summed direction.
+                    self._record_candidate_position(
+                        str(result.order_id), symbol, direction,
+                        self._entry_context[result.order_id],
+                    )
                 except Exception as exc:
                     logger.debug("[entry-ctx] capture failed: {}", exc)
 
@@ -6696,6 +6903,8 @@ class EventDrivenSystem:
         info: dict[str, Any] = {}
         try:
             info = self._entry_context.pop(ticket, None) or {}
+            # Release candidate provenance now the position has left the book.
+            self._candidate_positions.pop(str(ticket), None)
             # A flat-dollar close that still gained pips (e.g. commission ate
             # the dollar P&L) counts as a win for edge attribution.
             won = (pnl_dollars or 0.0) > 0.0 or (
@@ -6848,6 +7057,22 @@ class EventDrivenSystem:
                     "pnl_dollars": round(float(pnl_dollars), 2),
                     "won": pnl_dollars > 0,
                     "outcome": outcome,
+                    # ── Candidate attribution (Session 4) ──────────────────
+                    # Thread the opening idea's provenance onto every driving
+                    # signal's outcome so the learning loop can attribute wins
+                    # per (module × timeframe × source × regime), not just per
+                    # module. Empty when the trade had no captured candidate.
+                    "candidate_id": str(info.get("candidate_id", "") or ""),
+                    "timeframe_class": str(info.get("timeframe_class", "") or ""),
+                    "source": str(info.get("source", "") or ""),
+                    "regime_at_entry": str(info.get("regime_at_entry", "") or ""),
+                    "contributing_modules": list(
+                        info.get("contributing_modules", []) or []
+                    ),
+                    "contributing_timeframes": list(
+                        info.get("contributing_timeframes", []) or []
+                    ),
+                    "pnl_r": round(pnl_r, 4),
                 })
             except Exception as exc:
                 logger.debug("[close-learn] SignalLedger attach failed: {}", exc)
@@ -6950,6 +7175,17 @@ class EventDrivenSystem:
                     pnl_dollars=round(float(pnl_dollars), 2),
                     exit_cause=cause_value,
                     source=info.get("source", "") or "",
+                    # ── Candidate provenance (Session 4 multi-opportunity) ──
+                    candidate_id=str(info.get("candidate_id", "") or ""),
+                    timeframe_class=str(info.get("timeframe_class", "") or ""),
+                    candidate_score=float(info.get("candidate_score", 0.0) or 0.0),
+                    contributing_modules=list(
+                        info.get("contributing_modules", []) or []
+                    ),
+                    competing_candidates=int(
+                        info.get("competing_candidates", 0) or 0
+                    ),
+                    regime_at_entry=str(info.get("regime_at_entry", "") or ""),
                 )
                 try:
                     _loop = asyncio.new_event_loop()
