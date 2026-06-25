@@ -91,6 +91,7 @@ class CandleCloseHandler:
         get_spread_pips: Optional[Callable[[str], float]] = None,
         calibration_spread_tf: str = "M5",
         news_impact_tracker: Optional[Any] = None,
+        developing_store: Optional[WorldModelStore] = None,
     ) -> None:
         self._bus = event_bus
         self._store = world_model_store
@@ -138,6 +139,11 @@ class CandleCloseHandler:
         # measures the realised reaction ~30 min later, feeding the
         # CalibrationEngine's learned news sensitivity.
         self._news_impact_tracker = news_impact_tracker
+        # Developing (forming-bar) analysis store (Phase 2, optional). When
+        # provided, compute_bias reads developing structure from it to adjust
+        # confirmed bias CONFIDENCE (never direction). None = confirmed-only
+        # behaviour, unchanged.
+        self._developing_store = developing_store
         self._pool = ThreadPoolExecutor(
             max_workers=max(1, max_workers),
             thread_name_prefix="cc-handler",
@@ -429,7 +435,19 @@ class CandleCloseHandler:
         # Synthesize the directional bias from the merged HTF structure, then
         # blend in the non-ICT concepts (weighted by their learned edge) so the
         # bias is a data-driven combination, not pure ICT structure.
-        bias = compute_bias(struct)
+        #
+        # When a developing-analysis store is wired (Phase 2), pass the live
+        # (forming-bar) structure so compute_bias can adjust confidence — the
+        # confirmed DIRECTION is unchanged; only confidence moves ±15%.
+        dev_struct = None
+        if self._developing_store is not None:
+            try:
+                dev_wm = self._developing_store.get(symbol)
+                if dev_wm is not None:
+                    dev_struct = dict(dev_wm.structure)
+            except Exception:
+                dev_struct = None  # best-effort — developing store optional
+        bias = compute_bias(struct, developing_struct_by_tf=dev_struct)
         bias = self._blend_concepts(bias, concepts, regime)
 
         wm = build_world_model(

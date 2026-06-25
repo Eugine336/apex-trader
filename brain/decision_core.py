@@ -82,13 +82,25 @@ TF_MODULE_MAP: dict[str, list[str]] = {
 _TF_BY_RECENCY = ("M5", "M15", "H1", "H4", "D1")
 
 
-def compute_bias(struct_by_tf: dict[str, StructureAnalysis]) -> dict[str, Any]:
+def compute_bias(
+    struct_by_tf: dict[str, StructureAnalysis],
+    developing_struct_by_tf: Optional[dict[str, StructureAnalysis]] = None,
+    developing_discount: float = 0.7,
+) -> dict[str, Any]:
     """Synthesize a directional bias dict from per-TF StructureAnalysis.
 
     Direction is decided by H4 + H1 (D1 only weights confidence), mirroring
     ``StructureEngine.get_bias`` but operating on the already-computed analyses
     so no extra candle fetch is needed.  Returns the schema consumers expect:
     ``direction`` ("LONG"/"SHORT"/""), ``score`` (0-100), plus per-TF trends.
+
+    When ``developing_struct_by_tf`` is supplied (Phase 2), the live
+    (forming-bar) structure adjusts CONFIDENCE only — never direction. Direction
+    remains anchored to the confirmed H4/H1 hierarchy so the forming bar can
+    never repaint the trade side. Developing structure that agrees with the
+    confirmed direction nudges confidence up; conflicting developing structure
+    nudges it down, bounded to ±15% of the confirmed confidence and discounted
+    by ``developing_discount``.
     """
     def _trend(tf: str) -> tuple[Optional[str], float]:
         sa = struct_by_tf.get(tf)
@@ -132,6 +144,18 @@ def compute_bias(struct_by_tf: dict[str, StructureAnalysis]) -> dict[str, Any]:
 
     score = int(round(confidence * 100)) if direction else 0
 
+    # ── Developing structure confidence adjustment (Phase 2) ─────────────
+    # Direction comes from CONFIRMED structure only (H4/H1 hierarchy above).
+    # Developing (forming-bar) structure adjusts confidence: agreement boosts,
+    # conflict reduces, bounded to ±15% of confirmed confidence.
+    dev_blend = 0.0
+    if developing_struct_by_tf and direction:
+        dev_blend = _developing_agreement(
+            direction, developing_struct_by_tf, developing_discount,
+        )
+        confidence = round(min(1.0, max(0.0, confidence + dev_blend * 0.15)), 2)
+        score = int(round(confidence * 100))
+
     return {
         "direction": direction,
         "score": score,
@@ -143,7 +167,46 @@ def compute_bias(struct_by_tf: dict[str, StructureAnalysis]) -> dict[str, Any]:
         "d1_aligned": d1_aligned,
         "confidence": confidence,
         "tradeable": strength in ("STRONG", "MODERATE"),
+        "developing_blend": round(dev_blend, 3),
     }
+
+
+def _developing_agreement(
+    confirmed_direction: str,
+    dev_struct: dict[str, StructureAnalysis],
+    discount: float,
+) -> float:
+    """Score how much developing structure agrees with the confirmed direction.
+
+    Returns a value in ``[-1.0, +1.0]``:
+      * ``+1.0`` — developing fully agrees (confidence will be boosted),
+      * ``-1.0`` — developing fully disagrees (confidence will be reduced),
+      * ``0.0``  — no usable developing data (ranging/unknown/empty).
+
+    Each timeframe's confirmed-vs-developing agreement is weighted by the
+    developing confidence (× ``discount``) and signed by agreement, then
+    averaged across the timeframes that contributed.
+    """
+    agreements: list[float] = []
+    for tf in ("H4", "H1", "D1", "M15", "M5"):
+        sa = dev_struct.get(tf)
+        if sa is None:
+            continue
+        dev_trend = sa.trend.value if hasattr(sa.trend, "value") else str(sa.trend)
+        if not dev_trend or dev_trend == "RANGING":
+            continue
+        if dev_trend == "BULLISH":
+            dev_dir = "LONG"
+        elif dev_trend == "BEARISH":
+            dev_dir = "SHORT"
+        else:
+            continue
+        dev_conf = float(getattr(sa, "confidence", 0.0) or 0.0) * discount
+        agreements.append(dev_conf if dev_dir == confirmed_direction else -dev_conf)
+
+    if not agreements:
+        return 0.0
+    return sum(agreements) / len(agreements)
 
 
 def run_tf_modules(
@@ -154,6 +217,7 @@ def run_tf_modules(
     structure: StructureEngine,
     liquidity: LiquidityMapper,
     volume: VolumeAnalyzer,
+    include_forming: bool = False,
 ) -> dict[str, Any]:
     """Run the brain modules for one timeframe, plus the concept generators.
 
@@ -161,6 +225,13 @@ def run_tf_modules(
     ``structure``/``liquidity``/``volume`` engines are injected so callers can
     reuse instances.  Each module is guarded so one failure can't suppress the
     rest, and a concept failure can never break the ICT analysis.
+
+    ``include_forming`` controls the closed-bar contract.  The confirmed
+    analysis path (default ``False``) drops the still-forming bar so structural
+    artifacts come from CLOSED candles only.  The Phase-2 developing analysis
+    passes ``True`` to treat the forming bar as if it had just closed — "if the
+    candle closed right now, what would the structure look like?" — producing a
+    provisional, repaint-prone view kept strictly separate from confirmed data.
     """
     modules = TF_MODULE_MAP.get(tf, [])
     if not modules:
@@ -183,7 +254,12 @@ def run_tf_modules(
     # reason over CLOSED candles only, never the still-forming bar. Route those
     # to ``closed_df``. Observational reads (live momentum/regime, accumulated
     # volume) and the self-dropping StructureEngine keep the live ``df``.
-    closed_df = drop_forming_bar(df)
+    #
+    # When ``include_forming`` is set (Phase-2 developing analysis), the forming
+    # bar is treated as closed: ``closed_df`` IS the full frame, so the modules
+    # analyze the in-progress candle as completed data. This is intentionally
+    # provisional and lives only in the separate developing WorldModel store.
+    closed_df = df if include_forming else drop_forming_bar(df)
 
     for mod in modules:
         try:
