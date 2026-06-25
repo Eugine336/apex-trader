@@ -11,6 +11,7 @@ import pytest
 from brain.fvg_detector import FairValueGap, FVGStatus
 from brain.order_block import OrderBlock, OBStatus
 from brain.structure_engine import StructureAnalysis, StructureEvent, Trend
+from brain.directional_consensus import Vote
 from brain.world_model import WorldModelStore, build_world_model
 from entry.entry_orchestrator import EntryOrchestrator
 from entry.models import EntryConfig
@@ -259,3 +260,118 @@ class TestEntryOrchestratorReset:
         orch.reset()
         assert orch.zone_watcher.get_active_zones("EURUSD") == []
         assert len(orch.tick_detector.pending_entries) == 0
+
+
+def _make_struct_trend(trend) -> StructureAnalysis:
+    """StructureAnalysis with an explicit trend (for M5 flip-confirmation)."""
+    return StructureAnalysis(
+        trend=trend, last_event=StructureEvent.NONE,
+        swing_high=1.0900, swing_low=1.0800,
+        last_bos_level=None, last_choch_level=None,
+        structure_broken=False,
+        bullish_swing_points=[], bearish_swing_points=[],
+        confidence=0.6,
+    )
+
+
+def _setup_flip(
+    *,
+    tick_mom: float,
+    m5_trend,
+    momentum_dir: str = "SHORT",
+    momentum_conf: float = 0.8,
+    config=None,
+):
+    """Bullish-FVG (LONG) zone with an opposing momentum vote, wired with a
+    mockable tick_momentum and an optional M5 structural trend so the A1 flip
+    path can be exercised in isolation.
+    """
+    store = WorldModelStore()
+    decisions: list = []
+    m1_df = _bullish_m1()
+
+    orch = EntryOrchestrator(
+        world_model_store=store,
+        config=config or EntryConfig(min_entry_score=50),
+        pip_size_lookup=lambda _: 0.0001,
+        on_entry_decision=lambda d: decisions.append(d),
+        get_m1_dataframe=lambda _: m1_df,
+        get_tick_momentum=lambda s, d, p: tick_mom,
+    )
+
+    votes = [
+        Vote(
+            module="momentum", direction=momentum_dir,
+            confidence=momentum_conf, weight=1.0,
+        ),
+    ]
+    structure = None
+    if m5_trend is not None:
+        structure = {"M5": _make_struct_trend(m5_trend)}
+
+    wm = build_world_model(
+        symbol="EURUSD",
+        version=store.next_version(),
+        fvgs={"M5": [_make_fvg()]},
+        structure=structure,
+        votes=votes,
+    )
+    store.publish(wm)
+    orch.on_world_model_update("EURUSD")
+    return orch, decisions
+
+
+class TestEntryOrchestratorDirectionFlip:
+    def _touch_and_close(self, orch):
+        tick = FakeTick("EURUSD", 1.0844, 1.0845, datetime.now(timezone.utc))
+        orch.on_tick(tick)
+        orch.on_m1_close("EURUSD")
+
+    def test_flip_succeeds_when_ticks_and_m5_agree(self):
+        # Momentum opposes the LONG zone, ticks clearly move SHORT, M5 BEARISH
+        # agrees → flip to SHORT.
+        orch, _ = _setup_flip(tick_mom=0.50, m5_trend=Trend.BEARISH)
+        self._touch_and_close(orch)
+        assert orch.stats.get("direction_flips", 0) == 1
+        assert orch.stats.get("momentum_skips", 0) == 0
+
+    def test_flip_blocked_by_weak_ticks(self):
+        # tick_momentum below the 0.30 threshold → no flip, entry skipped.
+        orch, decisions = _setup_flip(tick_mom=0.15, m5_trend=Trend.BEARISH)
+        self._touch_and_close(orch)
+        assert orch.stats.get("direction_flips", 0) == 0
+        assert orch.stats.get("momentum_skips", 0) == 1
+        assert len(decisions) == 0
+
+    def test_flip_blocked_by_opposing_m5(self):
+        # Ticks are strong but M5 BULLISH opposes the SHORT flip → skip.
+        orch, decisions = _setup_flip(tick_mom=0.50, m5_trend=Trend.BULLISH)
+        self._touch_and_close(orch)
+        assert orch.stats.get("direction_flips", 0) == 0
+        assert orch.stats.get("momentum_skips", 0) == 1
+        assert len(decisions) == 0
+
+    def test_flip_with_ranging_m5(self):
+        # RANGING M5 does not block the flip when ticks confirm.
+        orch, _ = _setup_flip(tick_mom=0.40, m5_trend=Trend.RANGING)
+        self._touch_and_close(orch)
+        assert orch.stats.get("direction_flips", 0) == 1
+        assert orch.stats.get("momentum_skips", 0) == 0
+
+    def test_flip_with_unknown_m5(self):
+        # No M5 structure (UNKNOWN) is permissive when ticks confirm.
+        orch, _ = _setup_flip(tick_mom=0.40, m5_trend=None)
+        self._touch_and_close(orch)
+        assert orch.stats.get("direction_flips", 0) == 1
+        assert orch.stats.get("momentum_skips", 0) == 0
+
+    def test_no_flip_when_momentum_agrees(self):
+        # Momentum agrees with the LONG zone → no flip check, normal entry.
+        orch, decisions = _setup_flip(
+            tick_mom=0.0, m5_trend=Trend.BULLISH, momentum_dir="LONG",
+        )
+        self._touch_and_close(orch)
+        assert orch.stats.get("direction_flips", 0) == 0
+        assert orch.stats.get("momentum_skips", 0) == 0
+        assert len(decisions) == 1
+        assert decisions[0]["direction"] == "LONG"

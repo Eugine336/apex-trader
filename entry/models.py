@@ -125,8 +125,16 @@ class EntryConfig:
     # A zone's direction is mechanical (a bullish FVG ⇒ LONG). Before committing
     # the entry, momentum is consulted: when the live momentum read for the zone
     # direction is at/below ``-momentum_oppose_threshold`` the setup is fighting
-    # the move. If the OPPOSITE direction is genuinely M1-confirmed the trade is
-    # FLIPPED to go with the market; otherwise the entry is SKIPPED rather than
-    # taken against momentum. 0.2 ≈ "clearly opposing" on the [-1, +1] scale.
+    # the move. The flip to trade WITH the market is confirmed by live
+    # tick_momentum (real-time, sub-candle) plus the M5 structural trend — the
+    # opposite is taken only when ticks are genuinely moving that way AND the M5
+    # trend does not oppose it; otherwise the entry is SKIPPED rather than taken
+    # against momentum. 0.2 ≈ "clearly opposing" on the [-1, +1] scale.
     momentum_oppose_threshold: float = 0.20
+    # Minimum tick_momentum (signed for the flip direction) to confirm a
+    # direction flip. tick_momentum measures directional efficiency of the
+    # last ~20 ticks in [-1, +1]; 0.30 requires a clear, clean directional
+    # move — not just drift. Combined with the M5 structural trend check
+    # so the flip has both real-time price confirmation AND structural backing.
+    tick_momentum_flip_threshold: float = 0.30
     coalesce_hz: float = 15.0

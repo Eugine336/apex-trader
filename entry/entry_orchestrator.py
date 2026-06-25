@@ -57,6 +57,7 @@ class EntryOrchestrator:
         is_instrument_known: Optional[Callable[[str], bool]] = None,
         get_spread_pips: Optional[Callable[[str], float]] = None,
         get_m1_dataframe: Optional[Callable[[str], Optional[pd.DataFrame]]] = None,
+        get_tick_momentum: Optional[Callable[[str, str, float], float]] = None,
         on_gate_trace: Optional[Callable[..., None]] = None,
         gate_tuner: Optional[object] = None,
     ) -> None:
@@ -65,6 +66,11 @@ class EntryOrchestrator:
         self._on_entry = on_entry_decision
         self._on_gate_trace = on_gate_trace
         self._wm_store = world_model_store
+        # Live sub-candle momentum for the trade direction → [-1, +1]
+        # (signature: ``(symbol, norm_dir, pip_size) → float``). Used by the A1
+        # flip confirmation so the flip rides real-time price, not a 60s-stale
+        # M1 close. Defaults to neutral (0.0) when unwired.
+        self._get_tick_momentum = get_tick_momentum or (lambda s, d, p: 0.0)
 
         self._is_market_open = is_market_open or (lambda _: True)
         self._is_session_active = is_session_active or (lambda _: True)
@@ -360,6 +366,61 @@ class EntryOrchestrator:
         except Exception:
             return False
 
+    def _tick_m5_confirms_flip(
+        self, opposite: str, symbol: str,
+    ) -> tuple[bool, float, str]:
+        """Confirm a direction flip from live tick momentum + the M5 trend.
+
+        Replaces the 60s-stale M1 candle confirmation in the A1 flip path with
+        two real-time/structural reads:
+
+        1. ``tick_momentum`` (sub-candle, updates every tick) signed for the
+           OPPOSITE direction must reach ``tick_momentum_flip_threshold`` — the
+           flip only rides a clean, current move, not micro-drift.
+        2. The M5 structural trend must not OPPOSE the flip (flipping to LONG
+           against a BEARISH M5, or to SHORT against a BULLISH M5, is refused).
+           A RANGING/UNKNOWN M5 does not block — the flip stays permissive when
+           there is no opposing structure.
+
+        Returns ``(confirmed, tick_mom, m5_trend)`` so the caller can log the
+        actual values for production debugging. Fails closed (returns
+        ``(False, …)``) on any error — a failed read never flips a trade.
+        """
+        tick_mom = 0.0
+        m5_trend = "UNKNOWN"
+        try:
+            norm_dir = "BUY" if str(opposite).upper() == "LONG" else "SELL"
+            pip_size = self._pip_size(symbol)
+            tick_mom = float(self._get_tick_momentum(symbol, norm_dir, pip_size))
+
+            threshold = float(
+                getattr(self._config, "tick_momentum_flip_threshold", 0.30) or 0.30
+            )
+            if tick_mom < threshold:
+                return False, tick_mom, m5_trend
+
+            if self._wm_store is not None:
+                wm = self._wm_store.get(symbol)
+                if wm is not None:
+                    m5_sa = wm.structure_by_tf().get("M5")
+                    if m5_sa is not None:
+                        m5_trend = str(
+                            getattr(getattr(m5_sa, "trend", None), "value", "")
+                            or "UNKNOWN"
+                        )
+
+            want = str(opposite).upper()
+            opposes = (
+                (want == "LONG" and m5_trend == "BEARISH")
+                or (want == "SHORT" and m5_trend == "BULLISH")
+            )
+            if opposes:
+                return False, tick_mom, m5_trend
+
+            return True, tick_mom, m5_trend
+        except Exception:
+            return False, tick_mom, m5_trend
+
     def _flip_zone(self, zone, new_direction: str):
         """Mirror a zone to the opposite trade direction.
 
@@ -467,20 +528,24 @@ class EntryOrchestrator:
         # The zone's direction is mechanical (a bullish FVG ⇒ LONG). Before
         # committing, verify it against live momentum: the MARKET decides the
         # side, not the zone's historical kind. When momentum actively opposes
-        # the zone direction, either FLIP to trade WITH the move (only if the
-        # opposite is genuinely M1-confirmed) or SKIP the entry — never enter
-        # against momentum on the zone label alone.
+        # the zone direction, either FLIP to trade WITH the move (only when live
+        # tick_momentum confirms the opposite AND the M5 trend does not oppose
+        # it) or SKIP the entry — never enter against momentum on the zone label
+        # alone.
         oppose_floor = -float(
             getattr(self._config, "momentum_oppose_threshold", 0.20) or 0.20
         )
         momentum = self._entry_momentum(symbol, direction)
         if momentum is not None and momentum <= oppose_floor:
             opposite = "SHORT" if str(direction).upper() == "LONG" else "LONG"
-            if self._m1_confirms_direction(opposite, zone, m1_df, pip_size):
+            confirmed, tick_mom, m5_trend = self._tick_m5_confirms_flip(
+                opposite, symbol,
+            )
+            if confirmed:
                 logger.info(
                     "[entry-orch] {} direction FLIP {}→{} — momentum {:+.2f} "
-                    "opposed the zone, opposite M1-confirmed",
-                    symbol, direction, opposite, momentum,
+                    "opposed the zone, tick_mom={:+.2f} M5={}",
+                    symbol, direction, opposite, momentum, tick_mom, m5_trend,
                 )
                 self._stats["direction_flips"] = self._stats.get("direction_flips", 0) + 1
                 direction = opposite
@@ -489,8 +554,8 @@ class EntryOrchestrator:
             else:
                 logger.info(
                     "[entry-orch] {} {} entry SKIPPED — momentum {:+.2f} opposes "
-                    "the zone and the opposite is not M1-confirmed",
-                    symbol, direction, momentum,
+                    "the zone and the flip is unconfirmed (tick_mom={:+.2f} M5={})",
+                    symbol, direction, momentum, tick_mom, m5_trend,
                 )
                 self._stats["momentum_skips"] = self._stats.get("momentum_skips", 0) + 1
                 self._tick_detector.cancel_pending(symbol, "momentum opposes zone")
