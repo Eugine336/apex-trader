@@ -84,6 +84,12 @@ class PositionSnapshot:
     trailing: bool = False
     partial_closed: bool = False
     re_entry_eligible: bool = False
+    # True while a worker-path SL move is in flight to the broker but not yet
+    # confirmed. The optimistic mutation writes the new (unconfirmed) level into
+    # the management state, so the synthetic stop-hit check must skip this cycle
+    # — otherwise a broker-rejected SL ("Invalid stops") could trigger a phantom
+    # stop-loss CLOSE before the rollback restores the real stop.
+    sl_pending_confirmation: bool = False
 
     # ── Live data (from broker / last tick) ───────────────────────────
     current_price: float = 0.0
@@ -240,6 +246,7 @@ def build_position_snapshot(
         trailing=getattr(pos, "trailing", False),
         partial_closed=partial_closed,
         re_entry_eligible=getattr(pos, "re_entry_eligible", False),
+        sl_pending_confirmation=getattr(tm_trade, "sl_pending_confirmation", False),
         current_price=current_price,
         broker_pnl=_pos_pnl(pos),
         broker_lots=_pos_lots(pos),

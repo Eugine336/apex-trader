@@ -231,6 +231,14 @@ def _broker_tp(pos) -> float:
 _SCALE_IN_RISK_FRACTION = 0.5
 _DEFAULT_PARTIAL_CLOSE_RATIO = 0.5
 
+# How long (seconds, monotonic) a worker-path SL move stays "pending broker
+# confirmation" after it is optimistically applied. While pending, the synthetic
+# stop-hit check is suppressed so a broker-rejected SL cannot trigger a phantom
+# stop-loss CLOSE before the modify result lands. Auto-expires so the guard can
+# never get stuck (e.g. if the aggregator deduped the intent away). A modify
+# round-trip is normally well under 1s even with retry backoff.
+_SL_MODIFY_PENDING_GRACE_S = 5.0
+
 
 # ── Tick source threads ──────────────────────────────────────────────
 
@@ -671,6 +679,14 @@ class PositionEvaluator:
                 if len(mgmt.score_history) > 20:
                     mgmt.score_history = mgmt.score_history[-20:]
 
+            # Resolve the per-cycle "SL modify in flight" flag from the monotonic
+            # deadline set when a worker-path SL move was last submitted (and
+            # auto-cleared by _handle_manage_result on the broker result). While
+            # pending, the snapshot tells the worker to skip the synthetic
+            # stop-hit check so an unconfirmed / rejected SL cannot fire a
+            # phantom stop-loss CLOSE.
+            mgmt.sl_pending_confirmation = mgmt.sl_modify_pending_until > now_mono
+
             snap = build_position_snapshot(
                 pos, tm_trade=mgmt, current_price=price,
                 score_history=tuple(mgmt.score_history),
@@ -713,6 +729,12 @@ class PositionEvaluator:
                             order_id, intent.intent_type,
                             {"stop_loss": prev_sl, "at_breakeven": prev_at_be},
                         )
+                        # Mark the optimistic SL as pending broker confirmation
+                        # so the synthetic stop-hit check is suppressed until the
+                        # modify result lands. Without this a broker rejection
+                        # ("Invalid stops") leaves the unconfirmed SL in the
+                        # snapshot long enough to fire a phantom stop-loss CLOSE.
+                        mgmt.sl_modify_pending_until = now_mono + _SL_MODIFY_PENDING_GRACE_S
                     elif intent.intent_type == IntentType.PARTIAL_CLOSE:
                         prev_pc = mgmt.partial_closed
                         prev_tp1 = mgmt.tp1_hit
@@ -4319,6 +4341,16 @@ class EventDrivenSystem:
             key = (ticket, int(itype))
             with self._inflight_manage_lock:
                 prev = self._inflight_manage.pop(key, None)
+            # The SL modify attempt has now concluded (success, permanent
+            # failure, or market-closed skip): clear the pending-confirmation
+            # guard so the synthetic stop-hit check resumes next cycle against
+            # the now-authoritative SL (the confirmed new level on success, or
+            # the rolled-back / original level otherwise).
+            if int(itype) == int(IntentType.MODIFY_SL):
+                mgmt_pending = self._mgmt_store.get(ticket)
+                if mgmt_pending is not None:
+                    mgmt_pending.sl_modify_pending_until = 0.0
+                    mgmt_pending.sl_pending_confirmation = False
             success = bool(getattr(result, "success", False))
             if success or prev is None:
                 return
