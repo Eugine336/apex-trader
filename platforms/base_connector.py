@@ -145,11 +145,15 @@ class BaseConnector(ABC):
 
     @abstractmethod
     def get_ohlcv(
-        self, symbol: str, timeframe: str, count: int = 200
+        self, symbol: str, timeframe: str, count: int = 200,
+        *, include_forming: bool = True,
     ) -> pd.DataFrame:
         """
         Fetch historical candles.
         Returns DataFrame with columns: time, open, high, low, close, volume.
+
+        ``include_forming`` defaults to True (broker-native: the last row is the
+        still-forming bar). Pass False to return confirmed-closed bars only.
         """
 
     @abstractmethod

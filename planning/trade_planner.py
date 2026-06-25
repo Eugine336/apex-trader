@@ -236,7 +236,11 @@ class TradePlanner:
         plan.confidence = confidence
 
         # ── 1. ENTER / WAIT / SKIP ───────────────────────────────────────
-        if confidence < cfg.min_confidence_to_enter and gate_agreement < cfg.min_advisor_agreement:
+        # Both floors must be cleared to ENTER: a strong reading on one
+        # dimension must NOT let a setup that fails the other dimension through.
+        # (Previously `and` meant the setup was only gated when BOTH failed, so
+        # one strong dimension bypassed the other.)
+        if confidence < cfg.min_confidence_to_enter or gate_agreement < cfg.min_advisor_agreement:
             if cfg.soften_gates:
                 # Phase 9: soften the conviction floor into a bounded dimmer.
                 # Instead of killing the setup, flow it through as ENTER carrying

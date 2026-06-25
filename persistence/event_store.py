@@ -107,6 +107,13 @@ class EventStore:
         self._queue: queue.Queue = queue.Queue(maxsize=max_queue)
         self._dropped = 0
         self._dropped_lock = threading.Lock()
+        # Set True when the backing DB is detected as corrupt (integrity_check
+        # failed at startup) or when consecutive write failures pile up. When
+        # degraded the store keeps accepting emits (they are dropped) but the
+        # flag lets startup recovery surface the problem loudly instead of
+        # silently reporting "no open positions" on a malformed DB.
+        self._db_degraded = False
+        self._write_error_streak = 0
         # Monotonic, per-process event sequence.  Assigned at emit time under
         # its own lock and seeded from the persisted MAX(seq) on connect, so it
         # continues across restarts and gives a strict total order for replay
@@ -141,6 +148,27 @@ class EventStore:
         )
         self._conn.execute("PRAGMA journal_mode=WAL")
         self._conn.execute("PRAGMA synchronous=NORMAL")
+        # Detect a corrupt/malformed DB up front. A "database disk image is
+        # malformed" file would otherwise silently drop every event and make
+        # startup recovery report a clean (empty) open-position set — masking
+        # real open positions. Surface it loudly and flag the store degraded.
+        try:
+            row = self._conn.execute("PRAGMA integrity_check").fetchone()
+            result = (row[0] if row else "").lower()
+            if result != "ok":
+                self._db_degraded = True
+                logger.critical(
+                    "[event_store] integrity_check FAILED for {} — DB is corrupt "
+                    "(result={!r}); event persistence and crash recovery are "
+                    "UNRELIABLE until the DB is replaced",
+                    self._db_path, row[0] if row else None,
+                )
+        except Exception as exc:
+            self._db_degraded = True
+            logger.critical(
+                "[event_store] integrity_check could not run for {} — treating DB "
+                "as degraded: {}", self._db_path, exc,
+            )
         self._conn.execute(_CREATE_EVENTS)
         # Migrate DBs created before the seq column existed.
         existing_cols = {
@@ -204,6 +232,15 @@ class EventStore:
     def dropped_count(self) -> int:
         with self._dropped_lock:
             return self._dropped
+
+    @property
+    def is_degraded(self) -> bool:
+        """True when the backing DB is corrupt or persistently unwritable.
+
+        Startup recovery checks this so a malformed DB cannot masquerade as a
+        clean (zero open positions) reconciliation.
+        """
+        return self._db_degraded
 
     def query(
         self,
@@ -451,8 +488,21 @@ class EventStore:
                 with self._db_lock:
                     self._conn.executemany(insert_sql, batch)
                     self._conn.commit()
+                self._write_error_streak = 0
             except Exception as exc:
+                self._write_error_streak += 1
                 print(f"[event_store] write failed (batch={len(batch)}): {exc}", file=sys.stderr)
+                # Three consecutive failed batches means the DB is not merely
+                # busy — it is corrupt or unwritable. Flag degraded and log at
+                # ERROR (once) so monitoring can alert instead of this scrolling
+                # silently past on stderr.
+                if self._write_error_streak == 3:
+                    self._db_degraded = True
+                    logger.error(
+                        "[event_store] {} consecutive write failures for {} — "
+                        "marking store DEGRADED; events are being dropped: {}",
+                        self._write_error_streak, self._db_path, exc,
+                    )
 
     # ── Lifecycle ─────────────────────────────────────────────────────────
 

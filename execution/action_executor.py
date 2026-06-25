@@ -164,6 +164,14 @@ class ActionExecutor:
         self._lock = Lock()
         self._metrics = ExecutorMetrics()
         self._metrics_lock = Lock()
+        # PARTIAL_CLOSE idempotency: unlike OPEN, partials carry no idempotency
+        # key, so a lost-ack retry (broker actually reduced the position but
+        # returned a transient error) would close the fraction a second time.
+        # Record the monotonic time of the last partial per ticket and skip a
+        # repeat within a short window.
+        self._last_partial_close: dict[str, float] = {}
+        self._partial_close_lock = Lock()
+        self._partial_close_dedup_s = 5.0
         # Separate breakers per operation class AND per platform so a failing
         # CLOSE/manage path on one broker (e.g. a closed FX market on MT5 over
         # the weekend) cannot trip the breaker that gates manage operations on
@@ -228,6 +236,28 @@ class ActionExecutor:
             Current account drawdown percentage.
         """
         self._inc("intents_received")
+
+        # PARTIAL_CLOSE idempotency guard: skip a repeat partial for the same
+        # ticket within the dedup window so a re-submitted (or lost-ack) partial
+        # cannot chip the position twice.
+        if intent.intent_type == IntentType.PARTIAL_CLOSE:
+            tkt = str(intent.position_ticket or "")
+            if tkt:
+                now_mono = time.monotonic()
+                with self._partial_close_lock:
+                    last = self._last_partial_close.get(tkt, 0.0)
+                    if (now_mono - last) < self._partial_close_dedup_s:
+                        logger.warning(
+                            "EXECUTOR DEDUP | PARTIAL_CLOSE {} | within {:.0f}s of "
+                            "prior partial — skipping to avoid double-close",
+                            tkt, self._partial_close_dedup_s,
+                        )
+                        self._inc("intents_rejected")
+                        return ExecutionResult(
+                            intent=intent, success=False,
+                            error="partial_close_deduped",
+                        )
+                    self._last_partial_close[tkt] = now_mono
 
         gate = self._gate.validate(intent, open_positions, account_drawdown_pct)
         if not gate.allowed:
@@ -356,6 +386,22 @@ class ActionExecutor:
                         intent.intent_type.name,
                         intent.position_ticket,
                         result.error,
+                    )
+                    result.execution_time_ms = elapsed_ms
+                    result.retried = retried
+                    return result
+
+                # A transient PARTIAL_CLOSE failure is ambiguous: the broker may
+                # have already reduced the position before the ack was lost.
+                # Retrying would double-close, so treat it as terminal here
+                # rather than re-dispatch (it has no idempotency key like OPEN).
+                if intent.intent_type == IntentType.PARTIAL_CLOSE:
+                    circuit.record_failure()
+                    self._inc("intents_failed")
+                    self._add_latency(elapsed_ms)
+                    logger.warning(
+                        "EXECUTOR FAIL (no-retry partial) | PARTIAL_CLOSE {} | {}",
+                        intent.position_ticket, result.error,
                     )
                     result.execution_time_ms = elapsed_ms
                     result.retried = retried

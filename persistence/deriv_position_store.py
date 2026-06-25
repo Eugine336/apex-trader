@@ -170,7 +170,12 @@ class DerivPositionStore:
             except Exception as exc:
                 logger.error("DerivPositionStore load failed: {}", exc)
                 self._mark_unhealthy(f"load_all: {exc}")
-                return {}
+                # Do NOT return {} — an empty mapping would make the system boot
+                # believing there are zero open Deriv contracts while real ones
+                # are live at the broker (they would then run UNMANAGED). Raise
+                # so startup surfaces the failure instead of silently dropping
+                # all contract metadata (mirrors PositionStore.load_all_positions).
+                raise
         out: dict[str, dict] = {}
         for row in rows:
             cid = str(row[0])

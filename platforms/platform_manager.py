@@ -933,8 +933,16 @@ class PlatformManager:
         symbol: str,
         timeframes: Optional[list[str]] = None,
         count: int = 200,
+        *,
+        include_forming: bool = True,
     ) -> dict[str, pd.DataFrame]:
-        """Fetch OHLCV across multiple timeframes for a single symbol."""
+        """Fetch OHLCV across multiple timeframes for a single symbol.
+
+        ``include_forming`` defaults to True (broker-native: the last row is the
+        still-forming bar). Pass False for callers that require confirmed-closed
+        bars only; the cache is bypassed in that case so a closed-only request
+        never returns (or populates) a forming-bar-inclusive cache entry.
+        """
         if timeframes is None:
             timeframes = ["H4", "H1", "M15", "M5"]
         connector = self.get_connector(symbol)
@@ -950,13 +958,21 @@ class PlatformManager:
         for tf in timeframes:
             try:
                 cache = getattr(self, "candle_cache", None)
-                cached = cache.get(symbol, tf, count) if cache is not None else None
+                # Only the forming-bar-inclusive view is cached. A closed-only
+                # request bypasses the cache on both read and write so the two
+                # views never cross-contaminate.
+                cached = (
+                    cache.get(symbol, tf, count)
+                    if cache is not None and include_forming else None
+                )
                 if cached is not None:
                     data[tf] = cached
                     continue
-                df = connector.get_ohlcv(symbol, tf, count)
+                df = connector.get_ohlcv(
+                    symbol, tf, count, include_forming=include_forming,
+                )
                 data[tf] = df
-                if cache is not None:
+                if cache is not None and include_forming:
                     cache.put(symbol, tf, count, df)
             except Exception as exc:
                 exc_str = str(exc)
