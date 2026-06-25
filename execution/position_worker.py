@@ -90,6 +90,23 @@ class WorkerConfig:
     atr_trail_mult: float = 1.5
 
     # ── Stall exit ───────────────────────────────────────────────────
+    # Opportunistic management: a flat, aging position is cut because the live
+    # WorldModel no longer supports the thesis that opened it — NOT because a
+    # fixed per-timeframe clock ran out. When ``stall_requires_structure_loss``
+    # is True (default), the stall exit only fires once the live scan (built
+    # from the current WorldModel bias) opposes the position direction or its
+    # supporting conviction has decayed below ``stall_structure_score_floor``.
+    # With no live read available, the position is held (never cut on a clock
+    # alone). ``stall_min_hold_minutes`` is a safety floor so a brand-new flat
+    # position is not cut before the brain has re-read the market — it is a
+    # guardrail, not a horizon-classification timer.
+    stall_requires_structure_loss: bool = True
+    stall_structure_score_floor: int = 40
+    stall_min_hold_minutes: float = 30.0
+    # Legacy clock-based fallback. Only consulted when
+    # ``stall_requires_structure_loss`` is False (opt-out for backtests /
+    # environments without a live WorldModel feed). Retained for backward
+    # compatibility; not used by the live opportunistic path.
     stall_limits: dict = field(default_factory=lambda: {
         "M1": 30, "M5": 60, "M15": 90, "H1": 180, "H4": 360,
     })
@@ -252,7 +269,7 @@ class PositionWorker:
         self._check_breakeven(snap, intents)
         self._check_tp3(snap, intents)
         self._check_tp2(snap, intents)
-        self._check_stall(snap, now, intents)
+        self._check_stall(snap, now, intents, scan=scan)
 
         # ── Layer 2: Exit checks (ExitChecksMixin logic) ─────────────
         self._check_absolute_profit_protection(snap, intents)
@@ -407,17 +424,63 @@ class PositionWorker:
             ))
 
     def _check_stall(
-        self, snap: PositionSnapshot, now: datetime, out: list[Intent],
+        self,
+        snap: PositionSnapshot,
+        now: datetime,
+        out: list[Intent],
+        scan: Optional[ScanContext] = None,
     ) -> None:
+        """Exit a flat, aging position when the live thesis is no longer present.
+
+        Opportunistic management: the market decides when an idea is dead, not a
+        fixed clock. A flat position is only cut once the live WorldModel (via
+        ``scan``) no longer supports the direction that opened it — its bias has
+        flipped against the trade, or the supporting conviction has decayed below
+        ``stall_structure_score_floor``. With no live read available the position
+        is held rather than cut on elapsed time alone.
+
+        ``stall_min_hold_minutes`` is a safety floor (a new flat position is not
+        cut before the brain re-reads the market); it is not a per-timeframe
+        horizon timer. The legacy per-timeframe clock is only used when
+        ``stall_requires_structure_loss`` is disabled (opt-out for backtests).
+        """
         if snap.partial_closed:
             return
-        stall_limit = self.cfg.stall_limits.get(
-            snap.entry_timeframe, self.cfg.stall_default_limit,
-        )
         stall_minutes = (now - snap.open_time).total_seconds() / 60
         risk_pips = snap.risk_pips
         flat_threshold = 0.15 * risk_pips if risk_pips > 0 else 5.0
-        if stall_minutes > stall_limit and abs(snap.pnl_pips) < flat_threshold:
+        if abs(snap.pnl_pips) >= flat_threshold:
+            return
+
+        if self.cfg.stall_requires_structure_loss:
+            # Safety floor — never cut a brand-new flat position before the
+            # brain has had a chance to re-read the market for it.
+            if stall_minutes < self.cfg.stall_min_hold_minutes:
+                return
+            # No live WorldModel read → cannot confirm the thesis is gone, so
+            # hold rather than exit on elapsed time alone.
+            if scan is None:
+                return
+            if not self._stall_structure_lost(snap, scan):
+                return
+            out.append(Intent.close(
+                symbol=snap.symbol,
+                ticket=snap.order_id,
+                source="stall_exit",
+                reason=(
+                    f"Stall exit — flat {stall_minutes:.0f}min and live structure "
+                    f"no longer supports {snap.direction} "
+                    f"(bias {scan.direction or 'none'}@{scan.score}), "
+                    f"{snap.pnl_pips:.1f}pip"
+                ),
+            ))
+            return
+
+        # Legacy clock-based fallback (opt-out): per-timeframe stall window.
+        stall_limit = self.cfg.stall_limits.get(
+            snap.entry_timeframe, self.cfg.stall_default_limit,
+        )
+        if stall_minutes > stall_limit:
             out.append(Intent.close(
                 symbol=snap.symbol,
                 ticket=snap.order_id,
@@ -427,6 +490,23 @@ class PositionWorker:
                     f"{snap.pnl_pips:.1f}pip"
                 ),
             ))
+
+    def _stall_structure_lost(
+        self, snap: PositionSnapshot, scan: ScanContext,
+    ) -> bool:
+        """True when the live WorldModel no longer supports the position thesis.
+
+        The supporting structure is considered gone when the live bias direction
+        opposes the position, or when it still nominally agrees but its
+        conviction has decayed below ``stall_structure_score_floor``.
+        """
+        want = "LONG" if snap.is_long else "SHORT"
+        live_dir = str(scan.direction or "").strip().upper()
+        if live_dir in ("LONG", "SHORT") and live_dir != want:
+            return True
+        if scan.score < self.cfg.stall_structure_score_floor:
+            return True
+        return False
 
     # ──────────────────────────────────────────────────────────────────
     # Layer 2: Exit checks (mirrors ExitChecksMixin)

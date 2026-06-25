@@ -238,14 +238,30 @@ class TestBackwardCompat:
         tp2 = [i for i in intents if "tp2" in i.source]
         assert len(tp2) > 0
 
-    def test_stall_exit_no_context(self):
-        worker = PositionWorker(WorkerConfig(stall_limits={"M5": 30}))
+    def test_stall_held_without_live_read(self):
+        # Opportunistic stall: with no live WorldModel read (scan=None) a flat,
+        # aging position is HELD — it is never cut on elapsed time alone.
+        worker = PositionWorker()
         now = datetime.now(timezone.utc)
         snap = _snap(
             pnl_pips=0.5,
             open_time=now - timedelta(minutes=45),
         )
         intents = worker.evaluate(snap, now=now, scan=None, market=None)
+        stall = [i for i in intents if "stall" in i.source]
+        assert len(stall) == 0
+
+    def test_stall_exit_fires_on_structure_loss(self):
+        # Flat, aged, and the live bias opposes the position → stall fires.
+        worker = PositionWorker()
+        now = datetime.now(timezone.utc)
+        snap = _snap(
+            direction="LONG",
+            pnl_pips=0.5,
+            open_time=now - timedelta(minutes=45),
+        )
+        scan = ScanContext(direction="SHORT", score=70)
+        intents = worker.evaluate(snap, now=now, scan=scan, market=None)
         stall = [i for i in intents if "stall" in i.source]
         assert len(stall) > 0
 

@@ -220,29 +220,80 @@ class TestTP3:
 
 
 class TestStallExit:
-    def test_stall_exit_fires(self):
+    def test_stall_exit_fires_when_structure_lost(self):
+        # Flat, aged, AND live bias has flipped against the LONG → cut.
         open_time = NOW - timedelta(minutes=90)
         snap = _snap(
-            open_time=open_time, pnl_pips=0.5,
+            direction="BUY", open_time=open_time, pnl_pips=0.5,
             entry_timeframe="M5",
         )
+        scan = ScanContext(direction="SHORT", score=70)
         worker = PositionWorker()
-        intents = worker.evaluate(snap, NOW)
+        intents = worker.evaluate(snap, NOW, scan=scan)
         assert any(i.source == "stall_exit" for i in intents)
+
+    def test_stall_exit_fires_when_conviction_decayed(self):
+        # Flat, aged, bias still agrees but conviction decayed below floor → cut.
+        open_time = NOW - timedelta(minutes=90)
+        snap = _snap(direction="BUY", open_time=open_time, pnl_pips=0.5)
+        scan = ScanContext(direction="LONG", score=20)
+        worker = PositionWorker()
+        intents = worker.evaluate(snap, NOW, scan=scan)
+        assert any(i.source == "stall_exit" for i in intents)
+
+    def test_no_stall_when_structure_still_supports(self):
+        # Flat and aged, but the live WorldModel still supports the thesis →
+        # the position is held (market decides, not the clock).
+        open_time = NOW - timedelta(minutes=90)
+        snap = _snap(direction="BUY", open_time=open_time, pnl_pips=0.5)
+        scan = ScanContext(direction="LONG", score=80)
+        worker = PositionWorker()
+        intents = worker.evaluate(snap, NOW, scan=scan)
+        assert not any(i.source == "stall_exit" for i in intents)
+
+    def test_no_stall_without_live_read(self):
+        # No live WorldModel read available → never cut on elapsed time alone.
+        open_time = NOW - timedelta(minutes=90)
+        snap = _snap(open_time=open_time, pnl_pips=0.5)
+        worker = PositionWorker()
+        intents = worker.evaluate(snap, NOW, scan=None)
+        assert not any(i.source == "stall_exit" for i in intents)
+
+    def test_no_stall_inside_min_hold_floor(self):
+        # Structure lost but the position is younger than the safety floor →
+        # held until the brain has had time to re-read it.
+        open_time = NOW - timedelta(minutes=10)
+        snap = _snap(direction="BUY", open_time=open_time, pnl_pips=0.5)
+        scan = ScanContext(direction="SHORT", score=70)
+        worker = PositionWorker()
+        intents = worker.evaluate(snap, NOW, scan=scan)
+        assert not any(i.source == "stall_exit" for i in intents)
 
     def test_stall_exit_skipped_if_profitable(self):
         open_time = NOW - timedelta(minutes=90)
         snap = _snap(open_time=open_time, pnl_pips=50.0)
+        scan = ScanContext(direction="SHORT", score=70)
         worker = PositionWorker()
-        intents = worker.evaluate(snap, NOW)
+        intents = worker.evaluate(snap, NOW, scan=scan)
         assert not any(i.source == "stall_exit" for i in intents)
 
     def test_stall_exit_skipped_if_partial_closed(self):
         open_time = NOW - timedelta(minutes=90)
         snap = _snap(open_time=open_time, pnl_pips=0.5, partial_closed=True)
+        scan = ScanContext(direction="SHORT", score=70)
         worker = PositionWorker()
-        intents = worker.evaluate(snap, NOW)
+        intents = worker.evaluate(snap, NOW, scan=scan)
         assert not any(i.source == "stall_exit" for i in intents)
+
+    def test_legacy_clock_fallback_when_structure_gate_disabled(self):
+        # Opt-out: with the structure gate disabled, the legacy per-timeframe
+        # clock still fires (backtest / no-WorldModel environments).
+        open_time = NOW - timedelta(minutes=90)
+        snap = _snap(open_time=open_time, pnl_pips=0.5, entry_timeframe="M5")
+        cfg = WorkerConfig(stall_requires_structure_loss=False)
+        worker = PositionWorker(cfg)
+        intents = worker.evaluate(snap, NOW)
+        assert any(i.source == "stall_exit" for i in intents)
 
 
 class TestDynamicSLTightening:
