@@ -4758,6 +4758,60 @@ class EventDrivenSystem:
         except Exception as exc:
             logger.debug("[decision-trace] entry gate trace failed for {}: {}", symbol, exc)
 
+        # Feed the shadow store a counterfactual for each TUNABLE quality gate
+        # that blocked this setup, so the GateTuner can learn whether those
+        # gates are over-filtering profitable setups in the LIVE path (it
+        # previously only saw decision-engine / risk-governor rejections, never
+        # the entry gate's own score / HTF-alignment bars). Observational only —
+        # shadow contracts never affect a live decision. Best-effort.
+        if not passed:
+            try:
+                self._record_entry_gate_shadow_rejections(symbol, direction, results, meta)
+            except Exception as exc:
+                logger.debug(
+                    "[shadow] entry-gate rejection record failed for {}: {}", symbol, exc,
+                )
+
+    # Maps EntryGate quality-gate names → the GateTuner family they feed. Only
+    # whitelisted QUALITY gates appear here; safety / physical gates
+    # (market_open, spread, news, drawdown, zone_valid, risk_reward, …) are
+    # never auto-tuned and never recorded as tunable-gate counterfactuals.
+    _TUNABLE_GATE_FAMILY: dict[str, str] = {
+        "score_minimum": "entry_engine",
+        "alignment": "htf_alignment",
+    }
+
+    def _record_entry_gate_shadow_rejections(
+        self,
+        symbol: str,
+        direction: str,
+        results: Any,
+        meta: Optional[dict[str, Any]] = None,
+    ) -> None:
+        """Record one shadow rejection per TUNABLE quality gate that blocked.
+
+        A setup can fail several gates at once (e.g. score AND alignment); each
+        tunable quality gate gets its own contract so the counterfactual is
+        attributed to that gate independently. Safety gates are skipped.
+        """
+        m = dict(meta or {})
+        entry_price = float(m.get("entry_price", 0.0) or 0.0)
+        sl = float(m.get("stop_loss", 0.0) or 0.0)
+        tp1 = float(m.get("tp1", 0.0) or 0.0)
+        conviction = float(m.get("conviction", 0.0) or 0.0)
+        if entry_price <= 0.0 or sl <= 0.0 or tp1 <= 0.0:
+            return
+        for g in results or []:
+            if getattr(g, "passed", True):
+                continue
+            family = self._TUNABLE_GATE_FAMILY.get(str(getattr(g, "gate_name", "")))
+            if family is None:
+                continue
+            self._record_shadow_rejection(
+                symbol, direction, entry_price, sl, tp1,
+                f"{family}:{getattr(g, 'reason', '')}", conviction,
+            )
+
     def _on_world_model_update(self, event: Any) -> None:
         """Feed density tracker when WorldModel updates after a scan."""
         ctx = self._ctx

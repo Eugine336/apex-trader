@@ -47,15 +47,34 @@ class GateTuner(TuningGuardMixin):
         # [-3.0, 0.0] when its rejected setups keep winning. NEVER drops below
         # the watchlist score or the drawdown-mode floor (enforced at the gate).
         "entry_engine": (-3.0, 0.0, 1.0, -1),
+        # HTF-alignment gate rejects setups whose signed HTF alignment is below
+        # min_htf_alignment (base offset 0.0). Loosening LOWERS that floor —
+        # i.e. allows more counter-HTF entries — within [-0.5, 0.0] when the
+        # setups it rejected keep winning, which is the data proving HTF
+        # opposition was not actually predictive for that instrument. The live
+        # EntryGate clamps the loosened floor so it never drops below an
+        # absolute permissive cap (min_htf_alignment_floor). It NEVER tightens
+        # past the operator's configured floor (offset is loosening-only).
+        "htf_alignment": (-0.5, 0.0, 0.05, -1),
     }
 
     MIN_SAMPLES = 30        # resolved shadows for a gate before tuning it
     LOOSEN_WINRATE = 0.55   # rejected setups winning ≥ this → gate too strict
     TIGHTEN_WINRATE = 0.40  # rejected setups winning ≤ this → gate is right
 
-    def __init__(self, path: str | None = None) -> None:
+    def __init__(
+        self, path: str | None = None, *, staleness_decay: bool = True,
+    ) -> None:
         self._path = Path(path) if path else (_data_dir() / "gate_tuning.json")
         self._offsets: dict[str, float] = {}
+        # Staleness decay (cold-start safety, learned-value hygiene): a learned
+        # offset is only trustworthy while fresh shadow outcomes keep proving it.
+        # When a tunable gate stops producing counterfactual evidence (no recent
+        # rejected-then-resolved setups), its learned offset is nudged one step
+        # back toward the neutral operator-configured threshold on each
+        # calibration pass, so a stale learned value cannot persist indefinitely
+        # after the market regime that justified it has gone. On by default.
+        self._staleness_decay = bool(staleness_decay)
         self._load()
 
     # ── Read API (used by the gates) ─────────────────────────────────────
@@ -160,6 +179,37 @@ class GateTuner(TuningGuardMixin):
                     "(shadow win-rate {:.0%} over {} resolved)",
                     family, cur, new, win_rate, total,
                 )
+
+        # ── Staleness decay ──────────────────────────────────────────────
+        # Any tunable gate that produced NO counterfactual evidence this pass
+        # (absent from the aggregated outcomes) but still carries a non-neutral
+        # learned offset is nudged one step back toward neutral. This keeps a
+        # learned threshold from outliving the data that justified it: once the
+        # shadow feed for a gate dries up, its offset decays to the operator's
+        # configured value over successive passes. A gate that is present but
+        # merely thin (below MIN_SAMPLES) is left untouched — it is still
+        # accumulating evidence, not stale.
+        if self._staleness_decay:
+            for family, (lo, hi, step, _sign) in self.TUNABLE.items():
+                if family in agg:
+                    continue
+                cur = self._offsets.get(family, 0.0)
+                if abs(cur) <= 1e-9:
+                    continue
+                # Move one step toward 0, never overshooting past neutral.
+                if cur > 0:
+                    new = max(0.0, cur - step)
+                else:
+                    new = min(0.0, cur + step)
+                new = round(max(lo, min(hi, new)), 4)
+                if abs(new - cur) > 1e-9:
+                    self._offsets[family] = new
+                    changed.append((family, cur, new, None, 0))
+                    logger.info(
+                        "🎛️ Gate decayed (stale) — {} offset {:+.3f} → {:+.3f} "
+                        "(no recent shadow evidence)",
+                        family, cur, new,
+                    )
 
         if changed:
             self._save()
