@@ -527,10 +527,18 @@ class PositionEvaluator:
         max_workers: int = 4,
         ctx: Optional[SystemContext] = None,
         config: Optional[AppConfig] = None,
+        developing_world_model_store: Optional[WorldModelStore] = None,
     ) -> None:
         self._pm = platform_manager
         self._tick_store = tick_store
         self._wm_store = world_model_store
+        # Phase 5 — developing (forming-bar) WorldModel store. Optional and
+        # ADVISORY-ONLY: the management path reads it as an early-warning
+        # secondary signal that can only TIGHTEN protection on an open
+        # position, never loosen a stop, close, or open one. None (the default,
+        # and how every existing unit test constructs the evaluator) makes the
+        # advisory a no-op, so behaviour is identical to before Phase 5.
+        self._developing_wm_store = developing_world_model_store
         self._aggregator = intent_aggregator
         self._mgmt_store = mgmt_store or ManagementStateStore()
         self._worker = PositionWorker(worker_config or WorkerConfig())
@@ -1614,6 +1622,18 @@ class PositionEvaluator:
                 except Exception:
                     pass
 
+            # Phase 5 — developing-structure advisory. When the live (forming-
+            # bar) WorldModel warns of a reversal against this position while the
+            # confirmed verdict is only HOLD/OBSERVE, escalate to a strictly
+            # tightening protective stop. Advisory-only: never loosens a stop,
+            # never overrides CLOSE, never opens. No-op when no developing store
+            # is wired. Applied BEFORE journal/trace/health emit + dispatch so
+            # all of them reflect the escalated decision.
+            de_result = self._apply_developing_advisory(
+                de_result, symbol, norm_dir, entry_price, price, sl,
+                pnl_pips, trade_ctx,
+            )
+
             if ctx.decision_journal is not None:
                 try:
                     ctx.decision_journal.log(trade_ctx, sa, de_result)
@@ -1791,6 +1811,159 @@ class PositionEvaluator:
                 "[de-mgmt] DecisionEngine management failed for {}: {}",
                 order_id, exc,
             )
+
+    # ── Phase 5: developing-structure management advisory ────────────
+    def _apply_developing_advisory(
+        self,
+        de_result,
+        symbol: str,
+        norm_dir: str,
+        entry_price: float,
+        price: float,
+        current_sl: float,
+        pnl_pips: float,
+        trade_ctx,
+    ):
+        """Escalate HOLD/OBSERVE to a tightening protective stop on a developing
+        reversal warning.
+
+        The developing (forming-bar) WorldModel updates between candle closes,
+        so it can flag a reversal against an open position long before the
+        confirmed structure refreshes on the next candle close. This advisory
+        reads that early-warning signal and, when the confirmed DecisionEngine
+        verdict is only HOLD/OBSERVE, escalates to ``SET_PROTECTIVE_STOP``.
+
+        Safety contract (the developing layer is advisory, never authoritative):
+
+        * **No store → no-op.** When ``_developing_wm_store`` is None (every
+          existing unit test, and any deployment with developing analysis off)
+          this returns ``de_result`` unchanged.
+        * **Never overrides a confirmed CLOSE / protective action.** Only acts
+          when the verdict is HOLD or OBSERVE.
+        * **Never opens, never loosens.** The only mutation is a protective stop
+          at breakeven, and only when that strictly TIGHTENS the existing stop
+          (moves it toward price / reduces risk). If it cannot tighten safely it
+          annotates evidence and leaves the verdict untouched.
+        """
+        store = self._developing_wm_store
+        if store is None:
+            return de_result
+        cfg = getattr(self._config, "developing_analysis", None) if self._config else None
+        if cfg is not None and not getattr(cfg, "management_advisory_enabled", True):
+            return de_result
+        try:
+            from decision.actions import Action
+
+            action = getattr(de_result, "action", None)
+            action_name = action.value if hasattr(action, "value") else str(action or "")
+            # Only nudge a passive verdict — never override CLOSE or an already
+            # protective/active action (TIGHTEN_SL, SET_PROTECTIVE_STOP,
+            # MOVE_TO_BREAKEVEN, PARTIAL_CLOSE, SCALE_IN).
+            if action_name not in (Action.HOLD.value, Action.OBSERVE.value):
+                return de_result
+
+            dev_wm = store.get(symbol)
+            if dev_wm is None:
+                return de_result
+            dev_struct = dev_wm.structure_by_tf()
+            if not dev_struct:
+                return de_result
+
+            min_conf = float(
+                getattr(cfg, "management_advisory_min_confidence", 0.6)
+                if cfg is not None else 0.6
+            )
+            opposed_tfs = self._developing_reversal_tfs(
+                dev_struct, norm_dir, min_conf,
+            )
+            if not opposed_tfs:
+                return de_result
+
+            # Reversal warning present — try to tighten to a protective stop.
+            protective_sl = self._tightening_breakeven_sl(
+                norm_dir, entry_price, price, current_sl,
+            )
+            warn = "developing reversal on " + ",".join(opposed_tfs)
+            if protective_sl is None:
+                # Cannot tighten safely (e.g. not yet in profit) — leave the
+                # verdict alone, just record the early warning for visibility.
+                try:
+                    de_result.evidence = list(getattr(de_result, "evidence", []) or [])
+                    de_result.evidence.append(f"developing advisory: {warn} (no safe tighten)")
+                except Exception:
+                    pass
+                return de_result
+
+            de_result.action = Action.SET_PROTECTIVE_STOP
+            de_result.new_sl = protective_sl
+            try:
+                de_result.evidence = list(getattr(de_result, "evidence", []) or [])
+                de_result.evidence.append(f"developing advisory: {warn}")
+            except Exception:
+                pass
+            prior_reason = str(getattr(de_result, "reason", "") or "")
+            de_result.reason = (f"developing advisory protective stop ({warn})"
+                                 + (f" | {prior_reason}" if prior_reason else ""))
+            logger.info(
+                "[dev-advisory] {} {} HOLD→SET_PROTECTIVE_STOP @ {:.5f} — {}",
+                symbol, norm_dir, protective_sl, warn,
+            )
+            return de_result
+        except Exception as exc:
+            logger.debug("[dev-advisory] {} advisory skipped: {}", symbol, exc)
+            return de_result
+
+    @staticmethod
+    def _developing_reversal_tfs(
+        dev_struct: dict, norm_dir: str, min_conf: float,
+    ) -> list[str]:
+        """Tactical timeframes (H1/M5) whose developing structure opposes the
+        position — by an opposing trend at/above ``min_conf`` OR a reversal
+        event (CHoCH/BOS) against the trade. Returns the list of TFs warning.
+        """
+        # A BUY is opposed by bearish structure; a SELL by bullish structure.
+        opp_trend = "BEARISH" if norm_dir == "BUY" else "BULLISH"
+        opp_event_tag = "BEARISH" if norm_dir == "BUY" else "BULLISH"
+        warning: list[str] = []
+        for tf in ("H1", "M5"):
+            trend, conf = _struct_trend_conf(dev_struct, tf)
+            event = _struct_event(dev_struct, tf)
+            trend_opposes = trend == opp_trend and conf >= min_conf
+            event_opposes = (
+                event in ("CHOCH_" + opp_event_tag, "BOS_" + opp_event_tag)
+            )
+            if trend_opposes or event_opposes:
+                warning.append(tf)
+        return warning
+
+    @staticmethod
+    def _tightening_breakeven_sl(
+        norm_dir: str, entry_price: float, price: float, current_sl: float,
+    ) -> Optional[float]:
+        """A breakeven (entry-price) protective stop, but ONLY when it strictly
+        tightens the current stop and sits on the valid side of price.
+
+        Returns None when a breakeven move would loosen the stop or is invalid
+        (e.g. position not yet in profit), so the advisory never increases risk.
+        """
+        if entry_price <= 0:
+            return None
+        be = entry_price
+        cur = current_sl or 0.0
+        if norm_dir == "BUY":
+            # Valid long stop sits below price; tighten means raise the stop.
+            if be >= price:
+                return None
+            if cur > 0 and be <= cur:
+                return None  # would loosen (move stop down) or no change
+            return be
+        else:  # SELL
+            # Valid short stop sits above price; tighten means lower the stop.
+            if be <= price:
+                return None
+            if cur > 0 and be >= cur:
+                return None  # would loosen (move stop up) or no change
+            return be
 
     def _sl_move_too_close(
         self, symbol: str, current_price: float, new_sl: float,
@@ -2557,6 +2730,7 @@ class EventDrivenSystem:
             worker_config=self._build_worker_config(),
             ctx=ctx,
             config=config,
+            developing_world_model_store=self._developing_wm_store,
         )
         # Share ONE candidate-provenance map between this system (fill-time
         # recorder, close-time cleanup, dashboard read) and the evaluator

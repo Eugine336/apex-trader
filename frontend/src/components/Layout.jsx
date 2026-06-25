@@ -123,6 +123,7 @@ const departmentGroups = [
     items: [
       { to: "/engine/scanner", label: "Scanner", icon: "scanner" },
       { to: "/engine/votes", label: "Module Votes", icon: "votes" },
+      { to: "/engine/market-model", label: "Market Model", icon: "scanner" },
     ],
   },
   {

@@ -29,6 +29,7 @@ from dashboard.state_planner import PlannerMixin
 from dashboard.state_governor import GovernorMixin
 from dashboard.state_decision_trace import DecisionTraceMixin
 from dashboard.state_brain import BrainMixin
+from dashboard.state_market_model import MarketModelMixin
 from dashboard.state_orchestrator import OrchestratorMixin
 from dashboard.state_position_health import PositionHealthMixin
 from dashboard.state_module_governor import ModuleGovernorMixin
@@ -54,6 +55,7 @@ class LiveState(
     GovernorMixin,
     DecisionTraceMixin,
     BrainMixin,
+    MarketModelMixin,
     OrchestratorMixin,
     PositionHealthMixin,
     ModuleGovernorMixin,

@@ -24,6 +24,12 @@ export async function getRanker() {
   return data;
 }
 
+// GET /api/engine/market-model
+export async function getMarketModel() {
+  const { data } = await client.get("/api/engine/market-model");
+  return data;
+}
+
 // GET /api/engine/decisions?limit=&decision_type=&symbol=
 export async function getDecisions(params = {}) {
   const { data } = await client.get("/api/engine/decisions", { params });
