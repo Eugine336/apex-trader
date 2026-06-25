@@ -234,10 +234,19 @@ _DEFAULT_PARTIAL_CLOSE_RATIO = 0.5
 # How long (seconds, monotonic) a worker-path SL move stays "pending broker
 # confirmation" after it is optimistically applied. While pending, the synthetic
 # stop-hit check is suppressed so a broker-rejected SL cannot trigger a phantom
-# stop-loss CLOSE before the modify result lands. Auto-expires so the guard can
-# never get stuck (e.g. if the aggregator deduped the intent away). A modify
-# round-trip is normally well under 1s even with retry backoff.
-_SL_MODIFY_PENDING_GRACE_S = 5.0
+# stop-loss CLOSE before the modify result lands.
+#
+# Bug #20: this guard is HANDSHAKE-based — the modify-result callback
+# (_handle_manage_result) is what normally clears it, after rolling back the
+# optimistic SL on failure. This timeout is only a SAFETY NET for the case where
+# the result callback never arrives (e.g. the aggregator deduped the intent
+# away); when it elapses the eval thread rolls back the optimistic state BEFORE
+# resuming the synthetic stop-hit check. A modify round-trip is normally well
+# under 1s, but the executor retries transient failures with exponential backoff
+# (which the earlier 5s value could undershoot, dropping the guard mid-flight and
+# exposing the unconfirmed SL to a phantom stop). 30s comfortably covers the full
+# retry budget so the handshake — not the timer — is the normal clear path.
+_SL_MODIFY_PENDING_GRACE_S = 30.0
 
 
 # ── Tick source threads ──────────────────────────────────────────────
@@ -5416,6 +5425,68 @@ class EventDrivenSystem:
         )
         return (envelope, decision)
 
+    def _derive_consensus_targets(
+        self,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        sl: float,
+        sl_dist: float,
+        cfg: Any,
+    ) -> tuple[float, float]:
+        """TP targets for the consensus path from MARKET structure (Bug #0).
+
+        Mirrors ``EntryOrchestrator._derive_targets``: read the next structural
+        levels ahead of price (FVG / order block / liquidity pool from the live
+        WorldModel) and use them as TP1 (nearest qualifying target) and TP2
+        (next level beyond). A target only qualifies if it is at least
+        ``min_risk_reward`` × risk away, so the trade's reward:risk is set by
+        what the market is showing — not the fixed ``atr_tp1_rr`` / ``atr_tp2_rr``
+        multiples, which are now only the fallback when no structure exists ahead.
+        """
+        is_long = str(direction).upper() == "LONG"
+        risk = abs(entry_price - sl)
+        if risk <= 0:
+            risk = sl_dist if sl_dist > 0 else (entry_price * 0.001 if entry_price > 0 else 1.0)
+
+        try:
+            min_rr = float(getattr(getattr(self._config, "risk", None), "min_risk_reward", 1.0))
+        except Exception:
+            min_rr = 1.0
+        min_distance = risk * max(min_rr, 0.0)
+
+        targets: list[float] = []
+        if self._wm_store is not None:
+            try:
+                wm = self._wm_store.get(symbol)
+                if wm is not None:
+                    targets = wm.get_structural_targets(
+                        direction, entry_price, min_distance=min_distance,
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "[consensus-trigger] structural targets failed for {}: {}", symbol, exc,
+                )
+                targets = []
+
+        if targets:
+            tp1 = targets[0]
+            tp2 = next(
+                (t for t in targets if abs(t - entry_price) > abs(tp1 - entry_price)),
+                None,
+            )
+            if tp2 is None:
+                extra = abs(tp1 - entry_price) + risk
+                tp2 = entry_price + extra if is_long else entry_price - extra
+            return tp1, tp2
+
+        # Safety-net fallback: no structure ahead → ATR R:R multiples.
+        rr1 = float(cfg.atr_tp1_rr)
+        rr2 = float(cfg.atr_tp2_rr)
+        if is_long:
+            return entry_price + sl_dist * rr1, entry_price + sl_dist * rr2
+        return entry_price - sl_dist * rr1, entry_price - sl_dist * rr2
+
     def _build_consensus_decision_dict(
         self, symbol: str, candidate: Any, thesis: Any, direction: str, cfg: Any,
     ) -> Optional[dict]:
@@ -5448,14 +5519,14 @@ class EventDrivenSystem:
         sl_dist = float(atr) * float(cfg.atr_sl_mult)
         if sl_dist <= 0:
             return None
-        if direction == "LONG":
-            sl = entry_price - sl_dist
-            tp1 = entry_price + sl_dist * float(cfg.atr_tp1_rr)
-            tp2 = entry_price + sl_dist * float(cfg.atr_tp2_rr)
-        else:
-            sl = entry_price + sl_dist
-            tp1 = entry_price - sl_dist * float(cfg.atr_tp1_rr)
-            tp2 = entry_price - sl_dist * float(cfg.atr_tp2_rr)
+        sl = entry_price - sl_dist if direction == "LONG" else entry_price + sl_dist
+        # Bug #0: the consensus (zoneless) path is opportunistic too — TP targets
+        # come from MARKET structure ahead of price (next FVG/OB/liquidity pool),
+        # exactly like the zone path's _derive_targets. ATR R:R multiples are only
+        # the safety-net fallback when the brain sees no structure ahead.
+        tp1, tp2 = self._derive_consensus_targets(
+            symbol, direction, entry_price, sl, sl_dist, cfg,
+        )
 
         score = int(round(max(0.0, min(1.0, thesis.conviction)) * 100))
         try:

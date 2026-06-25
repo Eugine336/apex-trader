@@ -862,10 +862,18 @@ class PlatformManager:
 
         if isinstance(connector, MT5Connector):
             idx = self._connector_index(connector)
+            # Same key scheme as get_account_summary so the last-known cache aligns.
+            bal_key = (
+                f"mt5_{idx}"
+                if (idx is not None and len(self.mt5_connectors) > 1)
+                else "mt5"
+            )
             if idx is not None and self._mt5_connected_flags[idx]:
                 for attempt in range(2):
                     try:
                         balance = float(connector.get_account_info().balance)
+                        if balance >= 0:
+                            self._last_known_balances[bal_key] = balance
                         logger.debug(
                             "Balance for {} → {} platform: ${:.2f}",
                             symbol, platform_name, balance,
@@ -885,12 +893,22 @@ class PlatformManager:
                                 symbol,
                                 exc,
                             )
-            return 0.0
+            # Bug #17: never return a phantom $0 on a transient error/disconnect —
+            # fall back to the last-known good balance so sizing is not corrupted.
+            stale = self._last_known_balances.get(bal_key, 0.0)
+            if stale > 0:
+                logger.warning(
+                    "MT5 balance unavailable for {} — using last-known ${:.2f}",
+                    symbol, stale,
+                )
+            return stale
 
         if isinstance(connector, DerivConnector) and self._deriv_connected:
             for attempt in range(2):
                 try:
                     balance = float(self.deriv.get_account_info().balance)
+                    if balance >= 0:
+                        self._last_known_balances["deriv"] = balance
                     logger.debug(
                         "Balance for {} → {} platform: ${:.2f}",
                         symbol, platform_name, balance,
@@ -911,7 +929,15 @@ class PlatformManager:
                             exc,
                         )
 
-        return 0.0
+        # Bug #17: Deriv disconnected or fetch failed — return last-known good
+        # balance for this platform rather than a phantom $0.
+        stale = self._last_known_balances.get(platform_name, 0.0)
+        if stale > 0:
+            logger.warning(
+                "Deriv balance unavailable for {} — using last-known ${:.2f}",
+                symbol, stale,
+            )
+        return stale
 
     def get_total_equity(self) -> float:
         total = 0.0

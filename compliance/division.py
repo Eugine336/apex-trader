@@ -169,8 +169,13 @@ class ComplianceDivision:
     def _check_market_open(
         self, c: ComplianceCandidate, _b: ComplianceBook, _a: ComplianceAccount
     ) -> CheckOutcome:
+        # Bug #31: a safety-critical gate must fail CLOSED when its source is
+        # unbound — without a market-open source we cannot prove the market is
+        # open, so block rather than silently permit a trade into a closed market.
         if self._is_market_open is None:
-            return CheckOutcome("market_open", True, "disabled (no market-open source)")
+            return CheckOutcome(
+                "market_open", False, "no market-open source (fail-closed)"
+            )
         if self._is_market_open(c.symbol):
             return CheckOutcome("market_open", True, "market open")
         return CheckOutcome("market_open", False, f"{c.symbol} market closed")
@@ -178,9 +183,11 @@ class ComplianceDivision:
     def _check_broker_available(
         self, c: ComplianceCandidate, _b: ComplianceBook, _a: ComplianceAccount
     ) -> CheckOutcome:
+        # Bug #31: fail CLOSED when unbound — cannot prove the broker is alive,
+        # so block rather than route an order to a possibly-disconnected broker.
         if self._is_broker_available is None:
             return CheckOutcome(
-                "broker_available", True, "disabled (no broker-health source)"
+                "broker_available", False, "no broker-health source (fail-closed)"
             )
         if self._is_broker_available(c.symbol):
             return CheckOutcome("broker_available", True, "broker connected")
@@ -202,8 +209,13 @@ class ComplianceDivision:
     def _check_spread(
         self, c: ComplianceCandidate, _b: ComplianceBook, _a: ComplianceAccount
     ) -> CheckOutcome:
+        # Bug #31: fail CLOSED when unbound — without a spread source we cannot
+        # prove the spread is sane, so block rather than admit a trade into a
+        # possibly blown-out spread.
         if self._spread_monitor is None or self._get_spread_pips is None:
-            return CheckOutcome("spread_ok", True, "disabled (no spread source)")
+            return CheckOutcome(
+                "spread_ok", False, "no spread source (fail-closed)"
+            )
         cur_spread = float(self._get_spread_pips(c.symbol))
         safe, why = self._spread_monitor.is_spread_safe(c.symbol, cur_spread)
         if safe:
