@@ -2391,6 +2391,15 @@ class EventDrivenSystem:
         )
         self._wm_store = WorldModelStore()
 
+        # ── Live candle aggregator (Phase 1 — local tick-to-candle) ──
+        # Builds OHLC candles for all timeframes from the live tick stream so
+        # the Phase-2 developing analysis can run between candle closes with
+        # zero broker fetches. Purely additive — the confirmed analysis path
+        # (CandleCloseHandler → broker fetch on close) is untouched.
+        from tick.live_candle_aggregator import LiveCandleAggregator
+        self._live_candle_aggregator = LiveCandleAggregator(max_candles=200)
+        self._tick_router.register_callback(self._live_candle_aggregator.on_tick)
+
         # ── Learned analysis edge ────────────────────────────────────
         # Bounded, default-neutral multipliers that make the analysis
         # combination data-driven: zone conviction and per-concept bias are
@@ -3116,6 +3125,22 @@ class EventDrivenSystem:
                     "[event-driven] warmup scan failed (continuing live): {}", exc,
                 )
 
+        # ── Seed LiveCandleAggregator from broker history ────────────────
+        # Must run after the CandleCloseHandler warmup (which seeds WorldModels)
+        # and before the live tick loops start (which begin updating forming
+        # candles). Best-effort: any failure leaves the aggregator to backfill
+        # from the live tick stream instead.
+        try:
+            from tick.candle_close_detector import SUPPORTED_TIMEFRAMES
+            self._live_candle_aggregator.warmup(
+                symbols, list(SUPPORTED_TIMEFRAMES), self._fetch_candles,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[event-driven] LiveCandleAggregator warmup failed (continuing): {}",
+                exc,
+            )
+
         self._tick_router.start()
         self._candle_detector.start()
         self._mt5_poller.start()
@@ -3373,6 +3398,14 @@ class EventDrivenSystem:
         self._tick_router.stop()
         self._candle_detector.stop()
         self._candle_handler.shutdown()
+        # Detach the live candle aggregator from the tick router so it stops
+        # receiving ticks once the router is down.
+        try:
+            self._tick_router.unregister_callback(
+                self._live_candle_aggregator.on_tick
+            )
+        except Exception:
+            pass
         # Persist learned calibration so warmup history survives a restart.
         if self._calibration_engine is not None:
             _calib_cfg = getattr(self._config, "calibration", None)
