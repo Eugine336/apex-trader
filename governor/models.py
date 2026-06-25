@@ -51,6 +51,24 @@ class GovernorConfig:
     # on error) if a governor bug ever halts trading.
     fail_closed: bool = True
 
+    # ── Session 3 — multi-opportunity capital allocation (allocate()) ─────
+    # Limits for ``PortfolioGovernor.allocate()``, which funds a RANKED LIST of
+    # independent candidates (Portfolio Division decides which ideas deserve
+    # capital) instead of ratifying one already-collapsed direction. These are
+    # additive to — and independent of — the ``check()`` concentration limits
+    # above; ``allocate()`` owns the position-count caps, the cycle risk budget,
+    # and the V2 hedge ratio. All ON by default so the capital-allocation layer
+    # is live (no opt-in flag).
+    max_positions_per_symbol: int = 2     # cap on simultaneous positions on ONE symbol (V2: 1 per direction)
+    max_positions_per_tf_class: int = 3   # cap on positions sharing one horizon (SWING/SCALP) book-wide
+    max_total_positions: int = 10         # hard global ceiling on open positions
+    max_total_risk_pct: float = 6.0       # total risk budget across all positions (% of equity)
+    per_trade_max_risk: float = 2.0       # max risk granted to a single candidate (%)
+    # V2 hedging — an opposing-direction position on the same symbol is allowed
+    # but capped to this fraction of the dominant position's size, so a SHORT
+    # scalp can ride alongside a LONG swing without an accidental net flip.
+    hedge_ratio_cap: float = 0.30
+
     def to_dict(self) -> dict:
         return asdict(self)
 
