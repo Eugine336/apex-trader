@@ -1747,6 +1747,14 @@ class DerivConnector(BaseConnector):
 
         MAX_RETRIES = 5
         _MIN_STAKE = 1.0
+        # A symbol-property error on a PROPOSAL is schema-impossible (``symbol``
+        # is a valid proposal field), so it can only surface when a stale or
+        # out-of-band frame from an earlier request is mis-read as this
+        # proposal's reply. Re-sending re-correlates (a fresh req_id) instead of
+        # failing the order; bounded so a genuine persistent rejection still
+        # fails fast rather than looping the whole retry budget.
+        _MAX_SYMBOL_RETRIES = 2
+        symbol_retries = 0
         send_limit_order = True
 
         def build_proposal_payload(amount: float, multiplier: int, limit_order_enabled: bool) -> dict:
@@ -1778,6 +1786,24 @@ class DerivConnector(BaseConnector):
                 break
 
             changed = False
+
+            # ── 0. Symbol-property error → re-correlate ────────────────────
+            # ``symbol`` is a valid proposal field, so this error means a
+            # stale/out-of-band frame was mis-attributed to this proposal.
+            # Re-send (fresh req_id) to read the correct reply rather than
+            # failing the order. Once the bounded budget is spent, give up
+            # immediately — stripping SL/TP (section 3) cannot fix a symbol
+            # error, so falling through would only waste another round-trip.
+            if self._is_symbol_property_error(err):
+                if symbol_retries >= _MAX_SYMBOL_RETRIES:
+                    break
+                symbol_retries += 1
+                logger.warning(
+                    "Deriv proposal returned a symbol-property error for {} — "
+                    "re-sending proposal to re-correlate (attempt {}/{}).",
+                    mapped, symbol_retries, _MAX_SYMBOL_RETRIES,
+                )
+                changed = True
 
             # ── 1. Multiplier correction ───────────────────────────────────
             _mult_match = _re.search(
