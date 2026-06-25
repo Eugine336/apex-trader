@@ -82,6 +82,101 @@ TF_MODULE_MAP: dict[str, list[str]] = {
 _TF_BY_RECENCY = ("M5", "M15", "H1", "H4", "D1")
 
 
+# ── Probabilistic evidence model (Phase 3) ──────────────────────────────────
+# Each timeframe contributes evidence proportional to its weight × confidence.
+# No timeframe holds veto power: higher timeframes weigh more (strategic
+# context) while lower timeframes can outvote them when their combined,
+# confident evidence is larger.  Weights are normalised across the timeframes
+# that actually contributed directional structure, so missing/ranging frames
+# never introduce a systematic bias.  Developing (forming-bar) structure
+# contributes as additional, discounted evidence alongside confirmed structure.
+_EVIDENCE_WEIGHTS: dict[str, float] = {
+    "D1": 0.10,
+    "H4": 0.20,
+    "H1": 0.25,
+    "M15": 0.20,
+    "M5": 0.15,
+    "M1": 0.10,  # not in TF_MODULE_MAP yet, but ready when it is
+}
+
+# Minimum probability edge (long − short) required to call a direction.
+_DIRECTION_THRESHOLD = 0.05
+# Conflict at/above this level is treated as no clean signal (not tradeable).
+# Tuned so an equal-confidence H4-vs-H1 opposition (conflict ≈ 0.80) is vetoed
+# while a decisive weighted winner (e.g. 0.5 vs 0.3 → conflict 0.60) trades.
+_CONFLICT_VETO = 0.75
+
+
+def _trend_str(sa: Optional[StructureAnalysis]) -> str:
+    """Extract the trend label ("BULLISH"/"BEARISH"/"RANGING"/"") from a SA."""
+    if sa is None:
+        return ""
+    trend = sa.trend.value if hasattr(sa.trend, "value") else str(sa.trend)
+    return trend or ""
+
+
+def _confidence_of(sa: StructureAnalysis) -> float:
+    """Extract the confidence float (0.0-1.0) from a StructureAnalysis."""
+    return float(getattr(sa, "confidence", 0.0) or 0.0)
+
+
+def _collect_evidence(
+    struct_by_tf: dict[str, StructureAnalysis],
+    developing_by_tf: Optional[dict[str, StructureAnalysis]],
+    discount: float,
+) -> list[tuple[str, float, float]]:
+    """Gather directional evidence items as ``(direction, raw_weight, conf)``.
+
+    Confirmed structure contributes at its full timeframe weight; developing
+    structure contributes the same timeframe weight × ``discount`` as an
+    additional, independent vote.  RANGING / unknown frames contribute nothing
+    and their weight is excluded from the pool (no systematic bias).
+    """
+    items: list[tuple[str, float, float]] = []
+
+    def _add(layer: Optional[dict[str, StructureAnalysis]], mult: float) -> None:
+        if not layer:
+            return
+        for tf, sa in layer.items():
+            weight = _EVIDENCE_WEIGHTS.get(tf)
+            if weight is None or sa is None:
+                continue
+            trend = _trend_str(sa)
+            if trend == "BULLISH":
+                direction = "LONG"
+            elif trend == "BEARISH":
+                direction = "SHORT"
+            else:
+                continue  # RANGING / unknown → no evidence, weight excluded
+            items.append((direction, weight * mult, _confidence_of(sa)))
+
+    _add(struct_by_tf, 1.0)
+    _add(developing_by_tf, discount)
+    return items
+
+
+def _probabilities(items: list[tuple[str, float, float]]) -> tuple[float, float]:
+    """Aggregate evidence items into ``(long_probability, short_probability)``.
+
+    Weights are normalised across the contributing items so the result is the
+    weighted-average confidence behind each side, in ``[0, 1]`` with
+    ``long + short <= 1`` (low-confidence evidence leaves probability on the
+    table rather than forcing a 50/50 split).
+    """
+    w_total = sum(w for _, w, _ in items)
+    if w_total <= 0:
+        return 0.0, 0.0
+    long_p = 0.0
+    short_p = 0.0
+    for direction, weight, conf in items:
+        contrib = (weight / w_total) * conf
+        if direction == "LONG":
+            long_p += contrib
+        else:
+            short_p += contrib
+    return long_p, short_p
+
+
 def compute_bias(
     struct_by_tf: dict[str, StructureAnalysis],
     developing_struct_by_tf: Optional[dict[str, StructureAnalysis]] = None,
@@ -89,124 +184,101 @@ def compute_bias(
 ) -> dict[str, Any]:
     """Synthesize a directional bias dict from per-TF StructureAnalysis.
 
-    Direction is decided by H4 + H1 (D1 only weights confidence), mirroring
-    ``StructureEngine.get_bias`` but operating on the already-computed analyses
-    so no extra candle fetch is needed.  Returns the schema consumers expect:
-    ``direction`` ("LONG"/"SHORT"/""), ``score`` (0-100), plus per-TF trends.
+    Phase 3 — probabilistic evidence model.  Every timeframe contributes
+    weighted evidence (``weight × confidence``) toward LONG or SHORT; no
+    timeframe holds veto power.  Higher timeframes weigh more (strategic
+    context) but lower timeframes can outvote them when their combined evidence
+    is stronger.  Developing (forming-bar) structure, when supplied, adds
+    additional discounted evidence alongside the confirmed structure.
 
-    When ``developing_struct_by_tf`` is supplied (Phase 2), the live
-    (forming-bar) structure adjusts CONFIDENCE only — never direction. Direction
-    remains anchored to the confirmed H4/H1 hierarchy so the forming bar can
-    never repaint the trade side. Developing structure that agrees with the
-    confirmed direction nudges confidence up; conflicting developing structure
-    nudges it down, bounded to ±15% of the confirmed confidence and discounted
-    by ``developing_discount``.
+    The returned dict is fully backward-compatible (``direction``, ``score``,
+    ``strength``, ``confidence``, ``tradeable``, per-TF trends, ``d1_aligned``,
+    ``developing_blend``) and adds the probabilistic fields ``long_probability``,
+    ``short_probability`` and ``conflict_score`` for the Decision Engine.
+
+    The backward-compatible gate is deliberately conservative: a near-even
+    split (``conflict_score`` ≥ 0.60) or a sub-threshold edge yields
+    ``CONFLICTED``/``NONE`` with a blank ``direction`` (not tradeable), matching
+    the old hierarchy's behaviour for typical aligned/conflicted conditions.
+    The raw probabilities remain exposed for the opportunity engine.
     """
-    def _trend(tf: str) -> tuple[Optional[str], float]:
-        sa = struct_by_tf.get(tf)
-        if sa is None:
-            return None, 0.0
-        trend = sa.trend.value if hasattr(sa.trend, "value") else str(sa.trend)
-        return trend, float(getattr(sa, "confidence", 0.0) or 0.0)
-
-    h4_t, h4_c = _trend("H4")
-    h1_t, h1_c = _trend("H1")
-    d1_t, d1_c = _trend("D1")
-
-    direction_trend: Optional[str] = None
-    strength = "NONE"
-    if h4_t and h4_t != "RANGING" and h4_t == h1_t:
-        direction_trend, strength = h4_t, "STRONG"
-    elif h4_t and h4_t != "RANGING" and (h1_t is None or h1_t == "RANGING"):
-        direction_trend, strength = h4_t, "MODERATE"
-    elif (h4_t is None or h4_t == "RANGING") and h1_t and h1_t != "RANGING":
-        direction_trend, strength = h1_t, "MODERATE"
-    elif h4_t and h1_t and h4_t != h1_t:
-        strength = "CONFLICTED"
-
-    if direction_trend == "BULLISH":
-        direction = "LONG"
-    elif direction_trend == "BEARISH":
-        direction = "SHORT"
-    else:
-        direction = ""
-
-    d1_aligned = bool(
-        direction_trend and d1_t and d1_t != "RANGING" and d1_t == direction_trend
+    long_p, short_p = _probabilities(
+        _collect_evidence(struct_by_tf, developing_struct_by_tf, developing_discount)
     )
-    if d1_t and d1_t != "RANGING":
-        if d1_aligned:
-            confidence = round(d1_c * 0.4 + h4_c * 0.35 + h1_c * 0.25, 2)
-        else:
-            confidence = round(((h4_c + h1_c) / 2) * 0.85, 2)
+
+    dominant = max(long_p, short_p)
+    weaker = min(long_p, short_p)
+    conflict_score = (weaker / dominant) if dominant > 0 else 0.0
+
+    prob_diff = long_p - short_p
+    if prob_diff >= _DIRECTION_THRESHOLD:
+        raw_direction = "LONG"
+    elif prob_diff <= -_DIRECTION_THRESHOLD:
+        raw_direction = "SHORT"
     else:
-        confidence = round((h4_c + h1_c) / 2, 2)
+        raw_direction = ""
 
-    score = int(round(confidence * 100)) if direction else 0
+    confidence = dominant
 
-    # ── Developing structure confidence adjustment (Phase 2) ─────────────
-    # Direction comes from CONFIRMED structure only (H4/H1 hierarchy above).
-    # Developing (forming-bar) structure adjusts confidence: agreement boosts,
-    # conflict reduces, bounded to ±15% of confirmed confidence.
-    dev_blend = 0.0
-    if developing_struct_by_tf and direction:
-        dev_blend = _developing_agreement(
-            direction, developing_struct_by_tf, developing_discount,
-        )
-        confidence = round(min(1.0, max(0.0, confidence + dev_blend * 0.15)), 2)
+    if not raw_direction:
+        strength = "CONFLICTED" if dominant > 0 else "NONE"
+    elif conflict_score >= _CONFLICT_VETO:
+        strength = "CONFLICTED"
+    elif confidence >= 0.55 and conflict_score < 0.35:
+        strength = "STRONG"
+    elif confidence >= 0.30:
+        strength = "MODERATE"
+    else:
+        strength = "WEAK"
+
+    tradeable = strength in ("STRONG", "MODERATE")
+
+    # Backward-compat: only surface an actionable direction/score when the
+    # evidence is clean enough.  CONFLICTED/NONE blank the legacy direction
+    # exactly as the old hierarchy did; the probabilistic fields below keep the
+    # raw numbers for the opportunity engine.
+    if strength in ("CONFLICTED", "NONE"):
+        direction = ""
+        score = 0
+    else:
+        direction = raw_direction
         score = int(round(confidence * 100))
+
+    h4_trend = _trend_str(struct_by_tf.get("H4")) or "UNKNOWN"
+    h1_trend = _trend_str(struct_by_tf.get("H1")) or "UNKNOWN"
+    d1_trend = _trend_str(struct_by_tf.get("D1")) or "UNKNOWN"
+    want = (
+        "BULLISH" if direction == "LONG"
+        else ("BEARISH" if direction == "SHORT" else "")
+    )
+    d1_aligned = bool(direction and d1_trend == want)
+
+    # Observability: how much the developing evidence shifted the dominant
+    # probability versus a confirmed-only computation.
+    developing_blend = 0.0
+    if developing_struct_by_tf:
+        c_long, c_short = _probabilities(
+            _collect_evidence(struct_by_tf, None, developing_discount)
+        )
+        developing_blend = round(confidence - max(c_long, c_short), 3)
 
     return {
         "direction": direction,
         "score": score,
         "opposing_boost": 0,
         "strength": strength,
-        "h4_trend": h4_t or "UNKNOWN",
-        "h1_trend": h1_t or "UNKNOWN",
-        "d1_trend": d1_t or "UNKNOWN",
+        "h4_trend": h4_trend,
+        "h1_trend": h1_trend,
+        "d1_trend": d1_trend,
         "d1_aligned": d1_aligned,
-        "confidence": confidence,
-        "tradeable": strength in ("STRONG", "MODERATE"),
-        "developing_blend": round(dev_blend, 3),
+        "confidence": round(confidence, 4),
+        "tradeable": tradeable,
+        "developing_blend": developing_blend,
+        # ── Phase 3: probabilistic evidence model ──────────────────────────
+        "long_probability": round(long_p, 4),
+        "short_probability": round(short_p, 4),
+        "conflict_score": round(conflict_score, 4),
     }
-
-
-def _developing_agreement(
-    confirmed_direction: str,
-    dev_struct: dict[str, StructureAnalysis],
-    discount: float,
-) -> float:
-    """Score how much developing structure agrees with the confirmed direction.
-
-    Returns a value in ``[-1.0, +1.0]``:
-      * ``+1.0`` — developing fully agrees (confidence will be boosted),
-      * ``-1.0`` — developing fully disagrees (confidence will be reduced),
-      * ``0.0``  — no usable developing data (ranging/unknown/empty).
-
-    Each timeframe's confirmed-vs-developing agreement is weighted by the
-    developing confidence (× ``discount``) and signed by agreement, then
-    averaged across the timeframes that contributed.
-    """
-    agreements: list[float] = []
-    for tf in ("H4", "H1", "D1", "M15", "M5"):
-        sa = dev_struct.get(tf)
-        if sa is None:
-            continue
-        dev_trend = sa.trend.value if hasattr(sa.trend, "value") else str(sa.trend)
-        if not dev_trend or dev_trend == "RANGING":
-            continue
-        if dev_trend == "BULLISH":
-            dev_dir = "LONG"
-        elif dev_trend == "BEARISH":
-            dev_dir = "SHORT"
-        else:
-            continue
-        dev_conf = float(getattr(sa, "confidence", 0.0) or 0.0) * discount
-        agreements.append(dev_conf if dev_dir == confirmed_direction else -dev_conf)
-
-    if not agreements:
-        return 0.0
-    return sum(agreements) / len(agreements)
 
 
 def run_tf_modules(

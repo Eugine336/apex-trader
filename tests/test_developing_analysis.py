@@ -16,7 +16,6 @@ import pytest
 
 import brain.decision_core as dc
 from brain.decision_core import (
-    _developing_agreement,
     compute_bias,
     run_tf_modules,
 )
@@ -206,12 +205,19 @@ def test_compute_bias_confidence_bounded():
     assert 0.0 <= lo["confidence"] <= 1.0
 
 
-def test_developing_agreement_neutral():
-    """Ranging / empty developing structure has no effect."""
-    assert _developing_agreement("LONG", {}, 0.7) == 0.0
-    assert _developing_agreement(
-        "LONG", {"H1": _sa("RANGING", 0.9)}, 0.7,
-    ) == 0.0
+def test_developing_ranging_no_effect():
+    """Ranging / empty developing structure leaves the bias unchanged."""
+    confirmed = {"H4": _sa("BULLISH", 0.8), "H1": _sa("BULLISH", 0.8)}
+    base = compute_bias(confirmed)
+
+    # Ranging developing contributes no evidence → no shift.
+    ranging = compute_bias(confirmed, developing_struct_by_tf={"H1": _sa("RANGING", 0.9)})
+    assert ranging["direction"] == base["direction"]
+    assert ranging["developing_blend"] == 0.0
+
+    # Empty developing dict is falsy → developing_blend stays 0.0.
+    empty = compute_bias(confirmed, developing_struct_by_tf={})
+    assert empty["developing_blend"] == 0.0
 
 
 # ── DevelopingAnalysisLoop ──────────────────────────────────────────────────
