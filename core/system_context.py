@@ -919,6 +919,9 @@ class SystemContext:
                 sync_exclude_patterns=list(
                     getattr(db_cfg, "exclude_patterns", ["*.csv"]) if db_cfg else ["*.csv"]
                 ),
+                sync_interval_hours=float(
+                    getattr(db_cfg, "interval_hours", 1) if db_cfg else 1
+                ),
             )
         except Exception as exc:
             logger.warning("[SystemContext] DailyMaintenance init failed: {}", exc)

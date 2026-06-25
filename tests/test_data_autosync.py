@@ -157,6 +157,54 @@ class TestMaintenanceAutoSync:
             mock_orphan.assert_called_once()
 
 
+# ── DailyMaintenance interval-gated sync ───────────────────────────────────
+
+
+class TestMaintenanceIntervalSync:
+    def test_should_sync_disabled_when_auto_sync_off(self):
+        m = DailyMaintenance(auto_sync_data_repo=False)
+        assert m.should_sync() is False
+
+    def test_should_sync_first_time_true_then_waits_interval(self):
+        m = DailyMaintenance(auto_sync_data_repo=True, sync_interval_hours=1.0)
+        # Never synced → due immediately.
+        assert m.should_sync(now=1000.0) is True
+        with patch("scripts.backup_data.sync_data_repo", return_value="synced → origin/main"):
+            res = m.sync_data(event_count=7, now=1000.0)
+        assert res == "synced → origin/main"
+        # Within the interval → not due.
+        assert m.should_sync(now=1000.0 + 1800.0) is False
+        # After the interval → due again.
+        assert m.should_sync(now=1000.0 + 3600.0) is True
+
+    def test_zero_interval_disables_interval_sync(self):
+        m = DailyMaintenance(auto_sync_data_repo=True, sync_interval_hours=0)
+        assert m.should_sync(now=1000.0) is False
+
+    def test_daily_run_records_sync_time(self):
+        # A daily run() push counts as a sync, so the interval gate waits after it.
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp) / "data"
+            data_dir.mkdir()
+            m = DailyMaintenance(
+                data_dir=str(data_dir),
+                log_dir=str(Path(tmp) / "logs"),
+                auto_sync_data_repo=True,
+                sync_orphan_branch=False,
+                sync_interval_hours=1.0,
+            )
+            with patch(
+                "scripts.backup_data.sync_data_repo", return_value="synced → origin/main",
+            ):
+                m.run()
+            # run() just pushed → interval gate should not fire again immediately.
+            assert m.should_sync() is False
+
+    def test_sync_data_disabled_returns_disabled(self):
+        m = DailyMaintenance(auto_sync_data_repo=False)
+        assert m.sync_data() == "disabled"
+
+
 # ── clean_start ─────────────────────────────────────────────────────────────
 
 
@@ -357,3 +405,10 @@ class TestStartupPurgeToggle:
         from config import DataBackupConfig
 
         assert DataBackupConfig().startup_purge_enabled is False
+
+    def test_clean_start_on_first_boot_enabled_by_default(self):
+        from config import DataBackupConfig
+
+        # Declared field (not just a dynamic attr) so the single-user clean-start
+        # contract is explicit and multi-tenant can force it off.
+        assert DataBackupConfig().clean_start_on_first_boot is True

@@ -3297,6 +3297,26 @@ class EventDrivenSystem:
                 except Exception as exc:
                     logger.debug("[watchdog] daily maintenance check failed: {}", exc)
 
+            # ── Interval data-junction sync ───────────────────────────
+            # The daily block above only fires on a UTC day-roll. A restart
+            # hard-resets the junction to the remote, so any intra-day data not
+            # yet pushed is discarded. Push on the configured interval (default
+            # hourly) to shrink that loss window from a full day to the interval.
+            if ctx is not None and ctx.daily_maintenance is not None:
+                try:
+                    if ctx.daily_maintenance.should_sync():
+                        sync_event_count = None
+                        try:
+                            sync_event_count = get_event_store().count()
+                        except Exception:
+                            sync_event_count = None
+                        sync_res = ctx.daily_maintenance.sync_data(
+                            event_count=sync_event_count
+                        )
+                        logger.info("[event-driven] data-junction sync — {}", sync_res)
+                except Exception as exc:
+                    logger.debug("[watchdog] data-junction sync failed: {}", exc)
+
             # ── Portfolio heat monitoring — active position reduction ──
             if ctx is not None:
                 self._run_portfolio_heat_check(ctx)
