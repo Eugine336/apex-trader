@@ -190,12 +190,13 @@ export default function TradeHistory() {
                   <th className="px-2 py-3 text-right">Score</th>
                   <th className="px-2 py-3">Exit Reason</th>
                   <th className="px-2 py-3">Outcome</th>
+                  <th className="px-2 py-3">Setup</th>
                 </tr>
               </thead>
               <tbody>
                 {paged.length === 0 && (
                   <tr>
-                    <td colSpan={11} className="px-4 py-10 text-center text-gray-500">
+                    <td colSpan={12} className="px-4 py-10 text-center text-gray-500">
                       No trades match filter.
                     </td>
                   </tr>
@@ -261,6 +262,34 @@ export default function TradeHistory() {
                         >
                           {t.outcome}
                         </span>
+                      </td>
+                      <td className="px-2 py-2">
+                        {t.timeframe_class || t.source ? (
+                          <span
+                            className="font-mono text-[11px] text-gray-300"
+                            title={[
+                              t.candidate_id ? `candidate ${t.candidate_id}` : "",
+                              (t.contributing_modules || []).length
+                                ? `from: ${t.contributing_modules.join(", ")}`
+                                : "",
+                              t.regime_at_entry ? `regime ${t.regime_at_entry}` : "",
+                              t.competing_candidates
+                                ? `${t.competing_candidates} competing`
+                                : "",
+                              t.candidate_score
+                                ? `score ${Number(t.candidate_score).toFixed(2)}`
+                                : "",
+                            ]
+                              .filter(Boolean)
+                              .join(" · ")}
+                          >
+                            {[t.source ? t.source.toUpperCase() : "", t.timeframe_class]
+                              .filter(Boolean)
+                              .join(" ") || "—"}
+                          </span>
+                        ) : (
+                          <span className="text-xs text-gray-600">—</span>
+                        )}
                       </td>
                     </tr>
                   );

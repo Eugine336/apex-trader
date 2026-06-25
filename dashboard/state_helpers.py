@@ -217,6 +217,16 @@ class HelpersMixin:
                     "exit_reason": _exit_attr(close_map, record, "exit_reason"),
                     "exit_reason_source": _exit_attr(close_map, record, "exit_reason_source"),
                     "raw_broker_reason": _exit_attr(close_map, record, "raw_broker_reason"),
+                    # Multi-opportunity provenance — which idea opened this trade,
+                    # carried end-to-end so the history shows entry-source learning
+                    # context (empty for trades opened before the candidate pipeline).
+                    "source": str(record.get("source", "") or ""),
+                    "candidate_id": str(record.get("candidate_id", "") or ""),
+                    "timeframe_class": str(record.get("timeframe_class", "") or ""),
+                    "candidate_score": safe_float(record.get("candidate_score", 0.0), 0.0),
+                    "contributing_modules": list(record.get("contributing_modules", []) or []),
+                    "competing_candidates": int(safe_float(record.get("competing_candidates", 0), 0.0)),
+                    "regime_at_entry": str(record.get("regime_at_entry", "") or ""),
                 }
             )
 

@@ -67,6 +67,10 @@ class PortfolioGovernor:
         self.daily_trading_halted: bool = False
         self._reference_balance: float = 0.0
         self._recent_blocks: deque[dict] = deque(maxlen=50)
+        # Recent capital-allocation verdicts (Session 3, multi-opportunity) —
+        # retained for the dashboard so the operator can see which candidates
+        # were funded / denied and why (mirrors the _recent_blocks ring buffer).
+        self._recent_allocations: deque[dict] = deque(maxlen=50)
 
     # ── Main entry point ─────────────────────────────────────────────────
 
@@ -196,7 +200,7 @@ class PortfolioGovernor:
         from brain.candidate_models import Allocation  # lazy — avoids import cycle
 
         try:
-            return self._allocate_inner(
+            result = self._allocate_inner(
                 Allocation,
                 symbol,
                 direction,
@@ -206,6 +210,8 @@ class PortfolioGovernor:
                 open_positions or [],
                 account_balance,
             )
+            self._record_allocation(symbol, direction, timeframe_class, result)
+            return result
         except Exception as exc:  # noqa: BLE001
             if not getattr(self.config, "fail_closed", True):
                 logger.warning(
@@ -213,20 +219,44 @@ class PortfolioGovernor:
                     direction, symbol, exc,
                 )
                 per_trade = float(getattr(self.config, "per_trade_max_risk", 2.0))
-                return Allocation(
+                fail_open = Allocation(
                     approved=True,
                     max_risk_pct=per_trade,
                     reason=f"allocate error (fail-open): {exc}",
                 )
+                self._record_allocation(symbol, direction, timeframe_class, fail_open)
+                return fail_open
             logger.error(
                 "[Governor] allocate error for {} {} — failing CLOSED: {}",
                 direction, symbol, exc,
             )
-            return Allocation(
+            fail_closed = Allocation(
                 approved=False,
                 max_risk_pct=0.0,
                 reason=f"allocate error (fail-closed): {exc}",
             )
+            self._record_allocation(symbol, direction, timeframe_class, fail_closed)
+            return fail_closed
+
+    def _record_allocation(
+        self, symbol: str, direction: str, timeframe_class: str, allocation: Any,
+    ) -> None:
+        """Retain one capital-allocation verdict for the dashboard ring buffer."""
+        try:
+            self._recent_allocations.append(
+                {
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "symbol": str(symbol),
+                    "direction": str(direction),
+                    "timeframe_class": str(timeframe_class or ""),
+                    "approved": bool(getattr(allocation, "approved", False)),
+                    "max_risk_pct": round(float(getattr(allocation, "max_risk_pct", 0.0) or 0.0), 4),
+                    "reason": str(getattr(allocation, "reason", "") or ""),
+                    "conflicts": list(getattr(allocation, "conflicts", []) or []),
+                }
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[Governor] allocation record failed: {}", exc)
 
     def _allocate_inner(
         self,
@@ -663,6 +693,16 @@ class PortfolioGovernor:
             "currency_exposure": dict(sorted(currency_exposure.items(), key=lambda kv: -kv[1])),
             "sector_exposure": dict(sorted(sector_exposure.items(), key=lambda kv: -kv[1])),
             "recent_blocks": list(self._recent_blocks)[::-1],  # newest first
+            # Multi-opportunity capital allocation (Session 3) — the caps that
+            # bound how many independent ideas may be funded and the recent
+            # per-candidate funding verdicts (newest first).
+            "max_total_positions": int(getattr(cfg, "max_total_positions", 10)),
+            "max_positions_per_symbol": int(getattr(cfg, "max_positions_per_symbol", 2)),
+            "max_positions_per_tf_class": int(getattr(cfg, "max_positions_per_tf_class", 3)),
+            "max_total_risk_pct": float(getattr(cfg, "max_total_risk_pct", 6.0)),
+            "per_trade_max_risk": float(getattr(cfg, "per_trade_max_risk", 2.0)),
+            "hedge_ratio_cap": float(getattr(cfg, "hedge_ratio_cap", 0.30)),
+            "recent_allocations": list(self._recent_allocations)[::-1],
         }
 
     # ── Internal helpers ─────────────────────────────────────────────────

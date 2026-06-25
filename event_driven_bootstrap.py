@@ -1053,6 +1053,28 @@ class PositionEvaluator:
             # SCOPED votes so its in-trade read matches the opening panel. No
             # provenance / disabled flag → falls through to the net-summed read.
             thesis = self._check_candidate_thesis(order_id, direction, wm)
+            # Candidate provenance + thesis health for the Position Health panel.
+            # thesis_status: "intact" (panel still supports), "flipped"
+            # (majority opposed → scoped close), "silent" (panel went quiet →
+            # conservative close), or "" when no provenance / scoped mgmt off.
+            prov = self._candidate_positions.get(str(order_id))
+            thesis_status = ""
+            if thesis is not None:
+                verdict, payload = thesis
+                if verdict == "CLOSE":
+                    thesis_status = (
+                        "flipped" if payload == "thesis_invalidated" else "silent"
+                    )
+                else:
+                    thesis_status = "intact"
+            prov_payload = {
+                "candidate_id": str(getattr(prov, "candidate_id", "") or "") if prov else "",
+                "timeframe_class": str(getattr(prov, "timeframe_class", "") or "") if prov else "",
+                "contributing_modules": (
+                    list(getattr(prov, "contributing_modules", []) or []) if prov else []
+                ),
+                "thesis_status": thesis_status,
+            }
             if thesis is not None:
                 verdict, payload = thesis
                 if verdict == "CLOSE":
@@ -1074,6 +1096,36 @@ class PositionEvaluator:
                         self._candidate_positions.get(order_id).candidate_id
                         if self._candidate_positions.get(order_id) else "?",
                     )
+                    # Emit a POSITION_HEALTH event so the dashboard's live-
+                    # management panel shows the scoped thesis close (this path
+                    # returns before the regular per-cycle emit below).
+                    try:
+                        store = get_event_store()
+                        if store is not None:
+                            ph_risk = risk_pips if risk_pips > 0 else 0.0
+                            ph_profit_r = (
+                                round(pnl_pips / ph_risk, 4) if ph_risk > 0 else 0.0
+                            )
+                            store.emit(
+                                event_type=DE.POSITION_HEALTH,
+                                severity="INFO",
+                                symbol=symbol,
+                                parent_id=order_id or None,
+                                source_module="decision.engine",
+                                payload={
+                                    "order_id": order_id,
+                                    "pair": symbol,
+                                    "direction": norm_dir.replace("BUY", "LONG").replace("SELL", "SHORT"),
+                                    "horizon": prov_payload["timeframe_class"],
+                                    "health_score": 0.0,
+                                    "action": "CLOSE",
+                                    "profit_r": ph_profit_r,
+                                    "reason": f"candidate-scoped: {payload}",
+                                    **prov_payload,
+                                },
+                            )
+                    except Exception as exc:
+                        logger.debug("[candidate-mgmt] POSITION_HEALTH persist failed: {}", exc)
                     return
                 # HOLD — scope the panel the strategic engine revalidates on.
                 consensus_votes = payload
@@ -1320,6 +1372,7 @@ class PositionEvaluator:
                                 "structure_integrity": round(float(getattr(sa, "structure_integrity", 0.0) or 0.0), 4),
                             },
                             "reason": str(getattr(de_result, "reason", "") or "")[:200],
+                            **prov_payload,
                         },
                     )
             except Exception as exc:

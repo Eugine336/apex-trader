@@ -66,6 +66,7 @@ export default function Governor() {
   const cap = Number(g.daily_loss_cap_pct || 3);
   const lossFill = Math.max(0, Math.min(100, (-dailyPct / cap) * 100));
   const blocks = g.recent_blocks || [];
+  const allocations = g.recent_allocations || [];
 
   return (
     <div className="space-y-6">
@@ -199,6 +200,80 @@ export default function Governor() {
                       </td>
                       <td className="py-2 pr-2 text-xs text-gray-500">
                         {b.reason || "—"}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </Panel>
+
+          <Panel
+            title="Capital Allocation — multi-opportunity funding verdicts"
+            subtitle={`risk budget ${Number(g.max_total_risk_pct || 0).toFixed(
+              1
+            )}% · ≤${Number(g.per_trade_max_risk || 0).toFixed(
+              1
+            )}%/trade · ${g.max_positions_per_symbol || 0}/symbol · ${
+              g.max_positions_per_tf_class || 0
+            }/horizon · ${g.max_total_positions || 0} total · hedge ≤${Math.round(
+              (g.hedge_ratio_cap || 0) * 100
+            )}%`}
+            className="overflow-x-auto"
+          >
+            <table className="w-full min-w-[680px] text-sm">
+              <thead>
+                <tr className="border-b border-gray-700 text-left text-xs uppercase text-gray-500">
+                  <th className="py-2 pr-2">Time</th>
+                  <th className="py-2 pr-2">Symbol</th>
+                  <th className="py-2 pr-2">Dir</th>
+                  <th className="py-2 pr-2">Horizon</th>
+                  <th className="py-2 pr-2">Verdict</th>
+                  <th className="py-2 pr-2 text-right">Risk ≤</th>
+                  <th className="py-2 pr-2">Reason</th>
+                </tr>
+              </thead>
+              <tbody>
+                {allocations.length === 0 && (
+                  <tr>
+                    <td colSpan={7} className="py-12 text-center text-gray-500">
+                      {loading
+                        ? "Loading…"
+                        : "No capital-allocation verdicts yet — they appear as candidates are funded."}
+                    </td>
+                  </tr>
+                )}
+                {allocations.map((a, i) => {
+                  const dir = a.direction || "";
+                  return (
+                    <tr key={i} className="border-b border-gray-800">
+                      <td className="py-2 pr-2 text-xs text-gray-500">
+                        {fmtTs(a.timestamp)}
+                      </td>
+                      <td className="py-2 pr-2 font-medium text-gray-100">
+                        {a.symbol || "—"}
+                      </td>
+                      <td className={`py-2 pr-2 ${dirText(dir)}`}>{dir || "—"}</td>
+                      <td className="py-2 pr-2 text-gray-400">
+                        {a.timeframe_class || "—"}
+                      </td>
+                      <td className="py-2 pr-2">
+                        <span className={badgeClass(a.approved ? "green" : "red")}>
+                          {a.approved ? "FUNDED" : "DENIED"}
+                        </span>
+                      </td>
+                      <td className="py-2 pr-2 text-right font-mono text-xs text-gray-300">
+                        {Number(a.max_risk_pct || 0).toFixed(2)}%
+                      </td>
+                      <td
+                        className="py-2 pr-2 text-xs text-gray-500"
+                        title={
+                          (a.conflicts || []).length
+                            ? `conflicts: ${a.conflicts.join(", ")}`
+                            : undefined
+                        }
+                      >
+                        {a.reason || "—"}
                       </td>
                     </tr>
                   );
