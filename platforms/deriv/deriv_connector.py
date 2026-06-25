@@ -293,6 +293,13 @@ class DerivConnector(BaseConnector):
         # 4. Open the WebSocket — it is pre-authenticated, so no authorize
         #    message is sent.
         # Caller MUST hold ``_connect_lock``.
+        # Re-authenticate before the OTP request: re-source the access token
+        # from its out-of-band origin so a reconnect can recover when Deriv has
+        # timed the previous token out server-side (the local TTL clock may
+        # still consider it live). Idempotent — an unchanged token is a no-op.
+        if self._maybe_refresh_token(force=True):
+            logger.info("Deriv re-authenticated before OTP request — access token refreshed")
+
         if not self._check_token_valid():
             return False
 
@@ -304,6 +311,10 @@ class DerivConnector(BaseConnector):
 
         ws_url = await self._get_otp_ws_url(self._account_id)
         if not ws_url:
+            # A stale cached accountId can outlive a token rotation; clear it so
+            # the next attempt re-resolves it via the freshly authenticated REST
+            # call rather than retrying OTP against a dead account binding.
+            self._account_id = ""
             return False
 
         try:
@@ -389,17 +400,24 @@ class DerivConnector(BaseConnector):
         """True once the access token has expired (reconnect impossible)."""
         return (self._token_expires_at - _time.time()) <= 0
 
-    def _maybe_refresh_token(self) -> bool:
+    def _maybe_refresh_token(self, force: bool = False) -> bool:
         """Proactively refresh the token once ~80% of its TTL has elapsed.
 
         Returns True if a refresh was attempted and succeeded. When no refresh
         callback is configured this is a no-op (the caller still warns/winds
         down via _check_token_valid / the monitor loop).
+
+        ``force=True`` bypasses the TTL gate so a (re)connect can re-source the
+        access token from its out-of-band origin (token file / env) before
+        requesting a fresh OTP. Deriv times tokens out server-side independently
+        of our local TTL clock, so re-reading the source on every reconnect lets
+        an operator-supplied fresh token self-heal the connection. Re-reading an
+        unchanged token is a harmless no-op (handled below).
         """
         if self._token_refresh_callback is None:
             return False
         elapsed = _time.time() - self._token_issued_at
-        if elapsed < self._token_ttl * _TOKEN_REFRESH_FRACTION:
+        if not force and elapsed < self._token_ttl * _TOKEN_REFRESH_FRACTION:
             return False
         try:
             new_token, expires_in = self._token_refresh_callback()

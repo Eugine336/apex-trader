@@ -148,6 +148,12 @@ class PlatformManager:
 
         self._mt5_connected_flags: list[bool] = [False] * len(self.mt5_connectors)
         self._deriv_connected = False
+        # Last-known good balance per platform key. Each platform's balance is
+        # tracked INDEPENDENTLY so a disconnected leg keeps contributing its
+        # last value to the pooled total instead of vanishing — otherwise the
+        # pooled balance oscillates wildly (and trips the risk engine's swing
+        # guard) every time one broker reconnects.
+        self._last_known_balances: dict[str, float] = {}
 
         self._mt5_was_connected: list[bool] = [False] * len(self.mt5_connectors)
         self._deriv_was_connected = False
@@ -790,13 +796,19 @@ class PlatformManager:
             if self._mt5_connected_flags[i]:
                 key = f"mt5_{i}" if len(self.mt5_connectors) > 1 else "mt5"
                 try:
-                    summary[key] = connector.get_account_info()
+                    info = connector.get_account_info()
+                    summary[key] = info
+                    if info is not None and info.balance is not None and info.balance >= 0:
+                        self._last_known_balances[key] = float(info.balance)
                 except Exception as exc:
                     label = f"MT5[{i}]" if len(self.mt5_connectors) > 1 else "MT5"
                     logger.warning("{} account info error: {}", label, exc)
         if self._deriv_connected:
             try:
-                summary["deriv"] = self.deriv.get_account_info()
+                info = self.deriv.get_account_info()
+                summary["deriv"] = info
+                if info is not None and info.balance is not None and info.balance >= 0:
+                    self._last_known_balances["deriv"] = float(info.balance)
                 if self._deriv_reconnect_warned:
                     logger.info("Deriv account info recovered")
                     self._deriv_reconnect_warned = False
@@ -809,11 +821,33 @@ class PlatformManager:
                     logger.warning("Deriv account info error: {}", exc)
         return summary
 
+    def get_balances_by_platform(self) -> dict[str, float]:
+        """Per-platform balances, treated independently and never collided.
+
+        Each connected platform reports its live balance; a platform that is
+        currently disconnected/erroring falls back to its last-known good
+        balance so its capital is still represented. Keys are platform keys
+        (e.g. ``mt5``, ``deriv``). MT5 real and Deriv demo balances are kept in
+        separate entries and are never summed into one another's slot.
+        """
+        balances: dict[str, float] = dict(self._last_known_balances)
+        for key, info in self.get_account_summary().items():
+            try:
+                bal = float(info.balance)
+            except (TypeError, ValueError):
+                continue
+            if bal >= 0:
+                balances[key] = bal
+        return balances
+
     def get_total_balance(self) -> float:
-        total = 0.0
-        for info in self.get_account_summary().values():
-            total += info.balance
-        return total
+        """Pooled balance across platforms, resilient to transient disconnects.
+
+        Uses each platform's last-known balance when it is momentarily offline
+        so the pooled figure stays stable instead of collapsing to a single
+        leg's balance during a reconnect.
+        """
+        return sum(self.get_balances_by_platform().values())
 
     def get_platform_balance(self, symbol: str) -> float:
         """Get balance for the specific platform that handles this symbol."""

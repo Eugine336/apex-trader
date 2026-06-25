@@ -382,6 +382,24 @@ class DerivTickAdapter:
     def _poll_loop(self) -> None:
         error_counts: dict[str, int] = defaultdict(int)
         last_error_log: dict[str, float] = {}
+        # Connection-level errors (disconnect / reconnecting) hit every symbol
+        # at once and would otherwise flood the log with one line per symbol
+        # per cycle. Collapse them into a single throttled summary covering all
+        # affected symbols, and emit one line when the connection recovers.
+        conn_down = False
+        conn_first_log = 0.0
+        conn_last_summary = 0.0
+        conn_err_count = 0
+        conn_symbols: set[str] = set()
+        CONN_SUMMARY_INTERVAL = 60.0
+
+        def _is_conn_error(msg: str) -> bool:
+            m = msg.lower()
+            return (
+                "not connected" in m
+                or "reconnect" in m
+                or "request blocked" in m
+            )
 
         while self._running:
             for sym in self._symbols:
@@ -403,11 +421,45 @@ class DerivTickAdapter:
                         )
                         self._router.on_tick(tick)
                         error_counts[sym] = 0
+                        if conn_down:
+                            # First good tick after a connection outage.
+                            logger.info(
+                                "[deriv-adapter] connection recovered — "
+                                "resuming tick polling ({} suppressed error(s) "
+                                "across {} symbol(s) during outage)",
+                                conn_err_count, len(conn_symbols),
+                            )
+                            conn_down = False
+                            conn_err_count = 0
+                            conn_symbols = set()
                     else:
                         error_counts[sym] += 1
                 except Exception as exc:
                     error_counts[sym] += 1
                     now = _time.monotonic()
+                    if _is_conn_error(str(exc)):
+                        # Aggregate connection-down errors into one summary line.
+                        conn_symbols.add(sym)
+                        conn_err_count += 1
+                        if not conn_down:
+                            conn_down = True
+                            conn_first_log = now
+                            conn_last_summary = now
+                            logger.warning(
+                                "[deriv-adapter] Deriv disconnected — suppressing "
+                                "per-symbol tick errors; a summary will follow "
+                                "every {:.0f}s until reconnect", CONN_SUMMARY_INTERVAL,
+                            )
+                        elif now - conn_last_summary >= CONN_SUMMARY_INTERVAL:
+                            conn_last_summary = now
+                            logger.warning(
+                                "[deriv-adapter] still disconnected for {:.0f}s — "
+                                "{} tick error(s) across {} symbol(s) suppressed",
+                                now - conn_first_log, conn_err_count,
+                                len(conn_symbols),
+                            )
+                        continue
+                    # Genuine per-symbol error — keep the existing 60s throttle.
                     if now - last_error_log.get(sym, 0) >= 60.0:
                         last_error_log[sym] = now
                         logger.warning(
@@ -2891,12 +2943,12 @@ class EventDrivenSystem:
         ctx = self._ctx
         if ctx is None:
             return
-        # RiskEngine global balance ← pooled broker truth.
+        # RiskEngine global balance ← per-platform broker truth (independent).
         if ctx.risk_engine is not None:
             try:
-                broker_balance = self._pm.get_total_balance()
-                if broker_balance is not None and broker_balance > 0:
-                    ctx.risk_engine.reconcile_balance(broker_balance)
+                platform_balances = self._pm.get_balances_by_platform()
+                if platform_balances:
+                    ctx.risk_engine.reconcile_platform_balances(platform_balances)
             except Exception as exc:
                 logger.debug("[startup] risk-engine balance seed failed: {}", exc)
         # Per-account silos ← per-account broker balance (heat denominator,
@@ -3462,13 +3514,14 @@ class EventDrivenSystem:
         # ── Broker-truth balance reconciliation (B13) ──────────────────
         # Pull the risk engine's running balance back to broker truth every
         # cycle so commission/swap/slippage/manual-trade drift can never
-        # accumulate.  Fail-safe — leaves the internal balance untouched on
-        # any failure (reconcile_balance ignores None/negative).
+        # accumulate.  Reconciles each platform INDEPENDENTLY so a reconnecting
+        # leg's transient balance can't collide with the other platform.
+        # Fail-safe — leaves balances untouched on any failure.
         if ctx.risk_engine is not None:
             try:
-                broker_balance = self._pm.get_total_balance()
-                if broker_balance is not None:
-                    ctx.risk_engine.reconcile_balance(broker_balance)
+                platform_balances = self._pm.get_balances_by_platform()
+                if platform_balances:
+                    ctx.risk_engine.reconcile_platform_balances(platform_balances)
             except Exception as exc:
                 logger.debug("[risk-state] balance reconcile failed: {}", exc)
 

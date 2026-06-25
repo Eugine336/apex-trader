@@ -43,6 +43,14 @@
     "BOOM1000": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
     "CRASH300N": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
     "CRASH500": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
-    "CRASH1000": {"default": 100, "accepted": [100, 200, 300, 400, 500]}
+    "CRASH1000": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "stpRNG": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "RDBULL": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "RDBEAR": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "JD10": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "JD25": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "JD50": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "JD75": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "JD100": {"default": 100, "accepted": [100, 200, 300, 400, 500]}
   }
 }
