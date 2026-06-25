@@ -229,12 +229,16 @@ class OperationsMixin:
     def _ops_layer_status(self) -> dict:
         health = self._ops_health_snapshot()
         layers = health.get("adaptive_layers", {}) or {}
+        detail = health.get("adaptive_layer_detail", {}) or {}
         store_sizes = health.get("store_sizes_mb", {}) or {}
         out: dict[str, dict] = {}
         for name, state in layers.items():
+            info = detail.get(name, {}) or {}
             out[name] = {
                 "state": str(state),
                 "store_mb": _r(store_sizes.get(name, 0.0), 3),
+                "reason": str(info.get("reason", "")),
+                "enabled": info.get("enabled"),
             }
         return out
 

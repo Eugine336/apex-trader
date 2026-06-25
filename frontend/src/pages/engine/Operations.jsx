@@ -33,6 +33,7 @@ function limitColor(value, limit) {
 function layerColor(state) {
   if (state === "active") return "text-emerald-400";
   if (state === "error") return "text-red-400";
+  if (state === "disabled") return "text-amber-400";
   return "text-gray-500";
 }
 
@@ -329,6 +330,9 @@ function LayerPulse({ layers }) {
               <div className={`mt-1 text-base font-semibold ${layerColor(info.state)}`}>
                 {String(info.state).toUpperCase()}
               </div>
+              {info.reason && info.state !== "active" && (
+                <div className="text-xs text-gray-500">{info.reason}</div>
+              )}
               {info.store_mb > 0 && (
                 <div className="text-xs text-gray-500">{info.store_mb} MB</div>
               )}

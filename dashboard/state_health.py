@@ -39,6 +39,49 @@ _ED_ADAPTIVE_LAYERS: tuple[tuple[str, str], ...] = (
     ("ml_adapter", "ml_adapter"),
 )
 
+# (layer label) → (config section, enable-flag attribute) for layers gated by an
+# explicit master switch. Layers absent from this map have no enable flag and are
+# considered always-on (their presence alone is "active"). Used to distinguish a
+# component that is OFF by deliberate config from one that failed to initialise.
+_LAYER_ENABLE_FLAGS: dict[str, tuple[str, str]] = {
+    "counterfactual": ("counterfactual", "counterfactual_enabled"),
+    "interaction_analyzer": ("interaction", "interaction_discovery_enabled"),
+    "behavior_discovery": ("behavior_discovery", "behavior_discovery_enabled"),
+    "signal_discovery": ("signal_discovery", "signal_discovery_enabled"),
+    "vote_calibrator": ("vote_calibrator", "vote_calibration_enabled"),
+}
+
+
+def _layer_enabled(cfg: Any, label: str) -> bool | None:
+    """Resolve a layer's config enable-flag.
+
+    Returns ``True``/``False`` when the layer has a master switch, or ``None``
+    when it has none (always-on). The virtual registry is special-cased: it is
+    enabled only when both the signal-discovery kill switch and the virtual-
+    promotion flag are on.
+    """
+    if cfg is None:
+        return None
+    if label == "virtual_registry":
+        sd = getattr(cfg, "signal_discovery", None)
+        if sd is None:
+            return None
+        kill = bool(getattr(sd, "signal_discovery_enabled", True))
+        promote = bool(getattr(sd, "virtual_promotion_enabled", True))
+        return kill and promote
+    spec = _LAYER_ENABLE_FLAGS.get(label)
+    if spec is None:
+        return None
+    section, attr = spec
+    sub = getattr(cfg, section, None)
+    if sub is None:
+        return None
+    try:
+        return bool(getattr(sub, attr, True))
+    except Exception:  # noqa: BLE001
+        return None
+
+
 # (label, config section, db-path key) — mirrors ops.lifecycle store sizes.
 _ED_STORE_PATHS: tuple[tuple[str, str, str], ...] = (
     ("signal_ledger", "signal_ledger", "signal_ledger_db_path"),
@@ -54,14 +97,57 @@ _ED_STORE_PATHS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def _ed_adaptive_layers(ctx: Any) -> dict:
-    """active/dormant per adaptive component, read from the SystemContext."""
+def _ed_adaptive_layers(ctx: Any, cfg: Any = None) -> dict:
+    """Per-adaptive-component state, read from the SystemContext.
+
+    Returns one of three strings per layer so a config-disabled component is no
+    longer indistinguishable from a broken one:
+
+    * ``"active"``   — built and (if it has a master switch) enabled.
+    * ``"disabled"`` — switched off by config (built-but-off, or never built
+      because its flag is off).
+    * ``"dormant"``  — absent with no disabling flag found (init failed / not
+      wired).
+    """
     layers: dict[str, str] = {}
     if ctx is None:
         return layers
     for label, attr in _ED_ADAPTIVE_LAYERS:
-        layers[label] = "active" if getattr(ctx, attr, None) is not None else "dormant"
+        present = getattr(ctx, attr, None) is not None
+        enabled = _layer_enabled(cfg, label)
+        if not present:
+            layers[label] = "disabled" if enabled is False else "dormant"
+        elif enabled is False:
+            layers[label] = "disabled"
+        else:
+            layers[label] = "active"
     return layers
+
+
+def _ed_adaptive_layer_detail(ctx: Any, cfg: Any = None) -> dict:
+    """Richer per-layer status: ``{label: {status, reason, enabled}}``.
+
+    Companion to :func:`_ed_adaptive_layers` for consumers that want the reason
+    behind a non-active state (config-disabled vs init-failed) without parsing
+    the bare status string.
+    """
+    detail: dict[str, dict] = {}
+    if ctx is None:
+        return detail
+    for label, attr in _ED_ADAPTIVE_LAYERS:
+        present = getattr(ctx, attr, None) is not None
+        enabled = _layer_enabled(cfg, label)
+        if not present:
+            if enabled is False:
+                status, reason = "disabled", "disabled by config"
+            else:
+                status, reason = "dormant", "not initialized"
+        elif enabled is False:
+            status, reason = "disabled", "disabled by config"
+        else:
+            status, reason = "active", "running"
+        detail[label] = {"status": status, "reason": reason, "enabled": enabled}
+    return detail
 
 
 def _ed_store_sizes_mb(cfg: Any) -> dict:
@@ -182,7 +268,8 @@ class HealthMixin:
             "watchdog": watchdog_state,
             "ed_stats": stats,
             "memory_mb": memory_mb,
-            "adaptive_layers": _ed_adaptive_layers(ctx),
+            "adaptive_layers": _ed_adaptive_layers(ctx, cfg),
+            "adaptive_layer_detail": _ed_adaptive_layer_detail(ctx, cfg),
             "store_sizes_mb": _ed_store_sizes_mb(cfg),
             "last_tick_age_seconds": (watchdog_state or {}).get("seconds_since_tick"),
             "warnings": warnings,
