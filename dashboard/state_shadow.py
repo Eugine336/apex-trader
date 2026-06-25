@@ -6,8 +6,7 @@ setup outcomes — WIN/LOSS/BE/PARTIAL/EXPIRED grouped by rejecting gate.
 
 from __future__ import annotations
 
-from dataclasses import asdict
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
 from loguru import logger
 
@@ -17,7 +16,7 @@ class ShadowMixin:
 
     def _get_shadow_store(self):
         try:
-            from persistence.shadow_store import ShadowStore, _DB_PATH
+            from persistence.shadow_store import ShadowStore
             if not hasattr(self, "_shadow_store_inst"):
                 self._shadow_store_inst = ShadowStore()
             return self._shadow_store_inst

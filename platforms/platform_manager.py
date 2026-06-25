@@ -518,15 +518,15 @@ class PlatformManager:
                     result = conn._find_order_by_idem_key(idem_key)
                     if result is not None:
                         return result
-                except Exception:
-                    pass
+                except Exception as exc:
+                    _pm_logger.debug("[pm] MT5 idem-key lookup failed: {}", exc)
         if self._deriv_connected:
             try:
                 cid = self.deriv._find_contract_by_idem_key(idem_key)
                 if cid:
                     return cid
-            except Exception:
-                pass
+            except Exception as exc:
+                _pm_logger.debug("[pm] Deriv idem-key lookup failed: {}", exc)
         return None
 
     def execute_entry(

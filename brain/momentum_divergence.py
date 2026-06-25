@@ -15,7 +15,6 @@ import math
 from typing import Optional
 
 import pandas as pd
-from loguru import logger
 
 
 def calculate_rsi(closes: pd.Series, period: int = 14) -> Optional[float]:

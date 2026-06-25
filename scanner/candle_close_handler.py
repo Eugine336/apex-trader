@@ -29,18 +29,12 @@ from typing import Any, Callable, Optional
 import pandas as pd
 from loguru import logger
 
-from brain.fvg_detector import FVGDetector, FairValueGap
-from brain.inducement_detector import InducementDetector, InducementAnalysis
 from brain.instrument_profile import get_profile
-from brain.liquidity_mapper import LiquidityMapper, LiquidityMap
-from brain.order_block import OrderBlockDetector, OrderBlock
-from brain.structure_engine import StructureEngine, StructureAnalysis
-from brain.volume_analyzer import VolumeAnalyzer, VolumeAnalysis
+from brain.liquidity_mapper import LiquidityMapper
+from brain.structure_engine import StructureEngine
+from brain.volume_analyzer import VolumeAnalyzer
 from brain.world_model import WorldModel, WorldModelStore, build_world_model
-from brain.wyckoff_engine import WyckoffEngine, WyckoffAnalysis
 from brain.currency_strength import CurrencyStrengthMeter, CURRENCY_PAIRS
-from brain.concept_modules import run_concepts
-from config import get_pip_size
 from entry.models import EntryConfig
 from entry.zone_watcher import extract_entry_zones
 from brain.decision_core import (
@@ -49,7 +43,6 @@ from brain.decision_core import (
     run_tf_modules,
     blend_concepts,
     build_consensus,
-    fvg_proximity,
 )
 from tick.event_bus import EventBus
 from tick.models import CandleClose

@@ -18,8 +18,7 @@ broker threads.
 from __future__ import annotations
 
 import threading
-import time as _time
-from typing import Callable, Optional
+from typing import Callable
 
 from loguru import logger
 

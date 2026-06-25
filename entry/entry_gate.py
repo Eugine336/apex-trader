@@ -23,7 +23,7 @@ All gates are pure functions of their inputs (no side effects).
 from __future__ import annotations
 
 import math
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 from typing import Optional
 
 from loguru import logger

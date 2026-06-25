@@ -22,7 +22,6 @@ Unprofitable ones die. Over millions of steps, capability emerges.
 
 from __future__ import annotations
 
-import os
 import time
 import json
 import numpy as np
@@ -33,10 +32,9 @@ import torch.optim as optim
 from torch.distributions import Categorical
 from dataclasses import dataclass, asdict
 from pathlib import Path
-from typing import Optional
 
 from .environment import ApexTradingEnv
-from .network import ApexRLAgent, ACTION_LABELS
+from .network import ApexRLAgent
 from .contracts import OBS_CONTRACT_VERSION, schema_hash, schema
 
 

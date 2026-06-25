@@ -14,7 +14,6 @@ import math
 from typing import Optional
 
 import pandas as pd
-from loguru import logger
 
 
 def compute_session_vwap(

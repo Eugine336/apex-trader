@@ -8,9 +8,8 @@ severity-filtered, paginated event queries.
 from __future__ import annotations
 
 import json
-import time as _time
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from loguru import logger
 

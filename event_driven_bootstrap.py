@@ -24,8 +24,8 @@ from typing import Any, Callable, Optional
 import pandas as pd
 from loguru import logger
 
-from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open, is_session_gated, Platform
-from brain.world_model import WorldModelStore, build_world_model
+from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open, is_session_gated
+from brain.world_model import WorldModelStore
 from compliance import (
     ComplianceAccount,
     ComplianceBook,
@@ -34,14 +34,11 @@ from compliance import (
 from core.system_context import SystemContext
 from persistence.event_store import get_event_store
 from persistence import domain_events as DE
-from persistence.position_store import PositionStore, STORE_UNAVAILABLE
 from tick import EventBus, Tick, TickStore, CandleCloseDetector, TickRouter
-from tick.models import CandleClose
 from scanner.candle_close_handler import CandleCloseHandler
 from execution.intents import Intent, IntentType
 from execution.intent_aggregator import IntentAggregator, AggregatorConfig
 from execution.action_executor import ActionExecutor, ExecutorConfig
-from execution.risk_gate import GateConfig
 from execution.position_worker import (
     PositionWorker, WorkerConfig, ScanContext, MarketContext, sl_within_min_room,
 )

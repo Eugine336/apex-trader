@@ -15,7 +15,6 @@ from __future__ import annotations
 
 from typing import Any
 
-from loguru import logger
 
 
 # (health label, SystemContext attribute) — mirrors ops.lifecycle adaptive layers.

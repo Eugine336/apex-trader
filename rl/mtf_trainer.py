@@ -25,7 +25,7 @@ import torch.optim as optim
 from torch.distributions import Categorical
 
 from .mtf_environment import ApexMultiTFTradingEnv
-from .network import ApexRLAgent, ACTION_LABELS
+from .network import ApexRLAgent
 from .vec_env import make_vec_env, has_instrument_data
 from .contracts import (
     OBS_CONTRACT_VERSION,

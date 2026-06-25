@@ -15,7 +15,6 @@ with M1_SWING_LOOKBACK = 3 (7-bar window) for M1 micro-structure.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Optional
 
 import pandas as pd

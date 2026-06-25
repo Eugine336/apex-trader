@@ -22,15 +22,13 @@ Integration with APEX scanner:
 
 from __future__ import annotations
 
-import json
 import logging
 import sqlite3
 import threading
 import numpy as np
 from collections import deque
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Optional
 
 from .network import ApexRLAgent, ACTION_LABELS

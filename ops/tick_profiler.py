@@ -27,7 +27,7 @@ import threading
 import time
 from collections import deque
 from contextlib import contextmanager
-from typing import Any, Deque, Dict, Iterator, List, Optional
+from typing import Any, Deque, Dict, Iterator, List
 
 
 def _percentile(ordered: List[float], q: float) -> float:

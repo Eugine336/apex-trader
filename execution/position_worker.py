@@ -30,7 +30,7 @@ from loguru import logger
 
 from execution.intents import Intent, IntentType
 from execution.position_snapshot import PositionSnapshot
-from config import is_always_open, is_session_gated
+from config import is_always_open
 from management.trailing_stop import StructureTrailingStop
 
 

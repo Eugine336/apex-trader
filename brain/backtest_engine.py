@@ -22,7 +22,7 @@ import os
 import random
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional, Union
+from typing import Optional
 
 import numpy as np
 import pandas as pd
