@@ -1333,7 +1333,7 @@ class DataBackupConfig:
     # it only fires while the on-disk .local_schema_version differs from
     # SCHEMA_VERSION, then writes the new version, so subsequent restarts are
     # no-ops and never re-wipe freshly learned state.
-    startup_purge_enabled: bool = True
+    startup_purge_enabled: bool = False
     # Run the data-junction clean-start (fetch + hard-reset to the remote) on
     # boot. Default ON for single-user mode. Multi-tenant per-user instances run
     # from an isolated, non-git working dir and force this OFF (see
