@@ -398,13 +398,19 @@ class TestCleanStart:
 
 
 class TestStartupPurgeToggle:
-    """The learned-data purge is opt-in (default OFF) — a normal restart only
-    syncs the data junction and never wipes adaptive state."""
+    """The learned-data purge is gated two ways: the ``startup_purge_enabled``
+    toggle AND a schema-version mismatch. It is enabled following the
+    Opportunistic Intelligence rewire (Sessions 1-4) so the now-stale learned
+    state is wiped once on the next restart; the schema gate keeps it
+    self-limiting so it never re-wipes freshly learned state."""
 
-    def test_startup_purge_disabled_by_default(self):
+    def test_startup_purge_enabled_for_migration(self):
         from config import DataBackupConfig
 
-        assert DataBackupConfig().startup_purge_enabled is False
+        # Enabled deliberately for the schema-version migration (SCHEMA_VERSION
+        # bumped). The schema gate still prevents it from re-running once the
+        # on-disk version matches.
+        assert DataBackupConfig().startup_purge_enabled is True
 
     def test_clean_start_on_first_boot_enabled_by_default(self):
         from config import DataBackupConfig

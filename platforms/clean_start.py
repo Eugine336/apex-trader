@@ -23,13 +23,12 @@ from pathlib import Path
 from config import SCHEMA_VERSION
 from loguru import logger
 
-from config import SCHEMA_VERSION
-
 # Learned / adaptive artifacts that encoded the old structure-biased weights.
 # These are safe to delete — they are regenerated empty on first write.
 _STALE_LEARNED_FILES: tuple[str, ...] = (
     "scoring_weights.json",
     "zone_edge.json",
+    "symbol_conviction.json",
     "ml_pair_profiles.json",
     "ml_session_profiles.json",
     "ml_regime_strategies.json",
@@ -47,6 +46,7 @@ _STALE_LEARNED_FILES: tuple[str, ...] = (
     "interaction_discovery.db",
     "param_evolution.db",
     "signal_discovery.db",
+    "virtual_modules.db",
     "capital_allocation.db",
     "execution_profiles.db",
     "regime_detection.db",
