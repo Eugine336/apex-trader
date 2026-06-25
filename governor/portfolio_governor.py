@@ -305,6 +305,13 @@ class PortfolioGovernor:
             )
 
         # ── Gate 2: timeframe-class cap (only when horizon is known) ─────
+        # The horizon-concentration cap is, by design, opt-in per candidate: a
+        # candidate with no ``timeframe_class`` cannot be bucketed into a horizon
+        # so this cap does not apply to it. That is NOT an unbounded bypass —
+        # such a candidate is still bounded by the per-symbol cap (Gate 1), the
+        # global position cap (Gate 3) and the total risk budget (Gate 4). The
+        # skip is logged so an unknown-horizon candidate slipping past the
+        # horizon cap is visible rather than silent.
         if tfc:
             max_tf = int(getattr(cfg, "max_positions_per_tf_class", 3))
             same_tf = [v for v in views if v["timeframe_class"] == tfc]
@@ -314,6 +321,12 @@ class PortfolioGovernor:
                     reason=f"tf_class_cap_hit {tfc} ({len(same_tf)}/{max_tf})",
                     conflicts=[f"{v['symbol']} {v['direction']}" for v in same_tf],
                 )
+        else:
+            logger.debug(
+                "[Governor] {} {} has no timeframe_class — horizon cap (Gate 2) "
+                "skipped; still bounded by symbol/global/risk caps",
+                sym, direction,
+            )
 
         # ── Gate 4: total risk budget ────────────────────────────────────
         max_total_risk = float(getattr(cfg, "max_total_risk_pct", 6.0))

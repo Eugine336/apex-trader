@@ -217,8 +217,8 @@ class EntryValidator:
             return False, "Inverted SL/TP for LONG"
         if not is_long and (signal.stop_loss <= entry or signal.tp1 >= entry or signal.tp2 >= entry):
             return False, "Inverted SL/TP for SHORT"
-        if signal.risk_reward_1 < 1.0:
-            return False, f"R:R to TP1 below 1:1 ({signal.risk_reward_1:.2f})"
+        if signal.risk_reward_1 < min_rr:
+            return False, f"R:R to TP1 below minimum ({signal.risk_reward_1:.2f} < {min_rr})"
         if signal.risk_reward_2 < min_rr:
             return False, f"R:R to TP2 below minimum ({signal.risk_reward_2:.2f} < {min_rr})"
         return True, f"R:R OK (TP1={signal.risk_reward_1:.2f}, TP2={signal.risk_reward_2:.2f})"

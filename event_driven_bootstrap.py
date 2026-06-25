@@ -4457,6 +4457,15 @@ class EventDrivenSystem:
                     ticket, meta.get("symbol", "?"), attempts,
                 )
                 self._external_close_attempts.pop(ticket, None)
+                # The ticket is being dropped from tracking without a booked
+                # close, so its management + in-flight rollback state would
+                # otherwise leak forever. Clear both so a stale phantom-SL
+                # snapshot can never resurface against a future ticket reuse.
+                self._clear_inflight_manage_ticket(str(ticket))
+                try:
+                    self._mgmt_store.remove(str(ticket))
+                except Exception:
+                    pass
             else:
                 still_pending[ticket] = meta
 

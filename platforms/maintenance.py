@@ -95,6 +95,7 @@ class DailyMaintenance:
         results["db_backup"] = self._backup_database()
         results["logs_cleaned"] = self._rotate_logs()
         results["stale_cleaned"] = self._clean_stale_data()
+        results["event_store_pruned"] = self._prune_event_store()
 
         # Push the local data junction to its GitHub remote *after* the local
         # backup so the freshest snapshot (including today's backup file) is
@@ -109,6 +110,25 @@ class DailyMaintenance:
 
         self._last_maintenance_day = day_key
         return results
+
+    def _prune_event_store(self) -> int:
+        """Trim the append-only event store to its retention limits.
+
+        ``EventStore.prune`` enforces the configured max-age / max-rows policy
+        but was never invoked anywhere, so ``apex_events.db`` grew without bound
+        (observed at 200+ MB in production). Running it on the daily cadence
+        keeps the store bounded; failures never abort maintenance.
+        """
+        try:
+            from persistence.event_store import get_event_store
+
+            deleted = int(get_event_store().prune())
+            if deleted:
+                logger.info("[maintenance] event store pruned — {} rows removed", deleted)
+            return deleted
+        except Exception as exc:
+            logger.warning("[maintenance] event-store prune failed: {}", exc)
+            return 0
 
     def _backup_database(self) -> str:
         """Copy positions.db to data/backups/positions_YYYY-MM-DD.db"""

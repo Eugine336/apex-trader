@@ -28,7 +28,14 @@ def atr_series(df: pd.DataFrame, period: int = 14) -> pd.Series:
     """Compute ATR using the exact same formula as RegimeDetector._calculate_atr.
 
     true_range = max(high - low, |high - prev_close|, |low - prev_close|)
-    ATR        = rolling(period).mean().bfill()
+    ATR        = rolling(period, min_periods=1).mean()
+
+    The warm-up rows use a causal expanding mean (``min_periods=1``) rather than
+    a backward fill. ``bfill()`` copied the FIRST fully-formed ATR value back
+    into the leading rows — a look-ahead leak (future data into past bars) that
+    biased backtest/replay. ``min_periods=1`` keeps the series fully populated
+    using only past+current bars, and the latest value is unchanged once
+    ``period`` bars exist.
     """
     prev_close = df["close"].shift(1)
     tr_components = pd.concat(
@@ -40,7 +47,7 @@ def atr_series(df: pd.DataFrame, period: int = 14) -> pd.Series:
         axis=1,
     )
     true_range = tr_components.max(axis=1)
-    return true_range.rolling(period).mean().bfill()
+    return true_range.rolling(period, min_periods=1).mean()
 
 
 def latest_atr(df: pd.DataFrame, period: int = 14) -> Optional[float]:

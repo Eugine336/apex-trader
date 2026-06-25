@@ -313,7 +313,20 @@ class PositionSizer:
         actual_risk_pct = (max_loss / account_balance) * 100.0
         label = symbol or "trade"
 
-        if actual_risk_pct <= self.max_risk_pct_per_trade:
+        # The elevated ``max_risk_pct_per_trade`` tolerance exists ONLY because a
+        # genuine micro account ($5–$200) cannot trade below the 0.01 min lot.
+        # Above the micro threshold the account is large enough to size on
+        # target, so the min-lot tolerance must NOT exceed the engine's hard
+        # per-trade cap — otherwise min-lot inflation silently lets a normal
+        # account risk up to 5% when the engine only ever approved 2.5%.
+        is_micro = account_balance < self.micro_account_threshold_usd
+        engine_cap_pct = self._engine_cap * 100.0
+        ceiling_pct = (
+            self.max_risk_pct_per_trade if is_micro
+            else min(self.max_risk_pct_per_trade, engine_cap_pct)
+        )
+
+        if actual_risk_pct <= ceiling_pct:
             logger.info(
                 f"[PositionSizer] Micro-account mode: {label} using min lot {lots} "
                 f"at {actual_risk_pct:.1f}% risk (target ${risk_amount:.2f}, "
@@ -329,7 +342,7 @@ class PositionSizer:
         logger.warning(
             f"[PositionSizer] {label} skip: min lot {lots} risks "
             f"{actual_risk_pct:.1f}% (${max_loss:.2f}) — exceeds max "
-            f"{self.max_risk_pct_per_trade:.1f}% per-trade cap for "
+            f"{ceiling_pct:.1f}% per-trade cap for "
             f"${account_balance:.2f} account"
         )
         return 0.0, skip_mode

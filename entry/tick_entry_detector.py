@@ -62,6 +62,12 @@ class TickEntryDetector:
 
         self._pending: dict[str, PendingEntry] = {}
         self._triggered_zones: set[tuple[str, float, float]] = set()
+        # Zone identity for each pending entry, so a cancel can decide whether
+        # the zone should be re-armed (untraded) or stay consumed (filled).
+        self._pending_zone_key: dict[str, tuple[str, float, float]] = {}
+        # Zones touched but NOT traded, awaiting price to leave the band before
+        # they become eligible to re-trigger on a fresh re-approach.
+        self._rearm_watch: dict[tuple[str, float, float], EntryZone] = {}
         self._lock = threading.Lock()
 
     @property
@@ -99,6 +105,10 @@ class TickEntryDetector:
         pip_size = self._pip_size_lookup(symbol)
         proximity = self._config.zone_proximity_pips * pip_size
 
+        # Re-eligible any touched-but-untraded zone whose price has since left
+        # the band, so a fresh re-approach can trigger it again.
+        self._process_rearm_watch(symbol, tick, proximity)
+
         for zone in zones:
             # Tolerance-based key so an identically-priced band re-uses the same
             # dedup entry rather than slipping past raw float equality.
@@ -117,10 +127,21 @@ class TickEntryDetector:
 
             spread = abs(tick.ask - tick.bid)
             # Spread ceiling unified with EntryGate._check_spread (the
-            # authoritative check): max spread = max_spread_multiplier * 5 pips.
-            # Convert to price units here since this detector compares raw
-            # bid/ask price distance, not pips.
-            max_spread = self._config.max_spread_multiplier * 5.0 * pip_size
+            # authoritative check): max spread = max_spread_multiplier ×
+            # instrument typical spread (pips), converted to price units here
+            # since this detector compares raw bid/ask price distance. Falls
+            # back to a 5-pip basis when the instrument's typical spread is
+            # unknown.
+            typical_pips = 5.0
+            try:
+                from config import get_instrument
+
+                _ts = float(getattr(get_instrument(symbol), "typical_spread_pips", 0.0) or 0.0)
+                if _ts > 0:
+                    typical_pips = _ts
+            except Exception:
+                typical_pips = 5.0
+            max_spread = self._config.max_spread_multiplier * typical_pips * pip_size
             if spread > max_spread:
                 continue
 
@@ -136,7 +157,10 @@ class TickEntryDetector:
 
                 with self._lock:
                     self._pending[symbol] = pending
+                    self._pending_zone_key[symbol] = zone_key
                     self._mark_triggered(zone_key)
+                    # A fresh trigger supersedes any pending re-arm watch.
+                    self._rearm_watch.pop(zone_key, None)
 
                 logger.info(
                     "[tick-entry] {} zone touch: {} @ {:.5f} (zone {:.5f}–{:.5f})",
@@ -154,11 +178,40 @@ class TickEntryDetector:
         return None
 
     def cancel_pending(self, symbol: str, reason: str = "cancelled") -> None:
-        """Remove a pending entry for *symbol*."""
+        """Remove a pending entry for *symbol*.
+
+        When the entry was NOT taken (any reason other than ``"filled"``) the
+        zone is queued for re-arm: it becomes eligible to trigger again once
+        price leaves and later re-approaches the band. A ``"filled"`` zone stays
+        permanently consumed so a live position is never re-entered.
+        """
         with self._lock:
             removed = self._pending.pop(symbol, None)
+            zone_key = self._pending_zone_key.pop(symbol, None)
+            if (
+                removed is not None
+                and zone_key is not None
+                and reason != "filled"
+            ):
+                if len(self._rearm_watch) >= _MAX_TRIGGERED_ZONES:
+                    self._rearm_watch.clear()
+                self._rearm_watch[zone_key] = removed.zone
         if removed:
             logger.info("[tick-entry] {} pending cancelled: {}", symbol, reason)
+
+    def _process_rearm_watch(
+        self, symbol: str, tick: TickData, proximity: float,
+    ) -> None:
+        """Clear the dedup flag for any watched zone whose price has left the
+        band, so a fresh re-approach can re-trigger it."""
+        with self._lock:
+            keys = [k for k in self._rearm_watch if k[0] == symbol]
+            for key in keys:
+                zone = self._rearm_watch[key]
+                price = tick.ask if zone.direction == "LONG" else tick.bid
+                if not self._is_within_zone(price, zone, proximity):
+                    self._triggered_zones.discard(key)
+                    self._rearm_watch.pop(key, None)
 
     def mark_confirmed(self, symbol: str) -> None:
         """Mark a pending entry as confirmed (M1 passed)."""
@@ -182,6 +235,8 @@ class TickEntryDetector:
         """Clear all pending entries and triggered zone history."""
         with self._lock:
             self._pending.clear()
+            self._pending_zone_key.clear()
+            self._rearm_watch.clear()
             self._triggered_zones.clear()
 
     def _mark_triggered(self, zone_key: tuple[str, float, float]) -> None:

@@ -56,7 +56,7 @@ class TestATREquivalence:
             axis=1,
         )
         true_range = tr_components.max(axis=1)
-        expected = true_range.rolling(period).mean().bfill()
+        expected = true_range.rolling(period, min_periods=1).mean()
 
         pd.testing.assert_series_equal(result, expected, check_names=False)
 
