@@ -104,6 +104,7 @@ class MT5Connector(BaseConnector):
         max_tick_age_seconds: float = 120.0,
         max_slippage_pips: float = 0.0,
         min_rr_after_adjust: float = 1.5,
+        preserve_rr_after_adjust: bool = True,
     ):
         self._login = login
         self._password = password
@@ -121,6 +122,13 @@ class MT5Connector(BaseConnector):
         # approved R:R no longer exists. Reject the order if the post-adjustment
         # R:R falls below this floor rather than silently taking a worse trade.
         self._min_rr_after_adjust = float(min_rr_after_adjust)
+        # When the broker's minimum stop distance widens the SL, the reward leg
+        # (TP) is left where the sizer put it, collapsing the approved R:R. With
+        # this enabled (default), the TP is extended outward to restore the
+        # ORIGINAL R:R before the floor check rejects the order — extra reward
+        # only, never added risk — so a tick-size rounding can't kill a setup
+        # the entry pipeline already approved.
+        self._preserve_rr_after_adjust = bool(preserve_rr_after_adjust)
         # Tick-freshness limit comes straight from config (RiskConfig resolves
         # the MAX_TICK_AGE_SECONDS env override explicitly at the config layer).
         self._max_tick_age_seconds = float(max_tick_age_seconds)
@@ -414,6 +422,35 @@ class MT5Connector(BaseConnector):
             return max(1, pts)
         return self._deviation
 
+    @staticmethod
+    def _restore_tp_for_rr(
+        price: float,
+        sl: float,
+        tp: float,
+        is_buy: bool,
+        orig_rr: float,
+        digits: int,
+    ) -> float:
+        """Return a TP that restores ``orig_rr`` against the (widened) SL.
+
+        Extends the take-profit outward to ``adjusted_risk × orig_rr`` so a
+        broker minimum-stop adjustment that widened the SL cannot collapse the
+        pipeline-approved reward:risk. The TP is only ever pushed FURTHER from
+        price (more reward, never added risk); if the recomputed TP would be
+        nearer than the current one, the current TP is kept unchanged.
+        """
+        if orig_rr <= 0 or tp <= 0:
+            return tp
+        adj_risk = abs(price - sl)
+        if adj_risk <= 0:
+            return tp
+        target_reward = adj_risk * orig_rr
+        restored_tp = (price + target_reward) if is_buy else (price - target_reward)
+        restored_tp = round(restored_tp, digits)
+        if (is_buy and restored_tp > tp) or (not is_buy and restored_tp < tp):
+            return restored_tp
+        return tp
+
     def place_order(
         self,
         symbol: str,
@@ -567,6 +604,11 @@ class MT5Connector(BaseConnector):
         # Stops: enforce minimum SL/TP distance from entry price
         min_distance = self._effective_min_stop_distance(mapped, point, stops_level)
         if min_distance > 0:
+            # Capture the originally-approved R:R before any broker adjustment,
+            # so we can restore it if the minimum-stop floor widens the SL.
+            orig_risk = abs(price - sl)
+            orig_reward = abs(tp - price)
+            orig_rr = (orig_reward / orig_risk) if orig_risk > 0 else 0.0
             sl_distance = abs(price - sl)
             tp_distance = abs(tp - price)
             if sl_distance < min_distance:
@@ -585,6 +627,23 @@ class MT5Connector(BaseConnector):
                 )
                 tp = round(new_tp, digits)
                 request["tp"] = tp
+
+            # Restore the approved R:R after the SL was widened by the broker
+            # floor: extend the TP outward to ``adjusted_risk × orig_rr``. This
+            # only ever increases reward (never moves TP closer / adds risk) and
+            # keeps a tick-size rounding from collapsing a pipeline-approved R:R.
+            if self._preserve_rr_after_adjust and orig_rr > 0 and tp > 0:
+                restored_tp = self._restore_tp_for_rr(
+                    price, sl, tp, is_buy, orig_rr, digits
+                )
+                if restored_tp != tp:
+                    logger.info(
+                        "[MT5] {} {} — restoring approved R:R {:.2f} after SL "
+                        "widening: TP {:.5f} → {:.5f}",
+                        mapped, direction, orig_rr, tp, restored_tp,
+                    )
+                    tp = restored_tp
+                    request["tp"] = tp
 
             # R:R viability after stop adjustment. The position sizer approved
             # the trade on the ORIGINAL (tighter) SL; once the broker minimum

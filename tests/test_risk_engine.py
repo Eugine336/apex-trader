@@ -570,3 +570,56 @@ def test_reconcile_applies_large_swing_when_corroborated(engine):
     assert engine.balance == 10_000.0  # first read held back
     engine.reconcile_balance(41.0)
     assert engine.balance == 41.0  # corroborated → synced
+
+
+# ── reconcile_platform_balances — per-platform independence ───────────────
+
+
+def test_platform_balances_tracked_independently(engine):
+    engine.reconcile_platform_balances({"mt5": 28.88, "deriv": 10_026.96})
+    assert engine.get_platform_balance("mt5") == 28.88
+    assert engine.get_platform_balance("deriv") == 10_026.96
+    # Pooled balance is the sum of the independent legs.
+    assert engine.balance == pytest.approx(28.88 + 10_026.96)
+
+
+def test_disconnected_platform_retains_last_known_balance(engine):
+    engine.reconcile_platform_balances({"mt5": 28.88, "deriv": 10_026.96})
+    pooled = engine.balance
+    # Deriv drops out of the read entirely (disconnected). Its last-known
+    # balance must persist — never replaced by MT5's or zeroed.
+    engine.reconcile_platform_balances({"mt5": 28.88})
+    assert engine.get_platform_balance("deriv") == 10_026.96
+    assert engine.balance == pytest.approx(pooled)
+
+
+def test_platform_balances_do_not_collide_on_reconnect(engine):
+    # The exact oscillation from the incident: MT5 real ($28.88) and Deriv demo
+    # ($10,026.96) must never be reconciled against each other, so neither leg
+    # ever sees an "implausible swing" caused by the other platform's value.
+    engine.reconcile_platform_balances({"mt5": 28.88, "deriv": 10_026.96})
+    # Deriv reconnects/drops repeatedly; MT5 stays put.
+    for _ in range(3):
+        engine.reconcile_platform_balances({"mt5": 28.88})  # deriv offline
+        engine.reconcile_platform_balances({"mt5": 28.88, "deriv": 10_026.96})
+    assert engine.get_platform_balance("mt5") == 28.88
+    assert engine.get_platform_balance("deriv") == 10_026.96
+    assert engine.balance == pytest.approx(28.88 + 10_026.96)
+
+
+def test_platform_swing_requires_per_platform_corroboration(engine):
+    engine.reconcile_platform_balances({"mt5": 10_000.0})
+    # A single-cycle crash on MT5 alone is held back until corroborated.
+    engine.reconcile_platform_balances({"mt5": 40.0})
+    assert engine.get_platform_balance("mt5") == 10_000.0
+    # Second corroborating read applies it.
+    engine.reconcile_platform_balances({"mt5": 41.0})
+    assert engine.get_platform_balance("mt5") == 41.0
+
+
+def test_platform_balances_ignore_none_and_negative(engine):
+    engine.reconcile_platform_balances({"mt5": 100.0})
+    engine.reconcile_platform_balances({"mt5": None, "deriv": -5.0})
+    assert engine.get_platform_balance("mt5") == 100.0
+    assert engine.get_platform_balance("deriv") is None
+

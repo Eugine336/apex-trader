@@ -97,6 +97,12 @@ class RiskEngine:
         # Pending broker balance awaiting a second corroborating read before an
         # implausibly large single-cycle swing is trusted (see reconcile_balance).
         self._balance_resync_candidate: float | None = None
+        # Per-platform balances, tracked INDEPENDENTLY. MT5 and Deriv balances
+        # must never collide or substitute for one another: a disconnected leg
+        # retains its last value here so the pooled balance does not oscillate.
+        # Each platform carries its own swing-corroboration candidate.
+        self._platform_balances: dict[str, float] = {}
+        self._platform_resync_candidate: dict[str, float] = {}
 
         self.drawdown_guard = DrawdownGuard(
             base_risk_pct=self.risk_cfg.risk_per_trade_pct / 100.0,
@@ -737,6 +743,71 @@ class RiskEngine:
                 )
         self._balance_resync_candidate = None
         self.balance = broker_balance
+
+    def reconcile_platform_balances(
+        self,
+        platform_balances: dict[str, float] | None,
+        max_jump_pct: float = 50.0,
+    ) -> None:
+        """Sync per-platform balances independently, then pool the total.
+
+        Each platform's balance is reconciled against its OWN previous value —
+        never against another platform's — so MT5 (real) and Deriv (demo)
+        balances can never collide or substitute for one another. A platform
+        absent from this read retains its last-known balance rather than
+        dropping out of the pooled total. The implausible-swing guard is
+        applied per platform: a single-cycle jump beyond ``max_jump_pct`` for a
+        given platform must be corroborated by a second consecutive read for
+        that same platform before it is applied.
+
+        ``self.balance`` is set to the sum of the (independently maintained)
+        per-platform balances, keeping the pooled figure stable even while one
+        leg reconnects.
+        """
+        if not platform_balances:
+            return
+        for platform, raw in platform_balances.items():
+            if raw is None:
+                continue
+            try:
+                bal = float(raw)
+            except (TypeError, ValueError):
+                continue
+            if bal < 0:
+                continue
+            prev = self._platform_balances.get(platform)
+            if prev and prev > 0 and bal > 0:
+                divergence_pct = abs(prev - bal) / bal * 100.0
+                if divergence_pct >= max_jump_pct:
+                    candidate = self._platform_resync_candidate.get(platform)
+                    corroborated = (
+                        candidate is not None
+                        and candidate > 0
+                        and abs(candidate - bal) / bal * 100.0 < max_jump_pct
+                    )
+                    if not corroborated:
+                        self._platform_resync_candidate[platform] = bal
+                        logger.warning(
+                            "[RiskEngine] {} balance swing {:.2f}% rejected — "
+                            "internal ${:,.2f} vs broker ${:,.2f}; awaiting a "
+                            "second corroborating read before resyncing",
+                            platform, divergence_pct, prev, bal,
+                        )
+                        continue
+                    logger.warning(
+                        "[RiskEngine] {} balance swing {:.2f}% corroborated over "
+                        "two reads — syncing to broker ${:,.2f}",
+                        platform, divergence_pct, bal,
+                    )
+            self._platform_resync_candidate.pop(platform, None)
+            self._platform_balances[platform] = bal
+        pooled = sum(self._platform_balances.values())
+        if pooled > 0:
+            self.balance = pooled
+
+    def get_platform_balance(self, platform: str) -> float | None:
+        """Last-known independent balance for a single platform, if tracked."""
+        return self._platform_balances.get(platform)
 
     # Hard ceiling on per-trade risk regardless of any scaling factor.
     _RISK_PCT_CAP = 0.025
