@@ -21,7 +21,12 @@ def _make_zone(expires_in_seconds=600) -> EntryZone:
 
 
 def _defaults(**overrides):
-    """Valid default kwargs for validate_all."""
+    """Valid default kwargs for validate_all.
+
+    Includes Phase 3 probabilities so the default-on EV gate passes for the
+    bullish LONG setup (long_probability dominant). Tests that exercise the
+    legacy alignment gate construct the gate with ``ev_gate_enabled=False``.
+    """
     base = dict(
         symbol="EURUSD", direction="LONG",
         entry_price=1.0845, stop_loss=1.0835,
@@ -31,6 +36,7 @@ def _defaults(**overrides):
         is_instrument_known=True, is_market_open=True,
         is_session_active=True, is_news_clear=True,
         is_drawdown_ok=True,
+        long_probability=0.65, short_probability=0.15,
     )
     base.update(overrides)
     return base
@@ -52,7 +58,7 @@ class TestEntryGateAllPass:
             "instrument_known", "price_finite", "market_open",
             "session_active", "spread_ok", "news_clear",
             "drawdown_ok", "score_minimum", "risk_reward_ok",
-            "zone_valid", "alignment",
+            "zone_valid", "ev_gate",
         }
         assert names == expected
 
@@ -133,10 +139,15 @@ class TestEntryGateScore:
 
 
 class TestEntryGateAlignment:
-    """Strongly counter-trend entries are rejected at the gate (Bug #3)."""
+    """Strongly counter-trend entries are rejected by the legacy alignment gate.
+
+    These exercise the legacy directional gate, so they pin
+    ``ev_gate_enabled=False``; the EV gate (default) is covered in
+    tests/test_ev_gate.py.
+    """
 
     def test_strong_opposition_rejected(self):
-        gate = EntryGate()  # default min_htf_alignment = -0.5
+        gate = EntryGate(config=EntryConfig(ev_gate_enabled=False))  # min_htf_alignment = -0.5
         passed, results = gate.validate_all(**_defaults(alignment=-0.93))
         assert passed is False
         align = next(r for r in results if r.gate_name == "alignment")
@@ -144,24 +155,24 @@ class TestEntryGateAlignment:
         assert "Alignment" in align.reason
 
     def test_mild_opposition_allowed(self):
-        gate = EntryGate()
+        gate = EntryGate(config=EntryConfig(ev_gate_enabled=False))
         passed, _ = gate.validate_all(**_defaults(alignment=-0.30))
         assert passed is True
 
     def test_support_allowed(self):
-        gate = EntryGate()
+        gate = EntryGate(config=EntryConfig(ev_gate_enabled=False))
         passed, _ = gate.validate_all(**_defaults(alignment=0.80))
         assert passed is True
 
     def test_none_alignment_permissive(self):
-        gate = EntryGate()
+        gate = EntryGate(config=EntryConfig(ev_gate_enabled=False))
         passed, results = gate.validate_all(**_defaults(alignment=None))
         assert passed is True
         align = next(r for r in results if r.gate_name == "alignment")
         assert align.passed
 
     def test_floor_disabled_when_config_none(self):
-        cfg = EntryConfig()
+        cfg = EntryConfig(ev_gate_enabled=False)
         cfg.min_htf_alignment = None  # type: ignore[assignment]
         gate = EntryGate(config=cfg)
         passed, _ = gate.validate_all(**_defaults(alignment=-0.99))

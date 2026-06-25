@@ -137,4 +137,35 @@ class EntryConfig:
     # move — not just drift. Combined with the M5 structural trend check
     # so the flip has both real-time price confirmation AND structural backing.
     tick_momentum_flip_threshold: float = 0.30
+    # ── Expected-Value gate (Phase 4 — Opportunity Engine) ────────────────
+    # APEX is opportunistic: the MARKET decides the side. Instead of asking
+    # "does the trade align with the HTF bias?" (a hard directional veto that
+    # blocked every counter-trend idea), the gate asks "given the probabilistic
+    # evidence and the zone's reward:risk, is the expected value positive
+    # enough to take this trade?". EV = p_win × R:R − p_loss, where p_win /
+    # p_loss come from the Phase 3 probabilistic bias (long/short probability)
+    # mapped to the trade direction.
+    #
+    # Minimum EV in R-multiples to take a trade. 0.3R means the probability-
+    # weighted outcome must exceed 0.3× the risk. Replaces the alignment floor
+    # as the directional gate.
+    min_entry_ev: float = 0.3
+    # Additional EV premium a COUNTER-TREND trade (direction opposes the
+    # probabilistic majority) must clear on top of ``min_entry_ev``. A
+    # counter-trend idea fights the predominant structure flow, so it must show
+    # a stronger probability-weighted edge before it is taken.
+    counter_trend_ev_premium: float = 0.1
+    # When True, the EV gate replaces the alignment-floor gate as the entry
+    # plane's directional check (the opportunistic default). Set False to revert
+    # to the legacy ``min_htf_alignment`` floor gate.
+    ev_gate_enabled: bool = True
+    # Counter-trend conviction multiplier used WHEN the EV gate is enabled. The
+    # legacy ``counter_trend_conviction_mult`` (0.70) was tuned to filter
+    # geometry-only counter-trend setups at the score≥85 gate BEFORE any
+    # directional EV check existed. With the EV gate now handling directional
+    # risk explicitly, the conviction haircut is softened to 0.85 so a
+    # counter-trend FVG+OB (100 × 0.85 = 85) can still clear the score gate and
+    # reach the EV gate, which decides on its merits rather than blocking it on
+    # geometry alone.
+    counter_trend_conviction_mult_ev: float = 0.85
     coalesce_hz: float = 15.0

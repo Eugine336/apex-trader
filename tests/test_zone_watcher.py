@@ -236,11 +236,13 @@ class TestCounterTrendConvictionPenalty:
             order_blocks={"H1": [ob]},
             structure={"H4": _make_structure(Trend.BULLISH)},
         )
-        zones = extract_entry_zones(model, EntryConfig())
+        zones = extract_entry_zones(model, EntryConfig(ev_gate_enabled=False))
         overlap = [z for z in zones if z.zone_type == ZoneType.FVG_OB_OVERLAP]
         assert len(overlap) == 1
         assert overlap[0].is_counter_trend is True
-        # 100 * 0.70 = 70 → below the 85 score gate.
+        # Legacy gate: 100 * 0.70 = 70 → below the 85 score gate. (Under the
+        # default EV gate the haircut is softened to 0.85 → covered in
+        # tests/test_ev_gate.py.)
         assert overlap[0].conviction == 70
 
     def test_with_trend_overlap_unpenalised(self):
@@ -270,7 +272,7 @@ class TestCounterTrendConvictionPenalty:
             order_blocks={"H1": [ob]},
             structure={"H4": _make_structure(Trend.BULLISH)},
         )
-        cfg = EntryConfig(counter_trend_conviction_mult=0.5)
+        cfg = EntryConfig(counter_trend_conviction_mult=0.5, ev_gate_enabled=False)
         zones = extract_entry_zones(model, cfg)
         overlap = [z for z in zones if z.zone_type == ZoneType.FVG_OB_OVERLAP]
         assert overlap[0].conviction == 50

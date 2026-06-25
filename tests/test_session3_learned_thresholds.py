@@ -175,7 +175,7 @@ class _FakeTuner:
 
 class TestEntryGateHtfAlignmentLearned:
     def test_offset_lowers_floor_admits_counter_htf(self):
-        cfg = EntryConfig(min_htf_alignment=-0.5)
+        cfg = EntryConfig(min_htf_alignment=-0.5, ev_gate_enabled=False)
         # Base floor -0.5 rejects alignment -0.6; a -0.2 loosening offset lowers
         # the floor to -0.7, so the same setup now passes.
         base = EntryGate(config=cfg)
@@ -188,7 +188,10 @@ class TestEntryGateHtfAlignmentLearned:
         assert align.passed is True
 
     def test_offset_never_below_permissive_floor(self):
-        cfg = EntryConfig(min_htf_alignment=-0.5, min_htf_alignment_floor=-0.8)
+        cfg = EntryConfig(
+            min_htf_alignment=-0.5, min_htf_alignment_floor=-0.8,
+            ev_gate_enabled=False,
+        )
         # An out-of-envelope huge loosening can't drop the floor below -0.8, so a
         # fully-opposed setup (-0.95) is still rejected.
         gate = EntryGate(config=cfg, gate_tuner=_FakeTuner(-50.0))
@@ -197,14 +200,14 @@ class TestEntryGateHtfAlignmentLearned:
         assert align.passed is False
 
     def test_cold_start_offset_zero_is_base_behaviour(self):
-        cfg = EntryConfig(min_htf_alignment=-0.5)
+        cfg = EntryConfig(min_htf_alignment=-0.5, ev_gate_enabled=False)
         tuned = EntryGate(config=cfg, gate_tuner=_FakeTuner(0.0))
         # offset 0 → identical to the no-tuner gate.
         assert tuned.validate_all(**_defaults(alignment=-0.6))[0] is False
         assert tuned.validate_all(**_defaults(alignment=-0.3))[0] is True
 
     def test_no_tuner_uses_base_floor(self):
-        cfg = EntryConfig(min_htf_alignment=-0.5)
+        cfg = EntryConfig(min_htf_alignment=-0.5, ev_gate_enabled=False)
         gate = EntryGate(config=cfg)  # no tuner
         passed, _ = gate.validate_all(**_defaults(alignment=-0.6))
         assert passed is False
