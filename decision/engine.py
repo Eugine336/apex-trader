@@ -512,6 +512,19 @@ class DecisionEngine:
             hold_reason_parts.append(f"structure intact ({sa.structure_integrity:.2f})")
         if sa.profit_state > 0:
             hold_score += min(sa.profit_state * 0.05, 0.15)
+        elif sa.profit_state < 0:
+            # Live loss penalty — holding a losing position must be justified,
+            # not free. HOLD previously only ever GAINED (positive profit / HTF
+            # support) and never lost ground for a deepening loss, so a position
+            # could bleed unchallenged between (frozen) candle-close reads while
+            # HOLD stayed pinned above CLOSE. The live P&L (the one dimension
+            # that refreshes every tick) now erodes HOLD as the loss deepens, so
+            # the verdict can move without waiting for the next candle.
+            loss_penalty = min(abs(sa.profit_state) * 0.15, 0.25)
+            hold_score -= loss_penalty
+            hold_reason_parts.append(
+                f"loss penalty ({sa.profit_state:.1f}R) -{loss_penalty:.2f}"
+            )
         if sa.momentum > 0.1:
             hold_score += sa.momentum * 0.10
 
@@ -536,10 +549,15 @@ class DecisionEngine:
         if sa.structure_integrity < 0.25:
             close_score += (0.25 - sa.structure_integrity) * 1.0
             close_reason_parts.append(f"structure broken ({sa.structure_integrity:.2f})")
-        if sa.profit_state < -0.5 and sa.tf_alignment < 0:
+        if sa.profit_state < -0.5:
+            # Loss-response: a meaningful loss adds CLOSE pressure regardless of
+            # the (often stale) HTF alignment. The prior ``and tf_alignment < 0``
+            # veto meant a bleeding trade with a mildly positive — and frozen —
+            # alignment never accrued any loss-driven close pressure, so it rode
+            # to the broker stop. The loss is live; it should be heard on its own.
             close_score += min(abs(sa.profit_state) * 0.10, 0.20)
-            close_reason_parts.append(f"in loss ({sa.profit_state:.1f}R) against trend")
-        if sa.momentum < -0.3 and sa.profit_state < 0:
+            close_reason_parts.append(f"in loss ({sa.profit_state:.1f}R)")
+        if sa.momentum <= -0.3 and sa.profit_state < 0:
             close_score += abs(sa.momentum) * 0.15
             close_reason_parts.append(f"adverse momentum ({sa.momentum:+.2f})")
         # Active loss-response: a losing trade whose read is no longer clearly
@@ -547,13 +565,30 @@ class DecisionEngine:
         # broker stop. Engages only once structure/momentum stops supporting the
         # trade, and scales with how deep the loss is — so a healthy pullback in
         # an intact trend (structure ≥ 0.5 and momentum ≥ 0) is still held.
-        if sa.profit_state < -0.6 and (sa.structure_integrity < 0.5 or sa.momentum < 0.0):
+        if sa.profit_state < -0.3 and (sa.structure_integrity < 0.5 or sa.momentum < 0.0):
             depth = min(abs(sa.profit_state), 2.0)
             close_score += min(0.10 + (depth - 0.6) * 0.25, 0.45)
             close_reason_parts.append(
                 f"active loss-response ({sa.profit_state:.1f}R, "
                 f"structure={sa.structure_integrity:.2f}, momentum={sa.momentum:+.2f})"
             )
+        # Live price-vs-structure (sub-candle): when price has traded through the
+        # nearest supporting swing against the position, the thesis structure is
+        # breaking NOW — add bounded CLOSE pressure scaled by the break depth,
+        # without waiting for the slow candle-close structure read to catch up.
+        pvs = float(getattr(sa, "price_vs_structure", 0.0) or 0.0)
+        if pvs < 0.0:
+            close_score += min(abs(pvs) * 0.30, 0.30)
+            close_reason_parts.append(f"price broke structure ({pvs:+.2f})")
+        # Live tick momentum (sub-candle): rapid adverse price movement against a
+        # non-winning position adds bounded CLOSE pressure. This is the live
+        # pulse the (M1-close) momentum term cannot see between candle closes;
+        # it never fires on a winner (profit_state ≥ 0) so it cannot cut a trade
+        # that is currently working.
+        tick_mom = float(getattr(sa, "tick_momentum", 0.0) or 0.0)
+        if tick_mom <= -0.3 and sa.profit_state < 0:
+            close_score += min(abs(tick_mom) * 0.20, 0.20)
+            close_reason_parts.append(f"adverse tick momentum ({tick_mom:+.2f})")
         if sa.urgency > 0.8:
             close_score += sa.urgency * 0.20
             close_reason_parts.append(f"high urgency ({sa.urgency:.2f})")

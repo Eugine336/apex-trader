@@ -60,6 +60,7 @@ class EntryGate:
         current_spread_pips: float,
         zone: Optional[EntryZone] = None,
         alignment: Optional[float] = None,
+        posture: str = "",
         is_instrument_known: bool = True,
         is_market_open: bool = True,
         is_session_active: bool = True,
@@ -84,7 +85,7 @@ class EntryGate:
             self._check_news(symbol, is_news_clear),
             self._check_drawdown(is_drawdown_ok),
             self._check_score(symbol, score),
-            self._check_alignment(symbol, direction, alignment),
+            self._check_alignment(symbol, direction, alignment, posture),
             self._check_risk_reward(entry_price, stop_loss, tp1, tp2, direction),
             self._check_zone_valid(zone, utc_now),
         ]
@@ -178,6 +179,7 @@ class EntryGate:
 
     def _check_alignment(
         self, symbol: str, direction: str, alignment: Optional[float],
+        posture: str = "",
     ) -> GateResult:
         """Reject entries that strongly oppose the higher-timeframe bias.
 
@@ -186,6 +188,12 @@ class EntryGate:
         almost immediately by management's HTF structure read, so taking it
         only pays spread twice. ``None`` (no alignment supplied) is permissive
         so callers that cannot compute it keep prior behaviour.
+
+        ``posture`` is the situation read (e.g. ``"MIXED"``). A MIXED posture has
+        no clear directional edge, so its alignment bar is RAISED to require
+        genuine HTF support (≥ +0.30) rather than merely "not strongly opposed"
+        — a low-conviction setup with a weakly positive but split HTF stack (the
+        slow-bleed loss pattern) no longer sails through the permissive floor.
         """
         min_align = getattr(self._config, "min_htf_alignment", None)
         if min_align is None or alignment is None:
@@ -207,6 +215,12 @@ class EntryGate:
                 logger.debug(
                     "[entry-gate] gate-tuner htf_alignment offset unavailable: {}", exc,
                 )
+        # MIXED posture: a no-clear-edge setup must show real HTF support, not
+        # just escape the permissive floor. Layered ON TOP of the tuner result
+        # (max of the two) so a learned loosening can never drop a MIXED entry
+        # below the +0.30 conviction bar.
+        if str(posture or "").upper() == "MIXED":
+            min_align = max(min_align, 0.30)
         if alignment < min_align:
             return GateResult(
                 False, "alignment",

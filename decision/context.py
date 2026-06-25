@@ -86,6 +86,18 @@ class TradeContext:
     m5_confidence: float = 0.0
     m5_event: str = "NONE"
 
+    # ── Live tick momentum (sub-candle) ──────────────────────────────────
+    # Rate of adverse/favourable price movement derived from the recent live
+    # tick stream, signed relative to the trade direction in [-1, +1]:
+    #   +1 = price moving rapidly in favour of the position,
+    #    0 = flat / no recent tick pressure,
+    #   -1 = price moving rapidly against the position.
+    # Candle-derived ``momentum`` only refreshes on M1 close (stale for up to a
+    # minute); this is the live pulse the decision engine reads between closes.
+    # Maintained by the main loop from the per-symbol tick history; 0.0 when no
+    # recent ticks are available (no pressure applied).
+    tick_momentum: float = 0.0
+
     # ── Fast-cluster opposition streak (PR10) ────────────────────────────
     # Consecutive management cycles the fast-evidence cluster (momentum + M1
     # alignment) has opposed the open position. Maintained by the main loop

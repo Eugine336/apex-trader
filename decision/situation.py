@@ -116,6 +116,26 @@ class SituationAssessment:
     profit_state: float = 0.0
     """R-multiple of the trade.  Negative = in loss."""
 
+    price_vs_structure: float = 0.0
+    """
+    Live price relative to the key swing structure that supports the trade,
+    in [-1, 0]:
+      0.0 = price respecting structure (no break against the trade).
+     -1.0 = price has decisively broken the nearest supporting swing against
+            the trade direction (thesis structurally invalidated).
+    Computed from the live price vs the TradeContext swing levels (NOT an entry
+    zone's invalidation_level, which does not exist in the management path), so
+    a structural break is seen the moment price trades through it rather than on
+    the next slow candle close.
+    """
+
+    tick_momentum: float = 0.0
+    """
+    Live sub-candle momentum signed for the trade, in [-1, +1]: negative = price
+    moving against the position right now. Mirrors ``TradeContext.tick_momentum``
+    — a live pulse alongside the (M1-close) ``momentum`` dimension.
+    """
+
     urgency: float = 0.0
     """
     0.0 = no time pressure.
@@ -236,6 +256,12 @@ class SituationEngine:
             evidence.append(f"profit +{sa.profit_state:.1f}R")
         elif sa.profit_state < -0.3:
             evidence.append(f"loss {sa.profit_state:.1f}R")
+
+        # ── 4b. Live price-vs-structure + tick momentum ──────────────────
+        # Two live (sub-candle) reads so the in-trade thesis is verified against
+        # what price is doing NOW, not only what the last closed candle showed.
+        sa.price_vs_structure = self._compute_price_vs_structure(ctx, evidence)
+        sa.tick_momentum = max(-1.0, min(1.0, float(getattr(ctx, "tick_momentum", 0.0) or 0.0)))
 
         # ── 5. Urgency ──────────────────────────────────────────────────
         sa.urgency = self._compute_urgency(ctx, evidence, sa.urgency_components)
@@ -530,6 +556,78 @@ class SituationEngine:
         )
         val = confidence if aligned else -confidence
         return max(-1.0, min(1.0, val))
+
+    def _compute_price_vs_structure(
+        self, ctx: TradeContext, evidence: list[str],
+    ) -> float:
+        """Live price vs the swing structure supporting the trade → [-1, 0].
+
+        For a long the supporting structure is the swing lows beneath entry; for
+        a short it is the swing highs above. When live price has traded through
+        the nearest such level (against the trade), the thesis structure is
+        breaking — returns a negative signal scaled by how far through it is
+        relative to the trade's own risk distance (entry → current_sl). Returns
+        0.0 when price still respects structure or the inputs are unavailable.
+
+        Uses ``TradeContext`` swing levels and ``current_sl`` only — deliberately
+        NOT an entry zone's ``invalidation_level`` (that object does not exist in
+        the management path).
+        """
+        price = float(getattr(ctx, "current_price", 0.0) or 0.0)
+        if price <= 0.0:
+            return 0.0
+        is_long = ctx.is_long
+        entry = float(getattr(ctx, "entry_price", 0.0) or 0.0)
+
+        # Price-scale of one unit of risk: entry → stop distance. Falls back to a
+        # small fraction of price so the read still works before an SL is known.
+        sl = float(getattr(ctx, "current_sl", 0.0) or 0.0)
+        risk_dist = abs(entry - sl) if (entry > 0 and sl > 0) else 0.0
+        if risk_dist <= 0.0:
+            risk_dist = price * 0.001
+
+        # Gather the supporting swing levels for this side.
+        levels: list[float] = []
+        for hi, lo in (
+            (ctx.d1_swing_high, ctx.d1_swing_low),
+            (ctx.h4_swing_high, ctx.h4_swing_low),
+            (ctx.h1_swing_high, ctx.h1_swing_low),
+        ):
+            lvl = lo if is_long else hi
+            if lvl is None:
+                continue
+            try:
+                lvl = float(lvl)
+            except (TypeError, ValueError):
+                continue
+            # Only levels that were actually supporting the trade matter: a
+            # swing BELOW entry for a long, ABOVE entry for a short.
+            if entry > 0:
+                if is_long and lvl >= entry:
+                    continue
+                if (not is_long) and lvl <= entry:
+                    continue
+            levels.append(lvl)
+
+        if not levels:
+            return 0.0
+
+        # The nearest supporting level price would break first.
+        if is_long:
+            support = max(levels)              # highest swing low beneath
+            breach = (support - price) / risk_dist if price < support else 0.0
+        else:
+            support = min(levels)              # lowest swing high above
+            breach = (price - support) / risk_dist if price > support else 0.0
+
+        if breach <= 0.0:
+            return 0.0
+        signal = -min(breach, 1.0)
+        evidence.append(
+            f"price broke {'support' if is_long else 'resistance'} "
+            f"{support:.5f} ({signal:+.2f})"
+        )
+        return signal
 
     def _compute_tf_alignment(
         self, ctx: TradeContext, evidence: list[str],

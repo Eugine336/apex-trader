@@ -18,6 +18,7 @@ const STAGE_LABELS = {
   governor: "Governor",
   planner: "Planner",
   risk_stack: "Risk Stack",
+  management: "Management",
 };
 
 function stageLabel(s) {
