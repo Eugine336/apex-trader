@@ -2144,6 +2144,13 @@ class EventDrivenSystem:
         # external-close reconciliation path (_reconcile_external_closes).
         self._closed_tickets: dict[str, float] = {}
         self._closed_tickets_lock = threading.Lock()
+        # Running count of trades closed through the learning feedback path.
+        # Seeded from persisted history at startup (_seed_learning_counters)
+        # and incremented on every close so the periodic learning-recompute
+        # cadence (counterfactual / signal-discovery / interaction / behavior
+        # maybe_recompute, all gated on TuneContext.total_trades) actually
+        # fires instead of being pinned off by a hardcoded zero.
+        self._closed_trade_count: int = 0
         # Last-seen open book for external-close detection:
         # ticket -> {symbol, direction, platform}.
         self._known_open: dict[str, dict] = {}
@@ -2792,6 +2799,11 @@ class EventDrivenSystem:
         # watchdog reconcile (which could be after the first trade).
         self._seed_broker_truth()
 
+        # Seed the closed-trade counter from persisted attribution history so
+        # the periodic learning recompute (gated on total_trades) reflects the
+        # full track record after a restart instead of re-warming from zero.
+        self._seed_learning_counters()
+
         symbols = list(INSTRUMENT_REGISTRY.keys())
         for sym in symbols:
             self._candle_detector.register(sym)
@@ -2972,6 +2984,37 @@ class EventDrivenSystem:
                         seeded.add(acct)
             except Exception as exc:
                 logger.debug("[startup] account-risk balance seed failed: {}", exc)
+
+    def _seed_learning_counters(self) -> None:
+        """Seed the running closed-trade counter from persisted history.
+
+        ``self._closed_trade_count`` drives the ``TuneContext.total_trades``
+        the close path hands to the TunerAgent, which forwards it to every
+        periodic ``maybe_recompute`` (counterfactual attribution, signal /
+        interaction / behavior discovery). Those recomputes gate on a
+        ``total_trades >= min_trades`` floor, so without a seed the system
+        would have to re-accumulate the floor in fresh closes after every
+        restart before any recompute fired again. The counterfactual store
+        records one attribution row per opened trade and is the most direct
+        persisted proxy for "trades the system has closed". Best-effort.
+        """
+        ctx = self._ctx
+        if ctx is None:
+            return
+        engine = getattr(ctx, "counterfactual_engine", None)
+        if engine is None:
+            return
+        try:
+            seeded = int(engine.count_closed_trades())
+            if seeded > 0:
+                self._closed_trade_count = seeded
+                logger.info(
+                    "[event-driven] learning counter seeded — {} closed trade(s) "
+                    "in persisted attribution history",
+                    seeded,
+                )
+        except Exception as exc:
+            logger.debug("[startup] learning-counter seed failed: {}", exc)
 
     def _restore_governor_state(self) -> None:
         ctx = self._ctx
@@ -6913,6 +6956,87 @@ class EventDrivenSystem:
 
     # ── Trade close feedback chain ───────────────────────────────────
 
+    def _build_open_attribution(
+        self, symbol: str, direction: str, order_id: Any, wm: Any,
+    ) -> Any:
+        """Build the entry-time decision snapshot for counterfactual replay.
+
+        The leave-one-out attribution (``CounterfactualEngine``) re-runs the
+        EXACT consensus math the live system used with one module removed, so
+        it needs the actual vote panel plus the consensus thresholds and ranker
+        kwargs that were in force at entry. Previously the snapshot captured
+        only ``trade_id/pair/direction/timestamp`` — leaving ``votes`` empty —
+        which made every module classify as ABSENT and the whole attribution
+        inert (an orphaned data path). This captures the published per-module
+        votes from the WorldModel together with the live consensus + ranker
+        config so the replay is faithful.
+        """
+        from adaptive.counterfactual import TradeAttribution
+
+        votes_payload: list[dict] = []
+        try:
+            for v in (wm.votes_list() if wm is not None else []):
+                d = str(getattr(v, "direction", "") or "")
+                votes_payload.append({
+                    "module": str(getattr(v, "module", "") or ""),
+                    "direction": d,
+                    "confidence": float(getattr(v, "confidence", 0.0) or 0.0),
+                    "weight": float(getattr(v, "weight", 0.0) or 0.0),
+                })
+        except Exception as exc:
+            logger.debug("[counterfactual] vote snapshot failed: {}", exc)
+
+        thresholds: dict = {}
+        cc = getattr(self._config, "consensus", None)
+        if cc is not None:
+            thresholds = {
+                "min_net_score": float(getattr(cc, "min_net_score", 1.5)),
+                "min_agreement": float(getattr(cc, "min_agreement", 0.55)),
+                "high_authority_modules": list(
+                    getattr(cc, "high_authority_modules", []) or []
+                ),
+                "high_authority_oppose_confidence": float(
+                    getattr(cc, "high_authority_oppose_confidence", 0.6)
+                ),
+                "min_contributors": int(getattr(cc, "min_contributors", 1) or 1),
+            }
+
+        ranker_kwargs: dict = {}
+        rc = getattr(self._config, "opportunity_ranker", None)
+        if rc is not None:
+            ranker_kwargs = {
+                "execute": bool(getattr(rc, "execute", False)),
+                "rescue_neutral_consensus": bool(
+                    getattr(rc, "rescue_neutral_consensus", False)
+                ),
+                "scalp_modules": list(getattr(rc, "scalp_modules", []) or []),
+                "swing_modules": list(getattr(rc, "swing_modules", []) or []),
+                "scalp_reward_risk": float(getattr(rc, "scalp_reward_risk", 1.5)),
+                "swing_reward_risk": float(getattr(rc, "swing_reward_risk", 2.5)),
+                "base_win_rate": float(getattr(rc, "base_win_rate", 0.40)),
+                "confidence_win_rate_gain": float(
+                    getattr(rc, "confidence_win_rate_gain", 0.40)
+                ),
+                "min_expected_value": float(getattr(rc, "min_expected_value", 0.0)),
+                "min_cluster_confidence": float(
+                    getattr(rc, "min_cluster_confidence", 0.0)
+                ),
+                "min_cluster_contributors": int(
+                    getattr(rc, "min_cluster_contributors", 1) or 1
+                ),
+            }
+
+        return TradeAttribution(
+            trade_id=str(order_id),
+            pair=symbol,
+            direction=direction,
+            timestamp_open=_time.time(),
+            votes=votes_payload,
+            consensus_direction=direction,
+            thresholds=thresholds,
+            ranker_kwargs=ranker_kwargs,
+        )
+
     def _on_order_filled(
         self,
         symbol: str,
@@ -6988,13 +7112,8 @@ class EventDrivenSystem:
         # CounterfactualEngine — snapshot vote panel at open for leave-one-out replay
         if ctx.counterfactual_engine is not None and order_id:
             try:
-                from adaptive.counterfactual import TradeAttribution
-                ta = TradeAttribution(
-                    trade_id=str(order_id),
-                    pair=symbol,
-                    direction=direction,
-                    timestamp_open=_time.time(),
-                )
+                wm = self._wm_store.get(symbol)
+                ta = self._build_open_attribution(symbol, direction, order_id, wm)
                 ctx.counterfactual_engine.record_open(ta)
             except Exception as exc:
                 logger.debug("[post-fill] CounterfactualEngine open record failed: {}", exc)
@@ -7269,8 +7388,16 @@ class EventDrivenSystem:
         if ctx.tuner_agent is not None:
             try:
                 from adaptive.tunable import TuneContext
+                # Running total of closed trades (seeded from persisted history
+                # at startup). Forwarded as total_trades so the periodic
+                # learning recompute engines (counterfactual attribution,
+                # signal / interaction / behavior discovery) clear their
+                # min-trades floor and actually fire — previously this was
+                # hardcoded to 0, which pinned every recompute permanently off.
+                # getattr-guarded so callers that bypass __init__ stay safe.
+                self._closed_trade_count = getattr(self, "_closed_trade_count", 0) + 1
                 tune_ctx = TuneContext(
-                    total_trades=0,
+                    total_trades=self._closed_trade_count,
                     trades_since_last_tune=1,
                     seconds_since_last_tune=0.0,
                 )

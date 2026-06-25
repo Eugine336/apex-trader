@@ -567,6 +567,28 @@ class CounterfactualEngine:
                 return []
         return [self._row_to_attribution(r) for r in rows]
 
+    def count_closed_trades(self) -> int:
+        """Total closed, graded (pnl_r present) attribution rows on disk.
+
+        Used to seed the live ``total_trades`` counter at startup so the
+        periodic ``maybe_recompute`` cadence reflects the full persisted
+        history rather than restarting from zero on every process restart.
+        Returns 0 when no DB / on error.
+        """
+        if self._conn is None:
+            return 0
+        with self._lock:
+            try:
+                cur = self._conn.execute(
+                    "SELECT COUNT(*) FROM trade_attribution "
+                    "WHERE closed=1 AND pnl_r IS NOT NULL"
+                )
+                row = cur.fetchone()
+                return int(row[0]) if row and row[0] is not None else 0
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[counterfactual] count_closed_trades failed: {}", exc)
+                return 0
+
     def get_attribution(self, trade_id: str) -> Optional[TradeAttribution]:
         if self._conn is None or not trade_id:
             return None
