@@ -25,7 +25,7 @@ from types import SimpleNamespace
 from brain.candidate_models import CandidatePosition
 from brain.directional_consensus import Vote
 from brain.trade_journal import TradeJournal, TradeRecord
-from event_driven_bootstrap import EventDrivenSystem
+from event_driven_bootstrap import PositionEvaluator
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -40,8 +40,8 @@ def _wm(votes: list) -> SimpleNamespace:
     return SimpleNamespace(votes_list=lambda: list(votes))
 
 
-def _system(scoped_enabled: bool = True, min_live: int = 1) -> EventDrivenSystem:
-    sys = EventDrivenSystem.__new__(EventDrivenSystem)
+def _system(scoped_enabled: bool = True, min_live: int = 1) -> PositionEvaluator:
+    sys = PositionEvaluator.__new__(PositionEvaluator)
     sys._candidate_positions = {}
     sys._config = SimpleNamespace(
         decision=SimpleNamespace(
@@ -93,7 +93,7 @@ def test_scope_votes_filters_to_contributing_panel():
         _vote("momentum", "SHORT", "M5"),   # dropped — not a contributing module
         _vote("structure", "SHORT", "M5"),  # dropped — wrong timeframe
     ]
-    scoped = EventDrivenSystem._scope_votes_to_candidate(votes, prov)
+    scoped = PositionEvaluator._scope_votes_to_candidate(votes, prov)
     mods = sorted((v.module, v.timeframe) for v in scoped)
     assert mods == [("structure", "H4"), ("wyckoff", "D1")]
 
@@ -101,7 +101,7 @@ def test_scope_votes_filters_to_contributing_panel():
 def test_scope_votes_no_modules_returns_all():
     prov = _prov("LONG", [], [])
     votes = [_vote("structure", "LONG", "H4"), _vote("momentum", "SHORT", "M5")]
-    assert EventDrivenSystem._scope_votes_to_candidate(votes, prov) == votes
+    assert PositionEvaluator._scope_votes_to_candidate(votes, prov) == votes
 
 
 # ── 3. thesis intact → HOLD with scoped votes ─────────────────────────────────
@@ -242,3 +242,27 @@ def test_min_live_votes_threshold():
     verdict, reason = sys._check_candidate_thesis("T1", "BUY", wm)
     assert verdict == "CLOSE"
     assert reason == "thesis_silent"
+
+
+# ── 10. construction initializes the provenance map (regression) ──────────────
+
+
+def test_position_evaluator_initializes_candidate_positions():
+    """A freshly constructed PositionEvaluator must own a ``_candidate_positions``
+    map. Its candidate-scoped management read accesses it every cycle; when it
+    was missing the live manager raised ``'PositionEvaluator' object has no
+    attribute '_candidate_positions'`` on every open position.
+    """
+    from execution.position_worker import WorkerConfig
+
+    evaluator = PositionEvaluator(
+        platform_manager=SimpleNamespace(),
+        tick_store=SimpleNamespace(),
+        world_model_store=SimpleNamespace(),
+        intent_aggregator=SimpleNamespace(),
+        mgmt_store=SimpleNamespace(),
+        worker_config=WorkerConfig(),
+    )
+    assert hasattr(evaluator, "_candidate_positions")
+    assert evaluator._candidate_positions == {}
+

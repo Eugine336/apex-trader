@@ -521,6 +521,13 @@ class PositionEvaluator:
         self._de_interval = 10.0
         self._fast_opposition: dict[str, int] = {}
         self._last_h1_close: dict[str, datetime] = {}
+        # Per-ticket candidate provenance (Session 4 multi-opportunity). The
+        # owning EventDrivenSystem aliases its own dict onto this field after
+        # construction so the fill-time recorder, the close-time cleanup, the
+        # dashboard read, and this evaluator's candidate-scoped management read
+        # all share one map. Defaulted here so the evaluator is also safe to use
+        # standalone (and in unit tests) without that aliasing step.
+        self._candidate_positions: dict[str, "CandidatePosition"] = {}
 
     def evaluate_all(
         self, scheduler: Optional[ManagementScheduler] = None,
@@ -2248,6 +2255,12 @@ class EventDrivenSystem:
             ctx=ctx,
             config=config,
         )
+        # Share ONE candidate-provenance map between this system (fill-time
+        # recorder, close-time cleanup, dashboard read) and the evaluator
+        # (candidate-scoped management read). Without this, provenance recorded
+        # at fill never reaches the manager and the manager raised AttributeError
+        # every cycle (it had no _candidate_positions of its own).
+        self._evaluator._candidate_positions = self._candidate_positions
         # Phase 3 (event-reactive management): the tick-eval loop evaluates
         # only the symbols a ManagementScheduler reports as due (active symbols
         # shortly after a tick, idle symbols on the safety-net cadence) instead
@@ -6839,7 +6852,7 @@ class EventDrivenSystem:
                     # Provenance object for candidate-scoped management — manage
                     # this position against the modules + timeframes that voted
                     # it open, not the latest net-summed direction.
-                    self._record_candidate_position(
+                    self._evaluator._record_candidate_position(
                         str(result.order_id), symbol, direction,
                         self._entry_context[result.order_id],
                     )
