@@ -53,7 +53,8 @@ CREATE TABLE IF NOT EXISTS events (
     severity       TEXT NOT NULL,
     symbol         TEXT,
     source_module  TEXT,
-    payload_json   TEXT
+    payload_json   TEXT,
+    seq            INTEGER
 )
 """
 
@@ -121,6 +122,11 @@ class BackfillRunner:
             "errors": 0,
         }
         self._conn: Optional[sqlite3.Connection] = None
+        # Monotonic per-row sequence, seeded from the persisted MAX(seq) on
+        # connect. Backfilled rows MUST carry a seq or the EventStore's
+        # seq-based replay/recovery (``query_events_after`` filters
+        # ``seq > after_seq``) silently excludes every backfilled event.
+        self._seq = 0
 
     def _connect_events(self) -> None:
         self.events_db.parent.mkdir(parents=True, exist_ok=True)
@@ -129,6 +135,32 @@ class BackfillRunner:
         self._conn.execute("PRAGMA synchronous=NORMAL")
         self._conn.execute(_CREATE_EVENTS)
         self._conn.commit()
+        self._ensure_seq_column()
+        self._seed_seq()
+
+    def _ensure_seq_column(self) -> None:
+        """Add the seq column to a DB created before it existed (mirrors the
+        EventStore migration) so backfilled rows can carry a sequence."""
+        assert self._conn is not None
+        try:
+            cols = {
+                r[1] for r in self._conn.execute("PRAGMA table_info(events)").fetchall()
+            }
+            if "seq" not in cols:
+                self._conn.execute("ALTER TABLE events ADD COLUMN seq INTEGER")
+                self._conn.commit()
+        except Exception as exc:
+            logger.warning("[backfill] seq column ensure failed: {}", exc)
+
+    def _seed_seq(self) -> None:
+        """Continue the sequence from the persisted maximum so backfilled and
+        live events share one monotonic ordering."""
+        assert self._conn is not None
+        try:
+            row = self._conn.execute("SELECT MAX(seq) FROM events").fetchone()
+            self._seq = int(row[0]) if row and row[0] is not None else 0
+        except Exception:
+            self._seq = 0
 
     def _event_exists(self, event_id: str) -> bool:
         assert self._conn is not None
@@ -155,11 +187,12 @@ class BackfillRunner:
         if self.dry_run:
             return True
         assert self._conn is not None
+        self._seq += 1
         self._conn.execute(
             "INSERT INTO events "
             "(event_id, correlation_id, parent_id, ts_utc_ms, event_type,"
-            " severity, symbol, source_module, payload_json)"
-            " VALUES (?,?,?,?,?,?,?,?,?)",
+            " severity, symbol, source_module, payload_json, seq)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?)",
             (
                 event_id,
                 correlation_id,
@@ -170,6 +203,7 @@ class BackfillRunner:
                 symbol,
                 source_module,
                 json.dumps(payload),
+                self._seq,
             ),
         )
         return True

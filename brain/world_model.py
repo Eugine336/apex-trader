@@ -14,6 +14,7 @@ from __future__ import annotations
 import math
 import threading
 import time as _time
+from copy import deepcopy
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, Any, Optional
@@ -320,6 +321,23 @@ def build_world_model(
             return ()
         return tuple((tf, tuple(items)) for tf, items in d.items())
 
+    def _freeze_lists_copy(
+        d: Optional[dict[str, list]],
+    ) -> tuple[tuple[str, tuple], ...]:
+        """Like ``_freeze_lists`` but deep-copies each element into the snapshot.
+
+        The frozen dataclass only freezes the *containers* (lists → tuples); the
+        contained ``OrderBlock`` / ``FairValueGap`` objects are mutable and their
+        ``.status`` is mutated in place by the detectors. Copying them at publish
+        time isolates the published snapshot so a producer re-mutating its own
+        objects can never retroactively change what concurrent readers see.
+        """
+        if not d:
+            return ()
+        return tuple(
+            (tf, tuple(deepcopy(item) for item in items)) for tf, items in d.items()
+        )
+
     def _freeze_scalars(
         d: Optional[dict[str, Any]],
     ) -> tuple[tuple[str, Any], ...]:
@@ -331,8 +349,8 @@ def build_world_model(
         symbol=symbol,
         version=version,
         timestamp=ts,
-        fvgs=_freeze_lists(fvgs),
-        order_blocks=_freeze_lists(order_blocks),
+        fvgs=_freeze_lists_copy(fvgs),
+        order_blocks=_freeze_lists_copy(order_blocks),
         structure=_freeze_scalars(structure),
         liquidity=_freeze_scalars(liquidity),
         volume=_freeze_scalars(volume),

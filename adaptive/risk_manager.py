@@ -219,20 +219,45 @@ class RiskManager(TuningGuardMixin):
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
     def _connect(self) -> None:
-        try:
-            self._conn = sqlite3.connect(
-                str(self._db_path), timeout=10, check_same_thread=False,
-            )
-            self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA synchronous=NORMAL")
-            self._conn.execute(_CREATE_EQUITY)
-            self._conn.execute(_CREATE_RISK_EVENTS)
-            self._conn.execute(_CREATE_DRAWDOWN)
-            self._conn.execute(_CREATE_META)
-            self._conn.commit()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[RiskManager] DB connect/init failed ({}): {}", self._db_path, exc)
-            self._conn = None
+        # The circuit-breaker (drawdown/HALTED) state persisted here MUST survive
+        # restarts — a silent degrade to in-memory means a hard-drawdown halt is
+        # forgotten on the next boot and trading silently resumes. Escalate the
+        # failure to ERROR, retry once, and expose a queryable ``degraded`` flag
+        # so the safety layer/dashboard can surface the lost durability instead
+        # of it passing unnoticed at WARNING level.
+        for attempt in (1, 2):
+            try:
+                self._conn = sqlite3.connect(
+                    str(self._db_path), timeout=10, check_same_thread=False,
+                )
+                self._conn.execute("PRAGMA journal_mode=WAL")
+                self._conn.execute("PRAGMA synchronous=NORMAL")
+                self._conn.execute(_CREATE_EQUITY)
+                self._conn.execute(_CREATE_RISK_EVENTS)
+                self._conn.execute(_CREATE_DRAWDOWN)
+                self._conn.execute(_CREATE_META)
+                self._conn.commit()
+                return
+            except Exception as exc:  # noqa: BLE001
+                self._conn = None
+                if attempt == 1:
+                    logger.warning(
+                        "[RiskManager] DB connect/init failed ({}) — retrying once: {}",
+                        self._db_path, exc,
+                    )
+                    continue
+                logger.error(
+                    "[RiskManager] DB connect/init FAILED after retry ({}): {} — "
+                    "circuit-breaker state is NOT durable across restart "
+                    "(running in-memory only)",
+                    self._db_path, exc,
+                )
+
+    @property
+    def degraded(self) -> bool:
+        """True when the persistence layer is unavailable, so HALTED/drawdown
+        state will not survive a restart."""
+        return self._conn is None
 
     def close(self) -> None:
         with self._lock:

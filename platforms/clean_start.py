@@ -91,6 +91,23 @@ def _write_local_schema_version(version_file: Path, schema_version: str) -> bool
         return False
 
 
+def _backup_local_state(d: Path, *, branch_name: str = "clean-start-backup") -> None:
+    """Force-update a backup branch to the data repo's current HEAD.
+
+    Captures committed-but-unpushed local state before a destructive
+    ``git reset --hard`` so it is always recoverable. Best-effort and silent on
+    failure — never blocks the sync.
+    """
+    try:
+        subprocess.run(
+            ["git", "-C", str(d.resolve()), "branch", "-f", branch_name, "HEAD"],
+            capture_output=True,
+            text=True,
+        )
+    except Exception as exc:
+        logger.debug("[clean-start] local-state backup branch failed: {}", exc)
+
+
 def sync_clean_state_from_remote(
     data_dir: str = "data",
     *,
@@ -118,6 +135,14 @@ def sync_clean_state_from_remote(
         targets = [branch]
         if branch == "main":
             targets.append("master")
+
+        # Safeguard against data loss: ``git reset --hard`` discards any local
+        # commits not yet on the remote AND any uncommitted changes to tracked
+        # files (up to the un-pushed intraday window of DB/journal writes).
+        # Snapshot the current local state onto a force-updated backup branch
+        # first so nothing is ever permanently lost — the operator can recover
+        # or push it later. Non-blocking: a backup failure never aborts the sync.
+        _backup_local_state(d)
 
         last_reason = "unknown"
         for idx, target in enumerate(targets):

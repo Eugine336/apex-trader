@@ -132,10 +132,33 @@ class EntryGate:
             return GateResult(False, "session_active", f"{symbol} session inactive")
         return GateResult(True, "session_active", "Session active")
 
+    def _max_spread_pips(self, symbol: str) -> float:
+        """Instrument-aware spread ceiling in pips.
+
+        The ceiling scales with the instrument's own typical spread
+        (``max_spread_multiplier × typical_spread_pips``) rather than a single
+        hardcoded 5-pip "typical" that is far too tight for indices/metals/
+        synthetics and too loose for tight-spread majors. Falls back to the
+        legacy 5-pip basis when the instrument (or its typical spread) is
+        unknown.
+        """
+        mult = float(getattr(self._config, "max_spread_multiplier", 3.0))
+        typical = 5.0
+        try:
+            from config import get_instrument
+
+            info = get_instrument(symbol)
+            ts = float(getattr(info, "typical_spread_pips", 0.0) or 0.0)
+            if ts > 0:
+                typical = ts
+        except Exception:
+            typical = 5.0
+        return mult * typical
+
     def _check_spread(
         self, symbol: str, spread_pips: float,
     ) -> GateResult:
-        max_spread = self._config.max_spread_multiplier * 5.0
+        max_spread = self._max_spread_pips(symbol)
         if spread_pips > max_spread:
             return GateResult(
                 False, "spread_ok",

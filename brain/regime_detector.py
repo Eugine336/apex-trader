@@ -120,7 +120,12 @@ class RegimeDetector:
             axis=1,
         )
         true_range = tr_components.max(axis=1)
-        return true_range.rolling(self.atr_period).mean().bfill()
+        # min_periods=1 (causal expanding mean) rather than .bfill(): bfill
+        # copied the first formed ATR value backward into the warm-up rows,
+        # leaking future data into past bars (look-ahead). This keeps the series
+        # fully populated using only past+current bars; the latest value is
+        # unchanged once atr_period bars exist.
+        return true_range.rolling(self.atr_period, min_periods=1).mean()
 
     def _calculate_directional_strength(
         self, df: pd.DataFrame, atr_series: pd.Series

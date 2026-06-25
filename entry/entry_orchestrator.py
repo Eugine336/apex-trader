@@ -636,6 +636,12 @@ class EntryOrchestrator:
                 "; ".join(f"{g.gate_name}: {g.reason}" for g in failed),
             )
 
-        self._tick_detector.cancel_pending(symbol, "processed")
+        # Signal the detector whether a trade was actually taken: a "filled"
+        # zone stays consumed, while a rejected zone becomes eligible again once
+        # price leaves and later re-approaches it (a touch alone must not
+        # permanently consume a still-valid zone).
+        self._tick_detector.cancel_pending(
+            symbol, "filled" if passed else "rejected",
+        )
         with self._lock:
             self._confirming.pop(symbol, None)

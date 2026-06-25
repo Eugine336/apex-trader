@@ -59,7 +59,7 @@ class GovernorConfig:
     # above; ``allocate()`` owns the position-count caps, the cycle risk budget,
     # and the V2 hedge ratio. All ON by default so the capital-allocation layer
     # is live (no opt-in flag).
-    max_positions_per_symbol: int = 2     # cap on simultaneous positions on ONE symbol (V2: 1 per direction)
+    max_positions_per_symbol: int = 2     # cap on TOTAL simultaneous positions on ONE symbol (both directions counted; e.g. 1 long + 1 short)
     max_positions_per_tf_class: int = 3   # cap on positions sharing one horizon (SWING/SCALP) book-wide
     max_total_positions: int = 10         # hard global ceiling on open positions
     max_total_risk_pct: float = 6.0       # total risk budget across all positions (% of equity)
