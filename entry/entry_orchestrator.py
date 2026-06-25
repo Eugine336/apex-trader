@@ -277,6 +277,123 @@ class EntryOrchestrator:
             logger.debug("[entry-orch] alignment read failed for {}: {}", symbol, exc)
             return None
 
+    def _entry_momentum(self, symbol: str, direction: str) -> Optional[float]:
+        """Signed live momentum for a trade direction from the WorldModel.
+
+        Reads the unbiased ``momentum`` module vote(s) (RSI+MACD on M5/H1) and
+        signs them relative to the trade: +confidence when the momentum vote
+        agrees with ``direction``, −confidence when it opposes. Returns the
+        clamped sum in [-1, +1] (positive = momentum supports the direction), or
+        ``None`` when no momentum vote is available (caller stays permissive).
+        """
+        if self._wm_store is None:
+            return None
+        try:
+            wm = self._wm_store.get(symbol)
+            if wm is None:
+                return None
+            votes = (
+                wm.votes_list()
+                if hasattr(wm, "votes_list")
+                else list(getattr(wm, "votes", ()) or [])
+            )
+            want = str(direction).upper()
+            signal = 0.0
+            found = False
+            for v in votes:
+                if str(getattr(v, "module", "")).lower() != "momentum":
+                    continue
+                vdir = str(getattr(v, "direction", "")).upper()
+                if vdir not in ("LONG", "SHORT"):
+                    continue
+                conf = max(0.0, min(1.0, float(getattr(v, "confidence", 0.0) or 0.0)))
+                found = True
+                signal += conf if vdir == want else -conf
+            if not found:
+                return None
+            return max(-1.0, min(1.0, signal))
+        except Exception as exc:
+            logger.debug("[entry-orch] momentum read failed for {}: {}", symbol, exc)
+            return None
+
+    @staticmethod
+    def _entry_posture(
+        alignment: Optional[float], momentum: Optional[float],
+    ) -> str:
+        """Lightweight situation posture for the entry (mirrors the situation
+        engine's alignment/momentum label branches).
+
+        Both inputs are signed for the trade direction. Returns ``"MIXED"`` for a
+        no-clear-edge setup (the case the gate tightens), or a more specific
+        label when one applies. Empty string when inputs are unavailable so the
+        gate keeps its permissive default.
+        """
+        if alignment is None or momentum is None:
+            return ""
+        a = float(alignment)
+        m = float(momentum)
+        if a > 0.4 and m > 0.1:
+            return "TREND_CONTINUATION"
+        if a > 0.3 and m < -0.2:
+            return "COUNTER_MOMENTUM"
+        if abs(a) < 0.2:
+            return "RANGE_ENTRY"
+        if a < -0.3:
+            return "COUNTER_TREND"
+        return "MIXED"
+
+    def _m1_confirms_direction(
+        self, direction: str, zone, m1_df: pd.DataFrame, pip_size: float,
+    ) -> bool:
+        """True when the M1 frame structurally/momentum-confirms ``direction``.
+
+        Re-uses the M1 confirmer's stateless checks (structure then momentum)
+        without touching its per-symbol candle counter, so it can be probed for
+        the OPPOSITE direction during the A1 flip decision without disturbing the
+        live confirmation state.
+        """
+        try:
+            r = M1CandleConfirmer._check_structure(m1_df, direction, pip_size)
+            if r.confirmed:
+                return True
+            r = M1CandleConfirmer._check_momentum(m1_df, direction, zone, pip_size)
+            return bool(r.confirmed)
+        except Exception:
+            return False
+
+    def _flip_zone(self, zone, new_direction: str):
+        """Mirror a zone to the opposite trade direction.
+
+        The stop (invalidation) moves to the opposite side of the zone using the
+        SAME geometry the zone watcher applies (half the zone size as buffer), so
+        a flipped SHORT stops above the zone and a flipped LONG stops below it.
+        A flipped trade is by construction WITH momentum, so the counter-trend
+        conviction haircut is undone (conviction restored to its un-penalised
+        base) and ``is_counter_trend`` cleared — the flip must not double-penalise
+        an idea that now agrees with the move.
+        """
+        from dataclasses import replace
+
+        zone_size = abs(zone.top - zone.bottom)
+        buffer = zone_size * 0.5
+        if str(new_direction).upper() == "LONG":
+            inv = zone.bottom - buffer
+        else:
+            inv = zone.top + buffer
+
+        conviction = int(getattr(zone, "conviction", 0) or 0)
+        if getattr(zone, "is_counter_trend", False):
+            mult = float(getattr(self._config, "counter_trend_conviction_mult", 1.0) or 1.0)
+            if 0.0 < mult < 1.0:
+                conviction = min(100, int(round(conviction / mult)))
+        return replace(
+            zone,
+            direction=str(new_direction).upper(),
+            invalidation_level=inv,
+            conviction=conviction,
+            is_counter_trend=False,
+        )
+
     def _derive_targets(
         self,
         symbol: str,
@@ -347,6 +464,41 @@ class EntryOrchestrator:
         entry_price = info["touch_price"]
         pip_size = self._pip_size(symbol)
 
+        # ── A1: opportunistic direction verification ─────────────────────
+        # The zone's direction is mechanical (a bullish FVG ⇒ LONG). Before
+        # committing, verify it against live momentum: the MARKET decides the
+        # side, not the zone's historical kind. When momentum actively opposes
+        # the zone direction, either FLIP to trade WITH the move (only if the
+        # opposite is genuinely M1-confirmed) or SKIP the entry — never enter
+        # against momentum on the zone label alone.
+        oppose_floor = -float(
+            getattr(self._config, "momentum_oppose_threshold", 0.20) or 0.20
+        )
+        momentum = self._entry_momentum(symbol, direction)
+        if momentum is not None and momentum <= oppose_floor:
+            opposite = "SHORT" if str(direction).upper() == "LONG" else "LONG"
+            if self._m1_confirms_direction(opposite, zone, m1_df, pip_size):
+                logger.info(
+                    "[entry-orch] {} direction FLIP {}→{} — momentum {:+.2f} "
+                    "opposed the zone, opposite M1-confirmed",
+                    symbol, direction, opposite, momentum,
+                )
+                self._stats["direction_flips"] = self._stats.get("direction_flips", 0) + 1
+                direction = opposite
+                zone = self._flip_zone(zone, opposite)
+                info = {**info, "direction": opposite, "zone": zone}
+            else:
+                logger.info(
+                    "[entry-orch] {} {} entry SKIPPED — momentum {:+.2f} opposes "
+                    "the zone and the opposite is not M1-confirmed",
+                    symbol, direction, momentum,
+                )
+                self._stats["momentum_skips"] = self._stats.get("momentum_skips", 0) + 1
+                self._tick_detector.cancel_pending(symbol, "momentum opposes zone")
+                with self._lock:
+                    self._confirming.pop(symbol, None)
+                return
+
         risk_pips = abs(entry_price - zone.invalidation_level) / pip_size
         if risk_pips <= 0:
             risk_pips = 10.0
@@ -360,6 +512,9 @@ class EntryOrchestrator:
         spread_pips = self._get_spread(symbol)
 
         alignment = self._htf_alignment(symbol, direction)
+        # Situation posture for the gate — a MIXED (no-edge) setup must show real
+        # HTF support, not merely escape the permissive alignment floor.
+        posture = self._entry_posture(alignment, momentum)
 
         passed, results = self._gate.validate_all(
             symbol=symbol,
@@ -372,6 +527,7 @@ class EntryOrchestrator:
             current_spread_pips=spread_pips,
             zone=zone,
             alignment=alignment,
+            posture=posture,
             is_instrument_known=self._is_instrument_known(symbol),
             is_market_open=self._is_market_open(symbol),
             is_session_active=self._is_session_active(symbol),

@@ -120,4 +120,12 @@ class EntryConfig:
     # score≥85 gate. At 0.70 a counter-trend FVG+OB becomes 70 (< 85 gate),
     # naturally filtering geometry-only counter-trend setups.
     counter_trend_conviction_mult: float = 0.70
+    # ── Opportunistic direction verification (A1) ─────────────────────────
+    # A zone's direction is mechanical (a bullish FVG ⇒ LONG). Before committing
+    # the entry, momentum is consulted: when the live momentum read for the zone
+    # direction is at/below ``-momentum_oppose_threshold`` the setup is fighting
+    # the move. If the OPPOSITE direction is genuinely M1-confirmed the trade is
+    # FLIPPED to go with the market; otherwise the entry is SKIPPED rather than
+    # taken against momentum. 0.2 ≈ "clearly opposing" on the [-1, +1] scale.
+    momentum_oppose_threshold: float = 0.20
     coalesce_hz: float = 15.0

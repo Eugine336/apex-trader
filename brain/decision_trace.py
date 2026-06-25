@@ -373,6 +373,12 @@ class DecisionTraceRecorder:
         # A trace that reached a terminal state without the ranker ever stamping
         # means a stage was skipped silently — that is exactly the kind of gap
         # this system exists to make loud.
+        #
+        # Live-position management traces are exempt: they are NOT part of the
+        # scan→entry funnel (there is no ranker stage for an already-open trade),
+        # so a management trace legitimately records only the management verdict.
+        if trace.has_stage(STAGE_MANAGEMENT):
+            return
         if not trace.has_stage(STAGE_RANKER):
             logger.error(
                 "[decision_trace] {} finalised ({}) with NO '{}' verdict — "

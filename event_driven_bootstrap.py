@@ -1060,6 +1060,93 @@ class PositionEvaluator:
 
         return out
 
+    def _compute_tick_momentum(
+        self, symbol: str, norm_dir: str, pip_size: float,
+    ) -> float:
+        """Live sub-candle momentum from the recent tick stream → [-1, +1].
+
+        Candle-derived momentum only refreshes on M1 close, so between closes the
+        DecisionEngine is blind to price moving against an open position. This
+        reads the recent stored ticks and measures the *directional efficiency*
+        of the move — net displacement ÷ total path length, in [-1, +1]: a clean
+        one-directional move scores near ±1, choppy/flat action near 0. The
+        result is signed for the trade (rising price favours a long, falling a
+        short) so the engine can react to a rapid adverse move immediately.
+
+        Returns 0.0 (no pressure) when there are too few ticks, the path is flat,
+        or the net move is below ~0.5 pip of micro-noise — so it never invents a
+        pulse out of a stationary price.
+        """
+        try:
+            ticks = self._tick_store.get_recent(symbol, count=20)
+        except Exception:
+            return 0.0
+        if not ticks or len(ticks) < 5:
+            return 0.0
+        mids: list[float] = []
+        for t in ticks:
+            bid = float(getattr(t, "bid", 0.0) or 0.0)
+            ask = float(getattr(t, "ask", 0.0) or 0.0)
+            if bid > 0.0 and ask > 0.0:
+                mids.append((bid + ask) / 2.0)
+            elif bid > 0.0:
+                mids.append(bid)
+            elif ask > 0.0:
+                mids.append(ask)
+        if len(mids) < 5:
+            return 0.0
+        net = mids[-1] - mids[0]
+        path = sum(abs(mids[i] - mids[i - 1]) for i in range(1, len(mids)))
+        if path <= 0.0:
+            return 0.0
+        # Ignore sub-noise drift so a near-flat price never reads as momentum.
+        if pip_size > 0.0 and abs(net) / pip_size < 0.5:
+            return 0.0
+        efficiency = max(-1.0, min(1.0, net / path))
+        signed = efficiency if norm_dir == "BUY" else -efficiency
+        return max(-1.0, min(1.0, signed))
+
+    def _stamp_management_trace(
+        self, symbol: str, order_id: str, trade_ctx, sa, de_result,
+    ) -> None:
+        """Record a STAGE_MANAGEMENT DecisionTrace for one management eval.
+
+        Surfaces the live-position management verdict (the action chosen + the
+        situation dimensions that drove it) onto the decision-trace panel. Uses a
+        fresh per-eval recorder (thread-safe across concurrent positions) and the
+        management completeness exemption (no ranker stage for an open trade).
+        """
+        from brain.decision_trace import DecisionTraceRecorder, STAGE_MANAGEMENT
+
+        recorder = DecisionTraceRecorder(getattr(self._config, "decision_trace", None))
+        if not recorder.enabled:
+            return
+        action = getattr(de_result, "action", None)
+        action_str = action.value if hasattr(action, "value") else str(action or "HOLD")
+        reason = str(getattr(de_result, "reason", "") or "")
+        justification = reason[:240] if len(reason) >= 8 else f"management verdict {action_str}"
+        evidence = {
+            "order_id": str(order_id or ""),
+            "action": action_str,
+            "confidence": round(float(getattr(de_result, "confidence", 0.0) or 0.0), 4),
+            "tf_alignment": round(float(getattr(sa, "tf_alignment", 0.0) or 0.0), 4),
+            "momentum": round(float(getattr(sa, "momentum", 0.0) or 0.0), 4),
+            "tick_momentum": round(float(getattr(sa, "tick_momentum", 0.0) or 0.0), 4),
+            "structure_integrity": round(float(getattr(sa, "structure_integrity", 0.0) or 0.0), 4),
+            "price_vs_structure": round(float(getattr(sa, "price_vs_structure", 0.0) or 0.0), 4),
+            "profit_state": round(float(getattr(sa, "profit_state", 0.0) or 0.0), 4),
+        }
+        recorder.begin(symbol, setup_id=str(order_id or ""))
+        recorder.stamp(
+            stage=STAGE_MANAGEMENT,
+            owner="decision.engine",
+            verdict=action_str,
+            justification=justification,
+            evidence=evidence,
+            confidence=float(getattr(de_result, "confidence", 0.0) or 0.0),
+        )
+        recorder.finalize_success()
+
     def shutdown(self) -> None:
         """Stop the per-symbol evaluation worker pool (called on system stop)."""
         try:
@@ -1488,6 +1575,7 @@ class PositionEvaluator:
                 m5_trend=m5_trend,
                 m5_confidence=m5_conf,
                 m5_event=m5_event,
+                tick_momentum=self._compute_tick_momentum(symbol, norm_dir, pip_size),
                 fast_opposition_streak=fast_opp,
                 score_history=list(score_hist[-10:]),
                 open_trade_count=len(open_positions),
@@ -1533,6 +1621,17 @@ class PositionEvaluator:
                     ctx.decision_journal.log(trade_ctx, sa, de_result)
                 except Exception:
                     pass
+
+            # Stamp the management verdict onto a DecisionTrace so the dashboard's
+            # decision-trace panel shows live-position management — previously the
+            # STAGE_MANAGEMENT stage was defined but never recorded, leaving the
+            # panel blind to every HOLD/CLOSE/SL decision. A fresh recorder per
+            # eval keeps this thread-safe across concurrently-managed positions;
+            # best-effort so a tracing failure never affects management.
+            try:
+                self._stamp_management_trace(symbol, order_id, trade_ctx, sa, de_result)
+            except Exception as exc:
+                logger.debug("[de-mgmt] management trace stamp failed for {}: {}", symbol, exc)
 
             # Emit POSITION_HEALTH so the dashboard's live-management panel is
             # fed by the event-driven system (mirrors
@@ -5290,7 +5389,55 @@ class EventDrivenSystem:
         if not items:
             return
 
+        # Stamp the consensus entry decision onto a DecisionTrace so the
+        # dashboard's decision-trace panel reflects the zoneless consensus path
+        # (previously only the structural zone path was traced). Best-effort.
+        try:
+            self._stamp_consensus_trace(symbol, items)
+        except Exception as exc:
+            logger.debug("[consensus-trigger] trace stamp failed for {}: {}", symbol, exc)
+
         self._select_and_execute(symbol, items, cfg)
+
+    def _stamp_consensus_trace(self, symbol: str, items: list) -> None:
+        """Record a DecisionTrace for the consensus (zoneless) entry path.
+
+        Documents which directions passed consensus this cycle and their thesis
+        conviction, so the decision-trace panel shows consensus-initiated entries
+        the same way it shows the structural zone path. Stamps a ranker-stage
+        verdict (the consensus panel is this path's ranking signal, which also
+        satisfies trace completeness). Best-effort; never affects the entry.
+        """
+        from brain.decision_trace import DecisionTraceRecorder, STAGE_RANKER
+
+        recorder = DecisionTraceRecorder(getattr(self._config, "decision_trace", None))
+        if not recorder.enabled:
+            return
+        descriptors: list[str] = []
+        evidence: dict[str, Any] = {"source": "consensus", "candidates": len(items)}
+        for envelope, decision in items:
+            direction = str(decision.get("direction", "") or "")
+            thesis = getattr(envelope, "thesis", None)
+            conviction = round(float(getattr(thesis, "conviction", 0.0) or 0.0), 4)
+            cand = getattr(envelope, "candidate", None)
+            cid = str(getattr(cand, "candidate_id", "") or "")
+            descriptors.append(f"{direction} conv={conviction}")
+            if cid:
+                evidence[f"candidate_{cid[:8]}"] = f"{direction} conv={conviction}"
+        justification = (
+            "consensus formed " + ", ".join(descriptors)
+            if descriptors else "consensus formed candidate(s)"
+        )
+        recorder.begin(symbol)
+        recorder.stamp(
+            stage=STAGE_RANKER,
+            owner="brain.directional_consensus",
+            verdict="PASS",
+            justification=justification,
+            evidence=evidence,
+            confidence=1.0,
+        )
+        recorder.finalize_success()
 
     def _build_consensus_candidate_item(
         self, symbol: str, candidate: Any, cfg: Any,
