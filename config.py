@@ -1313,6 +1313,12 @@ class DataBackupConfig:
     # and never wipes learned state. Flip to True deliberately (e.g. after a
     # migration that invalidates learned data) to let the schema-gated purge run.
     startup_purge_enabled: bool = False
+    # Run the data-junction clean-start (fetch + hard-reset to the remote) on
+    # boot. Default ON for single-user mode. Multi-tenant per-user instances run
+    # from an isolated, non-git working dir and force this OFF (see
+    # api/instance_config.py) so the git/reset machinery never touches their
+    # state. main.py reads this via getattr(default=True).
+    clean_start_on_first_boot: bool = True
 
 
 @dataclass
