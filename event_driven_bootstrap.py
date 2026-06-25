@@ -536,6 +536,37 @@ class PositionEvaluator:
         # all share one map. Defaulted here so the evaluator is also safe to use
         # standalone (and in unit tests) without that aliasing step.
         self._candidate_positions: dict[str, "CandidatePosition"] = {}
+        # In-flight optimistic-management rollback snapshots, keyed by
+        # (ticket, intent_type). The worker-path optimistic SL / partial writes
+        # record the pre-mutation values here so a rejected modify/partial rolls
+        # back instead of leaving phantom state. The owning EventDrivenSystem
+        # aliases its OWN dict + lock onto these fields after construction so the
+        # record (here) and the execution-result rollback (_handle_manage_result)
+        # operate on ONE shared store — without that aliasing the record landed
+        # in a dict the result callback never read. Defaulted here so the
+        # evaluator is also safe to use standalone (and in unit tests).
+        self._inflight_manage: dict[tuple[str, int], dict[str, Any]] = {}
+        self._inflight_manage_lock = threading.Lock()
+
+    def _record_inflight_manage(
+        self, ticket: str, intent_type: IntentType, prev: dict[str, Any],
+    ) -> None:
+        """Record pre-mutation management values for rollback on exec failure.
+
+        Mirrors EventDrivenSystem._record_inflight_manage but lives on the
+        evaluator (which performs the optimistic mutation). Both write into the
+        SAME dict once the owner aliases it, so the FlushLoop result callback can
+        find and roll back the snapshot. Previously this method existed only on
+        EventDrivenSystem, so calling it from here raised AttributeError — which
+        the broad per-position try/except swallowed, leaving the optimistic SL
+        write committed but its pending-confirmation guard (set on the line
+        after the failing call) never armed.
+        """
+        try:
+            with self._inflight_manage_lock:
+                self._inflight_manage[(str(ticket), int(intent_type))] = prev
+        except Exception:
+            pass
 
     def evaluate_all(
         self, scheduler: Optional[ManagementScheduler] = None,
@@ -1785,6 +1816,20 @@ class PositionEvaluator:
             if ratio <= 0.0:
                 ratio = _DEFAULT_PARTIAL_CLOSE_RATIO
             ratio = max(0.05, min(0.95, ratio))
+            # Guard against repeated banking. The DE re-evaluates a position
+            # every ``_de_interval`` seconds; without an optimistic flag a
+            # persistent PARTIAL_CLOSE verdict would chip the position away on
+            # every cycle. Skip when a partial is already taken/in-flight, then
+            # mark it optimistically (mirrors the worker TP1-partial path) and
+            # record the pre-mutation values so a rejected partial rolls back and
+            # retries instead of being permanently marked done.
+            mgmt = self._mgmt_store.get(order_id)
+            if mgmt is not None and getattr(mgmt, "partial_closed", False):
+                logger.debug(
+                    "[de-mgmt] partial-close skipped {} — already partial-closed",
+                    symbol,
+                )
+                return
             self._aggregator.register_position(
                 ticket=order_id, direction=direction,
                 current_sl=sl, pip_size=pip_size,
@@ -1796,6 +1841,15 @@ class PositionEvaluator:
                 source="decision_engine_partial",
                 reason=f"DE partial {ratio:.0%}: {getattr(de_result, 'reason', '')[:60]}",
             )])
+            if mgmt is not None:
+                prev_pc = mgmt.partial_closed
+                prev_tp1 = mgmt.tp1_hit
+                mgmt.partial_closed = True
+                mgmt.tp1_hit = True
+                self._record_inflight_manage(
+                    order_id, IntentType.PARTIAL_CLOSE,
+                    {"partial_closed": prev_pc, "tp1_hit": prev_tp1},
+                )
             logger.info(
                 "[DE-MGMT] {} {} PARTIAL_CLOSE {:.0%} — {}",
                 symbol, direction, ratio,
@@ -2283,6 +2337,15 @@ class EventDrivenSystem:
         # at fill never reaches the manager and the manager raised AttributeError
         # every cycle (it had no _candidate_positions of its own).
         self._evaluator._candidate_positions = self._candidate_positions
+        # Share ONE in-flight rollback store between this system (the FlushLoop
+        # result callback rolls back / clears here) and the evaluator (which
+        # records the optimistic mutation). Without this the evaluator recorded
+        # into its own dict that the result callback never read, so the
+        # pending-confirmation guard line after the record never ran (the call
+        # raised AttributeError) — leaving an unconfirmed/rejected SL live in the
+        # snapshot with no guard, the exact phantom stop-hit CLOSE condition.
+        self._evaluator._inflight_manage = self._inflight_manage
+        self._evaluator._inflight_manage_lock = self._inflight_manage_lock
         # Phase 3 (event-reactive management): the tick-eval loop evaluates
         # only the symbols a ManagementScheduler reports as due (active symbols
         # shortly after a tick, idle symbols on the safety-net cadence) instead
@@ -4338,44 +4401,56 @@ class EventDrivenSystem:
             itype = getattr(intent, "intent_type", None)
             if not ticket or itype is None:
                 return
+            is_sl = int(itype) == int(IntentType.MODIFY_SL)
             key = (ticket, int(itype))
             with self._inflight_manage_lock:
                 prev = self._inflight_manage.pop(key, None)
-            # The SL modify attempt has now concluded (success, permanent
-            # failure, or market-closed skip): clear the pending-confirmation
-            # guard so the synthetic stop-hit check resumes next cycle against
-            # the now-authoritative SL (the confirmed new level on success, or
-            # the rolled-back / original level otherwise).
-            if int(itype) == int(IntentType.MODIFY_SL):
+
+            success = bool(getattr(result, "success", False))
+            err = str(getattr(result, "error", "") or "").lower()
+            market_closed = (
+                "market_closed" in err
+                or "market closed" in err
+                or "market is closed" in err
+            )
+
+            # Order matters. On a real failure the optimistic mutation (the
+            # unconfirmed SL the worker wrote into the management state) MUST be
+            # rolled back BEFORE the pending-confirmation guard is cleared. The
+            # eval thread derives ``sl_pending_confirmation`` from
+            # ``sl_modify_pending_until`` and reads ``stop_loss`` to build the
+            # snapshot; if the guard were dropped first, a concurrent snapshot
+            # could pair the cleared guard with the still-rejected SL and fire a
+            # phantom stop-hit CLOSE in the window before the rollback landed.
+            if not success and prev is not None and not market_closed:
+                mgmt = self._mgmt_store.get(ticket)
+                if mgmt is not None:
+                    for field_name, value in prev.items():
+                        try:
+                            setattr(mgmt, field_name, value)
+                        except Exception:
+                            pass
+                    try:
+                        self._mgmt_store.persist(mgmt, force=True)
+                    except Exception:
+                        pass
+                    logger.warning(
+                        "[manage] {} {} failed — rolled back optimistic state ({})",
+                        itype.name, ticket, getattr(result, "error", ""),
+                    )
+
+            # The SL modify attempt has now concluded (success, rolled-back
+            # failure, or expected market-closed skip): clear the pending guard
+            # so the synthetic stop-hit check resumes next cycle against the
+            # now-authoritative SL — the confirmed new level on success, or the
+            # just-restored original level on failure. On a market-closed skip
+            # the optimistic level stands, but the market is shut so no tick can
+            # fire a synthetic stop; clearing the guard keeps it from sticking.
+            if is_sl:
                 mgmt_pending = self._mgmt_store.get(ticket)
                 if mgmt_pending is not None:
                     mgmt_pending.sl_modify_pending_until = 0.0
                     mgmt_pending.sl_pending_confirmation = False
-            success = bool(getattr(result, "success", False))
-            if success or prev is None:
-                return
-            err = str(getattr(result, "error", "") or "").lower()
-            if "market_closed" in err or "market closed" in err or "market is closed" in err:
-                # Expected: market shut. Keep the optimistic guard so we do not
-                # hammer a closed market; it will reconcile when the market opens
-                # (a fresh evaluation re-derives the correct state).
-                return
-            mgmt = self._mgmt_store.get(ticket)
-            if mgmt is None:
-                return
-            for field_name, value in prev.items():
-                try:
-                    setattr(mgmt, field_name, value)
-                except Exception:
-                    pass
-            try:
-                self._mgmt_store.persist(mgmt, force=True)
-            except Exception:
-                pass
-            logger.warning(
-                "[manage] {} {} failed — rolled back optimistic state ({})",
-                itype.name, ticket, getattr(result, "error", ""),
-            )
         except Exception as exc:
             logger.debug("[manage] result handling failed: {}", exc)
 
