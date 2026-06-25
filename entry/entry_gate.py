@@ -192,6 +192,21 @@ class EntryGate:
             return GateResult(True, "alignment", "No alignment floor")
         if not math.isfinite(alignment):
             return GateResult(True, "alignment", "Alignment unavailable")
+        # Apply the learned GateTuner offset (bounded, loosening-only) so the
+        # HTF-alignment floor reflects what the shadow outcomes have proven:
+        # if the counter-HTF setups this gate rejected keep winning, the floor
+        # is lowered (more counter-HTF allowed) within the tuner's envelope —
+        # but never below the absolute permissive cap (min_htf_alignment_floor),
+        # and the tuner can only loosen, never tighten past the configured floor.
+        if self._gate_tuner is not None:
+            try:
+                offset = float(self._gate_tuner.offset("htf_alignment"))
+                cap = float(getattr(self._config, "min_htf_alignment_floor", -1.0))
+                min_align = max(cap, float(min_align) + offset)
+            except Exception as exc:
+                logger.debug(
+                    "[entry-gate] gate-tuner htf_alignment offset unavailable: {}", exc,
+                )
         if alignment < min_align:
             return GateResult(
                 False, "alignment",

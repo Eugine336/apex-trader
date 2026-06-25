@@ -77,4 +77,5 @@ class TestGateOffsets:
         with tempfile.TemporaryDirectory() as tmp:
             gt = GateTuner(os.path.join(tmp, "gt.json"))
             offs = gt.all_offsets()
-        assert offs == {"ev_gate": 0.0}
+        # Every whitelisted tunable gate starts at a neutral (0.0) offset.
+        assert offs == {f: 0.0 for f in GateTuner.TUNABLE}
