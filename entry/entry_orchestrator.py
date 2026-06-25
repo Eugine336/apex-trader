@@ -360,12 +360,16 @@ class EntryOrchestrator:
         except Exception:
             return False
 
-    def _flip_zone(self, zone, new_direction: str):
+    def _flip_zone(self, zone, new_direction: str, entry_price: float = 0.0):
         """Mirror a zone to the opposite trade direction.
 
-        The stop (invalidation) moves to the opposite side of the zone using the
-        SAME geometry the zone watcher applies (half the zone size as buffer), so
-        a flipped SHORT stops above the zone and a flipped LONG stops below it.
+        The stop (invalidation) is mirrored around the ENTRY (touch) price so a
+        flipped SHORT always stops ABOVE entry and a flipped LONG always stops
+        BELOW entry, preserving the original risk distance. Mirroring around the
+        zone alone is unsafe: when price has already run past the zone, the
+        zone-relative invalidation can land on the wrong side of the entry,
+        producing an inverted SL/TP that the gate rejects. Anchoring on the
+        entry price guarantees a valid SHORT (SL above) / LONG (SL below).
         A flipped trade is by construction WITH momentum, so the counter-trend
         conviction haircut is undone (conviction restored to its un-penalised
         base) and ``is_counter_trend`` cleared — the flip must not double-penalise
@@ -373,12 +377,26 @@ class EntryOrchestrator:
         """
         from dataclasses import replace
 
-        zone_size = abs(zone.top - zone.bottom)
-        buffer = zone_size * 0.5
-        if str(new_direction).upper() == "LONG":
-            inv = zone.bottom - buffer
+        orig_inv = float(getattr(zone, "invalidation_level", 0.0) or 0.0)
+        if entry_price and entry_price > 0 and orig_inv > 0:
+            # Mirror the stop around the entry: new_sl = 2*entry − original_sl.
+            # Preserves the risk distance and flips it to the correct side.
+            inv = 2.0 * entry_price - orig_inv
+            # Defensive: ensure the mirrored stop is on the correct side of
+            # entry for the new direction (it will be unless risk was zero).
+            if str(new_direction).upper() == "LONG" and inv >= entry_price:
+                inv = entry_price - abs(entry_price - orig_inv)
+            elif str(new_direction).upper() == "SHORT" and inv <= entry_price:
+                inv = entry_price + abs(entry_price - orig_inv)
         else:
-            inv = zone.top + buffer
+            # Fallback (no usable entry): mirror around the zone geometry.
+            zone_size = abs(zone.top - zone.bottom)
+            buffer = zone_size * 0.5
+            inv = (
+                zone.bottom - buffer
+                if str(new_direction).upper() == "LONG"
+                else zone.top + buffer
+            )
 
         conviction = int(getattr(zone, "conviction", 0) or 0)
         if getattr(zone, "is_counter_trend", False):
@@ -484,7 +502,7 @@ class EntryOrchestrator:
                 )
                 self._stats["direction_flips"] = self._stats.get("direction_flips", 0) + 1
                 direction = opposite
-                zone = self._flip_zone(zone, opposite)
+                zone = self._flip_zone(zone, opposite, entry_price)
                 info = {**info, "direction": opposite, "zone": zone}
             else:
                 logger.info(
