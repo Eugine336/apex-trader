@@ -11,7 +11,13 @@ from dataclasses import dataclass, field
 from enum import Enum
 from loguru import logger
 
-SCHEMA_VERSION = "4"
+# Bumped to "5" after the Opportunistic Intelligence rewire (Sessions 1-4):
+# killing hard SCALP/SWING gating, structure-derived targets, market-driven
+# stall/management, learned HTF gate, and full learning-loop attribution all
+# changed the meaning of persisted learned/adaptive artifacts. The mismatch
+# vs the on-disk .local_schema_version triggers the schema-gated startup purge
+# once (see platforms/clean_start.py) so the system relearns from scratch.
+SCHEMA_VERSION = "5"
 
 
 class InstrumentCategory(Enum):
@@ -1321,10 +1327,13 @@ class DataBackupConfig:
     # stale pre-migration data.
     sync_orphan_branch: bool = True
     # One-time schema-gated purge of stale learned/adaptive artifacts at startup.
-    # Default OFF: a normal restart only syncs the data junction from the remote
-    # and never wipes learned state. Flip to True deliberately (e.g. after a
-    # migration that invalidates learned data) to let the schema-gated purge run.
-    startup_purge_enabled: bool = False
+    # Enabled for the Opportunistic Intelligence rewire (Sessions 1-4): those
+    # changes invalidated the persisted learned state, so the schema-gated purge
+    # must run once on the next restart to clear it. The purge is self-limiting —
+    # it only fires while the on-disk .local_schema_version differs from
+    # SCHEMA_VERSION, then writes the new version, so subsequent restarts are
+    # no-ops and never re-wipe freshly learned state.
+    startup_purge_enabled: bool = True
     # Run the data-junction clean-start (fetch + hard-reset to the remote) on
     # boot. Default ON for single-user mode. Multi-tenant per-user instances run
     # from an isolated, non-git working dir and force this OFF (see
