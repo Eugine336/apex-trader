@@ -107,6 +107,15 @@ async def ranker(
     return await _proxy(user=user, pm=pm, path="/api/ranker")
 
 
+@router.get("/market-model")
+async def market_model(
+    user: dict[str, Any] = Depends(get_current_user),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> Any:
+    """Confirmed vs developing (forming-bar) structure per symbol — dual WorldModel."""
+    return await _proxy(user=user, pm=pm, path="/api/market-model")
+
+
 @router.get("/decisions")
 async def decisions(
     limit: int = Query(default=100, ge=1, le=500),

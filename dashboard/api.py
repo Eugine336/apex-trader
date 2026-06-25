@@ -295,6 +295,11 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
         """Ranked opportunities (coherent vote clusters) per pair with EV/horizon aggregates."""
         return _state.get_ranker()
 
+    @app.get("/api/market-model")
+    def market_model():
+        """Confirmed vs developing (forming-bar) structure per symbol — the dual WorldModel."""
+        return _state.get_market_model()
+
     @app.get("/api/orchestrator")
     def orchestrator(limit: int = 100, symbol: str = ""):
         """Round-table graded-sizing proposals — per-dimension multipliers + applied size."""

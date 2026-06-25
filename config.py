@@ -3134,6 +3134,19 @@ class DevelopingAnalysisConfig:
     refresh_h1: float = 30.0
     refresh_h4: float = 60.0
     refresh_d1: float = 300.0
+    # ── Phase 5: management advisory ─────────────────────────────────
+    # When the developing (forming-bar) structure warns of a reversal against
+    # an OPEN position while the confirmed DecisionEngine verdict is only HOLD/
+    # OBSERVE, the management path may escalate to a PROTECTIVE stop — but ONLY
+    # in a strictly tightening direction (it can never loosen a stop, close a
+    # position, or open one). This is an early-warning nudge; the confirmed
+    # data remains authoritative.
+    management_advisory_enabled: bool = True
+    # Developing structure confidence required on a tactical TF (H1/M5) before a
+    # trend-based reversal warning is acted on. Reversal EVENTS (CHoCH/BOS
+    # against the position) bypass this floor since a confirmed break is itself
+    # high-signal.
+    management_advisory_min_confidence: float = 0.6
 
 
 @dataclass
