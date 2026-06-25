@@ -11,6 +11,7 @@ readers (execution plane, entry plane, dashboard) get frozen snapshots.
 
 from __future__ import annotations
 
+import math
 import threading
 import time as _time
 from dataclasses import dataclass, field
@@ -155,6 +156,73 @@ class WorldModel:
         for _tf, ob_list in self.order_blocks:
             out.extend(ob_list)
         return out
+
+    def get_structural_targets(
+        self,
+        direction: str,
+        current_price: float,
+        *,
+        min_distance: float = 0.0,
+    ) -> list[float]:
+        """Structural price levels ahead of price in the trade direction.
+
+        The opportunistic-trading rewire derives take-profit targets from what
+        the MARKET is actually showing — the next fair-value gap, order block,
+        or liquidity pool in front of price — instead of a hardcoded
+        reward-multiple. Returns candidate target prices sorted nearest-first.
+        An empty list means the brain sees no structure ahead, and the entry
+        layer falls back to a volatility/risk-multiple target.
+
+        ``direction`` is ``"LONG"`` (targets above price) or ``"SHORT"`` (below).
+        Levels within ``min_distance`` of ``current_price`` are skipped so a
+        target is never effectively at the entry.
+        """
+        d = str(direction or "").upper()
+        if d not in ("LONG", "SHORT") or current_price is None or current_price <= 0:
+            return []
+        is_long = d == "LONG"
+        levels: list[float] = []
+
+        def _consider(price: Any) -> None:
+            try:
+                p = float(price)
+            except (TypeError, ValueError):
+                return
+            if not math.isfinite(p) or p <= 0:
+                return
+            if is_long and p > current_price + min_distance:
+                levels.append(p)
+            elif (not is_long) and p < current_price - min_distance:
+                levels.append(p)
+
+        # FVGs — the midpoint is a fair proxy for where price fills the gap.
+        try:
+            for fvg in self.all_fvgs():
+                _consider(getattr(fvg, "midpoint", None))
+        except Exception:  # never let a malformed object break entry geometry
+            pass
+        # Order blocks — the near edge price reaches first becomes the target.
+        try:
+            for ob in self.all_order_blocks():
+                edge = getattr(ob, "bottom", None) if is_long else getattr(ob, "top", None)
+                _consider(edge)
+        except Exception:
+            pass
+        # Liquidity pools — price hunts buy-side liquidity above / sell-side below.
+        try:
+            for _tf, lq in self.liquidity:
+                pools = (
+                    getattr(lq, "buy_side_liquidity", None)
+                    if is_long
+                    else getattr(lq, "sell_side_liquidity", None)
+                )
+                for zone in (pools or []):
+                    _consider(getattr(zone, "price", None))
+        except Exception:
+            pass
+
+        # Nearest-first, de-duplicated.
+        return sorted(set(levels), key=lambda p: abs(p - current_price))
 
 
 class WorldModelStore:

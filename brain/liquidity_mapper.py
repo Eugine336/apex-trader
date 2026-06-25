@@ -40,17 +40,24 @@ class LiquidityMapper:
     """
 
     def __init__(self, equal_threshold_pips: float = 3.0, min_touches: int = 2):
-        self.equal_threshold = equal_threshold_pips * 0.0001  # Convert pips to price
+        # Store the threshold in PIPS, not a pre-converted price. The price
+        # threshold is derived per call from the instrument's real pip_size
+        # (passed to map()/classify_sweep_reaction()) — the old
+        # ``equal_threshold_pips * 0.0001`` baked an FX-major pip in, silently
+        # mis-scaling sweep/equal-level geometry on JPY pairs, metals, indices
+        # and Deriv synthetics.
+        self.equal_threshold_pips = float(equal_threshold_pips)
         self.min_touches = min_touches
 
-    def map(self, df: pd.DataFrame, pip_size: float = 0.0001) -> LiquidityMap:
+    def map(self, df: pd.DataFrame, pip_size: float) -> LiquidityMap:
         """
         Full liquidity mapping on OHLC data.
         Returns all buy/sell side liquidity zones.
         """
-        # Per-call threshold (do NOT mutate self — keeps map() thread-safe when
-        # different-pip-size symbols are scanned concurrently).
-        threshold = 3.0 * pip_size
+        # Per-call threshold from the instrument's real pip_size (do NOT mutate
+        # self — keeps map() thread-safe when different-pip-size symbols are
+        # scanned concurrently).
+        threshold = self.equal_threshold_pips * pip_size
 
         df = df.copy().reset_index(drop=True)
         current_price = df["close"].iloc[-1]
@@ -103,7 +110,13 @@ class LiquidityMapper:
         ``i`` we mask every later unused candle within ``thr`` in one numpy op
         instead of a Python ``for j`` loop.
         """
-        thr = threshold if threshold is not None else self.equal_threshold
+        if threshold is None:
+            raise ValueError(
+                "LiquidityMapper._find_equal_levels requires an explicit "
+                "pip-derived threshold; call via map()/classify_sweep_reaction() "
+                "with the instrument's real pip_size."
+            )
+        thr = threshold
         values = df[column].values
         timestamps = df["time"].values if "time" in df.columns else [pd.Timestamp.now()] * len(df)
         zones = []
@@ -155,7 +168,12 @@ class LiquidityMapper:
         # Touch counts reuse the cached numpy column instead of a per-swing
         # pandas reduction (the original called _count_touches(df, ...) which
         # rebuilt a Series each time — the dominant cost in liquidity mapping).
-        thr2 = (threshold if threshold is not None else self.equal_threshold) * 2
+        if threshold is None:
+            raise ValueError(
+                "LiquidityMapper._find_swing_liquidity requires an explicit "
+                "pip-derived threshold; pass pip_size via map()."
+            )
+        thr2 = threshold * 2
 
         for i in range(lookback, len(values) - lookback):
             window = values[i - lookback: i + lookback + 1]
@@ -190,7 +208,12 @@ class LiquidityMapper:
 
     def _count_touches(self, df: pd.DataFrame, level: float, column: str, threshold: float | None = None) -> int:
         """Count how many candles touched near this level."""
-        thr = threshold if threshold is not None else self.equal_threshold
+        if threshold is None:
+            raise ValueError(
+                "LiquidityMapper._count_touches requires an explicit "
+                "pip-derived threshold; pass pip_size via map()."
+            )
+        thr = threshold
         return int(((df[column] - level).abs() <= thr * 2).sum())
 
     def _determine_bias(
@@ -261,7 +284,7 @@ class LiquidityMapper:
         return False
 
     def classify_sweep_reaction(
-        self, df: pd.DataFrame, pip_size: float = 0.0001,
+        self, df: pd.DataFrame, pip_size: float,
         reaction_window: int = 3,
     ) -> tuple[str, str, float]:
         """
@@ -292,7 +315,7 @@ class LiquidityMapper:
             if len(pre_reaction) < 3:
                 return ("NONE", "NEUTRAL", 0.0)
 
-            threshold = 3.0 * pip_size
+            threshold = self.equal_threshold_pips * pip_size
             equal_highs = self._find_equal_levels(pre_reaction, "high", threshold)
             equal_lows = self._find_equal_levels(pre_reaction, "low", threshold)
             swing_highs = self._find_swing_liquidity(pre_reaction, "high", threshold)

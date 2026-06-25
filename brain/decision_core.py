@@ -209,7 +209,10 @@ def run_tf_modules(
                 results["volume"] = volume.analyze(df, closed_df=closed_df)
             elif mod == "wyckoff":
                 if profile.wyckoff_enabled:
-                    wyck = WyckoffEngine(pip_size=pip_size)
+                    wyck = WyckoffEngine(
+                        pip_size=pip_size,
+                        swing_lookback=profile.swing_lookback,
+                    )
                     # WyckoffEngine self-drops the forming bar for its pattern
                     # reads and feeds its inner StructureEngine the live frame
                     # (which self-drops), so it receives the live ``df`` here to
@@ -335,6 +338,40 @@ def fvg_proximity(symbol: str) -> float:
     ).proximity
 
 
+def _ranker_kwargs_from_config(ranker_config: Any) -> dict:
+    """Map an ``OpportunityRankerConfig`` onto ``decide_opportunities`` kwargs.
+
+    This is the wiring that makes the operator-tunable ranker config actually
+    drive the live consensus path (previously the config existed but was never
+    threaded through, so the ranker silently used its own function defaults).
+    Returns an empty dict when no config is supplied, so behaviour is unchanged
+    for callers that do not pass one.
+    """
+    if ranker_config is None:
+        return {}
+    out: dict = {}
+    # Single EV ranking proxy. Prefer an explicit ``reward_risk`` field; fall
+    # back to the legacy swing value, then a neutral default.
+    rr = getattr(ranker_config, "reward_risk", None)
+    if rr is None:
+        rr = getattr(ranker_config, "swing_reward_risk", None)
+    if rr is not None:
+        out["reward_risk"] = float(rr)
+    for src, dst in (
+        ("base_win_rate", "base_win_rate"),
+        ("confidence_win_rate_gain", "confidence_win_rate_gain"),
+        ("min_expected_value", "min_expected_value"),
+        ("min_cluster_confidence", "min_cluster_confidence"),
+        ("min_cluster_contributors", "min_cluster_contributors"),
+        ("scalp_modules", "scalp_modules"),
+        ("swing_modules", "swing_modules"),
+    ):
+        val = getattr(ranker_config, src, None)
+        if val is not None:
+            out[dst] = val
+    return out
+
+
 def build_consensus(
     symbol: str,
     wm: WorldModel,
@@ -351,6 +388,7 @@ def build_consensus(
     module_governor: Any = None,
     win_rate_provider: Any = None,
     weights: Optional[dict[str, float]] = None,
+    ranker_config: Any = None,
 ) -> tuple[list, list]:
     """Derive per-module directional votes + ranked opportunities from a WM.
 
@@ -636,7 +674,11 @@ def build_consensus(
                     )
                     wr_callable = None
             candidates = list(
-                decide_opportunities(votes, win_rate_provider=wr_callable)
+                decide_opportunities(
+                    votes,
+                    win_rate_provider=wr_callable,
+                    **_ranker_kwargs_from_config(ranker_config),
+                )
             )
     except Exception as exc:
         _warn_module_failure("consensus", "decide_opportunities", symbol, exc)

@@ -220,17 +220,18 @@ class EntryGate:
             return GateResult(False, "risk_reward_ok", "Inverted SL/TP for SHORT")
         reward1 = abs(tp1 - entry)
         rr1 = reward1 / risk
-        if rr1 < 1.0:
+        min_rr = getattr(self._config, "min_structural_rr", 1.0)
+        if rr1 < min_rr:
             return GateResult(
                 False, "risk_reward_ok",
-                f"TP1 R:R {rr1:.2f} < 1.0",
+                f"TP1 R:R {rr1:.2f} < {min_rr:.2f}",
             )
         reward2 = abs(tp2 - entry)
         rr2 = reward2 / risk
-        if rr2 < self._config.min_risk_reward:
+        if rr2 < min_rr:
             return GateResult(
                 False, "risk_reward_ok",
-                f"TP2 R:R {rr2:.2f} < min {self._config.min_risk_reward}",
+                f"TP2 R:R {rr2:.2f} < min {min_rr:.2f}",
             )
         return GateResult(True, "risk_reward_ok", f"R:R TP1={rr1:.2f} TP2={rr2:.2f}")
 

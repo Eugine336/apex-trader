@@ -542,6 +542,17 @@ class EntryEngine:
             # If the floor widens the SL AFTER targets are set, the effective R:R collapses
             # and the validator rejects a perfectly good setup with "R:R to TP2 below minimum".
             # Fix: apply the floor here so calculate_targets sees the real risk distance.
+            # ATR for a volatility-aware SL floor on synthetics/crypto (replaces
+            # the old hardcoded price-percentage floor). None on thin data → the
+            # method's safety-net percentage applies.
+            _floor_atr: Optional[float] = None
+            try:
+                from brain.volatility_stop import latest_atr
+                if m5_df is not None and len(m5_df) >= self._atr_stop_period:
+                    _floor_atr = latest_atr(m5_df, self._atr_stop_period)
+            except Exception:
+                _floor_atr = None
+
             stop_loss_local, risk_distance_local = self._apply_sl_floor(
                 direction=direction,
                 entry_price=target_entry_price,
@@ -551,6 +562,7 @@ class EntryEngine:
                 category=category,
                 min_risk_distance=min_risk_distance,
                 pair=pair,
+                atr=_floor_atr,
             )
 
             tp1_local, tp2_local = self.calculate_targets(
@@ -1258,6 +1270,7 @@ class EntryEngine:
         category: str,
         min_risk_distance: float,
         pair: str = "",
+        atr: Optional[float] = None,
     ) -> tuple[float, float]:
         """Widen a real-but-too-tight stop up to the per-category minimum distance.
 
@@ -1267,17 +1280,23 @@ class EntryEngine:
         otherwise valid setup. Rather than dropping it, we floor the stop to the
         minimum so the trade proceeds with a sane risk distance.
 
-        Synthetics/crypto floor to a price-relative percentage; forex, commodities
-        and indices floor to the per-category ``min_risk_pips`` distance. Only a
-        real-but-too-tight stop is widened — degenerate zones (< 1 pip) are left
-        untouched so the caller's invalid-zone rejection still fires.
+        Synthetics/crypto floor to a VOLATILITY-aware minimum (1×ATR) so the
+        stop reflects what the instrument is actually doing rather than a fixed
+        price percentage; forex, commodities and indices floor to the
+        per-category ``min_risk_pips`` distance. Only a real-but-too-tight stop
+        is widened — degenerate zones (< 1 pip) are left untouched so the
+        caller's invalid-zone rejection still fires.
 
         Returns the (possibly widened) ``(stop_loss, risk_distance)`` pair.
         """
-        if category == "synthetic":
-            floor_distance = entry_price * 0.003  # 0.3%
-        elif category == "crypto":
-            floor_distance = entry_price * 0.0015  # 0.15%
+        if category in ("synthetic", "crypto"):
+            if atr is not None and math.isfinite(atr) and atr > 0:
+                # Volatility-aware minimum: a synthetic/crypto stop should be at
+                # least one ATR wide instead of a hardcoded price percentage.
+                floor_distance = float(atr)
+            else:
+                # Safety net only when ATR is unavailable (thin data).
+                floor_distance = entry_price * (0.003 if category == "synthetic" else 0.0015)
         else:
             floor_distance = min_risk_distance
 

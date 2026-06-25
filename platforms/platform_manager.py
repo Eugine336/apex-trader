@@ -126,6 +126,7 @@ class PlatformManager:
                 reject_on_minlot_inflation=self.config.risk.reject_on_minlot_inflation,
                 max_tick_age_seconds=self.config.risk.max_tick_age_seconds,
                 max_slippage_pips=getattr(self.config.risk, "max_slippage_pips", 0.0),
+                min_rr_after_adjust=self.config.risk.min_risk_reward,
             )
             for cfg in mt5_configs
         ]

@@ -432,22 +432,27 @@ def decide_opportunities(
     *,
     scalp_modules: tuple[str, ...] | list[str] | None = None,
     swing_modules: tuple[str, ...] | list[str] | None = None,
-    scalp_reward_risk: float = 1.5,
-    swing_reward_risk: float = 2.5,
+    reward_risk: float = 2.0,
     base_win_rate: float = 0.40,
     confidence_win_rate_gain: float = 0.40,
     min_expected_value: float = 0.0,
     min_cluster_confidence: float = 0.0,
     min_cluster_contributors: int = 1,
     win_rate_provider=None,
+    **_legacy,
 ):
     """Open-ended counterpart to ``decide``.
 
     Where ``decide`` sums every vote into one scalar direction, this returns a
-    ranked list of independent opportunities (coherent vote clusters), each with
-    its own expected value.  It reuses the SAME votes and never mutates them, so
-    it can run alongside ``decide`` for shadow measurement before it drives any
-    live trade.
+    ranked list of independent opportunities (one coherent vote cluster per
+    DIRECTION — no upfront scalp/swing split), each with its own expected value.
+    It reuses the SAME votes and never mutates them, so it can run alongside
+    ``decide`` for shadow measurement before it drives any live trade.
+
+    A single ``reward_risk`` is used as the EV ranking proxy; the trade's real
+    reward:risk comes from structural targets at the entry layer. Legacy
+    ``scalp_reward_risk`` / ``swing_reward_risk`` keyword arguments are accepted
+    and ignored for backward compatibility.
 
     Imported lazily to avoid a circular import (opportunity_ranker imports
     ``Vote`` from this module).
@@ -462,8 +467,7 @@ def decide_opportunities(
         votes,
         scalp_modules=scalp_modules if scalp_modules is not None else DEFAULT_SCALP_MODULES,
         swing_modules=swing_modules if swing_modules is not None else DEFAULT_SWING_MODULES,
-        scalp_reward_risk=scalp_reward_risk,
-        swing_reward_risk=swing_reward_risk,
+        reward_risk=reward_risk,
         base_win_rate=base_win_rate,
         confidence_win_rate_gain=confidence_win_rate_gain,
         min_expected_value=min_expected_value,

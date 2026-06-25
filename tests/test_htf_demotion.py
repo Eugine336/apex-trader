@@ -1,17 +1,15 @@
-"""Tests for HTF demotion to pure context, scaled by ranker horizon.
+"""Tests for HTF authority weighting across ranker horizons.
 
-When the opportunity ranker selects the live direction, higher-timeframe
-(H4/D1) bias downstream is scaled by the selected opportunity's horizon instead
-of holding blanket authority:
+Opportunistic-trading rewire: the system no longer demotes higher-timeframe
+(H4/D1) authority based on a SCALP/SWING label. The MARKET decides the
+opportunity, and HTF context is weighed UNIFORMLY for every trade by default
+(scale 1.0 for every horizon). The horizon-scaling MECHANISM is retained — and
+still works when an operator explicitly configures per-horizon scales — but it
+is inert out of the box.
 
-  * SCALP  → HTF demoted to pure context (scale 0.0)
-  * SWING  → HTF keeps full authority   (scale 1.0)
-  * MIXED  → HTF at half authority       (scale 0.5)
-  * ""     → no ranker horizon → full authority (unchanged fallback)
-
-These tests cover the config, the EntryEngine H4 counter-trend penalty scaling,
-and the DecisionEngine HTF enter/skip/conviction weight scaling (including the
-SKIP→ENTER flip a demoted HTF produces for a counter-HTF scalp).
+These tests cover the uniform defaults, the (opt-in) EntryEngine and
+DecisionEngine scaling mechanisms, and the default decide_entry behaviour
+(horizon does not change the verdict).
 """
 
 import pytest
@@ -31,11 +29,12 @@ class TestOpportunityRankerConfig:
         cfg = OpportunityRankerConfig()
         assert cfg.execute is True
 
-    def test_default_horizon_scales(self):
+    def test_default_horizon_scales_are_uniform(self):
+        # HTF authority is uniform by default — no per-horizon demotion.
         cfg = OpportunityRankerConfig()
-        assert cfg.scalp_htf_penalty_scale == 0.0
+        assert cfg.scalp_htf_penalty_scale == 1.0
         assert cfg.swing_htf_penalty_scale == 1.0
-        assert cfg.mixed_htf_penalty_scale == 0.5
+        assert cfg.mixed_htf_penalty_scale == 1.0
 
     @pytest.mark.parametrize("field", [
         "scalp_htf_penalty_scale",
@@ -64,14 +63,11 @@ class TestEntryEnginePenaltyScale:
         eng.config.opportunity_ranker = OpportunityRankerConfig(**cfg_overrides)
         return eng
 
-    def test_scalp_demotes_to_zero(self):
-        assert self._engine()._htf_penalty_scale("SCALP") == 0.0
-
-    def test_swing_keeps_full_authority(self):
-        assert self._engine()._htf_penalty_scale("SWING") == 1.0
-
-    def test_mixed_is_half(self):
-        assert self._engine()._htf_penalty_scale("MIXED") == 0.5
+    def test_uniform_full_authority_by_default(self):
+        eng = self._engine()
+        assert eng._htf_penalty_scale("SCALP") == 1.0
+        assert eng._htf_penalty_scale("SWING") == 1.0
+        assert eng._htf_penalty_scale("MIXED") == 1.0
 
     def test_no_horizon_is_full_authority(self):
         eng = self._engine()
@@ -79,14 +75,8 @@ class TestEntryEnginePenaltyScale:
         assert eng._htf_penalty_scale(None) == 1.0
         assert eng._htf_penalty_scale("UNKNOWN") == 1.0
 
-    def test_applied_penalty_scales_with_horizon(self):
-        eng = self._engine()
-        base = 15
-        assert int(round(base * eng._htf_penalty_scale("SCALP"))) == 0
-        assert int(round(base * eng._htf_penalty_scale("SWING"))) == 15
-        assert int(round(base * eng._htf_penalty_scale("MIXED"))) == 8
-
-    def test_custom_scales_respected(self):
+    def test_custom_scales_still_respected(self):
+        # The mechanism remains tunable for operators who opt in.
         eng = self._engine(scalp_htf_penalty_scale=0.25)
         assert eng._htf_penalty_scale("SCALP") == 0.25
 
@@ -94,25 +84,39 @@ class TestEntryEnginePenaltyScale:
 # ── DecisionEngine HTF weight scaling ─────────────────────────────────────────
 
 class TestDecisionEngineHorizonScaling:
-    def test_scale_lookup(self):
+    def test_uniform_full_authority_by_default(self):
+        de = DecisionEngine()
+        assert de._horizon_htf_scale("SCALP") == 1.0
+        assert de._horizon_htf_scale("SWING") == 1.0
+        assert de._horizon_htf_scale("MIXED") == 1.0
+        assert de._horizon_htf_scale("") == 1.0
+
+    def test_scale_lookup_with_explicit_args(self):
+        # The mechanism still honours explicit per-horizon scales when set.
         de = DecisionEngine(scalp_htf_scale=0.0, swing_htf_scale=1.0, mixed_htf_scale=0.5)
         assert de._horizon_htf_scale("SCALP") == 0.0
         assert de._horizon_htf_scale("SWING") == 1.0
         assert de._horizon_htf_scale("MIXED") == 0.5
-        # No ranker horizon keeps full authority.
         assert de._horizon_htf_scale("") == 1.0
         assert de._horizon_htf_scale("anything") == 1.0
 
-    def test_scalp_zeroes_htf_weights(self):
+    def test_default_engine_leaves_weights_unchanged(self):
         de = DecisionEngine()
+        w = DecisionWeights()
+        # Uniform default (scale 1.0) → weights returned unchanged for any horizon.
+        assert de._apply_horizon_scaling(w, "SCALP") is w
+        assert de._apply_horizon_scaling(w, "MIXED") is w
+
+    def test_explicit_scalp_zeroes_htf_weights(self):
+        de = DecisionEngine(scalp_htf_scale=0.0)
         w = DecisionWeights()
         scaled = de._apply_horizon_scaling(w, "SCALP")
         assert scaled.enter_htf == 0.0
         assert scaled.skip_htf == 0.0
         assert scaled.conviction_htf == 0.0
 
-    def test_conviction_sum_is_preserved(self):
-        de = DecisionEngine()
+    def test_conviction_sum_is_preserved_when_scaled(self):
+        de = DecisionEngine(scalp_htf_scale=0.0)
         w = DecisionWeights()
         scaled = de._apply_horizon_scaling(w, "SCALP")
         base_sum = (w.conviction_htf + w.conviction_structure
@@ -124,12 +128,12 @@ class TestDecisionEngineHorizonScaling:
         assert scaled.conviction_momentum > w.conviction_momentum
 
     def test_empty_horizon_returns_weights_unchanged(self):
-        de = DecisionEngine()
+        de = DecisionEngine(scalp_htf_scale=0.0)
         w = DecisionWeights()
         assert de._apply_horizon_scaling(w, "") is w
 
-    def test_mixed_halves_htf_weights(self):
-        de = DecisionEngine()
+    def test_explicit_mixed_halves_htf_weights(self):
+        de = DecisionEngine(mixed_htf_scale=0.5)
         w = DecisionWeights()
         scaled = de._apply_horizon_scaling(w, "MIXED")
         assert scaled.enter_htf == pytest.approx(w.enter_htf * 0.5)
@@ -174,31 +178,23 @@ def _neutral_sa() -> SituationAssessment:
     )
 
 
-class TestDecideEntryHtfDemotion:
-    def test_scalp_demotion_flips_skip_to_enter(self):
-        # Reversal disabled so the only counter-HTF pressure is the HTF skip
-        # weight — isolating the demotion effect.
+class TestDecideEntryUniformHtf:
+    def test_horizon_does_not_change_default_verdict(self):
+        # Opportunistic-trading rewire: by default HTF is uniform, so a SCALP
+        # label no longer flips a counter-HTF skip into an entry.
         de = DecisionEngine(reversal_enabled=False)
         sa = _neutral_sa()
-
         no_horizon = de.decide_entry(_counter_htf_ctx(""), sa)
         scalp = de.decide_entry(_counter_htf_ctx("SCALP"), sa)
+        swing = de.decide_entry(_counter_htf_ctx("SWING"), sa)
+        assert no_horizon.action == scalp.action == swing.action
 
-        # Full HTF authority skips the counter-HTF trade...
-        assert no_horizon.action == EntryAction.SKIP
-        # ...but a SCALP idea treats HTF as context and is graded on its merits.
-        assert scalp.action != EntryAction.SKIP
-
-    def test_swing_keeps_htf_authority(self):
-        de = DecisionEngine(reversal_enabled=False)
+    def test_explicit_scalp_demotion_flips_skip_to_enter(self):
+        # The mechanism still works when an operator explicitly opts in.
+        de = DecisionEngine(reversal_enabled=False, scalp_htf_scale=0.0)
         sa = _neutral_sa()
         no_horizon = de.decide_entry(_counter_htf_ctx(""), sa)
-        swing = de.decide_entry(_counter_htf_ctx("SWING"), sa)
-        # SWING behaves identically to the no-horizon fallback (full authority).
-        assert swing.action == no_horizon.action == EntryAction.SKIP
+        scalp = de.decide_entry(_counter_htf_ctx("SCALP"), sa)
+        assert no_horizon.action == EntryAction.SKIP
+        assert scalp.action != EntryAction.SKIP
 
-    def test_scalp_demotion_logged_in_evidence(self):
-        de = DecisionEngine(reversal_enabled=False)
-        sa = _neutral_sa()
-        decision = de.decide_entry(_counter_htf_ctx("SCALP"), sa)
-        assert any("HTF demoted" in e for e in decision.evidence) or "HTF demoted" in decision.reason

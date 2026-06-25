@@ -27,12 +27,16 @@ from loguru import logger
 
 from brain.directional_consensus import Vote
 
-# ── Timeframe classification ──────────────────────────────────────────────
-# Fast modules read micro/intrasession structure (scalp horizon); slow modules
-# read higher-timeframe / positional structure (swing horizon).  These are the
-# defaults — callers (via OpportunityRankerConfig) can override them.
+# ── Horizon labels — INFORMATIONAL ONLY ───────────────────────────────────
+# Opportunistic-trading rewire: the system no longer decides "this is a scalp"
+# or "this is a swing" up front and then applies different rules per box. The
+# MARKET decides what the opportunity is; the system reads the evidence and
+# takes whatever opportunity is there. These labels are kept purely so
+# dashboards / the trade journal can SHOW which horizons the evidence spanned —
+# they never gate a trade, size it, scale HTF authority, or pick a winner.
 SCALP = "SCALP"
 SWING = "SWING"
+MIXED = "MIXED"
 
 DEFAULT_SCALP_MODULES: tuple[str, ...] = ("momentum", "volume", "vwap", "liquidity")
 DEFAULT_SWING_MODULES: tuple[str, ...] = (
@@ -68,7 +72,7 @@ class Opportunity:
     """
 
     direction: str               # "LONG" or "SHORT"
-    timeframe_class: str         # "SCALP" or "SWING"
+    timeframe_class: str         # INFORMATIONAL horizon label (SCALP/SWING/MIXED)
     expected_value: float        # EV in R units (reward/risk-adjusted)
     confidence: float            # 0.0 .. 1.0 — weighted-mean cluster confidence
     coherence: float             # 0.0 .. 1.0 — cluster mass / (cluster + opposing same-tf mass)
@@ -132,26 +136,54 @@ def classify_timeframe(
 
 def cluster_votes(
     votes: list[Vote],
-    scalp_modules: tuple[str, ...] | list[str] = DEFAULT_SCALP_MODULES,
-    swing_modules: tuple[str, ...] | list[str] = DEFAULT_SWING_MODULES,
-) -> dict[tuple[str, str], list[Vote]]:
-    """Group non-neutral votes into clusters keyed by (direction, timeframe_class).
+    *_legacy_module_lists,
+) -> dict[str, list[Vote]]:
+    """Group non-neutral votes into clusters keyed by DIRECTION only.
 
-    Coherent clusters form naturally: the fast modules agreeing on a direction
-    become one cluster, the slow modules agreeing on a (possibly different)
-    direction become another.  NEUTRAL/abstaining votes are dropped.
+    Opportunistic-trading rewire: the system no longer pre-sorts evidence into
+    a SCALP/SWING horizon bucket before deciding. The market decides what the
+    opportunity is — every vote agreeing on a direction forms one coherent
+    opportunity; the opposing votes form the other. NEUTRAL/abstaining votes are
+    dropped.
+
+    Legacy ``scalp_modules`` / ``swing_modules`` positional arguments are
+    accepted and ignored for backward compatibility with older call sites.
     """
-    clusters: dict[tuple[str, str], list[Vote]] = {}
+    clusters: dict[str, list[Vote]] = {}
     for v in votes:
         if v.direction not in ("LONG", "SHORT"):
             continue
         if v.confidence <= 0.0 or v.weight <= 0.0:
             continue
-        tf = classify_timeframe(
+        clusters.setdefault(v.direction, []).append(v)
+    return clusters
+
+
+def summarize_horizon(
+    cluster: list[Vote],
+    scalp_modules: tuple[str, ...] | list[str] = DEFAULT_SCALP_MODULES,
+    swing_modules: tuple[str, ...] | list[str] = DEFAULT_SWING_MODULES,
+) -> str:
+    """Informational-only horizon label for a direction cluster.
+
+    The decision pipeline NEVER branches on this — it exists purely so a
+    consumer (dashboard / trade journal) can see which horizons the evidence
+    spanned: SCALP when every contributing vote is fast, SWING when every one is
+    slow, otherwise MIXED. It does not gate, size, scale HTF, or select a winner.
+    """
+    classes = {
+        classify_timeframe(
             v.module, scalp_modules, swing_modules, getattr(v, "timeframe", ""),
         )
-        clusters.setdefault((v.direction, tf), []).append(v)
-    return clusters
+        for v in cluster
+    }
+    if not classes:
+        return MIXED
+    if classes == {SCALP}:
+        return SCALP
+    if classes == {SWING}:
+        return SWING
+    return MIXED
 
 
 def score_opportunity(
@@ -163,22 +195,25 @@ def score_opportunity(
     reward_risk: float,
     base_win_rate: float,
     confidence_win_rate_gain: float,
-    scalp_modules: tuple[str, ...] | list[str] = DEFAULT_SCALP_MODULES,
-    swing_modules: tuple[str, ...] | list[str] = DEFAULT_SWING_MODULES,
     win_rate_provider: Optional[WinRateProvider] = None,
 ) -> Opportunity:
-    """Score one cluster as an independent opportunity with EV in R units.
+    """Score one direction cluster as an independent opportunity with EV in R.
 
     EV = p_win × reward_risk − (1 − p_win) × 1.0
 
     ``p_win`` is derived from the cluster's weighted-mean confidence scaled by
-    its *coherence* — how dominant the cluster is versus opposing votes on the
-    SAME timeframe horizon.  A fast SHORT scalp is judged against opposing fast
-    votes, not against slow swing votes that simply see a different trade.
+    its *coherence* — how dominant the cluster is versus ALL opposing votes,
+    regardless of which timeframe they came from. The system no longer carves
+    opposition into a same-horizon bucket: a LONG idea is judged against every
+    SHORT vote, because the market does not care which timeframe disagreed.
 
-    When a ``win_rate_provider`` returns a calibrated probability for
-    (direction, timeframe_class) it overrides the modelled formula — the
-    provenance is recorded on ``win_prob_components`` either way (collapse #27).
+    ``timeframe_class`` is an informational label only (see ``summarize_horizon``)
+    — it is stamped on the result and handed to a calibrated ``win_rate_provider``
+    if one is wired, but it never changes the EV math or the ranking.
+
+    ``reward_risk`` here is a single ranking proxy for EV; the trade's ACTUAL
+    reward:risk is derived later from structural targets at the entry layer, not
+    from a per-horizon constant.
     """
     cluster_mass = sum(abs(v.signed) for v in cluster)
     weight_sum = sum(v.weight for v in cluster)
@@ -188,15 +223,11 @@ def score_opportunity(
         else 0.0
     )
 
-    # Opposing mass on the SAME timeframe horizon (a real disagreement about
-    # this idea), not cross-horizon votes that describe a different trade.
+    # Opposing mass = every opposite-direction vote, any timeframe. A real
+    # disagreement about THIS idea is any evidence pointing the other way.
     opposing_mass = 0.0
     for v in all_votes:
         if v.direction not in ("LONG", "SHORT") or v.direction == direction:
-            continue
-        if classify_timeframe(
-            v.module, scalp_modules, swing_modules, getattr(v, "timeframe", ""),
-        ) != timeframe_class:
             continue
         opposing_mass += abs(v.signed)
 
@@ -257,43 +288,47 @@ def score_opportunity(
 def rank_opportunities(
     votes: list[Vote],
     *,
-    scalp_modules: tuple[str, ...] | list[str] = DEFAULT_SCALP_MODULES,
-    swing_modules: tuple[str, ...] | list[str] = DEFAULT_SWING_MODULES,
-    scalp_reward_risk: float = 1.5,
-    swing_reward_risk: float = 2.5,
+    reward_risk: float = 2.0,
     base_win_rate: float = 0.40,
     confidence_win_rate_gain: float = 0.40,
     min_expected_value: float = 0.0,
     min_cluster_confidence: float = 0.0,
     min_cluster_contributors: int = 1,
     win_rate_provider: Optional[WinRateProvider] = None,
+    scalp_modules: tuple[str, ...] | list[str] = DEFAULT_SCALP_MODULES,
+    swing_modules: tuple[str, ...] | list[str] = DEFAULT_SWING_MODULES,
+    **_legacy,
 ) -> list[Opportunity]:
     """Cluster, score, filter and rank every coherent opportunity in the panel.
 
-    Returns the FULL list ordered best-first by expected value — the ranked
-    tail is never truncated here (collapse #13): every coherent idea that
-    clears the EV / confidence / contributor floors survives so the executor /
-    orchestrator can choose among ALL of them by capacity, not a hardcoded
-    top-N.  When nothing clears the floors the list is empty (the "no trade"
-    answer, graded on quality rather than forced by a summation to NEUTRAL).
+    Clusters are formed by DIRECTION only — no upfront scalp/swing split. Each
+    surviving cluster is scored on a single ``reward_risk`` ranking proxy (the
+    trade's real R:R comes from structural targets downstream, not a horizon
+    constant). Returns the FULL list ordered best-first by expected value: every
+    coherent idea that clears the EV / confidence / contributor floors survives
+    so the executor can choose among ALL of them by capacity, not a hardcoded
+    top-N. An empty list is the "no trade" answer, graded on quality rather than
+    forced by a summation to NEUTRAL.
+
+    ``scalp_modules`` / ``swing_modules`` are used only to derive the
+    informational horizon label. Legacy ``scalp_reward_risk`` /
+    ``swing_reward_risk`` keyword arguments are accepted and ignored.
     """
-    clusters = cluster_votes(votes, scalp_modules, swing_modules)
+    clusters = cluster_votes(votes)
     opportunities: list[Opportunity] = []
 
-    for (direction, tf), cluster in clusters.items():
+    for direction, cluster in clusters.items():
         if len(cluster) < min_cluster_contributors:
             continue
-        reward_risk = scalp_reward_risk if tf == SCALP else swing_reward_risk
+        horizon = summarize_horizon(cluster, scalp_modules, swing_modules)
         opp = score_opportunity(
             direction,
-            tf,
+            horizon,
             cluster,
             votes,
             reward_risk=reward_risk,
             base_win_rate=base_win_rate,
             confidence_win_rate_gain=confidence_win_rate_gain,
-            scalp_modules=scalp_modules,
-            swing_modules=swing_modules,
             win_rate_provider=win_rate_provider,
         )
         if opp.confidence < min_cluster_confidence:

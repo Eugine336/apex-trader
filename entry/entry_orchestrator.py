@@ -277,6 +277,64 @@ class EntryOrchestrator:
             logger.debug("[entry-orch] alignment read failed for {}: {}", symbol, exc)
             return None
 
+    def _derive_targets(
+        self,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        sl: float,
+    ) -> tuple[float, float]:
+        """Take-profit targets from MARKET structure, not a hardcoded multiple.
+
+        The opportunistic-trading rewire reads the next structural levels ahead
+        of price (FVG / order block / liquidity pool from the WorldModel) and
+        uses them as TP1 (nearest qualifying target) and TP2 (next structural
+        level beyond it). A target only qualifies if it is at least
+        ``min_structural_rr`` × risk away, so the trade's reward:risk is set by
+        what the market is presenting rather than a fixed R-multiple.
+
+        Falls back to a risk-multiple target (a safety net) only when the brain
+        exposes no structure ahead — the downstream EntryEngine still applies
+        its ATR-based SL/TP refinement ("tighter wins") afterwards.
+        """
+        risk = abs(entry_price - sl)
+        if risk <= 0:
+            risk = entry_price * 0.001 if entry_price > 0 else 1.0
+        is_long = str(direction).upper() == "LONG"
+        min_rr = getattr(self._config, "min_structural_rr", 1.0)
+        min_distance = risk * max(min_rr, 0.0)
+
+        targets: list[float] = []
+        if self._wm_store is not None:
+            try:
+                wm = self._wm_store.get(symbol)
+                if wm is not None:
+                    targets = wm.get_structural_targets(
+                        direction, entry_price, min_distance=min_distance,
+                    )
+            except Exception as exc:
+                logger.debug(
+                    "[entry-orch] structural targets failed for {}: {}", symbol, exc,
+                )
+                targets = []
+
+        if targets:
+            tp1 = targets[0]
+            # TP2 = next structural level beyond TP1 (else extend by one more R).
+            tp2 = next((t for t in targets if abs(t - entry_price) > abs(tp1 - entry_price)), None)
+            if tp2 is None:
+                extra = abs(tp1 - entry_price) + risk
+                tp2 = entry_price + extra if is_long else entry_price - extra
+            return tp1, tp2
+
+        # Safety-net fallback: no structure ahead → risk-multiple targets. The
+        # multiples respect the structural-R:R floor so the gate still passes.
+        rr1 = max(min_rr, 1.5)
+        rr2 = max(min_rr * 2.0, 3.0)
+        if is_long:
+            return entry_price + risk * rr1, entry_price + risk * rr2
+        return entry_price - risk * rr1, entry_price - risk * rr2
+
     def _run_gates_and_emit(
         self,
         symbol: str,
@@ -293,14 +351,11 @@ class EntryOrchestrator:
         if risk_pips <= 0:
             risk_pips = 10.0
 
-        if direction == "LONG":
-            sl = zone.invalidation_level
-            tp1 = entry_price + abs(entry_price - sl) * 1.5
-            tp2 = entry_price + abs(entry_price - sl) * 3.0
-        else:
-            sl = zone.invalidation_level
-            tp1 = entry_price - abs(entry_price - sl) * 1.5
-            tp2 = entry_price - abs(entry_price - sl) * 3.0
+        # SL sits at the zone's invalidation level for both directions — the
+        # level where the thesis is wrong. Targets come from market structure.
+        sl = zone.invalidation_level
+
+        tp1, tp2 = self._derive_targets(symbol, direction, entry_price, sl)
 
         spread_pips = self._get_spread(symbol)
 
