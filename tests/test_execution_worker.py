@@ -121,6 +121,56 @@ class TestStopLoss:
         assert not any(i.source == "stop_loss" for i in intents)
 
 
+class TestSlPendingConfirmation:
+    """A failed/in-flight MODIFY_SL must never trigger a phantom stop-loss CLOSE.
+
+    When a worker-path SL move is optimistically applied but not yet confirmed
+    by the broker, the snapshot carries ``sl_pending_confirmation=True``. The
+    synthetic stop-hit check must be suppressed for that cycle so a
+    broker-rejected SL ("Invalid stops") cannot close a still-open position.
+    """
+
+    def test_pending_suppresses_phantom_stop_close_short(self):
+        # SELL with price ABOVE the (unconfirmed) SL — would normally be an SL
+        # hit. With the modify pending broker confirmation, no CLOSE is emitted.
+        snap = _snap(
+            direction="SELL", entry_price=1.10, sl=1.11,
+            sl_original=1.11, tp1=1.09, tp2=1.08,
+            current_price=1.11100,
+            sl_pending_confirmation=True,
+        )
+        worker = PositionWorker()
+        intents = worker.evaluate(snap, NOW)
+        assert not any(i.source == "stop_loss" for i in intents)
+        assert not any(i.intent_type == IntentType.CLOSE for i in intents)
+
+    def test_pending_suppresses_phantom_stop_close_long(self):
+        snap = _snap(
+            direction="BUY", sl=1.09900, current_price=1.09800,
+            sl_pending_confirmation=True,
+        )
+        worker = PositionWorker()
+        intents = worker.evaluate(snap, NOW)
+        assert not any(i.source == "stop_loss" for i in intents)
+        assert not any(i.intent_type == IntentType.CLOSE for i in intents)
+
+    def test_confirmed_sl_still_fires_when_not_pending(self):
+        # Control: once the SL is confirmed (not pending), a genuine stop hit
+        # still closes the position as before.
+        snap = _snap(
+            direction="SELL", entry_price=1.10, sl=1.11,
+            sl_original=1.11, tp1=1.09, tp2=1.08,
+            current_price=1.11100,
+            sl_pending_confirmation=False,
+        )
+        worker = PositionWorker()
+        intents = worker.evaluate(snap, NOW)
+        assert any(
+            i.intent_type == IntentType.CLOSE and "SL hit" in i.reason
+            for i in intents
+        )
+
+
 class TestTP1:
     def test_long_tp1_hit_mt5(self):
         snap = _snap(tp1=1.105, current_price=1.106, partial_closed=False)

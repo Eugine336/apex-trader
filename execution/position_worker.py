@@ -264,7 +264,14 @@ class PositionWorker:
         past_grace = age_seconds >= self.cfg.min_hold_seconds
 
         # ── Layer 1: Tick-level checks (TradeManager.update logic) ────
-        self._check_stop_loss(snap, intents)
+        # Skip the synthetic stop-hit check while a worker-path SL move is in
+        # flight but unconfirmed: the optimistic mutation has written the new
+        # (still-unconfirmed) level into the snapshot, and a broker rejection
+        # ("Invalid stops") would otherwise let this check fire a phantom
+        # stop-loss CLOSE against a level the broker never accepted. The broker
+        # still enforces the real stop server-side during this brief window.
+        if not snap.sl_pending_confirmation:
+            self._check_stop_loss(snap, intents)
         self._check_tp1(snap, intents)
         self._check_breakeven(snap, intents)
         self._check_tp3(snap, intents)

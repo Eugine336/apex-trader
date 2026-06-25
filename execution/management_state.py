@@ -61,6 +61,16 @@ class ManagementState:
     # backtest plane, which captures entry OQ/EQ from the WorldModel at open.
     entry_oq: Optional[float] = None
     entry_eq: Optional[float] = None
+    # Transient (never persisted): a worker-path SL move is optimistically
+    # written into ``stop_loss`` before the broker confirms it. While the modify
+    # is in flight the synthetic stop-hit check must NOT fire against this
+    # unconfirmed level — a broker rejection ("Invalid stops") would otherwise
+    # leave the rejected SL in place long enough for a phantom stop-hit CLOSE.
+    # ``sl_modify_pending_until`` is a monotonic deadline (auto-expires so the
+    # guard can never get stuck); ``sl_pending_confirmation`` is the per-cycle
+    # boolean derived from it that the snapshot carries to the worker.
+    sl_modify_pending_until: float = 0.0
+    sl_pending_confirmation: bool = False
 
 
 from runtime_paths import data_dir as _data_dir  # noqa: E402
