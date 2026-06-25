@@ -25,6 +25,7 @@ import pandas as pd
 from loguru import logger
 
 from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open, is_session_gated
+from brain.symbol_mapper import resolve_to_internal
 from brain.world_model import WorldModelStore
 from compliance import (
     ComplianceAccount,
@@ -991,10 +992,10 @@ class PositionEvaluator:
             )
             if spec and spec.get("pip_size", 0) > 0:
                 return float(spec["pip_size"])
-            return float(get_pip_size(symbol))
+            return float(get_pip_size(resolve_to_internal(symbol)))
         except Exception:
             try:
-                return float(get_pip_size(symbol))
+                return float(get_pip_size(resolve_to_internal(symbol)))
             except Exception:
                 return 0.0001
 
@@ -4058,17 +4059,33 @@ class EventDrivenSystem:
         # ── Portfolio risk state machine ──
         if ctx.portfolio_risk_sm is not None:
             try:
-                equity = 0.0
-                try:
-                    equity = float(self._pm.get_total_equity() or 0.0)
-                except Exception:
+                # Issue #4: heat must be PER ACCOUNT, not against combined
+                # equity. A $27 MT5 account carrying a risky position would
+                # look harmless when diluted against a $9,999 Deriv balance —
+                # so the state machine is driven by the WORST single-account
+                # heat (risk_$ / that account's own balance). This keeps a
+                # multi-broker setup from masking one account's danger behind
+                # another's idle capital. Falls back to combined-equity heat
+                # only when per-account data is unavailable.
+                heat_pct = 0.0
+                if ctx.account_risk is not None and acct_risk_dollars:
+                    for _acct, _risk_d in acct_risk_dollars.items():
+                        _bal = ctx.account_risk.balance(_acct)
+                        _h = (_risk_d / _bal * 100.0) if _bal > 0 else 0.0
+                        if _h > heat_pct:
+                            heat_pct = _h
+                else:
                     equity = 0.0
-                if equity <= 0 and ctx.account_risk is not None:
-                    equity = ctx.account_risk.total_balance()
-                heat_pct = (
-                    compute_live_heat_pct(position_risks, equity)
-                    if equity > 0 else 0.0
-                )
+                    try:
+                        equity = float(self._pm.get_total_equity() or 0.0)
+                    except Exception:
+                        equity = 0.0
+                    if equity <= 0 and ctx.account_risk is not None:
+                        equity = ctx.account_risk.total_balance()
+                    heat_pct = (
+                        compute_live_heat_pct(position_risks, equity)
+                        if equity > 0 else 0.0
+                    )
                 corr_safe, max_exposure = self._portfolio_correlation_state(positions)
                 snapshot = PortfolioRiskSnapshot(
                     live_heat_pct=heat_pct,
@@ -4155,19 +4172,41 @@ class EventDrivenSystem:
                 return
 
             if state == PortfolioRiskState.EMERGENCY:
+                # Issue #4: only flatten positions on accounts that are
+                # ACTUALLY hot. A multi-broker book must not nuke a calm
+                # account's positions because a different account overheated.
+                # When per-account heat is unavailable, fall back to flattening
+                # everything (fail-safe — better to over-close than leave risk).
+                emerg_pct = getattr(
+                    ctx.portfolio_risk_sm, "heat_emergency_pct", 4.0,
+                )
+                acct_risk = getattr(ctx, "account_risk", None)
+                closed = 0
+                skipped = 0
                 for pos in positions:
                     ticket = str(getattr(pos, "order_id", getattr(pos, "ticket", "")))
                     symbol = getattr(pos, "symbol", "")
-                    if ticket:
-                        self._aggregator.submit([Intent.close(
-                            symbol=symbol,
-                            ticket=ticket,
-                            source="heat_monitor",
-                            reason="portfolio_heat_emergency",
-                        )])
+                    if not ticket:
+                        continue
+                    if acct_risk is not None and symbol:
+                        try:
+                            acct = ctx.account_key(symbol, self._pm)
+                            if acct and acct_risk.heat(acct) < emerg_pct:
+                                skipped += 1
+                                continue
+                        except Exception:
+                            pass
+                    self._aggregator.submit([Intent.close(
+                        symbol=symbol,
+                        ticket=ticket,
+                        source="heat_monitor",
+                        reason="portfolio_heat_emergency",
+                    )])
+                    closed += 1
                 logger.warning(
-                    "[heat-monitor] EMERGENCY — {} CLOSE intents for all positions",
-                    len(positions),
+                    "[heat-monitor] EMERGENCY — {} CLOSE intent(s) for hot "
+                    "account(s); {} position(s) on calm accounts left open",
+                    closed, skipped,
                 )
                 return
 
@@ -4695,7 +4734,7 @@ class EventDrivenSystem:
                 sl = getattr(pos, "sl", 0.0) or 0.0
                 pip_size = 0.0001
                 try:
-                    pip_size = get_pip_size(getattr(pos, "symbol", ""))
+                    pip_size = get_pip_size(resolve_to_internal(getattr(pos, "symbol", "")))
                 except Exception:
                     pass
                 self._mgmt_store.get_or_create(
@@ -4745,7 +4784,7 @@ class EventDrivenSystem:
 
     def _safe_pip_size(self, symbol: str) -> float:
         try:
-            return get_pip_size(symbol)
+            return get_pip_size(resolve_to_internal(symbol))
         except Exception:
             return 0.0001
 
@@ -7148,9 +7187,41 @@ class EventDrivenSystem:
             # Snap MT5 lots to the broker's volume_min/max/step so an
             # unaligned size is never rejected (broker-truth constraints).
             if size_result.lots > 0:
+                pre_snap_lots = size_result.lots
                 size_result.lots = self._snap_to_broker_volume(
                     symbol, size_result.lots,
                 )
+                # Issue #3: the broker min lot can floor the size UPWARD (e.g.
+                # DE40 min lot 0.10 vs a sized 0.01). The sizer validated the
+                # pre-snap size, so re-check the post-snap max loss against the
+                # PER-ACCOUNT balance (the account this symbol trades on, not
+                # the aggregate). Min-lot inflation on indices/synthetics can
+                # turn a safe 0.01-lot plan into a position that risks the whole
+                # micro account — reject rather than silently accept it.
+                if (
+                    not pctx.uses_stake
+                    and size_result.lots > pre_snap_lots + 1e-9
+                    and pip_size > 0 and pip_value > 0
+                    and (balance or 0.0) > 0
+                ):
+                    snap_risk_pips = abs(entry_price - sl) / pip_size
+                    snap_max_loss = (
+                        size_result.lots * snap_risk_pips * pip_value
+                    )
+                    ceiling_pct = float(
+                        getattr(shared_sizer, "max_risk_pct_per_trade", 5.0)
+                    )
+                    snap_risk_pct = (snap_max_loss / (balance or 0.0)) * 100.0
+                    if snap_risk_pct > ceiling_pct + 1e-9:
+                        logger.warning(
+                            "EVENT-DRIVEN ENTRY SKIPPED | {} — broker min lot {:.2f} "
+                            "risks {:.1f}% (${:.2f}) of ${:.2f} account, exceeds "
+                            "{:.1f}% cap (sized {:.2f} lots pre-snap)",
+                            symbol, size_result.lots, snap_risk_pct,
+                            snap_max_loss, balance or 0.0, ceiling_pct,
+                            pre_snap_lots,
+                        )
+                        return
 
             # ── Execute order ────────────────────────────────────────
             order_ts = _time.time()

@@ -14,7 +14,7 @@ import pandas as pd
 from loguru import logger
 
 from config import get_pip_size
-from brain.symbol_mapper import SymbolMapper
+from brain.symbol_mapper import SymbolMapper, resolve_to_internal
 from ops.redaction import mask_account_id
 from platforms.order_idempotency import build_order_comment, extract_idempotency_key
 from platforms.base_connector import (
@@ -788,15 +788,22 @@ class MT5Connector(BaseConnector):
                 direction, mapped, lots, filled_lots,
             )
 
-        pip_size = get_pip_size(symbol)
-        slippage = abs(result.price - price) / pip_size
+        pip_size = get_pip_size(resolve_to_internal(symbol))
+        slippage = abs(result.price - price) / pip_size if pip_size > 0 else 0.0
 
         # Loud backstop: the deviation cap should have rejected/requoted a fill
         # beyond tolerance, but market-execution accounts may ignore deviation.
+        # The order's SL/TP are absolute price levels already submitted to the
+        # broker, so they remain enforced server-side regardless of slippage.
+        # We surface severe slippage at ERROR so monitoring catches a degraded
+        # entry R:R; a normal overshoot stays at WARNING.
         if self._max_slippage_pips > 0 and slippage > self._max_slippage_pips + 1e-9:
-            logger.warning(
-                "⚠️ SLIPPAGE EXCEEDED — {} {} filled {:.1f}pip beyond plan "
+            severe = slippage > (3.0 * self._max_slippage_pips)
+            log = logger.error if severe else logger.warning
+            log(
+                "{} SLIPPAGE EXCEEDED — {} {} filled {:.1f}pip beyond plan "
                 "(cap {:.1f}pip); broker may not honour deviation on this account",
+                "🚨" if severe else "⚠️",
                 direction, mapped, slippage, self._max_slippage_pips,
             )
 
