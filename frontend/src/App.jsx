@@ -18,6 +18,7 @@ import Feedback from "./pages/engine/Feedback";
 import Governor from "./pages/engine/Governor";
 import Learning from "./pages/engine/Learning";
 import AdaptiveLearning from "./pages/engine/AdaptiveLearning";
+import CrossInstrument from "./pages/engine/CrossInstrument";
 import MarketModel from "./pages/engine/MarketModel";
 import MLInsights from "./pages/engine/MLInsights";
 import ModuleGovernor from "./pages/engine/ModuleGovernor";
@@ -64,6 +65,7 @@ export default function App() {
         <Route path="/engine/votes" element={<ModuleVotes />} />
         <Route path="/engine/market-model" element={<MarketModel />} />
         <Route path="/engine/adaptive-learning" element={<AdaptiveLearning />} />
+        <Route path="/engine/cross-instrument" element={<CrossInstrument />} />
         <Route path="/engine/ranker" element={<Ranker />} />
         <Route path="/engine/decisions" element={<Decisions />} />
         <Route path="/engine/trace" element={<DecisionTrace />} />

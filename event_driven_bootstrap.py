@@ -2735,6 +2735,57 @@ class EventDrivenSystem:
                 )
                 self._adaptive_scheduler = None
 
+        # ── Cross-instrument opportunity layer (GAP 1/2/5) ────────────
+        # GlobalOpportunityQueue (collect → cross-instrument rank → dispatch) and
+        # the ProactiveOpportunityScanner (pre-heat watchlist). Both default OFF
+        # via config.cross_instrument; when off the queue is a perfect
+        # pass-through and the scanner never starts, so behaviour is unchanged.
+        self._opportunity_queue = None
+        self._proactive_scanner = None
+        _ci_cfg = getattr(self._config, "cross_instrument", None)
+        if _ci_cfg is not None and ctx is not None:
+            try:
+                from brain.opportunity_queue import GlobalOpportunityQueue
+                ranker = getattr(ctx, "cross_instrument_ranker", None)
+                if ranker is not None:
+                    try:
+                        ranker.bind_lookups(spread_pips_lookup=self._get_spread_pips)
+                    except Exception:
+                        pass
+                self._opportunity_queue = GlobalOpportunityQueue(
+                    dispatch=self._on_entry_decision,
+                    enabled=bool(getattr(_ci_cfg, "queue_enabled", False)),
+                    window_ms=int(getattr(_ci_cfg, "queue_window_ms", 1000)),
+                    ranker=(
+                        ranker
+                        if bool(getattr(_ci_cfg, "ranking_enabled", False))
+                        else None
+                    ),
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[event-driven] GlobalOpportunityQueue init failed: {}", exc,
+                )
+                self._opportunity_queue = None
+            try:
+                from brain.proactive_scanner import ProactiveOpportunityScanner
+                self._proactive_scanner = ProactiveOpportunityScanner(
+                    symbols_provider=lambda: list(INSTRUMENT_REGISTRY.keys()),
+                    get_world_model=self._wm_store.get,
+                    enabled=bool(getattr(_ci_cfg, "proactive_scan_enabled", False)),
+                    interval_seconds=float(
+                        getattr(_ci_cfg, "proactive_scan_interval_seconds", 60.0)
+                    ),
+                    min_ev=float(getattr(_ci_cfg, "proactive_scan_min_ev", 0.5)),
+                    density_tracker=getattr(ctx, "opportunity_density_tracker", None),
+                    event_publish=self._event_bus.publish,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[event-driven] ProactiveOpportunityScanner init failed: {}", exc,
+                )
+                self._proactive_scanner = None
+
         # ── Execution plane ──────────────────────────────────────────
         self._aggregator = IntentAggregator(AggregatorConfig())
         self._executor = ActionExecutor(
@@ -2792,7 +2843,7 @@ class EventDrivenSystem:
             world_model_store=self._wm_store,
             config=EntryConfig(),
             pip_size_lookup=self._safe_pip_size,
-            on_entry_decision=self._on_entry_decision,
+            on_entry_decision=self._submit_entry,
             is_instrument_known=lambda s: s in INSTRUMENT_REGISTRY,
             is_market_open=self._check_market_open,
             is_session_active=self._check_session_active,
@@ -3404,6 +3455,17 @@ class EventDrivenSystem:
                     "[event-driven] adaptive scheduler start failed: {}", exc,
                 )
 
+        # ── Start ProactiveOpportunityScanner (GAP 5) ────────────────
+        # Daemon; only starts when cross_instrument.proactive_scan_enabled. Never
+        # triggers entries — it pre-heats the watchlist + density tracker.
+        if getattr(self, "_proactive_scanner", None) is not None:
+            try:
+                self._proactive_scanner.start()
+            except Exception as exc:
+                logger.warning(
+                    "[event-driven] proactive scanner start failed: {}", exc,
+                )
+
         # ── Start ProcessWatchdog heartbeat thread ───────────────────
         ctx = self._ctx
         if ctx is not None and ctx.process_watchdog is not None:
@@ -3661,6 +3723,16 @@ class EventDrivenSystem:
         if getattr(self, "_adaptive_scheduler", None) is not None:
             try:
                 self._adaptive_scheduler.stop()
+            except Exception:
+                pass
+        if getattr(self, "_proactive_scanner", None) is not None:
+            try:
+                self._proactive_scanner.stop()
+            except Exception:
+                pass
+        if getattr(self, "_opportunity_queue", None) is not None:
+            try:
+                self._opportunity_queue.stop()
             except Exception:
                 pass
         self._tick_router.stop()
@@ -6334,6 +6406,127 @@ class EventDrivenSystem:
                 cooldown = float(getattr(cfg, "trigger_cooldown_seconds", 300.0))
             self._consensus_entry_cooldown[symbol] = now + cooldown
 
+    def _submit_entry(self, decision: dict[str, Any], allocation: Any = None) -> None:
+        """Route a passed entry into the cross-instrument queue (GAP 1).
+
+        The zone path (tick-driven, per-instrument-isolated) fires entries in
+        TICK-ARRIVAL order. When ``cross_instrument.queue_enabled`` is on, the
+        queue collects a window of these across all instruments and dispatches
+        them best-EV-first via ``_on_entry_decision``. When the queue is off (the
+        default) or absent, this calls ``_on_entry_decision`` synchronously —
+        byte-for-byte identical to the pre-queue direct call.
+        """
+        q = getattr(self, "_opportunity_queue", None)
+        if q is None:
+            self._on_entry_decision(decision, allocation)
+            return
+        try:
+            q.submit(decision, allocation)
+        except Exception:
+            logger.exception(
+                "[event-driven] opportunity-queue submit failed — direct dispatch",
+            )
+            self._on_entry_decision(decision, allocation)
+
+    def _open_position_evs(self) -> list:
+        """Best-effort EV (R units) of every open position, for displacement.
+
+        EV ≈ current unrealised R + remaining distance to the target in R, per the
+        cross-instrument design. Fully guarded: a position whose risk distance
+        cannot be derived is skipped rather than guessed.
+        """
+        from management.position_displacer import PositionEV
+
+        out: list = []
+        try:
+            positions = list(self._pm.get_all_open_positions() or [])
+        except Exception:
+            return out
+        for pos in positions:
+            try:
+                symbol = str(getattr(pos, "symbol", "") or "")
+                ticket = str(
+                    getattr(pos, "order_id", getattr(pos, "ticket", "")) or ""
+                )
+                if not symbol or not ticket:
+                    continue
+                direction = str(getattr(pos, "direction", "LONG") or "LONG")
+                is_long = direction.upper() in ("BUY", "LONG")
+                entry = _broker_entry_price(pos)
+                sl = float(getattr(pos, "sl", 0.0) or 0.0)
+                tp = _broker_tp(pos)
+                risk_dist = abs(entry - sl)
+                if entry <= 0 or risk_dist <= 0:
+                    continue
+                tick = self._tick_store.get_latest(symbol)
+                cur = float(getattr(tick, "mid", 0.0) or 0.0) if tick else 0.0
+                if cur <= 0:
+                    cur = entry
+                profit_dist = (cur - entry) if is_long else (entry - cur)
+                profit_r = profit_dist / risk_dist
+                remaining_r = 0.0
+                if tp and tp > 0:
+                    remaining_r = abs(tp - cur) / risk_dist
+                out.append(
+                    PositionEV(
+                        ticket=ticket,
+                        symbol=symbol,
+                        direction=direction,
+                        ev=profit_r + remaining_r,
+                        profit_r=profit_r,
+                    )
+                )
+            except Exception:
+                continue
+        return out
+
+    def _try_displacement(
+        self, symbol: str, direction: str, decision: dict[str, Any],
+    ) -> bool:
+        """GAP 4: close a weaker open position to make room for a better idea.
+
+        Invoked when the Portfolio Division rejects an entry for capacity/budget.
+        No-op (returns False) unless ``cross_instrument.displacement_enabled`` is
+        on. Submits a CLOSE through the normal IntentAggregator (risk is never
+        bypassed); the better idea re-enters on its next signal once the slot
+        frees. Never raises.
+        """
+        ctx = self._ctx
+        displacer = getattr(ctx, "position_displacer", None) if ctx is not None else None
+        if displacer is None or not getattr(displacer, "enabled", False):
+            return False
+        try:
+            candidate_ev = float(
+                decision.get("cross_adjusted_ev", decision.get("candidate_ev", 0.0))
+                or 0.0
+            )
+            evs = self._open_position_evs()
+            verdict = displacer.evaluate(
+                candidate_ev, evs, candidate_symbol=symbol,
+            )
+            if not verdict.displace or verdict.target is None:
+                logger.debug(
+                    "[displacer] {} {} not displacing: {}",
+                    symbol, direction, verdict.reason,
+                )
+                return False
+            target = verdict.target
+            self._aggregator.submit([Intent.close(
+                symbol=target.symbol,
+                ticket=target.ticket,
+                source="position_displacer",
+                reason="displaced_for_higher_ev_opportunity",
+            )])
+            displacer.record_displacement()
+            logger.info(
+                "[displacer] CLOSE {} {} (ticket {}) — {}",
+                target.symbol, target.direction, target.ticket, verdict.reason,
+            )
+            return True
+        except Exception as exc:
+            logger.debug("[displacer] {} displacement attempt failed: {}", symbol, exc)
+            return False
+
     def _on_entry_decision(
         self, decision: dict[str, Any], allocation: Any = None,
     ) -> None:
@@ -7352,6 +7545,39 @@ class EventDrivenSystem:
                         risk_pct = dd_risk
                 except Exception:
                     pass
+
+            # ── GAP 3: opportunity-quality-proportional sizing ───────
+            # Size the best opportunities up and weaker ones down on top of the
+            # existing de-risking chain. Identity (1.0) when disabled, so risk is
+            # unchanged. The per-trade risk ceiling below still clamps the result.
+            if ctx is not None and getattr(ctx, "opportunity_quality_sizer", None) is not None:
+                try:
+                    qsizer = ctx.opportunity_quality_sizer
+                    if getattr(qsizer, "enabled", False):
+                        q_ev = float(decision.get("cross_adjusted_ev",
+                                                  decision.get("candidate_ev", 0.0)) or 0.0)
+                        q_conf = float(decision.get("candidate_score", 0.0) or 0.0)
+                        if q_conf <= 0.0:
+                            q_conf = float(conviction or 0.0) / 100.0
+                        q_rank = decision.get("cross_rank")
+                        q_total = decision.get("cross_rank_total")
+                        q_mult = qsizer.multiplier(
+                            ev=q_ev,
+                            confidence=q_conf,
+                            rank=int(q_rank) if q_rank is not None else None,
+                            rank_total=int(q_total) if q_total is not None else None,
+                        )
+                        if q_mult != 1.0:
+                            logger.info(
+                                "[quality-sizer] {} risk {:.3f}%→{:.3f}% (×{:.2f}) "
+                                "EV={:+.2f}R rank={}",
+                                symbol, risk_pct * 100.0, risk_pct * q_mult * 100.0,
+                                q_mult, q_ev,
+                                f"{q_rank}/{q_total}" if q_rank is not None else "n/a",
+                            )
+                            risk_pct *= q_mult
+                except Exception as exc:
+                    logger.debug("[quality-sizer] sizing skipped: {}", exc)
             pip_size = self._safe_pip_size(symbol)
             pctx = build_context_for_symbol(symbol)
 
@@ -7461,6 +7687,10 @@ class EventDrivenSystem:
                     "EVENT-DRIVEN ENTRY SKIPPED | {} — Portfolio: {}",
                     symbol, pf_verdict.reason,
                 )
+                # GAP 4: capacity/budget rejection → try displacing a weaker open
+                # position so the better idea can re-enter on its next signal.
+                # No-op unless cross_instrument.displacement_enabled is on.
+                self._try_displacement(symbol, direction, decision)
                 return
 
             combined_mult = pf_verdict.combined_mult
