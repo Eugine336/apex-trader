@@ -102,6 +102,8 @@ class SystemContext:
 
     # ── Governance (Department 8 — authorise Learning + contain) ──────
     governance: Optional["GovernanceDivision"] = None
+    # Aggregate-health thermostat read by Governance to pause/resume learning.
+    health_assessor: Optional[Any] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
     opportunity_executor: Optional[OpportunityExecutor] = None
@@ -865,6 +867,35 @@ class SystemContext:
             from governance.division import GovernanceDivision as _Governance
 
             lg_cfg = getattr(config, "learning_governance", None)
+
+            # ── HealthAssessor (the thermostat over all learning) ──────
+            # Built first so it can be handed to Governance. Aggregate health
+            # is what Governance reads to pause/resume the whole learning layer
+            # — distinct from the per-recommendation authorisation it already
+            # does. Behaviour-neutral by default (only freezes on CRITICAL,
+            # which needs negative rolling EV AND a strong secondary signal).
+            try:
+                from governance.health_assessor import HealthAssessor as _HealthAssessor
+
+                ha_cfg = getattr(lg_cfg, "health_assessor", None) if lg_cfg else None
+                if ha_cfg is None or bool(getattr(ha_cfg, "enabled", True)):
+                    ctx.health_assessor = _HealthAssessor(
+                        enabled=bool(getattr(ha_cfg, "enabled", True)) if ha_cfg else True,
+                        window_size=int(getattr(ha_cfg, "window_size", 20)) if ha_cfg else 20,
+                        max_history=int(getattr(ha_cfg, "max_history", 200)) if ha_cfg else 200,
+                        critical_entry_rate_threshold=float(
+                            getattr(ha_cfg, "critical_entry_rate_threshold", 1.3)
+                        ) if ha_cfg else 1.3,
+                        critical_learner_loss_rate=float(
+                            getattr(ha_cfg, "critical_learner_loss_rate", 0.65)
+                        ) if ha_cfg else 0.65,
+                        degraded_learner_loss_rate=float(
+                            getattr(ha_cfg, "degraded_learner_loss_rate", 0.55)
+                        ) if ha_cfg else 0.55,
+                    )
+            except Exception as exc:
+                logger.warning("[SystemContext] HealthAssessor init failed: {}", exc)
+
             ctx.governance = _Governance(
                 module_governor=ctx.module_governor,
                 tuner_agent=ctx.tuner_agent,
@@ -880,6 +911,15 @@ class SystemContext:
                 full_min_accuracy=getattr(lg_cfg, "promotion_full_min_accuracy", 0.55) if lg_cfg else 0.55,
                 full_min_marginal_r=getattr(lg_cfg, "promotion_full_min_marginal_r", 0.0) if lg_cfg else 0.0,
                 history_limit=int(getattr(lg_cfg, "recommendation_history_limit", 500) if lg_cfg else 500),
+                health_assessor=ctx.health_assessor,
+                health_auto_freeze=bool(
+                    getattr(getattr(lg_cfg, "health_assessor", None), "auto_freeze_on_critical", True)
+                    if lg_cfg else True
+                ),
+                health_auto_release=bool(
+                    getattr(getattr(lg_cfg, "health_assessor", None), "auto_release_on_healthy", True)
+                    if lg_cfg else True
+                ),
             )
             # Install Governance as the authoriser on the Learning→Governance
             # gateway and require authorisation (per config; default on).

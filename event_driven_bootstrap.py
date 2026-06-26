@@ -8663,6 +8663,20 @@ class EventDrivenSystem:
         except Exception as exc:
             logger.debug("[close-learn] loss-streak notify failed: {}", exc)
 
+        # Governance aggregate-health thermostat — feed the realized outcome to
+        # the HealthAssessor and let Governance freeze/resume the whole learning
+        # layer on a CRITICAL/HEALTHY transition. Best-effort: a monitoring
+        # fault must never break the close path.
+        if ctx.governance is not None and hasattr(ctx.governance, "check_health_after_close"):
+            try:
+                ctx.governance.check_health_after_close(
+                    realized_r=pnl_r,
+                    entry_path=str(info.get("source", "") or ""),
+                    learner_enabled=bool(info.get("learner_enabled", False)),
+                )
+            except Exception as exc:
+                logger.debug("[close-learn] health assessment failed: {}", exc)
+
         # TunerAgent — route trade-close tuning
         if ctx.tuner_agent is not None:
             try:

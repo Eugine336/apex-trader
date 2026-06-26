@@ -56,6 +56,7 @@ from governance.models import (
     ToxicPairRecord,
     _pair_key,
 )
+from governance.health_models import HealthAssessment, HealthStatus
 from governance.verdict import GovernanceVerdict
 
 # Recommendation type constants (kept as literals so this module does not import
@@ -110,6 +111,12 @@ class GovernanceDivision:
         full_min_accuracy: float = 0.55,
         full_min_marginal_r: float = 0.0,
         history_limit: int = 500,
+        # Aggregate-health monitoring (the thermostat over all learning). When a
+        # HealthAssessor is wired, Governance can freeze the whole learning
+        # layer on CRITICAL aggregate health and release it on recovery.
+        health_assessor: Optional[object] = None,
+        health_auto_freeze: bool = True,
+        health_auto_release: bool = True,
     ) -> None:
         self._module_governor = module_governor
         self._tuner_agent = tuner_agent
@@ -139,6 +146,16 @@ class GovernanceDivision:
         }
         self._lock = threading.Lock()
 
+        # Aggregate-health monitoring + the auto-freeze/release state machine.
+        self._health_assessor = health_assessor
+        self._health_auto_freeze = bool(health_auto_freeze)
+        self._health_auto_release = bool(health_auto_release)
+        # True while learning is frozen *because of* aggregate health (kept
+        # distinct so we freeze/release exactly once per transition rather than
+        # spamming the TunerAgent on every close).
+        self._health_frozen = False
+        self._last_health: Optional[HealthAssessment] = None
+
     # ── Wiring (injected after construction) ──────────────────────────────
 
     def bind_runtime(
@@ -147,6 +164,7 @@ class GovernanceDivision:
         module_governor: Optional[object] = None,
         tuner_agent: Optional[object] = None,
         virtual_registry: Optional[object] = None,
+        health_assessor: Optional[object] = None,
     ) -> None:
         """Inject the enforcement-arm references after construction.
 
@@ -158,6 +176,8 @@ class GovernanceDivision:
             self._tuner_agent = tuner_agent
         if virtual_registry is not None:
             self._virtual_registry = virtual_registry
+        if health_assessor is not None:
+            self._health_assessor = health_assessor
 
     # ── Learning recommendation authorisation (the ⑦→⑧ boundary) ──────────
 
@@ -479,6 +499,131 @@ class GovernanceDivision:
             logger.warning("[governance] release_tuning({}) failed: {}", tunable_name, exc)
             return False
 
+    # ── Aggregate-health thermostat (freeze/resume the whole learning layer) ─
+
+    def check_health(self) -> Optional[HealthAssessment]:
+        """Read the aggregate-health verdict and act on it.
+
+        On ``CRITICAL`` (negative rolling expectancy *and* accelerating
+        participation or heavy learner-enabled losses) Governance freezes every
+        registered tunable — pausing learning so it stops adjusting parameters
+        while the system is bleeding. On a return to ``HEALTHY`` the freeze is
+        released and learning resumes. ``DEGRADED`` is a visible warning that,
+        on its own, changes nothing.
+
+        The freeze/release is edge-triggered: a one-shot ``_health_frozen`` flag
+        means we order the TunerAgent exactly once per transition, never once
+        per trade close. Fail-safe — any fault returns ``None`` and never
+        freezes (a monitoring error must not pause trading).
+
+        Returns the :class:`HealthAssessment` (or ``None`` when no assessor is
+        wired or the assessment could not be computed).
+        """
+        assessor = self._health_assessor
+        if assessor is None:
+            return None
+        try:
+            assessment = assessor.assess()
+        except Exception as exc:  # noqa: BLE001 — fail-safe: never freeze on a fault
+            logger.debug("[governance] health assessment failed: {}", exc)
+            return None
+
+        action: Optional[str] = None
+        with self._lock:
+            self._last_health = assessment
+            status = assessment.health_status
+            if (
+                status == HealthStatus.CRITICAL
+                and self._health_auto_freeze
+                and not self._health_frozen
+            ):
+                self._health_frozen = True
+                action = "freeze"
+            elif (
+                status == HealthStatus.HEALTHY
+                and self._health_auto_release
+                and self._health_frozen
+            ):
+                self._health_frozen = False
+                action = "release"
+
+        # Perform the containment outside the lock (freeze/release of the
+        # TunerAgent take their own locks); the flag above already guarantees
+        # this fires exactly once per transition.
+        if action == "freeze":
+            frozen = self._freeze_all_tuning(
+                reason=(
+                    f"aggregate health CRITICAL "
+                    f"(EV={assessment.rolling_ev:+.3f}, "
+                    f"entry_rate={assessment.entry_rate_trend:.2f}, "
+                    f"learner_loss={assessment.learner_enabled_loss_rate:.2f})"
+                )
+            )
+            logger.warning(
+                "[governance] system health CRITICAL — froze {} tunable(s); "
+                "learning PAUSED until recovery", frozen,
+            )
+        elif action == "release":
+            released = self._release_all_tuning()
+            logger.info(
+                "[governance] system health recovered to HEALTHY — released {} "
+                "tunable(s); learning RESUMED", released,
+            )
+        return assessment
+
+    def check_health_after_close(
+        self,
+        realized_r: float,
+        entry_path: str = "",
+        learner_enabled: bool = False,
+    ) -> Optional[HealthAssessment]:
+        """Record one closed trade with the assessor, then re-check health.
+
+        Called from the trade-close path. Fail-safe — never raises, so a
+        monitoring fault can never break the close path."""
+        assessor = self._health_assessor
+        if assessor is None:
+            return None
+        try:
+            assessor.record_trade_close(
+                realized_r=realized_r,
+                entry_path=entry_path,
+                learner_enabled=learner_enabled,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[governance] health record_trade_close failed: {}", exc)
+        return self.check_health()
+
+    def _freeze_all_tuning(self, *, reason: str = "") -> int:
+        """Freeze every registered tunable via the TunerAgent. Returns count."""
+        agent = self._tuner_agent
+        names = getattr(agent, "registered_names", None) if agent is not None else None
+        if not names:
+            return 0
+        frozen = 0
+        for name in list(names):
+            if self.freeze_tuning(name, reason=reason):
+                frozen += 1
+        return frozen
+
+    def _release_all_tuning(self) -> int:
+        """Release every registered tunable via the TunerAgent. Returns count."""
+        agent = self._tuner_agent
+        names = getattr(agent, "registered_names", None) if agent is not None else None
+        if not names:
+            return 0
+        released = 0
+        for name in list(names):
+            if self.release_tuning(name):
+                released += 1
+        return released
+
+    @property
+    def learning_frozen_for_health(self) -> bool:
+        """True while learning is paused by the aggregate-health thermostat."""
+        with self._lock:
+            return self._health_frozen
+
     # ── Audit / dashboard surface ──────────────────────────────────────────
 
     def _record_authorization(
@@ -531,6 +676,15 @@ class GovernanceDivision:
             auth_n = len(self._auth_log)
             promo_n = len(self._promotion_log)
             toxic = [r.to_dict() for r in self._toxic_pairs.values()]
+            health_frozen = self._health_frozen
+            last_health = self._last_health
+        health: dict = {
+            "has_assessor": self._health_assessor is not None,
+            "auto_freeze_on_critical": self._health_auto_freeze,
+            "auto_release_on_healthy": self._health_auto_release,
+            "learning_frozen_for_health": health_frozen,
+            "last_assessment": last_health.to_dict() if last_health is not None else None,
+        }
         return {
             "enforce_toxic_pairs": self._enforce_toxic,
             "has_module_governor": self._module_governor is not None,
@@ -540,6 +694,7 @@ class GovernanceDivision:
             "authorizations_logged": auth_n,
             "promotions_logged": promo_n,
             "toxic_pairs": toxic,
+            "health": health,
             "bounds": {
                 "size_multiplier": [self._min_size_mult, self._max_size_mult],
                 "max_weight_multiplier": self._max_weight_mult,
