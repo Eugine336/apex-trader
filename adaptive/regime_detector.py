@@ -44,7 +44,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 from loguru import logger
 
@@ -227,6 +227,7 @@ class RegimeDetector(TuningGuardMixin):
         trending_threshold: float = 0.6,
         volatile_threshold: float = 0.7,
         quiet_threshold: float = 0.3,
+        on_regime_change: Optional[Callable[[str, str], None]] = None,
     ) -> None:
         self.enabled = bool(enabled)
         self._db_path = Path(db_path) if db_path is not None else _DB_PATH
@@ -241,6 +242,12 @@ class RegimeDetector(TuningGuardMixin):
         self.volatile_threshold = _clip01(float(volatile_threshold))
         self.quiet_threshold = _clip01(float(quiet_threshold))
 
+        # Optional callback ``fn(old_regime, new_regime)`` fired when a pair's
+        # committed regime flips. Lets the adaptive optimiser force an
+        # out-of-band retrain on a material regime change. Optional, no-op when
+        # None, and a failing callback can never break classification.
+        self._on_regime_change = on_regime_change
+
         self._lock = threading.RLock()
         self._conn: Optional[sqlite3.Connection] = None
         # Committed state per pair + the per-pair candidate streak for hysteresis.
@@ -252,6 +259,25 @@ class RegimeDetector(TuningGuardMixin):
             logger.warning("[RegimeDetector] could not create db dir: {}", exc)
         self._connect()
         self._load_state()
+
+    def set_regime_change_callback(
+        self, callback: Optional[Callable[[str, str], None]]
+    ) -> None:
+        """Set/replace the regime-transition callback after construction.
+
+        Wired to ``optimizer.notify_regime_change`` so a committed regime flip
+        can force an out-of-band adaptive retrain. Passing None clears it.
+        """
+        self._on_regime_change = callback
+
+    def _emit_regime_change(self, old_regime: str, new_regime: str) -> None:
+        """Fire the regime-change callback. Best-effort, never raises."""
+        if self._on_regime_change is None or old_regime == new_regime:
+            return
+        try:
+            self._on_regime_change(old_regime, new_regime)
+        except Exception as exc:  # noqa: BLE001 — never break classification
+            logger.debug("[RegimeDetector] regime-change callback failed: {}", exc)
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -448,11 +474,13 @@ class RegimeDetector(TuningGuardMixin):
             self._pending[pair] = (cand_label, streak)
 
             flipped = False
+            transition: Optional[Tuple[str, str]] = None
             if candidate != committed.regime and streak >= self.hysteresis_bars:
                 old = committed.regime
                 committed.regime = candidate
                 committed.since_ts = now
                 flipped = True
+                transition = (old, candidate)
                 self._log_transition(pair, old, candidate, conf, now)
 
             committed.confidence = conf
@@ -469,7 +497,13 @@ class RegimeDetector(TuningGuardMixin):
                     "[RegimeDetector] {} regime → {} (conf {:.2f})",
                     pair, committed.regime, conf,
                 )
-            return committed
+
+        # Notify outside the lock so a slow/failed callback never blocks
+        # classification or holds the per-pair state lock. Fires only on a
+        # committed flip (best-effort; never raises).
+        if transition is not None:
+            self._emit_regime_change(transition[0], transition[1])
+        return committed
 
     def _log_transition(self, pair: str, old: str, new: str, conf: float, ts: float) -> None:
         if self._conn is None:
