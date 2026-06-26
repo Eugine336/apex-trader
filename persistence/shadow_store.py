@@ -208,7 +208,7 @@ class ShadowStore:
                 self._conn.commit()
                 return contract.contract_id
             except Exception as exc:
-                logger.debug("[ShadowStore] insert_contract failed: {}", exc)
+                logger.warning("[ShadowStore] insert_contract failed: {}", exc)
                 return None
 
     def resolve_contract(
@@ -246,7 +246,7 @@ class ShadowStore:
                 self._conn.commit()
                 return True
             except Exception as exc:
-                logger.debug("[ShadowStore] resolve_contract failed: {}", exc)
+                logger.warning("[ShadowStore] resolve_contract failed: {}", exc)
                 return False
 
     def mark_expired(self, contract_id: str, bars_replayed: int) -> bool:
@@ -264,7 +264,7 @@ class ShadowStore:
                 self._conn.commit()
                 return True
             except Exception as exc:
-                logger.debug("[ShadowStore] mark_expired failed: {}", exc)
+                logger.warning("[ShadowStore] mark_expired failed: {}", exc)
                 return False
 
     def discard_stale_pending(self, older_than_ms: int) -> int:
@@ -287,7 +287,7 @@ class ShadowStore:
                 self._conn.commit()
                 return cur.rowcount or 0
             except Exception as exc:
-                logger.debug("[ShadowStore] discard_stale_pending failed: {}", exc)
+                logger.warning("[ShadowStore] discard_stale_pending failed: {}", exc)
                 return 0
 
     def get_pending(self, limit: int = 100) -> List[ShadowContract]:

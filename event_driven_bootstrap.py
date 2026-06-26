@@ -1329,8 +1329,12 @@ class PositionEvaluator:
             open_positions = []
             try:
                 open_positions = self._pm.get_all_open_positions()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.error(
+                    "[de-mgmt] open-positions fetch failed for {} — open-trade "
+                    "count/scale-in sizing may be wrong: {}",
+                    order_id, exc,
+                )
             wm = self._wm_store.get(symbol)
             structure = wm.structure_by_tf() if wm is not None else {}
             d1_trend, d1_conf = _struct_trend_conf(structure, "D1")
@@ -1482,23 +1486,35 @@ class PositionEvaluator:
                     ss = ctx.session_engine.get_status()
                     session_name = getattr(ss, "name", "UNKNOWN")
                     session_tradeable = getattr(ss, "is_tradeable", True)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "[de-mgmt] session status read failed for {} — using "
+                        "defaults: {}",
+                        symbol, exc,
+                    )
             news_mins = 999.0
             if ctx.news_guard is not None:
                 try:
                     ns = ctx.news_guard.check([symbol])
                     news_mins = getattr(ns, "minutes_to_next", 999.0)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.error(
+                        "[de-mgmt] news-guard check failed for {} — management "
+                        "running blind to imminent high-impact news: {}",
+                        symbol, exc,
+                    )
             hold_mins = 0.0
             entry_time = getattr(pos, "open_time", None) or getattr(pos, "entry_time", None)
             if entry_time is not None:
                 try:
                     if hasattr(entry_time, "timestamp"):
                         hold_mins = (now - entry_time).total_seconds() / 60.0
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "[de-mgmt] hold-time computation failed for {} — "
+                        "hold_minutes defaulting to 0: {}",
+                        symbol, exc,
+                    )
 
             # Live portfolio heat for this position's account — feeds the
             # situation engine / risk governor management review (was hardcoded
@@ -1631,16 +1647,24 @@ class PositionEvaluator:
                 trade_ctx.context_pressure = _cp
                 trade_ctx.opposing_boost = _ob
                 trade_ctx.pressure_details = _pd
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "[de-mgmt] context-pressure summary failed for {} "
+                    "(diagnostic only): {}",
+                    symbol, exc,
+                )
             sa = ctx.situation_engine.assess_open_trade(trade_ctx)
             de_result = ctx.decision_engine.decide_management(trade_ctx, sa)
 
             if ctx.risk_governor is not None:
                 try:
                     de_result = ctx.risk_governor.review(de_result, trade_ctx, sa)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.error(
+                        "[de-mgmt] RiskGovernor review failed for {} — "
+                        "management verdict applied un-reviewed: {}",
+                        order_id, exc,
+                    )
 
             # Phase 5 — developing-structure advisory. When the live (forming-
             # bar) WorldModel warns of a reversal against this position while the
@@ -1657,8 +1681,11 @@ class PositionEvaluator:
             if ctx.decision_journal is not None:
                 try:
                     ctx.decision_journal.log(trade_ctx, sa, de_result)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "[de-mgmt] decision-journal log failed for {}: {}",
+                        order_id, exc,
+                    )
 
             # Stamp the management verdict onto a DecisionTrace so the dashboard's
             # decision-trace panel shows live-position management — previously the
@@ -4800,8 +4827,12 @@ class EventDrivenSystem:
                     pnl_pips = (close_price - entry) / pip_size
                 else:
                     pnl_pips = (entry - close_price) / pip_size
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.error(
+                "[external-close] pnl_pips computation failed for {} — "
+                "realized pip P&L booked as 0 (learning fed wrong PnL): {}",
+                ticket, exc,
+            )
 
         logger.warning(
             "[external-close] {} {} closed at broker (reason={}, pnl=${:.2f}) "
@@ -4823,8 +4854,11 @@ class EventDrivenSystem:
         )
         try:
             self._mgmt_store.remove(str(ticket))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "[external-close] mgmt-store cleanup failed for {}: {}",
+                ticket, exc,
+            )
         return True
 
     def _reconcile_external_closes(
@@ -6836,8 +6870,11 @@ class EventDrivenSystem:
                         if hw is not None:
                             try:
                                 hw.record_rl_signal_success()
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                logger.warning(
+                                    "[entry-risk] RL signal-success metric "
+                                    "record failed for {}: {}", symbol, exc,
+                                )
                         if aug.vetoed:
                             logger.warning(
                                 "EVENT-DRIVEN ENTRY BLOCKED | {} — RL veto "
@@ -6858,8 +6895,11 @@ class EventDrivenSystem:
                     if hw is not None:
                         try:
                             hw.record_rl_signal_failure()
-                        except Exception:
-                            pass
+                        except Exception as metric_exc:
+                            logger.warning(
+                                "[entry-risk] RL signal-failure metric record "
+                                "failed for {}: {}", symbol, metric_exc,
+                            )
                     logger.debug("[entry-risk] RL augmentation failed: {}", exc)
 
             # ── Gate 6: DecisionEngine — strategic conviction scoring ─
@@ -6916,8 +6956,12 @@ class EventDrivenSystem:
                         de_typ_spread = float(
                             getattr(_sinfo, "typical_spread_pips", 0.0) or 0.0
                         ) if _sinfo else 0.0
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning(
+                            "[entry-decision] spread read failed for {} — "
+                            "DE conviction spread dimension defaulting to 0: {}",
+                            symbol, exc,
+                        )
 
                     # Live M1 evidence — the orchestrator decision dict never
                     # carried m1_aligned/m1_event, so the entry plane defaulted
@@ -7052,8 +7096,11 @@ class EventDrivenSystem:
                         if ctx.decision_journal is not None:
                             try:
                                 ctx.decision_journal.log_entry(entry_ctx, sa, de_result)
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                logger.warning(
+                                    "[entry-decision] decision-journal log_entry "
+                                    "(rejected) failed for {}: {}", symbol, exc,
+                                )
                         self._record_shadow_rejection(
                             symbol, direction, entry_price, sl, tp1,
                             "decision_engine", conviction,
@@ -7081,8 +7128,12 @@ class EventDrivenSystem:
                                     ctx.decision_journal.log_entry(
                                         entry_ctx, sa, gov_result, governor_changed=True,
                                     )
-                                except Exception:
-                                    pass
+                                except Exception as exc:
+                                    logger.warning(
+                                        "[entry-decision] decision-journal "
+                                        "log_entry (vetoed) failed for {}: {}",
+                                        symbol, exc,
+                                    )
                             self._record_shadow_rejection(
                                 symbol, direction, entry_price, sl, tp1,
                                 "risk_governor", conviction,
@@ -7104,8 +7155,11 @@ class EventDrivenSystem:
                                 entry_ctx, sa, gov_result if ctx.risk_governor else de_result,
                                 governor_changed=(ctx.risk_governor is not None and gov_result is not de_result),
                             )
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.warning(
+                                "[entry-decision] decision-journal log_entry "
+                                "(accepted) failed for {}: {}", symbol, exc,
+                            )
 
                 except Exception as exc:
                     # Fail CLOSED: the DecisionEngine + RiskGovernor are the
@@ -7436,21 +7490,30 @@ class EventDrivenSystem:
             if ctx is not None and ctx.system_volatility_monitor is not None:
                 try:
                     vol_mult = ctx.system_volatility_monitor.get_size_multiplier()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "[entry-sizing] system volatility size-multiplier read "
+                        "failed for {} — defaulting to 1.0: {}", symbol, exc,
+                    )
             if ctx is not None and ctx.opportunity_density_tracker is not None:
                 try:
                     density_mult = ctx.opportunity_density_tracker.get_size_multiplier()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "[entry-sizing] opportunity-density size-multiplier read "
+                        "failed for {} — defaulting to 1.0: {}", symbol, exc,
+                    )
 
             # ── Execution quality multiplier ─────────────────────────
             exec_mult = 1.0
             if ctx is not None and ctx.execution_monitor is not None:
                 try:
                     exec_mult = ctx.execution_monitor.get_size_multiplier(symbol)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "[entry-sizing] execution-quality size-multiplier read "
+                        "failed for {} — defaulting to 1.0: {}", symbol, exc,
+                    )
 
             # ── Capital allocation multiplier (L5.5a) ────────────────
             cap_mult = 1.0
@@ -7463,8 +7526,12 @@ class EventDrivenSystem:
                         try:
                             rs = ctx.regime_detector.get_regime(symbol)
                             regime_str = getattr(rs, "regime", "")
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.warning(
+                                "[cap-alloc] regime read failed for {} — sizing "
+                                "fingerprint built without regime: {}",
+                                symbol, exc,
+                            )
                     fp = compute_fingerprint(
                         horizon="SWING",
                         extra=regime_str,
@@ -7491,8 +7558,11 @@ class EventDrivenSystem:
                         try:
                             rs = ctx.regime_detector.get_regime(symbol)
                             regime_str = getattr(rs, "regime", "")
-                        except Exception:
-                            pass
+                        except Exception as exc:
+                            logger.warning(
+                                "[exec-prof] regime read failed for {} — profile "
+                                "selected without regime: {}", symbol, exc,
+                            )
                     exec_profile = ctx.execution_profiles.select_profile(
                         horizon="SWING",
                         regime=regime_str,
@@ -7552,8 +7622,12 @@ class EventDrivenSystem:
                                 symbol, risk_pct * 100.0, alloc_pct,
                             )
                             risk_pct = capped
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.error(
+                        "[multi-opp] allocation risk-cap failed for {} — trade "
+                        "may be sized above its granted allocation: {}",
+                        symbol, exc,
+                    )
             if ctx is not None and ctx.drawdown_guard is not None:
                 try:
                     dd_status = ctx.drawdown_guard.get_status()
@@ -7563,8 +7637,12 @@ class EventDrivenSystem:
                     dd_risk = getattr(dd_status, "current_risk_pct", 0.0) or 0.0
                     if dd_risk > 0 and dd_risk < risk_pct:
                         risk_pct = dd_risk
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.error(
+                        "[entry-sizing] DrawdownGuard risk-cap failed for {} — "
+                        "risk not reduced for current drawdown mode: {}",
+                        symbol, exc,
+                    )
 
             # ── GAP 3: opportunity-quality-proportional sizing ───────
             # Size the best opportunities up and weaker ones down on top of the
@@ -7795,8 +7873,11 @@ class EventDrivenSystem:
                         "combined_mult": round(combined_mult, 3),
                     },
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "[entry-decision] ORDER_SENT event emit failed for {}: {}",
+                    symbol, exc,
+                )
 
             idem_key = generate_idempotency_key(
                 symbol, direction, float(size_result.lots),
@@ -7859,8 +7940,11 @@ class EventDrivenSystem:
                         ticket=str(getattr(result, "order_id", "")),
                         conviction=float(conviction or 0.0),
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "[entry-decision] order-placed audit_trade failed for "
+                        "{}: {}", symbol, exc,
+                    )
                 self._on_order_filled(symbol, direction, result, balance,
                                       entry_price, order_ts)
 
@@ -7962,7 +8046,11 @@ class EventDrivenSystem:
                         self._entry_context[result.order_id],
                     )
                 except Exception as exc:
-                    logger.debug("[entry-ctx] capture failed: {}", exc)
+                    logger.error(
+                        "[entry-ctx] capture failed for {} — close-path PnL "
+                        "attribution/candidate provenance lost: {}",
+                        symbol, exc,
+                    )
 
                 # OutcomeLogger — record the plan at entry time
                 if ctx is not None and ctx.outcome_logger is not None:
@@ -8451,8 +8539,11 @@ class EventDrivenSystem:
                     daily_pnl_pct=round(ctx.account_risk.daily_pnl_pct(acct), 2),
                     halted=ctx.account_risk.daily_loss_halted(acct),
                 )
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "[close-audit] realized-close audit_trade/audit_risk failed "
+                "for {}: {}", ticket, exc,
+            )
 
         # ── LEARNING LAYER (Phase 4) ────────────────────────────────
 
@@ -8698,8 +8789,12 @@ class EventDrivenSystem:
                     try:
                         rs = ctx.regime_detector.get_regime(symbol)
                         regime_str = getattr(rs, "regime", "")
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning(
+                            "[close-evo] regime read failed for {} — capital "
+                            "allocator outcome fingerprint missing regime: {}",
+                            symbol, exc,
+                        )
                 fp = compute_fingerprint(
                     horizon="SWING",
                     extra=regime_str,

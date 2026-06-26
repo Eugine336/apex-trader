@@ -678,7 +678,7 @@ class PositionWorker:
             ))
             return True
         except Exception as exc:
-            logger.debug("[pos-worker] structure trailing failed for {}: {}", snap.order_id, exc)
+            logger.warning("[pos-worker] structure trailing failed for {}: {}", snap.order_id, exc)
             return False
 
     def _check_atr_trailing(
@@ -740,7 +740,7 @@ class PositionWorker:
                 reason=f"ATR trail SL → {new_sl:.5f} ({self.cfg.atr_trail_mult:.1f}×ATR)",
             ))
         except Exception as exc:
-            logger.debug("[pos-worker] ATR trailing failed for {}: {}", snap.order_id, exc)
+            logger.warning("[pos-worker] ATR trailing failed for {}: {}", snap.order_id, exc)
 
     def _check_invalidation(
         self, snap: PositionSnapshot, scan: ScanContext, out: list[Intent],

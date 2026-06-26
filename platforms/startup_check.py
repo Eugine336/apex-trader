@@ -9,6 +9,8 @@ import time as _time
 from dataclasses import dataclass
 from pathlib import Path
 
+from loguru import logger
+
 
 
 @dataclass
@@ -133,8 +135,11 @@ class StartupCheck:
                         ),
                         duration_ms=(_time.monotonic() - t0) * 1000,
                     )
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "[startup-check] instrument_registry validation raised — "
+                    "treating as passed: {}", exc,
+                )
 
             return CheckResult(
                 name="instrument_registry",

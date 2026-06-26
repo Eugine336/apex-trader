@@ -197,6 +197,6 @@ class DerivPositionStore:
             if self._conn is not None:
                 try:
                     self._conn.close()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("[DerivPositionStore] conn.close() failed during shutdown: {}", exc)
                 self._conn = None

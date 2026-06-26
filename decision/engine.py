@@ -1370,7 +1370,11 @@ class DecisionEngine:
             # A margin at/below the safety floor is genuinely hopeless → hard SKIP.
             try:
                 soften = self.soften_gate and margin > self.gate_safety_margin
-            except Exception:
+            except Exception as exc:
+                logger.warning(
+                    "[decision] gate-soften evaluation failed; defaulting to no-soften: {}",
+                    exc,
+                )
                 soften = False
             # A no-edge range never softens — there is no thesis for the
             # orchestrator round table to size; it is a genuine no-trade.
