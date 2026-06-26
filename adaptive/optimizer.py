@@ -57,6 +57,17 @@ class AdaptiveOptimizer(TuningGuardMixin):
     RETRAIN_TRADE_INTERVAL = 50
     RETRAIN_DAY_INTERVAL = 7
 
+    # ── Event-driven retrain (verification gap #3) ────────────────────────
+    # The periodic triggers above are batch: between cycles the system runs on
+    # stale learned parameters even when the market has clearly shifted. An
+    # event-driven trigger lets a regime change, a drawdown-mode escalation, or
+    # a loss streak force an immediate retrain on the next check — so learning
+    # stops being "every 50 trades / 7 days" and reacts to material change. A
+    # cooldown prevents thrashing (back-to-back retrains on a noisy signal).
+    EVENT_RETRAIN_ENABLED = True
+    EVENT_RETRAIN_COOLDOWN_MINUTES = 60
+    LOSS_STREAK_RETRAIN_THRESHOLD = 3
+
     # Recency: the learners adapt to the CURRENT regime by training on trades
     # within this rolling window — but only if enough remain (≥ min trades),
     # otherwise the full history is used so a young account never starves the
@@ -109,6 +120,30 @@ class AdaptiveOptimizer(TuningGuardMixin):
         self._last_train_time: Optional[datetime] = None
         self._trades_since_train: int = 0
         self._last_recommendations: list[str] = []
+
+        # Event-driven retrain state (gap #3). Tunable per instance; optional
+        # overrides may be supplied on the config object (any attribute access
+        # is guarded so a config without these fields keeps the defaults).
+        self.event_retrain_enabled = bool(
+            getattr(config, "event_retrain_enabled", self.EVENT_RETRAIN_ENABLED)
+        )
+        self.event_retrain_cooldown_minutes = int(
+            getattr(
+                config,
+                "event_retrain_cooldown_minutes",
+                self.EVENT_RETRAIN_COOLDOWN_MINUTES,
+            )
+        )
+        self.loss_streak_retrain_threshold = int(
+            getattr(
+                config,
+                "loss_streak_retrain_threshold",
+                self.LOSS_STREAK_RETRAIN_THRESHOLD,
+            )
+        )
+        self._event_retrain_pending: bool = False
+        self._event_retrain_reason: str = ""
+        self._last_event_retrain_time: Optional[datetime] = None
 
         # Closed-trade history provider.  Wired at startup to the persistent
         # TradeJournal (see EventDrivenSystem.start) so the learners train on
@@ -376,12 +411,112 @@ class AdaptiveOptimizer(TuningGuardMixin):
         ltt = last_train_time or self._last_train_time
         nts = new_trades_since or self._trades_since_train
 
+        # Event-driven trigger takes priority over the periodic checks: a regime
+        # shift / drawdown escalation / loss streak fires an immediate retrain on
+        # the next check, then clears the flag (one retrain per event).
+        if self._event_retrain_pending:
+            self._event_retrain_pending = False
+            logger.info(
+                "[ml] event-driven retrain triggered: {}",
+                self._event_retrain_reason or "unspecified",
+            )
+            return True
+
         if ltt is None:
             return True
         if nts >= self.RETRAIN_TRADE_INTERVAL:
             return True
         elapsed = (datetime.now(timezone.utc) - ltt).days
         return elapsed >= self.RETRAIN_DAY_INTERVAL
+
+    # ------------------------------------------------------------------
+    # Event-driven retrain triggers (gap #3)
+    # ------------------------------------------------------------------
+    # These notification hooks let other subsystems force an out-of-band
+    # retrain when the market materially changes, instead of waiting for the
+    # next periodic cycle. They only ARM the flag (checked in should_retrain);
+    # the actual retrain is still owned by the optimisation loop. Callers are
+    # wired separately (see the integration notes on each method).
+
+    def trigger_event_retrain(self, reason: str) -> bool:
+        """Arm an out-of-band retrain on the next ``should_retrain`` check.
+
+        Respects ``event_retrain_enabled`` and the cooldown so a noisy signal
+        cannot thrash the learners. Returns True when the flag was armed, False
+        when suppressed (disabled or within cooldown). Never raises.
+        """
+        try:
+            if not self.event_retrain_enabled:
+                return False
+            now = datetime.now(timezone.utc)
+            cooldown = timedelta(minutes=max(0, self.event_retrain_cooldown_minutes))
+            if (
+                self._last_event_retrain_time is not None
+                and now - self._last_event_retrain_time < cooldown
+            ):
+                logger.debug(
+                    "[ml] event retrain '{}' suppressed — within {}min cooldown",
+                    reason, self.event_retrain_cooldown_minutes,
+                )
+                return False
+            self._event_retrain_pending = True
+            self._event_retrain_reason = reason
+            self._last_event_retrain_time = now
+            logger.info("[ml] event retrain armed: {}", reason)
+            return True
+        except Exception as exc:  # noqa: BLE001 — never break a caller hot path
+            logger.debug("[ml] trigger_event_retrain failed: {}", exc)
+            return False
+
+    def notify_loss_streak(self, consecutive_losses: int) -> bool:
+        """Arm a retrain when a loss streak reaches the configured threshold.
+
+        # Caller integration: invoke from the trade-close path (e.g.
+        # EventDrivenSystem._on_trade_closed) with the running consecutive-loss
+        # count once that count is tracked.
+        """
+        try:
+            if int(consecutive_losses) >= self.loss_streak_retrain_threshold:
+                return self.trigger_event_retrain(
+                    f"loss_streak={int(consecutive_losses)}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[ml] notify_loss_streak failed: {}", exc)
+        return False
+
+    def notify_drawdown_escalation(self, old_mode: str, new_mode: str) -> bool:
+        """Arm a retrain when the drawdown guard escalates to a tighter mode.
+
+        # Caller integration: invoke from DrawdownGuard's mode-transition path
+        # when the mode moves to a MORE defensive state (e.g. NORMAL→CAUTION,
+        # CAUTION→RECOVERY, NORMAL→RECOVERY).
+        """
+        try:
+            severity = {"NORMAL": 0, "CAUTION": 1, "RECOVERY": 2, "FROZEN": 3}
+            old_s = severity.get(str(old_mode).upper(), 0)
+            new_s = severity.get(str(new_mode).upper(), 0)
+            if new_s > old_s:
+                return self.trigger_event_retrain(
+                    f"drawdown_escalation={old_mode}->{new_mode}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[ml] notify_drawdown_escalation failed: {}", exc)
+        return False
+
+    def notify_regime_change(self, old_regime: str, new_regime: str) -> bool:
+        """Arm a retrain when the detected market regime changes.
+
+        # Caller integration: invoke from RegimeDetector when the classified
+        # regime transitions to a different label.
+        """
+        try:
+            if str(old_regime) != str(new_regime) and str(new_regime):
+                return self.trigger_event_retrain(
+                    f"regime_change={old_regime}->{new_regime}"
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[ml] notify_regime_change failed: {}", exc)
+        return False
 
     def register_new_trade(self, exit_cause: Optional[str] = None) -> None:
         self._trades_since_train += 1

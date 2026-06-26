@@ -330,6 +330,25 @@ class ConsensusConfig:
         default_factory=lambda: ["currency_strength"]
     )
     high_authority_oppose_confidence: float = 0.6
+    # ── currency_strength authority mode (verification gap #2) ────────────
+    # Historically ``currency_strength`` (a cross-pair aggregate, not a single
+    # timeframe) had a binary VETO: when it opposed the net consensus with
+    # confidence >= high_authority_oppose_confidence the entire thesis — no
+    # matter how unanimous the rest of the panel — was forced to NEUTRAL. That
+    # is directional authority, not the probabilistic-evidence philosophy the
+    # rest of the stack follows (the H4 bias gate is a graded penalty, not a
+    # veto). "penalty" (default) makes currency_strength a GRADED voice: its
+    # opposition subtracts a confidence-scaled penalty from the thesis
+    # conviction (so a strong-enough multi-TF setup survives, a marginal one
+    # naturally falls below the conviction threshold → NEUTRAL through normal
+    # flow). Set to "veto" to restore the legacy binary kill.
+    currency_strength_penalty_mode: str = "penalty"
+    # Conviction penalty (points on the 0–100 conviction-percent scale, applied
+    # as ``amount/100 × opposing confidence``) when currency_strength opposes in
+    # "penalty" mode. 20 points ≈ a 0.6-confidence opposition shaving 0.12 off
+    # conviction, scaling to the full 0.20 at max confidence. Sized like the H4
+    # bias penalty (15) so the two graded authorities are comparable.
+    currency_strength_penalty_amount: float = 20.0
     min_contributors: int = 2
     # PR10 Phase 0: when the panel collapses to NEUTRAL on the agreement gate,
     # log the suppressed minority cluster and emit a counterfactual shadow so
@@ -424,6 +443,20 @@ class ConsensusConfig:
                     f"ConsensusConfig.high_authority_modules entry '{mod}' "
                     f"not present in weights: {list(self.weights.keys())}"
                 )
+        if self.currency_strength_penalty_mode not in ("penalty", "veto"):
+            raise ValueError(
+                f"ConsensusConfig.currency_strength_penalty_mode must be "
+                f"'penalty' or 'veto', got {self.currency_strength_penalty_mode!r}"
+            )
+        if (
+            not isinstance(self.currency_strength_penalty_amount, (int, float))
+            or not math.isfinite(self.currency_strength_penalty_amount)
+            or self.currency_strength_penalty_amount < 0
+        ):
+            raise ValueError(
+                f"ConsensusConfig.currency_strength_penalty_amount must be a "
+                f"finite number >= 0, got {self.currency_strength_penalty_amount!r}"
+            )
         if not (0.0 <= self.conviction_threshold <= 1.0):
             raise ValueError(
                 f"ConsensusConfig.conviction_threshold must be in [0, 1], "

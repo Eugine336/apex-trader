@@ -5947,6 +5947,12 @@ class EventDrivenSystem:
                 net_scale=cfg.net_scale,
                 symbol=symbol,
                 conviction_store=_conv_store,
+                currency_strength_penalty_mode=getattr(
+                    cfg, "currency_strength_penalty_mode", "penalty"
+                ),
+                currency_strength_penalty_amount=getattr(
+                    cfg, "currency_strength_penalty_amount", 20.0
+                ),
             )
         except Exception as exc:
             logger.debug(
@@ -6010,6 +6016,12 @@ class EventDrivenSystem:
                 net_scale=cfg.net_scale,
                 symbol=symbol,
                 conviction_store=_conv_store,
+                currency_strength_penalty_mode=getattr(
+                    cfg, "currency_strength_penalty_mode", "penalty"
+                ),
+                currency_strength_penalty_amount=getattr(
+                    cfg, "currency_strength_penalty_amount", 20.0
+                ),
             )
         except Exception as exc:
             logger.debug("[consensus-trigger] {} thesis failed: {}", symbol, exc)
