@@ -3226,13 +3226,13 @@ class CrossInstrumentConfig:
     # ── GAP 1: Global opportunity queue (quality-ordered dispatch) ──────
     # Collect candidates across all instruments during a window, then dispatch
     # them best-EV-first instead of first-tick-first.
-    queue_enabled: bool = False
+    queue_enabled: bool = True
     queue_window_ms: int = 1000          # collection window before a drain
 
     # ── GAP 2: Cross-instrument ranking ────────────────────────────────
     # Normalise EVs across instruments (spread cost, per-pair win rate) before
     # the queue dispatches. No effect unless the queue is enabled.
-    ranking_enabled: bool = False
+    ranking_enabled: bool = True
     spread_ev_penalty_per_pip: float = 0.02   # R deducted per spread pip
     winrate_ev_weight: float = 0.5            # R swing applied by (win_rate-0.5)
 
@@ -3240,7 +3240,7 @@ class CrossInstrumentConfig:
     # Size the best opportunities UP (to max_boost) and weaker ones DOWN (to
     # min_cut) on top of the existing de-risking sizing chain. The per-trade
     # risk ceiling still clamps the final size.
-    quality_sizing_enabled: bool = False
+    quality_sizing_enabled: bool = True
     quality_sizing_max_boost: float = 1.3
     quality_sizing_min_cut: float = 0.7
     quality_sizing_ev_ref: float = 1.0        # EV (R) that maps to full boost
@@ -3248,7 +3248,7 @@ class CrossInstrumentConfig:
     # ── GAP 4: Position displacement / upgrade ─────────────────────────
     # Close a lower-EV open position to fund a clearly better new opportunity
     # when capacity / budget is exhausted.
-    displacement_enabled: bool = False
+    displacement_enabled: bool = True
     displacement_ev_margin: float = 0.5       # new EV must beat weakest by this R
     displacement_max_per_cycle: int = 1
     displacement_min_profit_protect: float = 1.0   # never displace a >1R winner
@@ -3258,7 +3258,7 @@ class CrossInstrumentConfig:
     # Periodically rank all instruments and publish a watchlist of those
     # approaching a high-EV setup; feeds the density tracker + dashboard. Never
     # triggers entries directly — it only pre-heats the pipeline.
-    proactive_scan_enabled: bool = False
+    proactive_scan_enabled: bool = True
     proactive_scan_interval_seconds: float = 60.0
     proactive_scan_min_ev: float = 0.5
     proactive_proximity_pct: float = 0.02     # within 2% of a zone counts as near
