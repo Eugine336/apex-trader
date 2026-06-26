@@ -4,7 +4,6 @@ import json
 import tempfile
 from pathlib import Path
 
-import pytest
 
 from decision.context import TradeContext
 from decision.situation import SituationEngine, SituationAssessment
@@ -354,7 +353,7 @@ class TestDecisionJournal:
 
 class TestDecisionConfig:
     def test_config_defaults(self):
-        from config import AppConfig, DecisionConfig
+        from config import AppConfig
         cfg = AppConfig()
         assert cfg.decision.enabled is True
         assert cfg.decision.journal_enabled is True

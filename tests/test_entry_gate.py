@@ -1,9 +1,7 @@
 """Tests for entry.entry_gate — EntryGate."""
 
-import math
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 from entry.entry_gate import EntryGate
 from entry.models import EntryConfig, EntryZone, ZoneType

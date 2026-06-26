@@ -375,7 +375,6 @@ class TestTunableAdapter:
     def test_rollback_strips_reserved_key(self, learner):
         # tune then rollback must restore profiles without crashing on the
         # reserved sigmoid key in the snapshot.
-        from adaptive.tunable import TuneContext
 
         t = self._adapter(learner)
         t._begin()  # snapshot includes the sigmoid key

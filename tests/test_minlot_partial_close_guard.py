@@ -23,12 +23,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any
 
 from execution.action_executor import ActionExecutor, ExecutorConfig
 from execution.intents import Intent, IntentType
 from execution.position_snapshot import PositionSnapshot
-from execution.position_worker import PositionWorker, WorkerConfig
+from execution.position_worker import PositionWorker
 from execution.risk_gate import GateConfig
 
 # ── Fake broker ──────────────────────────────────────────────────────

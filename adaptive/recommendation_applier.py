@@ -24,7 +24,7 @@ from __future__ import annotations
 import threading
 import time
 from collections import deque
-from typing import Callable, Deque, Dict, Optional
+from typing import Callable, Deque, Dict
 
 from loguru import logger
 

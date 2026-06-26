@@ -144,7 +144,7 @@ class ObservationBuilder:
         c = closes[-self.window:]
         o = opens[-self.window:]
         h = highs[-self.window:]
-        l = lows[-self.window:]
+        lo = lows[-self.window:]
         v = volumes[-self.window:]
         a = atr_s[-self.window:]
 
@@ -162,7 +162,7 @@ class ObservationBuilder:
         ret5  = np.concatenate([[0]*5, (c[5:] - c[:-5]) / (c[:-5] + 1e-8)])
         ret14 = np.concatenate([[0]*14, (c[14:] - c[:-14]) / (c[:-14] + 1e-8)])
 
-        rng       = (h - l) + 1e-8
+        rng       = (h - lo) + 1e-8
         hl_ratio  = rng / (c + 1e-8)
         oc_ratio  = (c - o) / rng
 
@@ -171,7 +171,7 @@ class ObservationBuilder:
         obs = np.stack([
             znorm(o),
             znorm(h),
-            znorm(l),
+            znorm(lo),
             znorm(c),
             znorm(v),
             znorm(a),

@@ -9,11 +9,9 @@ Validates:
   5. BacktestResult.atr_comparison is None when compare_atr_stop=False
 """
 
-import math
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from brain.volatility_stop import (
     atr_series,

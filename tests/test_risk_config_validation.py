@@ -5,7 +5,6 @@ Ensures invalid money/risk values raise ValueError at construction
 and that valid defaults pass unchanged.
 """
 
-import math
 import pytest
 from config import RiskConfig, AppConfig
 

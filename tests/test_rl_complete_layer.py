@@ -7,7 +7,6 @@ from __future__ import annotations
 import os
 import sys
 import tempfile
-from dataclasses import fields
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -42,9 +41,9 @@ def _make_ohlcv_csv(path: Path, symbol: str, tf: str, n_bars: int = 300):
         o = base + np.random.normal(0, 0.001)
         c = o + np.random.normal(0, 0.001)
         h = max(o, c) + abs(np.random.normal(0, 0.0005))
-        l = min(o, c) - abs(np.random.normal(0, 0.0005))
+        lo = min(o, c) - abs(np.random.normal(0, 0.0005))
         v = max(1, int(np.random.exponential(100)))
-        rows.append({"time": dt.isoformat(), "open": o, "high": h, "low": l, "close": c, "volume": v})
+        rows.append({"time": dt.isoformat(), "open": o, "high": h, "low": lo, "close": c, "volume": v})
         dt += delta
 
     df = pd.DataFrame(rows)
@@ -309,7 +308,7 @@ def test_walk_forward_splits_chronologically():
 
 def test_health_watchdog_rl_fields():
     """HealthWatchdog has RL health tracking."""
-    from platforms.health_watchdog import HealthWatchdog, HealthReport
+    from platforms.health_watchdog import HealthWatchdog
 
     hw = HealthWatchdog()
 

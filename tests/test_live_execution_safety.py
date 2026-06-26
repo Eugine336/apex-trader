@@ -3,10 +3,8 @@ Regression tests for the 5 live-execution-safety fixes (C1-C4, C6).
 Each test is designed to FAIL on the pre-fix code and PASS after.
 """
 
-import types
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 
 
 # ═══════════════════════════════════════════════════════════════════════════════

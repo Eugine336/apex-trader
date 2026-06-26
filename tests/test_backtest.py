@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from backtest.broker import SimulatedBroker, SimulatedPosition
+from backtest.broker import SimulatedBroker
 from backtest.data import (
     Candle,
     DataValidationError,
@@ -17,7 +17,7 @@ from backtest.data import (
 )
 from backtest.results import BacktestResults, BacktestReporter, TradeRecord
 from backtest.runner import BacktestRunner
-from backtest.strategy import BarContext, MovingAverageCrossStrategy, Signal
+from backtest.strategy import BarContext, Signal
 from backtest import synthetic_data as sd
 
 

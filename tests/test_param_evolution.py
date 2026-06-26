@@ -17,10 +17,8 @@ import tempfile
 
 import pytest
 
-from config import ParameterEvolutionConfig
 from adaptive.counterfactual import CounterfactualEngine, TradeAttribution
 from adaptive.param_evolution import (
-    LOC_RANKER,
     LOC_THRESHOLD,
     EvolvableParam,
     ParameterCandidate,

@@ -13,9 +13,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone, timedelta
 
-import pytest
 
-from execution.intents import Intent, IntentType
+from execution.intents import IntentType
 from execution.position_worker import (
     PositionWorker,
     WorkerConfig,

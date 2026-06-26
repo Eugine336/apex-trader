@@ -10,7 +10,6 @@ import sys
 import types
 
 import numpy as np
-import pytest
 from unittest.mock import MagicMock
 
 # Pre-seed torch and heavy rl submodules as mocks before any rl import
@@ -71,7 +70,7 @@ def _make_env(initial_balance=10_000.0, n_bars=500):
         "volume": np.ones(n_bars),
     })
 
-    from rl.contracts import TF_ORDER, ATR_PERIOD, WINDOW, OBS_SHAPE, N_CONTEXT_FEATURES, build_symbol_vocab
+    from rl.contracts import TF_ORDER, build_symbol_vocab
     from rl.multi_tf_obs_builder import MultiTFObservationBuilder, symbol_id_for
 
     env._m5_raw = m5_df.copy()

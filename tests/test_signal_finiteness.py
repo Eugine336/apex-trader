@@ -11,14 +11,13 @@ CHANGE 2: Verifies the H4 bias gate rejects contradicting trends when
 import math
 import numpy as np
 import pandas as pd
-import pytest
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from config import AppConfig
 from trigger.entry_engine import EntryEngine, EntrySignal, EntryRejection
-from trigger.entry_validator import EntryValidator, ValidationResult
+from trigger.entry_validator import EntryValidator
 
 
 # ═══════════════════════════════════════════════════════════════════════════

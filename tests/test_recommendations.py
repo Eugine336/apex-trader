@@ -11,7 +11,6 @@ Covers:
   when auto-approved, and old map retained when a real authoriser rejects.
 """
 
-import pytest
 
 from config import VoteCalibratorConfig
 from adaptive.recommendations import (

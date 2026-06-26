@@ -5,18 +5,13 @@ from __future__ import annotations
 import time
 import threading
 from dataclasses import dataclass
-from datetime import datetime, timezone
 from typing import Any, Optional
-from unittest.mock import MagicMock
 
-import pytest
 
 from execution.intents import Intent, IntentType
 from execution.action_executor import (
     ActionExecutor,
-    ExecutionResult,
     ExecutorConfig,
-    ExecutorMetrics,
     _is_transient,
 )
 from execution.risk_gate import GateConfig

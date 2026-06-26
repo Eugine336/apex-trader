@@ -21,7 +21,6 @@ import pytest
 from config import RegimeDetectionConfig
 from adaptive.regime_detector import (
     RegimeDetector,
-    RegimeState,
     REGIME_TRENDING_UP,
     REGIME_TRENDING_DOWN,
     REGIME_RANGING,

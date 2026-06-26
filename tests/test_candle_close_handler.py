@@ -6,11 +6,9 @@ and the handler is thread-safe under concurrent events.
 """
 
 import sys
-import threading
 import time
 import types
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pandas as pd
@@ -64,7 +62,7 @@ if "torch" not in sys.modules:
     sys.modules["torch.nn.functional"] = _torch.nn.functional
     sys.modules["torch.distributions"] = _torch.distributions
 
-from brain.world_model import WorldModelStore, build_world_model
+from brain.world_model import WorldModelStore
 from scanner.candle_close_handler import (
     CandleCloseHandler,
     TF_MODULE_MAP,

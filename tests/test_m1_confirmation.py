@@ -2,11 +2,9 @@
 
 from datetime import datetime, timedelta, timezone
 
-import numpy as np
 import pandas as pd
-import pytest
 
-from entry.m1_confirmation import M1CandleConfirmer, ConfirmationResult
+from entry.m1_confirmation import M1CandleConfirmer
 from entry.models import EntryConfig, EntryZone, ZoneType
 
 

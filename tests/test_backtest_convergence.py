@@ -7,18 +7,11 @@ Two tiers:
   - Heavy (torch present): end-to-end smoke with injected scanner/engine.
 """
 
-import importlib
-import inspect
-import types
-from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from types import SimpleNamespace
-from typing import Optional
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import numpy as np
 import pandas as pd
-import pytest
 
 # ---------------------------------------------------------------------------
 # Lightweight tests — always run, no torch required

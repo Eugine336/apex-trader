@@ -7,9 +7,7 @@ no static flag, no human bias. Multi-bar reactions are detected.
 Dependency-light: pandas + numpy only, no torch.
 """
 
-import numpy as np
 import pandas as pd
-import pytest
 
 from brain.liquidity_mapper import LiquidityMapper
 from brain.directional_consensus import vote_from_liquidity

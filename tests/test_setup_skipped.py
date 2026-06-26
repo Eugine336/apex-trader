@@ -14,9 +14,8 @@ import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
 
-from persistence.event_store import EventStore, new_cycle_id, get_event_store
+from persistence.event_store import EventStore, new_cycle_id
 from persistence.domain_events import SETUP_SKIPPED
 
 

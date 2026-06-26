@@ -5,10 +5,8 @@ and exit_reason_source='deriv_poc' propagation in main_loop reconciliation.
 """
 
 from datetime import datetime, timezone
-from typing import Optional
 from unittest.mock import MagicMock
 
-import pytest
 
 from platforms.base_connector import DealCloseInfo
 

@@ -5,7 +5,6 @@ Dependency-light — no torch, no pandas required for consensus math tests.
 Only imports pandas for vote-extractor tests that need DataFrames.
 """
 
-import math
 import pytest
 
 from brain.directional_consensus import (

@@ -8,19 +8,9 @@ Verifies that:
 """
 
 import json
-import tempfile
-import time
-import threading
-from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from types import SimpleNamespace
-from typing import Optional, Union
-from unittest.mock import MagicMock, patch
 
-import pytest
-from loguru import logger
 
-from persistence.event_store import EventStore, new_cycle_id, new_setup_id, get_event_store
+from persistence.event_store import EventStore, new_cycle_id, new_setup_id
 from persistence.domain_events import DECISION_REJECT, ORDER_SENT, ORDER_FILLED, TRADE_OPEN
 
 

@@ -8,7 +8,6 @@ while passing fresh positive ticks unchanged.
 
 import sys
 import time as _time
-from datetime import datetime, timezone
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 

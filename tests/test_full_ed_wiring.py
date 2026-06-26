@@ -5,11 +5,7 @@ shadow resolution, dashboard mixin fallbacks, and conviction cap.
 from __future__ import annotations
 
 import sys
-import threading
-import time
-from dataclasses import dataclass
-from types import SimpleNamespace, ModuleType
-from typing import Any, Optional
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
