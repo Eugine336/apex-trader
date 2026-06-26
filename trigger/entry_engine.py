@@ -1622,9 +1622,13 @@ class EntryEngine:
 
     def _pip_size(self, symbol: str) -> float:
         try:
-            return get_pip_size(symbol)
+            ps = get_pip_size(symbol)
         except KeyError:
             return 0.0001
+        # A misconfigured registry entry (pip_size <= 0) would crash every
+        # downstream ``/ pip_size`` site with ZeroDivisionError. Clamp to a
+        # safe positive default so risk/RR math degrades gracefully instead.
+        return float(ps) if ps and ps > 0 else 0.0001
 
     def _category(self, symbol: str) -> str:
         try:

@@ -624,6 +624,16 @@ class EntryOrchestrator:
                     self._confirming.pop(symbol, None)
                 return
 
+        if pip_size <= 0:
+            logger.warning(
+                "[entry-orch] {} pip_size is {} — cannot compute risk, skipping",
+                symbol, pip_size,
+            )
+            self._tick_detector.cancel_pending(symbol, "invalid pip_size")
+            with self._lock:
+                self._confirming.pop(symbol, None)
+            return
+
         risk_pips = abs(entry_price - zone.invalidation_level) / pip_size
         if risk_pips <= 0:
             risk_pips = 10.0

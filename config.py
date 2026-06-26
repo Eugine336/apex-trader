@@ -127,6 +127,14 @@ _register("XTIUSD", "WTI Crude",  _COM, _M5, 0.01,  10.0,  4.0, "specific", _CMA
 _IDX = InstrumentCategory.INDEX
 _IMAR = MarginCategory.INDEX
 
+# TODO: verify index pip_size / pip_value against each broker's contract specs.
+# These (pip_size, pip_value) pairs drive pnl_pips and per-pip risk math. With
+# pip_size=0.1 on a ~24,000-priced index (e.g. GER40/DAX) a small 3.8-point
+# adverse move reads as -38,000 "pips" — mathematically consistent but it makes
+# the learners' per-pip figures dwarf forex. The dollar P&L is taken straight
+# from the broker (position.profit, already in account currency) and is correct,
+# so this is a pip-scale/display concern, not a money-sizing bug. Confirm each
+# broker's true point value before changing these — wrong specs break sizing.
 _register("US100",  "Nasdaq 100",   _IDX, _M5, 0.1, 1.0, 1.5, "specific", _IMAR)
 _register("US30",   "Dow Jones 30", _IDX, _M5, 0.1, 1.0, 2.0, "specific", _IMAR)
 _register("US500",  "S&P 500",      _IDX, _M5, 0.1, 1.0, 0.5, "specific", _IMAR)
