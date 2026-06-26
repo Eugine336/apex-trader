@@ -137,6 +137,7 @@ def decide(
     high_authority_oppose_confidence: float,
     min_contributors: int = 1,
     log_suppressed_minorities: bool = True,
+    currency_strength_penalty_mode: str = "veto",
 ) -> DirectionDecision:
     """
     Compute consensus direction from a list of weighted signed votes.
@@ -145,7 +146,15 @@ def decide(
     - |net| < min_net_score
     - agreement < min_agreement
     - a high-authority module opposes the net direction with high confidence
+      AND ``currency_strength_penalty_mode == "veto"`` (legacy binary veto)
     - fewer than min_contributors modules cast a non-NEUTRAL vote
+
+    High-authority opposition is always *recorded* on ``opposed_by`` for
+    visibility/penalty, but it only forces NEUTRAL here when the mode is
+    ``"veto"``. In ``"penalty"`` mode the opposing module's signed vote already
+    weighs against the net (it is a normal vote), and the graded conviction
+    penalty is applied downstream in :func:`form_thesis` — so a single
+    cross-pair metric no longer nukes an otherwise-unanimous multi-TF thesis.
 
     When agreement is what dissolves an otherwise-directional panel, the
     suppressed minority cluster is captured on the returned decision (and logged
@@ -239,12 +248,21 @@ def decide(
                     minority_dir, cluster_desc, suppressed_strength,
                     raw_dir, agreement,
                 )
-    elif opposed_by:
+    elif opposed_by and currency_strength_penalty_mode == "veto":
         logger.info(
-            "[consensus] NEUTRAL — high-authority opposition from: {}",
+            "[consensus] NEUTRAL — high-authority opposition (veto mode) from: {}",
             ", ".join(opposed_by),
         )
         direction = "NEUTRAL"
+    elif opposed_by:
+        # Penalty mode: the opposition is recorded (and penalised downstream in
+        # form_thesis) but does NOT force NEUTRAL here. The opposing module's
+        # signed vote has already weighed against the net.
+        logger.info(
+            "[consensus] high-authority opposition (penalty mode) from: {} "
+            "— direction held, conviction will be penalised",
+            ", ".join(opposed_by),
+        )
     elif len(non_neutral) < min_contributors:
         logger.info(
             "[consensus] NEUTRAL — only {} non-neutral voter(s), "
@@ -339,6 +357,8 @@ def form_thesis(
     log_suppressed_minorities: bool = False,
     symbol: Optional[str] = None,
     conviction_store: Any = None,
+    currency_strength_penalty_mode: str = "veto",
+    currency_strength_penalty_amount: float = 20.0,
 ) -> ConsensusThesis:
     """Turn a vote panel into an actionable :class:`ConsensusThesis`.
 
@@ -372,6 +392,7 @@ def form_thesis(
         high_authority_oppose_confidence=high_authority_oppose_confidence,
         min_contributors=min_contributors,
         log_suppressed_minorities=log_suppressed_minorities,
+        currency_strength_penalty_mode=currency_strength_penalty_mode,
     )
 
     direction = decision.direction
@@ -390,6 +411,39 @@ def form_thesis(
     scale = net_scale if net_scale and net_scale > 0 else max(min_net_score * 2.0, 1e-9)
     net_sat = min(1.0, abs(decision.net_score) / scale)
     raw_conviction = round(min(1.0, 0.5 * decision.agreement + 0.5 * net_sat), 4)
+
+    # Graded currency_strength penalty (verification gap #2). In "penalty" mode
+    # decide() let the direction stand despite high-authority opposition; the
+    # opposition is now expressed as a confidence-scaled conviction haircut
+    # rather than a binary kill. ``penalty_amount`` is on the 0–100 conviction-
+    # percent scale, applied as ``amount/100 × opposing_confidence``. A marginal
+    # thesis falls below ``conviction_threshold`` (→ no trigger); a strong,
+    # unanimous multi-TF thesis survives a single opposing cross-pair metric.
+    if currency_strength_penalty_mode == "penalty" and decision.opposed_by:
+        try:
+            opp_conf = max(
+                (
+                    float(v.confidence)
+                    for v in decision.votes
+                    if v.module in decision.opposed_by
+                    and v.direction not in ("NEUTRAL", direction)
+                ),
+                default=0.0,
+            )
+            penalty = (float(currency_strength_penalty_amount) / 100.0) * opp_conf
+            if penalty > 0:
+                penalised = round(max(0.0, raw_conviction - penalty), 4)
+                logger.info(
+                    "[consensus] currency_strength penalty: conviction "
+                    "{:.4f} → {:.4f} (−{:.4f}, opp_conf={:.2f}) from {}",
+                    raw_conviction, penalised, penalty, opp_conf,
+                    ", ".join(decision.opposed_by),
+                )
+                raw_conviction = penalised
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[consensus] currency_strength penalty failed: {}", exc
+            )
 
     # 1B — symbol-relative conviction. Record the raw value and re-express it
     # against this symbol's own distribution. Guarded: any fault leaves the raw

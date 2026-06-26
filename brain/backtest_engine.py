@@ -1171,6 +1171,12 @@ class BacktestEngine:
                 net_scale=cfg.net_scale,
                 symbol=pair,
                 conviction_store=getattr(self, "symbol_conviction", None),
+                currency_strength_penalty_mode=getattr(
+                    cfg, "currency_strength_penalty_mode", "penalty"
+                ),
+                currency_strength_penalty_amount=getattr(
+                    cfg, "currency_strength_penalty_amount", 20.0
+                ),
             )
         except Exception as exc:
             logger.warning("[backtest] form_thesis failed for {}: {}", pair, exc)

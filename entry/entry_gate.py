@@ -91,6 +91,7 @@ class EntryGate:
             directional_gate = self._check_ev(
                 symbol, direction, entry_price, stop_loss, tp1,
                 long_probability, short_probability,
+                current_spread_pips,
             )
         else:
             directional_gate = self._check_alignment(
@@ -230,6 +231,7 @@ class EntryGate:
         tp1: float,
         long_probability: float,
         short_probability: float,
+        spread_pips: float = 0.0,
     ) -> GateResult:
         """Expected-value gate (Phase 4 — Opportunity Engine).
 
@@ -246,13 +248,25 @@ class EntryGate:
         fights the predominant flow. The GateTuner can LOWER the EV bar within
         its bounded ``ev_gate`` envelope when its rejected setups keep winning,
         but never below zero.
+
+        Execution cost: the spread erodes the reward leg (you exit a winning
+        LONG at the bid, not the ask), so the spread cost — converted from pips
+        to price distance via the instrument pip size — is subtracted from the
+        gross reward BEFORE computing R:R. Two setups with identical price
+        targets but different spreads no longer score the same EV; the wider-
+        spread setup is correctly penalised. Falls back to the gross reward
+        when the spread or pip size is unavailable.
         """
         risk = abs(entry_price - stop_loss)
         if risk <= 0:
             return GateResult(False, "ev_gate", "Zero risk distance")
 
         reward = abs(tp1 - entry_price)
-        rr_ratio = reward / risk
+        # Subtract the spread cost (in price units) from the reward leg — the
+        # round-trip cost the trade must overcome to realise its target.
+        spread_cost = self._spread_cost_price(symbol, spread_pips)
+        net_reward = max(reward - spread_cost, 0.0)
+        rr_ratio = net_reward / risk
 
         if direction.upper() == "LONG":
             p_win = float(long_probability)
@@ -288,13 +302,39 @@ class EntryGate:
             return GateResult(
                 False, "ev_gate",
                 f"EV {entry_ev:.3f}R < min {min_ev:.3f}R "
-                f"({label}, p_win={p_win:.2f} rr={rr_ratio:.2f})",
+                f"({label}, p_win={p_win:.2f} rr={rr_ratio:.2f} "
+                f"spread_cost={spread_cost:.5f})",
             )
         return GateResult(
             True, "ev_gate",
             f"EV {entry_ev:.3f}R OK "
-            f"({label}, p_win={p_win:.2f} rr={rr_ratio:.2f})",
+            f"({label}, p_win={p_win:.2f} rr={rr_ratio:.2f} "
+            f"spread_cost={spread_cost:.5f})",
         )
+
+    def _spread_cost_price(self, symbol: str, spread_pips: float) -> float:
+        """Convert a spread quoted in pips to a price-distance cost.
+
+        ``spread_cost = spread_pips × pip_size``. Returns 0.0 (no penalty) when
+        the spread is missing/non-finite/non-positive or the pip size cannot be
+        resolved — so the gate degrades to the prior gross-reward behaviour
+        rather than crashing on an unknown instrument.
+        """
+        try:
+            sp = float(spread_pips)
+            if not math.isfinite(sp) or sp <= 0:
+                return 0.0
+            from config import get_pip_size
+
+            pip_size = float(get_pip_size(symbol))
+            if not math.isfinite(pip_size) or pip_size <= 0:
+                return 0.0
+            return sp * pip_size
+        except Exception as exc:
+            logger.debug(
+                "[entry-gate] spread cost unavailable for {}: {}", symbol, exc,
+            )
+            return 0.0
 
     def _check_alignment(
         self, symbol: str, direction: str, alignment: Optional[float],
