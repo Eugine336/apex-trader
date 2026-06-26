@@ -88,9 +88,78 @@ class TestSyncDataRepo:
                 )
 
 
+# ── WAL checkpoint before sync ─────────────────────────────────────────────
+
+
+class TestWalCheckpoint:
+    def test_wal_checkpoint_flushes_data(self):
+        from scripts import backup_data
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            db = d / "test.db"
+            conn = sqlite3.connect(str(db))
+            try:
+                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute("CREATE TABLE t (x INTEGER)")
+                conn.executemany(
+                    "INSERT INTO t VALUES (?)", [(i,) for i in range(2000)]
+                )
+                conn.commit()
+                # In WAL mode the inserts live in the -wal sidecar; the main
+                # .db file is still tiny until a checkpoint flushes it.
+                size_before = db.stat().st_size
+                n = backup_data._checkpoint_wal_files(d)
+            finally:
+                conn.close()
+            size_after = db.stat().st_size
+            assert n == 1
+            assert size_after > size_before
+
+    def test_wal_checkpoint_skips_corrupt(self):
+        from scripts import backup_data
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            (d / "foo.db").write_bytes(b"not a sqlite database at all")
+            n = backup_data._checkpoint_wal_files(d)
+            assert n == 0
+
+    def test_wal_checkpoint_empty_dir(self):
+        from scripts import backup_data
+        with tempfile.TemporaryDirectory() as tmp:
+            assert backup_data._checkpoint_wal_files(Path(tmp)) == 0
+
+    def test_sync_data_repo_checkpoints_before_commit(self):
+        from scripts import backup_data
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            _init_repo(d)
+            (d / "apex_positions.db").write_text("rows")
+
+            calls: list[str] = []
+            real_run_git = backup_data._run_git
+
+            def _track_checkpoint(data_dir):
+                calls.append("checkpoint")
+                return 0
+
+            def _track_run_git(args, cwd):
+                if args and args[0] == "add":
+                    calls.append("add")
+                return real_run_git(args, cwd)
+
+            with patch.object(backup_data, "_DATA_DIR", d), patch.object(
+                backup_data, "_checkpoint_wal_files", side_effect=_track_checkpoint,
+            ), patch.object(
+                backup_data, "_run_git", side_effect=_track_run_git,
+            ):
+                backup_data.sync_data_repo(commit_message="x", push=False)
+
+            assert "checkpoint" in calls
+            assert "add" in calls
+            assert calls.index("checkpoint") < calls.index("add")
+
+
 # ── DailyMaintenance auto-sync wiring ──────────────────────────────────────
-
-
 class TestMaintenanceAutoSync:
     def test_sync_disabled_by_default(self):
         # Default ctor keeps auto-sync OFF so existing callers/tests are inert.

@@ -20,6 +20,7 @@ import argparse
 import fnmatch
 import os
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 from pathlib import Path
@@ -80,6 +81,34 @@ def _copy_filtered(
             shutil.copy2(str(src_file), str(dest_root / fname))
             copied += 1
     return copied, skipped
+
+
+# ── WAL checkpoint helper ─────────────────────────────────────────────────
+
+
+def _checkpoint_wal_files(data_dir: Path) -> int:
+    """Flush WAL journals into main .db files before a git sync.
+
+    SQLite WAL mode keeps recent writes in a separate -wal file. Git
+    excludes -wal/-shm files, so without an explicit checkpoint the
+    committed .db files contain only stale data (often just the empty
+    schema). Running ``PRAGMA wal_checkpoint(TRUNCATE)`` merges the WAL
+    back and truncates it, making the .db file self-contained.
+
+    Returns the number of databases successfully checkpointed.
+    """
+    checkpointed = 0
+    for db_path in sorted(data_dir.glob("*.db")):
+        try:
+            conn = sqlite3.connect(str(db_path), timeout=5)
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            conn.close()
+            checkpointed += 1
+        except Exception as exc:
+            logger.debug("[data-sync] WAL checkpoint skipped for {}: {}", db_path.name, exc)
+    if checkpointed:
+        logger.info("[data-sync] checkpointed {} WAL files in {}", checkpointed, data_dir)
+    return checkpointed
 
 
 # ── Git helpers ──────────────────────────────────────────────────────────
@@ -146,6 +175,7 @@ def run_backup(
         _run_git(["checkout", "--orphan", _BRANCH], tmpdir)
 
         dest = Path(tmpdir) / "data"
+        _checkpoint_wal_files(_DATA_DIR)
         copied, skipped = _copy_filtered(
             _DATA_DIR, dest, max_bytes, exclude_patterns,
         )
@@ -222,6 +252,10 @@ def sync_data_repo(
     if not ok:
         return "data dir is not a git repo"
 
+    # Flush WAL journals into the main .db files so the committed databases
+    # are self-contained — git excludes the -wal/-shm sidecars.
+    _checkpoint_wal_files(base)
+
     # Stage everything except excluded patterns. Default git pathspec matching
     # treats '*' as crossing '/', so ':(exclude)*.csv' drops CSVs at any depth.
     add_args = ["add", "-A", "."]
@@ -289,6 +323,7 @@ def mirror_instances(
         users += 1
         dest_data = dst_base / "instances" / child.name / "data"
         dest_data.mkdir(parents=True, exist_ok=True)
+        _checkpoint_wal_files(src_data)
         c, s = _copy_filtered(src_data, dest_data, max_bytes, exclude_patterns)
         copied += c
         skipped += s
