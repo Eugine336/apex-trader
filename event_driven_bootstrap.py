@@ -2708,6 +2708,33 @@ class EventDrivenSystem:
                 )
                 self._developing_loop = None
 
+        # ── Phase 6: adaptive scheduler (continuous-learning closure) ──
+        # Drives the time-based learning cadences (TunerAgent.on_periodic_tick /
+        # on_scan_cycle) that were dormant in production — only on_trade_close
+        # fired live — plus the AdaptiveWeightProvider recompute. Best-effort.
+        self._adaptive_scheduler = None
+        _at_cfg = getattr(self._config, "adaptive_tuner", None)
+        if _at_cfg is not None and bool(getattr(_at_cfg, "enabled", True)) and ctx is not None:
+            try:
+                from adaptive.adaptive_scheduler import AdaptiveSchedulerLoop
+                self._adaptive_scheduler = AdaptiveSchedulerLoop(
+                    tuner_agent=ctx.tuner_agent,
+                    weight_provider=ctx.adaptive_weight_provider,
+                    trade_count_provider=lambda: getattr(self, "_closed_trade_count", 0),
+                    periodic_interval_seconds=float(
+                        getattr(_at_cfg, "periodic_interval_seconds", 900.0)
+                    ),
+                    scan_interval_seconds=float(
+                        getattr(_at_cfg, "scan_interval_seconds", 3600.0)
+                    ),
+                    enabled=True,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[event-driven] AdaptiveSchedulerLoop init failed: {}", exc,
+                )
+                self._adaptive_scheduler = None
+
         # ── Execution plane ──────────────────────────────────────────
         self._aggregator = IntentAggregator(AggregatorConfig())
         self._executor = ActionExecutor(
@@ -3367,6 +3394,16 @@ class EventDrivenSystem:
                     "[event-driven] developing analysis start failed: {}", exc,
                 )
 
+        # Phase 6 — start the adaptive scheduler (drives periodic/scan tuning +
+        # weight recompute). Daemon; never blocks shutdown.
+        if getattr(self, "_adaptive_scheduler", None) is not None:
+            try:
+                self._adaptive_scheduler.start()
+            except Exception as exc:
+                logger.warning(
+                    "[event-driven] adaptive scheduler start failed: {}", exc,
+                )
+
         # ── Start ProcessWatchdog heartbeat thread ───────────────────
         ctx = self._ctx
         if ctx is not None and ctx.process_watchdog is not None:
@@ -3619,6 +3656,11 @@ class EventDrivenSystem:
         if getattr(self, "_developing_loop", None) is not None:
             try:
                 self._developing_loop.stop()
+            except Exception:
+                pass
+        if getattr(self, "_adaptive_scheduler", None) is not None:
+            try:
+                self._adaptive_scheduler.stop()
             except Exception:
                 pass
         self._tick_router.stop()
@@ -7636,6 +7678,12 @@ class EventDrivenSystem:
                             if regime is not None and not isinstance(regime, str)
                             else str(regime or "")
                         ),
+                        # ── Phase 6: per-TF confirmed structure trend at entry ──
+                        # Recorded so the close path can score which timeframes
+                        # actually backed winning trades, feeding the bounded
+                        # AdaptiveWeightProvider that nudges the bias evidence
+                        # weights. Best-effort; absent → no weight adaptation.
+                        "entry_tf_trends": self._capture_entry_tf_trends(symbol),
                     }
                     # Provenance object for candidate-scoped management — manage
                     # this position against the modules + timeframes that voted
@@ -7978,6 +8026,30 @@ class EventDrivenSystem:
         except Exception as exc:
             logger.debug("[post-fill] TRADE_OPEN event emit failed: {}", exc)
 
+    def _capture_entry_tf_trends(self, symbol: str) -> dict:
+        """Snapshot the confirmed per-TF structure trend at entry time.
+
+        Returns ``{tf: "BULLISH"/"BEARISH"/"RANGING"}`` from the live confirmed
+        WorldModel. Best-effort — any fault yields an empty dict (which simply
+        means this trade contributes no evidence to weight adaptation).
+        """
+        try:
+            wm = self._wm_store.get(symbol)
+            if wm is None:
+                return {}
+            trends: dict[str, str] = {}
+            for tf, sa in wm.structure_by_tf().items():
+                if sa is None:
+                    continue
+                trend = getattr(sa, "trend", None)
+                trend = getattr(trend, "value", trend)
+                if trend:
+                    trends[str(tf)] = str(trend)
+            return trends
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[entry-tf-trends] capture failed: {}", exc)
+            return {}
+
     def _on_trade_closed(
         self,
         symbol: str,
@@ -8032,6 +8104,18 @@ class EventDrivenSystem:
         ctx = self._ctx
         if ctx is None:
             return
+
+        # ── Phase 6: feed per-TF structure agreement into the adaptive
+        # evidence-weight provider so the probabilistic-bias weights learn
+        # which timeframes actually predict winners. Best-effort.
+        awp = getattr(ctx, "adaptive_weight_provider", None)
+        if awp is not None:
+            try:
+                tf_trends = info.get("entry_tf_trends") or {}
+                if tf_trends:
+                    awp.record_trade_outcome(direction, tf_trends, bool(won))
+            except Exception as exc:
+                logger.debug("[close-learn] weight-provider record failed: {}", exc)
 
         balance = self._pm.get_platform_balance(symbol)
 

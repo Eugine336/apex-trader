@@ -153,6 +153,7 @@ class RecommendationGateway:
     ) -> None:
         self._governance_required = bool(governance_required)
         self._authorizer = authorizer
+        self._applier: Optional[Callable[[LearningRecommendation], None]] = None
         self._history: Deque[RecommendationDecision] = deque(
             maxlen=max(1, int(history_limit))
         )
@@ -181,6 +182,22 @@ class RecommendationGateway:
     def has_authorizer(self) -> bool:
         return self._authorizer is not None
 
+    def set_applier(
+        self, applier: Optional[Callable[[LearningRecommendation], None]],
+    ) -> None:
+        """Inject (or clear) the bounded applier that mutates live config.
+
+        Phase 6: when wired, an APPROVED recommendation is handed to the applier
+        which applies it within hard, reversible bounds. Without an applier the
+        gateway only records the decision (shadow/audit only) — so this stays
+        behaviour-neutral until an operator wires the applier.
+        """
+        self._applier = applier
+
+    @property
+    def has_applier(self) -> bool:
+        return self._applier is not None
+
     # ── Hot path ──────────────────────────────────────────────────────────
 
     def submit(self, recommendation: LearningRecommendation) -> RecommendationDecision:
@@ -202,6 +219,17 @@ class RecommendationGateway:
         with self._lock:
             self._history.append(decision)
             self._counts[status] = self._counts.get(status, 0) + 1
+        # Apply approved recommendations through the bounded applier, if wired.
+        # The applier is fully exception-safe; a fault can never break the
+        # learner that submitted, nor flip the recorded decision.
+        if decision.approved and self._applier is not None:
+            try:
+                self._applier(recommendation)
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[recommendations] applier raised on {} from {}: {}",
+                    recommendation.recommendation_type, recommendation.source, exc,
+                )
         return decision
 
     def is_approved(self, recommendation: LearningRecommendation) -> bool:

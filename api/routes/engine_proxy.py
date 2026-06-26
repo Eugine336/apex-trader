@@ -116,6 +116,15 @@ async def market_model(
     return await _proxy(user=user, pm=pm, path="/api/market-model")
 
 
+@router.get("/adaptive-learning")
+async def adaptive_learning(
+    user: dict[str, Any] = Depends(get_current_user),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> Any:
+    """Phase 6 — adaptive evidence weights, per-TF accuracy, applier + scheduler state."""
+    return await _proxy(user=user, pm=pm, path="/api/adaptive-learning")
+
+
 @router.get("/decisions")
 async def decisions(
     limit: int = Query(default=100, ge=1, le=500),

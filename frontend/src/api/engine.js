@@ -30,6 +30,12 @@ export async function getMarketModel() {
   return data;
 }
 
+// GET /api/engine/adaptive-learning
+export async function getAdaptiveLearning() {
+  const { data } = await client.get("/api/engine/adaptive-learning");
+  return data;
+}
+
 // GET /api/engine/decisions?limit=&decision_type=&symbol=
 export async function getDecisions(params = {}) {
   const { data } = await client.get("/api/engine/decisions", { params });
