@@ -7934,6 +7934,25 @@ class EventDrivenSystem:
                         # AdaptiveWeightProvider that nudges the bias evidence
                         # weights. Best-effort; absent → no weight adaptation.
                         "entry_tf_trends": self._capture_entry_tf_trends(symbol),
+                        # Session at entry — feeds SessionLearner via the close
+                        # path's TradeRecord. Captured here because the close
+                        # path has no way to know which session the trade was
+                        # opened in. Uses SessionStatus.current_session (the
+                        # actual field; `.name` does not exist on the dataclass).
+                        "session_at_entry": (
+                            str(getattr(
+                                ctx.session_engine.get_status(),
+                                "current_session", "",
+                            ) or "")
+                            if ctx is not None and ctx.session_engine is not None
+                            else ""
+                        ),
+                        # Entry score + confluences — the conviction the setup
+                        # was opened on and the gates it cleared. Carried so the
+                        # close path can populate the journal + PostCloseTracker
+                        # (was hard-coded to 0 / "").
+                        "score": int(decision.get("conviction", 0) or 0),
+                        "confluences": list(decision.get("gates_passed", []) or []),
                     }
                     # Provenance object for candidate-scoped management — manage
                     # this position against the modules + timeframes that voted
@@ -8555,10 +8574,16 @@ class EventDrivenSystem:
                     exit_cause=cause_value,
                     sl_price=float(info.get("sl", 0.0) or 0.0),
                     tp_price=float(info.get("tp", 0.0) or 0.0),
-                    entry_timestamp=now_dt,
+                    # Forward MFE/MAE checks must be scheduled from the ACTUAL
+                    # entry time (stored as an ISO string at fill), not the
+                    # close time. Passing now_dt here measured the wrong price
+                    # window (T+5/15/30/60m from close), making entry_accuracy
+                    # and management_score garbage. Falls back to now_dt only
+                    # when the entry time is unavailable.
+                    entry_timestamp=info.get("entry_time") or now_dt,
                     exit_timestamp=now_dt,
-                    entry_score=0,
-                    entry_confluences="",
+                    entry_score=int(info.get("score", 0) or 0),
+                    entry_confluences=list(info.get("confluences", []) or []),
                 )
             except Exception as exc:
                 logger.debug("[close-learn] PostCloseTracker failed: {}", exc)
@@ -8605,10 +8630,10 @@ class EventDrivenSystem:
                     entry=float(info.get("entry_price", 0.0) or 0.0),
                     exit=exit_price,
                     pnl=round(float(pnl_pips), 2),
-                    score=0,
-                    confluences="",
-                    regime="",
-                    session="",
+                    score=int(info.get("score", 0) or 0),
+                    confluences=list(info.get("confluences", []) or []),
+                    regime=str(info.get("regime_at_entry", "") or ""),
+                    session=str(info.get("session_at_entry", "") or ""),
                     spread=0.0,
                     slippage=0.0,
                     entry_type="event_driven",
