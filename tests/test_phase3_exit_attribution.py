@@ -5,17 +5,13 @@ TRADE_CLOSE event emission, and exit_reason_source propagation.
 """
 
 import sqlite3
-import tempfile
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
-from typing import Optional
 from unittest.mock import MagicMock, patch
 
-import pytest
 
-from persistence.domain_events import TRADE_CLOSE, TRADE_OPEN
+from persistence.domain_events import TRADE_CLOSE
 from persistence.event_store import EventStore
 from platforms.base_connector import DealCloseInfo
 

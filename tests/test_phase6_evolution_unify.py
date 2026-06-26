@@ -8,8 +8,6 @@ Tests:
 - Shutdown closes evolution engine DB connections
 """
 
-from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
 
 import pytest
 

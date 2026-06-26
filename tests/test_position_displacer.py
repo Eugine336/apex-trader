@@ -5,7 +5,6 @@ selection, cooldown, max-per-cycle cap, empty book, and stats.
 """
 
 from management.position_displacer import (
-    DisplacementDecision,
     PositionDisplacer,
     PositionEV,
 )

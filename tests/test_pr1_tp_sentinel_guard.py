@@ -5,7 +5,6 @@ when take-profit levels are None or <= 0, preventing false TP triggers
 on adopted positions with missing/unset broker TPs.
 """
 
-from datetime import datetime, timezone
 
 from management.trade_manager import (
     EntrySignal,

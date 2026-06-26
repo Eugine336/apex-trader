@@ -21,8 +21,6 @@ that no layer throws and that blocked trades are recorded, not swallowed.
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -34,7 +32,6 @@ from backtest.runner import BacktestRunner
 from config import OpsConfig
 from ops.lifecycle import HealthCheck, ShutdownManager, StartupRecovery
 from ops.logging_config import audit_risk, audit_trade, configure_structured_logging
-from ops.watchdog import ProcessWatchdog
 
 
 @pytest.fixture(autouse=True)

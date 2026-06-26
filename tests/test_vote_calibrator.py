@@ -12,9 +12,6 @@ Dependency-light: a tiny fake EmitterFeedback drives the math precisely, plus
 one faithful integration test over a real SignalLedger + EmitterFeedbackService.
 """
 
-import math
-import os
-import tempfile
 
 import pytest
 
@@ -22,7 +19,6 @@ from config import VoteCalibratorConfig
 from adaptive.vote_calibrator import (
     VoteCalibrator,
     VoteCalibration,
-    DEFAULT_VOTE_MODULES,
 )
 from adaptive.tunable_adapters import VoteCalibratorTunable
 from adaptive.tunable import TuneContext, TuneFrequency

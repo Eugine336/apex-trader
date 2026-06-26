@@ -2,7 +2,6 @@
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 from brain.fvg_detector import FairValueGap, FVGStatus
 from brain.order_block import OrderBlock, OBStatus
@@ -11,7 +10,6 @@ from brain.world_model import WorldModelStore, build_world_model
 from entry.models import EntryConfig, ZoneType
 from entry.zone_watcher import ZoneWatcher, extract_entry_zones
 
-import pandas as pd
 
 
 def _ts(offset_minutes: int = 0) -> datetime:

@@ -15,8 +15,6 @@ Verifies:
 10. R-multiple computation
 """
 
-import os
-import sqlite3
 import tempfile
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -114,9 +112,9 @@ def _make_bars_ohlc(
     if start is None:
         start = datetime(2026, 5, 1, 10, 5, tzinfo=timezone.utc)
     rows = []
-    for i, (o, h, l, c) in enumerate(ohlc_list):
+    for i, (o, h, lo, c) in enumerate(ohlc_list):
         t = start + timedelta(minutes=interval_minutes * i)
-        rows.append({"time": t, "open": o, "high": h, "low": l, "close": c, "volume": 100})
+        rows.append({"time": t, "open": o, "high": h, "low": lo, "close": c, "volume": 100})
     return pd.DataFrame(rows)
 
 

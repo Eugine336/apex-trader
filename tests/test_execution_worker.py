@@ -188,15 +188,18 @@ class TestTP1:
         )
         worker = PositionWorker()
         intents = worker.evaluate(snap, NOW)
-        deriv_intents = [i for i in intents if i.source == "tp1_deriv"]
+        deriv_intents = [i for i in intents if i.source == "tp1_deriv_be"]
         assert len(deriv_intents) == 1
-        assert deriv_intents[0].intent_type == IntentType.CLOSE
+        assert deriv_intents[0].intent_type == IntentType.MODIFY_SL
+        # Deriv contracts are atomic — TP1 trails SL to breakeven and keeps
+        # the position open to run to TP2 instead of closing.
+        assert deriv_intents[0].new_sl == pytest.approx(snap.entry_price, abs=snap.pip_size * 5)
 
     def test_tp1_already_hit_skipped(self):
         snap = _snap(tp1=1.105, current_price=1.106, partial_closed=True)
         worker = PositionWorker()
         intents = worker.evaluate(snap, NOW)
-        assert not any(i.source in ("tp1_partial", "tp1_deriv") for i in intents)
+        assert not any(i.source in ("tp1_partial", "tp1_deriv_be") for i in intents)
 
     def test_short_tp1_hit(self):
         snap = _snap(

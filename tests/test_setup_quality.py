@@ -4,7 +4,6 @@ Tests for the layered decision architecture (Layers 2 & 3).
 Must run WITHOUT torch or pandas installed.
 """
 
-import math
 import pytest
 
 from brain.setup_quality import (

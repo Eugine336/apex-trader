@@ -11,7 +11,7 @@ No torch/pandas/numpy required.
 
 import pytest
 
-from decision.actions import EntryAction, EntryDecision
+from decision.actions import EntryAction
 from decision.context import EntryContext
 from decision.engine import DecisionEngine
 from decision.situation import SituationAssessment, SituationEngine

@@ -3,10 +3,8 @@
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
-from brain.fvg_detector import FairValueGap, FVGStatus
-from brain.world_model import WorldModelStore, build_world_model
+from brain.world_model import WorldModelStore
 from entry.models import EntryConfig, EntryState, EntryZone, ZoneType
 from entry.tick_entry_detector import TickEntryDetector
 from entry.zone_watcher import ZoneWatcher

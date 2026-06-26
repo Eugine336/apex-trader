@@ -9,7 +9,6 @@ Covers:
   (e) Exception during DB check → passed=False.
 """
 
-import pytest
 from unittest.mock import patch, MagicMock
 
 from platforms.startup_check import StartupCheck, CheckResult

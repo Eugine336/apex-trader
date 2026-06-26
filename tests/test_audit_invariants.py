@@ -15,9 +15,7 @@ I6. Backfill is idempotent.
 from __future__ import annotations
 
 import json
-import os
 import sqlite3
-import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -34,9 +32,7 @@ from persistence.domain_events import (
     DECISION_REJECT,
     ORDER_FILLED,
     ORDER_SENT,
-    SHADOW_RESOLVED,
     TRADE_CLOSE,
-    TRADE_OPEN,
 )
 
 

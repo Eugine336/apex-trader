@@ -11,11 +11,9 @@ import json
 import os
 import tempfile
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch
 
-import pytest
 
-from brain.drawdown_guard import DrawdownGuard, DrawdownMode, DrawdownStatus
+from brain.drawdown_guard import DrawdownGuard, DrawdownMode
 
 
 # ── Defect 1: margin flatten freeze ────────────────────────────────────

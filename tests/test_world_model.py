@@ -1,12 +1,10 @@
 """Tests for brain.world_model (Phase 1)."""
 
 import threading
-import time
-from datetime import datetime, timezone
 
 import pytest
 
-from brain.world_model import WorldModel, WorldModelStore, build_world_model
+from brain.world_model import WorldModelStore, build_world_model
 
 
 # ---------------------------------------------------------------------------

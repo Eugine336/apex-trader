@@ -69,26 +69,6 @@ def repo_root() -> Path:
     return Path(override) if override else _FALLBACK_REPO_ROOT
 
 
-def shared_data_dir() -> Path:
-    """Return the repo-anchored ``data`` dir for SHARED, read-only reference data.
-
-    Distinct from :func:`data_dir`, which is the per-user *writeable* tree. This
-    is for assets that ship with the code and are identical for every user.
-    """
-    return repo_root() / "data"
-
-
-def checkpoints_dir() -> Path:
-    """Return the repo-anchored ``checkpoints`` dir (shared, read-only).
-
-    Trained RL models are a shared resource: every per-user instance reads the
-    same checkpoint. They must NOT resolve against the per-user cwd, or a
-    spawned instance would look in ``<workdir>/checkpoints`` (which never exists)
-    and the RL subsystem would stay permanently INACTIVE_NO_CHECKPOINT.
-    """
-    return repo_root() / "checkpoints"
-
-
 def data_dir() -> Path:
     """Return the active (writeable, per-user-isolated) data directory.
 

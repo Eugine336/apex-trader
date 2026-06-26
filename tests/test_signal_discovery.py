@@ -23,7 +23,6 @@ from adaptive.signal_discovery import (
 )
 from adaptive.tunable import TuneContext, TuneFrequency
 from adaptive.tunable_adapters import SignalDiscoveryTunable
-from adaptive.tuner_agent import TunerAgent
 
 
 _THRESHOLDS = {

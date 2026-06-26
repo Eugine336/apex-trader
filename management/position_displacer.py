@@ -30,8 +30,6 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Sequence
 
-from loguru import logger
-
 
 @dataclass
 class PositionEV:

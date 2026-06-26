@@ -5,7 +5,6 @@ Torch-free where possible; torch-dependent tests use pytest.importorskip.
 
 import os
 import sqlite3
-import sys
 import tempfile
 import numpy as np
 import pytest
@@ -248,7 +247,6 @@ class TestShadowTradeRecovery:
             con.commit()
             con.close()
 
-            from rl.shadow import ShadowTrade
             import rl.shadow as shadow_mod
 
             class FakeShadowEngine:

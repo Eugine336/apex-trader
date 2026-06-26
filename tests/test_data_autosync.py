@@ -271,7 +271,10 @@ class TestCleanStart:
 
             assert res == "reset to origin/main"
             assert commands[1][-2:] == ["fetch", "origin"]
-            assert commands[2][-3:] == ["reset", "--hard", "origin/main"]
+            # A local-state backup branch is force-updated between the fetch and
+            # the destructive reset, so the reset is the 4th git call.
+            assert "branch" in commands[2] and "clean-start-backup" in commands[2]
+            assert commands[3][-3:] == ["reset", "--hard", "origin/main"]
 
     def test_sync_falls_back_to_master_when_main_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -294,8 +297,10 @@ class TestCleanStart:
                 res = sync_clean_state_from_remote(str(d), branch="main")
 
             assert res == "reset to origin/master (fallback)"
-            assert commands[2][-3:] == ["reset", "--hard", "origin/main"]
-            assert commands[3][-3:] == ["reset", "--hard", "origin/master"]
+            # Backup branch is the 3rd git call; the two reset attempts follow.
+            assert "branch" in commands[2] and "clean-start-backup" in commands[2]
+            assert commands[3][-3:] == ["reset", "--hard", "origin/main"]
+            assert commands[4][-3:] == ["reset", "--hard", "origin/master"]
 
     def test_pull_non_git_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -308,46 +313,6 @@ class TestCleanStart:
             sync_clean_state_from_remote("/nope/missing/dir")
             == "no data directory"
         )
-
-    def test_sync_uses_fetch_then_hard_reset(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            d = Path(tmp)
-            calls = []
-
-            def _fake_run(cmd, capture_output, text):  # noqa: ANN001
-                calls.append(cmd)
-                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-            with patch("platforms.clean_start._is_git_repo", return_value=True), patch(
-                "platforms.clean_start.subprocess.run", side_effect=_fake_run,
-            ):
-                result = sync_clean_state_from_remote(str(d), branch="main")
-
-            assert result == "synced remote state (main)"
-            assert calls[0][-2:] == ["fetch", "origin"]
-            assert calls[1][-3:] == ["reset", "--hard", "origin/main"]
-
-    def test_sync_falls_back_to_master_when_main_missing(self):
-        with tempfile.TemporaryDirectory() as tmp:
-            d = Path(tmp)
-
-            responses = [
-                subprocess.CompletedProcess(["git"], 0, stdout="", stderr=""),
-                subprocess.CompletedProcess(
-                    ["git"],
-                    1,
-                    stdout="",
-                    stderr="fatal: ambiguous argument 'origin/main'",
-                ),
-                subprocess.CompletedProcess(["git"], 0, stdout="", stderr=""),
-            ]
-
-            with patch("platforms.clean_start._is_git_repo", return_value=True), patch(
-                "platforms.clean_start.subprocess.run", side_effect=responses,
-            ):
-                result = sync_clean_state_from_remote(str(d), branch="main")
-
-            assert result == "synced remote state (master)"
 
     def test_startup_runner_is_context_free(self):
         with patch(

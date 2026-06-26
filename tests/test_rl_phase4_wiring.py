@@ -5,10 +5,7 @@ update_price wiring, and shadow loop closure.
 from __future__ import annotations
 
 import os
-import sqlite3
-import tempfile
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import numpy as np
 import pytest

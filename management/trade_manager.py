@@ -18,7 +18,7 @@ from typing import Optional
 import pandas as pd
 from loguru import logger
 
-from brain.structure_engine import StructureEngine, StructureEvent
+from brain.structure_engine import StructureAnalysis, StructureEngine, StructureEvent
 from config import get_pip_size, get_instrument
 from management.trailing_stop import StructureTrailingStop
 from management.partial_close import PartialCloseCalculator
@@ -208,7 +208,7 @@ class TradeManager:
         self._m5_structure_engine = StructureEngine(swing_lookback=3)
         self._m5_analysis_cache: Optional[tuple] = None
 
-    def _analyze_m5_structure(self, df_m5: pd.DataFrame):
+    def _analyze_m5_structure(self, df_m5: pd.DataFrame) -> StructureAnalysis:
         """Analyze an M5 frame once, memoized by frame identity within a cycle."""
         cached = self._m5_analysis_cache
         if cached is not None and cached[0] is df_m5:

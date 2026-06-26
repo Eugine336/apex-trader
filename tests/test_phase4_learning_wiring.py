@@ -13,11 +13,8 @@ from __future__ import annotations
 import sys
 import types
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
-from typing import Optional
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
-import pytest
 
 
 # ── Stub heavy deps before importing main modules ───────────────────

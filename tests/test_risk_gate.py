@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import time
-from datetime import datetime, timezone
 
-import pytest
 
-from execution.intents import Intent, IntentType
-from execution.risk_gate import GateConfig, GateResult, RiskGate
+from execution.intents import Intent
+from execution.risk_gate import GateConfig, RiskGate
 
 
 # ── Helpers ──────────────────────────────────────────────────────────

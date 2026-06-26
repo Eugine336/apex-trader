@@ -216,14 +216,14 @@ class StructureEngine:
             ))
 
         # Label lows
-        for i, l in enumerate(lows):
+        for i, low in enumerate(lows):
             if i == 0:
                 kind = "HL"  # First low — assume HL
             else:
-                kind = "HL" if l["price"] > lows[i-1]["price"] else "LL"
+                kind = "HL" if low["price"] > lows[i-1]["price"] else "LL"
             labeled.append(SwingPoint(
-                index=l["index"], price=l["price"],
-                kind=kind, timestamp=l["timestamp"]
+                index=low["index"], price=low["price"],
+                kind=kind, timestamp=low["timestamp"]
             ))
 
         # Sort by index

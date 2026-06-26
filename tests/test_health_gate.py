@@ -7,7 +7,6 @@ Run:  python -m pytest tests/test_health_gate.py -v
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 from platforms.health_watchdog import HealthWatchdog
 

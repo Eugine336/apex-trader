@@ -20,7 +20,6 @@ with conservative cold-start priors, bounded movement and staleness decay:
 import os
 import tempfile
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 
 from adaptive.gate_tuner import GateTuner
 from entry.entry_gate import EntryGate

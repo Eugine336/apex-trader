@@ -3,7 +3,6 @@
 import threading
 from datetime import datetime, timedelta, timezone
 
-import pytest
 
 from execution.intent_aggregator import (
     AggregatorConfig,

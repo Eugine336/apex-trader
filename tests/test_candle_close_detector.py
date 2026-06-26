@@ -3,11 +3,9 @@
 import threading
 import time
 from datetime import datetime, timezone
-from unittest.mock import MagicMock
 
-import pytest
 
-from tick.models import CandleClose, Tick
+from tick.models import Tick
 from tick.event_bus import EventBus
 from tick.candle_close_detector import (
     CandleCloseDetector,

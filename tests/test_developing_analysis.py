@@ -12,7 +12,6 @@ Covers:
 from types import SimpleNamespace
 
 import pandas as pd
-import pytest
 
 import brain.decision_core as dc
 from brain.decision_core import (

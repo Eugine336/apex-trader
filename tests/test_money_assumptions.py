@@ -58,7 +58,6 @@ _pd.DataFrame = MagicMock
 if "pandas" not in sys.modules:
     sys.modules["pandas"] = _pd
 
-import pytest
 
 from risk.risk_engine import RiskEngine
 from trigger.entry_engine import EntryEngine, EntryRejection
@@ -202,7 +201,7 @@ class TestStartupEnabledPairsValidation:
         fake_cfg.enabled_pairs = ["EURUSD", "BOGUS_PAIR"]
 
         def _fake_registry_check():
-            from config import INSTRUMENT_REGISTRY as reg, AppConfig
+            from config import INSTRUMENT_REGISTRY as reg
             _t0 = 0.0
             unresolved = [
                 s for s in fake_cfg.enabled_pairs

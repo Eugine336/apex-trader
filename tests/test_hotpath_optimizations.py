@@ -9,7 +9,6 @@ work that are testable without heavy deps (no torch/pandas required):
 """
 
 import json
-import time
 
 import pytest
 

@@ -18,19 +18,21 @@ from __future__ import annotations
 import functools
 import threading
 
+from typing import Any, Callable
+
 from loguru import logger
 
 
-def _synchronized(method):
+def _synchronized(method: Callable) -> Callable:
     """Run ``method`` while holding the instance's re-entrant ``_lock``."""
     @functools.wraps(method)
-    def _wrapper(self, *args, **kwargs):
+    def _wrapper(self, *args, **kwargs) -> Any:
         with self._lock:
             return method(self, *args, **kwargs)
     return _wrapper
 
 
-def _lock_public_methods(cls):
+def _lock_public_methods(cls: type) -> type:
     """Wrap every public method so it runs under the instance's ``_lock``.
 
     Underscore-prefixed methods (including ``__init__``) are skipped: private

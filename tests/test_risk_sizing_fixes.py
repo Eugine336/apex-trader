@@ -55,10 +55,9 @@ _pd.DataFrame = MagicMock
 if "pandas" not in sys.modules:
     sys.modules["pandas"] = _pd
 
-import pytest
 
-from risk.position_sizer import PositionSizer, SizeResult
-from risk.risk_engine import RiskEngine, RiskAssessment
+from risk.position_sizer import PositionSizer
+from risk.risk_engine import RiskEngine
 
 
 # ═══════════════════════════════════════════════════════════════════════════

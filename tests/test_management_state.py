@@ -1,7 +1,6 @@
 """Tests for execution.management_state module."""
 
 import threading
-from datetime import datetime, timezone
 
 from execution.management_state import ManagementState, ManagementStateStore
 

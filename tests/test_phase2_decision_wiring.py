@@ -9,7 +9,6 @@ Covers:
 - Graceful degradation when subsystems are None
 """
 
-import pytest
 from unittest.mock import MagicMock
 
 from core.system_context import SystemContext
@@ -228,9 +227,7 @@ class TestRiskGovernorIntegration:
             assert gov_result.should_enter is True
 
     def test_governor_vetoes_at_max_trades(self):
-        from decision.engine import DecisionEngine
         from decision.governor import RiskGovernor
-        from decision.situation import SituationEngine
         from decision.context import EntryContext
         from decision.actions import EntryAction, EntryDecision
 

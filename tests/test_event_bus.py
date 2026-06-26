@@ -1,10 +1,7 @@
 """Tests for tick.event_bus — thread-safe pub/sub."""
 
 import threading
-import time
-from unittest.mock import MagicMock
 
-import pytest
 
 from tick.event_bus import EventBus
 

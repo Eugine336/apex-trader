@@ -77,10 +77,10 @@ class TestStructureStop:
         eng = _engine(tmp_path)
         pair = "EURUSD"
         # Feed a recent window with a clear swing low at 1.0950.
-        for h, l in [(1.1010, 1.0980), (1.1005, 1.0950), (1.1020, 1.0990),
+        for h, lo in [(1.1010, 1.0980), (1.1005, 1.0950), (1.1020, 1.0990),
                      (1.1015, 1.0985), (1.1025, 1.0995), (1.1030, 1.1000),
                      (1.1028, 1.0998), (1.1035, 1.1002)]:
-            eng.update_price(pair, h, l, (h + l) / 2, 0.0010, None)
+            eng.update_price(pair, h, lo, (h + lo) / 2, 0.0010, None)
 
         eng.open_shadow_trade(pair, _signal(pair, 1), close=1.1000, atr=0.0010, pip_size=0.0001)
         t = eng.open_trades[pair]
@@ -95,10 +95,10 @@ class TestStructureStop:
     def test_short_stop_anchors_above_recent_swing_high(self, tmp_path):
         eng = _engine(tmp_path)
         pair = "EURUSD"
-        for h, l in [(1.1050, 1.1000), (1.1080, 1.1010), (1.1040, 1.1005),
+        for h, lo in [(1.1050, 1.1000), (1.1080, 1.1010), (1.1040, 1.1005),
                      (1.1045, 1.1008), (1.1035, 1.1002), (1.1030, 1.1000),
                      (1.1032, 1.1001), (1.1028, 1.0999)]:
-            eng.update_price(pair, h, l, (h + l) / 2, 0.0010, None)
+            eng.update_price(pair, h, lo, (h + lo) / 2, 0.0010, None)
 
         eng.open_shadow_trade(pair, _signal(pair, 2), close=1.1010, atr=0.0010, pip_size=0.0001)
         t = eng.open_trades[pair]

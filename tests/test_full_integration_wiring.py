@@ -9,7 +9,6 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
-import pytest
 
 
 # ── DecisionEngine management interface ──────────────────────────────

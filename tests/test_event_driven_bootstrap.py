@@ -2,22 +2,17 @@
 
 from __future__ import annotations
 
-import os
-import threading
 import time
 from datetime import datetime, timezone
-from unittest.mock import MagicMock, patch, PropertyMock
+from unittest.mock import MagicMock, patch
 from types import SimpleNamespace
 
-import pytest
 
 from tick import Tick, EventBus, TickStore, CandleCloseDetector, TickRouter
 from brain.world_model import WorldModelStore
 from execution.intents import Intent, IntentType
 from execution.intent_aggregator import IntentAggregator
-from execution.action_executor import ActionExecutor, ExecutorConfig
-from execution.position_snapshot import PositionSnapshot
-from execution.position_worker import PositionWorker, WorkerConfig
+from execution.action_executor import ActionExecutor
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -365,7 +360,6 @@ class TestEventDrivenSystem:
 class TestBrokerPortCompatibility:
     def test_platform_manager_satisfies_broker_port(self):
         """PlatformManager has the methods BrokerPort requires."""
-        from execution.action_executor import BrokerPort
 
         pm = _mock_platform_manager()
         assert hasattr(pm, "modify_trade")

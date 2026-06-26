@@ -5,8 +5,7 @@ Verifies that quality failures are counted, surfaced in the HealthWatchdog,
 and trigger health warnings when ALL directional setups fail consecutively.
 """
 
-import pytest
-from platforms.health_watchdog import HealthWatchdog, HealthReport
+from platforms.health_watchdog import HealthWatchdog
 
 
 # ── HealthWatchdog quality tracking ──────────────────────────────────

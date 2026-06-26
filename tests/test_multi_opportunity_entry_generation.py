@@ -22,7 +22,7 @@ import pandas as pd
 
 from brain.candidate_models import Candidate, CandidateEntryDecision
 from brain.decision_core import decide_candidates
-from brain.directional_consensus import Vote, decide, decide_opportunities
+from brain.directional_consensus import Vote, decide
 from brain.fvg_detector import FairValueGap, FVGStatus
 from brain.opportunity_ranker import rank_opportunities
 from brain.world_model import WorldModelStore, build_world_model

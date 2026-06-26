@@ -12,7 +12,7 @@ Covers:
 import json
 import os
 import tempfile
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from brain.swap_model import _count_rollover_nights, estimate_swap, load_swap_rates
 

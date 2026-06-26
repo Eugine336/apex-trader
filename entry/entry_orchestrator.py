@@ -28,17 +28,20 @@ Usage::
 from __future__ import annotations
 
 import threading
-from typing import Any, Callable, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import pandas as pd
 from loguru import logger
 
 from brain.world_model import WorldModelStore
-from entry.models import EntryConfig
+from entry.models import EntryConfig, EntryZone
 from entry.zone_watcher import ZoneWatcher
 from entry.tick_entry_detector import TickData, TickEntryDetector
 from entry.m1_confirmation import M1CandleConfirmer
 from entry.entry_gate import EntryGate
+
+if TYPE_CHECKING:
+    from brain.candidate_models import Candidate
 
 
 class EntryOrchestrator:
@@ -190,7 +193,7 @@ class EntryOrchestrator:
 
     def _match_candidate_for_zone(
         self, symbol: str, direction: str, timeframe: str,
-    ):
+    ) -> "Optional[Candidate]":
         """Find the ranked Candidate that best explains this zone, or ``None``.
 
         A zone is the structural "price comes to the setup" expression of an
@@ -450,7 +453,7 @@ class EntryOrchestrator:
         except Exception:
             return False, tick_mom, m5_trend
 
-    def _flip_zone(self, zone, new_direction: str, entry_price: float = 0.0):
+    def _flip_zone(self, zone: EntryZone, new_direction: str, entry_price: float = 0.0) -> EntryZone:
         """Mirror a zone to the opposite trade direction.
 
         The stop (invalidation) is mirrored around the ENTRY (touch) price so a
