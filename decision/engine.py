@@ -82,6 +82,7 @@ class DecisionEngine:
         thesis_secure_enabled: bool = True,
         thesis_secure_min_profit_usd: float = 15.0,
         thesis_secure_min_profit_pips: float = 12.0,
+        thesis_secure_min_profit_r: float = 0.5,
         thesis_deterioration_threshold: float = 0.35,
         thesis_close_threshold: float = 0.80,
         thesis_healthy_structure: float = 0.5,
@@ -118,6 +119,25 @@ class DecisionEngine:
         range_edge_htf_min: float = 0.20,
         range_edge_consensus_min: float = 0.40,
         range_edge_skip_penalty: float = 0.10,
+        # R-based profit protection ladder (scale-independent). The existing
+        # TIGHTEN_SL / MOVE_TO_BREAKEVEN gates key off dollar/pip economic
+        # profit or R thresholds (>=1.5R) that a min-lot micro position can
+        # never reach -- so a winner that peaks at +0.9R / +$0.39 rides all the
+        # way back to scratch while HOLD wins every cycle. These tiers fire on
+        # R-multiples ONLY (sa.profit_state), so they protect identically at
+        # 0.01 lots and 10 lots. They are ADDITIVE -- they stack onto the
+        # existing scores, never replace them, and never force a CLOSE (tiers
+        # 1-2 only move stops; tier 3 banks half only in an exhaustion regime).
+        profit_protect_enabled: bool = True,
+        breakeven_lock_r: float = 0.5,
+        profit_trail_r: float = 1.0,
+        profit_trail_lock_r: float = 0.3,
+        partial_close_r: float = 0.8,
+        partial_close_regime_required: bool = True,
+        partial_close_fraction: float = 0.5,
+        breakeven_lock_score: float = 0.50,
+        profit_trail_score: float = 0.45,
+        partial_close_score: float = 0.45,
     ) -> None:
         self.weights = weights or DecisionWeights()
         # Roadmap D — regime-dependent weighting.
@@ -151,6 +171,7 @@ class DecisionEngine:
         self.thesis_secure_enabled = thesis_secure_enabled
         self.thesis_secure_min_profit_usd = max(0.0, thesis_secure_min_profit_usd)
         self.thesis_secure_min_profit_pips = max(0.0, thesis_secure_min_profit_pips)
+        self.thesis_secure_min_profit_r = max(0.0, thesis_secure_min_profit_r)
         self.thesis_deterioration_threshold = thesis_deterioration_threshold
         self.thesis_close_threshold = thesis_close_threshold
         self.thesis_healthy_structure = thesis_healthy_structure
@@ -235,6 +256,17 @@ class DecisionEngine:
         self.range_edge_htf_min = max(0.0, float(range_edge_htf_min))
         self.range_edge_consensus_min = max(0.0, float(range_edge_consensus_min))
         self.range_edge_skip_penalty = max(0.0, float(range_edge_skip_penalty))
+        # -- R-based profit protection ladder (scale-independent) ---------
+        self.profit_protect_enabled = bool(profit_protect_enabled)
+        self.breakeven_lock_r = max(0.0, float(breakeven_lock_r))
+        self.profit_trail_r = max(0.0, float(profit_trail_r))
+        self.profit_trail_lock_r = max(0.0, float(profit_trail_lock_r))
+        self.partial_close_r = max(0.0, float(partial_close_r))
+        self.partial_close_regime_required = bool(partial_close_regime_required)
+        self.partial_close_fraction = max(0.05, min(0.95, float(partial_close_fraction)))
+        self.breakeven_lock_score = max(0.0, float(breakeven_lock_score))
+        self.profit_trail_score = max(0.0, float(profit_trail_score))
+        self.partial_close_score = max(0.0, float(partial_close_score))
 
     @staticmethod
     def _tf_conflict_opposition(sa: SituationAssessment) -> float:
@@ -675,6 +707,86 @@ class DecisionEngine:
         reasons[Action.MOVE_TO_BREAKEVEN] = "; ".join(be_reason) if be_reason else "no BE signal"
         evidence_map[Action.MOVE_TO_BREAKEVEN] = list(be_reason)
 
+        # ── R-based profit protection ladder (scale-independent) ─────────
+        # Additive tiers keyed off the R-multiple ONLY (sa.profit_state), so a
+        # min-lot micro position that the dollar/pip-gated terms above can never
+        # protect is still secured the moment it earns real R. Each tier stacks
+        # onto the existing score for its action so it can beat HOLD; none of
+        # them force a CLOSE. Fully inert when ``profit_protect_enabled`` is off.
+        ladder_sl: float | None = None
+        ladder_partial: float = 0.0
+        ladder_actions: set[Action] = set()
+        if self.profit_protect_enabled:
+            exhaustion = self._ladder_exhaustion(sa)
+            # PARTIAL_CLOSE has no baseline score elsewhere — register it so the
+            # selector can pick it when (and only when) tier 3 contributes.
+            scores.setdefault(Action.PARTIAL_CLOSE, 0.0)
+            reasons.setdefault(Action.PARTIAL_CLOSE, "no partial signal")
+            evidence_map.setdefault(Action.PARTIAL_CLOSE, [])
+
+            # Tier 1 — breakeven lock (≥ breakeven_lock_r). Move SL to entry so
+            # the trade can still run but can NEVER become a loss. Fires once
+            # (at_breakeven guard); only when moving to BE actually improves the
+            # stop, so it is a no-op once protected.
+            if (
+                sa.profit_state >= self.breakeven_lock_r
+                and not ctx.at_breakeven
+                and self._breakeven_improves(ctx)
+            ):
+                scores[Action.MOVE_TO_BREAKEVEN] += self.breakeven_lock_score
+                ladder_actions.add(Action.MOVE_TO_BREAKEVEN)
+                msg = (
+                    f"profit lock: +{sa.profit_state:.1f}R ≥ "
+                    f"{self.breakeven_lock_r:.1f}R → breakeven"
+                )
+                evidence_map[Action.MOVE_TO_BREAKEVEN].append(msg)
+                reasons[Action.MOVE_TO_BREAKEVEN] = "; ".join(
+                    evidence_map[Action.MOVE_TO_BREAKEVEN]
+                )
+
+            # Tier 2 — profit trail (≥ profit_trail_r) once momentum turns or the
+            # regime is exhausting. Trail the stop to lock profit_trail_lock_r,
+            # only when that improves on the current stop (never loosens).
+            if sa.profit_state >= self.profit_trail_r and (
+                sa.momentum < 0 or exhaustion
+            ):
+                trail_sl = self._compute_profit_trail_sl(ctx)
+                if trail_sl is not None:
+                    scores[Action.TIGHTEN_SL] += self.profit_trail_score
+                    ladder_sl = trail_sl
+                    ladder_actions.add(Action.TIGHTEN_SL)
+                    msg = (
+                        f"profit trail: +{sa.profit_state:.1f}R ≥ "
+                        f"{self.profit_trail_r:.1f}R → lock +"
+                        f"{self.profit_trail_lock_r:.1f}R"
+                    )
+                    evidence_map[Action.TIGHTEN_SL].append(msg)
+                    reasons[Action.TIGHTEN_SL] = "; ".join(
+                        evidence_map[Action.TIGHTEN_SL]
+                    )
+
+            # Tier 3 — partial close (≥ partial_close_r) in an exhaustion regime.
+            # Bank half NOW and let the runner ride (the remainder is moved to
+            # breakeven by tier 1 on a later cycle). Fires once (partial_closed
+            # guard).
+            if (
+                sa.profit_state >= self.partial_close_r
+                and not ctx.partial_closed
+                and (not self.partial_close_regime_required or exhaustion)
+            ):
+                scores[Action.PARTIAL_CLOSE] += self.partial_close_score
+                ladder_partial = self.partial_close_fraction
+                ladder_actions.add(Action.PARTIAL_CLOSE)
+                msg = (
+                    f"partial bank {self.partial_close_fraction:.0%}: "
+                    f"+{sa.profit_state:.1f}R ≥ {self.partial_close_r:.1f}R "
+                    f"in exhaustion"
+                )
+                evidence_map[Action.PARTIAL_CLOSE].append(msg)
+                reasons[Action.PARTIAL_CLOSE] = "; ".join(
+                    evidence_map[Action.PARTIAL_CLOSE]
+                )
+
         # ── Select highest-scoring action ────────────────────────────────
         best_action = max(scores, key=lambda a: scores[a])
         best_score = scores[best_action]
@@ -729,7 +841,18 @@ class DecisionEngine:
             decision.exit_cause = FAST_OPPOSITION_EXIT_CAUSE
 
         if best_action == Action.TIGHTEN_SL:
-            decision.new_sl = self._compute_tightened_sl(ctx)
+            # Prefer the ladder's profit-trail stop (a fixed R-lock from entry)
+            # when the ladder drove the tighten; fall back to the legacy
+            # current-price-relative tighten otherwise.
+            if Action.TIGHTEN_SL in ladder_actions and ladder_sl is not None:
+                decision.new_sl = ladder_sl
+            else:
+                decision.new_sl = self._compute_tightened_sl(ctx)
+
+        if best_action == Action.PARTIAL_CLOSE:
+            decision.partial_ratio = (
+                ladder_partial if ladder_partial > 0.0 else self.partial_close_fraction
+            )
 
         return decision
 
@@ -799,6 +922,57 @@ class DecisionEngine:
                 return None
         return round(new_sl, 5)
 
+    # ── R-based profit protection ladder helpers ─────────────────────────
+    @staticmethod
+    def _ladder_exhaustion(sa: SituationAssessment) -> bool:
+        """True when the regime is exhausting against a (winning) position.
+
+        Reads the derived regime label (``primary_label`` — the system's actual
+        regime field) and treats TREND_EXHAUSTION as the canonical exhaustion
+        regime. When no label is set (e.g. a SituationAssessment built directly
+        without the engine), falls back to the documented momentum proxy
+        (``momentum < -0.2``).
+        """
+        label = (getattr(sa, "primary_label", "") or "").upper()
+        if label == "TREND_EXHAUSTION":
+            return True
+        if label in ("", "UNKNOWN"):
+            return sa.momentum < -0.2
+        return False
+
+    @staticmethod
+    def _breakeven_improves(ctx: TradeContext) -> bool:
+        """True when moving the stop to entry would tighten (not loosen) it."""
+        if ctx.is_long:
+            return ctx.current_sl < ctx.entry_price
+        return ctx.current_sl > ctx.entry_price
+
+    def _compute_profit_trail_sl(self, ctx: TradeContext) -> float | None:
+        """Stop that locks ``profit_trail_lock_r`` R of profit from entry.
+
+        Scale-independent: the lock distance is a fraction of the trade's own
+        reconstructed risk (``original_risk_pips``), so it protects identically
+        at any lot size. Returns None when the reconstructed risk is unusable or
+        the resulting stop would not improve on the current stop.
+        """
+        if ctx.original_risk_pips < 1e-8:
+            return None
+        from config import get_pip_size
+
+        pip = get_pip_size(ctx.symbol)
+        lock_distance = self.profit_trail_lock_r * ctx.original_risk_pips * pip
+        if lock_distance <= 0:
+            return None
+        if ctx.is_long:
+            new_sl = ctx.entry_price + lock_distance
+            if new_sl <= ctx.current_sl:
+                return None
+        else:
+            new_sl = ctx.entry_price - lock_distance
+            if new_sl >= ctx.current_sl:
+                return None
+        return round(new_sl, 5)
+
     def _maybe_thesis_secure(
         self, ctx: TradeContext, sa: SituationAssessment,
     ) -> ManagementDecision | None:
@@ -812,6 +986,10 @@ class DecisionEngine:
         econ_profit = (
             (self.thesis_secure_min_profit_usd > 0 and ctx.pnl_dollars >= self.thesis_secure_min_profit_usd)
             or (self.thesis_secure_min_profit_pips > 0 and ctx.pnl_pips >= self.thesis_secure_min_profit_pips)
+            # R-based gate (scale-independent): a min-lot winner can reach real R
+            # while its dollar/pip profit never crosses the absolute gates above,
+            # so this OR term lets the thesis-secure fire at micro scale too.
+            or (self.thesis_secure_min_profit_r > 0 and sa.profit_state >= self.thesis_secure_min_profit_r)
         )
         if not econ_profit:
             return None
