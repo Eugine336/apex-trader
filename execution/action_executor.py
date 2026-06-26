@@ -509,9 +509,23 @@ class ActionExecutor:
             vol_step = pos.get("volume_step", 0.01) or 0.01
             close_lots = round(round(close_lots / vol_step) * vol_step, 8)
             if close_lots <= 0:
+                # Position is at (or below) the broker minimum lot — it cannot be
+                # split. Reporting a hard failure here would roll back the
+                # optimistic partial_closed / tp1_hit flags (see
+                # _handle_manage_result, which only rolls back on failure), so the
+                # impossible PARTIAL_CLOSE would re-fire every eval cycle forever.
+                # Instead report success with a skip marker: the flags stick, the
+                # system stops retrying the split it can't do, and the position
+                # falls through to SL-based protection (breakeven / trailing) that
+                # the profit-protection ladder already provides.
+                logger.warning(
+                    "PARTIAL_CLOSE min-lot skip: {} lots at minimum "
+                    "({} × {}) — using SL protection instead | {}",
+                    remaining, remaining, fraction, intent.position_ticket,
+                )
                 return ExecutionResult(
-                    intent=intent, success=False,
-                    error=f"Computed close lots <= 0 ({remaining} × {fraction})",
+                    intent=intent, success=True,
+                    error="min_lot_skip: position at minimum lot, partial close skipped",
                 )
             resp = self._broker.close_trade(
                 order_id=intent.position_ticket,

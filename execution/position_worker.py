@@ -355,44 +355,54 @@ class PositionWorker:
             hit = snap.current_price >= snap.tp1
         else:
             hit = snap.current_price <= snap.tp1
-        if hit:
-            if snap.platform == "deriv":
-                # Bug #27: Deriv contracts are atomic — partial close is blocked
-                # at the executor (full-close only). The old behaviour closed the
-                # ENTIRE position at TP1, forfeiting all TP2 upside (there was no
-                # actual "reopen" despite the source name). Instead, lock in profit
-                # by trailing the SL to breakeven and KEEP the position open to run
-                # to TP2 (which _check_tp2 closes fully). Fire once: skip if the
-                # stop is already at/beyond breakeven so it does not thrash.
-                if not snap.at_breakeven:
-                    direction = "LONG" if snap.is_long else "SHORT"
-                    be_level = self._breakeven_level(
-                        snap.entry_price, direction,
-                        self.cfg.breakeven_buffer_pips, snap.pip_size,
-                    )
-                    # Only ever move the stop forward (never loosen it).
-                    if (snap.is_long and be_level > snap.sl) or (
-                        not snap.is_long and be_level < snap.sl
-                    ):
-                        out.append(Intent.modify_sl(
-                            symbol=snap.symbol,
-                            ticket=snap.order_id,
-                            new_sl=be_level,
-                            source="tp1_deriv_be",
-                            reason=(
-                                f"TP1 hit @ {snap.tp1:.5f} — SL→BE, "
-                                f"running to TP2 (deriv atomic)"
-                            ),
-                        ))
-            else:
-                ratio = snap.plan_partial_ratio or self.cfg.partial_close_ratio
-                out.append(Intent.partial_close(
-                    symbol=snap.symbol,
-                    ticket=snap.order_id,
-                    fraction=ratio,
-                    source="tp1_partial",
-                    reason=f"TP1 hit @ {snap.tp1:.5f}, partial {ratio:.0%}",
-                ))
+        if not hit:
+            return
+        # A partial close is impossible in two cases: (1) Deriv contracts are
+        # atomic (full-close only at the executor), and (2) the position is
+        # already at the broker minimum lot, so splitting it computes a zero
+        # close volume — the executor would reject it and the doomed
+        # PARTIAL_CLOSE would re-fire every cycle. In both cases lock in profit
+        # by trailing the SL to breakeven and KEEP the position open to run to
+        # TP2 (which _check_tp2 closes fully). Fire once: skip if the stop is
+        # already at/beyond breakeven so it does not thrash.
+        vol_min = snap.volume_min or 0.01
+        at_min_lot = snap.remaining_lots <= vol_min
+        if snap.platform == "deriv" or at_min_lot:
+            if not snap.at_breakeven:
+                direction = "LONG" if snap.is_long else "SHORT"
+                be_level = self._breakeven_level(
+                    snap.entry_price, direction,
+                    self.cfg.breakeven_buffer_pips, snap.pip_size,
+                )
+                # Only ever move the stop forward (never loosen it).
+                if (snap.is_long and be_level > snap.sl) or (
+                    not snap.is_long and be_level < snap.sl
+                ):
+                    if snap.platform == "deriv":
+                        source = "tp1_deriv_be"
+                        why = "deriv atomic"
+                    else:
+                        source = "tp1_minlot_be"
+                        why = "min-lot, cannot split"
+                    out.append(Intent.modify_sl(
+                        symbol=snap.symbol,
+                        ticket=snap.order_id,
+                        new_sl=be_level,
+                        source=source,
+                        reason=(
+                            f"TP1 hit @ {snap.tp1:.5f} — SL→BE, "
+                            f"running to TP2 ({why})"
+                        ),
+                    ))
+        else:
+            ratio = snap.plan_partial_ratio or self.cfg.partial_close_ratio
+            out.append(Intent.partial_close(
+                symbol=snap.symbol,
+                ticket=snap.order_id,
+                fraction=ratio,
+                source="tp1_partial",
+                reason=f"TP1 hit @ {snap.tp1:.5f}, partial {ratio:.0%}",
+            ))
 
     def _check_breakeven(self, snap: PositionSnapshot, out: list[Intent]) -> None:
         if not snap.partial_closed or snap.at_breakeven:
