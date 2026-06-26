@@ -87,6 +87,7 @@ class CandleCloseHandler:
         win_rate_provider: Optional[Any] = None,
         consensus_config: Optional[Any] = None,
         ranker_config: Optional[Any] = None,
+        dynamic_weight_config: Optional[Any] = None,
         calibration_engine: Optional[Any] = None,
         get_spread_pips: Optional[Callable[[str], float]] = None,
         calibration_spread_tf: str = "M5",
@@ -128,6 +129,27 @@ class CandleCloseHandler:
         # its own function defaults because the config was never passed through).
         from config import OpportunityRankerConfig as _OpportunityRankerConfig
         self._ranker_config = ranker_config or _OpportunityRankerConfig()
+        # Dynamic consensus weights (optional, default-on): scales each module's
+        # static consensus weight by the current regime / volatility / recency
+        # before the vote is cast, so the panel self-balances by market state.
+        # Constructed once from the consensus base weights + DynamicWeightConfig;
+        # behaviour-neutral when the config's master switch is off, and any fault
+        # in construction leaves it None (build_consensus then uses static
+        # weights). The provider itself never raises into the consensus path.
+        self._dynamic_weight_provider = None
+        try:
+            from brain.dynamic_weights import DynamicWeightProvider
+            from config import DynamicWeightConfig as _DynamicWeightConfig
+            dw_cfg = dynamic_weight_config or _DynamicWeightConfig()
+            self._dynamic_weight_provider = DynamicWeightProvider(
+                self._consensus_config.weights, dw_cfg,
+            )
+        except Exception as exc:  # noqa: BLE001 — optional, never block startup
+            logger.warning(
+                "[cc-handler] DynamicWeightProvider init failed: {} — "
+                "consensus will use static weights", exc,
+            )
+            self._dynamic_weight_provider = None
         # CalibrationEngine feed (default-neutral when None): on each candle
         # close the handler hands the SAME candles/spread it already fetched to
         # the single-writer CalibrationEngine so per-symbol stats stay live.
@@ -560,6 +582,8 @@ class CandleCloseHandler:
             win_rate_provider=self._win_rate_provider,
             weights=self._consensus_config.weights,
             ranker_config=self._ranker_config,
+            dynamic_weight_provider=self._dynamic_weight_provider,
+            is_confirmed=True,
         )
 
     def _attach_quality(
