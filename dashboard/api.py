@@ -305,6 +305,11 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
         """Phase 6 — adaptive evidence weights, per-TF accuracy, applier + scheduler state."""
         return _state.get_adaptive_learning()
 
+    @app.get("/api/cross-instrument")
+    def cross_instrument():
+        """Cross-instrument opportunity layer — queue, quality sizer, displacer + proactive watchlist."""
+        return _state.get_cross_instrument()
+
     @app.get("/api/orchestrator")
     def orchestrator(limit: int = 100, symbol: str = ""):
         """Round-table graded-sizing proposals — per-dimension multipliers + applied size."""

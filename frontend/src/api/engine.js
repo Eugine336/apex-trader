@@ -36,6 +36,12 @@ export async function getAdaptiveLearning() {
   return data;
 }
 
+// GET /api/engine/cross-instrument
+export async function getCrossInstrument() {
+  const { data } = await client.get("/api/engine/cross-instrument");
+  return data;
+}
+
 // GET /api/engine/decisions?limit=&decision_type=&symbol=
 export async function getDecisions(params = {}) {
   const { data } = await client.get("/api/engine/decisions", { params });

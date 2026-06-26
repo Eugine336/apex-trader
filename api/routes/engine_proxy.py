@@ -125,6 +125,15 @@ async def adaptive_learning(
     return await _proxy(user=user, pm=pm, path="/api/adaptive-learning")
 
 
+@router.get("/cross-instrument")
+async def cross_instrument(
+    user: dict[str, Any] = Depends(get_current_user),
+    pm: ProcessManager = Depends(get_process_manager),
+) -> Any:
+    """Cross-instrument opportunity layer — queue, quality sizer, displacer + proactive watchlist."""
+    return await _proxy(user=user, pm=pm, path="/api/cross-instrument")
+
+
 @router.get("/decisions")
 async def decisions(
     limit: int = Query(default=100, ge=1, le=500),

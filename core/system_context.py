@@ -128,6 +128,13 @@ class SystemContext:
     # ── Phase 6: continuous-learning closure ─────────────────────────
     adaptive_weight_provider: Optional[Any] = None
     recommendation_applier: Optional[Any] = None
+    # ── Cross-instrument opportunity layer (GAP 1-5) ──────────────────
+    # Pure helpers consumed at gated call sites; default-disabled behaviour is an
+    # identity no-op. The queue + proactive scanner live on the event-driven
+    # system (they need runtime dispatch / event-bus callables).
+    cross_instrument_ranker: Optional[Any] = None
+    opportunity_quality_sizer: Optional[Any] = None
+    position_displacer: Optional[Any] = None
     ml_adapter: Optional[AdaptiveOptimizer] = None
     win_rate_provider: Optional[Any] = None
     rl_bridge: Optional[Any] = None
@@ -977,6 +984,53 @@ class SystemContext:
             ctx.adaptive_weight_provider is not None,
             ctx.recommendation_applier is not None,
         )
+
+        # ── Cross-instrument opportunity layer (GAP 1-5) ─────────────
+        # Pure helpers built from the cross_instrument config. They are consumed
+        # only at gated call sites, so when every cross_instrument flag is off the
+        # system behaves identically. The queue + proactive scanner are built on
+        # the event-driven system (they need runtime callables).
+        ci_cfg = getattr(config, "cross_instrument", None)
+        try:
+            from brain.cross_instrument_ranker import CrossInstrumentRanker as _XRank
+            from brain.opportunity_sizer import OpportunityQualitySizer as _QSizer
+            from management.position_displacer import PositionDisplacer as _Displacer
+
+            ctx.cross_instrument_ranker = _XRank(
+                spread_pips_lookup=None,  # bound at runtime by the bootstrap
+                win_rate_lookup=None,
+                spread_ev_penalty_per_pip=float(
+                    getattr(ci_cfg, "spread_ev_penalty_per_pip", 0.02) if ci_cfg else 0.02
+                ),
+                winrate_ev_weight=float(
+                    getattr(ci_cfg, "winrate_ev_weight", 0.5) if ci_cfg else 0.5
+                ),
+            )
+            ctx.opportunity_quality_sizer = _QSizer(
+                enabled=bool(getattr(ci_cfg, "quality_sizing_enabled", False) if ci_cfg else False),
+                max_boost=float(getattr(ci_cfg, "quality_sizing_max_boost", 1.3) if ci_cfg else 1.3),
+                min_cut=float(getattr(ci_cfg, "quality_sizing_min_cut", 0.7) if ci_cfg else 0.7),
+                ev_ref=float(getattr(ci_cfg, "quality_sizing_ev_ref", 1.0) if ci_cfg else 1.0),
+            )
+            ctx.position_displacer = _Displacer(
+                enabled=bool(getattr(ci_cfg, "displacement_enabled", False) if ci_cfg else False),
+                ev_margin=float(getattr(ci_cfg, "displacement_ev_margin", 0.5) if ci_cfg else 0.5),
+                min_profit_protect=float(
+                    getattr(ci_cfg, "displacement_min_profit_protect", 1.0) if ci_cfg else 1.0
+                ),
+                max_per_cycle=int(getattr(ci_cfg, "displacement_max_per_cycle", 1) if ci_cfg else 1),
+                cooldown_seconds=float(
+                    getattr(ci_cfg, "displacement_cooldown_seconds", 300.0) if ci_cfg else 300.0
+                ),
+            )
+            logger.info(
+                "[SystemContext] cross-instrument layer — quality_sizing={} "
+                "displacement={} (queue/scanner on event-driven system)",
+                ctx.opportunity_quality_sizer.enabled,
+                ctx.position_displacer.enabled,
+            )
+        except Exception as exc:
+            logger.warning("[SystemContext] cross-instrument layer init failed: {}", exc)
 
         # ── Ops / Dashboard / Persistence (Phase 5) ──────────────────
 

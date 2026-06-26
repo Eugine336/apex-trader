@@ -3208,6 +3208,87 @@ class AdaptiveTunerConfig:
 
 
 @dataclass
+class CrossInstrumentConfig:
+    """Cross-instrument opportunity layer — make APEX a PORTFOLIO opportunist.
+
+    Per-instrument the system is already opportunistic (EV-gated entries, no HTF
+    veto). These five layers add the missing cross-instrument view: collect every
+    instrument's scored entry during a window, rank them against each other, size
+    by relative quality, displace a weaker open position for a clearly better
+    idea, and proactively pre-heat the pipeline for instruments approaching a
+    high-EV setup.
+
+    EVERY layer defaults OFF so the system behaves byte-for-byte identically
+    until explicitly enabled. When all five are off, entries flow straight
+    through the unchanged per-instrument pipeline.
+    """
+
+    # ── GAP 1: Global opportunity queue (quality-ordered dispatch) ──────
+    # Collect candidates across all instruments during a window, then dispatch
+    # them best-EV-first instead of first-tick-first.
+    queue_enabled: bool = False
+    queue_window_ms: int = 1000          # collection window before a drain
+
+    # ── GAP 2: Cross-instrument ranking ────────────────────────────────
+    # Normalise EVs across instruments (spread cost, per-pair win rate) before
+    # the queue dispatches. No effect unless the queue is enabled.
+    ranking_enabled: bool = False
+    spread_ev_penalty_per_pip: float = 0.02   # R deducted per spread pip
+    winrate_ev_weight: float = 0.5            # R swing applied by (win_rate-0.5)
+
+    # ── GAP 3: Opportunity-quality-proportional sizing ─────────────────
+    # Size the best opportunities UP (to max_boost) and weaker ones DOWN (to
+    # min_cut) on top of the existing de-risking sizing chain. The per-trade
+    # risk ceiling still clamps the final size.
+    quality_sizing_enabled: bool = False
+    quality_sizing_max_boost: float = 1.3
+    quality_sizing_min_cut: float = 0.7
+    quality_sizing_ev_ref: float = 1.0        # EV (R) that maps to full boost
+
+    # ── GAP 4: Position displacement / upgrade ─────────────────────────
+    # Close a lower-EV open position to fund a clearly better new opportunity
+    # when capacity / budget is exhausted.
+    displacement_enabled: bool = False
+    displacement_ev_margin: float = 0.5       # new EV must beat weakest by this R
+    displacement_max_per_cycle: int = 1
+    displacement_min_profit_protect: float = 1.0   # never displace a >1R winner
+    displacement_cooldown_seconds: float = 300.0
+
+    # ── GAP 5: Proactive opportunity scanner ───────────────────────────
+    # Periodically rank all instruments and publish a watchlist of those
+    # approaching a high-EV setup; feeds the density tracker + dashboard. Never
+    # triggers entries directly — it only pre-heats the pipeline.
+    proactive_scan_enabled: bool = False
+    proactive_scan_interval_seconds: float = 60.0
+    proactive_scan_min_ev: float = 0.5
+    proactive_proximity_pct: float = 0.02     # within 2% of a zone counts as near
+
+    def __post_init__(self) -> None:
+        if int(self.queue_window_ms) < 0:
+            raise ValueError("CrossInstrumentConfig.queue_window_ms must be >= 0")
+        if not (0.0 < float(self.quality_sizing_min_cut) <= 1.0):
+            raise ValueError(
+                "CrossInstrumentConfig.quality_sizing_min_cut must be in (0, 1]"
+            )
+        if float(self.quality_sizing_max_boost) < 1.0:
+            raise ValueError(
+                "CrossInstrumentConfig.quality_sizing_max_boost must be >= 1.0"
+            )
+        if float(self.quality_sizing_ev_ref) <= 0:
+            raise ValueError(
+                "CrossInstrumentConfig.quality_sizing_ev_ref must be > 0"
+            )
+        if int(self.displacement_max_per_cycle) < 1:
+            raise ValueError(
+                "CrossInstrumentConfig.displacement_max_per_cycle must be >= 1"
+            )
+        if float(self.proactive_scan_interval_seconds) <= 0:
+            raise ValueError(
+                "CrossInstrumentConfig.proactive_scan_interval_seconds must be > 0"
+            )
+
+
+@dataclass
 class AppConfig:
     # All 4 categories enabled — forex, commodity, index, synthetic
     enabled_categories: list[str] = field(
@@ -3241,6 +3322,9 @@ class AppConfig:
     )
     tuner_agent: TunerAgentConfig = field(default_factory=TunerAgentConfig)
     adaptive_tuner: AdaptiveTunerConfig = field(default_factory=AdaptiveTunerConfig)
+    cross_instrument: CrossInstrumentConfig = field(
+        default_factory=CrossInstrumentConfig
+    )
     counterfactual: CounterfactualConfig = field(default_factory=CounterfactualConfig)
     interaction: InteractionConfig = field(default_factory=InteractionConfig)
     param_evolution: ParameterEvolutionConfig = field(default_factory=ParameterEvolutionConfig)

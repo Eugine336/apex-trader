@@ -169,6 +169,7 @@ const departmentGroups = [
     items: [
       { to: "/engine/learning", label: "Learning Layer", icon: "learning" },
       { to: "/engine/adaptive-learning", label: "Adaptive Learning", icon: "learning" },
+      { to: "/engine/cross-instrument", label: "Cross-Instrument", icon: "scanner" },
       { to: "/engine/feedback", label: "Outcome Feedback", icon: "feedback" },
       { to: "/engine/ml", label: "ML Insights", icon: "ml" },
       { to: "/engine/evolution", label: "Evolution", icon: "evolution" },
