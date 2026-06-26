@@ -2070,8 +2070,30 @@ class PairLearnerConfig:
     continuous_absolute_floor: float = 0.1
     # Multiplier for pairs with too little history to size on (cold start) and
     # the trade count below which a pair is treated as cold start.
-    cold_start_multiplier: float = 0.8
+    # Cold start risks half the normal position on an unproven symbol: the
+    # system should win FIRST and only size up once a pair earns it. A loser
+    # has less capital at risk; a winner scales up through the sigmoid curve.
+    cold_start_multiplier: float = 0.5
     cold_start_min_trades: int = 5
+    # Cold-start entry-bar boost: while a pair has no statistical edge yet
+    # (no profile, or fewer than MIN_TRADES), the effective minimum entry
+    # score is raised by this many points so only high-quality setups enter.
+    # 0 disables the boost (legacy behaviour).
+    cold_start_score_boost: int = 5
+    # Graduated cold-start sizing: between cold_start_min_trades and MIN_TRADES
+    # the multiplier is earned from early results rather than held flat — a
+    # winning pair sizes up, a borderline pair stays at cold start, a losing
+    # pair shrinks further. Early-stop (below) catches confident losers first.
+    cold_start_graduated: bool = True
+    # Fast early-stop: detect losing symbols before they drain capital, long
+    # before the statistically-confident AVOID (n>=30, wr<0.40) would fire.
+    # After early_avoid_min_trades, a win rate at/below early_avoid_max_win_rate
+    # flags AVOID. Independently, early_avoid_max_consecutive_losses recent
+    # losses in a row flag AVOID immediately. Reversible: retraining with more
+    # data can move the recommendation back to TRADE.
+    early_avoid_min_trades: int = 5
+    early_avoid_max_win_rate: float = 0.25
+    early_avoid_max_consecutive_losses: int = 4
 
     # Entry-vs-management split (consumes PostCloseTracker signal accuracy).
     # When enabled the effective win rate the sigmoid sees is blended toward the
@@ -2117,6 +2139,26 @@ class PairLearnerConfig:
             raise ValueError(
                 "PairLearnerConfig.cold_start_min_trades must be >= 0, "
                 f"got {self.cold_start_min_trades!r}"
+            )
+        if int(self.cold_start_score_boost) < 0:
+            raise ValueError(
+                "PairLearnerConfig.cold_start_score_boost must be >= 0, "
+                f"got {self.cold_start_score_boost!r}"
+            )
+        if int(self.early_avoid_min_trades) < 0:
+            raise ValueError(
+                "PairLearnerConfig.early_avoid_min_trades must be >= 0, "
+                f"got {self.early_avoid_min_trades!r}"
+            )
+        if not (0.0 <= float(self.early_avoid_max_win_rate) <= 1.0):
+            raise ValueError(
+                "PairLearnerConfig.early_avoid_max_win_rate must be in [0, 1], "
+                f"got {self.early_avoid_max_win_rate!r}"
+            )
+        if int(self.early_avoid_max_consecutive_losses) < 0:
+            raise ValueError(
+                "PairLearnerConfig.early_avoid_max_consecutive_losses must be >= 0, "
+                f"got {self.early_avoid_max_consecutive_losses!r}"
             )
 
 

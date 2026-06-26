@@ -30,8 +30,13 @@ _DEF_CEILING = 1.2
 _DEF_PRIOR = 0.8
 _DEF_SHRINKAGE_FULL_WEIGHT = 30
 _DEF_ABSOLUTE_FLOOR = 0.1
-_DEF_COLD_START_MULT = 0.8
+_DEF_COLD_START_MULT = 0.5
 _DEF_COLD_START_MIN = 5
+_DEF_COLD_START_SCORE_BOOST = 5
+_DEF_COLD_START_GRADUATED = True
+_DEF_EARLY_AVOID_MIN_TRADES = 5
+_DEF_EARLY_AVOID_MAX_WIN_RATE = 0.25
+_DEF_EARLY_AVOID_MAX_CONSEC_LOSSES = 4
 _DEF_ENTRY_SPLIT = False
 _DEF_ENTRY_BLEND_WEIGHT = 0.3
 _DEF_MGMT_LOG = True
@@ -148,6 +153,21 @@ class PairLearner:
         self.continuous_absolute_floor = float(g("continuous_absolute_floor", _DEF_ABSOLUTE_FLOOR))
         self.cold_start_multiplier = float(g("cold_start_multiplier", _DEF_COLD_START_MULT))
         self.cold_start_min_trades = int(g("cold_start_min_trades", _DEF_COLD_START_MIN))
+        self.cold_start_score_boost = int(
+            g("cold_start_score_boost", _DEF_COLD_START_SCORE_BOOST)
+        )
+        self.cold_start_graduated = bool(
+            g("cold_start_graduated", _DEF_COLD_START_GRADUATED)
+        )
+        self.early_avoid_min_trades = int(
+            g("early_avoid_min_trades", _DEF_EARLY_AVOID_MIN_TRADES)
+        )
+        self.early_avoid_max_win_rate = float(
+            g("early_avoid_max_win_rate", _DEF_EARLY_AVOID_MAX_WIN_RATE)
+        )
+        self.early_avoid_max_consecutive_losses = int(
+            g("early_avoid_max_consecutive_losses", _DEF_EARLY_AVOID_MAX_CONSEC_LOSSES)
+        )
         self.entry_management_split_enabled = bool(
             g("entry_management_split_enabled", _DEF_ENTRY_SPLIT)
         )
@@ -193,13 +213,31 @@ class PairLearner:
                 return 1.0
             return round(mult, 4)
         # Legacy 4-bucket behaviour (flag off).
+        # Honor an AVOID recommendation first — an early-stop loser (n>=5) must
+        # be blocked even before it reaches MIN_TRADES, not sized at 0.8.
+        if profile is not None and profile.recommendation == "AVOID":
+            return 0.0
         if profile is None or profile.total_trades < self.MIN_TRADES:
             return 0.8
-        if profile.recommendation == "AVOID":
-            return 0.0
         if profile.recommendation == "REDUCE_SIZE":
             return 0.7
         return 1.0
+
+    def get_cold_start_score_boost(self, pair: str) -> int:
+        """Extra minimum-entry-score points required while a pair is unproven.
+
+        Returns ``cold_start_score_boost`` when the pair has no profile or
+        fewer than ``MIN_TRADES`` decided trades (no statistical edge yet), so
+        only high-quality setups enter during cold start. Returns 0 once the
+        pair has graduated. Never raises.
+        """
+        boost = int(getattr(self, "cold_start_score_boost", 0) or 0)
+        if boost <= 0:
+            return 0
+        profile = self._profiles.get(pair)
+        if profile is None or int(profile.total_trades or 0) < self.MIN_TRADES:
+            return boost
+        return 0
 
     # ------------------------------------------------------------------
     # Continuous multiplier
@@ -208,18 +246,37 @@ class PairLearner:
     def _continuous_multiplier(self, profile: PairProfile) -> float:
         """Smooth, Bayesian-shrunk size multiplier for a learned pair.
 
+        * AVOID recommendation → hard 0.0 (safety floor preserved) — checked
+          FIRST so an early-stop loser is blocked even below cold-start count.
         * Cold start (too few trades) → ``cold_start_multiplier``.
-        * AVOID recommendation → hard 0.0 (safety floor preserved).
+        * Graduated cold start (between cold_start_min_trades and MIN_TRADES) →
+          earned from early results: a winner sizes up, a loser shrinks.
         * Otherwise a logistic curve over the *effective* win rate, shrunk
           toward the prior on thin samples and clamped to [floor, ceiling].
         """
         n = int(profile.total_trades or 0)
-        if n < self.cold_start_min_trades:
-            return self.cold_start_multiplier
-        # Preserve the hard AVOID safety stop — a statistically-confident loser
-        # is never sized up, regardless of the smooth curve.
+        # Preserve the hard AVOID safety stop FIRST — a statistically-confident
+        # loser (or an early-stop loser with few trades) is never sized,
+        # regardless of the smooth curve or how little history it has.
         if profile.recommendation == "AVOID":
             return 0.0
+        if n < self.cold_start_min_trades:
+            return self.cold_start_multiplier
+
+        # Graduated cold start: between cold_start_min_trades and MIN_TRADES a
+        # pair earns its size from early performance rather than holding flat.
+        if n < self.MIN_TRADES and self.cold_start_graduated:
+            base = self.cold_start_multiplier
+            eff_wr = self._effective_win_rate(profile)
+            if not math.isfinite(eff_wr):
+                eff_wr = 0.0
+            if eff_wr >= 0.6:        # winning pair — earn sizing up toward 1.0
+                earned = min(1.0, base + (eff_wr - 0.5))
+            elif eff_wr >= 0.45:     # break-even — stay at cold start
+                earned = base
+            else:                    # losing pair — shrink further
+                earned = max(self.continuous_absolute_floor, base * 0.5)
+            return earned
 
         eff_wr = self._effective_win_rate(profile)
         raw = sigmoid_multiplier(
@@ -328,14 +385,37 @@ class PairLearner:
         best_session = self._best_dim(trades, "session")
         best_regime = self._best_dim(trades, "regime")
 
+        # Early-stop: detect losing symbols fast — long before the
+        # statistically-confident AVOID (n>=30, wr<0.40) would fire — so a
+        # cold-start loser is blocked before it drains capital. Only evaluated
+        # DURING the cold-start window (n < MIN_TRADES); once a pair graduates
+        # the full statistical logic governs, so a proven pair is never
+        # hard-AVOIDED on a short recent losing streak. Reversible: retraining
+        # with more (better) data can move the recommendation back to TRADE.
+        rec = None
         if n < self.MIN_TRADES:
-            rec = "INSUFFICIENT_DATA"
-        elif wr < 0.40 and n >= 30:
-            rec = "AVOID"
-        elif wr < 0.55:
-            rec = "REDUCE_SIZE"
-        else:
-            rec = "TRADE"
+            if (
+                self.early_avoid_min_trades > 0
+                and n >= self.early_avoid_min_trades
+                and wr <= self.early_avoid_max_win_rate
+            ):
+                rec = "AVOID"
+            elif (
+                self.early_avoid_max_consecutive_losses > 0
+                and n >= self.early_avoid_max_consecutive_losses
+                and all(p < 0 for p in pnls[-self.early_avoid_max_consecutive_losses:])
+            ):
+                rec = "AVOID"
+
+        if rec is None:
+            if n < self.MIN_TRADES:
+                rec = "INSUFFICIENT_DATA"
+            elif wr < 0.40 and n >= 30:
+                rec = "AVOID"
+            elif wr < 0.55:
+                rec = "REDUCE_SIZE"
+            else:
+                rec = "TRADE"
 
         entry_accuracy, management_score, optimal_sl_r = self._post_close_metrics(pair)
 

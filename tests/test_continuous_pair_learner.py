@@ -132,7 +132,9 @@ class TestContinuousMultiplier:
     def test_cold_start_thin_profile(self, save_to_tmp):
         learner = PairLearner(config=_continuous_cfg(cold_start_min_trades=5))
         learner.learn(_mixed_trades("EURUSD", wins=2, losses=1))  # n=3 < 5
-        assert learner.get_pair_multiplier("EURUSD") == 0.8
+        # New cold-start default is 0.5 (was 0.8): the system risks half size on
+        # an unproven pair until it earns more.
+        assert learner.get_pair_multiplier("EURUSD") == 0.5
 
     def test_avoid_is_hard_zero(self, save_to_tmp):
         learner = PairLearner(config=_continuous_cfg())
@@ -174,8 +176,12 @@ class TestContinuousMultiplier:
 
 class TestBayesianShrinkage:
     def test_thin_sample_pulled_toward_prior(self, save_to_tmp):
+        # Graduated cold start off here: this test targets the pure sigmoid +
+        # shrinkage path at low n (graduated would otherwise intercept the
+        # cold_start_min_trades..MIN_TRADES band).
         cfg = _continuous_cfg(
-            cold_start_min_trades=1, shrinkage_full_weight=30, continuous_prior=0.8
+            cold_start_min_trades=1, shrinkage_full_weight=30, continuous_prior=0.8,
+            cold_start_graduated=False,
         )
         learner = PairLearner(config=cfg)
         learner.learn(_mixed_trades("EURUSD", wins=1, losses=0))  # n=1, wr 1.0
@@ -183,7 +189,10 @@ class TestBayesianShrinkage:
         assert learner.get_pair_multiplier("EURUSD") == pytest.approx(0.8, abs=0.05)
 
     def test_full_sample_uses_raw_curve(self, save_to_tmp):
-        cfg = _continuous_cfg(cold_start_min_trades=1, shrinkage_full_weight=30)
+        cfg = _continuous_cfg(
+            cold_start_min_trades=1, shrinkage_full_weight=30,
+            cold_start_graduated=False,
+        )
         learner = PairLearner(config=cfg)
         learner.learn(_mixed_trades("EURUSD", wins=60, losses=0))  # n=60 >= 30
         raw = sigmoid_multiplier(1.0)  # ceiling-bound raw curve value
@@ -192,7 +201,10 @@ class TestBayesianShrinkage:
         )
 
     def test_more_trades_closer_to_raw(self, save_to_tmp):
-        cfg = _continuous_cfg(cold_start_min_trades=1, shrinkage_full_weight=30)
+        cfg = _continuous_cfg(
+            cold_start_min_trades=1, shrinkage_full_weight=30,
+            cold_start_graduated=False,
+        )
         thin = PairLearner(config=cfg)
         thin.learn(_mixed_trades("AAA", wins=5, losses=0))
         thick = PairLearner(config=cfg)

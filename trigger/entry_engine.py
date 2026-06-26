@@ -127,6 +127,11 @@ class EntryEngine:
         # it can LOWER the entry score bar within a bounded envelope if the
         # engine's rejected setups keep winning. Neutral (None) by default.
         self.gate_tuner = None
+        # Optional PairLearner (set by the trading loop). When present, it RAISES
+        # the entry-score bar for cold-start (unproven) symbols so only
+        # high-quality setups enter while a pair has no statistical edge yet.
+        # Neutral (None) by default.
+        self.pair_learner = None
 
     # ------------------------------------------------------------------
     # Main entry calculation
@@ -346,6 +351,15 @@ class EntryEngine:
                 )
             except Exception as exc:
                 logger.debug("[entry_engine] gate-tuner offset unavailable: {}", exc)
+        # Cold-start boost: while a pair has no statistical edge yet, RAISE the
+        # bar so only high-quality setups enter. Applied after the gate tuner so
+        # a loosening offset can never erode the cold-start floor — the system
+        # should win first and only relax the bar once the pair has earned it.
+        if self.pair_learner is not None:
+            try:
+                base_min += int(self.pair_learner.get_cold_start_score_boost(pair))
+            except Exception as exc:
+                logger.debug("[entry_engine] cold-start score boost unavailable: {}", exc)
         effective_min_score = max(
             base_min,
             status.current_score_threshold,
