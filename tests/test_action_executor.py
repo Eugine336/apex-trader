@@ -246,13 +246,41 @@ class TestPartialClose:
         assert result.success
         assert broker.close_calls[0]["lots"] == 0.05
 
-    def test_zero_lots_rejected(self):
+    def test_zero_lots_skips_to_sl_protection(self):
+        # A position that cannot be split (computed close lots round to zero)
+        # must NOT hard-fail — that would roll back the optimistic
+        # partial_closed flag and re-fire the doomed PARTIAL_CLOSE forever.
+        # Instead the executor reports success with a min-lot skip marker so
+        # the flag sticks and the position falls through to SL protection.
         broker = FakeBroker()
         executor = ActionExecutor(broker, _fast_cfg())
         positions = _positions(remaining_lots=0.0)
         result = executor.execute(_partial_intent(), positions)
-        assert not result.success
-        assert "close lots <= 0" in result.error.lower()
+        assert result.success
+        assert "min_lot_skip" in (result.error or "")
+        # Broker close must never be called for an impossible split.
+        assert broker.close_calls == []
+
+    def test_minlot_partial_skips_to_sl_protection(self):
+        # A 0.01-lot position at the broker minimum: 0.01 × 0.5 = 0.005 →
+        # rounds to 0 at the 0.01 volume step. Same fallback as above.
+        broker = FakeBroker()
+        executor = ActionExecutor(broker, _fast_cfg())
+        positions = _positions(remaining_lots=0.01, volume_step=0.01)
+        result = executor.execute(_partial_intent(), positions)
+        assert result.success
+        assert "min_lot_skip" in (result.error or "")
+        assert broker.close_calls == []
+
+    def test_normal_lot_partial_still_executes(self):
+        # Regression: a normal-sized position is split and sent to the broker
+        # exactly as before — the min-lot fallback must not interfere.
+        broker = FakeBroker()
+        executor = ActionExecutor(broker, _fast_cfg())
+        positions = _positions(remaining_lots=0.10, volume_step=0.01)
+        result = executor.execute(_partial_intent(), positions)
+        assert result.success
+        assert broker.close_calls[0]["lots"] == 0.05
 
 
 # ── Risk gate rejection ─────────────────────────────────────────────

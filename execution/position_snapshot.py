@@ -96,6 +96,12 @@ class PositionSnapshot:
     broker_pnl: float = 0.0
     broker_lots: float = 0.0
 
+    # ── Broker volume constraints ─────────────────────────────────────
+    # Minimum tradeable lot size for this symbol. A position already at this
+    # size cannot be partially closed (the executor would compute a zero close
+    # volume), so TP1 must fall back to SL→breakeven protection instead.
+    volume_min: float = 0.01
+
     # ── P&L (from TradeManager) ───────────────────────────────────────
     pnl_pips: float = 0.0
     pnl_dollars: float = 0.0
@@ -250,6 +256,7 @@ def build_position_snapshot(
         current_price=current_price,
         broker_pnl=_pos_pnl(pos),
         broker_lots=_pos_lots(pos),
+        volume_min=float(getattr(pos, "volume_min", 0.01) or 0.01),
         pnl_pips=pnl_pips,
         pnl_dollars=pnl_dollars,
         pip_size=pip_size,
