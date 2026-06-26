@@ -17,11 +17,19 @@ callers should log the result and continue regardless.
 
 from __future__ import annotations
 
+import sqlite3
 import subprocess
 from pathlib import Path
 
 from config import SCHEMA_VERSION
 from loguru import logger
+
+# Operational, machine-local event-store DB. It is recreated empty on first
+# write and must never be restored from a shared remote — see
+# ``discard_corrupt_event_store`` below for why this matters.
+_EVENT_STORE_DB_NAME = "apex_events.db"
+# How many rotated ``apex_events.db.corrupt.<ts>`` forensic copies to retain.
+_KEEP_CORRUPT_ROTATIONS = 3
 
 # Learned / adaptive artifacts that encoded the old structure-biased weights.
 # These are safe to delete — they are regenerated empty on first write.
@@ -243,18 +251,151 @@ def purge_stale_learned_data(
     return "nothing stale to purge"
 
 
+def _event_db_is_corrupt(db_path: Path) -> bool:
+    """Return True only when an existing, non-empty event-store DB fails its
+    SQLite integrity check.
+
+    A missing file is NOT corrupt (connecting would otherwise create an empty
+    DB as a side effect, so existence/size is checked up front). A transient
+    lock (``OperationalError``) is NOT treated as corruption either — only a
+    malformed image or a non-``ok`` integrity result counts.
+    """
+    try:
+        if not db_path.is_file() or db_path.stat().st_size == 0:
+            return False
+    except OSError:
+        return False
+
+    conn = None
+    try:
+        conn = sqlite3.connect(str(db_path), timeout=5)
+        row = conn.execute("PRAGMA integrity_check").fetchone()
+    except sqlite3.OperationalError as exc:
+        # Locked/busy or otherwise unreadable for a non-structural reason —
+        # leave the file untouched rather than risk deleting a healthy DB.
+        logger.warning(
+            "[clean-start] event-store integrity check could not run for {}: {}",
+            db_path,
+            exc,
+        )
+        return False
+    except sqlite3.DatabaseError:
+        # "database disk image is malformed" / "file is not a database".
+        return True
+    except Exception as exc:  # noqa: BLE001 — never let hygiene abort startup
+        logger.warning(
+            "[clean-start] event-store integrity check errored for {}: {}",
+            db_path,
+            exc,
+        )
+        return False
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    return (row[0] if row else "").strip().lower() != "ok"
+
+
+def _prune_corrupt_rotations(
+    data_dir: Path,
+    *,
+    db_name: str = _EVENT_STORE_DB_NAME,
+    keep: int = _KEEP_CORRUPT_ROTATIONS,
+) -> int:
+    """Delete old ``<db_name>.corrupt.*`` rotation files, keeping the newest
+    ``keep`` for forensics. Returns the number removed."""
+    try:
+        rotations = sorted(
+            data_dir.glob(f"{db_name}.corrupt.*"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return 0
+
+    removed = 0
+    for stale in rotations[max(keep, 0):]:
+        try:
+            stale.unlink()
+            removed += 1
+        except OSError as exc:
+            logger.warning("[clean-start] could not prune {}: {}", stale, exc)
+    return removed
+
+
+def discard_corrupt_event_store(
+    data_dir: str = "data",
+    *,
+    db_name: str = _EVENT_STORE_DB_NAME,
+) -> str:
+    """Remove a corrupt operational event-store DB before it is opened.
+
+    The ``data`` directory is a separate git repo (junction). ``clean-start``
+    hard-resets it to the remote, which restores whatever ``apex_events.db`` is
+    committed there. The event store is operational, machine-local state and
+    should never be version-controlled — if a corrupt copy is committed, every
+    restart restores it, the store logs a CRITICAL integrity failure, rotates
+    it to ``apex_events.db.corrupt.<ts>``, and starts fresh — an endless
+    restore/rotate loop that also bloats the disk with rotation files.
+
+    This best-effort step breaks that loop: run after the data-repo reset and
+    BEFORE the event store opens. If the restored DB is corrupt it is deleted
+    (with its ``-wal``/``-shm`` sidecars) so the store starts on a clean slate
+    with no CRITICAL spam and no new rotation file. A healthy DB is always left
+    untouched, so once the data repo stops tracking the file (the proper fix)
+    legitimate local event history is preserved. Accumulated rotation files are
+    pruned to a small forensic window regardless.
+    """
+    d = Path(data_dir)
+    if not d.is_dir():
+        return "no data directory"
+
+    db_path = d / db_name
+    removed: list[str] = []
+    if _event_db_is_corrupt(db_path):
+        for suffix in ("", "-wal", "-shm"):
+            sidecar = d / f"{db_name}{suffix}"
+            try:
+                if sidecar.exists():
+                    sidecar.unlink()
+                    removed.append(sidecar.name)
+            except OSError as exc:
+                logger.warning("[clean-start] could not remove {}: {}", sidecar, exc)
+        if removed:
+            logger.warning(
+                "[clean-start] discarded corrupt event-store DB so a fresh one "
+                "is created cleanly (removed: {})",
+                ", ".join(removed),
+            )
+
+    pruned = _prune_corrupt_rotations(d)
+
+    if removed and pruned:
+        return f"discarded corrupt event-store ({len(removed)}); pruned {pruned} rotation(s)"
+    if removed:
+        return f"discarded corrupt event-store ({len(removed)})"
+    if pruned:
+        return f"pruned {pruned} rotation(s)"
+    return "event-store healthy"
+
+
 def run_startup_clean_start(
     *,
     data_dir: str = "data",
     branch: str = "main",
     schema_version: str = SCHEMA_VERSION,
     local_schema_version_file: str | Path | None = None,
-) -> tuple[str, str]:
-    """Convenience wrapper: sync remote state, then run schema-gated purge."""
+) -> tuple[str, str, str]:
+    """Convenience wrapper: sync remote state, discard a corrupt event-store DB
+    restored by that sync, then run the schema-gated purge."""
     pull_res = sync_clean_state_from_remote(data_dir=data_dir, branch=branch)
+    event_store_res = discard_corrupt_event_store(data_dir=data_dir)
     purge_res = purge_stale_learned_data(
         data_dir=data_dir,
         schema_version=schema_version,
         local_schema_version_file=local_schema_version_file,
     )
-    return pull_res, purge_res
+    return pull_res, event_store_res, purge_res
