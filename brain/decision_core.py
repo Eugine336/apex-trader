@@ -99,6 +99,34 @@ _EVIDENCE_WEIGHTS: dict[str, float] = {
     "M1": 0.10,  # not in TF_MODULE_MAP yet, but ready when it is
 }
 
+# Phase 6 — optional adaptive override of the static weights above. When a
+# provider is registered (``set_evidence_weight_provider``) its bounded,
+# learned vector is used; otherwise the static defaults apply. The provider is
+# duck-typed (only ``get_weights() -> dict``) so this stays a leaf module with
+# no learning-layer dependency, and any provider fault transparently falls back
+# to the static defaults.
+_weight_provider = None  # set via set_evidence_weight_provider
+
+
+def set_evidence_weight_provider(provider) -> None:
+    """Register (or clear, with ``None``) the adaptive evidence-weight provider."""
+    global _weight_provider
+    _weight_provider = provider
+
+
+def _active_weights() -> dict[str, float]:
+    """Return the active per-TF evidence weights (adaptive if available)."""
+    provider = _weight_provider
+    if provider is not None:
+        try:
+            weights = provider.get_weights()
+            if isinstance(weights, dict) and weights:
+                return weights
+        except Exception:  # noqa: BLE001 — never break the bias model
+            pass
+    return _EVIDENCE_WEIGHTS
+
+
 # Minimum probability edge (long − short) required to call a direction.
 _DIRECTION_THRESHOLD = 0.05
 # Conflict at/above this level is treated as no clean signal (not tradeable).
@@ -133,12 +161,13 @@ def _collect_evidence(
     and their weight is excluded from the pool (no systematic bias).
     """
     items: list[tuple[str, float, float]] = []
+    active_weights = _active_weights()
 
     def _add(layer: Optional[dict[str, StructureAnalysis]], mult: float) -> None:
         if not layer:
             return
         for tf, sa in layer.items():
-            weight = _EVIDENCE_WEIGHTS.get(tf)
+            weight = active_weights.get(tf)
             if weight is None or sa is None:
                 continue
             trend = _trend_str(sa)

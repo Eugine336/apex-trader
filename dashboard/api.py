@@ -300,6 +300,11 @@ def create_app(state: Optional[LiveState] = None) -> FastAPI:
         """Confirmed vs developing (forming-bar) structure per symbol — the dual WorldModel."""
         return _state.get_market_model()
 
+    @app.get("/api/adaptive-learning")
+    def adaptive_learning():
+        """Phase 6 — adaptive evidence weights, per-TF accuracy, applier + scheduler state."""
+        return _state.get_adaptive_learning()
+
     @app.get("/api/orchestrator")
     def orchestrator(limit: int = 100, symbol: str = ""):
         """Round-table graded-sizing proposals — per-dimension multipliers + applied size."""

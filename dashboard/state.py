@@ -34,6 +34,7 @@ from dashboard.state_orchestrator import OrchestratorMixin
 from dashboard.state_position_health import PositionHealthMixin
 from dashboard.state_module_governor import ModuleGovernorMixin
 from dashboard.state_learning import LearningMixin
+from dashboard.state_adaptive_learning import AdaptiveLearningMixin
 from dashboard.state_health import HealthMixin
 from dashboard.state_operations import OperationsMixin
 from dashboard.state_departments import DepartmentsMixin
@@ -60,6 +61,7 @@ class LiveState(
     PositionHealthMixin,
     ModuleGovernorMixin,
     LearningMixin,
+    AdaptiveLearningMixin,
     HealthMixin,
     OperationsMixin,
     DepartmentsMixin,
