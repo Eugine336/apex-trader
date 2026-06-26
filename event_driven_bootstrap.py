@@ -2723,6 +2723,7 @@ class EventDrivenSystem:
             win_rate_provider=getattr(ctx, "win_rate_provider", None) if ctx else None,
             consensus_config=getattr(self._config, "consensus", None),
             ranker_config=getattr(self._config, "opportunity_ranker", None),
+            dynamic_weight_config=getattr(self._config, "dynamic_weights", None),
             calibration_engine=self._calibration_engine,
             get_spread_pips=self._get_spread_pips,
             calibration_spread_tf=getattr(_calib_cfg, "spread_sample_tf", "M5"),

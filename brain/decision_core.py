@@ -549,6 +549,46 @@ def _ranker_kwargs_from_config(ranker_config: Any) -> dict:
     return out
 
 
+def _pick_consensus_regime(wm: WorldModel) -> str:
+    """Pick a representative regime label for the dynamic-weight context.
+
+    Reads the WorldModel's per-TF volatility regime, preferring H1 (the primary
+    structural frame) then M5, then any available. Returns "" when none is
+    present — the provider treats that as neutral (no regime bias).
+    """
+    try:
+        rb = wm.regime_by_tf()
+        if not rb:
+            return ""
+        return str(rb.get("H1") or rb.get("M5") or next(iter(rb.values()), "") or "")
+    except Exception:  # noqa: BLE001 — best-effort context only
+        return ""
+
+
+def _volatility_ratio_from_df(df: Optional[pd.DataFrame], window: int = 14, baseline: int = 50) -> float:
+    """Current ATR / baseline ATR from a candle frame (1.0 = neutral).
+
+    Mirrors :func:`brain.concept_modules.volatility_regime`'s range-based ATR so
+    the dynamic-weight volatility factor is consistent with the regime label.
+    Returns 1.0 (neutral) whenever the data is missing/insufficient so the
+    provider applies no volatility bias.
+    """
+    try:
+        if df is None or len(df) < baseline + 1:
+            return 1.0
+        if not {"high", "low"}.issubset(getattr(df, "columns", [])):
+            return 1.0
+        rng = (df["high"] - df["low"]).abs()
+        atr_recent = float(rng.rolling(window).mean().iloc[-1])
+        atr_base = float(rng.rolling(baseline).mean().iloc[-1])
+        if not (atr_base > 0) or not (atr_recent >= 0):
+            return 1.0
+        ratio = atr_recent / atr_base
+        return ratio if (ratio > 0 and ratio == ratio) else 1.0  # NaN-safe
+    except Exception:  # noqa: BLE001 — best-effort context only
+        return 1.0
+
+
 def build_consensus(
     symbol: str,
     wm: WorldModel,
@@ -566,6 +606,8 @@ def build_consensus(
     win_rate_provider: Any = None,
     weights: Optional[dict[str, float]] = None,
     ranker_config: Any = None,
+    dynamic_weight_provider: Any = None,
+    is_confirmed: bool = True,
 ) -> tuple[list, list]:
     """Derive per-module directional votes + ranked opportunities from a WM.
 
@@ -596,6 +638,13 @@ def build_consensus(
     no-ops when their feature flag is off — the calibrator returns the base
     weight unchanged and the governor reports nothing suppressed — so wiring
     them in is behaviour-neutral until the operator enables them.
+
+    The optional ``dynamic_weight_provider`` makes the per-module base weight
+    *contextual*: it scales each static ``ConsensusConfig`` weight by the
+    current market regime, volatility, and data recency (``is_confirmed``)
+    before the governor/calibrator hooks run. This composes as context ×
+    learned accuracy. It is behaviour-neutral when no provider is passed or its
+    master switch is off, and falls back to the static weights on any error.
     """
     from brain.directional_consensus import (
         Vote,
@@ -625,6 +674,30 @@ def build_consensus(
                 base_weights[k] = float(v)
             except (TypeError, ValueError):
                 continue
+
+    # ── Dynamic context adjustment (optional) ─────────────────────────────
+    # When a DynamicWeightProvider is wired, scale these static base weights by
+    # the current regime, volatility and data recency BEFORE the per-module
+    # governor/calibrator hooks run — so the panel weighting composes as
+    # context (regime/volatility/recency) × learned accuracy (calibrator). The
+    # provider never raises (it falls back to the static weights on any error),
+    # and entries it returns simply overlay the merged base set, so missing
+    # modules keep their static weight. Behaviour-neutral when no provider is
+    # passed or its master switch is off.
+    if dynamic_weight_provider is not None:
+        try:
+            regime = _pick_consensus_regime(wm)
+            vol_ratio = _volatility_ratio_from_df(m5_df)
+            adjusted = dynamic_weight_provider.compute_weights(
+                symbol, regime, vol_ratio, is_confirmed,
+            )
+            if adjusted:
+                base_weights.update(adjusted)
+        except Exception as exc:  # noqa: BLE001 — never block the panel
+            logger.debug(
+                "[consensus] {} dynamic weight adjustment failed: {} — "
+                "using static weights", symbol, exc,
+            )
 
     def _wt(module: str) -> float:
         return float(base_weights.get(module, 1.0))
