@@ -322,7 +322,7 @@ class PortfolioGovernor:
                     conflicts=[f"{v['symbol']} {v['direction']}" for v in same_tf],
                 )
         else:
-            logger.debug(
+            logger.warning(
                 "[Governor] {} {} has no timeframe_class — horizon cap (Gate 2) "
                 "skipped; still bounded by symbol/global/risk caps",
                 sym, direction,

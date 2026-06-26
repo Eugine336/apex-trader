@@ -1127,7 +1127,7 @@ class DerivConnector(BaseConnector):
             contracts = resp.get("portfolio", {}).get("contracts", [])
             return float(sum(float(c.get("profit", 0) or 0.0) for c in contracts))
         except Exception as exc:
-            logger.debug("Deriv unrealized P&L sum failed: {}", exc)
+            logger.warning("Deriv unrealized P&L sum failed: {}", exc)
             return 0.0
 
     # ── Market data ──────────────────────────────────────────────────────
@@ -2153,8 +2153,8 @@ class DerivConnector(BaseConnector):
                 close_time=close_time,
                 raw_comment=str(poc.get("status", "")),
             )
-        except Exception:
-            logger.debug("Deriv get_deal_close_info failed for {}", order_id)
+        except Exception as exc:
+            logger.warning("Deriv get_deal_close_info failed for {}: {}", order_id, exc)
             return None
 
     # ── Positions ────────────────────────────────────────────────────────
@@ -2248,7 +2248,7 @@ class DerivConnector(BaseConnector):
         try:
             store.save_position(contract_id, data)
         except Exception as exc:
-            logger.debug("[deriv] persist position {} failed: {}", contract_id, exc)
+            logger.warning("[deriv] persist position {} failed: {}", contract_id, exc)
 
     def _unpersist_position(self, contract_id: str) -> None:
         """Remove a closed contract from the crash-safe store (best effort)."""
@@ -2258,7 +2258,7 @@ class DerivConnector(BaseConnector):
         try:
             store.remove_position(contract_id)
         except Exception as exc:
-            logger.debug("[deriv] unpersist position {} failed: {}", contract_id, exc)
+            logger.warning("[deriv] unpersist position {} failed: {}", contract_id, exc)
 
     def _find_contract_by_idem_key(self, idem_key: str) -> str:
         """Query the Deriv portfolio for a contract matching *idem_key*.

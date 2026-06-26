@@ -511,7 +511,7 @@ class RiskEngine:
         except Exception as exc:  # noqa: BLE001
             # Optional risk dimensions failed to build — proceed with whatever
             # dimensions were collected, but make the degradation visible.
-            logger.debug("[RiskEngine] optional risk dimension build skipped: {}", exc)
+            logger.warning("[RiskEngine] optional risk dimension build skipped: {}", exc)
         return ra.accumulate(dims)
 
     def record_trade_result(
@@ -679,13 +679,13 @@ class RiskEngine:
             try:
                 self.drawdown_guard.restore_state(dg)
             except Exception as exc:
-                logger.debug("[RiskEngine] drawdown guard restore failed: {}", exc)
+                logger.warning("[RiskEngine] drawdown guard restore failed: {}", exc)
         pnl_state = state.get("pnl_tracker")
         if pnl_state:
             try:
                 self.pnl_tracker.restore_state(pnl_state)
             except Exception as exc:
-                logger.debug("[RiskEngine] pnl tracker restore failed: {}", exc)
+                logger.warning("[RiskEngine] pnl tracker restore failed: {}", exc)
 
     def reconcile_balance(
         self,

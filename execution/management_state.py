@@ -209,7 +209,7 @@ class ManagementStateStore:
             self._conn.commit()
             self._last_sig[state.ticket] = self._sig(state)
         except Exception as exc:
-            logger.debug("[mgmt-state] persist failed for {}: {}", state.ticket, exc)
+            logger.warning("[mgmt-state] persist failed for {}: {}", state.ticket, exc)
 
     @staticmethod
     def _sig(state: ManagementState) -> tuple:
@@ -277,7 +277,7 @@ class ManagementStateStore:
                     )
                     self._conn.commit()
                 except Exception as exc:
-                    logger.debug("[mgmt-state] delete failed for {}: {}", ticket, exc)
+                    logger.warning("[mgmt-state] delete failed for {}: {}", ticket, exc)
 
     def cleanup(self, active_tickets: set[str]) -> int:
         """Remove states for positions no longer open. Returns count removed."""
@@ -295,7 +295,7 @@ class ManagementStateStore:
                     )
                     self._conn.commit()
                 except Exception as exc:
-                    logger.debug("[mgmt-state] cleanup DB failed: {}", exc)
+                    logger.warning("[mgmt-state] cleanup DB failed: {}", exc)
             return len(stale)
 
     def all_tickets(self) -> set[str]:
@@ -311,6 +311,6 @@ class ManagementStateStore:
         if self._conn is not None:
             try:
                 self._conn.close()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("[mgmt-state] conn.close() failed during shutdown: {}", exc)
             self._conn = None
