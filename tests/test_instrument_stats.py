@@ -139,3 +139,121 @@ def test_get_profile_provider_is_opt_in():
     finally:
         ip.set_stats_provider(None)
     assert ip.get_profile("ZZZ_UNKNOWN") is ip._FOREX_PROFILE
+
+
+# ── Wick-to-body ratio tracking ────────────────────────────────────────────
+
+
+class _Bar:
+    """Minimal OHLC row supporting both attribute and item access via a dict."""
+
+    def __init__(self, o, h, l, c):
+        self._d = {"open": o, "high": h, "low": l, "close": c}
+
+    def __getitem__(self, k):
+        return self._d[k]
+
+    def get(self, k, default=None):
+        return self._d.get(k, default)
+
+
+class _Frame:
+    """Tiny stand-in for a candle frame exposing ``.iloc[-1]``."""
+
+    def __init__(self, bar):
+        self._bar = bar
+
+    @property
+    def iloc(self):
+        return [self._bar]
+
+
+def _feed_wick_body(st, ratio, n):
+    """Push ``n`` M5 candles whose wick-to-body ratio is exactly ``ratio``.
+
+    Body is fixed at 1.0 (open=100, close=101); the wicks are extended so the
+    full range equals ``ratio`` → ``(high - low) / |close - open| == ratio``.
+    Requires ``ratio >= 1`` so the range can contain the body.
+    """
+    half = (ratio - 1.0) / 2.0
+    for _ in range(n):
+        bar = _Bar(o=100.0, h=101.0 + half, l=100.0 - half, c=101.0)
+        st._roll_wick_body(_Frame(bar))
+
+
+def test_wick_body_ratio_needs_min_samples():
+    st = InstrumentStats(symbol="X", pip_size=0.0001)
+    assert st.wick_body_ratio() is None
+    _feed_wick_body(st, 3.0, 49)
+    assert st.wick_body_ratio() is None          # below the 50-sample gate
+    _feed_wick_body(st, 3.0, 1)
+    assert st.wick_body_ratio() == pytest.approx(3.0)
+
+
+def test_wick_body_ratio_skips_doji():
+    st = InstrumentStats(symbol="X")
+    doji = _Frame(_Bar(o=100.0, h=100.5, l=99.5, c=100.0))  # body == 0
+    st._roll_wick_body(doji)
+    assert len(st._wick_body_samples) == 0       # doji ignored, no divide-by-zero
+
+
+def test_wick_body_ratio_persists_round_trip():
+    st = InstrumentStats(symbol="X", pip_size=0.0001)
+    _feed_wick_body(st, 2.5, 60)
+    blob = st.to_dict()
+    assert blob["wick_body_ratio"] == pytest.approx(2.5)
+    restored = InstrumentStats.from_dict(blob)
+    assert restored.wick_body_ratio() == pytest.approx(2.5)
+
+
+# ── Self-calibrating swing_lookback ────────────────────────────────────────
+
+
+class _StatsWBR:
+    """Calibrated stats stub that also exposes a wick-to-body ratio."""
+
+    def __init__(self, atr, wbr):
+        self._atr = atr
+        self._wbr = wbr
+
+    def is_calibrated(self, tf="M5"):
+        return True
+
+    def atr_pips(self, tf="M5"):
+        return self._atr
+
+    def wick_body_ratio(self):
+        return self._wbr
+
+
+def test_swing_lookback_unchanged_without_wbr_method():
+    # Stats stub lacking wick_body_ratio → swing_lookback keeps the category default.
+    d = ip.derive_profile(ip._FOREX_PROFILE, _FakeStats(5.0))
+    assert d.swing_lookback == ip._FOREX_PROFILE.swing_lookback
+
+
+def test_swing_lookback_unchanged_when_wbr_none():
+    d = ip.derive_profile(ip._FOREX_PROFILE, _StatsWBR(5.0, None))
+    assert d.swing_lookback == ip._FOREX_PROFILE.swing_lookback
+
+
+def test_swing_lookback_widens_for_wicky_instrument():
+    # ratio 3.5 vs reference 2.0 → scale 1.75 → round(5 * 1.75) = 9
+    d = ip.derive_profile(ip._FOREX_PROFILE, _StatsWBR(5.0, 3.5))
+    assert d.swing_lookback == 9
+
+
+def test_swing_lookback_tightens_for_clean_instrument():
+    # ratio 1.4 vs reference 2.0 → scale 0.7 → round(5 * 0.7) = 4 (then >= 3 floor)
+    d = ip.derive_profile(ip._FOREX_PROFILE, _StatsWBR(5.0, 1.4))
+    assert d.swing_lookback == 4
+
+
+def test_swing_lookback_bounds_enforced():
+    # Extreme wickiness clamps the scale at 2.0x then the absolute cap at 15.
+    hi = ip.derive_profile(ip._INDEX_PROFILE, _StatsWBR(10.0, 50.0))
+    assert 3 <= hi.swing_lookback <= 15
+    assert hi.swing_lookback == min(15, ip._INDEX_PROFILE.swing_lookback * 2)
+    # Extreme cleanliness clamps the scale at 0.6x then the absolute floor at 3.
+    lo = ip.derive_profile(ip._FOREX_PROFILE, _StatsWBR(5.0, 0.01))
+    assert lo.swing_lookback == max(3, round(ip._FOREX_PROFILE.swing_lookback * 0.6))

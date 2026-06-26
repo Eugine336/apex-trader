@@ -49,6 +49,9 @@ _SPREAD_SAMPLES = 500         # live spread readings retained for median / p95
 _HOUR_EMA_ALPHA = 2.0 / (20 + 1)   # ~20-day EMA of per-hour range (rolling)
 _OUTCOME_WINDOW = 200         # structure/zone outcome memory
 _NEWS_EMA_ALPHA = 2.0 / (20 + 1)   # ~20-event EMA of news impact per currency
+_WBR_SAMPLES = 200            # M5 wick-to-body ratios retained for the median
+_WBR_MIN_SAMPLES = 50         # min M5 candles before the wick/body read is trusted
+_WBR_REFERENCE = 2.0          # typical M5 wick/body ratio for a major forex pair
 
 
 def _percentile(sorted_vals: list[float], pct: float) -> float:
@@ -139,6 +142,11 @@ class InstrumentStats:
     # Live spread samples (pips) → median / p95 on demand.
     _spread_samples: Deque[float] = field(default_factory=lambda: deque(maxlen=_SPREAD_SAMPLES))
 
+    # Rolling M5 wick-to-body ratios → median on demand.  A high median marks a
+    # "wicky" instrument (GBPJPY, XAUUSD) whose spike candles need a wider swing
+    # lookback; a low median marks clean waves (EURGBP) where tight lookback works.
+    _wick_body_samples: Deque[float] = field(default_factory=lambda: deque(maxlen=_WBR_SAMPLES))
+
     # Average true range per UTC hour (EMA), so the busy hours emerge from data.
     vol_by_hour: list[float] = field(default_factory=lambda: [0.0] * 24)
     _hour_seen: list[bool] = field(default_factory=lambda: [False] * 24)
@@ -183,8 +191,34 @@ class InstrumentStats:
             win.append(atr_pips)
             self.samples += 1
             self._roll_hour_of_day(df)
+            if tf == "M5":
+                self._roll_wick_body(df)
         except Exception:  # noqa: BLE001 — stats must never break analysis
             return
+
+    def _roll_wick_body(self, df: Any) -> None:
+        """Fold the last M5 bar's wick-to-body ratio into the rolling window.
+
+        Ratio is ``(high - low) / |close - open|``.  Doji bars (a near-zero body)
+        are skipped to avoid a divide-by-zero / runaway value.
+        """
+        try:
+            last = df.iloc[-1]
+            high = float(last["high"])
+            low = float(last["low"])
+            open_ = float(last["open"])
+            close = float(last["close"])
+        except Exception:
+            return
+        body = abs(close - open_)
+        if body < 1e-9:
+            return  # doji — undefined ratio, skip
+        rng = high - low
+        if rng <= 0:
+            return
+        ratio = rng / body
+        if math.isfinite(ratio) and ratio > 0:
+            self._wick_body_samples.append(ratio)
 
     def _roll_hour_of_day(self, df: Any) -> None:
         """Fold the last bar's range into the per-UTC-hour EMA (session discovery)."""
@@ -283,6 +317,17 @@ class InstrumentStats:
             return 0.0
         return _percentile(sorted(self._spread_samples), 0.95)
 
+    def wick_body_ratio(self) -> Optional[float]:
+        """Median M5 wick-to-body ratio, or ``None`` until enough samples exist.
+
+        Returns ``None`` below :data:`_WBR_MIN_SAMPLES` so callers fall back to
+        the category default; a high value (wicky instrument) warrants a wider
+        swing lookback, a low value (clean waves) a tighter one.
+        """
+        if len(self._wick_body_samples) < _WBR_MIN_SAMPLES:
+            return None
+        return _percentile(sorted(self._wick_body_samples), 0.5)
+
     @property
     def structure_reliability(self) -> Optional[float]:
         """Fraction of recent BOS/CHOCH events that held, or None if untracked."""
@@ -342,6 +387,8 @@ class InstrumentStats:
             "atr_pips_by_tf": dict(self.atr_pips_by_tf),
             "atr_pips_window": {tf: list(w) for tf, w in self._atr_pips_window.items()},
             "spread_samples": list(self._spread_samples),
+            "wick_body_samples": list(self._wick_body_samples),
+            "wick_body_ratio": self.wick_body_ratio(),  # computed read for dashboards
             "vol_by_hour": list(self.vol_by_hour),
             "hour_seen": list(self._hour_seen),
             "structure_outcomes": [int(x) for x in self._structure_outcomes],
@@ -367,6 +414,9 @@ class InstrumentStats:
             )
         st._spread_samples = deque(
             (float(v) for v in (data.get("spread_samples") or [])), maxlen=_SPREAD_SAMPLES
+        )
+        st._wick_body_samples = deque(
+            (float(v) for v in (data.get("wick_body_samples") or [])), maxlen=_WBR_SAMPLES
         )
         vbh = data.get("vol_by_hour") or []
         if len(vbh) == 24:
