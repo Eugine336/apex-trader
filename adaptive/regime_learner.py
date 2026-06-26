@@ -185,18 +185,32 @@ class RegimeLearner:
     # ------------------------------------------------------------------
 
     def _learn_regime(self, regime: str, trades: list[dict]) -> RegimeStrategy:
+        from adaptive.recency_weight import (
+            has_recency_weights,
+            trade_weight,
+            weighted_mean,
+            weighted_win_rate,
+        )
+
         pnls = [float(t.get("pnl", 0)) for t in trades]
+        n = len(pnls)
         winners = [p for p in pnls if p > 0]
         losers = [p for p in pnls if p < 0]
-        n = len(pnls)
-        # Scratch trades (pnl == 0) are excluded from the win-rate denominator.
-        decided = len(winners) + len(losers)
-        wr = len(winners) / decided if decided else 0.0
+        if has_recency_weights(trades):
+            # Time-decayed stats: stale-regime trades count less than fresh ones.
+            weights = [trade_weight(t) for t in trades]
+            wr = weighted_win_rate(pnls, weights)
+            win_w = [w for p, w in zip(pnls, weights) if p > 0]
+            loss_w = [w for p, w in zip(pnls, weights) if p < 0]
+            avg_win = weighted_mean(winners, win_w) if winners else 0.0
+            avg_loss = abs(weighted_mean(losers, loss_w)) if losers else 0.0
+        else:
+            # Scratch trades (pnl == 0) are excluded from the win-rate denominator.
+            decided = len(winners) + len(losers)
+            wr = len(winners) / decided if decided else 0.0
+            avg_win = float(np.mean(winners)) if winners else 0.0
+            avg_loss = abs(float(np.mean(losers))) if losers else 0.0
         confidence = min(1.0, n / self.CONFIDENCE_FULL)
-
-        avg_win = float(np.mean(winners)) if winners else 0.0
-        avg_loss = abs(float(np.mean(losers))) if losers else 0.0
-
         if wr >= 0.75:
             tp_mult = 1.2
             sl_buf = 1.5

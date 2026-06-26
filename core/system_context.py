@@ -1077,6 +1077,17 @@ class SystemContext:
                 sync_interval_hours=float(
                     getattr(db_cfg, "interval_hours", 1) if db_cfg else 1
                 ),
+                vacuum_size_threshold_mb=float(
+                    getattr(db_cfg, "vacuum_size_threshold_mb", 50.0)
+                    if db_cfg else 50.0
+                ),
+                compact_repo_size_mb=float(
+                    getattr(db_cfg, "compact_repo_size_mb", 500.0)
+                    if db_cfg else 500.0
+                ),
+                max_rss_mb=float(
+                    getattr(db_cfg, "max_rss_mb", 2048.0) if db_cfg else 2048.0
+                ),
             )
         except Exception as exc:
             logger.warning("[SystemContext] DailyMaintenance init failed: {}", exc)
