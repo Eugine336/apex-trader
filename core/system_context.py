@@ -104,6 +104,9 @@ class SystemContext:
     governance: Optional["GovernanceDivision"] = None
     # Aggregate-health thermostat read by Governance to pause/resume learning.
     health_assessor: Optional[Any] = None
+    # Per-gate parameter attribution — which learned gate adjustment opened a
+    # trade (DECISIVE) vs merely supported one that would have passed anyway.
+    gate_attributor: Optional[Any] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
     opportunity_executor: Optional[OpportunityExecutor] = None
@@ -896,6 +899,25 @@ class SystemContext:
             except Exception as exc:
                 logger.warning("[SystemContext] HealthAssessor init failed: {}", exc)
 
+            # ── GateAttributor (per-gate parameter counterfactual) ─────
+            # Snapshots the GateTuner offsets at entry and replays the gate
+            # decision on the operator's default thresholds at close, so
+            # Governance can attribute which learned loosening *opened* a trade
+            # (DECISIVE) vs which merely supported one that would have passed
+            # anyway. Observational — it never freezes or blocks. Reads the
+            # entry-config defaults (min_entry_ev / min_entry_score /
+            # min_htf_alignment) the live EntryGate also defaults to.
+            try:
+                from adaptive.gate_attribution import GateAttributor as _GateAttributor
+                from entry.models import EntryConfig as _EntryConfig
+
+                ctx.gate_attributor = _GateAttributor(
+                    gate_tuner=ctx.gate_tuner,
+                    config=_EntryConfig(),
+                )
+            except Exception as exc:
+                logger.warning("[SystemContext] GateAttributor init failed: {}", exc)
+
             ctx.governance = _Governance(
                 module_governor=ctx.module_governor,
                 tuner_agent=ctx.tuner_agent,
@@ -920,6 +942,7 @@ class SystemContext:
                     getattr(getattr(lg_cfg, "health_assessor", None), "auto_release_on_healthy", True)
                     if lg_cfg else True
                 ),
+                gate_attributor=ctx.gate_attributor,
             )
             # Install Governance as the authoriser on the Learning→Governance
             # gateway and require authorisation (per config; default on).
