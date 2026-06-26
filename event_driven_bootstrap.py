@@ -2655,6 +2655,11 @@ class EventDrivenSystem:
         # maybe_recompute, all gated on TuneContext.total_trades) actually
         # fires instead of being pinned off by a hardcoded zero.
         self._closed_trade_count: int = 0
+        # Running consecutive-loss streak across closed trades. A genuine loss
+        # (realized P&L < 0) increments it; any win or scratch resets it to 0.
+        # Feeds AdaptiveOptimizer.notify_loss_streak so a losing run can force an
+        # out-of-band retrain instead of waiting for the periodic cycle.
+        self._consecutive_losses: int = 0
         # Last-seen open book for external-close detection:
         # ticket -> {symbol, direction, platform}.
         self._known_open: dict[str, dict] = {}
@@ -8641,6 +8646,22 @@ class EventDrivenSystem:
                 ctx.ml_adapter.register_new_trade(exit_cause=cause_value)
             except Exception as exc:
                 logger.debug("[close-learn] MLAdapter register failed: {}", exc)
+
+        # Event-driven retrain — loss-streak trigger. Track the running
+        # consecutive-loss count and notify the optimiser so a losing run forces
+        # an out-of-band retrain (gated by the optimiser's threshold + cooldown)
+        # instead of waiting for the next periodic cycle. A genuine loss
+        # (realized P&L < 0) extends the streak; a win or scratch resets it.
+        # Best-effort: a counter/notify failure must never break the close path.
+        try:
+            if float(pnl_dollars) < 0.0:
+                self._consecutive_losses += 1
+                if ctx.ml_adapter is not None:
+                    ctx.ml_adapter.notify_loss_streak(self._consecutive_losses)
+            else:
+                self._consecutive_losses = 0
+        except Exception as exc:
+            logger.debug("[close-learn] loss-streak notify failed: {}", exc)
 
         # TunerAgent — route trade-close tuning
         if ctx.tuner_agent is not None:

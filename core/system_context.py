@@ -782,6 +782,21 @@ class SystemContext:
         except Exception as exc:
             logger.warning("[SystemContext] AdaptiveOptimizer init failed: {}", exc)
 
+        # ── Event-driven retrain: DrawdownGuard → AdaptiveOptimizer ──
+        # The guard is constructed before the optimiser, so wire the
+        # mode-transition callback here (now both exist). A drawdown escalation
+        # (NORMAL→CAUTION, CAUTION→RECOVERY, …) arms an out-of-band retrain.
+        # No-op when either subsystem is absent; never raises.
+        try:
+            if ctx.drawdown_guard is not None and ctx.ml_adapter is not None:
+                ctx.drawdown_guard.set_mode_change_callback(
+                    ctx.ml_adapter.notify_drawdown_escalation
+                )
+        except Exception as exc:
+            logger.warning(
+                "[SystemContext] DrawdownGuard→optimizer retrain wire failed: {}", exc
+            )
+
         # ── AdaptiveWinRateProvider ─────────────────────────────────
         # Closes the opportunity-ranker's ``win_rate_provider`` hook: feeds the
         # ranker (and the orchestrator EV sizing that consumes it) a calibrated
@@ -1188,9 +1203,17 @@ class SystemContext:
         try:
             from adaptive.regime_detector import RegimeDetector as _RegimeDetL7
             rd_cfg = getattr(config, "regime_detection", None)
+            # Event-driven retrain: a committed regime flip notifies the
+            # optimiser to retrain out-of-band. ml_adapter is built earlier, so
+            # its hook is available now; None-safe when the optimiser is absent.
+            _regime_cb = (
+                ctx.ml_adapter.notify_regime_change
+                if ctx.ml_adapter is not None else None
+            )
             ctx.regime_detector = _RegimeDetL7(
                 lookback_bars=getattr(rd_cfg, "lookback_bars", 50) if rd_cfg else 50,
                 hysteresis_bars=getattr(rd_cfg, "hysteresis_bars", 5) if rd_cfg else 5,
+                on_regime_change=_regime_cb,
             )
         except Exception as exc:
             logger.warning("[SystemContext] RegimeDetector init failed: {}", exc)

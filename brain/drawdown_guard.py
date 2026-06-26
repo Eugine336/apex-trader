@@ -9,6 +9,7 @@ import threading
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from enum import Enum
+from typing import Callable, Optional
 
 import numpy as np
 
@@ -78,6 +79,7 @@ class DrawdownGuard:
         self,
         base_risk_pct: float = 0.005,
         rolling_window_days: int = DEFAULT_DRAWDOWN_ROLLING_WINDOW_DAYS,
+        on_mode_change: Optional[Callable[[str, str], None]] = None,
     ):
         """
         base_risk_pct: matches config.risk_per_trade_pct (default 0.5%)
@@ -91,8 +93,17 @@ class DrawdownGuard:
         consumer-facing drawdown-from-peak. Lifetime drawdown stays available
         via ``lifetime_drawdown_from_peak_pct`` for logging/display. A value
         <= 0 disables the rolling window and falls back to the lifetime peak.
+
+        on_mode_change: optional callback ``fn(old_mode, new_mode)`` fired
+        whenever the live drawdown mode transitions (e.g. NORMAL→CAUTION). Used
+        to notify the adaptive optimiser so a drawdown escalation can force an
+        out-of-band retrain. Optional and no-op when None; never affects the
+        guard's own behaviour and a failing callback can never break a trade
+        result. May also be set later via ``set_mode_change_callback`` (the
+        guard is constructed before the optimiser at startup).
         """
         self._lock = threading.RLock()
+        self._on_mode_change = on_mode_change
         self.mode = DrawdownMode.NORMAL
         self.consecutive_losses = 0
         self.consecutive_wins = 0
@@ -117,12 +128,45 @@ class DrawdownGuard:
             DrawdownMode.FROZEN: 999,
         }
 
+    def set_mode_change_callback(
+        self, callback: Optional[Callable[[str, str], None]]
+    ) -> None:
+        """Set/replace the mode-transition callback after construction.
+
+        The guard is built before the adaptive optimiser at startup, so the
+        callback (``optimizer.notify_drawdown_escalation``) is wired here once
+        the optimiser exists. Passing None clears it.
+        """
+        self._on_mode_change = callback
+
+    def _emit_mode_change(self, old_mode: str, new_mode: str) -> None:
+        """Fire the mode-change callback when the live mode actually moved.
+
+        Best-effort: a callback failure is swallowed (debug-logged) so it can
+        never break a trade-result or day-roll. No-op when no callback is set
+        or the mode is unchanged.
+        """
+        if self._on_mode_change is None or old_mode == new_mode:
+            return
+        try:
+            self._on_mode_change(old_mode, new_mode)
+        except Exception as exc:  # noqa: BLE001 — never break the caller
+            try:
+                from loguru import logger
+                logger.debug("[drawdown-guard] mode-change callback failed: {}", exc)
+            except Exception:
+                pass
+
     def register_trade_result(
         self, pnl_pct: float, timestamp: datetime | None = None
     ) -> DrawdownStatus:
         timestamp = timestamp or datetime.now(timezone.utc)
         day_key = timestamp.strftime("%Y-%m-%d")
         week_key = f"{timestamp.isocalendar().year}-W{timestamp.isocalendar().week}"
+
+        # Capture the mode before any roll/update so the net transition across
+        # this trade (day-roll FROZEN→RECOVERY + _update_mode) is detected once.
+        old_mode = self.mode.value
 
         self._roll_day_if_needed(day_key)
         self.daily_pnl_history[day_key] = (
@@ -144,6 +188,7 @@ class DrawdownGuard:
         self.update_hwm(equity, timestamp)
 
         self._update_mode(day_key)
+        self._emit_mode_change(old_mode, self.mode.value)
         return self.get_status(timestamp)
 
     def update_hwm(self, equity: float, timestamp: datetime | None = None) -> dict:
@@ -282,7 +327,9 @@ class DrawdownGuard:
         no-op (the freeze must outlast the day it was triggered on).
         """
         timestamp = timestamp or datetime.now(timezone.utc)
+        old_mode = self.mode.value
         self._roll_day_if_needed(timestamp.strftime("%Y-%m-%d"))
+        self._emit_mode_change(old_mode, self.mode.value)
 
     def _roll_day_if_needed(self, day_key: str) -> None:
         if self.last_trade_day is None:
