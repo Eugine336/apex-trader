@@ -63,6 +63,10 @@ class AdaptiveOptimizer(TuningGuardMixin):
     # learners. 0 days disables windowing (full history, legacy behaviour).
     RECENCY_WINDOW_DAYS = 90
     RECENCY_MIN_TRADES = 50
+    # When the window falls back to the full history, trades older than the
+    # window are exponentially down-weighted with this half-life so stale,
+    # months-old regime data fades instead of counting equally forever.
+    RECENCY_HALF_LIFE_DAYS = 60.0
 
     # Losing-pattern hard-block thresholds. A cached multi-dimensional
     # combination (pair×session, pair×regime, …) only becomes a live entry
@@ -81,8 +85,20 @@ class AdaptiveOptimizer(TuningGuardMixin):
         self.session_learner = SessionLearner(config=getattr(config, "session_learner", None))
 
         # Tunable per instance (kept as attributes so ops can adjust/disable).
-        self.recency_window_days = self.RECENCY_WINDOW_DAYS
-        self.recency_min_trades = self.RECENCY_MIN_TRADES
+        # Read from config with the class constants as defaults so a year-long
+        # deployment can retune the recency policy without a code change.
+        self.recency_window_days = int(
+            getattr(config, "recency_window_days", self.RECENCY_WINDOW_DAYS)
+            if config is not None else self.RECENCY_WINDOW_DAYS
+        )
+        self.recency_min_trades = int(
+            getattr(config, "recency_min_trades", self.RECENCY_MIN_TRADES)
+            if config is not None else self.RECENCY_MIN_TRADES
+        )
+        self.recency_half_life_days = float(
+            getattr(config, "recency_half_life_days", self.RECENCY_HALF_LIFE_DAYS)
+            if config is not None else self.RECENCY_HALF_LIFE_DAYS
+        )
 
         # Losing-pattern gate: tunable per instance; the cached patterns are
         # refreshed on every optimisation pass.
@@ -142,6 +158,7 @@ class AdaptiveOptimizer(TuningGuardMixin):
         # (the full history still drives the all-time performance report below).
         learner_trades = self._recent_trades(
             trades, self.recency_window_days, self.recency_min_trades,
+            half_life_days=self.recency_half_life_days,
         )
         if len(learner_trades) < n:
             logger.info(
@@ -200,20 +217,70 @@ class AdaptiveOptimizer(TuningGuardMixin):
         window_days: int,
         min_trades: int,
         now: Optional[datetime] = None,
+        half_life_days: float = RECENCY_HALF_LIFE_DAYS,
     ) -> list[dict]:
         """Return trades within `window_days` — but only if at least `min_trades`
         remain; otherwise return the full set so the learners never starve. This
         is what lets the learners adapt to the current regime instead of being
-        anchored by stale, months-old trades. Disabled when window_days <= 0."""
-        if window_days <= 0 or len(trades) <= min_trades:
+        anchored by stale, months-old trades. Disabled when window_days <= 0.
+
+        When it falls back to the full history (not enough recent trades), each
+        returned trade is tagged with a ``_recency_weight`` so older trades decay
+        exponentially (half-life ``half_life_days``) instead of counting equally:
+        trades inside the window keep weight 1.0; older ones fade. Learners that
+        read the field use weighted stats; those that don't are unaffected."""
+        if window_days <= 0:
+            # Windowing disabled — legacy behaviour, no weighting.
             return trades
         now = now or datetime.now(timezone.utc)
         cutoff = now - timedelta(days=window_days)
-        recent = [
-            t for t in trades
-            if (ts := cls._parse_trade_ts(t)) is not None and ts >= cutoff
-        ]
-        return recent if len(recent) >= min_trades else trades
+        if len(trades) > min_trades:
+            recent = [
+                t for t in trades
+                if (ts := cls._parse_trade_ts(t)) is not None and ts >= cutoff
+            ]
+            if len(recent) >= min_trades:
+                # Enough fresh trades — train on the window itself (all weight 1.0).
+                return recent
+        # Fallback: full history, but time-decayed so ancient regime data fades.
+        return cls._apply_recency_weights(trades, window_days, half_life_days, now)
+
+    @classmethod
+    def _apply_recency_weights(
+        cls,
+        trades: list[dict],
+        window_days: int,
+        half_life_days: float,
+        now: datetime,
+    ) -> list[dict]:
+        """Return shallow copies of `trades` carrying a ``_recency_weight``.
+
+        Trades inside the recency window get 1.0; older trades decay as
+        ``exp(-ln(2)/half_life_days * days_old)``. Trades with an unreadable
+        timestamp default to 1.0 (neutral — never zeroed out). Input dicts are
+        never mutated."""
+        import math
+
+        from adaptive.recency_weight import RECENCY_WEIGHT_KEY
+
+        lam = (math.log(2.0) / half_life_days) if half_life_days > 0 else 0.0
+        weighted: list[dict] = []
+        for t in trades:
+            ts = cls._parse_trade_ts(t)
+            if ts is None:
+                weight = 1.0
+            else:
+                days_old = max(0.0, (now - ts).total_seconds() / 86400.0)
+                if days_old <= window_days:
+                    weight = 1.0
+                else:
+                    weight = math.exp(-lam * days_old)
+                    if not math.isfinite(weight):
+                        weight = 0.0
+            copy = dict(t)
+            copy[RECENCY_WEIGHT_KEY] = round(weight, 6)
+            weighted.append(copy)
+        return weighted
 
     def get_trade_adjustments(
         self, pair: str, regime: str, session: str

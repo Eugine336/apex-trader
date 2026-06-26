@@ -285,6 +285,127 @@ def sync_data_repo(
     return f"synced → {remote}/{branch}"
 
 
+# ── History compaction ─────────────────────────────────────────────────────
+
+
+def _repo_object_size_mb(work_tree: str) -> float | None:
+    """Return the total git object size in MB from ``git count-objects``.
+
+    Sums loose (``size:``) and packed (``size-pack:``) object sizes — both
+    reported in KiB by the plain ``-v`` form. Using only ``size-pack`` would
+    read 0 on a repo whose recent commits aren't packed yet; summing both gives
+    a stable total regardless of pack state. ``None`` when unreadable.
+    """
+    ok, out = _run_git(["count-objects", "-v"], work_tree)
+    if not ok:
+        return None
+    total_kib = 0.0
+    found = False
+    for line in out.splitlines():
+        for key in ("size:", "size-pack:"):
+            if line.startswith(key):
+                try:
+                    total_kib += float(line.split(":", 1)[1].strip())
+                    found = True
+                except ValueError:
+                    pass
+    return (total_kib / 1024.0) if found else None
+
+
+def compact_repo_history(
+    data_dir: Path | str,
+    *,
+    max_repo_size_mb: float = 500.0,
+    keep_commits: int = 10,
+    branch: str = "main",
+) -> str:
+    """Squash the data-repo history into a single commit when it grows too big.
+
+    Every auto-sync commits full binary DB snapshots, so months of hourly
+    commits accumulate thousands of binary diffs — ``git clone`` slows and the
+    on-disk repo balloons. When the pack exceeds ``max_repo_size_mb`` *and*
+    there are more than ``keep_commits`` commits, this rewrites history into a
+    single commit holding the current tree, then force-pushes it.
+
+    Best-effort by contract — returns a status string and never raises. On any
+    mid-operation failure it restores the working branch so the tree is never
+    left stranded on a dangling orphan branch.
+    """
+    base = Path(data_dir)
+    if not base.is_dir():
+        return "no data directory"
+    work_tree = str(base.resolve())
+
+    ok, _ = _run_git(["rev-parse", "--is-inside-work-tree"], work_tree)
+    if not ok:
+        return "not a git repo"
+
+    size_mb = _repo_object_size_mb(work_tree)
+    if size_mb is None:
+        return "size unknown"
+    if size_mb <= max_repo_size_mb:
+        return f"ok ({size_mb:.1f} MB <= {max_repo_size_mb:.0f} MB)"
+
+    ok, count_out = _run_git(["rev-list", "--count", "HEAD"], work_tree)
+    try:
+        commit_count = int(count_out.strip()) if ok else 0
+    except ValueError:
+        commit_count = 0
+    if commit_count <= keep_commits:
+        return f"skipped ({commit_count} commits <= keep {keep_commits})"
+
+    temp_branch = "_compact_temp"
+    # Drop any stale temp branch left by a previous interrupted run.
+    _run_git(["branch", "-D", temp_branch], work_tree)
+
+    ok, out = _run_git(["checkout", "--orphan", temp_branch], work_tree)
+    if not ok:
+        return f"orphan checkout failed: {out.splitlines()[0] if out else 'unknown'}"
+
+    # Stage the full current tree, honouring the same CSV exclusion as sync.
+    add_args = ["add", "-A", "."]
+    add_args += [f":(exclude){pat}" for pat in _DEFAULT_EXCLUDE_PATTERNS]
+    _run_git(add_args, work_tree)
+
+    from datetime import datetime, timezone
+
+    ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    ok, out = _run_git(
+        [
+            "commit",
+            "-m",
+            f"compacted history {ts} (was {commit_count} commits)",
+            "--allow-empty",
+        ],
+        work_tree,
+    )
+    if not ok:
+        # Restore the original branch so we never strand the tree on the orphan.
+        _run_git(["checkout", "-f", branch], work_tree)
+        _run_git(["branch", "-D", temp_branch], work_tree)
+        return f"commit failed: {out.splitlines()[0] if out else 'unknown'}"
+
+    ok_del, _ = _run_git(["branch", "-D", branch], work_tree)
+    ok_rename, rn_out = _run_git(["branch", "-m", branch], work_tree)
+    if not ok_rename:
+        return f"branch rename failed: {rn_out.splitlines()[0] if rn_out else 'unknown'}"
+
+    _run_git(["gc", "--aggressive", "--prune=now"], work_tree)
+    new_size_mb = _repo_object_size_mb(work_tree)
+
+    ok, push_out = _run_git(["push", "--force", "origin", branch], work_tree)
+    if not ok:
+        logger.warning("[repo-compact] push failed: {}", push_out)
+        return f"push failed: {push_out.splitlines()[0] if push_out else 'unknown'}"
+
+    if new_size_mb is not None:
+        return (
+            f"compacted {size_mb:.1f} MB → {new_size_mb:.1f} MB "
+            f"({commit_count} commits squashed)"
+        )
+    return f"compacted (was {size_mb:.1f} MB, {commit_count} commits squashed)"
+
+
 # ── Multi-tenant: per-user namespaced sync ────────────────────────────────
 
 
