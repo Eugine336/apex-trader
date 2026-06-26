@@ -132,7 +132,7 @@ class BackfillRunner:
         self.events_db.parent.mkdir(parents=True, exist_ok=True)
         self._conn = sqlite3.connect(str(self.events_db), timeout=10)
         self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA synchronous=FULL")
         self._conn.execute(_CREATE_EVENTS)
         self._conn.commit()
         self._ensure_seq_column()

@@ -148,7 +148,7 @@ class ShadowStore:
                 check_same_thread=False,
             )
             self._conn.execute("PRAGMA journal_mode=WAL")
-            self._conn.execute("PRAGMA synchronous=NORMAL")
+            self._conn.execute("PRAGMA synchronous=FULL")
             self._conn.execute(_CREATE_CONTRACTS)
             self._migrate_source_column()
             self._conn.execute(_CREATE_IDX_STATUS)

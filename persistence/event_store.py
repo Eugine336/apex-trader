@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import uuid
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -141,13 +142,19 @@ class EventStore:
     # ── DB bootstrap ──────────────────────────────────────────────────────
 
     def _connect(self) -> None:
+        # Open connection with thread-sharing allowed for the dedicated
+        # writer thread and occasional readers. Use a longer timeout to
+        # reduce "database is locked" races under load.
         self._conn = sqlite3.connect(
             str(self._db_path),
             timeout=10,
             check_same_thread=False,
         )
+        # Use WAL and full synchronous to prioritise durability over raw
+        # write throughput — this reduces the chance of corruption on
+        # abrupt shutdowns at the cost of some performance.
         self._conn.execute("PRAGMA journal_mode=WAL")
-        self._conn.execute("PRAGMA synchronous=NORMAL")
+        self._conn.execute("PRAGMA synchronous=FULL")
         # Detect a corrupt/malformed DB up front. A "database disk image is
         # malformed" file would otherwise silently drop every event and make
         # startup recovery report a clean (empty) open-position set — masking
@@ -156,13 +163,31 @@ class EventStore:
             row = self._conn.execute("PRAGMA integrity_check").fetchone()
             result = (row[0] if row else "").lower()
             if result != "ok":
+                # Mark degraded and attempt to rotate the corrupt DB out of
+                # the way so the application can continue with a fresh store.
                 self._db_degraded = True
                 logger.critical(
                     "[event_store] integrity_check FAILED for {} — DB is corrupt "
-                    "(result={!r}); event persistence and crash recovery are "
-                    "UNRELIABLE until the DB is replaced",
+                    "(result={!r}); rotating corrupt DB and creating a fresh DB",
                     self._db_path, row[0] if row else None,
                 )
+                try:
+                    self._conn.close()
+                except Exception:
+                    pass
+                try:
+                    ts = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+                    corrupt_path = self._db_path.with_name(self._db_path.name + f'.corrupt.{ts}')
+                    shutil.move(str(self._db_path), str(corrupt_path))
+                    logger.warning("Rotated corrupt DB to {}", corrupt_path)
+                    # Recreate a fresh DB connection
+                    self._conn = sqlite3.connect(
+                        str(self._db_path), timeout=10, check_same_thread=False
+                    )
+                    self._conn.execute("PRAGMA journal_mode=WAL")
+                    self._conn.execute("PRAGMA synchronous=FULL")
+                except Exception as exc:
+                    logger.exception("Failed to rotate corrupt DB: {}", exc)
         except Exception as exc:
             self._db_degraded = True
             logger.critical(
