@@ -227,6 +227,11 @@ _ATR_GEOMETRY_RATIOS: dict[str, float] = {
 # The timeframe whose ATR scales the analysis-plane geometry.
 _GEOMETRY_ATR_TF = "M5"
 
+# Reference M5 wick-to-body ratio for a "typical" major-forex instrument.  A
+# symbol's measured ratio is divided by this to scale its swing_lookback up
+# (wickier than reference) or down (cleaner than reference).
+_WICK_BODY_REFERENCE = 2.0
+
 # Optional injected provider: ``symbol -> InstrumentStats | None``.  When unset
 # (default), ``get_profile`` returns the category constants unchanged — so the
 # self-calibrating path is strictly opt-in and behaviour-preserving until a live
@@ -248,11 +253,13 @@ def derive_profile(base: InstrumentProfile, stats: Any) -> InstrumentProfile:
 
     Pip-geometry fields are recomputed as ``k * live_ATR_pips`` (each floored at
     the category constant's lower bound so calibration never makes a threshold
-    nonsensically small), while structural / enable fields (``swing_lookback``,
-    ``m1_confirmation_bars``, the ``*_enabled`` flags, ``min_entry_score``) keep
-    the category value — those are not ATR-derivable.  Falls back to ``base``
-    unchanged when ``stats`` is missing or not yet calibrated, so cold start is
-    identical to today's behaviour.
+    nonsensically small).  ``swing_lookback`` self-calibrates from the symbol's
+    measured M5 wick-to-body ratio (wickier instruments get a wider lookback),
+    bounded to ``[3, 15]``.  The remaining structural / enable fields
+    (``m1_confirmation_bars``, the ``*_enabled`` flags, ``min_entry_score``)
+    keep the category value — those need trade-outcome data, not candle data.
+    Falls back to ``base`` unchanged when ``stats`` is missing or not yet
+    calibrated, so cold start is identical to today's behaviour.
     """
     try:
         if stats is None or not stats.is_calibrated(_GEOMETRY_ATR_TF):
@@ -263,13 +270,28 @@ def derive_profile(base: InstrumentProfile, stats: Any) -> InstrumentProfile:
     except Exception:  # noqa: BLE001 — calibration must never break analysis
         return base
 
-    overrides: dict[str, float] = {}
+    overrides: dict[str, Any] = {}
     for fld, k in _ATR_GEOMETRY_RATIOS.items():
         derived = k * atr_pips
         # Floor at half the category prior so a quiet session can't collapse a
         # threshold to ~0; the prior is the conservative lower bound.
         floor = getattr(base, fld) * 0.5
         overrides[fld] = round(max(derived, floor), 4)
+
+    # Self-calibrate swing_lookback from the symbol's measured wick behaviour.
+    # High wick-to-body ratio → violent wicks → needs a wider lookback so spike
+    # candles don't get mislabelled as swings.  Low ratio → clean waves → a
+    # tighter lookback catches genuine swings earlier.  Falls through to the
+    # category default when the stats lack enough samples (wbr is None) or the
+    # provider doesn't expose the read.
+    try:
+        wbr = stats.wick_body_ratio()
+        if wbr is not None and wbr > 0:
+            scale = max(0.6, min(2.0, wbr / _WICK_BODY_REFERENCE))
+            derived_lookback = int(round(base.swing_lookback * scale))
+            overrides["swing_lookback"] = max(3, min(15, derived_lookback))
+    except Exception:  # noqa: BLE001 — calibration must never break analysis
+        pass
 
     return replace(base, **overrides)
 
