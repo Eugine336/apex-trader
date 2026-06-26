@@ -122,12 +122,20 @@ def main() -> None:
         db_cfg = getattr(config, "data_backup", None)
         if db_cfg is None or getattr(db_cfg, "clean_start_on_first_boot", True):
             from platforms.clean_start import (
+                discard_corrupt_event_store,
                 purge_stale_learned_data,
                 sync_clean_state_from_remote,
             )
 
             branch = getattr(db_cfg, "sync_branch", "main") if db_cfg else "main"
             pull_res = sync_clean_state_from_remote(branch=branch)
+            # The data-junction reset above restores whatever apex_events.db is
+            # committed in the data repo. The event store is operational,
+            # machine-local state — a corrupt committed copy would be restored
+            # every boot, fail its integrity check, and rotate endlessly. Drop
+            # a corrupt restored DB now, before the store opens, so it starts
+            # fresh cleanly. A healthy DB is always left untouched.
+            event_store_res = discard_corrupt_event_store()
             # The learned-data purge is opt-in (default OFF) so a normal restart
             # never wipes adaptive state — only the data-junction sync runs.
             if db_cfg is not None and getattr(db_cfg, "startup_purge_enabled", False):
@@ -135,8 +143,9 @@ def main() -> None:
             else:
                 purge_res = "skipped (disabled)"
             logger.info(
-                "[event-driven] clean-start — pull: {} | purge: {}",
+                "[event-driven] clean-start — pull: {} | event-store: {} | purge: {}",
                 pull_res,
+                event_store_res,
                 purge_res,
             )
     except Exception as exc:  # noqa: BLE001

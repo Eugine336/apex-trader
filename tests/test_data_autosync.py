@@ -11,12 +11,14 @@ Covers:
 
 from __future__ import annotations
 
+import sqlite3
 import subprocess
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 from platforms.clean_start import (
+    discard_corrupt_event_store,
     purge_stale_learned_data,
     run_startup_clean_start,
     sync_clean_state_from_remote,
@@ -295,32 +297,6 @@ class TestCleanStart:
             assert commands[2][-3:] == ["reset", "--hard", "origin/main"]
             assert commands[3][-3:] == ["reset", "--hard", "origin/master"]
 
-    def test_startup_runner_is_context_free(self):
-        with patch(
-            "platforms.clean_start.sync_clean_state_from_remote",
-            return_value="reset to origin/main",
-        ) as mock_sync, patch(
-            "platforms.clean_start.purge_stale_learned_data",
-            return_value="purged 2: scoring_weights.json, zone_edge.json",
-        ) as mock_purge:
-            res = run_startup_clean_start(
-                data_dir="custom-data",
-                branch="main",
-                schema_version="42",
-                local_schema_version_file="local.version",
-            )
-
-        assert res == (
-            "reset to origin/main",
-            "purged 2: scoring_weights.json, zone_edge.json",
-        )
-        mock_sync.assert_called_once_with(data_dir="custom-data", branch="main")
-        mock_purge.assert_called_once_with(
-            data_dir="custom-data",
-            schema_version="42",
-            local_schema_version_file="local.version",
-        )
-
     def test_pull_non_git_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
             assert (
@@ -378,6 +354,9 @@ class TestCleanStart:
             "platforms.clean_start.sync_clean_state_from_remote",
             return_value="synced remote state (main)",
         ) as mock_sync, patch(
+            "platforms.clean_start.discard_corrupt_event_store",
+            return_value="event-store healthy",
+        ) as mock_discard, patch(
             "platforms.clean_start.purge_stale_learned_data",
             return_value="already clean",
         ) as mock_purge:
@@ -388,8 +367,13 @@ class TestCleanStart:
                 local_schema_version_file=".local_schema_version",
             )
 
-        assert result == ("synced remote state (main)", "already clean")
+        assert result == (
+            "synced remote state (main)",
+            "event-store healthy",
+            "already clean",
+        )
         mock_sync.assert_called_once_with(data_dir="data", branch="main")
+        mock_discard.assert_called_once_with(data_dir="data")
         mock_purge.assert_called_once_with(
             data_dir="data",
             schema_version="2",
@@ -417,3 +401,97 @@ class TestStartupPurgeToggle:
         # Declared field (not just a dynamic attr) so the single-user clean-start
         # contract is explicit and multi-tenant can force it off.
         assert DataBackupConfig().clean_start_on_first_boot is True
+
+
+# ── discard_corrupt_event_store ───────────────────────────────────────────
+
+
+def _make_healthy_db(path: Path) -> None:
+    conn = sqlite3.connect(str(path))
+    try:
+        conn.execute("CREATE TABLE t (x INTEGER)")
+        conn.execute("INSERT INTO t VALUES (1)")
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _make_corrupt_db(path: Path) -> None:
+    """Write a malformed SQLite image (valid header, scrambled pages) so
+    PRAGMA integrity_check fails, mirroring 'database disk image is malformed'."""
+    _make_healthy_db(path)
+    data = bytearray(path.read_bytes())
+    for i in range(100, min(len(data), 4000)):
+        data[i] = (data[i] + 137) & 0xFF
+    path.write_bytes(data)
+
+
+class TestDiscardCorruptEventStore:
+    """The event store is operational, machine-local state. A corrupt copy
+    restored by the data-junction reset must be dropped before the store opens
+    so it starts fresh — without the endless restore/rotate loop."""
+
+    def test_corrupt_db_and_sidecars_removed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            db = d / "apex_events.db"
+            _make_corrupt_db(db)
+            (d / "apex_events.db-wal").write_bytes(b"wal")
+            (d / "apex_events.db-shm").write_bytes(b"shm")
+
+            res = discard_corrupt_event_store(str(d))
+
+            assert not db.exists()
+            assert not (d / "apex_events.db-wal").exists()
+            assert not (d / "apex_events.db-shm").exists()
+            assert "discarded corrupt event-store" in res
+
+    def test_healthy_db_left_untouched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            db = d / "apex_events.db"
+            _make_healthy_db(db)
+            before = db.read_bytes()
+
+            res = discard_corrupt_event_store(str(d))
+
+            assert db.exists()
+            assert db.read_bytes() == before
+            assert res == "event-store healthy"
+
+    def test_missing_db_is_noop_and_creates_nothing(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+
+            res = discard_corrupt_event_store(str(d))
+
+            assert not (d / "apex_events.db").exists()
+            assert res == "event-store healthy"
+
+    def test_no_data_directory(self):
+        assert (
+            discard_corrupt_event_store("/nope/missing/dir") == "no data directory"
+        )
+
+    def test_old_corrupt_rotations_pruned_keeping_newest(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            # Five forensic rotations with increasing mtimes; newest 3 kept.
+            rotations = []
+            for i in range(5):
+                p = d / f"apex_events.db.corrupt.2026010{i}"
+                p.write_bytes(b"x")
+                import os
+
+                os.utime(p, (1_700_000_000 + i, 1_700_000_000 + i))
+                rotations.append(p)
+
+            res = discard_corrupt_event_store(str(d))
+
+            survivors = sorted(d.glob("apex_events.db.corrupt.*"))
+            assert len(survivors) == 3
+            # The three highest-numbered (newest mtime) survive.
+            assert rotations[0] not in survivors
+            assert rotations[1] not in survivors
+            assert rotations[4] in survivors
+            assert "pruned 2 rotation(s)" in res
