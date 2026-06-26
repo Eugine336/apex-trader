@@ -77,3 +77,6 @@ data/backups/
 *.zip
 node_modules/
 MagicMock/
+data/*.db
+data/*.db-wal
+data/*.db-shm
