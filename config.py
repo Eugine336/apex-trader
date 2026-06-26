@@ -264,6 +264,16 @@ class ScoringConfig:
     # Bayesian shrinkage strength — how strongly a class profile is pulled
     # toward the global default (higher = more shrinkage for thin classes).
     class_shrinkage_strength: float = 0.3
+    # ── Per-symbol scoring weights (learning tier 3) ─────────────────────
+    # An asset class (forex) still averages EURUSD with GBPJPY. When
+    # ``per_symbol_optimizer`` is on the ScoreOptimizer keeps an additional
+    # weight profile per individual symbol, layered ABOVE the per-class
+    # profiles. A symbol only gets its own profile once it has enough trades
+    # (``per_symbol_min_trades``); below that it silently resolves to its
+    # class profile, then to the shared default. Per-symbol profiles always
+    # accumulate data — the threshold only gates whether they are USED.
+    per_symbol_optimizer: bool = True
+    per_symbol_min_trades: int = 50
 
 
 # ---------------------------------------------------------------------------
@@ -3297,6 +3307,36 @@ class CrossInstrumentConfig:
 
 
 @dataclass
+class RegimeLearnerConfig:
+    """Settings for the RegimeLearner (learning tier 4 — per-symbol regimes).
+
+    The global per-regime strategies are unchanged. When ``per_symbol_enabled``
+    is on, the learner ALSO keeps a ``SYMBOL|REGIME`` compound profile so a
+    regime that behaves differently on EURUSD vs GBPJPY can diverge. The
+    compound profile is only consulted once it has ``per_symbol_min_trades``
+    samples; below that the global per-regime strategy is used. Per-symbol
+    profiles always accumulate data — the threshold only gates their USE.
+    """
+
+    per_symbol_enabled: bool = True
+    per_symbol_min_trades: int = 100
+
+
+@dataclass
+class SessionLearnerConfig:
+    """Settings for the SessionLearner (learning tier 4 — per-symbol sessions).
+
+    Mirrors RegimeLearnerConfig: a ``SYMBOL|SESSION`` compound profile is built
+    alongside the global per-session profiles and is only consulted once it has
+    ``per_symbol_min_trades`` samples, otherwise the global session profile is
+    used. Per-symbol profiles always accumulate; the threshold gates their USE.
+    """
+
+    per_symbol_enabled: bool = True
+    per_symbol_min_trades: int = 100
+
+
+@dataclass
 class AppConfig:
     # All 4 categories enabled — forex, commodity, index, synthetic
     enabled_categories: list[str] = field(
@@ -3319,6 +3359,8 @@ class AppConfig:
     signal_ledger: SignalLedgerConfig = field(default_factory=SignalLedgerConfig)
     post_close_tracker: PostCloseTrackerConfig = field(default_factory=PostCloseTrackerConfig)
     pair_learner: PairLearnerConfig = field(default_factory=PairLearnerConfig)
+    regime_learner: RegimeLearnerConfig = field(default_factory=RegimeLearnerConfig)
+    session_learner: SessionLearnerConfig = field(default_factory=SessionLearnerConfig)
     vote_calibrator: VoteCalibratorConfig = field(default_factory=VoteCalibratorConfig)
     module_governor: ModuleGovernorConfig = field(default_factory=ModuleGovernorConfig)
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)

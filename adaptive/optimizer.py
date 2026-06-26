@@ -76,9 +76,9 @@ class AdaptiveOptimizer(TuningGuardMixin):
     def __init__(self, config=None) -> None:
         self.analyzer = TradeAnalyzer()
         self.optimizer = ScoreOptimizer(config=getattr(config, "scoring", None))
-        self.regime_learner = RegimeLearner()
+        self.regime_learner = RegimeLearner(config=getattr(config, "regime_learner", None))
         self.pair_learner = PairLearner(config=getattr(config, "pair_learner", None))
-        self.session_learner = SessionLearner()
+        self.session_learner = SessionLearner(config=getattr(config, "session_learner", None))
 
         # Tunable per instance (kept as attributes so ops can adjust/disable).
         self.recency_window_days = self.RECENCY_WINDOW_DAYS
@@ -218,11 +218,16 @@ class AdaptiveOptimizer(TuningGuardMixin):
     def get_trade_adjustments(
         self, pair: str, regime: str, session: str
     ) -> TradeAdjustments:
-        regime_strat = self.regime_learner.get_strategy(regime)
+        # Pass the symbol so the regime/session learners can consult their
+        # per-symbol (tier 4) profiles when those buckets have enough data;
+        # they silently fall back to the global profiles otherwise.
+        regime_strat = self.regime_learner.get_strategy(regime, symbol=pair)
         pair_mult = self.pair_learner.get_pair_multiplier(pair)
-        session_agg = self.session_learner.get_session_aggression(session)
+        session_agg = self.session_learner.get_session_aggression(session, symbol=pair)
 
-        can_trade_regime, regime_reason = self.regime_learner.should_trade_regime(regime)
+        can_trade_regime, regime_reason = self.regime_learner.should_trade_regime(
+            regime, symbol=pair
+        )
         if not can_trade_regime:
             return TradeAdjustments(
                 should_trade=False, confidence=regime_strat.confidence, reason=regime_reason

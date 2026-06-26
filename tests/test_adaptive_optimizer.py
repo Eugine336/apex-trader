@@ -541,3 +541,244 @@ class TestTradeHistoryProvider:
         opt.set_trade_history_provider(_boom)
         # Must never propagate — a degraded history source cannot break tuning.
         assert opt.get_trade_history() == []
+
+
+# ──────────────────────────────────────────────────────────────────────────
+# Per-symbol learning (tiers 3 & 4)
+# ──────────────────────────────────────────────────────────────────────────
+
+from types import SimpleNamespace  # noqa: E402
+
+import adaptive.score_optimizer as _so_mod  # noqa: E402
+import adaptive.regime_learner as _rl_mod  # noqa: E402
+import adaptive.session_learner as _sl_mod  # noqa: E402
+
+
+def _score_cfg(**kw):
+    base = dict(
+        per_class_optimizer=False,
+        min_trades_per_class=30,
+        class_shrinkage_strength=0.3,
+        per_symbol_optimizer=True,
+        per_symbol_min_trades=50,
+    )
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+def _sym_trades(
+    symbol: str,
+    n: int,
+    win_rate: float = 0.7,
+    regime: str = "TRENDING_STRONG",
+    session: str = "LONDON",
+) -> list[dict]:
+    """Generate ``n`` trades for one symbol with varied confluence tags."""
+    rng = random.Random(hash(symbol) & 0xFFFF)
+    all_tags = [
+        "structure", "ob_h1", "ob_m5", "fvg", "mtf_confluence", "session",
+        "news", "currency_strength", "liquidity_sweep", "volume",
+        "inducement", "wyckoff",
+    ]
+    out: list[dict] = []
+    for _ in range(n):
+        is_win = rng.random() < win_rate
+        pnl = round(rng.uniform(5, 40), 2) if is_win else round(rng.uniform(-30, -3), 2)
+        tags = rng.sample(all_tags, k=rng.randint(3, 6))
+        out.append(_make_trade(
+            pair=symbol, pnl=pnl, regime=regime, session=session,
+            confluences_tags=tags,
+        ))
+    return out
+
+
+# ── Tier 3: ScoreOptimizer per-symbol weight profiles ──────────────────────
+
+class TestScoreOptimizerPerSymbol:
+    def test_below_threshold_falls_back_to_class(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_so_mod, "_data_dir", lambda: tmp_path)
+        opt = _so_mod.ScoreOptimizer(
+            config=_score_cfg(per_class_optimizer=True, per_symbol_min_trades=50)
+        )
+        # 30 forex trades per symbol — below the 50 symbol floor but the forex
+        # CLASS (60 combined) clears its 30 floor and gets a profile.
+        trades = _sym_trades("EURUSD", 30) + _sym_trades("GBPUSD", 30)
+        opt.optimize(trades, min_trades=20)
+        assert "EURUSD" not in opt.symbol_weights
+        # No symbol profile → resolves to the class profile.
+        assert opt.weights_for_symbol("EURUSD") is opt.weights_for_class("forex")
+
+    def test_crosses_threshold_starts_being_used(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_so_mod, "_data_dir", lambda: tmp_path)
+        opt = _so_mod.ScoreOptimizer(config=_score_cfg(per_symbol_min_trades=50))
+        opt.optimize(_sym_trades("EURUSD", 60), min_trades=20)
+        assert "EURUSD" in opt.symbol_weights
+        assert opt.weights_for_symbol("EURUSD") is opt.symbol_weights["EURUSD"]
+
+    def test_disabled_keeps_class_behaviour(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_so_mod, "_data_dir", lambda: tmp_path)
+        opt = _so_mod.ScoreOptimizer(
+            config=_score_cfg(per_class_optimizer=True, per_symbol_optimizer=False)
+        )
+        opt.optimize(_sym_trades("EURUSD", 60), min_trades=20)
+        assert opt.symbol_weights == {}
+        assert opt.weights_for_symbol("EURUSD") is opt.weights_for_class("forex")
+
+    def test_save_load_roundtrip_with_symbol_keys(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_so_mod, "_data_dir", lambda: tmp_path)
+        opt = _so_mod.ScoreOptimizer(config=_score_cfg(per_symbol_min_trades=50))
+        opt.optimize(_sym_trades("EURUSD", 60), min_trades=20)
+        assert "EURUSD" in opt.symbol_weights
+        # A fresh optimiser loads the persisted per-symbol profile verbatim.
+        opt2 = _so_mod.ScoreOptimizer(config=_score_cfg(per_symbol_min_trades=50))
+        assert "EURUSD" in opt2.symbol_weights
+        assert (
+            opt2.symbol_weights["EURUSD"].as_dict()
+            == opt.symbol_weights["EURUSD"].as_dict()
+        )
+
+    def test_fallback_chain_symbol_class_default(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_so_mod, "_data_dir", lambda: tmp_path)
+        opt = _so_mod.ScoreOptimizer(
+            config=_score_cfg(per_class_optimizer=True, per_symbol_min_trades=50)
+        )
+        opt.optimize(_sym_trades("EURUSD", 60), min_trades=20)
+        # Symbol with a profile → that profile.
+        assert opt.weights_for_symbol("EURUSD") is opt.symbol_weights["EURUSD"]
+        # Unknown symbol with no profile and unknown class → global default.
+        assert opt.weights_for_symbol("ZZZZZZ") is opt.current_weights
+
+    def test_legacy_flat_file_loads_without_symbol_keys(self, monkeypatch, tmp_path):
+        import json as _json
+        monkeypatch.setattr(_so_mod, "_data_dir", lambda: tmp_path)
+        flat = ScoringWeights().as_dict()
+        # Old flat schema uses *_weight field names at the top level.
+        legacy = {f"{k}_weight": v for k, v in flat.items()}
+        (tmp_path / "scoring_weights.json").write_text(_json.dumps(legacy))
+        opt = _so_mod.ScoreOptimizer(config=_score_cfg(per_symbol_min_trades=50))
+        assert opt.symbol_weights == {}
+        assert opt.class_weights == {}
+
+
+def _rl_cfg(**kw):
+    base = dict(per_symbol_enabled=True, per_symbol_min_trades=100)
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+# ── Tier 4: RegimeLearner per-symbol profiles ──────────────────────────────
+
+class TestRegimeLearnerPerSymbol:
+    def test_below_threshold_falls_back_to_global(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_rl_mod, "_data_dir", lambda: tmp_path)
+        learner = _rl_mod.RegimeLearner(config=_rl_cfg(per_symbol_min_trades=100))
+        trades = [_make_trade(pair="EURUSD", regime="TRENDING_STRONG", pnl=15)] * 60
+        learner.learn(trades)
+        # 60 < 100 symbol floor → global per-regime strategy is used.
+        assert (
+            learner.get_strategy("TRENDING_STRONG", symbol="EURUSD")
+            is learner.get_strategy("TRENDING_STRONG")
+        )
+
+    def test_crosses_threshold_used(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_rl_mod, "_data_dir", lambda: tmp_path)
+        learner = _rl_mod.RegimeLearner(config=_rl_cfg(per_symbol_min_trades=100))
+        # EURUSD loses in TRENDING_STRONG, GBPUSD wins — global blends to ~0.5.
+        trades = (
+            [_make_trade(pair="EURUSD", regime="TRENDING_STRONG", pnl=-8)] * 120
+            + [_make_trade(pair="GBPUSD", regime="TRENDING_STRONG", pnl=15)] * 120
+        )
+        learner.learn(trades)
+        ok_eur, _ = learner.should_trade_regime("TRENDING_STRONG", symbol="EURUSD")
+        ok_gbp, _ = learner.should_trade_regime("TRENDING_STRONG", symbol="GBPUSD")
+        assert ok_eur is False  # per-symbol loser blocked
+        assert ok_gbp is True   # per-symbol winner tradeable
+
+    def test_compound_key_saved_and_loaded(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_rl_mod, "_data_dir", lambda: tmp_path)
+        learner = _rl_mod.RegimeLearner(config=_rl_cfg(per_symbol_min_trades=100))
+        learner.learn([_make_trade(pair="EURUSD", regime="TRENDING_STRONG", pnl=15)] * 120)
+        assert "EURUSD|TRENDING_STRONG" in learner._symbol_strategies
+        learner2 = _rl_mod.RegimeLearner(config=_rl_cfg(per_symbol_min_trades=100))
+        assert "EURUSD|TRENDING_STRONG" in learner2._symbol_strategies
+
+    def test_global_updated_alongside_per_symbol(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_rl_mod, "_data_dir", lambda: tmp_path)
+        learner = _rl_mod.RegimeLearner(config=_rl_cfg())
+        learner.learn([_make_trade(pair="EURUSD", regime="RANGING", pnl=12)] * 120)
+        assert "RANGING" in learner._strategies
+        assert "EURUSD|RANGING" in learner._symbol_strategies
+
+    def test_backward_compat_load_without_compound_keys(self, monkeypatch, tmp_path):
+        import json as _json
+        monkeypatch.setattr(_rl_mod, "_data_dir", lambda: tmp_path)
+        legacy = {
+            "TRENDING_STRONG": {
+                "regime": "TRENDING_STRONG", "win_rate": 0.6,
+                "sample_size": 40, "confidence": 0.5,
+            }
+        }
+        (tmp_path / "ml_regime_strategies.json").write_text(_json.dumps(legacy))
+        learner = _rl_mod.RegimeLearner(config=_rl_cfg())
+        assert "TRENDING_STRONG" in learner._strategies
+        assert learner._symbol_strategies == {}
+
+
+def _slc_cfg(**kw):
+    base = dict(per_symbol_enabled=True, per_symbol_min_trades=100)
+    base.update(kw)
+    return SimpleNamespace(**base)
+
+
+# ── Tier 4: SessionLearner per-symbol profiles ─────────────────────────────
+
+class TestSessionLearnerPerSymbol:
+    def test_below_threshold_falls_back_to_global(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_sl_mod, "_data_dir", lambda: tmp_path)
+        learner = _sl_mod.SessionLearner(config=_slc_cfg(per_symbol_min_trades=100))
+        learner.learn([_make_trade(pair="EURUSD", session="LONDON", pnl=20)] * 30)
+        # 30 < 100 symbol floor → global per-session aggression is used.
+        assert (
+            learner.get_session_aggression("LONDON", symbol="EURUSD")
+            == learner.get_session_aggression("LONDON")
+        )
+
+    def test_crosses_threshold_used(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_sl_mod, "_data_dir", lambda: tmp_path)
+        learner = _sl_mod.SessionLearner(config=_slc_cfg(per_symbol_min_trades=100))
+        trades = (
+            [_make_trade(pair="EURUSD", session="LONDON", pnl=-8)] * 120
+            + [_make_trade(pair="GBPUSD", session="LONDON", pnl=20)] * 120
+        )
+        learner.learn(trades)
+        assert learner.get_session_aggression("LONDON", symbol="EURUSD") == "AVOID"
+        assert learner.get_session_aggression("LONDON", symbol="GBPUSD") == "AGGRESSIVE"
+
+    def test_compound_key_saved_and_loaded(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_sl_mod, "_data_dir", lambda: tmp_path)
+        learner = _sl_mod.SessionLearner(config=_slc_cfg(per_symbol_min_trades=100))
+        learner.learn([_make_trade(pair="EURUSD", session="LONDON", pnl=20)] * 120)
+        assert "EURUSD|LONDON" in learner._symbol_profiles
+        learner2 = _sl_mod.SessionLearner(config=_slc_cfg(per_symbol_min_trades=100))
+        assert "EURUSD|LONDON" in learner2._symbol_profiles
+
+    def test_global_updated_alongside_per_symbol(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(_sl_mod, "_data_dir", lambda: tmp_path)
+        learner = _sl_mod.SessionLearner(config=_slc_cfg())
+        learner.learn([_make_trade(pair="EURUSD", session="TOKYO", pnl=12)] * 120)
+        assert "TOKYO" in learner._profiles
+        assert "EURUSD|TOKYO" in learner._symbol_profiles
+
+    def test_backward_compat_load_without_compound_keys(self, monkeypatch, tmp_path):
+        import json as _json
+        monkeypatch.setattr(_sl_mod, "_data_dir", lambda: tmp_path)
+        legacy = {
+            "LONDON": {
+                "session": "LONDON", "win_rate": 0.6,
+                "total_trades": 40, "recommendation": "NORMAL",
+            }
+        }
+        (tmp_path / "ml_session_profiles.json").write_text(_json.dumps(legacy))
+        learner = _sl_mod.SessionLearner(config=_slc_cfg())
+        assert "LONDON" in learner._profiles
+        assert learner._symbol_profiles == {}
