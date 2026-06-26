@@ -768,6 +768,17 @@ class SystemContext:
                     ctx.ml_adapter.pair_learner.set_post_close_tracker(ctx.post_close_tracker)
                 except Exception:
                     pass
+            # Wire the PairLearner into the live entry engine so it can RAISE the
+            # entry-score bar for cold-start (unproven) symbols. Without this the
+            # EntryEngine's pair_learner stays None and the cold-start boost never
+            # reaches the live entry gate.
+            if ctx.entry_engine is not None:
+                try:
+                    ctx.entry_engine.pair_learner = ctx.ml_adapter.pair_learner
+                except Exception as exc:
+                    logger.warning(
+                        "[SystemContext] PairLearner→EntryEngine wire failed: {}", exc
+                    )
         except Exception as exc:
             logger.warning("[SystemContext] AdaptiveOptimizer init failed: {}", exc)
 
