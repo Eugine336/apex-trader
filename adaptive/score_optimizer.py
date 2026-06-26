@@ -192,6 +192,15 @@ class ScoreOptimizer:
     MIN_TRADES_PER_CLASS = 30
     CLASS_SHRINKAGE_STRENGTH = 0.3
 
+    # Per-symbol defaults (tier 3 — overridable via ScoringConfig). A bare
+    # ScoreOptimizer() with no config stays legacy (both layers off).
+    PER_SYMBOL_DEFAULT = False
+    MIN_TRADES_PER_SYMBOL = 50
+
+    # Prefix used to namespace per-symbol profiles inside the persisted
+    # profile dict so they never collide with asset-class keys.
+    SYMBOL_KEY_PREFIX = "symbol:"
+
     def __init__(self, config=None) -> None:
         # Per-class mode is driven by ScoringConfig. When off, behaviour is
         # byte-for-byte identical to the legacy single-profile optimizer.
@@ -202,16 +211,29 @@ class ScoreOptimizer:
         self.class_shrinkage_strength = float(
             getattr(config, "class_shrinkage_strength", self.CLASS_SHRINKAGE_STRENGTH)
         )
+        # Per-symbol mode (tier 3). Layered ABOVE per-class — a symbol with
+        # enough trades gets its own profile; otherwise it resolves to its
+        # class profile, then to the global default.
+        self.per_symbol = bool(
+            getattr(config, "per_symbol_optimizer", self.PER_SYMBOL_DEFAULT)
+        )
+        self.min_trades_per_symbol = int(
+            getattr(config, "per_symbol_min_trades", self.MIN_TRADES_PER_SYMBOL)
+        )
         # The shared / global profile (also the cold-start + shrinkage prior).
         self.current_weights = ScoringWeights()
         # Per-asset-class profiles. Empty / missing entries resolve to the
         # global ``current_weights`` so lookups never fail.
         self.class_weights: dict[str, ScoringWeights] = {}
+        # Per-symbol profiles (keyed by bare symbol). Only populated for
+        # symbols that have crossed ``min_trades_per_symbol`` — presence here
+        # implies the read-gate is satisfied.
+        self.symbol_weights: dict[str, ScoringWeights] = {}
         self.load_weights()
 
     def optimize(self, trades: list[dict], min_trades: int = 50) -> ScoringWeights:
-        if self.per_class:
-            return self._optimize_per_class(trades, min_trades)
+        if self.per_class or self.per_symbol:
+            return self._optimize_layered(trades, min_trades)
 
         if len(trades) < min_trades:
             logger.info(f"Only {len(trades)} trades — need {min_trades} before optimising")
@@ -322,20 +344,22 @@ class ScoreOptimizer:
         return clamped
 
     # ------------------------------------------------------------------
-    # Per-class optimisation
+    # Layered (per-class + per-symbol) optimisation
     # ------------------------------------------------------------------
 
-    def _optimize_per_class(
+    def _optimize_layered(
         self, trades: list[dict], min_trades: int
     ) -> ScoringWeights:
-        """Fit a separate weight profile per asset class.
+        """Fit the global profile plus optional per-class and per-symbol profiles.
 
         The shared/global profile (``current_weights``) is fitted on ALL trades
         and is used as the cold-start fallback and the Bayesian-shrinkage prior.
-        Each class with at least ``min_trades_per_class`` trades is fitted
-        independently on only its own trades, then shrunk toward the global
-        profile by sample confidence. Classes below the floor keep no separate
-        profile and resolve to the global one at lookup time.
+        When ``per_class`` is on, each class with enough trades is fitted on its
+        own trades and shrunk toward the global profile. When ``per_symbol`` is
+        on, each symbol with at least ``min_trades_per_symbol`` trades is fitted
+        on its own trades and shrunk toward its CLASS prior (which itself is the
+        class profile when present, else the global). Symbols below the floor
+        keep no separate profile and resolve to their class / global at lookup.
 
         Returns the global profile (mirrors the legacy return contract).
         """
@@ -344,34 +368,57 @@ class ScoreOptimizer:
         self.current_weights = global_weights
 
         # 2. Per-class profiles from the class-split history.
-        by_class = self._split_by_class(trades)
-        new_class_weights: dict[str, ScoringWeights] = {}
-        for cls, cls_trades in by_class.items():
-            if cls == DEFAULT_CLASS:
-                continue
-            n = len(cls_trades)
-            if n < self.min_trades_per_class:
-                # Thin class — no independent profile; resolves to global.
-                continue
-            incumbent = self.class_weights.get(cls, global_weights)
-            fitted = self._fit_profile(
-                cls_trades,
-                incumbent,
-                min_trades=min(min_trades, self.min_trades_per_class),
-            )
-            blended = self._shrink_toward_global(fitted, global_weights, n)
-            new_class_weights[cls] = blended
+        if self.per_class:
+            by_class = self._split_by_class(trades)
+            new_class_weights: dict[str, ScoringWeights] = {}
+            for cls, cls_trades in by_class.items():
+                if cls == DEFAULT_CLASS:
+                    continue
+                n = len(cls_trades)
+                if n < self.min_trades_per_class:
+                    # Thin class — no independent profile; resolves to global.
+                    continue
+                incumbent = self.class_weights.get(cls, global_weights)
+                fitted = self._fit_profile(
+                    cls_trades,
+                    incumbent,
+                    min_trades=min(min_trades, self.min_trades_per_class),
+                )
+                blended = self._shrink_toward_global(fitted, global_weights, n)
+                new_class_weights[cls] = blended
+            self.class_weights = new_class_weights
 
-        self.class_weights = new_class_weights
+        # 3. Per-symbol profiles (tier 3) from the symbol-split history.
+        if self.per_symbol:
+            by_symbol = self._split_by_symbol(trades)
+            new_symbol_weights: dict[str, ScoringWeights] = {}
+            for sym, sym_trades in by_symbol.items():
+                if not sym:
+                    continue
+                n = len(sym_trades)
+                if n < self.min_trades_per_symbol:
+                    # Below the read-gate — no profile; resolves to class/global.
+                    continue
+                # The symbol's natural prior is its class profile (which already
+                # shrinks toward the global). Falls through to global when the
+                # class has no independent profile.
+                prior = self.weights_for_class(classify_asset_class(sym))
+                incumbent = self.symbol_weights.get(sym, prior)
+                fitted = self._fit_profile(
+                    sym_trades,
+                    incumbent,
+                    min_trades=min(min_trades, self.min_trades_per_symbol),
+                )
+                blended = self._shrink_toward_global(fitted, prior, n)
+                new_symbol_weights[sym] = blended
+            self.symbol_weights = new_symbol_weights
+
         self.save_weights()
         logger.info(
-            "Per-class weights optimised — global total={} | classes={}".format(
+            "Layered weights optimised — global total={} | classes=[{}] | symbols=[{}]".format(
                 global_weights.total,
-                ", ".join(
-                    f"{cls}(n={len(by_class.get(cls, []))})"
-                    for cls in sorted(new_class_weights)
-                )
-                or "none above floor",
+                ", ".join(sorted(self.class_weights)) or "none",
+                ", ".join(sorted(self.symbol_weights)) or "none",
             )
         )
         return global_weights
@@ -459,6 +506,21 @@ class ScoreOptimizer:
             grouped.setdefault(cls, []).append(t)
         return grouped
 
+    @staticmethod
+    def _split_by_symbol(trades: list[dict]) -> dict[str, list[dict]]:
+        """Group trades by their individual symbol (``t['pair']``).
+
+        Trades with no symbol are skipped — an empty key would alias unrelated
+        instruments into one profile.
+        """
+        grouped: dict[str, list[dict]] = {}
+        for t in trades:
+            sym = str(t.get("pair", "") or "")
+            if not sym:
+                continue
+            grouped.setdefault(sym, []).append(t)
+        return grouped
+
     def weights_for_class(self, asset_class: str) -> ScoringWeights:
         """Return the weight profile for an asset class, falling back to global."""
         if not self.per_class:
@@ -466,7 +528,18 @@ class ScoreOptimizer:
         return self.class_weights.get(asset_class, self.current_weights)
 
     def weights_for_symbol(self, symbol: str) -> ScoringWeights:
-        """Return the weight profile that applies to ``symbol``."""
+        """Return the weight profile that applies to ``symbol``.
+
+        Fallback chain: per-symbol profile (when ``per_symbol`` is on and the
+        symbol has crossed ``min_trades_per_symbol`` — i.e. it has a stored
+        profile) → per-class profile → global default. Presence in
+        ``symbol_weights`` is the read-gate: a profile is only stored once the
+        symbol's trade count cleared the threshold during optimisation.
+        """
+        if self.per_symbol:
+            w = self.symbol_weights.get(symbol)
+            if w is not None:
+                return w
         return self.weights_for_class(classify_asset_class(symbol))
 
     @staticmethod
@@ -539,11 +612,13 @@ class ScoreOptimizer:
         p = Path(filepath)
         p.parent.mkdir(parents=True, exist_ok=True)
 
-        if self.per_class:
+        if self.per_class or self.per_symbol:
             default_w = weights or self.current_weights
             payload: dict = {DEFAULT_CLASS: asdict(default_w)}
             for cls, w in self.class_weights.items():
                 payload[cls] = asdict(w)
+            for sym, w in self.symbol_weights.items():
+                payload[f"{self.SYMBOL_KEY_PREFIX}{sym}"] = asdict(w)
         else:
             payload = asdict(weights or self.current_weights)
 
@@ -592,22 +667,31 @@ class ScoreOptimizer:
         if self._is_nested(data):
             default_data = data.get(DEFAULT_CLASS, {})
             self.current_weights = self._weights_from_dict(default_data)
-            self.class_weights = {
-                cls: self._weights_from_dict(d)
-                for cls, d in data.items()
-                if cls != DEFAULT_CLASS and isinstance(d, dict)
-            }
+            self.class_weights = {}
+            self.symbol_weights = {}
+            for key, d in data.items():
+                if key == DEFAULT_CLASS or not isinstance(d, dict):
+                    continue
+                if key.startswith(self.SYMBOL_KEY_PREFIX):
+                    sym = key[len(self.SYMBOL_KEY_PREFIX):]
+                    if sym:
+                        self.symbol_weights[sym] = self._weights_from_dict(d)
+                else:
+                    self.class_weights[key] = self._weights_from_dict(d)
             logger.info(
-                "Per-class weights loaded from {} — global total={} | classes=[{}]",
+                "Layered weights loaded from {} — global total={} | "
+                "classes=[{}] | symbols=[{}]",
                 filepath,
                 self.current_weights.total,
                 ", ".join(sorted(self.class_weights)),
+                ", ".join(sorted(self.symbol_weights)),
             )
             return self.current_weights
 
         weights = self._weights_from_dict(data)
         self.current_weights = weights
         self.class_weights = {}
+        self.symbol_weights = {}
         logger.info(f"Weights loaded from {filepath} — total={weights.total}")
         return weights
 

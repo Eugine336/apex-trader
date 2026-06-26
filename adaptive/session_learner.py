@@ -32,13 +32,37 @@ class SessionLearner:
     Learns optimal trading behaviour per session window.
     Returns an aggression level that the scanner and trigger
     use to adjust scan frequency and score thresholds.
+
+    Tier 4: when ``per_symbol_enabled`` is on, the learner also keeps a
+    ``SYMBOL|SESSION`` compound profile alongside the global per-session ones.
+    The compound profile is only consulted once it has ``per_symbol_min_trades``
+    samples; below that the global per-session profile is used. Per-symbol
+    profiles always accumulate — the threshold only gates their USE.
     """
 
     MIN_TRADES = 15
     SAVE_PATH = "data/ml_session_profiles.json"
 
-    def __init__(self) -> None:
+    # Per-symbol defaults (overridable via SessionLearnerConfig). A bare
+    # SessionLearner() with no config keeps per-symbol ON by default to match
+    # production; only the read-gate (sample size) controls whether it is used.
+    PER_SYMBOL_DEFAULT = True
+    PER_SYMBOL_MIN_TRADES = 100
+
+    # Compound-key separator for ``SYMBOL|SESSION`` profiles.
+    _SYMBOL_SEP = "|"
+
+    def __init__(self, config=None) -> None:
+        self.per_symbol_enabled = bool(
+            getattr(config, "per_symbol_enabled", self.PER_SYMBOL_DEFAULT)
+        )
+        self.per_symbol_min_trades = int(
+            getattr(config, "per_symbol_min_trades", self.PER_SYMBOL_MIN_TRADES)
+        )
+        # Global per-session profiles (session → profile).
         self._profiles: dict[str, SessionProfile] = {}
+        # Per-symbol compound profiles (``SYMBOL|SESSION`` → profile).
+        self._symbol_profiles: dict[str, SessionProfile] = {}
         self._load()
 
     def learn(self, trades: list[dict]) -> dict[str, SessionProfile]:
@@ -52,10 +76,34 @@ class SessionLearner:
             profiles[session] = self._build_profile(session, group)
 
         self._profiles = profiles
+
+        # Per-symbol compound profiles (always accumulate; read-gated on use).
+        if self.per_symbol_enabled:
+            sym_grouped: dict[str, list[dict]] = {}
+            for t in trades:
+                sym = str(t.get("pair", "") or "")
+                if not sym:
+                    continue
+                session = str(t.get("session", "unknown"))
+                key = f"{sym}{self._SYMBOL_SEP}{session}"
+                sym_grouped.setdefault(key, []).append(t)
+            symbol_profiles: dict[str, SessionProfile] = {}
+            for key, group in sym_grouped.items():
+                session = key.split(self._SYMBOL_SEP, 1)[1]
+                symbol_profiles[key] = self._build_profile(session, group)
+            self._symbol_profiles = symbol_profiles
+
         self._save()
         return profiles
 
-    def get_session_aggression(self, session: str) -> str:
+    def get_session_aggression(self, session: str, symbol: str | None = None) -> str:
+        # Per-symbol takes priority once the compound bucket is large enough.
+        if symbol and self.per_symbol_enabled:
+            prof = self._symbol_profiles.get(
+                f"{symbol}{self._SYMBOL_SEP}{session}"
+            )
+            if prof is not None and prof.total_trades >= self.per_symbol_min_trades:
+                return prof.recommendation
         profile = self._profiles.get(session)
         if profile is None:
             return "NORMAL"
@@ -70,6 +118,10 @@ class SessionLearner:
 
         p = _data_dir() / Path(self.SAVE_PATH).name
         data = {k: asdict(v) for k, v in self._profiles.items()}
+        # Per-symbol compound profiles share the same file under
+        # ``SYMBOL|SESSION`` keys — they never collide with bare session keys.
+        for k, v in self._symbol_profiles.items():
+            data[k] = asdict(v)
         atomic_write_text(p, json.dumps(data, indent=2, default=str))
         logger.info(f"Session profiles saved to {self.SAVE_PATH}")
 
@@ -79,7 +131,15 @@ class SessionLearner:
             return
         try:
             raw = json.loads(p.read_text())
-            self._profiles = {k: SessionProfile(**v) for k, v in raw.items()}
+            glob: dict[str, SessionProfile] = {}
+            sym: dict[str, SessionProfile] = {}
+            for k, v in raw.items():
+                if self._SYMBOL_SEP in k:
+                    sym[k] = SessionProfile(**v)
+                else:
+                    glob[k] = SessionProfile(**v)
+            self._profiles = glob
+            self._symbol_profiles = sym
             logger.info(f"Session profiles loaded from {self.SAVE_PATH}")
         except Exception as exc:
             logger.warning(f"SessionLearner: could not load profiles: {exc}")

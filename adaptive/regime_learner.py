@@ -34,14 +34,38 @@ class RegimeLearner:
     """
     Learns the best parameters for each market regime from historical trades.
     Only outputs high-confidence strategies once enough data exists.
+
+    Tier 4: when ``per_symbol_enabled`` is on, the learner also keeps a
+    ``SYMBOL|REGIME`` compound profile alongside the global per-regime ones.
+    The compound profile is only consulted once it has ``per_symbol_min_trades``
+    samples; below that the global per-regime strategy is used. Per-symbol
+    profiles always accumulate — the threshold only gates their USE.
     """
 
     MIN_SAMPLE = 30
     CONFIDENCE_FULL = 100
     SAVE_PATH = "data/ml_regime_strategies.json"
 
-    def __init__(self) -> None:
+    # Per-symbol defaults (overridable via RegimeLearnerConfig). A bare
+    # RegimeLearner() with no config keeps per-symbol ON by default to match
+    # production; only the read-gate (sample size) controls whether it is used.
+    PER_SYMBOL_DEFAULT = True
+    PER_SYMBOL_MIN_TRADES = 100
+
+    # Compound-key separator for ``SYMBOL|REGIME`` profiles.
+    _SYMBOL_SEP = "|"
+
+    def __init__(self, config=None) -> None:
+        self.per_symbol_enabled = bool(
+            getattr(config, "per_symbol_enabled", self.PER_SYMBOL_DEFAULT)
+        )
+        self.per_symbol_min_trades = int(
+            getattr(config, "per_symbol_min_trades", self.PER_SYMBOL_MIN_TRADES)
+        )
+        # Global per-regime strategies (regime → strategy).
         self._strategies: dict[str, RegimeStrategy] = {}
+        # Per-symbol compound strategies (``SYMBOL|REGIME`` → strategy).
+        self._symbol_strategies: dict[str, RegimeStrategy] = {}
         self._load()
 
     def learn(self, trades: list[dict]) -> dict[str, RegimeStrategy]:
@@ -55,15 +79,62 @@ class RegimeLearner:
             strategies[regime] = self._learn_regime(regime, group)
 
         self._strategies = strategies
+
+        # Per-symbol compound profiles (always accumulate; read-gated on use).
+        if self.per_symbol_enabled:
+            sym_grouped: dict[str, list[dict]] = {}
+            for t in trades:
+                sym = str(t.get("pair", "") or "")
+                if not sym:
+                    continue
+                regime = str(t.get("regime", "unknown"))
+                key = f"{sym}{self._SYMBOL_SEP}{regime}"
+                sym_grouped.setdefault(key, []).append(t)
+            symbol_strategies: dict[str, RegimeStrategy] = {}
+            for key, group in sym_grouped.items():
+                regime = key.split(self._SYMBOL_SEP, 1)[1]
+                symbol_strategies[key] = self._learn_regime(regime, group)
+            self._symbol_strategies = symbol_strategies
+
         self._save()
         return strategies
 
-    def get_strategy(self, regime: str) -> RegimeStrategy:
+    def get_strategy(self, regime: str, symbol: str | None = None) -> RegimeStrategy:
+        # Per-symbol takes priority once it has enough samples; otherwise the
+        # global per-regime strategy is used (then the hardcoded default).
+        if symbol and self.per_symbol_enabled:
+            sstrat = self._symbol_strategies.get(
+                f"{symbol}{self._SYMBOL_SEP}{regime}"
+            )
+            if (
+                sstrat is not None
+                and sstrat.sample_size >= self.per_symbol_min_trades
+                and sstrat.confidence > 0.3
+            ):
+                return sstrat
         if regime in self._strategies and self._strategies[regime].confidence > 0.3:
             return self._strategies[regime]
         return self._default_strategy(regime)
 
-    def should_trade_regime(self, regime: str) -> tuple[bool, str]:
+    def should_trade_regime(
+        self, regime: str, symbol: str | None = None
+    ) -> tuple[bool, str]:
+        # Per-symbol verdict wins once the compound bucket is large enough.
+        if symbol and self.per_symbol_enabled:
+            sstrat = self._symbol_strategies.get(
+                f"{symbol}{self._SYMBOL_SEP}{regime}"
+            )
+            if sstrat is not None and sstrat.sample_size >= self.per_symbol_min_trades:
+                if sstrat.win_rate < 0.40:
+                    return False, (
+                        f"Win rate for {symbol} in {regime} is "
+                        f"{sstrat.win_rate:.0%} over {sstrat.sample_size} "
+                        f"trades — avoiding"
+                    )
+                return True, (
+                    f"{symbol} in {regime} win rate {sstrat.win_rate:.0%} "
+                    f"— tradeable"
+                )
         strat = self._strategies.get(regime)
         if strat is None or strat.sample_size < self.MIN_SAMPLE:
             return True, f"Insufficient data for {regime} — using defaults"
@@ -83,6 +154,10 @@ class RegimeLearner:
 
         p = _data_dir() / Path(self.SAVE_PATH).name
         data = {k: asdict(v) for k, v in self._strategies.items()}
+        # Per-symbol compound profiles share the same file under ``SYMBOL|REGIME``
+        # keys — they never collide with bare regime keys.
+        for k, v in self._symbol_strategies.items():
+            data[k] = asdict(v)
         atomic_write_text(p, json.dumps(data, indent=2, default=str))
         logger.info(f"Regime strategies saved to {self.SAVE_PATH}")
 
@@ -92,7 +167,15 @@ class RegimeLearner:
             return
         try:
             raw = json.loads(p.read_text())
-            self._strategies = {k: RegimeStrategy(**v) for k, v in raw.items()}
+            glob: dict[str, RegimeStrategy] = {}
+            sym: dict[str, RegimeStrategy] = {}
+            for k, v in raw.items():
+                if self._SYMBOL_SEP in k:
+                    sym[k] = RegimeStrategy(**v)
+                else:
+                    glob[k] = RegimeStrategy(**v)
+            self._strategies = glob
+            self._symbol_strategies = sym
             logger.info(f"Regime strategies loaded from {self.SAVE_PATH}")
         except Exception as exc:
             logger.warning(f"RegimeLearner: could not load strategies: {exc}")
