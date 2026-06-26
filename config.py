@@ -3199,6 +3199,39 @@ class OpsConfig:
 
 
 @dataclass
+class HealthAssessorConfig:
+    """Aggregate system-health monitoring for the Governance Division (⑧).
+
+    Governance authorises individual Learning recommendations in isolation. The
+    :class:`governance.health_assessor.HealthAssessor` adds the *aggregate*
+    view — the thermostat that asks "across everything Learning changed, is the
+    system getting better or worse?" — and, when health turns ``CRITICAL``,
+    lets Governance pause (freeze) the learning layer until it recovers.
+
+    Behaviour-neutral on deploy: the assessor runs but only freezes on a strong
+    signal — ``CRITICAL`` requires negative rolling expectancy *and* either
+    accelerating participation or heavy learner-enabled losses. A healthy system
+    is never touched.
+    """
+
+    enabled: bool = True
+    # Rolling window (number of recent closed trades) for EV / win-rate / loss-rate.
+    window_size: int = 20
+    # Bounded outcome history — the deque can never grow past this.
+    max_history: int = 200
+    # CRITICAL when rolling EV < 0 AND entry-rate trend exceeds this (accelerating).
+    critical_entry_rate_threshold: float = 1.3
+    # CRITICAL when rolling EV < 0 AND learner-enabled loss rate exceeds this.
+    critical_learner_loss_rate: float = 0.65
+    # DEGRADED (warning band) when learner-enabled loss rate exceeds this.
+    degraded_learner_loss_rate: float = 0.55
+    # On CRITICAL, Governance freezes every registered tunable (pauses learning).
+    auto_freeze_on_critical: bool = True
+    # On recovery to HEALTHY, Governance releases the frozen tunables (resumes).
+    auto_release_on_healthy: bool = True
+
+
+@dataclass
 class LearningGovernanceConfig:
     """Settings for the Learning → Governance recommendation pipeline (P6/P7).
 
@@ -3235,6 +3268,8 @@ class LearningGovernanceConfig:
     promotion_full_min_signals: int = 80
     promotion_full_min_accuracy: float = 0.55
     promotion_full_min_marginal_r: float = 0.0
+    # Aggregate system-health monitoring (the thermostat over all learning).
+    health_assessor: HealthAssessorConfig = field(default_factory=HealthAssessorConfig)
 
 
 @dataclass
