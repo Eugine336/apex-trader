@@ -1412,9 +1412,14 @@ class MT5Connector(BaseConnector):
 
     def _to_position_info(self, p: Any) -> PositionInfo:
         direction = "BUY" if p.type == mt5.ORDER_TYPE_BUY else "SELL"
+        # Report the canonical registry symbol, not the broker-native alias
+        # (e.g. broker "DE40" → registry "GER40"). Order/modify/close key off the
+        # ticket and the raw mt5 position object, so this only affects the symbol
+        # the rest of the system records and learns under — keeping pip_size,
+        # trade-journal, and per-symbol learner keys consistent.
         return PositionInfo(
             order_id=str(p.ticket),
-            symbol=p.symbol,
+            symbol=resolve_to_internal(p.symbol),
             direction=direction,
             lots=p.volume,
             open_price=p.price_open,

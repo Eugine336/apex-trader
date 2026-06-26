@@ -15,7 +15,7 @@ from typing import Any, Callable, Optional
 import pandas as pd
 from loguru import logger
 
-from brain.symbol_mapper import SymbolMapper
+from brain.symbol_mapper import SymbolMapper, resolve_to_internal
 from config import get_pip_size
 from ops.redaction import mask_account_id, redact_account_in_url
 from persistence.deriv_position_store import DerivPositionStore
@@ -2173,7 +2173,9 @@ class DerivConnector(BaseConnector):
             direction = "BUY" if c.get("contract_type") == "MULTUP" else "SELL"
             positions.append(PositionInfo(
                 order_id=cid,
-                symbol=local.get("symbol", c.get("symbol", "")),
+                symbol=resolve_to_internal(
+                    local.get("symbol", c.get("symbol", ""))
+                ),
                 direction=direction,
                 lots=local.get("lots", 0),
                 open_price=float(c.get("buy_price", 0)),
@@ -2202,7 +2204,9 @@ class DerivConnector(BaseConnector):
         direction = "BUY" if poc.get("contract_type") == "MULTUP" else "SELL"
         return PositionInfo(
             order_id=order_id,
-            symbol=local.get("symbol", poc.get("underlying", "")),
+            symbol=resolve_to_internal(
+                local.get("symbol", poc.get("underlying", ""))
+            ),
             direction=direction,
             lots=local.get("lots", 0),
             open_price=float(poc.get("buy_price", 0)),
