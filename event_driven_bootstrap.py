@@ -438,6 +438,14 @@ class DerivTickAdapter:
             )
 
         while self._running:
+            # Per-cycle connection stats. The connection state is evaluated once
+            # at the end of the full symbol sweep — never mid-cycle — so a flaky
+            # link that mixes good and bad ticks within a single pass cannot flap
+            # the disconnect/recover log lines.
+            cycle_good_ticks = 0
+            cycle_conn_errors = 0
+            cycle_conn_symbols: set[str] = set()
+
             for sym in self._symbols:
                 if not self._running:
                     break
@@ -455,45 +463,21 @@ class DerivTickAdapter:
                             timestamp=datetime.now(timezone.utc),
                             source="deriv",
                         )
+                        # Route immediately — ticks must keep flowing regardless
+                        # of connection-state bookkeeping.
                         self._router.on_tick(tick)
                         error_counts[sym] = 0
-                        if conn_down:
-                            # First good tick after a connection outage.
-                            logger.info(
-                                "[deriv-adapter] connection recovered — "
-                                "resuming tick polling ({} suppressed error(s) "
-                                "across {} symbol(s) during outage)",
-                                conn_err_count, len(conn_symbols),
-                            )
-                            conn_down = False
-                            conn_err_count = 0
-                            conn_symbols = set()
+                        cycle_good_ticks += 1
                     else:
                         error_counts[sym] += 1
                 except Exception as exc:
                     error_counts[sym] += 1
                     now = _time.monotonic()
                     if _is_conn_error(str(exc)):
-                        # Aggregate connection-down errors into one summary line.
-                        conn_symbols.add(sym)
-                        conn_err_count += 1
-                        if not conn_down:
-                            conn_down = True
-                            conn_first_log = now
-                            conn_last_summary = now
-                            logger.warning(
-                                "[deriv-adapter] Deriv disconnected — suppressing "
-                                "per-symbol tick errors; a summary will follow "
-                                "every {:.0f}s until reconnect", CONN_SUMMARY_INTERVAL,
-                            )
-                        elif now - conn_last_summary >= CONN_SUMMARY_INTERVAL:
-                            conn_last_summary = now
-                            logger.warning(
-                                "[deriv-adapter] still disconnected for {:.0f}s — "
-                                "{} tick error(s) across {} symbol(s) suppressed",
-                                now - conn_first_log, conn_err_count,
-                                len(conn_symbols),
-                            )
+                        # Tally connection-down errors for end-of-cycle evaluation;
+                        # do not flip state or log here.
+                        cycle_conn_symbols.add(sym)
+                        cycle_conn_errors += 1
                         continue
                     # Genuine per-symbol error — keep the existing 60s throttle.
                     if now - last_error_log.get(sym, 0) >= 60.0:
@@ -502,6 +486,42 @@ class DerivTickAdapter:
                             "[deriv-adapter] {} tick error (count={}): {}",
                             sym, error_counts[sym], exc,
                         )
+
+            # ── Evaluate connection state once per full cycle (with hysteresis) ──
+            now = _time.monotonic()
+            if cycle_conn_errors > 0 and cycle_good_ticks == 0:
+                # Entire cycle failed — connection is down.
+                conn_symbols.update(cycle_conn_symbols)
+                conn_err_count += cycle_conn_errors
+                if not conn_down:
+                    conn_down = True
+                    conn_first_log = now
+                    conn_last_summary = now
+                    logger.warning(
+                        "[deriv-adapter] Deriv disconnected — suppressing "
+                        "per-symbol tick errors; a summary will follow "
+                        "every {:.0f}s until reconnect", CONN_SUMMARY_INTERVAL,
+                    )
+                elif now - conn_last_summary >= CONN_SUMMARY_INTERVAL:
+                    conn_last_summary = now
+                    logger.warning(
+                        "[deriv-adapter] still disconnected for {:.0f}s — "
+                        "{} tick error(s) across {} symbol(s) suppressed",
+                        now - conn_first_log, conn_err_count, len(conn_symbols),
+                    )
+            elif conn_down and cycle_good_ticks > 0 and cycle_conn_errors == 0:
+                # A full, clean cycle after an outage — genuinely recovered.
+                logger.info(
+                    "[deriv-adapter] connection recovered — resuming tick "
+                    "polling ({} suppressed error(s) across {} symbol(s) "
+                    "during {:.0f}s outage)",
+                    conn_err_count, len(conn_symbols), now - conn_first_log,
+                )
+                conn_down = False
+                conn_err_count = 0
+                conn_symbols = set()
+            # Mixed cycle (some good, some conn errors): hold current state — no flap.
+
             _time.sleep(self._interval)
 
 
