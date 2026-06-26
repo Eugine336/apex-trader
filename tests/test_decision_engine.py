@@ -173,8 +173,13 @@ class TestDecisionEngine:
         )
         sa = self.se.assess_open_trade(ctx)
         decision = self.de.decide_management(ctx, sa)
-        assert decision.action in (Action.TIGHTEN_SL, Action.HOLD), (
-            f"Expected TIGHTEN_SL or HOLD for profit+fading, got {decision.action.value}"
+        # A winner with fading momentum must be PROTECTED. The R-based profit
+        # ladder locks breakeven at >=0.5R (a strictly safer response than the
+        # legacy tighten), so MOVE_TO_BREAKEVEN is now also a valid outcome.
+        assert decision.action in (
+            Action.TIGHTEN_SL, Action.MOVE_TO_BREAKEVEN, Action.HOLD
+        ), (
+            f"Expected protect/hold for profit+fading, got {decision.action.value}"
         )
 
     def test_adopted_trade_observes(self):
