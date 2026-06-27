@@ -64,11 +64,17 @@ class DevelopingAnalysisLoop:
         developing_store: WorldModelStore,
         symbols: list[str],
         config: "DevelopingAnalysisConfig",
+        confirmed_store: Optional[WorldModelStore] = None,
     ) -> None:
         self._aggregator = candle_aggregator
         self._developing_store = developing_store
         self._symbols = list(symbols)
         self._config = config
+        # The confirmed (closed-bar) store, read ONLY to enforce the
+        # "confidence only, never direction" contract — the developing store
+        # must never publish a bias direction that contradicts confirmed.
+        # ``None`` disables the guard (e.g. standalone tests).
+        self._confirmed_store = confirmed_store
 
         # Own engine instances — never shared with the confirmed
         # CandleCloseHandler, so there is no cross-thread state to coordinate.
@@ -248,6 +254,43 @@ class DevelopingAnalysisLoop:
             # blend here — the blend happens in the confirmed path's
             # compute_bias, which reads this store).
             bias = compute_bias(struct)
+
+            # ── Contract guard: confidence only, never direction ──────────
+            # The developing store exists to nudge bias *confidence*, never to
+            # set direction (the confirmed path reads developing *structure*,
+            # not this bias).  Enforce that at the publish boundary so a future
+            # consumer can never read a forming-bar direction that contradicts
+            # the authoritative confirmed read.  Fail-loud (WARNING) and
+            # neutralise; best-effort — never raises (mirrors the loop's
+            # fault isolation).
+            if self._confirmed_store is not None and isinstance(bias, dict):
+                developing_dir = str(bias.get("direction", "") or "")
+                if developing_dir:
+                    confirmed_dir = ""
+                    try:
+                        confirmed_wm = self._confirmed_store.get(symbol)
+                        if confirmed_wm is not None:
+                            confirmed_dir = str(
+                                confirmed_wm.bias_dict().get("direction", "")
+                                or ""
+                            )
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.debug(
+                            "[developing-guard] {} confirmed bias read "
+                            "failed: {}", symbol, exc,
+                        )
+                    if confirmed_dir and developing_dir != confirmed_dir:
+                        logger.warning(
+                            "⚠️ [developing-guard] {} developing bias direction "
+                            "{} contradicts confirmed direction {} — "
+                            "neutralising developing direction",
+                            symbol, developing_dir, confirmed_dir,
+                        )
+                        # Match compute_bias's own blank-direction invariant
+                        # (direction "" ⇒ score 0) so the published dict can
+                        # never carry a direction-less but scored bias.
+                        bias["direction"] = ""
+                        bias["score"] = 0
 
             wm = build_world_model(
                 symbol=symbol,
