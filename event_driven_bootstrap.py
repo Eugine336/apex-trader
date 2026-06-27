@@ -603,6 +603,10 @@ class PositionEvaluator:
         # evaluator is also safe to use standalone (and in unit tests).
         self._inflight_manage: dict[tuple[str, int], dict[str, Any]] = {}
         self._inflight_manage_lock = threading.Lock()
+        # Symbols whose pip_size lookup fell back to the 0.0001 default. Used to
+        # warn once per symbol (avoid log floods) when risk sizing is derived
+        # from an unreliable pip_size.
+        self._pip_size_fallback_symbols: set[str] = set()
 
     def _record_inflight_manage(
         self, ticket: str, intent_type: IntentType, prev: dict[str, Any],
@@ -1024,8 +1028,26 @@ class PositionEvaluator:
         except Exception:
             try:
                 return float(get_pip_size(resolve_to_internal(symbol)))
-            except Exception:
+            except Exception as exc:
+                self._note_pip_size_fallback(symbol, exc)
                 return 0.0001
+
+    def _note_pip_size_fallback(self, symbol: str, exc: Exception) -> None:
+        """Record + warn (once per symbol) that pip_size fell back to 0.0001.
+
+        The 0.0001 fallback is correct only for FX majors.  For indices
+        (0.01), metals (0.01) or synthetics (0.1–1.0) it is wrong by
+        100×–10,000×, so any risk_pips derived from it is unreliable.  We
+        surface that loudly — once per symbol to avoid log floods — so a
+        silently mis-sized instrument is diagnosable instead of invisible.
+        """
+        fb = self._pip_size_fallback_symbols
+        if symbol not in fb:
+            fb.add(symbol)
+            logger.warning(
+                "[pip-size] {} fallback to 0.0001 — risk sizing may be "
+                "inaccurate: {}", symbol, exc,
+            )
 
     def suppress_ticket(self, ticket: str, duration: float = 60.0) -> None:
         """Suppress evaluation of a ticket for the given duration (seconds)."""
@@ -1525,8 +1547,12 @@ class PositionEvaluator:
                     de_heat_pct = float(
                         ctx.account_risk.heat(ctx.account_key(symbol, self._pm))
                     )
-                except Exception:
+                except Exception as exc:
                     de_heat_pct = 0.0
+                    logger.warning(
+                        "[manage] {} portfolio heat read failed — heat-aware "
+                        "management defaulting to 0.0: {}", symbol, exc,
+                    )
 
             entry_oq = None
             entry_eq = None
@@ -1538,14 +1564,16 @@ class PositionEvaluator:
                 entry_oq = getattr(mgmt, "entry_oq", None)
                 if entry_oq is not None:
                     entry_oq = float(entry_oq)
-            except Exception:
+            except Exception as exc:
                 entry_oq = None
+                logger.debug("[manage] entry_oq read failed: {}", exc)
             try:
                 entry_eq = getattr(mgmt, "entry_eq", None)
                 if entry_eq is not None:
                     entry_eq = float(entry_eq)
-            except Exception:
+            except Exception as exc:
                 entry_eq = None
+                logger.debug("[manage] entry_eq read failed: {}", exc)
             try:
                 if wm is not None:
                     live_oq = getattr(wm, "opportunity_quality", None)
@@ -2120,8 +2148,11 @@ class PositionEvaluator:
                     ) or 0.0
                     if dd_risk > 0:
                         risk_pct = min(risk_pct, _SCALE_IN_RISK_FRACTION * dd_risk)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "[scale-in] {} drawdown-guard risk read failed — "
+                        "scale-in risk fraction left unclamped: {}", symbol, exc,
+                    )
             if risk_pct <= 0:
                 return
 
@@ -2139,8 +2170,12 @@ class PositionEvaluator:
                     daily_cap = float(
                         getattr(ctx.account_risk, "daily_loss_cap_pct", 0.0) or 0.0
                     )
-                except Exception:
+                except Exception as exc:
                     daily_pnl, daily_cap = 0.0, 0.0
+                    logger.warning(
+                        "[scale-in] {} daily P&L/cap read failed — daily-loss "
+                        "budget guard defaulting to 0.0/0.0: {}", symbol, exc,
+                    )
 
             pf_verdict = portfolio.evaluate(
                 _PFCandidate(
@@ -2675,6 +2710,11 @@ class EventDrivenSystem:
         self._inflight_manage: dict[tuple[str, int], dict[str, Any]] = {}
         self._inflight_manage_lock = threading.Lock()
 
+        # Symbols whose pip_size lookup fell back to the 0.0001 default. Used to
+        # warn once per symbol and to tag entry context (``pip_size_fallback``)
+        # so downstream attribution knows the risk sizing used a guessed pip.
+        self._pip_size_fallback_symbols: set[str] = set()
+
         # ── Analysis plane ───────────────────────────────────────────
         # CalibrationEngine (single writer of per-instrument stats). Opt-in via
         # config.calibration.enabled — when off, no provider is registered and
@@ -2754,6 +2794,9 @@ class EventDrivenSystem:
                     developing_store=self._developing_wm_store,
                     symbols=list(INSTRUMENT_REGISTRY.keys()),
                     config=_dev_cfg,
+                    # Confirmed store — read-only, enforces the developing
+                    # store's "confidence only, never direction" contract.
+                    confirmed_store=self._wm_store,
                 )
             except Exception as exc:
                 logger.warning(
@@ -3307,8 +3350,11 @@ class EventDrivenSystem:
                     provider = comp.get_current_params
                 agent.register(ConsumerTunable(name, provider))
                 registered += 1
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(
+                    "[tuner] ConsumerTunable register failed for {}: {}",
+                    name, exc,
+                )
 
         # Wire set_tuner_agent on components that support it
         for comp in (ctx.ml_adapter, ctx.gate_tuner, ctx.calibrator,
@@ -3318,8 +3364,11 @@ class EventDrivenSystem:
             if comp is not None and hasattr(comp, "set_tuner_agent"):
                 try:
                     comp.set_tuner_agent(agent)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug(
+                        "[tuner] set_tuner_agent failed for {}: {}",
+                        type(comp).__name__, exc,
+                    )
 
         logger.info(
             "[tuner] registered {} tunable adapters with TunerAgent", registered,
@@ -4570,7 +4619,10 @@ class EventDrivenSystem:
                 max_exp = float(exposure_fn(trades) or 0.0)
                 return (max_exp < 1.0), max_exp
         except Exception as exc:
-            logger.debug("[risk-state] correlation read failed: {}", exc)
+            logger.warning(
+                "[risk-state] correlation read failed — exposure check "
+                "defaulting to permissive (True, 0.0): {}", exc,
+            )
         return True, 0.0
 
     def _check_portfolio_heat(self) -> None:
@@ -4936,8 +4988,11 @@ class EventDrivenSystem:
                 self._clear_inflight_manage_ticket(str(ticket))
                 try:
                     self._mgmt_store.remove(str(ticket))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.warning(
+                        "[reconcile] mgmt-state remove failed for dropped "
+                        "ticket {} — stale state may linger: {}", ticket, exc,
+                    )
             else:
                 still_pending[ticket] = meta
 
@@ -5021,8 +5076,11 @@ class EventDrivenSystem:
                         pnl_pips = (close_price - entry) / pip_size
                     else:
                         pnl_pips = (entry - close_price) / pip_size
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning(
+                    "[close-pnl] pnl_pips calculation failed for {} ticket {}: "
+                    "{} — attribution will use 0.0 pips", symbol, ticket, exc,
+                )
 
         # When the broker deal history did not supply an exit reason, fall back
         # to the close intent's own structured source (e.g. "stop_loss",
@@ -5061,8 +5119,11 @@ class EventDrivenSystem:
         # FAILED close keeps the position managed and retried.)
         try:
             self._mgmt_store.remove(str(ticket))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning(
+                "[close] mgmt-state remove failed for booked ticket {} — "
+                "orphan management state may linger: {}", ticket, exc,
+            )
         self._clear_inflight_manage_ticket(str(ticket))
 
     def _record_inflight_manage(
@@ -5130,8 +5191,11 @@ class EventDrivenSystem:
                             pass
                     try:
                         self._mgmt_store.persist(mgmt, force=True)
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.warning(
+                            "[manage] {} {} rollback persist failed — rolled-back "
+                            "state not durable: {}", itype.name, ticket, exc,
+                        )
                     logger.warning(
                         "[manage] {} {} failed — rolled back optimistic state ({})",
                         itype.name, ticket, getattr(result, "error", ""),
@@ -5218,8 +5282,27 @@ class EventDrivenSystem:
     def _safe_pip_size(self, symbol: str) -> float:
         try:
             return get_pip_size(resolve_to_internal(symbol))
-        except Exception:
+        except Exception as exc:
+            self._note_pip_size_fallback(symbol, exc)
             return 0.0001
+
+    def _note_pip_size_fallback(self, symbol: str, exc: Exception) -> None:
+        """Record + warn (once per symbol) that pip_size fell back to 0.0001.
+
+        The 0.0001 fallback is correct only for FX majors.  For indices
+        (0.01), metals (0.01) or synthetics (0.1–1.0) it is wrong by
+        100×–10,000×, so any risk_pips/lot sizing derived from it is
+        unreliable.  Tracking the symbol also lets the entry path tag the
+        trade's context (``pip_size_fallback``) so the journal/attribution
+        know the value was a guess.  Warns once per symbol to avoid floods.
+        """
+        fb = self._pip_size_fallback_symbols
+        if symbol not in fb:
+            fb.add(symbol)
+            logger.warning(
+                "[pip-size] {} fallback to 0.0001 — risk sizing may be "
+                "inaccurate: {}", symbol, exc,
+            )
 
     def _symbol_spec(self, symbol: str) -> dict:
         """Broker symbol spec (cached), or ``{}`` when unavailable.
@@ -5362,7 +5445,11 @@ class EventDrivenSystem:
     def _get_spread_pips(self, symbol: str) -> float:
         try:
             return self._pm.get_spread(symbol)
-        except Exception:
+        except Exception as exc:
+            logger.debug(
+                "[spread] {} spread read failed — defaulting to 1.0 pip: {}",
+                symbol, exc,
+            )
             return 1.0
 
     def _get_m1_dataframe(self, symbol: str) -> Optional[pd.DataFrame]:
@@ -6964,8 +7051,13 @@ class EventDrivenSystem:
                             de_heat_pct = float(
                                 ctx.account_risk.heat(ctx.account_key(symbol, self._pm))
                             )
-                        except Exception:
+                        except Exception as exc:
                             de_heat_pct = 0.0
+                            logger.warning(
+                                "[entry-decision] {} portfolio heat read failed "
+                                "— graded-risk heat defaulting to 0.0: {}",
+                                symbol, exc,
+                            )
                     de_cur_spread = 0.0
                     de_typ_spread = 0.0
                     try:
@@ -7695,6 +7787,19 @@ class EventDrivenSystem:
                 except Exception as exc:
                     logger.debug("[quality-sizer] sizing skipped: {}", exc)
             pip_size = self._safe_pip_size(symbol)
+            # Visibility: if this symbol's pip_size is the 0.0001 fallback, the
+            # risk geometry below (risk_pips → lots) may be off by 100×–10,000×
+            # for non-FX instruments. Surface it at WARNING per entry. The
+            # position is still bounded by the per-account min-lot inflation
+            # reject further down (post-snap risk% vs the sizer ceiling), so an
+            # over-risked size is rejected rather than sent — we make the cause
+            # visible here without changing that control flow.
+            if symbol in self._pip_size_fallback_symbols:
+                logger.warning(
+                    "[pip-size] {} sizing on FALLBACK pip_size=0.0001 — "
+                    "risk geometry may be inaccurate; position remains bounded "
+                    "by the per-account risk ceiling", symbol,
+                )
             pctx = build_context_for_symbol(symbol)
 
             info = INSTRUMENT_REGISTRY.get(symbol)
@@ -8069,6 +8174,13 @@ class EventDrivenSystem:
                         # rate — previously hard-missing here, so the close path
                         # read False unconditionally and the metric was inert.
                         "learner_enabled": self._is_learner_enabled(),
+                        # Whether this symbol's pip_size lookup fell back to the
+                        # 0.0001 default at entry. When True, risk_pips/sizing
+                        # were derived from a guessed pip — the journal +
+                        # attribution should treat the geometry as unreliable.
+                        "pip_size_fallback": (
+                            symbol in self._pip_size_fallback_symbols
+                        ),
                     }
                     # Provenance object for candidate-scoped management — manage
                     # this position against the modules + timeframes that voted
