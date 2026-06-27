@@ -117,6 +117,10 @@ class GovernanceDivision:
         health_assessor: Optional[object] = None,
         health_auto_freeze: bool = True,
         health_auto_release: bool = True,
+        # Per-gate parameter attribution (which learned gate adjustment opened a
+        # trade). Observational — surfaced in get_status and used to warn when
+        # learner-decisive trades are losing. Never freezes / blocks on its own.
+        gate_attributor: Optional[object] = None,
     ) -> None:
         self._module_governor = module_governor
         self._tuner_agent = tuner_agent
@@ -156,6 +160,11 @@ class GovernanceDivision:
         self._health_frozen = False
         self._last_health: Optional[HealthAssessment] = None
 
+        # Per-gate attribution (observational). Read in get_status; used in
+        # check_health_after_close to surface a warning when the trades a
+        # learned gate loosening *opened* are net-losing.
+        self._gate_attributor = gate_attributor
+
     # ── Wiring (injected after construction) ──────────────────────────────
 
     def bind_runtime(
@@ -165,6 +174,7 @@ class GovernanceDivision:
         tuner_agent: Optional[object] = None,
         virtual_registry: Optional[object] = None,
         health_assessor: Optional[object] = None,
+        gate_attributor: Optional[object] = None,
     ) -> None:
         """Inject the enforcement-arm references after construction.
 
@@ -178,6 +188,8 @@ class GovernanceDivision:
             self._virtual_registry = virtual_registry
         if health_assessor is not None:
             self._health_assessor = health_assessor
+        if gate_attributor is not None:
+            self._gate_attributor = gate_attributor
 
     # ── Learning recommendation authorisation (the ⑦→⑧ boundary) ──────────
 
@@ -592,7 +604,34 @@ class GovernanceDivision:
             )
         except Exception as exc:  # noqa: BLE001
             logger.debug("[governance] health record_trade_close failed: {}", exc)
+        self._warn_on_decisive_losses()
         return self.check_health()
+
+    def _warn_on_decisive_losses(self) -> None:
+        """Surface a warning when learner-decisive trades are net-losing.
+
+        Observational only — gate attribution never freezes or blocks. A high
+        ``decisive_negative_ev_count`` means a learned gate loosening is opening
+        trades the operator's default thresholds would have rejected, and those
+        trades are losing. Fail-safe — never raises to the close path.
+        """
+        attributor = self._gate_attributor
+        if attributor is None:
+            return
+        try:
+            summary = attributor.summarize()
+            neg_decisive = int(summary.get("decisive_negative_ev_count", 0) or 0)
+            if neg_decisive >= 3:
+                logger.warning(
+                    "⚠️ Gate attribution: {} learner-decisive trade(s) closed at "
+                    "negative R — a learned gate loosening is opening trades the "
+                    "default thresholds would have rejected, and they are losing "
+                    "(decisive avg R {:+.3f})",
+                    neg_decisive,
+                    float(summary.get("decisive_avg_r", 0.0) or 0.0),
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[governance] gate-attribution warn failed: {}", exc)
 
     def _freeze_all_tuning(self, *, reason: str = "") -> int:
         """Freeze every registered tunable via the TunerAgent. Returns count."""
@@ -685,6 +724,12 @@ class GovernanceDivision:
             "learning_frozen_for_health": health_frozen,
             "last_assessment": last_health.to_dict() if last_health is not None else None,
         }
+        gate_attribution = None
+        if self._gate_attributor is not None:
+            try:
+                gate_attribution = self._gate_attributor.summarize()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[governance] gate-attribution status failed: {}", exc)
         return {
             "enforce_toxic_pairs": self._enforce_toxic,
             "has_module_governor": self._module_governor is not None,
@@ -695,6 +740,7 @@ class GovernanceDivision:
             "promotions_logged": promo_n,
             "toxic_pairs": toxic,
             "health": health,
+            "gate_attribution": gate_attribution,
             "bounds": {
                 "size_multiplier": [self._min_size_mult, self._max_size_mult],
                 "max_weight_multiplier": self._max_weight_mult,

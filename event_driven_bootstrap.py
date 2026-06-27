@@ -8055,6 +8055,20 @@ class EventDrivenSystem:
                         # (was hard-coded to 0 / "").
                         "score": int(decision.get("conviction", 0) or 0),
                         "confluences": list(decision.get("gates_passed", []) or []),
+                        # ── Gate parameter snapshot (GateAttributor) ──────────
+                        # Captures the learned GateTuner offsets + effective and
+                        # default thresholds at entry so the close path can
+                        # attribute per-gate impact ("would this trade have
+                        # passed on the operator's default thresholds, or did a
+                        # learned loosening open it?"). Best-effort → {} on fault.
+                        "gate_snapshot": self._capture_gate_snapshot(
+                            result.order_id
+                        ),
+                        # Whether ANY learned gate offset is active (non-zero) at
+                        # entry. Feeds the HealthAssessor's learner-enabled loss
+                        # rate — previously hard-missing here, so the close path
+                        # read False unconditionally and the metric was inert.
+                        "learner_enabled": self._is_learner_enabled(),
                     }
                     # Provenance object for candidate-scoped management — manage
                     # this position against the modules + timeframes that voted
@@ -8425,6 +8439,54 @@ class EventDrivenSystem:
             logger.debug("[entry-tf-trends] capture failed: {}", exc)
             return {}
 
+    def _capture_gate_snapshot(self, order_id) -> dict:
+        """Snapshot gate parameters at entry for close-path attribution.
+
+        Records the learned GateTuner offsets together with the effective
+        (default + offset) and default thresholds so the close path can replay
+        the gate decision on the operator's defaults. Best-effort — any fault
+        (no context, no tuner, no attributor) yields an empty dict, which simply
+        means this trade contributes no gate attribution.
+        """
+        ctx = self._ctx
+        if ctx is None or getattr(ctx, "gate_tuner", None) is None:
+            return {}
+        attributor = getattr(ctx, "gate_attributor", None)
+        if attributor is None:
+            return {}
+        try:
+            offsets = ctx.gate_tuner.all_offsets()
+            defaults = attributor.default_thresholds()
+            effective = {
+                fam: defaults.get(fam, 0.0) + float(offsets.get(fam, 0.0))
+                for fam in defaults
+            }
+            snap = attributor.record_entry(
+                order_id=str(order_id),
+                gate_offsets=offsets,
+                effective_thresholds=effective,
+                default_thresholds=defaults,
+            )
+            return snap.to_dict() if snap is not None else {}
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[gate-attr] snapshot capture failed: {}", exc)
+            return {}
+
+    def _is_learner_enabled(self) -> bool:
+        """True when any GateTuner offset is non-zero (learning influenced entry).
+
+        Fixes the long-standing gap where ``learner_enabled`` was never
+        populated in the entry context, so the HealthAssessor's learner-enabled
+        loss rate was always computed over an empty set.
+        """
+        ctx = self._ctx
+        if ctx is None or getattr(ctx, "gate_tuner", None) is None:
+            return False
+        try:
+            return any(abs(float(v)) > 1e-9 for v in ctx.gate_tuner.all_offsets().values())
+        except Exception:  # noqa: BLE001
+            return False
+
     def _on_trade_closed(
         self,
         symbol: str,
@@ -8676,6 +8738,30 @@ class EventDrivenSystem:
                 )
             except Exception as exc:
                 logger.debug("[close-learn] health assessment failed: {}", exc)
+
+        # Gate attribution — replay the gate decision with the operator's
+        # default (no-learning) thresholds to determine whether a learned gate
+        # loosening was DECISIVE in opening this trade (it would have been
+        # rejected on the defaults) or merely SUPPORTING (it would have passed
+        # anyway). Best-effort: attribution must never break the close path.
+        gate_attributor = (
+            getattr(ctx, "gate_attributor", None) if ctx is not None else None
+        )
+        if gate_attributor is not None:
+            try:
+                snap = info.get("gate_snapshot", {}) or {}
+                eff = snap.get("effective_thresholds", {}) if isinstance(snap, dict) else {}
+                gate_attributor.record_close(
+                    order_id=str(ticket),
+                    realized_r=float(pnl_r or 0.0),
+                    # The trade's actual EV is not threaded out of the entry
+                    # gate; the effective EV threshold is the close-path proxy
+                    # (a loosened ev_gate then reads as DECISIVE — conservative).
+                    entry_ev=float(eff.get("ev_gate", 0.0) or 0.0),
+                    entry_score=float(info.get("score", 0) or 0),
+                )
+            except Exception as exc:
+                logger.debug("[close-learn] gate attribution failed: {}", exc)
 
         # TunerAgent — route trade-close tuning
         if ctx.tuner_agent is not None:
