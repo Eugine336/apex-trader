@@ -6016,6 +6016,43 @@ class EventDrivenSystem:
         )
         recorder.finalize_success()
 
+    def _feed_thesis_engine(self, symbol: str, votes: list) -> None:
+        """Feed the observational ThesisEngine (Gap 1a) with the live evidence.
+
+        Builds the competing Long/Short/Flat theses from this cycle's vote panel
+        and the probabilistic bias on the confirmed WorldModel. Best-effort and
+        fully decoupled: a tracking fault must never affect the entry pipeline,
+        and the engine is observational only in this session (it does not yet
+        drive entries).
+        """
+        ctx = self._ctx
+        engine = getattr(ctx, "thesis_engine", None) if ctx is not None else None
+        if engine is None:
+            return
+        try:
+            long_p = 0.0
+            short_p = 0.0
+            wm = self._wm_store.get(symbol) if self._wm_store is not None else None
+            if wm is not None:
+                bias = wm.bias_dict()
+                long_p = float(bias.get("long_probability", 0.0) or 0.0)
+                short_p = float(bias.get("short_probability", 0.0) or 0.0)
+            avg_rr = float(
+                getattr(getattr(self._config, "risk", None), "tp1_rr", 1.5) or 1.5
+            )
+            ev_long = long_p * avg_rr - short_p
+            ev_short = short_p * avg_rr - long_p
+            engine.update(
+                symbol=symbol,
+                votes=list(votes or []),
+                long_probability=long_p,
+                short_probability=short_p,
+                entry_ev_long=ev_long,
+                entry_ev_short=ev_short,
+            )
+        except Exception as exc:
+            logger.debug("[thesis-engine] feed failed for {}: {}", symbol, exc)
+
     def _build_consensus_candidate_item(
         self, symbol: str, candidate: Any, cfg: Any,
     ) -> Optional[tuple]:
@@ -6067,6 +6104,7 @@ class EventDrivenSystem:
             "[consensus-trigger] {} candidate {} {}",
             symbol, getattr(candidate, "candidate_id", "?"), thesis.summary,
         )
+        self._feed_thesis_engine(symbol, cand_votes)
         if not thesis.trigger:
             return None
         direction = thesis.direction
@@ -6130,6 +6168,7 @@ class EventDrivenSystem:
             return None
 
         logger.debug("[consensus-trigger] {} {}", symbol, thesis.summary)
+        self._feed_thesis_engine(symbol, votes)
         if not thesis.trigger:
             return None
         direction = thesis.direction

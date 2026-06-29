@@ -107,6 +107,9 @@ class SystemContext:
     # Per-gate parameter attribution — which learned gate adjustment opened a
     # trade (DECISIVE) vs merely supported one that would have passed anyway.
     gate_attributor: Optional[Any] = None
+    # Persistent competing Long/Short/Flat theses per symbol (Gap 1a). Runs
+    # observationally alongside the consensus pipeline; surfaced via Governance.
+    thesis_engine: Optional[Any] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
     opportunity_executor: Optional[OpportunityExecutor] = None
@@ -918,6 +921,22 @@ class SystemContext:
             except Exception as exc:
                 logger.warning("[SystemContext] GateAttributor init failed: {}", exc)
 
+            # ── ThesisEngine (persistent competing Long/Short/Flat theses) ──
+            # Keeps all three market hypotheses alive simultaneously, each with
+            # its own EV / confidence / uncertainty, and chooses the dominant
+            # one on relative expected value (Flat = do-nothing baseline) rather
+            # than collapsing the vote panel to a single winner. Observational
+            # in this session — fed by the consensus pipeline, surfaced via
+            # Governance ``get_status``; it does not yet drive entries.
+            try:
+                from brain.thesis_engine import ThesisEngine as _ThesisEngine
+
+                ctx.thesis_engine = _ThesisEngine(
+                    min_ev_threshold=float(getattr(config, "min_entry_ev", 0.3)),
+                )
+            except Exception as exc:
+                logger.warning("[SystemContext] ThesisEngine init failed: {}", exc)
+
             ctx.governance = _Governance(
                 module_governor=ctx.module_governor,
                 tuner_agent=ctx.tuner_agent,
@@ -943,6 +962,7 @@ class SystemContext:
                     if lg_cfg else True
                 ),
                 gate_attributor=ctx.gate_attributor,
+                thesis_engine=ctx.thesis_engine,
             )
             # Install Governance as the authoriser on the Learning→Governance
             # gateway and require authorisation (per config; default on).
