@@ -121,6 +121,9 @@ class GovernanceDivision:
         # trade). Observational — surfaced in get_status and used to warn when
         # learner-decisive trades are losing. Never freezes / blocks on its own.
         gate_attributor: Optional[object] = None,
+        # Persistent competing Long/Short/Flat theses (Gap 1a). Observational —
+        # surfaced in get_status. Never freezes / blocks on its own.
+        thesis_engine: Optional[object] = None,
     ) -> None:
         self._module_governor = module_governor
         self._tuner_agent = tuner_agent
@@ -165,6 +168,9 @@ class GovernanceDivision:
         # learned gate loosening *opened* are net-losing.
         self._gate_attributor = gate_attributor
 
+        # Persistent competing theses (observational). Read in get_status only.
+        self._thesis_engine = thesis_engine
+
     # ── Wiring (injected after construction) ──────────────────────────────
 
     def bind_runtime(
@@ -175,6 +181,7 @@ class GovernanceDivision:
         virtual_registry: Optional[object] = None,
         health_assessor: Optional[object] = None,
         gate_attributor: Optional[object] = None,
+        thesis_engine: Optional[object] = None,
     ) -> None:
         """Inject the enforcement-arm references after construction.
 
@@ -190,6 +197,8 @@ class GovernanceDivision:
             self._health_assessor = health_assessor
         if gate_attributor is not None:
             self._gate_attributor = gate_attributor
+        if thesis_engine is not None:
+            self._thesis_engine = thesis_engine
 
     # ── Learning recommendation authorisation (the ⑦→⑧ boundary) ──────────
 
@@ -730,6 +739,12 @@ class GovernanceDivision:
                 gate_attribution = self._gate_attributor.summarize()
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[governance] gate-attribution status failed: {}", exc)
+        thesis_engine = None
+        if self._thesis_engine is not None:
+            try:
+                thesis_engine = self._thesis_engine.get_status()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[governance] thesis-engine status failed: {}", exc)
         return {
             "enforce_toxic_pairs": self._enforce_toxic,
             "has_module_governor": self._module_governor is not None,
@@ -741,6 +756,7 @@ class GovernanceDivision:
             "toxic_pairs": toxic,
             "health": health,
             "gate_attribution": gate_attribution,
+            "thesis_engine": thesis_engine,
             "bounds": {
                 "size_multiplier": [self._min_size_mult, self._max_size_mult],
                 "max_weight_multiplier": self._max_weight_mult,
