@@ -5781,6 +5781,21 @@ class EventDrivenSystem:
                 ctx.health_watchdog.record_scan_success()
             except Exception:
                 pass
+
+        # ── ThesisEngine: maintain competing Long/Short/Flat theses ───
+        # Fed on EVERY WorldModel update (not only when the consensus active
+        # trigger is enabled) so the per-symbol thesis is current for BOTH the
+        # zone and consensus entry paths. Uses the full confirmed vote panel so
+        # the thesis reflects all the symbol's evidence, not a candidate subset.
+        # Best-effort — a tracking fault must never disrupt the analysis cycle.
+        try:
+            sym = getattr(event, "symbol", "")
+            if sym:
+                wm = self._wm_store.get(sym) if self._wm_store is not None else None
+                votes = list(getattr(wm, "votes", ()) or []) if wm is not None else []
+                self._feed_thesis_engine(sym, votes)
+        except Exception as exc:
+            logger.debug("[thesis-engine] world-model feed failed: {}", exc)
         if ctx.opportunity_density_tracker is not None:
             try:
                 ready_symbols = []
@@ -6017,13 +6032,13 @@ class EventDrivenSystem:
         recorder.finalize_success()
 
     def _feed_thesis_engine(self, symbol: str, votes: list) -> None:
-        """Feed the observational ThesisEngine (Gap 1a) with the live evidence.
+        """Feed the ThesisEngine with the live evidence for ``symbol``.
 
         Builds the competing Long/Short/Flat theses from this cycle's vote panel
         and the probabilistic bias on the confirmed WorldModel. Best-effort and
-        fully decoupled: a tracking fault must never affect the entry pipeline,
-        and the engine is observational only in this session (it does not yet
-        drive entries).
+        fully decoupled: a tracking fault must never affect the entry pipeline.
+        Called on every WorldModel update; the resulting thesis is consumed by
+        the entry gate (:meth:`_thesis_gate_allows`).
         """
         ctx = self._ctx
         engine = getattr(ctx, "thesis_engine", None) if ctx is not None else None
@@ -6052,6 +6067,59 @@ class EventDrivenSystem:
             )
         except Exception as exc:
             logger.debug("[thesis-engine] feed failed for {}: {}", symbol, exc)
+
+    def _thesis_gate_allows(self, symbol: str, direction: str) -> bool:
+        """ThesisEngine entry gate (Gap 1b) — fail-safe.
+
+        Returns True when the entry may proceed. Blocks (returns False) ONLY
+        when a thesis is actually tracked for ``symbol`` and the engine's
+        dominant read either says "do nothing" or points the OTHER way. When
+        the gate is disabled, the engine is absent, no thesis exists yet, or
+        anything errors, it returns True — the gate never blocks an entry on
+        absent evidence or a tracking fault (the upstream EV/permit gates remain
+        authoritative).
+        """
+        ctx = self._ctx
+        engine = getattr(ctx, "thesis_engine", None) if ctx is not None else None
+        if engine is None:
+            return True
+        cfg = getattr(self._config, "thesis", None)
+        if cfg is not None and not getattr(cfg, "gate_enabled", True):
+            return True
+        try:
+            # No thesis tracked yet (cold start) → cannot gate on absent
+            # evidence; allow the entry to fall through to the permit pipeline.
+            if engine.get(symbol) is None:
+                return True
+            should_trade, thesis_dir, ev_adv = engine.should_act(symbol)
+            want = str(direction or "").upper()
+            if not should_trade:
+                logger.info(
+                    "EVENT-DRIVEN ENTRY SKIPPED | {} — thesis not actionable "
+                    "(dominant not directional / EV over flat {:.3f}R below "
+                    "opportunity-cost margin)",
+                    symbol, ev_adv,
+                )
+                return False
+            if str(thesis_dir or "").upper() != want:
+                logger.info(
+                    "EVENT-DRIVEN ENTRY SKIPPED | {} — thesis direction {} "
+                    "disagrees with entry {} (no trade defended against the "
+                    "dominant thesis)",
+                    symbol, thesis_dir, want,
+                )
+                return False
+            logger.debug(
+                "[thesis-gate] {} {} agrees with dominant thesis "
+                "(EV advantage {:.3f}R)", symbol, want, ev_adv,
+            )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "[thesis-gate] {} evaluation errored — allowing entry "
+                "(fail-safe): {}", symbol, exc,
+            )
+            return True
 
     def _build_consensus_candidate_item(
         self, symbol: str, candidate: Any, cfg: Any,
@@ -6104,7 +6172,10 @@ class EventDrivenSystem:
             "[consensus-trigger] {} candidate {} {}",
             symbol, getattr(candidate, "candidate_id", "?"), thesis.summary,
         )
-        self._feed_thesis_engine(symbol, cand_votes)
+        # NOTE: the ThesisEngine is fed authoritatively from the FULL vote panel
+        # in _on_world_model_update (every cycle), so we do not re-feed it here
+        # with this candidate's vote subset (which would overwrite the symbol's
+        # full-panel thesis with one opportunity's narrower view).
         if not thesis.trigger:
             return None
         direction = thesis.direction
@@ -6168,7 +6239,8 @@ class EventDrivenSystem:
             return None
 
         logger.debug("[consensus-trigger] {} {}", symbol, thesis.summary)
-        self._feed_thesis_engine(symbol, votes)
+        # ThesisEngine is fed from the full vote panel in _on_world_model_update;
+        # no candidate-subset re-feed here (see _build_consensus_candidate_item).
         if not thesis.trigger:
             return None
         direction = thesis.direction
@@ -6828,6 +6900,20 @@ class EventDrivenSystem:
                         symbol, since_close, self._zone_reentry_cooldown_seconds,
                     )
                     return
+
+            # ── Gate 0d: ThesisEngine alignment (opportunity quality) ─
+            # The ThesisEngine keeps competing Long/Short/Flat theses alive per
+            # symbol and only signals action when the dominant DIRECTIONAL
+            # thesis beats the Flat (do-nothing) baseline by the configured
+            # opportunity-cost margin. Use it as an additional quality gate:
+            #   • thesis says don't act (dominant FLAT / below margin) → skip
+            #   • thesis direction disagrees with this entry            → skip
+            #   • thesis agrees and clears the margin                   → proceed
+            # Fail-safe: when the engine is absent, the symbol has no thesis yet
+            # (cold start), or anything errors, the entry is ALLOWED — the gate
+            # never blocks on absent evidence or a tracking fault.
+            if not self._thesis_gate_allows(symbol, direction):
+                return
 
             # ── Compliance Division: single authoritative permit ─────
             # Department 3 — the ONE pure permit layer.  Consolidates the

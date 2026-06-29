@@ -925,14 +925,26 @@ class SystemContext:
             # Keeps all three market hypotheses alive simultaneously, each with
             # its own EV / confidence / uncertainty, and chooses the dominant
             # one on relative expected value (Flat = do-nothing baseline) rather
-            # than collapsing the vote panel to a single winner. Observational
-            # in this session — fed by the consensus pipeline, surfaced via
-            # Governance ``get_status``; it does not yet drive entries.
+            # than collapsing the vote panel to a single winner. Fed every
+            # WorldModel update and used as an additional entry quality gate
+            # (Gap 1b) when ``thesis.gate_enabled`` is set.
             try:
                 from brain.thesis_engine import ThesisEngine as _ThesisEngine
 
+                thesis_cfg = getattr(config, "thesis", None)
                 ctx.thesis_engine = _ThesisEngine(
-                    min_ev_threshold=float(getattr(config, "min_entry_ev", 0.3)),
+                    min_ev_threshold=float(
+                        getattr(thesis_cfg, "opportunity_cost_threshold", 0.1)
+                        if thesis_cfg is not None else 0.1
+                    ),
+                    decay_rate=float(
+                        getattr(thesis_cfg, "decay_rate", 0.95)
+                        if thesis_cfg is not None else 0.95
+                    ),
+                    flat_ev=float(
+                        getattr(thesis_cfg, "flat_ev", 0.0)
+                        if thesis_cfg is not None else 0.0
+                    ),
                 )
             except Exception as exc:
                 logger.warning("[SystemContext] ThesisEngine init failed: {}", exc)

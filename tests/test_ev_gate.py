@@ -3,7 +3,8 @@
 The expected-value gate replaces the alignment-floor gate as the entry plane's
 directional check. EV = p_win × R:R − p_loss (in R-multiples), where p_win /
 p_loss are the Phase 3 long/short probabilities mapped to the trade direction.
-Counter-trend trades (p_loss > p_win) must clear a higher EV bar.
+No direction is preferred: with-trend and counter-trend trades clear the SAME
+EV bar — a counter-trend idea fails only when its own EV is below the bar.
 """
 
 from datetime import datetime, timedelta, timezone
@@ -60,22 +61,22 @@ class TestEvComputation:
         assert r.passed is True
 
     def test_negative_ev_rejects(self):
-        # p_win=0.2, rr=1.0, p_loss=0.8 → EV = 0.2 - 0.8 = -0.6R; counter-trend
-        # bar 0.4R → reject.
+        # p_win=0.2, rr=1.0, p_loss=0.8 → EV = 0.2 - 0.8 = -0.6R < 0.3R bar.
         gate = EntryGate()
         r = gate._check_ev("EURUSD", "LONG", 100.0, 99.0, 101.0, 0.2, 0.8)
         assert r.passed is False
 
-    def test_counter_trend_needs_premium(self):
+    def test_counter_trend_same_bar_low_ev_rejects(self):
         # p_win=0.4 (counter), rr=2.0, p_loss=0.6 → EV = 0.8 - 0.6 = 0.2R.
-        # Counter-trend bar = 0.3 + 0.1 = 0.4R → reject.
+        # Counter-trend faces the SAME 0.3R bar (no premium) → 0.2R rejects on
+        # its own merits, not via a directional surcharge.
         gate = EntryGate()
         r = gate._check_ev("EURUSD", "LONG", 100.0, 99.0, 102.0, 0.4, 0.6)
         assert r.passed is False
         assert "counter-trend" in r.reason
 
     def test_counter_trend_high_rr_passes(self):
-        # p_win=0.4 (counter), rr=3.0, p_loss=0.6 → EV = 1.2 - 0.6 = 0.6R > 0.4R.
+        # p_win=0.4 (counter), rr=3.0, p_loss=0.6 → EV = 1.2 - 0.6 = 0.6R > 0.3R.
         gate = EntryGate()
         r = gate._check_ev("EURUSD", "LONG", 100.0, 99.0, 103.0, 0.4, 0.6)
         assert r.passed is True

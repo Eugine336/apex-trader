@@ -150,11 +150,11 @@ class EntryConfig:
     # weighted outcome must exceed 0.3× the risk. Replaces the alignment floor
     # as the directional gate.
     min_entry_ev: float = 0.3
-    # Additional EV premium a COUNTER-TREND trade (direction opposes the
-    # probabilistic majority) must clear on top of ``min_entry_ev``. A
-    # counter-trend idea fights the predominant structure flow, so it must show
-    # a stronger probability-weighted edge before it is taken.
-    counter_trend_ev_premium: float = 0.1
+    # NOTE: there is deliberately NO counter-trend EV premium. APEX prefers no
+    # direction — the EV gate decides purely on expected value. If a
+    # counter-trend idea has lower probability-weighted EV it fails the bar on
+    # its own merits; adding a directional surcharge would be a thumb on the
+    # scale that contradicts the opportunistic philosophy.
     # When True, the EV gate replaces the alignment-floor gate as the entry
     # plane's directional check (the opportunistic default). Set False to revert
     # to the legacy ``min_htf_alignment`` floor gate.

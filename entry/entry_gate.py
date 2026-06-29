@@ -243,9 +243,10 @@ class EntryGate:
 
         ``EV = p_win × R:R − p_loss`` (in R-multiples), where ``p_win`` /
         ``p_loss`` are the Phase 3 long/short probabilities mapped to the trade
-        direction. A counter-trend trade (``p_loss > p_win``) must clear a
-        higher EV bar (``min_entry_ev + counter_trend_ev_premium``) because it
-        fights the predominant flow. The GateTuner can LOWER the EV bar within
+        direction. No direction is preferred: with-trend and counter-trend
+        ideas clear the SAME EV bar (``min_entry_ev``) — a counter-trend trade
+        with genuinely lower EV fails on its own merits rather than via a
+        directional surcharge. The GateTuner can LOWER the EV bar within
         its bounded ``ev_gate`` envelope when its rejected setups keep winning,
         but never below zero.
 
@@ -280,10 +281,13 @@ class EntryGate:
 
         entry_ev = p_win * rr_ratio - p_loss
 
+        # No direction is preferred: the EV bar is the same for with-trend and
+        # counter-trend ideas. A counter-trend trade with genuinely lower
+        # probability-weighted EV will simply fail this bar on its own merits —
+        # we do not add a directional surcharge (that would be a thumb on the
+        # scale against the opportunistic "the market decides the side" design).
         is_counter = p_loss > p_win
         min_ev = float(getattr(self._config, "min_entry_ev", 0.3))
-        if is_counter:
-            min_ev += float(getattr(self._config, "counter_trend_ev_premium", 0.1))
 
         # Learned GateTuner offset (bounded, loosening-only): lower the EV bar
         # when the setups this gate rejected keep winning. Never below 0 (a
