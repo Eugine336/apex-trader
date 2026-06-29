@@ -2955,6 +2955,15 @@ class EventDrivenSystem:
             # decisions — previously the offset only reached the legacy
             # backtest engine and the live EntryGate ignored it.
             gate_tuner=(ctx.gate_tuner if ctx is not None else None),
+            # PairLearner drives cold-start score relaxation in the event-driven
+            # path. Without this the entry bar stays at the hardest factory
+            # default (85) for every symbol indefinitely because the learning
+            # layer never accumulates enough trades to self-calibrate.
+            pair_learner=(
+                getattr(ctx.ml_adapter, "pair_learner", None)
+                if ctx is not None and ctx.ml_adapter is not None
+                else None
+            ),
         )
 
         # ── Compliance Division runtime binding ──────────────────────

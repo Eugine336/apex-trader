@@ -63,12 +63,18 @@ class EntryOrchestrator:
         get_tick_momentum: Optional[Callable[[str, str, float], float]] = None,
         on_gate_trace: Optional[Callable[..., None]] = None,
         gate_tuner: Optional[object] = None,
+        pair_learner: Optional[object] = None,
     ) -> None:
         self._config = config or EntryConfig()
         self._pip_size = pip_size_lookup or (lambda _: 0.0001)
         self._on_entry = on_entry_decision
         self._on_gate_trace = on_gate_trace
         self._wm_store = world_model_store
+        # PairLearner: drives cold-start score relaxation. During cold-start
+        # (no trade history for a symbol) the entry bar is temporarily lowered
+        # so trades can flow and the learning layer can bootstrap itself.
+        # Once MIN_TRADES is reached, the learner's outcome data takes over.
+        self._pair_learner = pair_learner
         # Live sub-candle momentum for the trade direction → [-1, +1]
         # (signature: ``(symbol, norm_dir, pip_size) → float``). Used by the A1
         # flip confirmation so the flip rides real-time price, not a 60s-stale
@@ -654,6 +660,36 @@ class EntryOrchestrator:
         # HTF support, not merely escape the permissive alignment floor.
         posture = self._entry_posture(alignment, momentum)
 
+        # Cold-start score relaxation: while a symbol has no trade history the
+        # learning layer is dormant and all gates sit at hardest defaults. We
+        # temporarily credit the zone score so that trades can flow and the
+        # learning layer can bootstrap. The credit shrinks linearly as trade
+        # count grows and disappears entirely once MIN_TRADES is reached.
+        effective_score = zone.conviction
+        if self._pair_learner is not None:
+            try:
+                n = self._pair_learner.get_trade_count(symbol)
+                min_trades = int(getattr(self._pair_learner, "MIN_TRADES", 30))
+                cold_min = int(getattr(self._pair_learner, "cold_start_min_trades", 5))
+                if n < cold_min:
+                    # Full cold-start: apply maximum credit (lower bar by 15 pts)
+                    effective_score = min(zone.conviction + 15, 123)
+                    logger.debug(
+                        "[cold-start] {} score {} -> {} (full cold, n={})",
+                        symbol, zone.conviction, effective_score, n,
+                    )
+                elif n < min_trades:
+                    # Graduated: credit shrinks linearly from 15 -> 0
+                    frac = (n - cold_min) / max(min_trades - cold_min, 1)
+                    credit = int(round(15 * (1.0 - frac)))
+                    effective_score = min(zone.conviction + credit, 123)
+                    logger.debug(
+                        "[cold-start] {} score {} -> {} (graduated n={}/{})",
+                        symbol, zone.conviction, effective_score, n, min_trades,
+                    )
+            except Exception as exc:
+                logger.debug("[cold-start] score adjustment failed for {}: {}", symbol, exc)
+
         passed, results = self._gate.validate_all(
             symbol=symbol,
             direction=direction,
@@ -661,7 +697,7 @@ class EntryOrchestrator:
             stop_loss=sl,
             tp1=tp1,
             tp2=tp2,
-            score=zone.conviction,
+            score=effective_score,
             current_spread_pips=spread_pips,
             zone=zone,
             alignment=alignment,

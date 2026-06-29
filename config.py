@@ -3682,5 +3682,18 @@ def session_score_floor(symbol: str) -> int:
 
 def spread_open_guard_applies(symbol: str) -> bool:
     """True if the instrument is subject to the London/NY open spread spike guard.
-    Only applies to FX pairs — commodity and index spreads don't spike at FX opens."""
-    return is_session_gated(symbol)
+
+    Applies to FX pairs AND commodities/indices. The original assumption that
+    commodity and index spreads don't spike at FX opens is wrong — XAUUSD,
+    XAGUSD, US30, GER40 all spike at London and NY open because they react to
+    the same macro catalysts. Waiting 15 minutes for spreads to normalise
+    applies equally to all of them.
+    """
+    info = INSTRUMENT_REGISTRY.get(symbol.upper())
+    if info is None:
+        return True  # unknown — protect conservatively
+    return info.category in (
+        InstrumentCategory.FOREX,
+        InstrumentCategory.COMMODITY,
+        InstrumentCategory.INDEX,
+    )
