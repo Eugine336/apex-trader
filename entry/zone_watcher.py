@@ -80,7 +80,11 @@ def extract_entry_zones(
     """
     cfg = config or EntryConfig()
     now = datetime.now(timezone.utc)
-    expiry = now + timedelta(seconds=cfg.zone_expiry_seconds)
+    # Expiry is now computed per-zone from its source timeframe (see below) —
+    # a flat 15-minute TTL killed every H1/H4/D1 setup before price could
+    # plausibly return to it. `expiry` here is kept only as the M5/legacy
+    # fallback for any timeframe not in the per-TF table.
+    expiry = now + timedelta(seconds=cfg.zone_expiry_seconds_default)
     zones: list[EntryZone] = []
 
     fvgs_by_tf = model.fvgs_by_tf()
@@ -147,6 +151,13 @@ def extract_entry_zones(
             is_counter = bool(bias_direction) and bias_direction != direction
 
             inv = _invalidation(direction, overlap_bottom, overlap_top)
+            # Overlap zones are confirmed on two timeframes — use whichever
+            # gives the longer TTL (the more durable structure governs how
+            # long the confluence stays tradeable).
+            overlap_ttl = max(
+                cfg.get_zone_expiry_seconds(ftf),
+                cfg.get_zone_expiry_seconds(otf),
+            )
             zones.append(EntryZone(
                 symbol=model.symbol,
                 direction=direction,
@@ -157,7 +168,7 @@ def extract_entry_zones(
                 invalidation_level=inv,
                 conviction=_conv(100, direction, ZoneType.FVG_OB_OVERLAP, ftf, is_counter),
                 created_at=now,
-                expires_at=expiry,
+                expires_at=now + timedelta(seconds=overlap_ttl),
                 timeframe=ftf,
                 has_sweep=False,
                 is_counter_trend=is_counter,
@@ -182,7 +193,7 @@ def extract_entry_zones(
             invalidation_level=inv,
             conviction=_conv(80, direction, ZoneType.FVG_MIDPOINT, ftf, is_counter),
             created_at=now,
-            expires_at=expiry,
+            expires_at=now + timedelta(seconds=cfg.get_zone_expiry_seconds(ftf)),
             timeframe=ftf,
             is_counter_trend=is_counter,
             bias_direction=bias_direction or "",
@@ -204,7 +215,7 @@ def extract_entry_zones(
             invalidation_level=inv,
             conviction=_conv(70, direction, ZoneType.OB_MIDPOINT, otf, is_counter),
             created_at=now,
-            expires_at=expiry,
+            expires_at=now + timedelta(seconds=cfg.get_zone_expiry_seconds(otf)),
             timeframe=otf,
             is_counter_trend=is_counter,
             bias_direction=bias_direction or "",

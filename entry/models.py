@@ -82,7 +82,15 @@ class EntryConfig:
     zone_proximity_pips: float = 3.0
     m1_confirmation_timeout_candles: int = 5
     m1_min_bars: int = 10
-    zone_expiry_seconds: float = 900.0  # 15 minutes
+    # Per-timeframe zone TTL. A flat 15-minute expiry was calibrated only for
+    # M5 scalps — an H4 order block or D1 FVG is structurally valid for hours
+    # or days, not minutes. Price often takes hours to return to a higher-TF
+    # zone, and the old flat TTL killed every higher-timeframe setup before
+    # price ever arrived. Falls back to zone_expiry_seconds_default for any
+    # timeframe not listed (and is also used directly by any caller that
+    # still reads the old flat value).
+    zone_expiry_seconds_default: float = 900.0  # 15 minutes — M1/M5 fallback
+    zone_expiry_seconds_by_tf: dict = None  # set in __post_init__
     max_concurrent_pending: int = 5
     max_spread_multiplier: float = 3.0
     # ── Single structural R:R guardrail (opportunistic-trading rewire) ────
@@ -169,3 +177,36 @@ class EntryConfig:
     # geometry alone.
     counter_trend_conviction_mult_ev: float = 0.85
     coalesce_hz: float = 15.0
+
+    def __post_init__(self) -> None:
+        if self.zone_expiry_seconds_by_tf is None:
+            # Calibrated so a zone stays valid roughly as long as price could
+            # plausibly take to return to it on that timeframe — a fraction of
+            # one to a few bars on the source TF, not a flat 15 minutes for
+            # everything. M1/M5 keep the original fast-scalp TTL; higher TFs
+            # get TTLs that actually match how structure behaves on them.
+            self.zone_expiry_seconds_by_tf = {
+                "M1": 300.0,        # 5 min  — ~5 bars
+                "M5": 900.0,        # 15 min — ~3 bars (legacy default)
+                "M15": 3600.0,      # 1 hour — ~4 bars
+                "M30": 7200.0,      # 2 hours — ~4 bars
+                "H1": 14400.0,      # 4 hours — ~4 bars
+                "H4": 57600.0,      # 16 hours — ~4 bars
+                "D1": 259200.0,     # 3 days — ~3 bars
+                "W1": 1209600.0,    # 2 weeks — ~2 bars
+            }
+
+    def get_zone_expiry_seconds(self, timeframe: str) -> float:
+        """TTL for a zone sourced from *timeframe*, falling back to the
+        flat default for any timeframe not in the map (and for callers that
+        pass an empty/unknown string)."""
+        tf = str(timeframe or "").upper()
+        table = self.zone_expiry_seconds_by_tf or {}
+        return float(table.get(tf, self.zone_expiry_seconds_default))
+
+    @property
+    def zone_expiry_seconds(self) -> float:
+        """Backward-compatible alias — old callers reading the flat value
+        still get the M5/legacy default; new callers should use
+        ``get_zone_expiry_seconds(timeframe)`` for the per-TF TTL."""
+        return self.zone_expiry_seconds_default

@@ -361,39 +361,29 @@ class PositionWorker:
         # atomic (full-close only at the executor), and (2) the position is
         # already at the broker minimum lot, so splitting it computes a zero
         # close volume — the executor would reject it and the doomed
-        # PARTIAL_CLOSE would re-fire every cycle. In both cases lock in profit
-        # by trailing the SL to breakeven and KEEP the position open to run to
-        # TP2 (which _check_tp2 closes fully). Fire once: skip if the stop is
-        # already at/beyond breakeven so it does not thrash.
+        # PARTIAL_CLOSE would re-fire every cycle.
+        #
+        # In both cases the philosophy answer is to BANK the real TP1 win now
+        # rather than gamble it down to a 2-pip breakeven scrape waiting for
+        # TP2 — a position that can never be split can also never "run a
+        # runner", so trailing to BE just exposes a real win to round-tripping
+        # back to ~nothing if price reverses before TP2. Close the full
+        # position at TP1. (Deriv atomic contracts: same logic — bank it.)
         vol_min = snap.volume_min or 0.01
         at_min_lot = snap.remaining_lots <= vol_min
         if snap.platform == "deriv" or at_min_lot:
-            if not snap.at_breakeven:
-                direction = "LONG" if snap.is_long else "SHORT"
-                be_level = self._breakeven_level(
-                    snap.entry_price, direction,
-                    self.cfg.breakeven_buffer_pips, snap.pip_size,
-                )
-                # Only ever move the stop forward (never loosen it).
-                if (snap.is_long and be_level > snap.sl) or (
-                    not snap.is_long and be_level < snap.sl
-                ):
-                    if snap.platform == "deriv":
-                        source = "tp1_deriv_be"
-                        why = "deriv atomic"
-                    else:
-                        source = "tp1_minlot_be"
-                        why = "min-lot, cannot split"
-                    out.append(Intent.modify_sl(
-                        symbol=snap.symbol,
-                        ticket=snap.order_id,
-                        new_sl=be_level,
-                        source=source,
-                        reason=(
-                            f"TP1 hit @ {snap.tp1:.5f} — SL→BE, "
-                            f"running to TP2 ({why})"
-                        ),
-                    ))
+            if snap.platform == "deriv":
+                source = "tp1_deriv_close"
+                why = "deriv atomic — cannot split, banking full win"
+            else:
+                source = "tp1_minlot_close"
+                why = "min-lot, cannot split — banking full win"
+            out.append(Intent.close(
+                symbol=snap.symbol,
+                ticket=snap.order_id,
+                source=source,
+                reason=f"TP1 hit @ {snap.tp1:.5f} — closing full position ({why})",
+            ))
         else:
             ratio = snap.plan_partial_ratio or self.cfg.partial_close_ratio
             out.append(Intent.partial_close(
