@@ -16,7 +16,7 @@ import threading
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Callable, Optional
 
 from loguru import logger
 
@@ -240,6 +240,23 @@ class WorldModelStore:
         self._store: dict[str, WorldModel] = {}
         self._lock = threading.RLock()
         self._version_counter: int = 0
+        # Optional change-notification callback (Session 26). Fired best-effort
+        # OUTSIDE the store lock after a successful publish, passing the symbol
+        # whose model changed. Lets a continuous consumer (e.g. the ThesisEngine)
+        # re-evaluate the instant a store updates — including the developing
+        # store's sub-candle publishes — instead of waiting on the candle-close
+        # EventBus. ``None`` (default) is behaviour-neutral.
+        self._on_publish: Optional[Callable[[str], None]] = None
+
+    def set_on_publish(self, callback: Optional[Callable[[str], None]]) -> None:
+        """Register (or clear with ``None``) the post-publish change callback.
+
+        The callback receives the published symbol and is invoked outside the
+        store lock so it can safely read the store back. Faults raised by the
+        callback are swallowed — a consumer error must never break a publish.
+        """
+        with self._lock:
+            self._on_publish = callback
 
     def next_version(self) -> int:
         """Return the next monotonically increasing version number."""
@@ -251,7 +268,10 @@ class WorldModelStore:
         """Atomically publish a WorldModel for ``model.symbol``.
 
         Only replaces the stored model if the new version is >= the current.
+        On a real (non-stale) publish, fires the ``on_publish`` change callback
+        (if registered) outside the lock — best-effort.
         """
+        callback: Optional[Callable[[str], None]] = None
         with self._lock:
             existing = self._store.get(model.symbol)
             if existing is not None and model.version < existing.version:
@@ -261,6 +281,18 @@ class WorldModelStore:
                 )
                 return
             self._store[model.symbol] = model
+            callback = self._on_publish
+        # Notify OUTSIDE the lock: the callback may read the store (RLock would
+        # allow re-entry, but keeping arbitrary consumer work off the lock keeps
+        # publish latency bounded and avoids surprising contention).
+        if callback is not None:
+            try:
+                callback(model.symbol)
+            except Exception as exc:  # noqa: BLE001 — consumer fault isolation
+                logger.debug(
+                    "[world-model] on_publish callback failed for {}: {}",
+                    model.symbol, exc,
+                )
 
     def get(self, symbol: str) -> Optional[WorldModel]:
         """Return the current WorldModel for ``symbol``, or None."""

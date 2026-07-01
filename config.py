@@ -3422,6 +3422,24 @@ class ThesisConfig:
     # Per-bar confidence decay applied to a directional thesis that stops being
     # refreshed by new evidence (no opinion is permanent). Flat is exempt.
     decay_rate: float = 0.95
+    # ── Session 26: continuous (sub-candle) thesis re-evaluation ──────────
+    # When True the ThesisEngine is re-fed the instant the DEVELOPING WorldModel
+    # store publishes (the sub-candle analysis loop), not only on candle close —
+    # so a probability shift between bar closes updates the thesis immediately
+    # ("if the probability changes, APEX changes"). The confirmed candle-close
+    # feed is unchanged and always runs. False = candle-close-only (legacy).
+    continuous_reeval_enabled: bool = True
+    # Per-symbol debounce (seconds) for the continuous path so several TF
+    # publishes landing together (or a fast developing cadence) can't re-evaluate
+    # the same symbol in a tight burst. The candle-close feed is never debounced.
+    continuous_reeval_min_interval_seconds: float = 5.0
+
+    def __post_init__(self) -> None:
+        if float(self.continuous_reeval_min_interval_seconds) < 0:
+            raise ValueError(
+                "ThesisConfig.continuous_reeval_min_interval_seconds must be "
+                f">= 0, got {self.continuous_reeval_min_interval_seconds!r}"
+            )
 
 
 @dataclass
