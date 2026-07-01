@@ -3433,12 +3433,40 @@ class ThesisConfig:
     # publishes landing together (or a fast developing cadence) can't re-evaluate
     # the same symbol in a tight burst. The candle-close feed is never debounced.
     continuous_reeval_min_interval_seconds: float = 5.0
+    # ── Session 27: time-based thesis decay (continuous challenge) ─────────
+    # A thesis must continuously EARN its standing with fresh evidence. Unlike
+    # the per-bar ``decay_rate`` above (which ages *confidence* on bar-close),
+    # this is a TIME-based decay of a thesis's *effective EV*, computed on read:
+    #     effective_ev = base_ev * exp(-ln2 / half_life * seconds_since_refresh)
+    # The absence of confirming evidence is itself disconfirming — a thesis not
+    # refreshed for ``thesis_decay_half_life`` seconds is worth half its EV, so a
+    # stale idea silently loses its edge over the Flat (do-nothing) baseline and
+    # stops passing the entry gate. Applies to Long, Short AND Flat so the
+    # comparison stays fair (with ``flat_ev`` = 0 the Flat decay is a no-op).
+    # Computed at read time — no stored value is mutated and no timer runs.
+    thesis_decay_enabled: bool = True
+    # Half-life in seconds: a thesis loses 50% of its effective EV after this
+    # long without a fresh evidence refresh (900s = 15 min).
+    thesis_decay_half_life: float = 900.0
+    # Effective EV at/below this floor means the thesis has decayed to "dead" —
+    # it carries no actionable information any more (logged as expired).
+    thesis_decay_floor: float = 0.01
 
     def __post_init__(self) -> None:
         if float(self.continuous_reeval_min_interval_seconds) < 0:
             raise ValueError(
                 "ThesisConfig.continuous_reeval_min_interval_seconds must be "
                 f">= 0, got {self.continuous_reeval_min_interval_seconds!r}"
+            )
+        if float(self.thesis_decay_half_life) <= 0:
+            raise ValueError(
+                "ThesisConfig.thesis_decay_half_life must be > 0, got "
+                f"{self.thesis_decay_half_life!r}"
+            )
+        if float(self.thesis_decay_floor) < 0:
+            raise ValueError(
+                "ThesisConfig.thesis_decay_floor must be >= 0, got "
+                f"{self.thesis_decay_floor!r}"
             )
 
 

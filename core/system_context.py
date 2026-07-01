@@ -945,6 +945,18 @@ class SystemContext:
                         getattr(thesis_cfg, "flat_ev", 0.0)
                         if thesis_cfg is not None else 0.0
                     ),
+                    decay_enabled=bool(
+                        getattr(thesis_cfg, "thesis_decay_enabled", True)
+                        if thesis_cfg is not None else True
+                    ),
+                    decay_half_life=float(
+                        getattr(thesis_cfg, "thesis_decay_half_life", 900.0)
+                        if thesis_cfg is not None else 900.0
+                    ),
+                    decay_floor=float(
+                        getattr(thesis_cfg, "thesis_decay_floor", 0.01)
+                        if thesis_cfg is not None else 0.01
+                    ),
                 )
             except Exception as exc:
                 logger.warning("[SystemContext] ThesisEngine init failed: {}", exc)
