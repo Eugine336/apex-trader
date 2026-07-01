@@ -3451,6 +3451,31 @@ class ThesisConfig:
     # Effective EV at/below this floor means the thesis has decayed to "dead" —
     # it carries no actionable information any more (logged as expired).
     thesis_decay_floor: float = 0.01
+    # ── Session 28: evidence-based position management (exit, not R-level) ─
+    # An OPEN position is defended by nothing but the standing evidence. On each
+    # management cycle the ThesisEngine's competing Long/Short/Flat theses are
+    # re-read (with decay applied): when the thesis that justified the position
+    # no longer beats the Flat (do-nothing) baseline by
+    # ``opportunity_cost_threshold``, an ``evidence_exit`` is raised. This is
+    # ADDITIVE to the mechanical R-ladder / stop-loss (the hard stop remains the
+    # safety net) — whichever exit triggers first wins, so a dying thesis is cut
+    # on evidence rather than ridden to the mechanical stop.
+    evidence_exit_enabled: bool = True
+    # Seconds between thesis-health checks for an open position, so the check
+    # does not re-run on every tick-eval cycle (it is a read of the already-fed
+    # engine, not a re-analysis). 0 disables the interval gate (check whenever
+    # the management cycle runs).
+    evidence_exit_check_interval: float = 30.0
+    # When True, an OPEN position is also exited when the OPPOSING thesis becomes
+    # the dominant, actionable read (``thesis_flip``) — the seed a later session
+    # turns into an atomic reversal. When False only the supporting-thesis
+    # deterioration (``evidence_exit``) triggers.
+    thesis_flip_exit_enabled: bool = True
+    # A position must be held at least this many seconds before an evidence exit
+    # may fire — the thesis needs at least one candle to settle so entry noise
+    # cannot immediately close a fresh position (the mechanical stop still
+    # protects it during this window).
+    evidence_exit_min_hold_time: float = 60.0
 
     def __post_init__(self) -> None:
         if float(self.continuous_reeval_min_interval_seconds) < 0:
@@ -3467,6 +3492,16 @@ class ThesisConfig:
             raise ValueError(
                 "ThesisConfig.thesis_decay_floor must be >= 0, got "
                 f"{self.thesis_decay_floor!r}"
+            )
+        if float(self.evidence_exit_check_interval) < 0:
+            raise ValueError(
+                "ThesisConfig.evidence_exit_check_interval must be >= 0, got "
+                f"{self.evidence_exit_check_interval!r}"
+            )
+        if float(self.evidence_exit_min_hold_time) < 0:
+            raise ValueError(
+                "ThesisConfig.evidence_exit_min_hold_time must be >= 0, got "
+                f"{self.evidence_exit_min_hold_time!r}"
             )
 
 

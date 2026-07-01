@@ -583,6 +583,11 @@ class PositionEvaluator:
         self._ctx = ctx
         self._last_de_eval: dict[str, float] = {}
         self._de_interval = 10.0
+        # Evidence-based exit (Session 28) — per-ticket monotonic timestamp of
+        # the last ThesisEngine health check, so the check is throttled to
+        # ``thesis.evidence_exit_check_interval`` rather than firing every
+        # tick-eval cycle.
+        self._last_evidence_exit_check: dict[str, float] = {}
         self._fast_opposition: dict[str, int] = {}
         self._last_h1_close: dict[str, datetime] = {}
         # Per-ticket candidate provenance (Session 4 multi-opportunity). The
@@ -1324,6 +1329,77 @@ class PositionEvaluator:
             return ("CLOSE", "thesis_invalidated")
         return ("HOLD", scoped)
 
+    def _check_evidence_exit(
+        self,
+        order_id: str,
+        symbol: str,
+        direction: str,
+        hold_seconds: float,
+        now_mono: float,
+    ) -> Optional[tuple[str, str, dict]]:
+        """Evidence-based exit gate for an open position (Session 28).
+
+        Reads the ThesisEngine's competing theses (decay applied) and, when the
+        thesis that justified the position no longer beats the Flat (do-nothing)
+        baseline — or the opposing thesis has become dominant — returns the exit
+        cause to raise. Returns ``None`` when the position should still be held,
+        the engine is absent/disabled, no thesis is tracked yet, the position is
+        inside its ``evidence_exit_min_hold_time``, or the per-ticket
+        ``evidence_exit_check_interval`` has not elapsed.
+
+        ADDITIVE to the mechanical R-ladder: this is a FASTER exit when the
+        thesis dies; the hard stop-loss remains the safety net. Fail-safe — any
+        fault returns ``None`` so management falls through to the R-ladder.
+
+        Returns ``(cause, reason, detail)`` where ``cause`` is the
+        :class:`ExitCause` value string (``"evidence_exit"`` or
+        ``"thesis_flip"``) to tag the close intent with.
+        """
+        ctx = self._ctx
+        engine = getattr(ctx, "thesis_engine", None) if ctx is not None else None
+        if engine is None:
+            return None
+        cfg = getattr(self._config, "thesis", None) if self._config is not None else None
+        if cfg is not None and not getattr(cfg, "evidence_exit_enabled", True):
+            return None
+        try:
+            # Min hold — a fresh position needs at least one candle to settle so
+            # entry noise cannot immediately close it (the mechanical stop still
+            # protects it during this window).
+            min_hold = float(getattr(cfg, "evidence_exit_min_hold_time", 60.0)) if cfg else 60.0
+            if hold_seconds is not None and hold_seconds < min_hold:
+                return None
+            # Check interval — this is a read of the already-fed engine, not a
+            # re-analysis; throttle it so it doesn't run every tick-eval cycle.
+            interval = float(getattr(cfg, "evidence_exit_check_interval", 30.0)) if cfg else 30.0
+            last = self._last_evidence_exit_check.get(order_id, 0.0)
+            if interval > 0.0 and (now_mono - last) < interval:
+                return None
+            self._last_evidence_exit_check[order_id] = now_mono
+            # No thesis tracked yet (cold start) → never exit on absent evidence.
+            if engine.get(symbol) is None:
+                return None
+            flip_enabled = bool(getattr(cfg, "thesis_flip_exit_enabled", True)) if cfg else True
+            threshold = float(getattr(cfg, "opportunity_cost_threshold", 0.1)) if cfg else 0.1
+            signal, reason, detail = engine.evaluate_open_position(
+                symbol,
+                direction,
+                opportunity_cost_threshold=threshold,
+                flip_exit_enabled=flip_enabled,
+            )
+            if signal == "THESIS_FLIP":
+                return ("thesis_flip", reason, detail or {})
+            if signal == "EVIDENCE_EXIT":
+                return ("evidence_exit", reason, detail or {})
+            return None
+        except Exception as exc:  # noqa: BLE001 — never let a fault close a trade
+            logger.warning(
+                "[evidence-exit] check failed for {} — falling through to "
+                "R-ladder: {}",
+                order_id, exc,
+            )
+            return None
+
     def _run_decision_engine_management(
         self, pos, price: float, now: datetime, now_mono: float,
         mgmt, order_id: str, snap: PositionSnapshot,
@@ -1537,6 +1613,76 @@ class PositionEvaluator:
                         "hold_minutes defaulting to 0: {}",
                         symbol, exc,
                     )
+
+            # ── Evidence-based exit (Session 28) ──────────────────────────
+            # Before the strategic scoring runs, ask the ThesisEngine whether
+            # the standing evidence still supports THIS open position. A
+            # decayed / contradicted thesis (or a now-dominant opposing thesis)
+            # is cut on evidence here — a FASTER exit than, and ADDITIVE to, the
+            # mechanical R-ladder whose hard stop remains the safety net. Fully
+            # fail-safe: a None verdict falls through to the normal DE
+            # management (and the min-hold / check-interval gates live inside
+            # the helper).
+            ev_exit = self._check_evidence_exit(
+                order_id, symbol, direction, hold_mins * 60.0, now_mono,
+            )
+            if ev_exit is not None:
+                cause, ev_reason, ev_detail = ev_exit
+                ev_risk = risk_pips if risk_pips > 0 else 0.0
+                ev_profit_r = round(pnl_pips / ev_risk, 4) if ev_risk > 0 else 0.0
+                self._aggregator.register_position(
+                    ticket=order_id, direction=direction,
+                    current_sl=sl, pip_size=pip_size,
+                )
+                self._aggregator.submit([Intent.close(
+                    symbol=symbol,
+                    ticket=order_id,
+                    source=cause,
+                    reason=f"evidence: {ev_reason}"[:120],
+                )])
+                logger.info(
+                    "[evidence-exit] {} {} {} — {} (profit {:+.2f}R)",
+                    symbol, direction, cause, ev_reason[:100], ev_profit_r,
+                )
+                if ctx.decision_journal is not None:
+                    try:
+                        ctx.decision_journal.log_management_event(
+                            symbol=symbol, order_id=order_id, direction=direction,
+                            event=cause, reason=ev_reason,
+                            profit_r=ev_profit_r, pnl_pips=pnl_pips,
+                            pnl_dollars=float(_broker_pnl(pos) or 0.0),
+                            hold_minutes=hold_mins, detail=ev_detail,
+                        )
+                    except Exception as exc:
+                        logger.debug(
+                            "[evidence-exit] journal failed for {}: {}", order_id, exc,
+                        )
+                try:
+                    store = get_event_store()
+                    if store is not None:
+                        store.emit(
+                            event_type=DE.POSITION_HEALTH,
+                            severity="INFO",
+                            symbol=symbol,
+                            parent_id=order_id or None,
+                            source_module="brain.thesis_engine",
+                            payload={
+                                "order_id": order_id,
+                                "pair": symbol,
+                                "direction": norm_dir.replace("BUY", "LONG").replace("SELL", "SHORT"),
+                                "horizon": "",
+                                "health_score": 0.0,
+                                "action": "CLOSE",
+                                "profit_r": ev_profit_r,
+                                "reason": f"{cause}: {ev_reason}"[:200],
+                                "evidence_detail": ev_detail,
+                            },
+                        )
+                except Exception as exc:
+                    logger.debug(
+                        "[evidence-exit] POSITION_HEALTH persist failed: {}", exc,
+                    )
+                return
 
             # Live portfolio heat for this position's account — feeds the
             # situation engine / risk governor management review (was hardcoded
@@ -6201,8 +6347,46 @@ class EventDrivenSystem:
             self._feed_thesis_engine(
                 sym, votes, trigger="developing", bias_source=developing_wm,
             )
+            # Continuous management (Session 28): a thesis that moved between
+            # candle closes should re-check any OPEN position on this symbol NOW
+            # rather than waiting for the next DE cadence. Best-effort, cheap —
+            # only clears the per-ticket throttles so the next tick-eval cycle
+            # runs the (tested) management + evidence-exit path immediately.
+            self._arm_evidence_recheck(sym)
         except Exception as exc:
             logger.debug("[thesis-engine] developing re-eval failed for {}: {}", symbol, exc)
+
+    def _arm_evidence_recheck(self, symbol: str) -> None:
+        """Force an immediate management re-check of open positions on ``symbol``.
+
+        Session 28 continuous hook: when the thesis for a symbol changes between
+        candle closes, clear the per-ticket DE-eval and evidence-exit throttle
+        timestamps for every tracked open position on that symbol, so the next
+        tick-eval cycle re-runs the management + evidence-exit path immediately
+        ("continuously re-evaluate the open thesis as new information arrives").
+
+        Cheap and fully best-effort: it never fetches from the broker, never
+        closes anything itself, and touches only the throttle maps — the
+        already-tested management path does the actual evaluation and exit.
+        Gated by ``thesis.evidence_exit_enabled``.
+        """
+        try:
+            cfg = getattr(self._config, "thesis", None) if self._config is not None else None
+            if cfg is not None and not getattr(cfg, "evidence_exit_enabled", True):
+                return
+            ev = getattr(self, "_evaluator", None)
+            if ev is None:
+                return
+            prov = getattr(ev, "_candidate_positions", None) or {}
+            for oid, cp in list(prov.items()):
+                if str(getattr(cp, "symbol", "")) == str(symbol):
+                    ev._last_de_eval[str(oid)] = 0.0
+                    ev._last_evidence_exit_check[str(oid)] = 0.0
+        except Exception as exc:
+            logger.debug(
+                "[evidence-exit] continuous recheck arm failed for {}: {}",
+                symbol, exc,
+            )
 
     def _thesis_gate_allows(self, symbol: str, direction: str) -> bool:
         """ThesisEngine entry gate (Gap 1b) — fail-safe.

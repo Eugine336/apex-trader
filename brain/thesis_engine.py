@@ -465,6 +465,120 @@ class ThesisEngine:
             logger.debug("[thesis] get_best_thesis({}) ignored a fault: {}", symbol, exc)
             return (FLAT, 0.0, None)
 
+    # ── Evidence-based position management (Session 28) ──────────────────
+
+    def evaluate_open_position(
+        self,
+        symbol: str,
+        position_direction: str,
+        now: Optional[float] = None,
+        *,
+        opportunity_cost_threshold: Optional[float] = None,
+        flip_exit_enabled: bool = True,
+    ) -> tuple[str, str, dict]:
+        """Should an OPEN position still be held on the standing evidence?
+
+        The APEX philosophy — "no trade is defended because it already exists" —
+        applied to management: instead of riding the mechanical R-ladder, an open
+        position is re-checked against the ThesisEngine's competing theses. The
+        *effective* (time-decayed) EVs are used, so a thesis that stops being
+        refreshed silently loses its standing and the position is exited on
+        evidence rather than defended by inertia.
+
+        ``position_direction`` is the open trade's side (``LONG``/``BUY`` or
+        ``SHORT``/``SELL``). ``opportunity_cost_threshold`` overrides the engine's
+        ``min_ev_threshold`` for the "does the supporting side still beat doing
+        nothing?" margin. ``flip_exit_enabled`` toggles the competing-dominance
+        signal.
+
+        Returns ``(signal, reason, detail)``:
+
+        * ``("HOLD", …)`` — the supporting thesis still justifies the position,
+          OR no thesis is tracked yet (never exit on absent evidence).
+        * ``("EVIDENCE_EXIT", …)`` — the supporting thesis's effective EV no
+          longer beats Flat by the opportunity-cost margin (decayed or
+          contradicted): the reason the trade existed is gone.
+        * ``("THESIS_FLIP", …)`` — the OPPOSING thesis is now the dominant,
+          actionable read. Distinct from EVIDENCE_EXIT so a later session can
+          turn it into an atomic reversal; today callers treat it as an exit.
+
+        ``detail`` carries the numbers behind the verdict for logging /
+        journaling. Fail-safe: any internal fault returns ``("HOLD",
+        "eval_error", {})`` — an evidence-exit fault must never itself close a
+        position (the mechanical stop remains the safety net).
+        """
+        try:
+            want = (
+                LONG if str(position_direction or "").upper() in (LONG, "BUY")
+                else SHORT
+            )
+            tset = self.get(symbol)
+            if tset is None:
+                # No standing evidence yet — never exit a position on nothing.
+                return ("HOLD", "no_thesis", {})
+            t = _now_epoch() if now is None else float(now)
+            threshold = (
+                self.min_ev_threshold
+                if opportunity_cost_threshold is None
+                else _safe_float(opportunity_cost_threshold, self.min_ev_threshold)
+            )
+            evs, dominant, _ = self._decayed_view(tset, t)
+            opp = SHORT if want == LONG else LONG
+            own_ev = evs[want]
+            opp_ev = evs[opp]
+            flat_ev = evs[FLAT]
+            own_over_flat = own_ev - flat_ev
+            opp_over_flat = opp_ev - flat_ev
+            detail = {
+                "position_direction": want,
+                "own_ev": round(own_ev, 4),
+                "opp_ev": round(opp_ev, 4),
+                "flat_ev": round(flat_ev, 4),
+                "own_over_flat": round(own_over_flat, 4),
+                "opp_over_flat": round(opp_over_flat, 4),
+                "threshold": round(threshold, 4),
+                "dominant": dominant,
+                "own_decay": round(self._time_decay_factor(tset.get(want), t), 4),
+                "opp_decay": round(self._time_decay_factor(tset.get(opp), t), 4),
+            }
+            # Competing thesis dominance — the OTHER side is now the actionable
+            # read (its decayed EV leads this side AND clears the do-nothing
+            # margin). Checked first: a genuine flip is more specific than a
+            # plain deterioration and seeds the future atomic reversal.
+            if flip_exit_enabled and opp_ev > own_ev and opp_over_flat >= threshold:
+                return (
+                    "THESIS_FLIP",
+                    (
+                        f"competing {opp} thesis dominant — effective EV "
+                        f"{opp_ev:.3f}R > held {want} {own_ev:.3f}R and "
+                        f"{opp_over_flat:.3f}R ≥ {threshold:.3f}R over flat"
+                    ),
+                    detail,
+                )
+            # Supporting thesis no longer beats doing nothing by the required
+            # margin — the evidence that justified the position is gone.
+            if own_over_flat < threshold:
+                return (
+                    "EVIDENCE_EXIT",
+                    (
+                        f"{want} thesis no longer supports position — effective "
+                        f"EV over flat {own_over_flat:.3f}R < {threshold:.3f}R"
+                    ),
+                    detail,
+                )
+            return (
+                "HOLD",
+                f"{want} thesis intact — effective EV over flat "
+                f"{own_over_flat:.3f}R ≥ {threshold:.3f}R",
+                detail,
+            )
+        except Exception as exc:  # noqa: BLE001 — a fault must never close a trade
+            logger.debug(
+                "[thesis] evaluate_open_position({}) ignored a fault: {}",
+                symbol, exc,
+            )
+            return ("HOLD", "eval_error", {})
+
     # ── Decay ───────────────────────────────────────────────────────────
 
     def decay_all(self) -> None:
