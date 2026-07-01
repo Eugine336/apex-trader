@@ -3385,6 +3385,46 @@ class DevelopingAnalysisConfig:
 
 
 @dataclass
+class ThesisConfig:
+    """Gap 1b — the ThesisEngine as a live entry quality gate.
+
+    The ThesisEngine (Gap 1a) keeps competing Long / Short / Flat theses alive
+    per symbol, each with its own EV / confidence / uncertainty, and chooses the
+    dominant one on RELATIVE expected value (Flat = the do-nothing baseline)
+    rather than collapsing the vote panel to a single winner.
+
+    This config controls whether the engine's dominant-thesis read acts as an
+    additional gate on entries. When ``gate_enabled`` is True an entry only
+    proceeds when the engine's dominant directional thesis AGREES with the
+    proposed direction AND its EV beats the Flat baseline by
+    ``opportunity_cost_threshold``. Doing nothing is an explicit, equally
+    acceptable outcome — the bar is "is this better than waiting?", not "is this
+    positive?".
+
+    Fail-safe: when no thesis is tracked for a symbol yet (cold start) or the
+    engine errors, the gate ALLOWS the entry — it never blocks on absent
+    evidence. The directional EV/permit gates upstream remain authoritative.
+    """
+
+    # Master switch for the entry gate. When False the ThesisEngine still runs
+    # observationally (fed every WorldModel update, surfaced via Governance
+    # ``get_status``) but never blocks an entry.
+    gate_enabled: bool = True
+    # The Flat thesis EV — the opportunity cost of doing nothing. Starts at 0.0
+    # so a directional thesis only needs ``opportunity_cost_threshold`` of
+    # positive EV; future sessions raise this as the measured cost of being in a
+    # position is learned, and the bar adapts automatically.
+    flat_ev: float = 0.0
+    # How much a directional thesis must beat the Flat baseline by, in
+    # R-multiples, before APEX acts (the ThesisEngine ``min_ev_threshold``).
+    # With ``flat_ev`` = 0.0 this initially behaves like a plain 0.1R floor.
+    opportunity_cost_threshold: float = 0.1
+    # Per-bar confidence decay applied to a directional thesis that stops being
+    # refreshed by new evidence (no opinion is permanent). Flat is exempt.
+    decay_rate: float = 0.95
+
+
+@dataclass
 class AdaptiveTunerConfig:
     """Phase 6 — closes the continuous-learning loop end to end.
 
@@ -3585,6 +3625,7 @@ class AppConfig:
     developing_analysis: DevelopingAnalysisConfig = field(
         default_factory=DevelopingAnalysisConfig
     )
+    thesis: ThesisConfig = field(default_factory=ThesisConfig)
     conviction_normalization: ConvictionNormalizationConfig = field(
         default_factory=ConvictionNormalizationConfig
     )
