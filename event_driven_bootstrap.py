@@ -2662,6 +2662,12 @@ class EventDrivenSystem:
         # Kept distinct from ``self._wm_store`` so developing data can never
         # corrupt confirmed, non-repainting WorldModels.
         self._developing_wm_store = WorldModelStore()
+        # Session 26 — continuous (sub-candle) thesis re-evaluation state. The
+        # developing store fires ``_on_developing_update`` on every publish; a
+        # per-symbol monotonic timestamp debounces bursts so several TF publishes
+        # landing together can't re-evaluate the same symbol repeatedly.
+        self._developing_reeval_at: dict[str, float] = {}
+        self._developing_reeval_lock = threading.Lock()
 
         # ── Learned analysis edge ────────────────────────────────────
         # Bounded, default-neutral multipliers that make the analysis
@@ -2803,6 +2809,22 @@ class EventDrivenSystem:
                     "[event-driven] DevelopingAnalysisLoop init failed: {}", exc,
                 )
                 self._developing_loop = None
+
+        # Session 26 — wire the developing store's change notification to the
+        # continuous thesis re-evaluation. Registered whenever the developing
+        # loop is live so a sub-candle probability shift updates the thesis the
+        # instant it publishes, not on the next candle close. Fully guarded
+        # (``_on_developing_update`` no-ops when the engine/config is absent or
+        # continuous re-eval is disabled), so this is behaviour-neutral until
+        # both the developing loop and a ThesisEngine are present.
+        if self._developing_loop is not None:
+            try:
+                self._developing_wm_store.set_on_publish(self._on_developing_update)
+            except Exception as exc:
+                logger.warning(
+                    "[event-driven] developing thesis re-eval wiring failed: {}",
+                    exc,
+                )
 
         # ── Phase 6: adaptive scheduler (continuous-learning closure) ──
         # Drives the time-based learning cadences (TunerAgent.on_periodic_tick /
@@ -6031,25 +6053,49 @@ class EventDrivenSystem:
         )
         recorder.finalize_success()
 
-    def _feed_thesis_engine(self, symbol: str, votes: list) -> None:
+    def _feed_thesis_engine(
+        self,
+        symbol: str,
+        votes: list,
+        *,
+        trigger: str = "candle_close",
+        bias_source: Any = None,
+    ) -> None:
         """Feed the ThesisEngine with the live evidence for ``symbol``.
 
         Builds the competing Long/Short/Flat theses from this cycle's vote panel
-        and the probabilistic bias on the confirmed WorldModel. Best-effort and
-        fully decoupled: a tracking fault must never affect the entry pipeline.
-        Called on every WorldModel update; the resulting thesis is consumed by
-        the entry gate (:meth:`_thesis_gate_allows`).
+        and the probabilistic bias. Best-effort and fully decoupled: a tracking
+        fault must never affect the entry pipeline.
+
+        Called on every confirmed WorldModel update (``trigger="candle_close"``)
+        AND — when continuous re-evaluation is enabled — the instant the
+        DEVELOPING store publishes between candle closes (``trigger="developing"``).
+
+        ``bias_source`` is the WorldModel to read the directional probabilities
+        from. The confirmed store is used when ``None`` (the candle-close path);
+        the developing path passes the fresher developing WorldModel so a
+        sub-candle probability shift is reflected immediately. The vote panel is
+        always the confirmed module evidence (the developing store carries no
+        consensus votes) — only the probabilities move between closes.
+
+        Emits a structured log when the re-evaluation materially changes the
+        thesis (``should_act`` flips, dominant direction changes, or EV moves).
         """
         ctx = self._ctx
         engine = getattr(ctx, "thesis_engine", None) if ctx is not None else None
         if engine is None:
             return
         try:
+            # Snapshot the pre-update read so we can log what actually changed.
+            before_act, before_dir, before_ev = self._thesis_snapshot(engine, symbol)
+
             long_p = 0.0
             short_p = 0.0
-            wm = self._wm_store.get(symbol) if self._wm_store is not None else None
-            if wm is not None:
-                bias = wm.bias_dict()
+            src = bias_source
+            if src is None and self._wm_store is not None:
+                src = self._wm_store.get(symbol)
+            if src is not None:
+                bias = src.bias_dict()
                 long_p = float(bias.get("long_probability", 0.0) or 0.0)
                 short_p = float(bias.get("short_probability", 0.0) or 0.0)
             avg_rr = float(
@@ -6065,8 +6111,98 @@ class EventDrivenSystem:
                 entry_ev_long=ev_long,
                 entry_ev_short=ev_short,
             )
+
+            # Log the delta only when it matters — a should_act flip, dominant
+            # direction change, or a meaningful EV move. Keeps the continuous
+            # path quiet on no-op refreshes while surfacing real thesis shifts.
+            after_act, after_dir, after_ev = self._thesis_snapshot(engine, symbol)
+            act_flip = before_act != after_act
+            dir_flip = before_dir != after_dir
+            ev_moved = abs(after_ev - before_ev) >= 0.05
+            if act_flip or dir_flip or ev_moved:
+                logger.info(
+                    "[thesis-update] {} ({}) — should_act {}→{} dir {}→{} "
+                    "EV-over-flat {:.3f}R→{:.3f}R (long_p={:.3f} short_p={:.3f})",
+                    symbol, trigger,
+                    before_act, after_act, before_dir or "-", after_dir or "-",
+                    before_ev, after_ev, long_p, short_p,
+                )
         except Exception as exc:
             logger.debug("[thesis-engine] feed failed for {}: {}", symbol, exc)
+
+    @staticmethod
+    def _thesis_snapshot(engine: Any, symbol: str) -> tuple[bool, str, float]:
+        """Read ``(should_act, dominant_direction, ev_over_flat)`` — fail-safe.
+
+        Returns a neutral ``(False, "", 0.0)`` when no thesis is tracked yet or
+        anything errors so the change-logging comparison never raises.
+        """
+        try:
+            if engine.get(symbol) is None:
+                return (False, "", 0.0)
+            should_trade, direction, ev_adv = engine.should_act(symbol)
+            return (bool(should_trade), str(direction or ""), float(ev_adv))
+        except Exception:  # noqa: BLE001 — snapshot is observability only
+            return (False, "", 0.0)
+
+    def _on_developing_update(self, symbol: str) -> None:
+        """Continuous thesis re-evaluation — fired by the developing store.
+
+        Registered as the developing :class:`WorldModelStore`'s ``on_publish``
+        callback (Session 26), so it runs whenever the sub-candle analysis loop
+        publishes a fresher developing read — NOT on every tick. It re-feeds the
+        ThesisEngine with the confirmed vote panel (the module evidence base) and
+        the DEVELOPING store's fresher directional probabilities, so a
+        probability shift between candle closes updates the thesis immediately.
+
+        Guards:
+        * Master switch ``thesis.continuous_reeval_enabled`` (default True).
+        * Per-symbol debounce so several TF publishes landing together, or a fast
+          developing cadence, can't re-evaluate the same symbol in a tight burst.
+        * Fully best-effort — a fault here must never disrupt the developing
+          loop or the store publish path that invoked it.
+        """
+        try:
+            sym = str(symbol or "")
+            if not sym:
+                return
+            ctx = self._ctx
+            engine = getattr(ctx, "thesis_engine", None) if ctx is not None else None
+            if engine is None:
+                return
+            cfg = getattr(self._config, "thesis", None)
+            if cfg is not None and not getattr(cfg, "continuous_reeval_enabled", True):
+                return
+            # Per-symbol debounce.
+            min_interval = float(
+                getattr(cfg, "continuous_reeval_min_interval_seconds", 5.0)
+                if cfg is not None else 5.0
+            )
+            now = _time.monotonic()
+            with self._developing_reeval_lock:
+                last = self._developing_reeval_at.get(sym, 0.0)
+                if min_interval > 0.0 and (now - last) < min_interval:
+                    return
+                self._developing_reeval_at[sym] = now
+
+            # Confirmed vote panel = the structural module evidence base; the
+            # developing store carries no consensus votes, only fresher bias.
+            confirmed_wm = (
+                self._wm_store.get(sym) if self._wm_store is not None else None
+            )
+            votes = (
+                list(getattr(confirmed_wm, "votes", ()) or [])
+                if confirmed_wm is not None else []
+            )
+            developing_wm = (
+                self._developing_wm_store.get(sym)
+                if self._developing_wm_store is not None else None
+            )
+            self._feed_thesis_engine(
+                sym, votes, trigger="developing", bias_source=developing_wm,
+            )
+        except Exception as exc:
+            logger.debug("[thesis-engine] developing re-eval failed for {}: {}", symbol, exc)
 
     def _thesis_gate_allows(self, symbol: str, direction: str) -> bool:
         """ThesisEngine entry gate (Gap 1b) — fail-safe.
