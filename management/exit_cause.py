@@ -46,6 +46,18 @@ class ExitCause(Enum):
     THESIS_INVALIDATED = "thesis_invalidated"
     THESIS_SILENT = "thesis_silent"
 
+    # ── Evidence-based management (Session 28) ────────────────────────────
+    # The ThesisEngine's competing Long/Short/Flat theses drove the exit, not a
+    # mechanical R-level. EVIDENCE_EXIT: the thesis that justified the position
+    # decayed / was contradicted so its effective EV no longer beats the Flat
+    # (do-nothing) baseline by the opportunity-cost margin. THESIS_FLIP: the
+    # OPPOSING thesis is now the dominant actionable read (a later session turns
+    # this into an atomic reversal; for now it exits). Kept distinct from the
+    # candidate-scoped THESIS_INVALIDATED so the learners can tell the
+    # engine-driven evidence exit apart from the opening-panel flip.
+    EVIDENCE_EXIT = "evidence_exit"
+    THESIS_FLIP = "thesis_flip"
+
     # ── Protective / guard exits ──────────────────────────────────────────
     NEWS_EXIT = "news_exit"
     SESSION_CLOSE = "session_close"
@@ -135,6 +147,10 @@ class ExitCause(Enum):
         if "stop loss" in r or "stop-loss" in r or "stopped out" in r or "sl hit" in r:
             return cls.STOP_LOSS
         # Strategic / thesis closes (DecisionEngine reasons).
+        if "thesis_flip" in r or "thesis flip" in r or "competing" in r:
+            return cls.THESIS_FLIP
+        if "evidence_exit" in r or "evidence exit" in r or r.startswith("evidence"):
+            return cls.EVIDENCE_EXIT
         if "severe thesis" in r or "thesis collapse" in r or "deterioration" in r or "decay" in r:
             return cls.THESIS_DECAY
         if "thesis" in r and "secure" in r:

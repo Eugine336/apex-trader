@@ -189,6 +189,61 @@ class DecisionJournal:
             decision.reason[:200],
         )
 
+    def log_management_event(
+        self,
+        symbol: str,
+        order_id: str,
+        direction: str,
+        event: str,
+        reason: str,
+        *,
+        profit_r: float = 0.0,
+        pnl_pips: float = 0.0,
+        pnl_dollars: float = 0.0,
+        hold_minutes: float = 0.0,
+        detail: dict | None = None,
+    ) -> None:
+        """Write a self-contained management-event JSONL record (Session 28).
+
+        For evidence-based management decisions (evidence exits, thesis flips)
+        that do NOT originate from a full DecisionEngine ``ManagementDecision``
+        — so they need not fabricate a ``TradeContext`` / ``SituationAssessment``
+        just to be journaled. Records the thesis numbers behind the exit
+        (``detail``) so the learning layer can attribute it. Fail-safe: a
+        journal write must never disrupt the exit it is recording.
+        """
+        now = datetime.now(timezone.utc)
+        record = {
+            "timestamp": now.isoformat(),
+            "decision_type": "MANAGEMENT_EVENT",
+            "event": str(event),
+            "symbol": symbol,
+            "order_id": order_id,
+            "direction": direction,
+            "reason": str(reason)[:300],
+            "profit_r": round(float(profit_r or 0.0), 3),
+            "pnl_pips": round(float(pnl_pips or 0.0), 2),
+            "pnl_dollars": round(float(pnl_dollars or 0.0), 2),
+            "hold_minutes": round(float(hold_minutes or 0.0), 2),
+            "detail": dict(detail or {}),
+        }
+        with self._lock:
+            try:
+                date_str = now.strftime("%Y-%m-%d")
+                if date_str != self._current_date:
+                    self._rotate_file(date_str)
+                if self._file is not None:
+                    self._file.write(json.dumps(record, default=str) + "\n")
+                    self._file.flush()
+            except Exception as exc:
+                logger.warning("[DecisionJournal] management-event write failed: {}", exc)
+
+        logger.info(
+            "[MGMT-EVENT] {} {} | {} | {} | pnl={:+.1f}pip ({:+.2f}R) | {}",
+            direction, symbol, event, order_id,
+            float(pnl_pips or 0.0), float(profit_r or 0.0), str(reason)[:160],
+        )
+
     def _rotate_file(self, date_str: str) -> None:
         if self._file is not None:
             try:
