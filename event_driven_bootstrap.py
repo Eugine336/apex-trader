@@ -588,6 +588,13 @@ class PositionEvaluator:
         # ``thesis.evidence_exit_check_interval`` rather than firing every
         # tick-eval cycle.
         self._last_evidence_exit_check: dict[str, float] = {}
+        # Atomic reversal (Session 29) — pending opposite-direction entries armed
+        # when a thesis_flip is judged reversal-viable, keyed by the exit leg's
+        # ticket. The owning EventDrivenSystem aliases its OWN dict onto this
+        # field after construction so the arm site (here, management path) and
+        # the dispatch site (_handle_close_result, once the close confirms) share
+        # ONE map. Defaulted here so the evaluator is safe standalone / in tests.
+        self._pending_reversals: dict[str, dict[str, Any]] = {}
         self._fast_opposition: dict[str, int] = {}
         self._last_h1_close: dict[str, datetime] = {}
         # Per-ticket candidate provenance (Session 4 multi-opportunity). The
@@ -1400,6 +1407,71 @@ class PositionEvaluator:
             )
             return None
 
+    def _maybe_arm_reversal(
+        self,
+        order_id: str,
+        symbol: str,
+        direction: str,
+        detail: dict,
+    ) -> Optional[str]:
+        """Decide whether a ``thesis_flip`` exit should become an atomic reversal.
+
+        Called at the flip decision (before the exit-leg CLOSE is submitted).
+        Consults the anti-ping-pong :class:`ReversalManager` with the competing
+        thesis's effective edge over Flat (from the flip ``detail``). When a
+        reversal is permitted, records a pending reversal keyed by the exit
+        ticket — the opposite-direction entry is dispatched the instant the close
+        confirms (:meth:`EventDrivenSystem._dispatch_pending_reversal`) — and
+        returns the reversal direction (``"LONG"``/``"SHORT"``). Returns ``None``
+        (fall back to a plain evidence exit) when reversal is disabled, the
+        manager rejects it (cooldown / per-session cap / escalating threshold),
+        or anything errors — a reversal is never armed on a fault.
+
+        Note: the reversal is *counted* (cooldown + session tally) only when it
+        actually dispatches, not here, so an armed-but-never-executed reversal
+        does not consume the budget.
+        """
+        ctx = self._ctx
+        rm = getattr(ctx, "reversal_manager", None) if ctx is not None else None
+        if rm is None or not getattr(rm, "enabled", False):
+            return None
+        try:
+            want = "LONG" if str(direction or "").upper() in ("LONG", "BUY") else "SHORT"
+            to_direction = "SHORT" if want == "LONG" else "LONG"
+            try:
+                competing_ev = float((detail or {}).get("opp_over_flat", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                competing_ev = 0.0
+            verdict = rm.evaluate(symbol, competing_ev)
+            if not verdict.reverse:
+                logger.info(
+                    "[reversal] {} {} flip NOT reversing (plain evidence exit) — {}",
+                    symbol, want, verdict.reason,
+                )
+                return None
+            plan = {
+                "symbol": symbol,
+                "from_direction": want,
+                "to_direction": to_direction,
+                "competing_ev": competing_ev,
+                "required_threshold": float(verdict.required_threshold),
+                "reversals_so_far": int(verdict.reversals_so_far),
+                "detail": dict(detail or {}),
+                "decided_at": _time.time(),
+            }
+            self._pending_reversals[str(order_id)] = plan
+            logger.info(
+                "[reversal] {} ARMED {}→{} on close of ticket {} — {}",
+                symbol, want, to_direction, order_id, verdict.reason,
+            )
+            return to_direction
+        except Exception as exc:  # noqa: BLE001 — never fail into a reversal
+            logger.warning(
+                "[reversal] arm failed for {} {} — plain evidence exit: {}",
+                symbol, direction, exc,
+            )
+            return None
+
     def _run_decision_engine_management(
         self, pos, price: float, now: datetime, now_mono: float,
         mgmt, order_id: str, snap: PositionSnapshot,
@@ -1628,6 +1700,20 @@ class PositionEvaluator:
             )
             if ev_exit is not None:
                 cause, ev_reason, ev_detail = ev_exit
+                # ── Atomic reversal (Session 29) ──────────────────────────
+                # A thesis_flip means the OPPOSING thesis is now dominant. If a
+                # reversal is viable (anti-ping-pong gate), tag this close as the
+                # EXIT LEG of a reversal and arm the opposite-direction entry to
+                # dispatch the instant the close confirms. Otherwise it stays a
+                # plain Session-28 evidence exit (flat). Fail-safe: arming never
+                # raises, so a fault falls back to the plain exit.
+                if cause == "thesis_flip":
+                    reversal_to = self._maybe_arm_reversal(
+                        order_id, symbol, direction, ev_detail,
+                    )
+                    if reversal_to is not None:
+                        cause = "thesis_reversal"
+                        ev_reason = f"reversal→{reversal_to}: {ev_reason}"
                 ev_risk = risk_pips if risk_pips > 0 else 0.0
                 ev_profit_r = round(pnl_pips / ev_risk, 4) if ev_risk > 0 else 0.0
                 self._aggregator.register_position(
@@ -2830,7 +2916,13 @@ class EventDrivenSystem:
         # to that same panel rather than the latest net-summed direction.
         self._candidate_positions: dict[str, "CandidatePosition"] = {}
 
-        # Dedup guard so a closed ticket's realized P&L is booked exactly once
+        # Atomic reversal (Session 29) — opposite-direction entries armed at a
+        # reversal-viable thesis_flip, keyed by the exit leg's ticket. Shared
+        # with the evaluator (which arms them in the management path) via the
+        # aliasing below, and drained by _handle_close_result once the exit
+        # leg's close confirms (close → open sequencing).
+        self._pending_reversals: dict[str, dict[str, Any]] = {}
+
         # across the system-close path (_handle_close_result) and the
         # external-close reconciliation path (_reconcile_external_closes).
         self._closed_tickets: dict[str, float] = {}
@@ -3089,6 +3181,11 @@ class EventDrivenSystem:
         # snapshot with no guard, the exact phantom stop-hit CLOSE condition.
         self._evaluator._inflight_manage = self._inflight_manage
         self._evaluator._inflight_manage_lock = self._inflight_manage_lock
+        # Share ONE pending-reversal map (Session 29): the evaluator arms a
+        # reversal in the management path; _handle_close_result (this system)
+        # drains it once the exit leg's close confirms. Without this the armed
+        # reversal would land in a dict the close-result path never reads.
+        self._evaluator._pending_reversals = self._pending_reversals
         # Phase 3 (event-reactive management): the tick-eval loop evaluates
         # only the symbols a ManagementScheduler reports as due (active symbols
         # shortly after a tick, idle symbols on the safety-net cadence) instead
@@ -4337,6 +4434,13 @@ class EventDrivenSystem:
                                 ctx.account_risk.reset_daily()
                             except Exception as exc:
                                 logger.debug("[event-driven] account-risk daily reset failed: {}", exc)
+                        # Reset the per-session atomic-reversal tally so the
+                        # anti-ping-pong session cap starts fresh each day.
+                        if getattr(ctx, "reversal_manager", None) is not None:
+                            try:
+                                ctx.reversal_manager.reset_session()
+                            except Exception as exc:
+                                logger.debug("[event-driven] reversal-manager session reset failed: {}", exc)
                         try:
                             es = get_event_store()
                             es.prune()
@@ -5302,6 +5406,14 @@ class EventDrivenSystem:
                 "orphan management state may linger: {}", ticket, exc,
             )
         self._clear_inflight_manage_ticket(str(ticket))
+
+        # ── Atomic reversal (Session 29) ──────────────────────────────────
+        # The close is now broker-confirmed and booked. If this ticket armed a
+        # reversal (a reversal-viable thesis_flip), dispatch the opposite-
+        # direction entry now — close → open sequencing, so the reversal never
+        # races the exit and can never leave two opposing positions open. If the
+        # entry fails any gate we simply stay flat (the safe state). Fail-safe.
+        self._dispatch_pending_reversal(str(ticket), symbol)
 
     def _record_inflight_manage(
         self, ticket: str, intent_type: IntentType, prev: dict[str, Any],
@@ -6732,6 +6844,220 @@ class EventDrivenSystem:
             ),
         }
 
+    def _build_reversal_decision_dict(
+        self, symbol: str, direction: str, plan: dict,
+    ) -> Optional[dict]:
+        """Build the opposite-direction entry dict for an atomic reversal.
+
+        Mirrors ``_build_consensus_decision_dict``: reference price + ATR define
+        the SL risk geometry for the reversal ``direction`` and TP targets come
+        from MARKET structure ahead of price (next FVG/OB/liquidity pool), with
+        ATR R:R multiples as the fallback. Tagged ``source="reversal"`` so the
+        entry pipeline exempts it from the zone re-entry cooldown (this is a
+        deliberate reversal, not a re-arm) and carries the reversal provenance
+        for the journal. Returns ``None`` on any failure — the caller then leaves
+        the book flat (the safe partial-reversal state). Never raises.
+        """
+        cfg = getattr(self._config, "consensus", None)
+        if cfg is None:
+            return None
+        try:
+            want = "LONG" if str(direction or "").upper() in ("LONG", "BUY") else "SHORT"
+            atr_period = int(getattr(cfg, "atr_period", 14))
+            m5 = self._fetch_candles(symbol, "M5", max(60, atr_period + 20))
+            if m5 is None or len(m5) < max(15, atr_period + 1):
+                return None
+            entry_price = float(m5["close"].iloc[-1])
+            if entry_price <= 0:
+                return None
+
+            from brain.volatility_stop import latest_atr
+            atr = latest_atr(m5, atr_period)
+            if not atr or atr <= 0:
+                return None
+            sl_dist = float(atr) * float(getattr(cfg, "atr_sl_mult", 1.5))
+            if sl_dist <= 0:
+                return None
+            sl = entry_price - sl_dist if want == "LONG" else entry_price + sl_dist
+            tp1, tp2 = self._derive_consensus_targets(
+                symbol, want, entry_price, sl, sl_dist, cfg,
+            )
+
+            # Conviction from the now-dominant thesis (fallback: the competing
+            # edge that armed the reversal, mapped onto a 0..100 score).
+            score = 0
+            try:
+                engine = getattr(self._ctx, "thesis_engine", None) if self._ctx else None
+                if engine is not None:
+                    best_dir, best_ev, best_th = engine.get_best_thesis(symbol)
+                    if best_th is not None and str(best_dir).upper() == want:
+                        score = int(round(max(0.0, min(1.0, float(
+                            getattr(best_th, "confidence", 0.0) or 0.0
+                        ))) * 100))
+            except Exception:
+                score = 0
+            if score <= 0:
+                comp = float(plan.get("competing_ev", 0.0) or 0.0)
+                score = int(round(max(0.0, min(1.0, comp)) * 100))
+
+            try:
+                risk_pips = abs(entry_price - sl) / self._safe_pip_size(symbol)
+            except Exception:
+                risk_pips = 0.0
+            try:
+                spread_pips = self._get_spread_pips(symbol)
+            except Exception:
+                spread_pips = 0.0
+
+            return {
+                "symbol": symbol,
+                "direction": want,
+                "entry_price": entry_price,
+                "stop_loss": round(sl, 8),
+                "tp1": round(tp1, 8),
+                "tp2": round(tp2, 8),
+                "conviction": score,
+                "zone_type": "",
+                "timeframe": "M5",
+                "source": "reversal",
+                "risk_pips": risk_pips,
+                "spread_pips": spread_pips,
+                # Reversal provenance for attribution / journaling.
+                "reversal_from": plan.get("from_direction", ""),
+                "reversal_from_ticket": plan.get("_ticket", ""),
+                "reversal_competing_ev": float(plan.get("competing_ev", 0.0) or 0.0),
+            }
+        except Exception as exc:  # noqa: BLE001 — a build fault leaves us flat (safe)
+            logger.warning(
+                "[reversal] {} {} decision-dict build failed — staying flat: {}",
+                symbol, direction, exc,
+            )
+            return None
+
+    def _dispatch_pending_reversal(self, ticket: str, symbol: str) -> None:
+        """Dispatch the opposite-direction entry once a reversal exit confirms.
+
+        Called from ``_handle_close_result`` after the exit leg's close is
+        broker-confirmed and booked — this enforces close → open sequencing
+        (decision atomic, execution sequential). Pops the armed plan, checks it
+        is still fresh, builds the reversal entry and dispatches it through the
+        FULL ``_on_entry_decision`` gate/sizing pipeline (Compliance / Portfolio
+        / Governor / EV / DecisionEngine) so the reversal earns no free pass and
+        is sized independently. Any failure leaves the book flat (the safe
+        partial-reversal state) and is journaled. Never raises into the close
+        path.
+        """
+        key = str(ticket or "")
+        try:
+            plan = self._pending_reversals.pop(key, None)
+        except Exception:
+            plan = None
+        if not plan:
+            return
+        ctx = self._ctx
+        try:
+            plan["_ticket"] = key
+            to_direction = str(plan.get("to_direction", "") or "")
+            if to_direction not in ("LONG", "SHORT"):
+                return  # never "reverse into flat"
+            # Freshness — do not chase a reversal on a market that has moved on
+            # while the exit leg took too long to confirm.
+            cfg = getattr(self._config, "thesis", None)
+            max_age = float(getattr(cfg, "reversal_max_age_seconds", 60.0)) if cfg else 60.0
+            decided_at = float(plan.get("decided_at", 0.0) or 0.0)
+            age = _time.time() - decided_at if decided_at > 0 else 0.0
+            if max_age > 0 and age > max_age:
+                logger.info(
+                    "[reversal] {} {} DISCARDED — exit leg confirmed {:.0f}s > "
+                    "max_age {:.0f}s after arming (market moved on)",
+                    symbol, to_direction, age, max_age,
+                )
+                self._journal_reversal(
+                    symbol, key, plan, dispatched=False,
+                    reason=f"stale ({age:.0f}s > {max_age:.0f}s)",
+                )
+                return
+
+            decision = self._build_reversal_decision_dict(symbol, to_direction, plan)
+            if decision is None:
+                logger.warning(
+                    "[reversal] {} {} PARTIAL — exit filled but reversal entry "
+                    "could not be built; staying flat",
+                    symbol, to_direction,
+                )
+                self._journal_reversal(
+                    symbol, key, plan, dispatched=False,
+                    reason="entry build failed (flat)",
+                )
+                return
+
+            # Count the reversal (cooldown + per-session tally) now that it is
+            # actually executing — an armed-but-unexecuted reversal never counts.
+            rm = getattr(ctx, "reversal_manager", None) if ctx is not None else None
+            if rm is not None:
+                try:
+                    rm.record_reversal(symbol)
+                except Exception as exc:
+                    logger.debug("[reversal] record_reversal failed for {}: {}", symbol, exc)
+
+            logger.info(
+                "[reversal] {} {}→{} DISPATCH — exit leg {} closed, opening "
+                "opposite (competing edge {:+.3f}R)",
+                symbol, plan.get("from_direction", ""), to_direction, key,
+                float(plan.get("competing_ev", 0.0) or 0.0),
+            )
+            self._journal_reversal(symbol, key, plan, dispatched=True, reason="dispatched")
+            # Full entry pipeline — reversal must independently qualify.
+            self._on_entry_decision(decision)
+        except Exception as exc:  # noqa: BLE001 — a reversal fault must leave us flat
+            logger.warning(
+                "[reversal] {} dispatch failed after close of {} — staying "
+                "flat (safe): {}", symbol, key, exc,
+            )
+            try:
+                self._journal_reversal(
+                    symbol, key, plan or {}, dispatched=False,
+                    reason=f"dispatch_error: {exc}"[:120],
+                )
+            except Exception:
+                pass
+
+    def _journal_reversal(
+        self, symbol: str, ticket: str, plan: dict, *, dispatched: bool, reason: str,
+    ) -> None:
+        """Log a reversal (dispatched or rejected) to the decision journal.
+
+        Records both legs — the exit side (original direction, competing edge
+        that flipped it) and the entry side (reversal direction) — plus the
+        anti-ping-pong context, so the learning layer can attribute reversals and
+        an operator can see when a reversal was armed but not taken. Fail-safe.
+        """
+        ctx = self._ctx
+        journal = getattr(ctx, "decision_journal", None) if ctx is not None else None
+        if journal is None:
+            return
+        try:
+            detail = {
+                "dispatched": bool(dispatched),
+                "from_direction": plan.get("from_direction", ""),
+                "to_direction": plan.get("to_direction", ""),
+                "competing_ev": float(plan.get("competing_ev", 0.0) or 0.0),
+                "required_threshold": float(plan.get("required_threshold", 0.0) or 0.0),
+                "reversals_so_far": int(plan.get("reversals_so_far", 0) or 0),
+                "flip_detail": dict(plan.get("detail", {}) or {}),
+                "outcome": reason,
+            }
+            journal.log_management_event(
+                symbol=symbol,
+                order_id=str(ticket),
+                direction=str(plan.get("from_direction", "")),
+                event="thesis_reversal" if dispatched else "thesis_reversal_rejected",
+                reason=reason,
+                detail=detail,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[reversal] journal failed for {}: {}", ticket, exc)
+
     def _already_holding_direction(self, symbol: str, direction: str) -> bool:
         """Cheap pre-check: do we already hold ``symbol`` in ``direction``?
 
@@ -7209,8 +7535,10 @@ class EventDrivenSystem:
             # Applies to the ZONE entry path only — prevents re-arming the
             # same symbol on the next M1 close after any exit. Consensus /
             # trigger entries carry their own cooldown (Gate above the call)
-            # and are exempt here.
-            if decision.get("source") != "consensus":
+            # and are exempt here. A "reversal" is a deliberate close + reverse
+            # (Session 29) — it fires the instant the exit leg closes, so it is
+            # exempt too (otherwise this cooldown would always block it).
+            if decision.get("source") not in ("consensus", "reversal"):
                 last_close = self._last_close_time.get(symbol, 0.0)
                 since_close = _time.time() - last_close
                 if last_close and since_close < self._zone_reentry_cooldown_seconds:
