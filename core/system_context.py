@@ -110,6 +110,9 @@ class SystemContext:
     # Persistent competing Long/Short/Flat theses per symbol (Gap 1a). Runs
     # observationally alongside the consensus pipeline; surfaced via Governance.
     thesis_engine: Optional[Any] = None
+    # Session 29 — anti-ping-pong gate for atomic reversals. Consulted when a
+    # ``thesis_flip`` fires to decide whether to close + reverse (vs plain exit).
+    reversal_manager: Optional[Any] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
     opportunity_executor: Optional[OpportunityExecutor] = None
@@ -960,6 +963,40 @@ class SystemContext:
                 )
             except Exception as exc:
                 logger.warning("[SystemContext] ThesisEngine init failed: {}", exc)
+
+            # ── Reversal Manager (Session 29) ─────────────────────────────
+            # Anti-ping-pong gate: when a thesis_flip fires, decide whether to
+            # close + reverse (atomic) or just exit. Fail-safe — a construction
+            # fault leaves ``reversal_manager`` None, so the flip falls back to
+            # the Session-28 evidence exit (flat).
+            try:
+                from management.reversal_manager import ReversalManager as _ReversalManager
+
+                thesis_cfg = getattr(config, "thesis", None)
+                ctx.reversal_manager = _ReversalManager(
+                    enabled=bool(
+                        getattr(thesis_cfg, "atomic_reversal_enabled", True)
+                        if thesis_cfg is not None else True
+                    ),
+                    min_thesis_ev=float(
+                        getattr(thesis_cfg, "reversal_min_thesis_ev", 0.1)
+                        if thesis_cfg is not None else 0.1
+                    ),
+                    cooldown_seconds=float(
+                        getattr(thesis_cfg, "reversal_cooldown", 300.0)
+                        if thesis_cfg is not None else 300.0
+                    ),
+                    max_reversals_per_session=int(
+                        getattr(thesis_cfg, "max_reversals_per_session", 3)
+                        if thesis_cfg is not None else 3
+                    ),
+                    threshold_escalation=float(
+                        getattr(thesis_cfg, "reversal_threshold_escalation", 0.5)
+                        if thesis_cfg is not None else 0.5
+                    ),
+                )
+            except Exception as exc:
+                logger.warning("[SystemContext] ReversalManager init failed: {}", exc)
 
             ctx.governance = _Governance(
                 module_governor=ctx.module_governor,

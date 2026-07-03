@@ -58,6 +58,16 @@ class ExitCause(Enum):
     EVIDENCE_EXIT = "evidence_exit"
     THESIS_FLIP = "thesis_flip"
 
+    # ── Atomic reversal (Session 29) ──────────────────────────────────────
+    # The OPPOSING thesis became dominant AND passed the reversal viability
+    # gate (anti-ping-pong: cooldown, per-session cap, escalating threshold),
+    # so the position was closed as the EXIT LEG of an atomic reversal — a new
+    # position in the opposite direction is dispatched the instant this close
+    # confirms. Distinct from a plain THESIS_FLIP exit (which leaves the book
+    # flat) so the learners can tell a reversal's exit leg apart from a simple
+    # evidence-driven flat.
+    THESIS_REVERSAL = "thesis_reversal"
+
     # ── Protective / guard exits ──────────────────────────────────────────
     NEWS_EXIT = "news_exit"
     SESSION_CLOSE = "session_close"
@@ -147,6 +157,8 @@ class ExitCause(Enum):
         if "stop loss" in r or "stop-loss" in r or "stopped out" in r or "sl hit" in r:
             return cls.STOP_LOSS
         # Strategic / thesis closes (DecisionEngine reasons).
+        if "reversal" in r or "reverse" in r:
+            return cls.THESIS_REVERSAL
         if "thesis_flip" in r or "thesis flip" in r or "competing" in r:
             return cls.THESIS_FLIP
         if "evidence_exit" in r or "evidence exit" in r or r.startswith("evidence"):

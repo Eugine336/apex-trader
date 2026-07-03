@@ -3476,6 +3476,37 @@ class ThesisConfig:
     # cannot immediately close a fresh position (the mechanical stop still
     # protects it during this window).
     evidence_exit_min_hold_time: float = 60.0
+    # ── Session 29: atomic reversal (close + reverse in one decision) ──────
+    # When a ``thesis_flip`` fires (the OPPOSING thesis is the dominant,
+    # actionable read), instead of merely exiting to flat the system can close
+    # the current side AND open the opposite direction as one atomic decision —
+    # so there is no gap between "I should be short" and being short. The new
+    # opposite entry still passes the full entry pipeline (Compliance /
+    # Portfolio / Governor / EV / DecisionEngine) and is sized independently from
+    # the competing thesis; a reversal earns no free pass. When disabled, a
+    # ``thesis_flip`` just triggers the Session-28 evidence exit (flat).
+    atomic_reversal_enabled: bool = True
+    # The competing thesis's effective EV over the Flat baseline (R) must clear
+    # this before a reversal is permitted — the same do-nothing margin a fresh
+    # entry beats. Defaults to ``opportunity_cost_threshold``.
+    reversal_min_thesis_ev: float = 0.1
+    # Seconds after a reversal during which no further reversal on that symbol is
+    # allowed — prevents reverse-back ping-pong in choppy conditions. Must exceed
+    # ``evidence_exit_min_hold_time`` so a reversal's fresh position cannot itself
+    # immediately reverse back.
+    reversal_cooldown: float = 300.0
+    # Hard cap on reversals per symbol per trading session. After the cap only
+    # plain evidence exits are allowed (no more reversals) until the session
+    # resets. 0 disables reversals entirely.
+    max_reversals_per_session: int = 3
+    # Each subsequent reversal on the same symbol requires progressively more
+    # edge: required = reversal_min_thesis_ev * (1 + escalation * reversals_so_far)
+    # (0.5 → 1.0×, 1.5×, 2.0× …) — the system grows skeptical of flip-flopping.
+    reversal_threshold_escalation: float = 0.5
+    # A pending reversal (armed at the flip decision, dispatched once the exit
+    # leg's close confirms) is discarded if the close does not confirm within
+    # this many seconds — a stale reversal on a moved market is not chased.
+    reversal_max_age_seconds: float = 60.0
 
     def __post_init__(self) -> None:
         if float(self.continuous_reeval_min_interval_seconds) < 0:
@@ -3502,6 +3533,31 @@ class ThesisConfig:
             raise ValueError(
                 "ThesisConfig.evidence_exit_min_hold_time must be >= 0, got "
                 f"{self.evidence_exit_min_hold_time!r}"
+            )
+        if float(self.reversal_min_thesis_ev) < 0:
+            raise ValueError(
+                "ThesisConfig.reversal_min_thesis_ev must be >= 0, got "
+                f"{self.reversal_min_thesis_ev!r}"
+            )
+        if float(self.reversal_cooldown) < 0:
+            raise ValueError(
+                "ThesisConfig.reversal_cooldown must be >= 0, got "
+                f"{self.reversal_cooldown!r}"
+            )
+        if int(self.max_reversals_per_session) < 0:
+            raise ValueError(
+                "ThesisConfig.max_reversals_per_session must be >= 0, got "
+                f"{self.max_reversals_per_session!r}"
+            )
+        if float(self.reversal_threshold_escalation) < 0:
+            raise ValueError(
+                "ThesisConfig.reversal_threshold_escalation must be >= 0, got "
+                f"{self.reversal_threshold_escalation!r}"
+            )
+        if float(self.reversal_max_age_seconds) < 0:
+            raise ValueError(
+                "ThesisConfig.reversal_max_age_seconds must be >= 0, got "
+                f"{self.reversal_max_age_seconds!r}"
             )
 
 
