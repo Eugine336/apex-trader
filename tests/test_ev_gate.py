@@ -55,34 +55,34 @@ def _defaults(**overrides):
 
 class TestEvComputation:
     def test_positive_ev_with_trend_passes(self):
-        # p_win=0.6, rr=2.0, p_loss=0.4 → EV = 0.6*2 - 0.4 = 0.8R > 0.3R.
+        # p_win=0.6, rr=2.0, p_loss=0.4 → EV = 0.6*2 - 0.4 = 0.8R > 0.1R.
         gate = EntryGate()
         r = gate._check_ev("EURUSD", "LONG", 100.0, 99.0, 102.0, 0.6, 0.4)
         assert r.passed is True
 
     def test_negative_ev_rejects(self):
-        # p_win=0.2, rr=1.0, p_loss=0.8 → EV = 0.2 - 0.8 = -0.6R < 0.3R bar.
+        # p_win=0.2, rr=1.0, p_loss=0.8 → EV = 0.2 - 0.8 = -0.6R < 0.1R bar.
         gate = EntryGate()
         r = gate._check_ev("EURUSD", "LONG", 100.0, 99.0, 101.0, 0.2, 0.8)
         assert r.passed is False
 
     def test_counter_trend_same_bar_low_ev_rejects(self):
-        # p_win=0.4 (counter), rr=2.0, p_loss=0.6 → EV = 0.8 - 0.6 = 0.2R.
-        # Counter-trend faces the SAME 0.3R bar (no premium) → 0.2R rejects on
+        # p_win=0.32 (counter), rr=2.0, p_loss=0.60 → EV = 0.64 - 0.60 = 0.04R.
+        # Counter-trend faces the SAME 0.1R bar (no premium) → 0.04R rejects on
         # its own merits, not via a directional surcharge.
         gate = EntryGate()
-        r = gate._check_ev("EURUSD", "LONG", 100.0, 99.0, 102.0, 0.4, 0.6)
+        r = gate._check_ev("EURUSD", "LONG", 100.0, 99.0, 102.0, 0.32, 0.60)
         assert r.passed is False
         assert "counter-trend" in r.reason
 
     def test_counter_trend_high_rr_passes(self):
-        # p_win=0.4 (counter), rr=3.0, p_loss=0.6 → EV = 1.2 - 0.6 = 0.6R > 0.3R.
+        # p_win=0.4 (counter), rr=3.0, p_loss=0.6 → EV = 1.2 - 0.6 = 0.6R > 0.1R.
         gate = EntryGate()
         r = gate._check_ev("EURUSD", "LONG", 100.0, 99.0, 103.0, 0.4, 0.6)
         assert r.passed is True
 
     def test_zero_probability_rejects(self):
-        # No probabilistic edge → EV = 0 < 0.3R → reject (no edge, no trade).
+        # No probabilistic edge → EV = 0 < 0.1R → reject (no edge, no trade).
         gate = EntryGate()
         r = gate._check_ev("EURUSD", "LONG", 100.0, 99.0, 102.0, 0.0, 0.0)
         assert r.passed is False
@@ -153,13 +153,13 @@ class _FakeTuner:
 
 class TestEvGateTuner:
     def test_gate_tuner_loosens_ev(self):
-        # EV = 0.45*1 - 0.2 = 0.25R (with-trend) → below base 0.30 bar.
+        # EV = 0.28*1 - 0.20 = 0.08R (with-trend) → below base 0.10 bar.
         base = EntryGate()
-        r_base = base._check_ev("EURUSD", "LONG", 100.0, 99.0, 101.0, 0.45, 0.2)
+        r_base = base._check_ev("EURUSD", "LONG", 100.0, 99.0, 101.0, 0.28, 0.20)
         assert r_base.passed is False
-        # A -0.10 loosening offset lowers the bar to 0.20R → 0.25R now passes.
-        tuned = EntryGate(gate_tuner=_FakeTuner(-0.10))
-        r_tuned = tuned._check_ev("EURUSD", "LONG", 100.0, 99.0, 101.0, 0.45, 0.2)
+        # A -0.05 loosening offset lowers the bar to 0.05R → 0.08R now passes.
+        tuned = EntryGate(gate_tuner=_FakeTuner(-0.05))
+        r_tuned = tuned._check_ev("EURUSD", "LONG", 100.0, 99.0, 101.0, 0.28, 0.20)
         assert r_tuned.passed is True
 
 

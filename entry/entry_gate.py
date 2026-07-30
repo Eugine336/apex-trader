@@ -287,7 +287,7 @@ class EntryGate:
         # we do not add a directional surcharge (that would be a thumb on the
         # scale against the opportunistic "the market decides the side" design).
         is_counter = p_loss > p_win
-        min_ev = float(getattr(self._config, "min_entry_ev", 0.3))
+        min_ev = float(getattr(self._config, "min_entry_ev", 0.1))
 
         # Learned GateTuner offset (bounded, loosening-only): lower the EV bar
         # when the setups this gate rejected keep winning. Never below 0 (a

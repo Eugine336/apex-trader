@@ -459,6 +459,52 @@ class EntryOrchestrator:
         except Exception:
             return False, tick_mom, m5_trend
 
+    def _tick_m5_agree_direction(
+        self, direction: str, symbol: str,
+    ) -> tuple[bool, float, str]:
+        """True when live tick momentum AND the M5 trend both agree with the
+        ORIGINAL zone ``direction``.
+
+        Admits an entry whose blended momentum score reads as opposing only
+        because it folds in LAGGING HTF momentum. For a scalp the leading
+        signals are the sub-candle ``tick_momentum`` and the M5 structural
+        trend: the entry proceeds when tick_momentum is the SAME sign as the
+        zone direction AND the M5 trend MATCHES it (BULLISH for LONG, BEARISH
+        for SHORT). A RANGING/UNKNOWN M5 is NOT a match — the override requires
+        positive structural agreement, not merely the absence of opposition.
+
+        Returns ``(agree, tick_mom, m5_trend)`` so the caller can log the actual
+        values. Fails closed (returns ``(False, …)``) on any error — a failed
+        read never admits a momentum-opposed entry.
+        """
+        tick_mom = 0.0
+        m5_trend = "UNKNOWN"
+        try:
+            norm_dir = "BUY" if str(direction).upper() == "LONG" else "SELL"
+            pip_size = self._pip_size(symbol)
+            tick_mom = float(self._get_tick_momentum(symbol, norm_dir, pip_size))
+            if tick_mom <= 0.0:
+                return False, tick_mom, m5_trend
+
+            if self._wm_store is not None:
+                wm = self._wm_store.get(symbol)
+                if wm is not None:
+                    m5_sa = wm.structure_by_tf().get("M5")
+                    if m5_sa is not None:
+                        m5_trend = str(
+                            getattr(getattr(m5_sa, "trend", None), "value", "")
+                            or "UNKNOWN"
+                        )
+
+            want = str(direction).upper()
+            matches = (
+                (want == "LONG" and m5_trend == "BULLISH")
+                or (want == "SHORT" and m5_trend == "BEARISH")
+            )
+            return matches, tick_mom, m5_trend
+        except Exception:
+            return False, tick_mom, m5_trend
+
     def _flip_zone(self, zone: EntryZone, new_direction: str, entry_price: float = 0.0) -> EntryZone:
         """Mirror a zone to the opposite trade direction.
 
@@ -594,11 +640,13 @@ class EntryOrchestrator:
         # ── A1: opportunistic direction verification ─────────────────────
         # The zone's direction is mechanical (a bullish FVG ⇒ LONG). Before
         # committing, verify it against live momentum: the MARKET decides the
-        # side, not the zone's historical kind. When momentum actively opposes
-        # the zone direction, either FLIP to trade WITH the move (only when live
-        # tick_momentum confirms the opposite AND the M5 trend does not oppose
-        # it) or SKIP the entry — never enter against momentum on the zone label
-        # alone.
+        # side, not the zone's historical kind. When the (lagging) blended
+        # momentum opposes the zone direction, one of three things happens:
+        # FLIP to trade WITH the move (when live tick_momentum confirms the
+        # opposite AND the M5 trend does not oppose it); PROCEED on the original
+        # direction (when live tick momentum AND the M5 trend BOTH agree with
+        # the zone — the real-time signals lead the lagging blend for scalps);
+        # or SKIP when neither holds.
         oppose_floor = -float(
             getattr(self._config, "momentum_oppose_threshold", 0.20) or 0.20
         )
@@ -619,16 +667,37 @@ class EntryOrchestrator:
                 zone = self._flip_zone(zone, opposite, entry_price)
                 info = {**info, "direction": opposite, "zone": zone}
             else:
-                logger.info(
-                    "[entry-orch] {} {} entry SKIPPED — momentum {:+.2f} opposes "
-                    "the zone and the flip is unconfirmed (tick_mom={:+.2f} M5={})",
-                    symbol, direction, momentum, tick_mom, m5_trend,
+                # The blended momentum score folds in HTF momentum (RSI+MACD on
+                # M5/H1), which LAGS. For scalping, the leading signals are live
+                # tick momentum and the M5 structural trend. If BOTH agree with
+                # the zone direction, take the entry despite the negative blended
+                # score rather than skipping a setup that current price action
+                # actively supports.
+                agree, tick_dir_mom, m5_dir = self._tick_m5_agree_direction(
+                    direction, symbol,
                 )
-                self._stats["momentum_skips"] = self._stats.get("momentum_skips", 0) + 1
-                self._tick_detector.cancel_pending(symbol, "momentum opposes zone")
-                with self._lock:
-                    self._confirming.pop(symbol, None)
-                return
+                if agree:
+                    logger.warning(
+                        "[entry-orch] {} {} entry PROCEEDS despite blended "
+                        "momentum {:+.2f} opposing — live tick_mom={:+.2f} agrees "
+                        "and M5={} matches the zone (HTF momentum lags; tick+M5 "
+                        "lead for scalps)",
+                        symbol, direction, momentum, tick_dir_mom, m5_dir,
+                    )
+                    self._stats["momentum_overrides"] = (
+                        self._stats.get("momentum_overrides", 0) + 1
+                    )
+                else:
+                    logger.info(
+                        "[entry-orch] {} {} entry SKIPPED — momentum {:+.2f} opposes "
+                        "the zone and the flip is unconfirmed (tick_mom={:+.2f} M5={})",
+                        symbol, direction, momentum, tick_mom, m5_trend,
+                    )
+                    self._stats["momentum_skips"] = self._stats.get("momentum_skips", 0) + 1
+                    self._tick_detector.cancel_pending(symbol, "momentum opposes zone")
+                    with self._lock:
+                        self._confirming.pop(symbol, None)
+                    return
 
         if pip_size <= 0:
             logger.warning(
