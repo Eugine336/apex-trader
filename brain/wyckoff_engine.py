@@ -49,6 +49,7 @@ class WyckoffEngine:
         volume_analyzer: Optional[VolumeAnalyzer] = None,
         structure_engine: Optional[StructureEngine] = None,
         swing_lookback: int = 2,
+        symbol: Optional[str] = None,
     ):
         if pip_size is None:
             raise ValueError(
@@ -60,6 +61,7 @@ class WyckoffEngine:
         self.range_window = range_window
         self.spring_buffer = spring_buffer_pips * pip_size
         self.pip_size = pip_size
+        self._symbol = symbol
         self.volume_analyzer = volume_analyzer or VolumeAnalyzer()
         # The inner StructureEngine's swing sensitivity is per-instrument, not a
         # hardcoded 2 — a synthetic index and a JPY cross do not confirm swings
@@ -115,8 +117,16 @@ class WyckoffEngine:
         range_high = float(recent["high"].max())
         range_low = float(recent["low"].min())
         range_width = (range_high - range_low) / max(recent["close"].iloc[-1], 1e-9)
-        in_range = range_width <= 0.015
+        # Gold accumulation/distribution ranges are wider and take longer to
+        # develop than forex — a $50-60 range at ~$2400 is ~2.1-2.5%. Widen the
+        # range threshold so those natural Gold zones register as ranges rather
+        # than being misread as directional moves.
+        max_width = 0.025 if self._is_gold() else 0.015
+        in_range = range_width <= max_width
         return range_high, range_low, in_range
+
+    def _is_gold(self) -> bool:
+        return bool(self._symbol) and self._symbol.upper() == "XAUUSD"
 
     def _is_spring(self, df: pd.DataFrame, range_low: float) -> bool:
         last = df.iloc[-1]
@@ -152,10 +162,13 @@ class WyckoffEngine:
         upthrust: bool,
         volume: VolumeAnalysis,
     ) -> tuple[WyckoffPhase, str, str, float]:
+        gold = self._is_gold()
         if spring:
-            return WyckoffPhase.PHASE_C, "SPRING", "LONG", 0.82
+            # Gold springs are very reliable institutional traps — boost the
+            # confidence when trading Gold.
+            return WyckoffPhase.PHASE_C, "SPRING", "LONG", 0.90 if gold else 0.82
         if upthrust:
-            return WyckoffPhase.PHASE_C, "UPTHRUST", "SHORT", 0.82
+            return WyckoffPhase.PHASE_C, "UPTHRUST", "SHORT", 0.90 if gold else 0.82
 
         if in_range and volume.climax_detected:
             sub = "SELLING_CLIMAX" if trend_return < 0 else "BUYING_CLIMAX"
@@ -166,7 +179,8 @@ class WyckoffEngine:
             if volume.confirmation_bias in {"BULLISH", "BEARISH"}:
                 direction = "LONG" if volume.confirmation_bias == "BULLISH" else "SHORT"
                 return WyckoffPhase.PHASE_D, "RANGE_EXIT_PREP", direction, 0.68
-            return WyckoffPhase.PHASE_B, "BUILDING_CAUSE", "NONE", 0.6
+            # Gold's accumulation phases are more predictive than forex.
+            return WyckoffPhase.PHASE_B, "BUILDING_CAUSE", "NONE", 0.70 if gold else 0.6
 
         if trend in {Trend.BULLISH, Trend.BEARISH}:
             direction = "LONG" if trend == Trend.BULLISH else "SHORT"

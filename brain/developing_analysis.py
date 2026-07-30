@@ -253,7 +253,7 @@ class DevelopingAnalysisLoop:
             # Developing bias from developing structure only (no confirmed
             # blend here — the blend happens in the confirmed path's
             # compute_bias, which reads this store).
-            bias = compute_bias(struct)
+            bias = compute_bias(struct, symbol=symbol)
 
             # ── Contract guard: confidence only, never direction ──────────
             # The developing store exists to nudge bias *confidence*, never to

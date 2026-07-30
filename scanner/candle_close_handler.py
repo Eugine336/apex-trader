@@ -469,7 +469,7 @@ class CandleCloseHandler:
                     dev_struct = dict(dev_wm.structure)
             except Exception:
                 dev_struct = None  # best-effort — developing store optional
-        bias = compute_bias(struct, developing_struct_by_tf=dev_struct)
+        bias = compute_bias(struct, developing_struct_by_tf=dev_struct, symbol=symbol)
         bias = self._blend_concepts(bias, concepts, regime)
 
         wm = build_world_model(

@@ -99,6 +99,20 @@ _EVIDENCE_WEIGHTS: dict[str, float] = {
     "M1": 0.10,  # not in TF_MODULE_MAP yet, but ready when it is
 }
 
+# Gold (XAUUSD) evidence weights.  Gold's institutional flow is dominated by
+# H1/H4 structure, and its dollar-scale swings make M5/M15 noise larger in
+# relative terms than on forex.  This set shifts weight off M5/M15 and onto
+# H4/H1 so the bias leans on the timeframes that actually carry Gold's
+# directional conviction.
+_GOLD_EVIDENCE_WEIGHTS: dict[str, float] = {
+    "D1": 0.10,
+    "H4": 0.30,
+    "H1": 0.30,
+    "M15": 0.15,
+    "M5": 0.10,
+    "M1": 0.05,
+}
+
 # Phase 6 — optional adaptive override of the static weights above. When a
 # provider is registered (``set_evidence_weight_provider``) its bounded,
 # learned vector is used; otherwise the static defaults apply. The provider is
@@ -114,8 +128,13 @@ def set_evidence_weight_provider(provider) -> None:
     _weight_provider = provider
 
 
-def _active_weights() -> dict[str, float]:
-    """Return the active per-TF evidence weights (adaptive if available)."""
+def _active_weights(symbol: Optional[str] = None) -> dict[str, float]:
+    """Return the active per-TF evidence weights.
+
+    The adaptive provider (when registered) takes precedence.  Otherwise, for
+    Gold (XAUUSD) the H1/H4-emphasised :data:`_GOLD_EVIDENCE_WEIGHTS` apply, and
+    for every other instrument the static :data:`_EVIDENCE_WEIGHTS` defaults.
+    """
     provider = _weight_provider
     if provider is not None:
         try:
@@ -124,6 +143,8 @@ def _active_weights() -> dict[str, float]:
                 return weights
         except Exception:  # noqa: BLE001 — never break the bias model
             pass
+    if symbol is not None and symbol.upper() == "XAUUSD":
+        return _GOLD_EVIDENCE_WEIGHTS
     return _EVIDENCE_WEIGHTS
 
 
@@ -152,6 +173,7 @@ def _collect_evidence(
     struct_by_tf: dict[str, StructureAnalysis],
     developing_by_tf: Optional[dict[str, StructureAnalysis]],
     discount: float,
+    symbol: Optional[str] = None,
 ) -> list[tuple[str, float, float]]:
     """Gather directional evidence items as ``(direction, raw_weight, conf)``.
 
@@ -161,7 +183,7 @@ def _collect_evidence(
     and their weight is excluded from the pool (no systematic bias).
     """
     items: list[tuple[str, float, float]] = []
-    active_weights = _active_weights()
+    active_weights = _active_weights(symbol)
 
     def _add(layer: Optional[dict[str, StructureAnalysis]], mult: float) -> None:
         if not layer:
@@ -210,6 +232,7 @@ def compute_bias(
     struct_by_tf: dict[str, StructureAnalysis],
     developing_struct_by_tf: Optional[dict[str, StructureAnalysis]] = None,
     developing_discount: float = 0.7,
+    symbol: Optional[str] = None,
 ) -> dict[str, Any]:
     """Synthesize a directional bias dict from per-TF StructureAnalysis.
 
@@ -232,7 +255,9 @@ def compute_bias(
     The raw probabilities remain exposed for the opportunity engine.
     """
     long_p, short_p = _probabilities(
-        _collect_evidence(struct_by_tf, developing_struct_by_tf, developing_discount)
+        _collect_evidence(
+            struct_by_tf, developing_struct_by_tf, developing_discount, symbol,
+        )
     )
 
     dominant = max(long_p, short_p)
@@ -287,7 +312,7 @@ def compute_bias(
     developing_blend = 0.0
     if developing_struct_by_tf:
         c_long, c_short = _probabilities(
-            _collect_evidence(struct_by_tf, None, developing_discount)
+            _collect_evidence(struct_by_tf, None, developing_discount, symbol)
         )
         developing_blend = round(confidence - max(c_long, c_short), 3)
 
@@ -389,6 +414,7 @@ def run_tf_modules(
                     wyck = WyckoffEngine(
                         pip_size=pip_size,
                         swing_lookback=profile.swing_lookback,
+                        symbol=symbol,
                     )
                     # WyckoffEngine self-drops the forming bar for its pattern
                     # reads and feeds its inner StructureEngine the live frame
@@ -1074,7 +1100,7 @@ def analyze_window(
             except Exception:
                 continue
 
-    bias = compute_bias(struct)
+    bias = compute_bias(struct, symbol=symbol)
     bias = blend_concepts(
         bias, concepts, regime, concept_weight,
         concept_flip_threshold=cc.concept_flip_threshold,
