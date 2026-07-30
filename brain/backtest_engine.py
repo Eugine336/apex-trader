@@ -579,8 +579,9 @@ class BacktestEngine:
 
         self.session_engine = SessionEngine()
         # Cross-instrument volatility monitor — fed each bar from the H1 regime
-        # analysis and applied as a sizing multiplier in ``_size_trade`` so the
-        # backtest mirrors the live SystemVolatilityMonitor size gate.
+        # analysis and folded into sizing as the ``vol_mult`` SizingFactors
+        # component in ``_build_sizing_factors`` so the backtest mirrors the live
+        # SystemVolatilityMonitor size gate.
         try:
             from brain.regime_detector import SystemVolatilityMonitor
             self.system_volatility_monitor = SystemVolatilityMonitor()
@@ -632,6 +633,23 @@ class BacktestEngine:
         self.drawdown_guard = None
         self.account_risk = None
         self.thesis_engine = None
+
+        # ── Live sizing / optimization subsystems (Phase 2 full-parity) ──
+        # The graded-sizing chain the live ``_on_entry_decision`` runs between
+        # the RiskGovernor verdict and ``PortfolioDivision.evaluate``: the
+        # Orchestrator round table, the adaptive optimizer (losing-pattern /
+        # AVOID vetoes + learned size), the opportunity-density and
+        # execution-quality monitors, the capital allocator and the
+        # opportunity-quality sizer. The system-wide volatility monitor already
+        # lives on ``self.system_volatility_monitor``. Each is best-effort (a
+        # construction/import fault leaves it None and its multiplier defaults
+        # to 1.0) and (re)built in ``_init_live_subsystems``.
+        self.bt_orchestrator = None
+        self.bt_ml_adapter = None
+        self.bt_opportunity_density = None
+        self.bt_execution_monitor = None
+        self.bt_capital_allocator = None
+        self.bt_oq_sizer = None
 
         if not self.legacy_mode:
             try:
@@ -690,7 +708,7 @@ class BacktestEngine:
         self._init_live_subsystems()
 
     def _init_live_subsystems(self) -> None:
-        """Construct the live stateful risk / compliance subsystems.
+        """Construct the live stateful risk / compliance / sizing subsystems.
 
         Mirrors ``SystemContext.create`` so the backtest is governed by the
         SAME permit + risk-state gates the live event-driven plane enforces:
@@ -707,10 +725,18 @@ class BacktestEngine:
           * :class:`AccountRiskManager` — per-account daily-P&L / heat silo.
           * :class:`ThesisEngine` — stateful competing Long/Short/Flat theses.
 
+        Phase 2 also builds the graded-sizing chain the live
+        ``_on_entry_decision`` runs before ``PortfolioDivision.evaluate`` — the
+        :class:`Orchestrator`, the :class:`AdaptiveOptimizer` (ml_adapter), the
+        :class:`OpportunityDensityTracker`, the :class:`ExecutionMonitor`, the
+        :class:`CapitalAllocator` and the :class:`OpportunityQualitySizer` — each
+        folded into the ``SizingFactors`` bundle by ``_build_sizing_factors``.
+
         Every subsystem is best-effort: an import or construction fault leaves
-        it ``None`` (logged) and its gate is skipped, so the replay still runs
-        in a degraded, live-parity-minus-one-gate mode. Re-invoked from ``run``
-        so consecutive backtests start with clean subsystem state.
+        it ``None`` (logged) and its gate / multiplier is skipped (defaulting to
+        a neutral 1.0), so the replay still runs in a degraded, live-parity-
+        minus-one-gate mode. Re-invoked from ``run`` so consecutive backtests
+        start with clean subsystem state.
         """
         risk_cfg = getattr(self.config, "risk", None)
         gcfg = getattr(self.config, "governor", None)
@@ -818,6 +844,95 @@ class BacktestEngine:
             logger.warning("[backtest] ThesisEngine unavailable: {}", exc)
             self.thesis_engine = None
 
+        # ── Orchestrator round table (graded size / physics veto) ────
+        self.bt_orchestrator = None
+        try:
+            from brain.orchestrator import Orchestrator
+            self.bt_orchestrator = Orchestrator(
+                config=getattr(self.config, "orchestrator", None),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[backtest] Orchestrator unavailable: {}", exc)
+            self.bt_orchestrator = None
+
+        # ── AdaptiveOptimizer (ml_adapter) ───────────────────────────
+        # Learned pair/regime/session edge + losing-pattern / AVOID vetoes,
+        # constructed exactly as ``SystemContext`` does so the replay reads the
+        # SAME learned edge the live plane sizes on. Read-only in the replay:
+        # ``get_trade_adjustments`` / ``is_losing_pattern`` are pure reads and
+        # ``register_new_trade`` only advances an in-memory counter — the live
+        # learned stores are never written. May be effectively cold (no learned
+        # history) — that is fine, every read then returns a neutral 1.0 /
+        # "trade" verdict. Best-effort → None on any construction fault.
+        self.bt_ml_adapter = None
+        try:
+            from adaptive.optimizer import AdaptiveOptimizer
+            self.bt_ml_adapter = AdaptiveOptimizer(config=self.config)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[backtest] AdaptiveOptimizer unavailable: {}", exc)
+            self.bt_ml_adapter = None
+
+        # ── OpportunityDensityTracker ────────────────────────────────
+        self.bt_opportunity_density = None
+        try:
+            from brain.opportunity_density import OpportunityDensityTracker
+            self.bt_opportunity_density = OpportunityDensityTracker(window_minutes=60)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[backtest] OpportunityDensityTracker unavailable: {}", exc)
+            self.bt_opportunity_density = None
+
+        # ── ExecutionMonitor (execution-quality sizing) ──────────────
+        self.bt_execution_monitor = None
+        try:
+            from brain.execution_monitor import ExecutionMonitor
+            self.bt_execution_monitor = ExecutionMonitor()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[backtest] ExecutionMonitor unavailable: {}", exc)
+            self.bt_execution_monitor = None
+
+        # ── CapitalAllocator ─────────────────────────────────────────
+        # SQLite-backed. Isolated to an in-memory DB so the replay warms up its
+        # own capital-allocation split (Phase-1 ``persist=False`` philosophy)
+        # and never reads/writes the live allocation store; cold → a neutral
+        # 1.0 multiplier. The prior instance's connection is closed on reset.
+        try:
+            prev_alloc = getattr(self, "bt_capital_allocator", None)
+            if prev_alloc is not None and hasattr(prev_alloc, "close"):
+                prev_alloc.close()
+        except Exception:  # noqa: BLE001
+            pass
+        self.bt_capital_allocator = None
+        try:
+            from pathlib import Path
+            from adaptive.capital_allocator import CapitalAllocator
+            self.bt_capital_allocator = CapitalAllocator(db_path=Path(":memory:"))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[backtest] CapitalAllocator unavailable: {}", exc)
+            self.bt_capital_allocator = None
+
+        # ── OpportunityQualitySizer (opportunity-proportional sizing) ─
+        self.bt_oq_sizer = None
+        try:
+            from brain.opportunity_sizer import OpportunityQualitySizer
+            ci_cfg = getattr(self.config, "cross_instrument", None)
+            self.bt_oq_sizer = OpportunityQualitySizer(
+                enabled=bool(
+                    getattr(ci_cfg, "quality_sizing_enabled", False) if ci_cfg else False
+                ),
+                max_boost=float(
+                    getattr(ci_cfg, "quality_sizing_max_boost", 1.3) if ci_cfg else 1.3
+                ),
+                min_cut=float(
+                    getattr(ci_cfg, "quality_sizing_min_cut", 0.7) if ci_cfg else 0.7
+                ),
+                ev_ref=float(
+                    getattr(ci_cfg, "quality_sizing_ev_ref", 1.0) if ci_cfg else 1.0
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[backtest] OpportunityQualitySizer unavailable: {}", exc)
+            self.bt_oq_sizer = None
+
         logger.info(
             "[backtest] live subsystems — compliance={} portfolio_sm={} "
             "drawdown={} account_risk={} thesis={}",
@@ -826,6 +941,16 @@ class BacktestEngine:
             self.drawdown_guard is not None,
             self.account_risk is not None,
             self.thesis_engine is not None,
+        )
+        logger.info(
+            "[backtest] sizing subsystems — orchestrator={} ml_adapter={} "
+            "density={} exec_monitor={} capital_allocator={} oq_sizer={}",
+            self.bt_orchestrator is not None,
+            self.bt_ml_adapter is not None,
+            self.bt_opportunity_density is not None,
+            self.bt_execution_monitor is not None,
+            self.bt_capital_allocator is not None,
+            self.bt_oq_sizer is not None,
         )
 
     def _require_decision_engine(self) -> None:
@@ -1012,6 +1137,7 @@ class BacktestEngine:
             # the per-account daily-loss halt update across the run.
             if not self.legacy_mode:
                 self._register_close_risk(balance - _bal_before, balance, now)
+                self._register_close_adaptive(close_event)
             total_commission += commission
             total_slippage_cost += open_trade.get("slippage_cost", 0.0)
             equity_curve.append(balance)
@@ -1546,10 +1672,22 @@ class BacktestEngine:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[backtest] DrawdownGuard risk-cap failed for {}: {}", pair, exc)
 
+        # ── Full-parity sizing chain (Phase 2 — mirror live _on_entry_decision) ─
+        # Orchestrator round table → adaptive optimizer → volatility / density /
+        # execution / capital multipliers → per-instrument ATR → opportunity-
+        # quality sizer, folded into the SAME SizingFactors bundle the live plane
+        # feeds PortfolioDivision. Vetoes (Orchestrator physics / uniformly-weak,
+        # a confirmed losing pattern, an optimizer AVOID) reject the entry.
+        factors = self._build_sizing_factors(
+            pair, direction, wm, slices, signal, zone, score,
+            de_result, de_size_mult, base_risk_pct, now,
+        )
+        if factors is None:
+            return None
+
         # ── Position sizing via PortfolioDivision → PositionSizer ───────────
         sized = self._size_trade(
-            pair, direction, signal, de_size_mult, de_result.conviction, balance,
-            base_risk_pct=base_risk_pct,
+            pair, direction, signal, factors, de_result.conviction, balance,
         )
         if sized is None:
             return None
@@ -1835,6 +1973,26 @@ class BacktestEngine:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[backtest] AccountRisk close update failed: {}", exc)
 
+    def _register_close_adaptive(self, close_event: Optional[dict]) -> None:
+        """Feed a realized close into the adaptive optimizer (Phase 2 parity).
+
+        Mirrors the live close-path ``ml_adapter.register_new_trade`` count/edge
+        signal so the optimizer's retrain cadence + exit-cause learning advance
+        across the replay. Best-effort; a fault never breaks the replay. The
+        Orchestrator dashboard proposal event is intentionally omitted — the
+        backtest has no event store to emit onto.
+        """
+        adapter = getattr(self, "bt_ml_adapter", None)
+        if adapter is None:
+            return
+        try:
+            exit_cause = None
+            if isinstance(close_event, dict):
+                exit_cause = close_event.get("exit_reason") or close_event.get("outcome")
+            adapter.register_new_trade(exit_cause=exit_cause)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[backtest] adaptive close register failed: {}", exc)
+
     def _calculate_entry(
         self,
         pair: str,
@@ -2004,18 +2162,360 @@ class BacktestEngine:
             consensus_votes=list(votes),
         )
 
+    # ── Full-parity sizing chain (Phase 2 — live _on_entry_decision) ─────────
+
+    def _build_sizing_factors(
+        self,
+        pair: str,
+        direction: str,
+        wm,
+        slices: dict[str, pd.DataFrame],
+        signal,
+        zone,
+        score: int,
+        de_result,
+        de_size_mult: float,
+        base_risk_pct: float,
+        now: Optional[datetime],
+    ):
+        """Compose the live-parity :class:`SizingFactors` bundle.
+
+        Mirrors the live ``_on_entry_decision`` sizing chain
+        (``event_driven_bootstrap`` ~8182-8678): Orchestrator round table →
+        adaptive optimizer → system-volatility → opportunity-density →
+        execution-quality → capital-allocation → per-instrument ATR, plus the
+        opportunity-quality sizer folded onto the base risk. Every subsystem is
+        best-effort: a missing/None subsystem contributes a neutral ``1.0``.
+
+        Returns ``None`` when a veto/block subsystem rejects the entry (an
+        Orchestrator veto, a confirmed losing pattern, or an optimizer AVOID) —
+        the same hard "no" the live plane returns on.
+        """
+        from portfolio.models import SizingFactors
+
+        zone_type = getattr(zone, "zone_type", "")
+        zone_type = str(getattr(zone_type, "value", zone_type) or "")
+        de_conviction = float(getattr(de_result, "conviction", 0.0) or 0.0)
+
+        # 1. Orchestrator round table — graded size or physics veto.
+        orch_mult, orch_vetoed = self._orchestrator_size_mult(
+            pair, direction, wm, float(score), de_conviction,
+        )
+        if orch_vetoed:
+            return None
+
+        # 2. Adaptive optimizer — losing-pattern block + AVOID veto + size adjust.
+        adapt_mult, adapt_blocked = self._adaptive_size_mult(
+            pair, wm, now, zone_type,
+        )
+        if adapt_blocked:
+            return None
+
+        # 3. System-wide volatility monitor.
+        vol_mult = 1.0
+        if self.system_volatility_monitor is not None:
+            try:
+                vol_mult = float(self.system_volatility_monitor.get_size_multiplier())
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[backtest] system-vol size-mult read failed: {}", exc)
+
+        # 4. Opportunity-density tracker (1.0 until fed in a multi-opp cycle).
+        density_mult = 1.0
+        if self.bt_opportunity_density is not None:
+            try:
+                density_mult = float(self.bt_opportunity_density.get_size_multiplier())
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[backtest] density size-mult read failed: {}", exc)
+
+        # 5. Execution-quality monitor (1.0 until execution samples accrue).
+        exec_mult = 1.0
+        if self.bt_execution_monitor is not None:
+            try:
+                exec_mult = float(self.bt_execution_monitor.get_size_multiplier(pair))
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[backtest] exec size-mult read failed: {}", exc)
+
+        # 6. Capital-allocation multiplier (by strategy fingerprint).
+        cap_mult = self._capital_alloc_mult(wm)
+
+        # 7. Per-instrument volatility (current vs average M5 ATR).
+        inst_vol_mult = self._instrument_vol_mult(slices)
+
+        # 8. Opportunity-quality-proportional sizer — folded onto the base risk
+        #    (a boost > 1.0 is allowed here, exactly as the live plane multiplies
+        #    ``risk_pct``), unlike the de-risking factors above which
+        #    PortfolioDivision clamps to <= 1.0.
+        risk_pct = float(base_risk_pct)
+        oq_mult = self._opportunity_quality_mult(wm, direction, float(score))
+        if oq_mult != 1.0:
+            risk_pct = round(risk_pct * oq_mult, 6)
+
+        return SizingFactors(
+            base_risk_pct=risk_pct,
+            de_size_mult=de_size_mult,
+            orch_mult=orch_mult,
+            vol_mult=vol_mult,
+            inst_vol_mult=inst_vol_mult,
+            density_mult=density_mult,
+            exec_mult=exec_mult,
+            cap_mult=cap_mult,
+            adapt_mult=adapt_mult,
+        )
+
+    def _orchestrator_size_mult(
+        self, pair: str, direction: str, wm, scan_score: float, de_conviction: float,
+    ) -> tuple[float, bool]:
+        """Grade the entry through the Orchestrator round table.
+
+        Returns ``(size_multiplier, vetoed)``. Fail-safe — a missing engine or
+        any fault is a neutral ``1.0``, never a veto. Mirrors
+        ``event_driven_bootstrap`` ~8182-8286.
+        """
+        engine = getattr(self, "bt_orchestrator", None)
+        if engine is None:
+            return 1.0, False
+        try:
+            from brain.orchestrator import TradeProposal
+
+            want_dir = "LONG" if str(direction).upper() in ("BUY", "LONG") else "SHORT"
+            structure = wm.structure_by_tf() if wm is not None else {}
+            h4_sa = structure.get("H4")
+            h4_alignment = (
+                float(getattr(h4_sa, "confidence", 0.0) or 0.0)
+                if h4_sa is not None else None
+            )
+
+            # Ranker-EV dimension is gated by ``orchestrator.use_ranker_ev``
+            # (default off), mirroring live so sizing is unchanged until opted in.
+            ranker_ev = ranker_coherence = ranker_confidence = None
+            candidate_count = 0
+            try:
+                _orch_cfg = getattr(self.config, "orchestrator", None)
+                _use_ranker_ev = bool(getattr(_orch_cfg, "use_ranker_ev", False))
+            except Exception:  # noqa: BLE001
+                _use_ranker_ev = False
+            if _use_ranker_ev and wm is not None:
+                try:
+                    cands = (
+                        wm.candidates_list()
+                        if hasattr(wm, "candidates_list")
+                        else list(getattr(wm, "candidates", ()) or [])
+                    )
+                    candidate_count = len(cands)
+                    matching = [
+                        c for c in cands
+                        if str(getattr(c, "direction", "")).upper() == want_dir
+                    ]
+                    if matching:
+                        best = max(
+                            matching,
+                            key=lambda c: float(getattr(c, "expected_value", 0.0) or 0.0),
+                        )
+                        ranker_ev = float(getattr(best, "expected_value", 0.0) or 0.0)
+                        ranker_coherence = float(getattr(best, "coherence", 0.0) or 0.0)
+                        ranker_confidence = float(getattr(best, "confidence", 0.0) or 0.0)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[backtest] orch candidate EV select failed: {}", exc)
+
+            proposal = TradeProposal(
+                pair=pair,
+                direction=want_dir,
+                scan_score=float(scan_score),
+                de_conviction=de_conviction if de_conviction > 0 else None,
+                de_margin=None,
+                tf_alignment=h4_alignment,
+                ranker_ev=ranker_ev,
+                ranker_coherence=ranker_coherence,
+                ranker_confidence=ranker_confidence,
+                candidate_count=candidate_count,
+            )
+            verdict = engine.evaluate(proposal)
+            if getattr(verdict, "vetoed", False):
+                logger.debug(
+                    "[backtest] {} {} orchestrator veto: {}",
+                    pair, want_dir, getattr(verdict, "veto_reason", ""),
+                )
+                return 0.0, True
+            return float(getattr(verdict, "size_multiplier", 1.0) or 1.0), False
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[backtest] orchestrator eval failed for {}: {}", pair, exc)
+            return 1.0, False
+
+    def _adaptive_size_mult(
+        self, pair: str, wm, now: Optional[datetime], zone_type: str,
+    ) -> tuple[float, bool]:
+        """Apply the AdaptiveOptimizer learned edge.
+
+        Returns ``(size_multiplier, blocked)``. Blocks (``True``) on a confirmed
+        losing pattern or an optimizer AVOID veto; otherwise returns the learned
+        position-size multiplier. Fail-safe — a missing adapter or any fault is a
+        neutral ``1.0``, never blocked. The live governance approval step is a
+        no-op in the backtest (auto-approved, matching live's Phase-7 default).
+        Mirrors ``event_driven_bootstrap`` ~8288-8389.
+        """
+        adapter = getattr(self, "bt_ml_adapter", None)
+        if adapter is None:
+            return 1.0, False
+        try:
+            regime = "UNKNOWN"
+            if wm is not None:
+                try:
+                    rbtf = wm.regime_by_tf()
+                    regime = str(
+                        rbtf.get("H1") or rbtf.get("H4")
+                        or next(iter(rbtf.values()), "UNKNOWN")
+                    )
+                except Exception:  # noqa: BLE001
+                    regime = "UNKNOWN"
+            session = "UNKNOWN"
+            if self.session_engine is not None and now is not None:
+                try:
+                    ss = self.session_engine.get_status(now)
+                    session = str(
+                        getattr(ss, "name", "")
+                        or getattr(ss, "current_session", "")
+                        or "UNKNOWN"
+                    )
+                except Exception:  # noqa: BLE001
+                    session = "UNKNOWN"
+
+            block_enabled = getattr(
+                getattr(self.config, "risk", None),
+                "losing_pattern_block_enabled", True,
+            )
+            if block_enabled:
+                is_loser, loser_reason = adapter.is_losing_pattern(
+                    pair, regime, session, zone_type,
+                )
+                if is_loser:
+                    logger.debug(
+                        "[backtest] {} entry blocked — losing pattern: {}",
+                        pair, loser_reason,
+                    )
+                    return 1.0, True
+
+            adj = adapter.get_trade_adjustments(pair, regime, session)
+            if not getattr(adj, "should_trade", True):
+                logger.debug(
+                    "[backtest] {} entry blocked — optimizer AVOID: {}",
+                    pair, getattr(adj, "reason", ""),
+                )
+                return 1.0, True
+            return float(getattr(adj, "position_size_multiplier", 1.0) or 1.0), False
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[backtest] adaptive optimizer adjust failed for {}: {}", pair, exc)
+            return 1.0, False
+
+    def _capital_alloc_mult(self, wm) -> float:
+        """Capital-allocation sizing multiplier for this trade's fingerprint.
+
+        Mirrors ``event_driven_bootstrap`` ~8422-8454. Best-effort neutral 1.0.
+        """
+        allocator = getattr(self, "bt_capital_allocator", None)
+        if allocator is None:
+            return 1.0
+        try:
+            from adaptive.capital_allocator import compute_fingerprint
+
+            regime_str = ""
+            if wm is not None:
+                try:
+                    rbtf = wm.regime_by_tf()
+                    regime_str = str(
+                        rbtf.get("H1") or rbtf.get("H4")
+                        or next(iter(rbtf.values()), "") or ""
+                    )
+                except Exception:  # noqa: BLE001
+                    regime_str = ""
+            fp = compute_fingerprint(horizon="SWING", extra=regime_str)
+            return float(allocator.get_sizing_multiplier(fp) or 1.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[backtest] capital-alloc size-mult failed: {}", exc)
+            return 1.0
+
+    def _instrument_vol_mult(self, slices: dict[str, pd.DataFrame]) -> float:
+        """Per-instrument volatility multiplier from current vs average M5 ATR.
+
+        Mirrors ``event_driven_bootstrap`` ~8616-8631 — reuses the shared
+        PositionSizer volatility ramp so the same [0.5, 1.5] mapping applies.
+        Best-effort neutral 1.0.
+        """
+        sizer = getattr(self, "position_sizer", None)
+        if sizer is None:
+            return 1.0
+        try:
+            vdf = slices.get("M5") if slices else None
+            if vdf is not None and len(vdf) >= 20:
+                tr = (vdf["high"] - vdf["low"]).abs()
+                cur_atr = float(tr.tail(14).mean())
+                avg_atr = float(tr.tail(50).mean())
+                return float(sizer.adjust_for_volatility(1.0, cur_atr, avg_atr))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[backtest] per-instrument vol-mult failed: {}", exc)
+        return 1.0
+
+    def _opportunity_quality_mult(
+        self, wm, direction: str, score: float,
+    ) -> float:
+        """Opportunity-quality-proportional sizing multiplier (GAP 3 parity).
+
+        Mirrors ``event_driven_bootstrap`` ~8551-8582. Identity ``1.0`` when the
+        sizer is disabled/absent (the default). Sources EV/confidence from the
+        best matching WorldModel candidate; falls back to the zone conviction as
+        confidence. Best-effort.
+        """
+        sizer = getattr(self, "bt_oq_sizer", None)
+        if sizer is None or not getattr(sizer, "enabled", False):
+            return 1.0
+        try:
+            q_ev = 0.0
+            q_conf = 0.0
+            if wm is not None:
+                try:
+                    want = str(direction).upper()
+                    cands = (
+                        wm.candidates_list()
+                        if hasattr(wm, "candidates_list")
+                        else list(getattr(wm, "candidates", ()) or [])
+                    )
+                    best = None
+                    for opp in cands:
+                        if str(getattr(opp, "direction", "")).upper() != want:
+                            continue
+                        if best is None or float(
+                            getattr(opp, "expected_value", 0.0) or 0.0
+                        ) > float(getattr(best, "expected_value", 0.0) or 0.0):
+                            best = opp
+                    if best is not None:
+                        q_ev = float(getattr(best, "expected_value", 0.0) or 0.0)
+                        q_conf = float(getattr(best, "confidence", 0.0) or 0.0)
+                except Exception:  # noqa: BLE001
+                    q_ev, q_conf = 0.0, 0.0
+            if q_conf <= 0.0:
+                q_conf = float(score or 0.0) / 100.0
+            return float(
+                sizer.multiplier(ev=q_ev, confidence=q_conf, rank=None, rank_total=None)
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[backtest] opportunity-quality sizer failed: {}", exc)
+            return 1.0
+
     def _size_trade(
         self,
         pair: str,
         direction: str,
         signal,
-        de_size_mult: float,
+        factors,
         conviction: float,
         balance: float,
         existing: Optional[list] = None,
-        base_risk_pct: Optional[float] = None,
     ):
         """Size the trade through PortfolioDivision → PositionSizer (live path).
+
+        ``factors`` is the fully-composed :class:`SizingFactors` bundle (base
+        risk + the entire graded multiplier chain) built by
+        ``_build_sizing_factors`` — mirroring the live plane, which folds the
+        whole chain into a single ``PortfolioDivision.evaluate`` call.
 
         Returns ``(lots, max_loss, risk_amount)`` or ``None`` when the portfolio
         rejects the trade or sizes it to zero.
@@ -2028,9 +2528,7 @@ class BacktestEngine:
         trade — matching reality).
         """
         try:
-            from portfolio.models import (
-                PortfolioCandidate, PortfolioAccount, SizingFactors,
-            )
+            from portfolio.models import PortfolioCandidate, PortfolioAccount
             candidate = PortfolioCandidate(
                 symbol=pair,
                 direction=direction,
@@ -2050,26 +2548,6 @@ class BacktestEngine:
                 account_key="backtest",
                 daily_pnl=float(getattr(self, "_bt_daily_pnl", 0.0) or 0.0),
                 daily_loss_cap_pct=daily_cap,
-            )
-            # Apply the cross-instrument volatility size gate the same way the
-            # live plane folds ``system_volatility_monitor.get_size_multiplier()``
-            # into the entry size.
-            if self.system_volatility_monitor is not None:
-                try:
-                    de_size_mult = round(
-                        de_size_mult * float(
-                            self.system_volatility_monitor.get_size_multiplier()
-                        ),
-                        3,
-                    )
-                except Exception:
-                    pass
-            factors = SizingFactors(
-                base_risk_pct=(
-                    float(base_risk_pct)
-                    if base_risk_pct is not None else self.risk_per_trade
-                ),
-                de_size_mult=de_size_mult,
             )
             verdict = self.portfolio.evaluate(
                 candidate, list(existing or []), account, factors,
