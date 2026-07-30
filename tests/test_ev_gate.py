@@ -194,7 +194,7 @@ def _make_structure(trend=Trend.BULLISH) -> StructureAnalysis:
 
 
 def _counter_trend_overlap_model():
-    """Bearish FVG+OB overlap under BULLISH HTF bias → counter-trend SHORT."""
+    """Bearish FVG+OB overlap under BULLISH HTF structure (counter-direction)."""
     store = WorldModelStore()
     return build_world_model(
         symbol="EURUSD",
@@ -206,22 +206,24 @@ def _counter_trend_overlap_model():
 
 
 class TestCounterTrendConviction:
-    def test_conviction_softened_for_counter_trend(self):
-        # EV gate ON → counter-trend FVG+OB = 100 × 0.85 = 85 (reaches the gate).
+    def test_conviction_not_haircut_with_ev_gate(self):
+        # A bearish overlap under bullish HTF is no longer haircut — it keeps
+        # its full base conviction (100) and reaches the gates on its merit.
         model = _counter_trend_overlap_model()
         zones = extract_entry_zones(model, EntryConfig(ev_gate_enabled=True))
         overlap = [z for z in zones if z.zone_type == ZoneType.FVG_OB_OVERLAP]
         assert len(overlap) == 1
-        assert overlap[0].is_counter_trend is True
-        assert overlap[0].conviction == 85
+        assert overlap[0].is_counter_trend is False
+        assert overlap[0].conviction == 100
 
-    def test_conviction_legacy_for_alignment(self):
-        # EV gate OFF → legacy haircut 0.70 → 100 × 0.70 = 70 (below score gate).
+    def test_conviction_not_haircut_without_ev_gate(self):
+        # Same with the EV gate off: no legacy directional haircut applies.
         model = _counter_trend_overlap_model()
         zones = extract_entry_zones(model, EntryConfig(ev_gate_enabled=False))
         overlap = [z for z in zones if z.zone_type == ZoneType.FVG_OB_OVERLAP]
         assert len(overlap) == 1
-        assert overlap[0].conviction == 70
+        assert overlap[0].is_counter_trend is False
+        assert overlap[0].conviction == 100
 
 
 # ── Full gate integration ────────────────────────────────────────────────────

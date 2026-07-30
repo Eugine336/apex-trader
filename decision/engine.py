@@ -366,11 +366,12 @@ class DecisionEngine:
     def _is_counter_htf(ctx: EntryContext) -> bool:
         """True when the trade direction opposes the higher-timeframe bias.
 
-        Honours the zone's ``is_counter_trend`` flag first — it is computed at
-        zone extraction against the full HTF stack (H4→H1→D1 via
-        ``_resolve_bias``), so it is a more complete read than the H4-only
-        derivation. Falls back to the H4 trend string (tolerating enum/`Trend.X`
-        forms) when the flag is unset, preserving the previous behaviour.
+        The zone's ``is_counter_trend`` flag is retained only as observability
+        metadata and is pinned ``False`` upstream (zone extraction no longer
+        pre-penalises against a crude HTF bias label). The engine therefore
+        makes its own counter-trend determination from the H4 trend string
+        (tolerating enum/`Trend.X` forms) — an entry is judged on its own
+        structural merit here, not via a pre-computed directional surcharge.
         """
         if getattr(ctx, "is_counter_trend", False):
             return True
