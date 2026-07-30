@@ -22,6 +22,7 @@ Design principles:
 
 from __future__ import annotations
 
+import math
 import time
 from dataclasses import dataclass, field
 from enum import Enum, auto
@@ -469,6 +470,12 @@ class PortfolioRiskStateMachine:
 
     Threshold ordering (validated in constructor):
       heat_emergency_pct > heat_reduction_pct > heat_defensive_pct > heat_recovery_pct
+
+    Adaptive scaling:
+      When ``account_equity`` is provided and below ``reference_balance``, all
+      four thresholds are sqrt-scaled up (and clamped) so micro accounts do not
+      trip DEFENSIVE/EMERGENCY on a single min-lot trade. Ordering is validated
+      AFTER scaling.
     """
 
     def __init__(
@@ -479,7 +486,42 @@ class PortfolioRiskStateMachine:
         heat_reduction_pct: float = 2.5,
         reduction_persist_seconds: float = 300.0,
         heat_emergency_pct: float = 4.0,
+        reference_balance: float = 10000.0,
+        account_equity: Optional[float] = None,
     ):
+        # Base thresholds are tuned for ~$10k accounts. On a micro account a
+        # single min-lot trade can be several percent of equity, which would
+        # instantly trip DEFENSIVE/EMERGENCY and force-close winners. When live
+        # equity is below the reference, sqrt-scale all four thresholds up and
+        # clamp each to a ceiling so the ladder stays useful without becoming
+        # meaningless on tiny balances.
+        base_defensive = heat_defensive_pct
+        base_recovery = heat_recovery_pct
+        base_reduction = heat_reduction_pct
+        base_emergency = heat_emergency_pct
+
+        if (
+            account_equity is not None
+            and account_equity > 0.0
+            and account_equity < reference_balance
+        ):
+            scale = max(1.0, math.sqrt(reference_balance / account_equity))
+            heat_defensive_pct = min(heat_defensive_pct * scale, 15.0)
+            heat_recovery_pct = min(heat_recovery_pct * scale, 12.0)
+            heat_reduction_pct = min(heat_reduction_pct * scale, 25.0)
+            heat_emergency_pct = min(heat_emergency_pct * scale, 40.0)
+            logger.info(
+                "[PortfolioRisk] Adaptive heat thresholds for equity=${:.2f} "
+                "(reference=${:.2f}, scale={:.2f}x): "
+                "defensive {:.2f}%→{:.2f}%, recovery {:.2f}%→{:.2f}%, "
+                "reduction {:.2f}%→{:.2f}%, emergency {:.2f}%→{:.2f}%",
+                account_equity, reference_balance, scale,
+                base_defensive, heat_defensive_pct,
+                base_recovery, heat_recovery_pct,
+                base_reduction, heat_reduction_pct,
+                base_emergency, heat_emergency_pct,
+            )
+
         if heat_recovery_pct >= heat_defensive_pct:
             raise ValueError(
                 f"heat_recovery_pct ({heat_recovery_pct}) must be < "

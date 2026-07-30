@@ -45,6 +45,21 @@ _DEFAULT_PARTIAL_CLOSE_RATIO = 0.5  # event_driven_bootstrap._DEFAULT_PARTIAL_CL
 _SCALE_IN_RISK_FRACTION = 0.5     # event_driven_bootstrap._SCALE_IN_RISK_FRACTION
 
 
+class _BacktestSpreadMonitor:
+    """Always-safe spread source for the ComplianceDivision in replay.
+
+    ``ComplianceDivision._check_spread`` fails CLOSED when it has no spread
+    source, so the backtest binds this trivial monitor: a candle replay has no
+    live spread to blow out, and the pre-parity backtest already treated the
+    spread veto as satisfied.  Matches the ``is_spread_safe(symbol, spread)``
+    duck-typed contract the division calls.
+    """
+
+    @staticmethod
+    def is_spread_safe(symbol: str, spread_pips: float) -> tuple[bool, str]:
+        return True, "backtest spread ok"
+
+
 @dataclass
 class ATRComparisonResult:
     """Side-by-side metrics: structure-stop vs ATR-stop on the same setups.
@@ -601,6 +616,23 @@ class BacktestEngine:
         self.position_sizer = None
         self.portfolio = None
         self.entry_gate = None
+
+        # ── Live stateful risk / compliance subsystems (Phase 1 full-parity) ──
+        # Threaded into the non-legacy path so the backtest is governed by the
+        # SAME gates the live plane enforces: the ComplianceDivision permit
+        # layer, the PortfolioRisk state machine, the DrawdownGuard risk cap,
+        # per-account risk silos and the stateful competing-thesis engine.
+        # Each is best-effort (a construction/import fault leaves it None and
+        # the corresponding gate is skipped) and constructed in
+        # ``_init_live_subsystems`` — also re-run at the start of every ``run``
+        # so consecutive backtests never leak state.
+        self._bt_account_key = "backtest"
+        self.compliance = None
+        self.portfolio_risk_sm = None
+        self.drawdown_guard = None
+        self.account_risk = None
+        self.thesis_engine = None
+
         if not self.legacy_mode:
             try:
                 self._build_live_engines()
@@ -653,6 +685,149 @@ class BacktestEngine:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[backtest] SymbolConvictionStore unavailable: {}", exc)
 
+        # Construct the live stateful risk / compliance subsystems too, so the
+        # non-legacy replay is governed by the same gates the live plane uses.
+        self._init_live_subsystems()
+
+    def _init_live_subsystems(self) -> None:
+        """Construct the live stateful risk / compliance subsystems.
+
+        Mirrors ``SystemContext.create`` so the backtest is governed by the
+        SAME permit + risk-state gates the live event-driven plane enforces:
+
+          * :class:`ComplianceDivision` — the single authoritative permit layer
+            (duplicate, daily-loss halt, per-account heat, DrawdownGuard FROZEN,
+            max-positions, PortfolioRisk DEFENSIVE+). The broker/platform checks
+            (market-open, broker-available, spread) are bound to always-pass
+            stubs — the backtest replays historical candles, so those physical
+            vetoes are trivially satisfied (as the pre-parity path assumed).
+          * :class:`PortfolioRiskStateMachine` — DEFENSIVE/REDUCING/EMERGENCY
+            heat management.
+          * :class:`DrawdownGuard` — NORMAL/CAUTION/RECOVERY/FROZEN risk cap.
+          * :class:`AccountRiskManager` — per-account daily-P&L / heat silo.
+          * :class:`ThesisEngine` — stateful competing Long/Short/Flat theses.
+
+        Every subsystem is best-effort: an import or construction fault leaves
+        it ``None`` (logged) and its gate is skipped, so the replay still runs
+        in a degraded, live-parity-minus-one-gate mode. Re-invoked from ``run``
+        so consecutive backtests start with clean subsystem state.
+        """
+        risk_cfg = getattr(self.config, "risk", None)
+        gcfg = getattr(self.config, "governor", None)
+
+        # ── DrawdownGuard ────────────────────────────────────────────
+        self.drawdown_guard = None
+        try:
+            from brain.drawdown_guard import DrawdownGuard
+            self.drawdown_guard = DrawdownGuard(
+                # Anchor NORMAL-mode risk to the backtest's own base risk so the
+                # per-mode cap only ever REDUCES risk during drawdown (never
+                # below the intended base in NORMAL), matching the guard's
+                # "scales DOWN from base" contract.
+                base_risk_pct=float(self.risk_per_trade),
+                rolling_window_days=int(
+                    getattr(risk_cfg, "drawdown_rolling_window_days", 30)
+                    if risk_cfg is not None else 30
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[backtest] DrawdownGuard unavailable: {}", exc)
+            self.drawdown_guard = None
+
+        # ── PortfolioRiskStateMachine ────────────────────────────────
+        self.portfolio_risk_sm = None
+        try:
+            if risk_cfg is None or getattr(risk_cfg, "portfolio_risk_engine_enabled", True):
+                from risk.portfolio_risk_state import PortfolioRiskStateMachine
+                self.portfolio_risk_sm = PortfolioRiskStateMachine(
+                    heat_defensive_pct=getattr(risk_cfg, "heat_defensive_pct", 1.5) if risk_cfg else 1.5,
+                    heat_recovery_pct=getattr(risk_cfg, "heat_recovery_pct", 1.0) if risk_cfg else 1.0,
+                    recovery_dwell_seconds=getattr(risk_cfg, "recovery_dwell_seconds", 120.0) if risk_cfg else 120.0,
+                    heat_reduction_pct=getattr(risk_cfg, "heat_reduction_pct", 2.5) if risk_cfg else 2.5,
+                    reduction_persist_seconds=getattr(risk_cfg, "reduction_persist_seconds", 300.0) if risk_cfg else 300.0,
+                    heat_emergency_pct=getattr(risk_cfg, "heat_emergency_pct", 4.0) if risk_cfg else 4.0,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[backtest] PortfolioRiskStateMachine unavailable: {}", exc)
+            self.portfolio_risk_sm = None
+
+        # ── AccountRiskManager ───────────────────────────────────────
+        self.account_risk = None
+        try:
+            from risk.account_risk import AccountRiskManager
+            self.account_risk = AccountRiskManager(
+                daily_loss_cap_pct=getattr(gcfg, "daily_loss_cap_pct", 3.0) if gcfg else 3.0,
+                daily_loss_recovery_pct=getattr(gcfg, "daily_loss_recovery_pct", 1.5) if gcfg else 1.5,
+                heat_block_pct=getattr(risk_cfg, "portfolio_heat_block_pct", 2.0) if risk_cfg else 2.0,
+                daily_loss_flatten_pct=getattr(risk_cfg, "daily_loss_flatten_pct", 5.0) if risk_cfg else 5.0,
+            )
+            self.account_risk.update_balance(self._bt_account_key, float(self.starting_balance))
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[backtest] AccountRiskManager unavailable: {}", exc)
+            self.account_risk = None
+
+        # ── ComplianceDivision ───────────────────────────────────────
+        self.compliance = None
+        try:
+            from compliance.division import ComplianceDivision
+            max_pos = int(getattr(gcfg, "max_open_positions", 8)) if gcfg else 8
+            self.compliance = ComplianceDivision(
+                drawdown_guard=self.drawdown_guard,
+                portfolio_risk_sm=self.portfolio_risk_sm,
+                account_risk=self.account_risk,
+                news_guard=None,
+                max_open_positions=max_pos,
+            )
+            # Bind always-pass broker/platform checks: a candle replay always
+            # has an open market, a live broker and a modelled spread, so those
+            # physically-necessary vetoes (which fail CLOSED when unbound) are
+            # satisfied here — leaving Compliance's STATEFUL gates as the ones
+            # that actually bind in the backtest.
+            self.compliance.bind_runtime(
+                is_market_open=lambda _sym: True,
+                is_broker_available=lambda _sym: True,
+                get_spread_pips=lambda _sym: 0.0,
+                spread_monitor=_BacktestSpreadMonitor(),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[backtest] ComplianceDivision unavailable: {}", exc)
+            self.compliance = None
+
+        # ── ThesisEngine (stateful competing Long/Short/Flat theses) ──
+        self.thesis_engine = None
+        try:
+            from brain.thesis_engine import ThesisEngine
+            tcfg = getattr(self.config, "thesis", None)
+            self.thesis_engine = ThesisEngine(
+                min_ev_threshold=float(
+                    getattr(tcfg, "opportunity_cost_threshold", 0.1) if tcfg is not None else 0.1
+                ),
+                decay_rate=float(getattr(tcfg, "decay_rate", 0.95) if tcfg is not None else 0.95),
+                flat_ev=float(getattr(tcfg, "flat_ev", 0.0) if tcfg is not None else 0.0),
+                decay_enabled=bool(
+                    getattr(tcfg, "thesis_decay_enabled", True) if tcfg is not None else True
+                ),
+                decay_half_life=float(
+                    getattr(tcfg, "thesis_decay_half_life", 900.0) if tcfg is not None else 900.0
+                ),
+                decay_floor=float(
+                    getattr(tcfg, "thesis_decay_floor", 0.01) if tcfg is not None else 0.01
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[backtest] ThesisEngine unavailable: {}", exc)
+            self.thesis_engine = None
+
+        logger.info(
+            "[backtest] live subsystems — compliance={} portfolio_sm={} "
+            "drawdown={} account_risk={} thesis={}",
+            self.compliance is not None,
+            self.portfolio_risk_sm is not None,
+            self.drawdown_guard is not None,
+            self.account_risk is not None,
+            self.thesis_engine is not None,
+        )
+
     def _require_decision_engine(self) -> None:
         """Raise loudly if the live decision engine is unavailable."""
         if self.entry_engine is None:
@@ -698,6 +873,16 @@ class BacktestEngine:
         self._bt_day = None
         self._bt_daily_pnl = 0.0
 
+        # Reset the stateful risk / compliance subsystems so consecutive
+        # backtests never leak state (heat, daily-loss halts, drawdown mode,
+        # standing theses). Untouched in legacy mode. Re-seeds the per-account
+        # balance from the run's starting balance.
+        if not self.legacy_mode:
+            try:
+                self._init_live_subsystems()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[backtest] live-subsystem reset failed: {}", exc)
+
         atr_compared = 0
         atr_skipped = 0
         struct_returns: list[float] = []
@@ -733,6 +918,14 @@ class BacktestEngine:
             # regime analysis (single-symbol replay → one analysis per bar; the
             # monitor's pct thresholds collapse to "this pair spiking or not").
             self._update_system_volatility(slices)
+
+            # Evaluate the PortfolioRisk state machine from the live open-trade
+            # heat every bar (single-position serial book → heat is the open
+            # trade's capital-at-risk, 0 when flat). This drives the Compliance
+            # portfolio-risk / heat gates on entries and the EMERGENCY
+            # force-close / DEFENSIVE breakeven responses on open trades.
+            if not self.legacy_mode:
+                self._update_portfolio_risk_state(open_trade, balance, now)
 
             if open_trade is None:
                 setup = self._decide_setup(pair, slices, now, balance)
@@ -778,6 +971,12 @@ class BacktestEngine:
                 slices=slices, pair=pair, now=now, manage=True,
             )
 
+            # PortfolioRisk EMERGENCY → force-close the open trade (live parity
+            # with ``_check_portfolio_heat`` flattening on extreme heat / a
+            # FROZEN DrawdownGuard). Only when geometry/management left it open.
+            if close_event is None and not self.legacy_mode:
+                close_event = self._maybe_emergency_close(open_trade, candle)
+
             if compare_atr_stop and atr_open_trade is not None:
                 atr_close = self._evaluate_trade(atr_open_trade, candle, manage=False)
                 if atr_close is not None:
@@ -808,6 +1007,11 @@ class BacktestEngine:
             # Accumulate realized $ P&L into the day's budget (net of costs) so
             # PortfolioDivision sees the real remaining daily-loss allowance.
             self._bt_daily_pnl += (balance - _bal_before)
+            # Feed the realized close into the live risk silos (live parity with
+            # the close-path in ``event_driven_bootstrap``) so drawdown mode and
+            # the per-account daily-loss halt update across the run.
+            if not self.legacy_mode:
+                self._register_close_risk(balance - _bal_before, balance, now)
             total_commission += commission
             total_slippage_cost += open_trade.get("slippage_cost", 0.0)
             equity_curve.append(balance)
@@ -1157,6 +1361,13 @@ class BacktestEngine:
         if cfg is None:
             return None
 
+        # ── Stateful ThesisEngine feed (mirrors live _feed_thesis_engine) ────
+        # Keep competing Long/Short/Flat theses alive per symbol from this bar's
+        # vote panel + probabilistic bias, so the gate below can require the
+        # dominant DIRECTIONAL thesis to beat the Flat (do-nothing) baseline —
+        # the same EV-over-flat opportunity-cost test the live plane applies.
+        self._feed_thesis_engine(pair, votes, wm)
+
         # ── Consensus thesis trigger (same call as the live consensus path) ──
         try:
             from brain.directional_consensus import form_thesis
@@ -1186,6 +1397,18 @@ class BacktestEngine:
             return None
         direction = thesis.direction
         if direction not in ("LONG", "SHORT"):
+            return None
+
+        # ── ThesisEngine gate (Gap 1b — mirrors live _thesis_gate_allows) ────
+        # The stateful engine must agree: the dominant directional thesis is
+        # actionable (beats Flat by the opportunity-cost margin) AND points the
+        # SAME way as this trigger. Fail-safe — a missing engine / cold-start /
+        # fault never blocks (the consensus trigger + permit gates stay
+        # authoritative).
+        if not self._thesis_gate_allows(pair, direction):
+            logger.debug(
+                "[backtest] {} {} thesis gate rejected", pair, direction,
+            )
             return None
 
         # ── Score = zone geometry (70/80/100), NOT bias confidence ──────────
@@ -1281,9 +1504,52 @@ class BacktestEngine:
         except Exception as exc:
             logger.debug("[backtest] governor review failed for {}: {}", pair, exc)
 
+        # ── Compliance Division: single authoritative permit (live parity) ───
+        # Department 3 — the ONE pure permit layer. In the single-position
+        # serial replay the book is empty at entry time (sizing only happens
+        # with no open trade), so duplicate / max-positions trivially pass; the
+        # gates that actually bind here are the daily-loss halt, per-account
+        # heat, DrawdownGuard FROZEN and the PortfolioRisk DEFENSIVE+ state —
+        # the same fail-CLOSED vetoes the live ``_on_entry_decision`` runs.
+        if not self._compliance_permits(pair, direction, balance):
+            return None
+
+        # ── PortfolioRisk EMERGENCY block (live parity) ──────────────────────
+        # A hard block on new entries while the portfolio is in EMERGENCY heat,
+        # mirroring the live plane (Compliance also blocks DEFENSIVE/REDUCING;
+        # this is the explicit survival-state fail-safe when Compliance is
+        # degraded to None).
+        if self.portfolio_risk_sm is not None:
+            try:
+                from risk.portfolio_risk_state import PortfolioRiskState
+                if self.portfolio_risk_sm.state == PortfolioRiskState.EMERGENCY:
+                    logger.debug(
+                        "[backtest] {} {} entry blocked — PortfolioRisk EMERGENCY",
+                        pair, direction,
+                    )
+                    return None
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[backtest] portfolio-risk EMERGENCY check failed: {}", exc)
+
+        # ── DrawdownGuard risk cap (live parity — event_driven ~8535) ────────
+        # ``current_risk_pct`` already encodes the per-mode reduction
+        # (NORMAL/CAUTION/RECOVERY/FROZEN); use it as a ceiling so a drawdown
+        # never lets the sized risk exceed the guard's recommendation.
+        base_risk_pct = float(self.risk_per_trade)
+        if self.drawdown_guard is not None:
+            try:
+                dd_risk = float(
+                    getattr(self.drawdown_guard.get_status(), "current_risk_pct", 0.0) or 0.0
+                )
+                if 0.0 < dd_risk < base_risk_pct:
+                    base_risk_pct = dd_risk
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[backtest] DrawdownGuard risk-cap failed for {}: {}", pair, exc)
+
         # ── Position sizing via PortfolioDivision → PositionSizer ───────────
         sized = self._size_trade(
             pair, direction, signal, de_size_mult, de_result.conviction, balance,
+            base_risk_pct=base_risk_pct,
         )
         if sized is None:
             return None
@@ -1320,6 +1586,254 @@ class BacktestEngine:
             entry_oq=entry_oq,
             entry_eq=entry_eq,
         )
+
+    # ── Stateful ThesisEngine (Gap 1a/1b — live-parity entry gate) ───────────
+
+    def _feed_thesis_engine(self, symbol: str, votes: list, wm) -> None:
+        """Feed the stateful ThesisEngine from this bar's evidence.
+
+        Mirrors the live ``_feed_thesis_engine``: build the competing
+        Long/Short/Flat theses from the vote panel + probabilistic bias so the
+        entry gate can require the dominant directional thesis to beat the Flat
+        baseline. Best-effort — a tracking fault never affects the entry path.
+        """
+        engine = getattr(self, "thesis_engine", None)
+        if engine is None:
+            return
+        try:
+            bias = wm.bias_dict()
+            long_p = float(bias.get("long_probability", 0.0) or 0.0)
+            short_p = float(bias.get("short_probability", 0.0) or 0.0)
+            avg_rr = float(
+                getattr(getattr(self.config, "risk", None), "tp1_rr", 1.5) or 1.5
+            )
+            ev_long = long_p * avg_rr - short_p
+            ev_short = short_p * avg_rr - long_p
+            engine.update(
+                symbol=symbol,
+                votes=list(votes or []),
+                long_probability=long_p,
+                short_probability=short_p,
+                entry_ev_long=ev_long,
+                entry_ev_short=ev_short,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[backtest] thesis-engine feed failed for {}: {}", symbol, exc)
+
+    def _thesis_gate_allows(self, symbol: str, direction: str) -> bool:
+        """ThesisEngine entry gate — fail-safe (mirrors live _thesis_gate_allows).
+
+        Returns True (allow) when the engine is absent, the gate is disabled, no
+        thesis is tracked yet, or anything errors. Blocks only when a thesis IS
+        tracked and the dominant read either says "do nothing" or disagrees with
+        this entry's direction.
+        """
+        engine = getattr(self, "thesis_engine", None)
+        if engine is None:
+            return True
+        tcfg = getattr(self.config, "thesis", None)
+        if tcfg is not None and not getattr(tcfg, "gate_enabled", True):
+            return True
+        try:
+            if engine.get(symbol) is None:
+                return True
+            should_trade, thesis_dir, ev_adv = engine.should_act(symbol)
+            want = str(direction or "").upper()
+            if not should_trade:
+                logger.debug(
+                    "[backtest] {} thesis not actionable (EV over flat {:.3f}R "
+                    "below margin)", symbol, ev_adv,
+                )
+                return False
+            if str(thesis_dir or "").upper() != want:
+                logger.debug(
+                    "[backtest] {} thesis direction {} disagrees with entry {}",
+                    symbol, thesis_dir, want,
+                )
+                return False
+            return True
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[backtest] {} thesis-gate evaluation errored — allowing "
+                "(fail-safe): {}", symbol, exc,
+            )
+            return True
+
+    # ── Compliance + portfolio-risk state (live-parity permit / heat) ────────
+
+    def _compliance_permits(self, symbol: str, direction: str, balance: float) -> bool:
+        """Run the ComplianceDivision permit for a prospective entry.
+
+        Returns True when the trade is permitted (or Compliance is degraded to
+        None). The book is empty in the single-position serial replay, so the
+        binding gates are daily-loss halt, per-account heat, DrawdownGuard
+        FROZEN and the PortfolioRisk state. Fail-CLOSED inside the division.
+        """
+        compliance = getattr(self, "compliance", None)
+        if compliance is None:
+            return True
+        try:
+            from compliance.models import (
+                ComplianceAccount, ComplianceBook, ComplianceCandidate,
+            )
+            if self.account_risk is not None and balance and balance > 0:
+                self.account_risk.update_balance(self._bt_account_key, float(balance))
+            verdict = compliance.permit(
+                ComplianceCandidate(symbol=symbol, direction=direction),
+                ComplianceBook(open_positions=[]),
+                ComplianceAccount(
+                    account_key=self._bt_account_key, balance=float(balance or 0.0),
+                ),
+            )
+            if verdict.rejected:
+                logger.debug(
+                    "[backtest] {} {} compliance REJECTED — {}",
+                    symbol, direction, "; ".join(verdict.reasons),
+                )
+                return False
+            return True
+        except Exception as exc:  # noqa: BLE001
+            # Fail-CLOSED: a permit-layer fault must not admit an ungated trade.
+            logger.debug(
+                "[backtest] {} compliance permit errored — blocking (fail-closed): {}",
+                symbol, exc,
+            )
+            return False
+
+    def _update_portfolio_risk_state(
+        self, open_trade: Optional[dict], balance: float, now: Optional[datetime],
+    ) -> None:
+        """Evaluate the PortfolioRiskStateMachine from the live open-trade heat.
+
+        Single-position serial book: heat is the open trade's capital-at-risk
+        over the account balance (0 when flat). Also mirrors live by publishing
+        the per-account heat onto the AccountRiskManager so the Compliance heat
+        gate sees a real reading. Ladder + hard emergency triggers mirror the
+        live ``_update_portfolio_risk_state``. Best-effort.
+        """
+        sm = getattr(self, "portfolio_risk_sm", None)
+        if sm is None:
+            return
+        try:
+            from risk.portfolio_risk_state import (
+                PortfolioRiskSnapshot,
+                PositionRisk,
+                compute_live_heat_pct,
+                compute_position_risk_dollars,
+            )
+        except Exception:  # noqa: BLE001
+            return
+        try:
+            position_risks: list = []
+            if open_trade is not None:
+                direction = open_trade["setup"].direction
+                risk_d, is_fallback = compute_position_risk_dollars(
+                    direction=direction,
+                    entry_price=float(open_trade["entry_price"]),
+                    sl=float(open_trade["stop_loss"]),
+                    lots=float(open_trade.get("lots", 0.0) or 0.0),
+                    pip_size=self.pip_size,
+                    pip_value_per_lot=self.pip_value_per_lot,
+                    at_breakeven=bool(open_trade.get("at_breakeven", False)),
+                )
+                position_risks.append(PositionRisk(
+                    order_id=str(open_trade.get("order_id", "")),
+                    symbol=str(open_trade.get("symbol", "")),
+                    direction=direction,
+                    risk_dollars=risk_d,
+                    is_at_breakeven=bool(open_trade.get("at_breakeven", False)),
+                    is_fallback=is_fallback,
+                ))
+            heat_pct = (
+                compute_live_heat_pct(position_risks, balance)
+                if balance and balance > 0 else 0.0
+            )
+            if self.account_risk is not None:
+                try:
+                    self.account_risk.set_heat(self._bt_account_key, heat_pct)
+                except Exception:  # noqa: BLE001
+                    pass
+            snapshot = PortfolioRiskSnapshot(
+                live_heat_pct=heat_pct,
+                position_risks=position_risks,
+                correlation_safe=True,
+                max_currency_exposure=0.0,
+            )
+            sm.evaluate(snapshot)
+
+            # Hard emergency triggers force-escalate from any state (extreme
+            # heat or a FROZEN DrawdownGuard), mirroring the live plane.
+            from risk.portfolio_risk_state import EmergencyTriggerResult
+            trig = EmergencyTriggerResult()
+            emerg_pct = getattr(sm, "heat_emergency_pct", 4.0)
+            if heat_pct >= emerg_pct:
+                trig.extreme_heat = True
+            if self.drawdown_guard is not None:
+                try:
+                    from brain.drawdown_guard import DrawdownMode
+                    if self.drawdown_guard.get_status().mode == DrawdownMode.FROZEN.value:
+                        trig.drawdown_frozen = True
+                except Exception:  # noqa: BLE001
+                    pass
+            if trig.any_fired:
+                sm.escalate_to_emergency(trig, heat_pct, True)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[backtest] portfolio-risk SM evaluate failed: {}", exc)
+
+    def _maybe_emergency_close(
+        self, trade: dict, candle: pd.Series,
+    ) -> Optional[dict]:
+        """Force-close the open trade when PortfolioRisk is in EMERGENCY.
+
+        Live parity: ``_check_portfolio_heat`` EMERGENCY flattens open
+        positions. In the single-position serial replay that is the one open
+        trade. Returns a close-event dict or None. Best-effort.
+        """
+        sm = getattr(self, "portfolio_risk_sm", None)
+        if sm is None:
+            return None
+        try:
+            from risk.portfolio_risk_state import PortfolioRiskState
+            if sm.state != PortfolioRiskState.EMERGENCY:
+                return None
+            close_event = self._force_close(trade, candle)
+            close_event["exit_reason"] = "portfolio_heat_emergency"
+            logger.info(
+                "[backtest] {} force-closed — PortfolioRisk EMERGENCY (heat flatten)",
+                trade.get("symbol", ""),
+            )
+            return close_event
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[backtest] emergency force-close failed: {}", exc)
+            return None
+
+    def _register_close_risk(
+        self, pnl_dollars: float, balance: float, now: Optional[datetime],
+    ) -> None:
+        """Feed a realized close into the live risk silos (live-parity close path).
+
+        Mirrors ``event_driven_bootstrap``'s close-path risk layer:
+          * DrawdownGuard.register_trade_result — P&L as a fraction of balance,
+            timestamped with the bar so day-rolls use simulated (not wall)
+            time.
+          * AccountRiskManager.update_balance + register_realized — the
+            per-account daily-P&L silo (drives the daily-loss halt).
+        Best-effort; a fault never breaks the replay.
+        """
+        if self.drawdown_guard is not None:
+            try:
+                pnl_pct = pnl_dollars / balance if balance and balance > 0 else 0.0
+                self.drawdown_guard.register_trade_result(pnl_pct, timestamp=now)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[backtest] DrawdownGuard close update failed: {}", exc)
+
+        if self.account_risk is not None:
+            try:
+                if balance and balance > 0:
+                    self.account_risk.update_balance(self._bt_account_key, float(balance))
+                self.account_risk.register_realized(self._bt_account_key, float(pnl_dollars))
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[backtest] AccountRisk close update failed: {}", exc)
 
     def _calculate_entry(
         self,
@@ -1499,6 +2013,7 @@ class BacktestEngine:
         conviction: float,
         balance: float,
         existing: Optional[list] = None,
+        base_risk_pct: Optional[float] = None,
     ):
         """Size the trade through PortfolioDivision → PositionSizer (live path).
 
@@ -1550,7 +2065,10 @@ class BacktestEngine:
                 except Exception:
                     pass
             factors = SizingFactors(
-                base_risk_pct=self.risk_per_trade,
+                base_risk_pct=(
+                    float(base_risk_pct)
+                    if base_risk_pct is not None else self.risk_per_trade
+                ),
                 de_size_mult=de_size_mult,
             )
             verdict = self.portfolio.evaluate(
@@ -1902,7 +2420,73 @@ class BacktestEngine:
                 "[backtest] {} SCALE_IN verdict not modelled (single-position serial replay)",
                 pair,
             )
+
+        # ── PortfolioRisk DEFENSIVE → advance eligible position to breakeven ──
+        # Live parity with ``_check_portfolio_heat`` DEFENSIVE: when the
+        # portfolio is defensive, a position that has proven favorable excursion
+        # (or already banked TP1 / a partial) has its stop advanced to
+        # breakeven — but only once price has cleared the BE level, so the stop
+        # never lands on the wrong side of market. Runs after the DE verdict so
+        # an explicit management BE/tighten still wins.
+        self._apply_defensive_breakeven(trade, candle)
         return None
+
+    def _apply_defensive_breakeven(self, trade: dict, candle: pd.Series) -> None:
+        """Advance an eligible position to breakeven while PortfolioRisk DEFENSIVE.
+
+        Mirrors the live heat-monitor DEFENSIVE arm. No-op unless the state
+        machine is DEFENSIVE, the position is eligible (favorable excursion ≥ 1R
+        or already TP1/partial-banked) and price has cleared the BE level. Only
+        ever tightens the stop toward breakeven — never loosens it. Best-effort.
+        """
+        sm = getattr(self, "portfolio_risk_sm", None)
+        if sm is None:
+            return
+        try:
+            from risk.portfolio_risk_state import (
+                PortfolioRiskState,
+                is_eligible_for_defensive_breakeven,
+            )
+            if sm.state != PortfolioRiskState.DEFENSIVE:
+                return
+            if trade.get("at_breakeven", False):
+                return
+            direction = trade["setup"].direction
+            is_long = str(direction).upper() in ("BUY", "LONG")
+            entry = float(trade["entry_price"])
+            sl = float(trade["stop_loss"])
+            price = float(candle["close"])
+            if not is_eligible_for_defensive_breakeven(
+                direction=direction,
+                entry_price=entry,
+                sl=sl,
+                current_price=price,
+                tp1_hit=bool(trade.get("tp1_hit", False)),
+                partial_closed=bool(trade.get("partial_closed", False)),
+                at_breakeven=bool(trade.get("at_breakeven", False)),
+            ):
+                return
+            be_price = (
+                entry + (2 * self.pip_size) if is_long else entry - (2 * self.pip_size)
+            )
+            # Only move once price has cleared BE (else the stop lands the wrong
+            # side of market → instant stop-out).
+            can_be = (price > be_price) if is_long else (price < be_price)
+            if not can_be:
+                return
+            improves = (be_price > sl) if is_long else (be_price < sl)
+            if not improves:
+                # Stop already at/beyond breakeven — nothing to tighten.
+                trade["at_breakeven"] = True
+                return
+            trade["stop_loss"] = be_price
+            trade["at_breakeven"] = True
+            logger.debug(
+                "[backtest] {} DEFENSIVE breakeven advance → SL {:.5f}",
+                trade.get("symbol", ""), be_price,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[backtest] defensive breakeven failed: {}", exc)
 
     def _de_partial_close(self, trade: dict, candle: pd.Series, de) -> None:
         """Bank a fraction of the open remainder on a PARTIAL_CLOSE verdict."""
