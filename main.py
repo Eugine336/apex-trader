@@ -86,6 +86,7 @@ def main() -> None:
         logger.warning("Structured logging setup skipped: {}", exc)
 
     logger.info(f"Instrument registry loaded — {len(INSTRUMENT_REGISTRY)} instruments")
+    logger.info(f"Trading mode: {getattr(config, 'trading_mode', 'gold').upper()}")
     for cat in config.enabled_categories:
         instruments = get_instruments_by_category(cat)
         logger.info(f"  {cat.upper()}: {len(instruments)} instruments enabled")

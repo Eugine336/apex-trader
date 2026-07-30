@@ -3815,6 +3815,24 @@ class AppConfig:
     max_consecutive_cycle_failures: int = 5
     log_level: str = "INFO"
 
+    def __post_init__(self) -> None:
+        # TRADING_MODE toggles the instrument universe from .env without code
+        # changes. "gold" (default) keeps the Gold specialist universe
+        # (commodity / XAUUSD only); "full" scans every instrument across
+        # forex, commodity, index and crypto. Any other value falls back to
+        # "gold" with a warning. Synthetic is intentionally excluded from
+        # "full" — Deriv synthetics need a separate broker setup.
+        mode = os.getenv("TRADING_MODE", "gold").lower().strip()
+        if mode not in ("gold", "full"):
+            logger.warning(
+                "[config] unknown TRADING_MODE '{}' — falling back to 'gold'", mode
+            )
+            mode = "gold"
+        if mode == "full":
+            self.enabled_categories = ["forex", "commodity", "index", "crypto"]
+            self.enabled_symbols_override = []
+        self.trading_mode = mode
+
     @property
     def enabled_pairs(self) -> list[str]:
         """All symbols from enabled categories, filtered by override if set."""
