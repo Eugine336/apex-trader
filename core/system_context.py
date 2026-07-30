@@ -253,6 +253,24 @@ class SystemContext:
         # ── PortfolioRiskStateMachine ────────────────────────────────
         try:
             if risk_cfg.portfolio_risk_engine_enabled:
+                # Adaptive heat thresholds scale with account size, so the SM
+                # needs the balance available at construction time. Prefer the
+                # pooled live balance; fall back to the RiskEngine's balance.
+                account_equity: Optional[float] = None
+                try:
+                    bal = platform_manager.get_total_balance()
+                    if bal and bal > 0:
+                        account_equity = float(bal)
+                except Exception:
+                    account_equity = None
+                if account_equity is None and ctx.risk_engine is not None:
+                    try:
+                        rb = float(getattr(ctx.risk_engine, "balance", 0.0) or 0.0)
+                        if rb > 0:
+                            account_equity = rb
+                    except Exception:
+                        account_equity = None
+
                 ctx.portfolio_risk_sm = PortfolioRiskStateMachine(
                     heat_defensive_pct=risk_cfg.heat_defensive_pct,
                     heat_recovery_pct=risk_cfg.heat_recovery_pct,
@@ -260,6 +278,8 @@ class SystemContext:
                     heat_reduction_pct=risk_cfg.heat_reduction_pct,
                     reduction_persist_seconds=risk_cfg.reduction_persist_seconds,
                     heat_emergency_pct=risk_cfg.heat_emergency_pct,
+                    reference_balance=risk_cfg.reference_balance,
+                    account_equity=account_equity,
                 )
         except Exception as exc:
             logger.critical(
