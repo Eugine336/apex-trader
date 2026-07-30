@@ -3038,9 +3038,6 @@ class EventDrivenSystem:
                     developing_store=self._developing_wm_store,
                     symbols=list(self._config.enabled_pairs),
                     config=_dev_cfg,
-                    # Confirmed store — read-only, enforces the developing
-                    # store's "confidence only, never direction" contract.
-                    confirmed_store=self._wm_store,
                 )
             except Exception as exc:
                 logger.warning(
@@ -7969,7 +7966,13 @@ class EventDrivenSystem:
                         m1_trend=m1_trend_v,
                         m1_aligned_count=m1_aligned_v,
                         m1_event=m1_event_v,
-                        is_counter_trend=bool(decision.get("is_counter_trend", False)),
+                        # Directional bias contamination removed: entries are
+                        # judged on their own structural merit by the downstream
+                        # gates, never pre-penalised by a crude HTF label. The
+                        # flag is pinned False so it has no scoring effect; the
+                        # true zone value still reaches the journal via the
+                        # decision dict for post-trade attribution.
+                        is_counter_trend=False,
                         bias_direction=decision.get("bias_direction", ""),
                         open_trade_count=len(open_positions),
                         max_open_trades=self._config.risk.max_open_trades,

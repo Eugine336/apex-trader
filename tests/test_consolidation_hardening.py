@@ -5,9 +5,9 @@ Covers the silent-failure hardening + developing-store direction guard:
   * ``_safe_pip_size`` fallback to 0.0001 now logs a WARNING (once per symbol)
     and records the symbol so the entry path can tag the trade.
   * the ``pnl_pips`` close-path calculation logs instead of silently passing.
-  * the developing WorldModelStore enforces its "confidence only, never
-    direction" contract at the publish boundary — a developing bias direction
-    that contradicts the confirmed store is neutralised (fail-loud).
+  * the developing WorldModelStore publishes whatever direction its forming-bar
+    structure shows — the old "confidence only, never direction" guard has been
+    removed, so a developing direction is never blanked against confirmed.
   * a scoped ratchet on bare ``except Exception: pass`` blocks in the main loop
     so new silent swallows can't be added to the money path unnoticed.
 """
@@ -18,7 +18,6 @@ import ast
 import pathlib
 import re
 from contextlib import contextmanager
-from datetime import datetime, timezone
 from types import SimpleNamespace
 
 from loguru import logger
@@ -26,7 +25,7 @@ from loguru import logger
 import event_driven_bootstrap as edb
 from brain.developing_analysis import DevelopingAnalysisLoop
 from brain.structure_engine import StructureAnalysis, StructureEvent, Trend
-from brain.world_model import WorldModelStore, build_world_model
+from brain.world_model import WorldModelStore
 from config import DevelopingAnalysisConfig
 
 _BOOTSTRAP_PATH = pathlib.Path(edb.__file__)
@@ -68,25 +67,13 @@ class _FakeAggregator:
         return None
 
 
-def _dev_loop(confirmed_store=None) -> DevelopingAnalysisLoop:
+def _dev_loop() -> DevelopingAnalysisLoop:
     return DevelopingAnalysisLoop(
         candle_aggregator=_FakeAggregator(),
         developing_store=WorldModelStore(),
         symbols=["EURUSD"],
         config=DevelopingAnalysisConfig(),
-        confirmed_store=confirmed_store,
     )
-
-
-def _publish_confirmed(store: WorldModelStore, symbol: str, direction: str) -> None:
-    wm = build_world_model(
-        symbol=symbol,
-        version=store.next_version(),
-        timestamp=datetime.now(timezone.utc),
-        structure={"H1": _sa("BULLISH", 0.8)},
-        bias={"direction": direction, "score": 80, "confidence": 0.8},
-    )
-    store.publish(wm)
 
 
 # ── (a) pip_size fallback logs a warning ────────────────────────────────────
@@ -167,16 +154,21 @@ def test_pnl_pips_failure_logs_warning():
     assert silent not in src
 
 
-# ── (c)–(e) developing-store direction guard ────────────────────────────────
+# ── developing-store direction pass-through (guard removed) ──────────────────
 
 
-def test_developing_store_direction_guard(monkeypatch):
-    """Developing direction contradicting confirmed is neutralised (fail-loud)."""
-    confirmed = WorldModelStore()
-    _publish_confirmed(confirmed, "EURUSD", "LONG")
-    loop = _dev_loop(confirmed_store=confirmed)
+def test_developing_store_publishes_structure_direction(monkeypatch):
+    """Developing analysis publishes the forming-bar structure's own direction.
 
-    # Force the developing bias to SHORT (contradicts confirmed LONG).
+    The old "confidence only, never direction" guard has been removed. The
+    developing store now publishes whatever direction its structure shows; the
+    confirmed path's ``compute_bias`` (which consumes this as discounted
+    evidence and has its own ``CONFLICTED`` veto) is the sole safety valve. No
+    neutralisation and no developing-guard warning.
+    """
+    loop = _dev_loop()
+
+    # Developing bias SHORT — no confirmed read can blank it any more.
     monkeypatch.setattr(
         "brain.developing_analysis.compute_bias",
         lambda struct: {"direction": "SHORT", "score": 80, "confidence": 0.8},
@@ -187,16 +179,14 @@ def test_developing_store_direction_guard(monkeypatch):
 
     published = loop._developing_store.get("EURUSD")
     assert published is not None
-    assert published.bias_dict().get("direction", "") == ""
-    assert published.bias_dict().get("score", 0) == 0
-    assert any("developing-guard" in line for line in logs)
+    assert published.bias_dict().get("direction", "") == "SHORT"
+    assert published.bias_dict().get("score", 0) == 80
+    assert not any("developing-guard" in line for line in logs)
 
 
-def test_developing_store_same_direction_passes(monkeypatch):
-    """Developing direction matching confirmed is preserved (not neutralised)."""
-    confirmed = WorldModelStore()
-    _publish_confirmed(confirmed, "EURUSD", "LONG")
-    loop = _dev_loop(confirmed_store=confirmed)
+def test_developing_store_preserves_direction(monkeypatch):
+    """A developing LONG is published unchanged."""
+    loop = _dev_loop()
 
     monkeypatch.setattr(
         "brain.developing_analysis.compute_bias",
@@ -208,39 +198,6 @@ def test_developing_store_same_direction_passes(monkeypatch):
     published = loop._developing_store.get("EURUSD")
     assert published is not None
     assert published.bias_dict().get("direction", "") == "LONG"
-
-
-def test_developing_store_no_confirmed_model_passes(monkeypatch):
-    """No confirmed model → developing direction passes through unchanged."""
-    confirmed = WorldModelStore()  # empty — no model for EURUSD
-    loop = _dev_loop(confirmed_store=confirmed)
-
-    monkeypatch.setattr(
-        "brain.developing_analysis.compute_bias",
-        lambda struct: {"direction": "SHORT", "score": 80, "confidence": 0.8},
-    )
-
-    loop._merge_and_publish("EURUSD", "H1", {"structure": _sa("BEARISH", 0.8)})
-
-    published = loop._developing_store.get("EURUSD")
-    assert published is not None
-    assert published.bias_dict().get("direction", "") == "SHORT"
-
-
-def test_developing_store_no_confirmed_store_passes(monkeypatch):
-    """confirmed_store=None disables the guard (standalone/back-compat)."""
-    loop = _dev_loop(confirmed_store=None)
-
-    monkeypatch.setattr(
-        "brain.developing_analysis.compute_bias",
-        lambda struct: {"direction": "SHORT", "score": 80, "confidence": 0.8},
-    )
-
-    loop._merge_and_publish("EURUSD", "H1", {"structure": _sa("BEARISH", 0.8)})
-
-    published = loop._developing_store.get("EURUSD")
-    assert published is not None
-    assert published.bias_dict().get("direction", "") == "SHORT"
 
 
 # ── (f) ratchet: bare `except Exception: pass` in the money path ─────────────

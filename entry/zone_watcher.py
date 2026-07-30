@@ -89,20 +89,22 @@ def extract_entry_zones(
 
     fvgs_by_tf = model.fvgs_by_tf()
     obs_by_tf = model.order_blocks_by_tf()
-    struct_by_tf = model.structure_by_tf()
     regime_by_tf = model.regime_by_tf()
-
-    bias_direction = _resolve_bias(struct_by_tf)
 
     def _conv(
         base: int,
         direction: str,
         zone_type: ZoneType,
         tf: str,
-        is_counter: bool = False,
     ) -> int:
-        """Scale a base conviction by the learned edge (default-neutral) and
-        apply the counter-trend penalty when the zone opposes the HTF bias."""
+        """Scale a base conviction by the learned edge (default-neutral).
+
+        Every zone receives its full base conviction × learned edge weight —
+        there is no counter-trend haircut. Directional risk is judged solely by
+        the downstream gates (EV gate, DecisionEngine, RiskGovernor) on each
+        entry's own structural merit, not pre-penalised by a crude HTF bias
+        label.
+        """
         val = float(base)
         if edge_weight is not None:
             try:
@@ -111,16 +113,6 @@ def extract_entry_zones(
                 val = base * w
             except Exception:  # noqa: BLE001 — learning must never break analysis
                 val = float(base)
-        if is_counter:
-            # When the EV gate is enabled (Phase 4) it handles directional risk
-            # explicitly, so the conviction haircut is softened — a counter-trend
-            # FVG+OB (100 × 0.85 = 85) can still clear the score gate and reach
-            # the EV gate, which decides on its merits. With the EV gate off, the
-            # legacy haircut (0.70) filters geometry-only counter-trend setups.
-            if getattr(cfg, "ev_gate_enabled", False):
-                val *= cfg.counter_trend_conviction_mult_ev
-            else:
-                val *= cfg.counter_trend_conviction_mult
         return max(1, min(100, int(round(val))))
 
     all_fvgs: list[tuple[str, FairValueGap]] = []
@@ -148,7 +140,6 @@ def extract_entry_zones(
                 continue
 
             direction = "LONG" if fvg.kind == "BULLISH" else "SHORT"
-            is_counter = bool(bias_direction) and bias_direction != direction
 
             inv = _invalidation(direction, overlap_bottom, overlap_top)
             # Overlap zones are confirmed on two timeframes — use whichever
@@ -166,13 +157,13 @@ def extract_entry_zones(
                 bottom=overlap_bottom,
                 midpoint=(overlap_top + overlap_bottom) / 2,
                 invalidation_level=inv,
-                conviction=_conv(100, direction, ZoneType.FVG_OB_OVERLAP, ftf, is_counter),
+                conviction=_conv(100, direction, ZoneType.FVG_OB_OVERLAP, ftf),
                 created_at=now,
                 expires_at=now + timedelta(seconds=overlap_ttl),
                 timeframe=ftf,
                 has_sweep=False,
-                is_counter_trend=is_counter,
-                bias_direction=bias_direction or "",
+                is_counter_trend=False,
+                bias_direction="",
             ))
             used_fvgs.add(fi)
             used_obs.add(oi)
@@ -181,7 +172,6 @@ def extract_entry_zones(
         if fi in used_fvgs:
             continue
         direction = "LONG" if fvg.kind == "BULLISH" else "SHORT"
-        is_counter = bool(bias_direction) and bias_direction != direction
         inv = _invalidation(direction, fvg.bottom, fvg.top)
         zones.append(EntryZone(
             symbol=model.symbol,
@@ -191,19 +181,18 @@ def extract_entry_zones(
             bottom=fvg.bottom,
             midpoint=fvg.midpoint,
             invalidation_level=inv,
-            conviction=_conv(80, direction, ZoneType.FVG_MIDPOINT, ftf, is_counter),
+            conviction=_conv(80, direction, ZoneType.FVG_MIDPOINT, ftf),
             created_at=now,
             expires_at=now + timedelta(seconds=cfg.get_zone_expiry_seconds(ftf)),
             timeframe=ftf,
-            is_counter_trend=is_counter,
-            bias_direction=bias_direction or "",
+            is_counter_trend=False,
+            bias_direction="",
         ))
 
     for oi, (otf, ob) in enumerate(all_obs):
         if oi in used_obs:
             continue
         direction = "LONG" if ob.kind == "BULLISH" else "SHORT"
-        is_counter = bool(bias_direction) and bias_direction != direction
         inv = _invalidation(direction, ob.bottom, ob.top)
         zones.append(EntryZone(
             symbol=model.symbol,
@@ -213,12 +202,12 @@ def extract_entry_zones(
             bottom=ob.bottom,
             midpoint=ob.midpoint,
             invalidation_level=inv,
-            conviction=_conv(70, direction, ZoneType.OB_MIDPOINT, otf, is_counter),
+            conviction=_conv(70, direction, ZoneType.OB_MIDPOINT, otf),
             created_at=now,
             expires_at=now + timedelta(seconds=cfg.get_zone_expiry_seconds(otf)),
             timeframe=otf,
-            is_counter_trend=is_counter,
-            bias_direction=bias_direction or "",
+            is_counter_trend=False,
+            bias_direction="",
         ))
 
     return zones

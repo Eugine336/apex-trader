@@ -223,9 +223,11 @@ class TestCounterTrendConvictionPenalty:
             structure=structure,
         )
 
-    def test_counter_trend_overlap_penalised(self):
+    def test_counter_direction_overlap_not_penalised(self):
         store = WorldModelStore()
-        # Bearish FVG+OB overlap under BULLISH HTF bias → counter-trend SHORT.
+        # Bearish FVG+OB overlap under BULLISH HTF structure. The zone is no
+        # longer labelled counter-trend or given a conviction haircut — it gets
+        # its full base conviction and is judged on its own merit downstream.
         fvg = _make_fvg(kind="BEARISH", top=1.0850, bottom=1.0840)
         ob = _make_ob(kind="BEARISH", top=1.0855, bottom=1.0835)
         model = self._model(
@@ -237,11 +239,8 @@ class TestCounterTrendConvictionPenalty:
         zones = extract_entry_zones(model, EntryConfig(ev_gate_enabled=False))
         overlap = [z for z in zones if z.zone_type == ZoneType.FVG_OB_OVERLAP]
         assert len(overlap) == 1
-        assert overlap[0].is_counter_trend is True
-        # Legacy gate: 100 * 0.70 = 70 → below the 85 score gate. (Under the
-        # default EV gate the haircut is softened to 0.85 → covered in
-        # tests/test_ev_gate.py.)
-        assert overlap[0].conviction == 70
+        assert overlap[0].is_counter_trend is False
+        assert overlap[0].conviction == 100
 
     def test_with_trend_overlap_unpenalised(self):
         store = WorldModelStore()
@@ -259,18 +258,3 @@ class TestCounterTrendConvictionPenalty:
         assert len(overlap) == 1
         assert overlap[0].is_counter_trend is False
         assert overlap[0].conviction == 100
-
-    def test_penalty_multiplier_configurable(self):
-        store = WorldModelStore()
-        fvg = _make_fvg(kind="BEARISH", top=1.0850, bottom=1.0840)
-        ob = _make_ob(kind="BEARISH", top=1.0855, bottom=1.0835)
-        model = self._model(
-            store,
-            fvgs={"M5": [fvg]},
-            order_blocks={"H1": [ob]},
-            structure={"H4": _make_structure(Trend.BULLISH)},
-        )
-        cfg = EntryConfig(counter_trend_conviction_mult=0.5, ev_gate_enabled=False)
-        zones = extract_entry_zones(model, cfg)
-        overlap = [z for z in zones if z.zone_type == ZoneType.FVG_OB_OVERLAP]
-        assert overlap[0].conviction == 50
