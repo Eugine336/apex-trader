@@ -11,7 +11,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 
-MAJOR_CURRENCIES = ["USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF"]
+MAJOR_CURRENCIES = ["USD", "EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF", "XAU"]
 
 # All 28 major pairs and which currencies they contain
 CURRENCY_PAIRS = {
@@ -29,6 +29,10 @@ CURRENCY_PAIRS = {
     "AUDCAD": ("AUD", "CAD"), "AUDCHF": ("AUD", "CHF"),
     "AUDNZD": ("AUD", "NZD"), "NZDCAD": ("NZD", "CAD"),
     "NZDCHF": ("NZD", "CHF"), "CADCHF": ("CAD", "CHF"),
+    # Gold vs USD — treated as a "currency pair" so XAU strength is ranked
+    # alongside the majors via the RSI momentum calc (strong XAU + weak USD
+    # = the ideal Gold long setup).
+    "XAUUSD": ("XAU", "USD"),
 }
 
 

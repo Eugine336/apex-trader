@@ -35,6 +35,18 @@ ASSET_CLUSTER: dict[str, str] = {
 }
 
 
+# Explicit intermarket relationships that pure currency decomposition misses.
+# Gold (XAUUSD) is an anti-USD instrument, so it moves INVERSELY to the
+# USD-strength proxies: when USDCHF / USDJPY rise (USD strong) Gold tends to
+# fall, and vice-versa. Registering it here lets the consensus correlation
+# vote read a Gold/DXY confirmation instead of abstaining.
+INVERSE_CORRELATION: dict[str, tuple[str, ...]] = {
+    "XAUUSD": ("USDCHF", "USDJPY"),
+    "USDCHF": ("XAUUSD",),
+    "USDJPY": ("XAUUSD",),
+}
+
+
 @dataclass
 class OpenTrade:
     pair: str
@@ -152,6 +164,15 @@ class CorrelationEngine:
         exposure = self.calculate_exposure(normalized)
         usd_value = exposure.currency_exposures.get("USD", 0.0)
         return round(float(usd_value), 4)
+
+    def inverse_correlates(self, pair: str) -> tuple[str, ...]:
+        """Instruments registered as moving INVERSELY to ``pair``.
+
+        Feeds the intermarket correlation vote — e.g. XAUUSD ↔ USDCHF/USDJPY
+        (USD-strength proxies). Returns an empty tuple when no inverse
+        relationship is registered.
+        """
+        return INVERSE_CORRELATION.get(pair.upper(), ())
 
     def _normalize_trade(self, trade: OpenTrade | dict) -> OpenTrade:
         if isinstance(trade, OpenTrade):

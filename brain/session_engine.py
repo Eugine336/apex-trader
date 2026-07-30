@@ -53,8 +53,8 @@ class SessionEngine:
     SESSIONS = {
         "SYDNEY":   {"open": time(21, 0), "close": time(6, 0),  "pairs": ["AUDUSD", "AUDNZD", "AUDJPY"]},
         "TOKYO":    {"open": time(0, 0),  "close": time(9, 0),  "pairs": ["USDJPY", "AUDJPY", "EURJPY", "CADJPY"]},
-        "LONDON":   {"open": time(7, 0),  "close": time(16, 0), "pairs": ["GBPUSD", "EURGBP", "EURUSD", "GBPJPY"]},
-        "NEW_YORK": {"open": time(12, 0), "close": time(21, 0), "pairs": ["EURUSD", "GBPUSD", "USDJPY", "USDCAD"]},
+        "LONDON":   {"open": time(7, 0),  "close": time(16, 0), "pairs": ["GBPUSD", "EURGBP", "EURUSD", "GBPJPY", "XAUUSD"]},
+        "NEW_YORK": {"open": time(12, 0), "close": time(21, 0), "pairs": ["EURUSD", "GBPUSD", "USDJPY", "USDCAD", "XAUUSD"]},
     }
 
     OVERLAP_SESSIONS = {
@@ -65,6 +65,14 @@ class SessionEngine:
     # Dead zones — avoid trading here
     DEAD_ZONES = [
         {"start": time(20, 0), "end": time(23, 59), "reason": "End of NY, low liquidity pre-Asia"},
+    ]
+
+    # Gold (XAUUSD) kill zones in UTC — its highest-probability windows.
+    # These are fixed UTC windows used only for the Gold scoring bonus.
+    GOLD_KILL_ZONES = [
+        (time(7, 0),   time(8, 30)),   # London open — the initial impulse move
+        (time(12, 30), time(14, 0)),   # NY open — second major move / reversal
+        (time(15, 30), time(16, 0)),   # London close — the "Judas swing" fake move
     ]
 
     # Canonical session windows in their EXCHANGE-LOCAL time + IANA tz. The
@@ -201,8 +209,17 @@ class SessionEngine:
         status = self.get_status(utc_now)
         return pair in status.best_pairs or status.liquidity == "HIGH"
 
-    def get_session_score(self, utc_now: Optional[datetime] = None) -> int:
-        """Return session quality score (0-10) for entry scoring."""
+    def get_session_score(
+        self,
+        utc_now: Optional[datetime] = None,
+        symbol: Optional[str] = None,
+    ) -> int:
+        """Return session quality score for entry scoring.
+
+        Base score is 0-10 by session. For XAUUSD the Gold kill-zone bonus is
+        folded in on top of the base score (capped at 15) — Gold is extremely
+        session-driven, so its best windows deserve extra weight.
+        """
         status = self.get_status(utc_now)
         scores = {
             "OVERLAP_LONDON_NY":    10,
@@ -215,7 +232,44 @@ class SessionEngine:
             "WEEKEND":              0,
             "TRANSITION":           1,
         }
-        return scores.get(status.current_session, 0)
+        base = scores.get(status.current_session, 0)
+        if symbol and symbol.upper() == "XAUUSD":
+            base = min(base + self.get_gold_kill_zone_bonus(utc_now), 15)
+        return base
+
+    def get_gold_kill_zone_bonus(self, utc_now: Optional[datetime] = None) -> int:
+        """Gold-specific kill-zone bonus (0-5) for XAUUSD entry scoring.
+
+        Grades how close the current time is to one of Gold's highest-probability
+        windows (see ``GOLD_KILL_ZONES``):
+          - inside a kill zone                       → 5
+          - within 30 min of a kill zone             → 3
+          - active London/NY session (no kill zone)  → 1
+          - outside sessions                         → 0
+
+        This is a filter/bonus that sharpens entry quality, never a gate.
+        """
+        if utc_now is None:
+            utc_now = datetime.now(timezone.utc)
+
+        now_mins = utc_now.hour * 60 + utc_now.minute
+
+        nearest_gap: Optional[int] = None
+        for start, end in self.GOLD_KILL_ZONES:
+            s = start.hour * 60 + start.minute
+            e = end.hour * 60 + end.minute
+            if s <= now_mins < e:
+                return 5
+            gap = (s - now_mins) if now_mins < s else (now_mins - e)
+            nearest_gap = gap if nearest_gap is None else min(nearest_gap, gap)
+
+        if nearest_gap is not None and nearest_gap <= 30:
+            return 3
+
+        session = self.get_status(utc_now).current_session
+        if "LONDON" in session or "NEW_YORK" in session:
+            return 1
+        return 0
 
     def _time_in_range(self, t: time, start: time, end: time) -> bool:
         """Check if time is within range, handles overnight ranges."""
@@ -360,8 +414,13 @@ class NewsGuard:
             p = pair.upper()
             if p in CURRENCY_PAIRS:
                 base, quote = CURRENCY_PAIRS[p]
-                currencies.add(base)
-                currencies.add(quote)
+                # Only fiat legs drive the economic calendar. A non-fiat leg
+                # like XAU (Gold, registered as a pseudo-currency for strength
+                # ranking) has no news events, so keep it out of the affected
+                # set — USD still freezes XAUUSD around FOMC/CPI/NFP.
+                for leg in (base, quote):
+                    if leg in _KNOWN_CCY:
+                        currencies.add(leg)
             else:
                 # Non-forex (crypto / metals priced in a currency, e.g. BTCUSD,
                 # XAUUSD): use the trailing 3-char currency so USD-driven events
