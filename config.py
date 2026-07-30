@@ -996,6 +996,11 @@ class RiskConfig:
     # advances eligible positions to breakeven.  No position is ever
     # closed or reduced by this engine (Phase 4b/4c).
     portfolio_risk_engine_enabled: bool = True
+    # Reference account balance the heat thresholds below are tuned for.
+    # When live equity is smaller than this, the state machine sqrt-scales the
+    # thresholds up (capped) so a single min-lot trade on a micro account does
+    # not immediately trip DEFENSIVE/EMERGENCY. Equity >= this value = no change.
+    reference_balance: float = 10000.0
     # Heat % at which the portfolio enters DEFENSIVE state
     heat_defensive_pct: float = 1.5
     # Heat % that must be sustained before returning to NORMAL
