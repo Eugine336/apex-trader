@@ -74,9 +74,12 @@ def test_select_zone_returns_none_when_no_direction_match():
 
 
 def test_size_trade_returns_real_lots_via_portfolio():
+    from portfolio.models import SizingFactors
+
     eng = BacktestEngine()
     signal = SimpleNamespace(entry_price=1.1000, stop_loss=1.0950, tp2=1.1150)
-    sized = eng._size_trade("EURUSD", "LONG", signal, de_size_mult=1.0,
+    factors = SizingFactors(base_risk_pct=eng.risk_per_trade, de_size_mult=1.0)
+    sized = eng._size_trade("EURUSD", "LONG", signal, factors,
                             conviction=0.8, balance=10_000.0)
     assert sized is not None
     lots, max_loss, risk_amount = sized
