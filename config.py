@@ -1846,6 +1846,12 @@ class OutcomeFeedbackConfig:
     journal_path: str = "data/outcome_feedback.jsonl"
     # Rolling window (most recent N completed trades) for accuracy aggregation.
     accuracy_lookback: int = 300
+    # Gold-specialist single-instrument mode. Defaults True because the system
+    # is locked to XAUUSD (config enabled_symbols_override=["XAUUSD"]); when
+    # truthy the feedback loop tightens its lookback to 100 and journal cap to
+    # 5000 so it stays responsive to regime shifts. Set False to revert to the
+    # multi-instrument defaults.
+    gold_specialist: bool = True
 
 
 @dataclass
