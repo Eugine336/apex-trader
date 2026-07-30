@@ -1038,6 +1038,7 @@ def analyze_window(
     liquidity: Optional[LiquidityMapper] = None,
     volume: Optional[VolumeAnalyzer] = None,
     consensus_config: Optional[ConsensusConfig] = None,
+    developing_struct_by_tf: Optional[dict[str, StructureAnalysis]] = None,
 ) -> WorldModel:
     """One-shot: build a fully-populated WorldModel from a multi-TF candle set.
 
@@ -1045,6 +1046,12 @@ def analyze_window(
     present in ``candles_by_tf`` and synthesizes bias, concepts/regime, entry
     zones, and consensus votes/candidates — returning a complete WorldModel.
     Used by the backtest so it decides identically to the live plane.
+
+    ``developing_struct_by_tf`` (optional) mirrors the confirmed live path
+    (``scanner.candle_close_handler``): when supplied it is forwarded to
+    ``compute_bias`` as additional ×0.70-discounted forming-bar evidence, so a
+    replay that simulates the ``DevelopingAnalysisLoop`` blends developing
+    structure exactly as live does.
     """
     structure = structure or StructureEngine()
     liquidity = liquidity or LiquidityMapper()
@@ -1100,7 +1107,9 @@ def analyze_window(
             except Exception:
                 continue
 
-    bias = compute_bias(struct, symbol=symbol)
+    bias = compute_bias(
+        struct, developing_struct_by_tf=developing_struct_by_tf, symbol=symbol,
+    )
     bias = blend_concepts(
         bias, concepts, regime, concept_weight,
         concept_flip_threshold=cc.concept_flip_threshold,

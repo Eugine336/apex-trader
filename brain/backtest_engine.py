@@ -27,6 +27,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from brain.market_data_utils import drop_forming_bar
 from brain.session_engine import SessionEngine
 from brain.trade_journal import TradeJournal, TradeRecord
 from loguru import logger
@@ -43,6 +44,18 @@ from loguru import logger
 _TP1_PARTIAL_RATIO = 0.5          # execution.position_worker WorkerConfig.partial_close_ratio
 _DEFAULT_PARTIAL_CLOSE_RATIO = 0.5  # event_driven_bootstrap._DEFAULT_PARTIAL_CLOSE_RATIO
 _SCALE_IN_RISK_FRACTION = 0.5     # event_driven_bootstrap._SCALE_IN_RISK_FRACTION
+
+# ── Developing-analysis forming-candle boundaries (Phase 3 parity) ───────
+# Per-timeframe candle length (seconds) used to aggregate the still-forming
+# HTF candle from M1 bars during replay — mirrors ``tick.candle_close_detector``
+# ``_TF_SECONDS`` for the HTFs the confirmed backtest slices carry (D1 is not
+# in the replay slice set, so it is intentionally omitted).
+_DEVELOPING_TF_SECONDS: dict[str, int] = {
+    "M5": 300,
+    "M15": 900,
+    "H1": 3600,
+    "H4": 14400,
+}
 
 
 class _BacktestSpreadMonitor:
@@ -145,6 +158,11 @@ class BacktestSetup:
     # the same baseline the live plane stores on the position record.
     entry_oq: Optional[float] = None
     entry_eq: Optional[float] = None
+    # Entry-source attribution (live parity). "zone" when the entry fired from
+    # a zone touch (TickEntryDetector zone-touch fill), "consensus" when the
+    # thesis triggered without a zone touch this bar. Carried into the trade
+    # journal so post-run analysis can compare zone vs consensus entries.
+    source: str = ""
 
 
 @dataclass
@@ -1422,11 +1440,22 @@ class BacktestEngine:
                         self._calibration_engine.update_spread(pair, spread, pip)
                 except Exception:
                     pass
+            # ── Developing-analysis simulation (live-parity — Phase 2) ──────
+            # Mirror the live DevelopingAnalysisLoop: build the still-forming
+            # HTF candle from M1 bars since the last HTF close and derive its
+            # structure, then feed it to analyze_window → compute_bias as ×0.70
+            # discounted evidence (same blend the confirmed live path applies in
+            # scanner.candle_close_handler). Best-effort + legacy-exempt: any
+            # failure returns None so the confirmed-only bias stands.
+            developing_struct = None
+            if not getattr(self, "legacy_mode", False):
+                developing_struct = self._build_developing_struct(pair, slices, now)
             wm = analyze_window(
                 pair,
                 {"H4": h4, "H1": h1, "M15": m15, "M5": m5},
                 timestamp=now,
                 consensus_config=getattr(self.config, "consensus", None),
+                developing_struct_by_tf=developing_struct,
             )
         except Exception as exc:
             logger.warning("[backtest] decision core failed for {}: {}", pair, exc)
@@ -1543,6 +1572,19 @@ class BacktestEngine:
             return None
         score = int(getattr(zone, "conviction", 0) or 0)
 
+        # ── M1 momentum confirmation (live-parity — entry.m1_confirmation) ──
+        # The live entry path requires M1 momentum confirmation after a zone
+        # touch before an entry fires (``M1CandleConfirmer.on_m1_close``). The
+        # backtest already carries M1 data, so it applies the SAME gate here:
+        # ≥3/5 aligned closed candles, two consecutive, or a higher-low /
+        # lower-high pattern. Not confirmed → skip this bar.
+        m1_slice = slices.get("M1")
+        if not self._m1_momentum_confirmed(m1_slice, direction):
+            logger.debug(
+                "[backtest] {} {} M1 momentum not confirmed — skip", pair, direction,
+            )
+            return None
+
         # ── Entry prices from the shared EntryEngine ────────────────────────
         # EntryEngine.calculate_entry reads scan_result.score/.confluences, which
         # the WorldModel does not expose — feed it the same scan-view adapter the
@@ -1552,6 +1594,15 @@ class BacktestEngine:
         signal = self._calculate_entry(pair, direction, slices, balance, scan_view)
         if signal is None:
             return None
+
+        # ── Zone-edge entry price + source attribution (live-parity) ────────
+        # The live plane fills at the zone edge on a zone touch (TickEntryDetector
+        # → M1 confirmation → entry at the zone edge), not at the candle close.
+        # Approximate that timing here with the current M1 candle's high/low
+        # against the selected zone: a touch adopts the zone-edge fill and marks
+        # the entry ``source="zone"``; no touch keeps the consensus (engine)
+        # entry and marks it ``source="consensus"``.
+        entry_source = self._apply_zone_edge_entry(signal, zone, m1_slice, direction)
 
         # ── EntryGate (score ≥ 85 floor, same gate as the live zone path) ───
         # Signed HTF alignment from the WorldModel bias (same derivation as the
@@ -1723,6 +1774,7 @@ class BacktestEngine:
             pip_value_per_lot=self.pip_value_per_lot,
             entry_oq=entry_oq,
             entry_eq=entry_eq,
+            source=entry_source,
         )
 
     # ── Stateful ThesisEngine (Gap 1a/1b — live-parity entry gate) ───────────
@@ -2043,6 +2095,211 @@ class BacktestEngine:
                 best_score = conv
                 best = zone
         return best
+
+    @staticmethod
+    def _m1_momentum_confirmed(m1_df, direction: str) -> bool:
+        """M1 momentum confirmation gate — mirrors ``entry.m1_confirmation``
+        ``M1CandleConfirmer._check_momentum`` pattern logic.
+
+        Uses the last 5 CLOSED M1 candles from the replay slice (the current
+        bar is already a closed candle in replay, so no forming bar is dropped).
+        Confirms when any of the same patterns the live confirmer accepts hold:
+
+        * ≥ 3/5 candles aligned with the trade direction, OR
+        * the last two candles are consecutive aligned closes, OR
+        * a higher-low + higher-close (LONG) / lower-high + lower-close (SHORT)
+          reversal pattern.
+
+        Returns ``False`` (skip the bar) when there are fewer than 5 M1 bars or
+        no pattern is present — the same conservative behaviour as live.
+        """
+        if m1_df is None or len(m1_df) < 5:
+            return False
+        last5 = m1_df.iloc[-5:]
+        closes = last5["close"].values
+        opens = last5["open"].values
+        highs = last5["high"].values
+        lows = last5["low"].values
+
+        if direction == "LONG":
+            bullish = sum(1 for c, o in zip(closes, opens) if c > o)
+            if bullish >= 3:
+                return True
+            if closes[-1] > opens[-1] and closes[-2] > opens[-2] and closes[-1] > closes[-2]:
+                return True
+            if lows[-1] > lows[-3] and closes[-1] > closes[-3]:
+                return True
+        else:
+            bearish = sum(1 for c, o in zip(closes, opens) if c < o)
+            if bearish >= 3:
+                return True
+            if closes[-1] < opens[-1] and closes[-2] < opens[-2] and closes[-1] < closes[-2]:
+                return True
+            if highs[-1] < highs[-3] and closes[-1] < closes[-3]:
+                return True
+        return False
+
+    def _apply_zone_edge_entry(self, signal, zone, m1_df, direction: str) -> str:
+        """Set the entry price to the zone edge on a zone touch (live parity).
+
+        The live plane enters at the zone edge when price touches the zone
+        (``entry.tick_entry_detector`` zone-touch fill), not at the candle close.
+        This approximates that using the current M1 candle's high/low against the
+        selected zone (M1 OHLC standing in for the live tick stream):
+
+        * LONG  (demand zone): fill at ``zone.top``, or deeper (candle low,
+          clamped to ``zone.bottom``) when price pushed further into the zone.
+        * SHORT (supply zone): fill at ``zone.bottom``, or deeper (candle high,
+          clamped to ``zone.top``) when price pushed further into the zone.
+
+        Mutates ``signal.entry_price`` in place when a touch fill is adopted and
+        returns the entry source (``"zone"`` on a touch, ``"consensus"`` when the
+        candle did not touch the zone and the engine's consensus entry stands).
+        Best-effort — any fault falls back to the consensus entry.
+        """
+        try:
+            top = float(getattr(zone, "top", 0.0) or 0.0)
+            bottom = float(getattr(zone, "bottom", 0.0) or 0.0)
+            if (
+                m1_df is None
+                or len(m1_df) == 0
+                or top <= 0.0
+                or bottom <= 0.0
+                or top < bottom
+            ):
+                return "consensus"
+
+            last = m1_df.iloc[-1]
+            hi = float(last["high"])
+            lo = float(last["low"])
+
+            # Touch = the current M1 candle's range overlaps the zone band.
+            if hi < bottom or lo > top:
+                return "consensus"
+
+            if direction == "LONG":
+                edge = min(top, max(lo, bottom))
+            else:
+                edge = max(bottom, min(hi, top))
+
+            # Adopt the zone-edge fill only when it keeps the entry on the
+            # correct side of the stop and TP1 (a degenerate zone must not flip
+            # the trade geometry); otherwise keep the engine price but still
+            # attribute the touch as a zone entry.
+            sl = float(getattr(signal, "stop_loss", 0.0) or 0.0)
+            tp1 = float(getattr(signal, "tp1", 0.0) or 0.0)
+            valid = (
+                (edge > sl and edge < tp1) if direction == "LONG"
+                else (edge < sl and edge > tp1)
+            )
+            if valid:
+                signal.entry_price = round(edge, 5)
+            return "zone"
+        except Exception as exc:  # noqa: BLE001 — entry attribution is best-effort
+            logger.debug("[backtest] zone-edge entry failed: {}", exc)
+            return "consensus"
+
+    def _build_developing_struct(self, pair: str, slices: dict, now):
+        """Simulate the live ``DevelopingAnalysisLoop`` for one replay bar.
+
+        For each HTF the confirmed slice carries, builds the still-forming candle
+        from the M1 bars since the last HTF close (the backtest analogue of
+        ``tick.live_candle_aggregator``), runs ``run_tf_modules`` with
+        ``include_forming=True`` (treating the forming bar as if it had just
+        closed — the same contract the developing loop uses), and returns the
+        developing ``StructureAnalysis`` per timeframe. That dict is fed to
+        ``compute_bias`` as ×0.70-discounted evidence, matching the confirmed
+        live path (``scanner.candle_close_handler``). Uses its own engine
+        instances so it never shares state with the confirmed pipeline.
+
+        Best-effort: returns ``None`` on any fault so the confirmed-only bias
+        stands (the current behaviour).
+        """
+        m1 = slices.get("M1")
+        if m1 is None or getattr(m1, "empty", True):
+            return None
+        try:
+            from brain.decision_core import run_tf_modules
+
+            if getattr(self, "_dev_structure", None) is None:
+                from brain.liquidity_mapper import LiquidityMapper
+                from brain.structure_engine import StructureEngine
+                from brain.volume_analyzer import VolumeAnalyzer
+
+                self._dev_structure = StructureEngine()
+                self._dev_liquidity = LiquidityMapper()
+                self._dev_volume = VolumeAnalyzer()
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[backtest] developing engines init failed: {}", exc)
+            return None
+
+        developing: dict = {}
+        for tf, tf_secs in _DEVELOPING_TF_SECONDS.items():
+            base = slices.get(tf)
+            if base is None or getattr(base, "empty", True):
+                continue
+            try:
+                forming = self._forming_htf_candle(m1, base, now, tf_secs)
+                if forming is None:
+                    continue
+                dev_slice = pd.concat(
+                    [drop_forming_bar(base), forming], ignore_index=True,
+                )
+                results = run_tf_modules(
+                    pair, tf, dev_slice,
+                    structure=self._dev_structure,
+                    liquidity=self._dev_liquidity,
+                    volume=self._dev_volume,
+                    include_forming=True,
+                )
+                sa = results.get("structure") if results else None
+                if sa is not None:
+                    developing[tf] = sa
+            except Exception as exc:  # noqa: BLE001
+                logger.debug(
+                    "[backtest] developing {} {} analysis failed: {}", pair, tf, exc,
+                )
+        return developing or None
+
+    @staticmethod
+    def _forming_htf_candle(m1_df, base_df, now, tf_secs: int):
+        """Aggregate the M1 bars of the current, still-forming HTF candle.
+
+        Selects the M1 bars from the current HTF boundary (``now`` floored to the
+        timeframe length) up to ``now`` and folds them into a single OHLC row —
+        the backtest analogue of ``LiveCandleAggregator``'s forming candle
+        (open = first, high = max, low = min, close = last, volume = sum). Built
+        purely from M1 bars up to ``now`` so it never leaks future data (the
+        fully-formed HTF candle in the replay frame would). Returns a 1-row
+        DataFrame aligned to ``base_df``'s columns, or ``None`` when the window
+        is empty.
+        """
+        now_ts = pd.Timestamp(now)
+        boundary_ts = now_ts.floor(f"{tf_secs}s")
+        window = m1_df[(m1_df["time"] >= boundary_ts) & (m1_df["time"] <= now_ts)]
+        if getattr(window, "empty", True):
+            return None
+
+        last = window.iloc[-1]
+        data: dict = {}
+        for col in base_df.columns:
+            if col == "time":
+                data[col] = last["time"]
+            elif col == "open":
+                data[col] = float(window["open"].iloc[0])
+            elif col == "high":
+                data[col] = float(window["high"].max())
+            elif col == "low":
+                data[col] = float(window["low"].min())
+            elif col == "close":
+                data[col] = float(window["close"].iloc[-1])
+            elif col in ("volume", "tick_volume"):
+                data[col] = (
+                    float(window[col].sum()) if col in window.columns else 0.0
+                )
+            else:
+                data[col] = last[col] if col in window.columns else 0.0
+        return pd.DataFrame([data], columns=list(base_df.columns))
 
     def _build_entry_context(
         self,
@@ -3326,6 +3583,7 @@ class BacktestEngine:
             timestamp=now,
             swap_modeled=None,
             swap_status="unavailable",  # backtest has no lot basis for financing in phase 1
+            source=getattr(setup, "source", ""),
         )
 
         try:
