@@ -192,6 +192,33 @@ _CRYPTO_PROFILE = InstrumentProfile(
     mtf_overlap_threshold_pips=10.0,
 )
 
+_GOLD_PROFILE = InstrumentProfile(
+    category="commodity",
+    # Structure: Gold makes clean institutional swings — tight lookback is reliable.
+    swing_lookback=5,
+    # Gold pip_size is 0.01, so 1 pip = $0.01. All pip fields below are scaled
+    # to Gold's real dollar geometry (daily ATR ~$20-40 = 2000-4000 pips), not
+    # the single-digit-pip commodity prior which is far too tight for Gold.
+    min_swing_size_pips=200.0,          # = $2.00 — minimum meaningful swing on Gold
+    # FVG: catch real institutional imbalances, filter spread/noise gaps.
+    fvg_proximity_pips=300.0,           # = $3.00 — catches real institutional imbalances
+    fvg_min_size_pips=150.0,            # = $1.50 — filters noise gaps
+    # OB: Gold overshoots order blocks by $1-3 before respecting them.
+    ob_buffer_pips=200.0,               # = $2.00 — Gold overshoots OBs by $1-3
+    ob_min_impulse_pips=500.0,          # = $5.00 — real impulsive moves
+    # Entry: stops must survive Gold's wicks and clear a sensible minimum.
+    sl_buffer_pips=150.0,               # = $1.50 — survive wicks
+    min_risk_pips=300.0,                # = $3.00 — minimum sensible Gold stop
+    m1_confirmation_bars=50,
+    # Scoring: lower threshold because more confluences are available for Gold.
+    min_entry_score=60,
+    wyckoff_enabled=True,               # Gold follows Wyckoff perfectly
+    currency_strength_enabled=True,     # Gold is an anti-USD instrument — DXY matters
+    news_filter_enabled=True,           # FOMC/CPI/NFP move Gold $20-50
+    session_score_contribution=True,    # Extremely session-driven: London open, NY open
+    mtf_overlap_threshold_pips=200.0,   # = $2.00
+)
+
 # Map category → profile
 _PROFILE_MAP: dict[str, InstrumentProfile] = {
     "forex":     _FOREX_PROFILE,
@@ -199,6 +226,15 @@ _PROFILE_MAP: dict[str, InstrumentProfile] = {
     "index":     _INDEX_PROFILE,
     "synthetic": _SYNTHETIC_PROFILE,
     "crypto":    _CRYPTO_PROFILE,
+}
+
+# Symbol-level overrides — consulted by get_profile() BEFORE the category map.
+# A symbol listed here gets its dedicated profile instead of its category's
+# generic one, letting a single instrument be tuned to its real behaviour.
+# Gold's dollar-scale geometry is nothing like Silver/Brent/WTI, so it earns
+# its own profile rather than sharing the generic commodity prior.
+_SYMBOL_PROFILE_MAP: dict[str, InstrumentProfile] = {
+    "XAUUSD": _GOLD_PROFILE,
 }
 
 
@@ -304,21 +340,27 @@ def get_profile(symbol: str) -> InstrumentProfile:
     """
     Return the InstrumentProfile for a symbol.
 
-    Looks up the category from INSTRUMENT_REGISTRY for the base (cold-start)
-    profile, then — when a stats provider is registered and the symbol is
-    calibrated — returns an ATR-normalised, self-calibrated profile derived from
+    Looks up a symbol-level override in ``_SYMBOL_PROFILE_MAP`` first, then falls
+    back to the category profile from INSTRUMENT_REGISTRY for the base
+    (cold-start) profile.  When a stats provider is registered and the symbol is
+    calibrated, returns an ATR-normalised, self-calibrated profile derived from
     that symbol's own live volatility.  Falls back to forex if the symbol is
     unknown, and to the category constants whenever stats are unavailable.
     """
-    info = INSTRUMENT_REGISTRY.get(symbol.upper())
-    if info is None:
-        logger.warning(
-            "InstrumentProfile — unknown symbol '{}', using forex defaults", symbol
-        )
-        base = _FOREX_PROFILE
+    key = symbol.upper()
+    override = _SYMBOL_PROFILE_MAP.get(key)
+    if override is not None:
+        base = override
     else:
-        category = info.category.value   # "forex" / "commodity" / "index" / "synthetic"
-        base = _PROFILE_MAP.get(category, _FOREX_PROFILE)
+        info = INSTRUMENT_REGISTRY.get(key)
+        if info is None:
+            logger.warning(
+                "InstrumentProfile — unknown symbol '{}', using forex defaults", symbol
+            )
+            base = _FOREX_PROFILE
+        else:
+            category = info.category.value   # "forex" / "commodity" / "index" / "synthetic"
+            base = _PROFILE_MAP.get(category, _FOREX_PROFILE)
 
     profile = base
     if _stats_provider is not None:

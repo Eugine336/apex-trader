@@ -3732,15 +3732,26 @@ class SessionLearnerConfig:
 
 @dataclass
 class AppConfig:
-    # All 4 categories enabled — forex, commodity, index, synthetic
+    # ── GOLD SPECIALIST MODE ──────────────────────────────────────────────
+    # Apex Trader is currently a Gold specialist: only XAUUSD is active. Gold
+    # runs on its dedicated `_GOLD_PROFILE` (brain/instrument_profile.py),
+    # tuned to Gold's real dollar-scale behaviour. Every other instrument
+    # stays in INSTRUMENT_REGISTRY but is inactive — the opportunist behaviour
+    # (aggressive entry/exit) is unchanged, only the instrument universe and
+    # parameters are Gold-calibrated.
+    #
+    # To re-enable other instruments:
+    #   • Add their categories back to `enabled_categories`
+    #     (e.g. ["forex", "commodity", "index", "synthetic", "crypto"]).
+    #   • Clear `enabled_symbols_override` (set to []) to scan every symbol in
+    #     the enabled categories, or list specific symbols to restrict the set.
     enabled_categories: list[str] = field(
-        default_factory=lambda: ["forex", "commodity", "index", "synthetic", "crypto"]
+        default_factory=lambda: ["commodity"]  # Gold's category only
     )
-    # Empty by default — scans ALL instruments in enabled_categories.
-    # Populate this ONLY to restrict to a subset during testing.
-    # e.g. ["EURUSD", "GBPUSD"] for a quick smoke test.
+    # Restricted to Gold only. Clear this ([]) to scan all symbols in the
+    # enabled categories, or list specific symbols for a targeted subset.
     enabled_symbols_override: list[str] = field(
-        default_factory=list  # <-- FIX: was hardcoded 8 pairs, now empty = scan everything
+        default_factory=lambda: ["XAUUSD"]  # Gold specialist — XAUUSD only
     )
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
