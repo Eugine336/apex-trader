@@ -258,7 +258,7 @@ def sync_data_repo(
 
     # Stage everything except excluded patterns. Default git pathspec matching
     # treats '*' as crossing '/', so ':(exclude)*.csv' drops CSVs at any depth.
-    add_args = ["add", "-A", "."]
+    add_args = ["add", "-A", "--force", "."]
     add_args += [f":(exclude){pat}" for pat in exclude_patterns]
     ok, add_out = _run_git(add_args, work_tree)
     if not ok:
@@ -363,7 +363,7 @@ def compact_repo_history(
         return f"orphan checkout failed: {out.splitlines()[0] if out else 'unknown'}"
 
     # Stage the full current tree, honouring the same CSV exclusion as sync.
-    add_args = ["add", "-A", "."]
+    add_args = ["add", "-A", "--force", "."]
     add_args += [f":(exclude){pat}" for pat in _DEFAULT_EXCLUDE_PATTERNS]
     _run_git(add_args, work_tree)
 
