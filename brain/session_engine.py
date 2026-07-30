@@ -333,6 +333,17 @@ class NewsGuard:
     any HIGH impact news that affects the pairs we're trading.
     """
 
+    # Gold reacts to a broader set of events than currency-specific news:
+    # geopolitical risk headlines, Treasury yields, and safe-haven flows can
+    # move Gold $20-50 even when the event carries no traditional "currency".
+    # When XAUUSD is in play these keywords widen the news filter beyond the
+    # currency-matched events.
+    GOLD_EXTRA_KEYWORDS = {
+        "gold", "treasury", "yield", "yields", "bond", "bonds",
+        "geopolitical", "war", "tariff", "tariffs", "sanctions",
+        "safe haven", "safe-haven", "debt ceiling", "default",
+    }
+
     def __init__(self, pause_before: int = 15, pause_after: int = 5):
         self.pause_before = pause_before
         self.pause_after = pause_after
@@ -367,11 +378,24 @@ class NewsGuard:
             )
 
         # Filter to relevant events
+        gold_in_play = "XAUUSD" in {str(p).upper() for p in pairs_in_play}
         nearby = []
         for event in events:
             if event.impact != "HIGH":
                 continue
-            if event.currency not in affected_currencies:
+
+            currency_match = event.currency in affected_currencies
+            # Gold reacts to a broader set of events than currency-specific
+            # news. When XAUUSD is in play, also admit HIGH-impact events whose
+            # title matches a Gold-moving keyword even if their currency isn't
+            # in the affected set (e.g. geopolitical / Treasury-yield headlines).
+            gold_keyword_match = False
+            if not currency_match and gold_in_play:
+                title_lc = (event.title or "").lower()
+                if any(kw in title_lc for kw in self.GOLD_EXTRA_KEYWORDS):
+                    gold_keyword_match = True
+
+            if not (currency_match or gold_keyword_match):
                 continue
 
             mins = (event.time_utc - utc_now).total_seconds() / 60
@@ -379,6 +403,12 @@ class NewsGuard:
             if -self.pause_after <= mins <= self.pause_before:
                 event.minutes_away = int(mins)
                 event.direction = "NOW" if abs(mins) <= 1 else ("BEFORE" if mins > 0 else "AFTER")
+                if gold_keyword_match:
+                    logger.info(
+                        "[NewsGuard] Gold extra-keyword news match: '{}' "
+                        "({}) — included for XAUUSD despite currency {}",
+                        event.title, event.impact, event.currency,
+                    )
                 nearby.append(event)
 
         is_clear = len(nearby) == 0

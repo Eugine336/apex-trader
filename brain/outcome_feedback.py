@@ -44,6 +44,12 @@ class OutcomeFeedback:
         # Cap the append-only journal so it can't grow without bound over
         # months of operation (it is fully re-read on every aggregation).
         self._max_records = int(getattr(config, "max_records", 20000)) if config is not None else 20000
+        # Gold-specialist single-instrument mode. With only XAUUSD trading, the
+        # feedback loop converges faster but stale data dilutes it, so tighten
+        # the lookback and journal cap to stay responsive to regime shifts.
+        if config is not None and getattr(config, "gold_specialist", False):
+            self._lookback = 100
+            self._max_records = 5000
         self._rotate_every = 500
         self._append_count = 0
         self._path = Path(path)
@@ -184,15 +190,25 @@ class OutcomeFeedback:
             completed = completed[-lb:]
         return completed
 
-    def module_accuracy(self, lookback: Optional[int] = None) -> dict:
+    def module_accuracy(
+        self,
+        lookback: Optional[int] = None,
+        symbol_filter: Optional[str] = None,
+    ) -> dict:
         """Per-module (× horizon) accuracy + calibration over completed trades.
 
         For every module that contributed to a placed trade, accumulate the
         trade's realised win/loss and R, plus the module's own predicted
         confidence, so the dashboard can show win rate, average R, and how well
         each module's stated confidence matched reality (calibration).
+
+        When ``symbol_filter`` is set, only completed trades whose
+        ``attribution["symbol"]`` matches (case-insensitive) are counted — this
+        lets the dashboard read Gold-only accuracy even if the system ever
+        trades other instruments again.
         """
         completed = self.get_completed(lookback)
+        want_symbol = symbol_filter.upper() if symbol_filter else None
         modules: dict[str, dict] = {}
         horizons: dict[str, dict] = {}
         total = 0
@@ -202,6 +218,10 @@ class OutcomeFeedback:
 
         for rec in completed:
             attr = rec.get("attribution", {}) or {}
+            if want_symbol is not None:
+                rec_symbol = str(attr.get("symbol", "") or "").upper()
+                if rec_symbol != want_symbol:
+                    continue
             out = rec.get("outcome", {}) or {}
             pnl_r = _safe_float(out.get("pnl_r"))
             if "won" in out:
