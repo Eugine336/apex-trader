@@ -3036,7 +3036,7 @@ class EventDrivenSystem:
                 self._developing_loop = DevelopingAnalysisLoop(
                     candle_aggregator=self._live_candle_aggregator,
                     developing_store=self._developing_wm_store,
-                    symbols=list(INSTRUMENT_REGISTRY.keys()),
+                    symbols=list(self._config.enabled_pairs),
                     config=_dev_cfg,
                     # Confirmed store — read-only, enforces the developing
                     # store's "confidence only, never direction" contract.
@@ -3126,7 +3126,7 @@ class EventDrivenSystem:
             try:
                 from brain.proactive_scanner import ProactiveOpportunityScanner
                 self._proactive_scanner = ProactiveOpportunityScanner(
-                    symbols_provider=lambda: list(INSTRUMENT_REGISTRY.keys()),
+                    symbols_provider=lambda: list(self._config.enabled_pairs),
                     get_world_model=self._wm_store.get,
                     enabled=bool(getattr(_ci_cfg, "proactive_scan_enabled", False)),
                     interval_seconds=float(
@@ -3392,7 +3392,7 @@ class EventDrivenSystem:
 
         def _prices_provider():
             prices = {}
-            for sym in INSTRUMENT_REGISTRY:
+            for sym in self._config.enabled_pairs:
                 tick = self._tick_store.get_latest(sym)
                 if tick is not None:
                     prices[sym] = tick.mid
@@ -3768,7 +3768,7 @@ class EventDrivenSystem:
         # full track record after a restart instead of re-warming from zero.
         self._seed_learning_counters()
 
-        symbols = list(INSTRUMENT_REGISTRY.keys())
+        symbols = list(self._config.enabled_pairs)
         for sym in symbols:
             self._candle_detector.register(sym)
         logger.info("[event-driven] registered {} symbols for candle detection", len(symbols))
@@ -5543,10 +5543,19 @@ class EventDrivenSystem:
             logger.warning("[event-driven] startup position recovery failed: {}", exc)
 
     def _classify_symbols(self) -> tuple[list[str], list[str]]:
-        """Split registry symbols by platform (MT5 vs Deriv)."""
+        """Split enabled symbols by platform (MT5 vs Deriv).
+
+        Only ``config.enabled_pairs`` are classified so the tick pollers
+        subscribe to the active universe (e.g. XAUUSD when running as a Gold
+        specialist), not every instrument in the registry. The registry is
+        still consulted for each symbol's platform metadata.
+        """
         mt5: list[str] = []
         deriv: list[str] = []
-        for sym, info in INSTRUMENT_REGISTRY.items():
+        for sym in self._config.enabled_pairs:
+            info = INSTRUMENT_REGISTRY.get(sym)
+            if info is None:
+                continue
             pf = info.platform.value if hasattr(info.platform, "value") else str(info.platform)
             if pf == "deriv":
                 deriv.append(sym)
@@ -6079,7 +6088,7 @@ class EventDrivenSystem:
         if ctx.opportunity_density_tracker is not None:
             try:
                 ready_symbols = []
-                for sym in INSTRUMENT_REGISTRY:
+                for sym in self._config.enabled_pairs:
                     wm = self._wm_store.get(sym)
                     if wm is not None:
                         zones = getattr(wm, "entry_zones", [])
