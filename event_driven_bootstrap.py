@@ -3321,13 +3321,18 @@ class EventDrivenSystem:
         )
 
         self._be_stop_cooldown: dict[str, float] = {}
-        self._be_cooldown_seconds = 300.0
+        # Retuned for aggressive gold scalping: after a breakeven stop the
+        # system should be ready to re-enter quickly once a new setup forms.
+        self._be_cooldown_seconds = 30.0
         # General per-symbol re-entry cooldown for the ZONE entry path: last
         # unix-ts a position closed per symbol. Prevents the zone path from
         # re-arming on the very next M1 close after any exit (not just BE
         # exits). Consensus/trigger entries use their own cooldown below.
+        # Retuned to 15s for aggressive gold scalping: long enough to prevent
+        # duplicate entries on the same candle, short enough to re-enter on the
+        # next zone touch so the system can ride a trend in pieces.
         self._last_close_time: dict[str, float] = {}
-        self._zone_reentry_cooldown_seconds = 300.0
+        self._zone_reentry_cooldown_seconds = 15.0
         # Re-fire debounce for the ACTIVE consensus entry trigger (Phase 4):
         # last unix-ts a zoneless consensus entry was dispatched per symbol, so
         # a standing thesis is not re-submitted every candle close between fills.
