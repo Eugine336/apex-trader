@@ -361,13 +361,19 @@ class TestEntryOrchestratorDirectionFlip:
         assert orch.stats.get("momentum_skips", 0) == 1
         assert len(decisions) == 0
 
-    def test_flip_blocked_by_opposing_m5(self):
-        # Ticks are strong but M5 BULLISH opposes the SHORT flip → skip.
+    def test_opposing_m5_no_flip_but_ticks_admit_entry(self):
+        # Momentum opposes the LONG zone and the SHORT flip is blocked by the
+        # BULLISH M5. But live ticks agree with the zone (LONG) and the M5 trend
+        # matches it, so the original LONG entry PROCEEDS instead of skipping —
+        # the lagging blended momentum no longer kills a setup that tick + M5
+        # actively support.
         orch, decisions = _setup_flip(tick_mom=0.50, m5_trend=Trend.BULLISH)
         self._touch_and_close(orch)
         assert orch.stats.get("direction_flips", 0) == 0
-        assert orch.stats.get("momentum_skips", 0) == 1
-        assert len(decisions) == 0
+        assert orch.stats.get("momentum_skips", 0) == 0
+        assert orch.stats.get("momentum_overrides", 0) == 1
+        assert len(decisions) == 1
+        assert decisions[0]["direction"] == "LONG"
 
     def test_flip_with_ranging_m5(self):
         # RANGING M5 does not block the flip when ticks confirm.

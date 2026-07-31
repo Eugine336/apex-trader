@@ -3,8 +3,8 @@
 Covers two integration changes:
 
 1. ``counter_trend_ev_premium`` is fully removed — the EV gate no longer adds a
-   directional surcharge, so a counter-trend idea whose EV sits between the base
-   bar (0.3R) and the old premium bar (0.4R) now passes on its own merits.
+   directional surcharge, so a counter-trend idea faces the SAME EV bar as a
+   with-trend one and passes on its own merits.
 2. ``EventDrivenSystem._thesis_gate_allows`` — the ThesisEngine acts as an
    additional entry quality gate that blocks when the dominant thesis disagrees
    with the proposed direction or is not actionable, and is fully fail-safe
@@ -41,8 +41,9 @@ class TestCounterTrendPremiumRemoved:
 
     def test_counter_trend_between_base_and_old_premium_now_passes(self):
         # p_win=0.45 (LONG), rr=2.0, p_loss=0.55 → EV = 0.9 - 0.55 = 0.35R.
-        # Counter-trend (p_loss > p_win). Old behaviour: bar 0.3+0.1=0.4R →
-        # reject. New behaviour: same 0.3R bar for every direction → pass.
+        # Counter-trend (p_loss > p_win). There is no directional premium — a
+        # counter-trend idea faces the SAME EV bar (0.1R) as with-trend, so a
+        # 0.35R setup passes on its own merits.
         gate = EntryGate()
         r = gate._check_ev("EURUSD", "LONG", 100.0, 99.0, 102.0, 0.45, 0.55)
         assert r.passed is True

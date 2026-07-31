@@ -82,6 +82,12 @@ class EntryConfig:
     zone_proximity_pips: float = 3.0
     m1_confirmation_timeout_candles: int = 5
     m1_min_bars: int = 10
+    # M1 momentum confirmation: minimum aligned candles out of the last 5 to
+    # confirm an entry via the momentum path. Retuned 3 → 2 for faster
+    # confirmation in volatile gold conditions. The structural pattern
+    # confirmations (higher-low / lower-high, BOS, two-consecutive) still
+    # auto-confirm regardless of this count.
+    m1_min_aligned: int = 2
     # Per-timeframe zone TTL. A flat 15-minute expiry was calibrated only for
     # M5 scalps — an H4 order block or D1 FVG is structurally valid for hours
     # or days, not minutes. Price often takes hours to return to a higher-TF
@@ -103,7 +109,10 @@ class EntryConfig:
     # this value (both default 1.0) so there is one effective number rather
     # than the old conflicting 1.0/1.5/1.8 floors.
     min_structural_rr: float = 1.0
-    min_entry_score: int = 85
+    # Score gate floor. Retuned for aggressive gold scalping: standalone Order
+    # Block zones (score 70) and standalone FVG zones (score 80) now clear the
+    # bar, not just FVG+OB overlaps (score 100). Only sub-60 (noise) is rejected.
+    min_entry_score: int = 60
     # Hard floor for the GateTuner-adjusted entry-score bar.  The tuner may
     # LOWER min_entry_score within a bounded envelope when its rejected setups
     # keep winning, but the live gate never drops the bar below this floor.
@@ -154,10 +163,12 @@ class EntryConfig:
     # p_loss come from the Phase 3 probabilistic bias (long/short probability)
     # mapped to the trade direction.
     #
-    # Minimum EV in R-multiples to take a trade. 0.3R means the probability-
-    # weighted outcome must exceed 0.3× the risk. Replaces the alignment floor
-    # as the directional gate.
-    min_entry_ev: float = 0.3
+    # Minimum EV in R-multiples to take a trade. 0.1R means the probability-
+    # weighted outcome must exceed 0.1× the risk. Retuned for aggressive gold
+    # scalping: any positive-EV setup should be taken — only genuinely negative
+    # or break-even setups are rejected. Replaces the alignment floor as the
+    # directional gate.
+    min_entry_ev: float = 0.1
     # NOTE: there is deliberately NO counter-trend EV premium. APEX prefers no
     # direction — the EV gate decides purely on expected value. If a
     # counter-trend idea has lower probability-weighted EV it fails the bar on

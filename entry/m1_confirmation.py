@@ -5,7 +5,7 @@ and checks for structural confirmation:
 
     1. CHoCH (Change of Character) on M1 in the trade direction.
     2. BOS (Break of Structure) on M1 in the trade direction.
-    3. Momentum confirmation: ≥3/5 candles aligned + volume filter.
+    3. Momentum confirmation: ≥2/5 candles aligned + volume filter.
 
 Logic extracted from ``trigger/entry_engine.py`` _detect_m1_choch()
 and _detect_momentum_confirmation().  Uses the same StructureEngine
@@ -98,7 +98,10 @@ class M1CandleConfirmer:
                 candles_used=count,
             )
 
-        result = self._check_momentum(m1_df, direction, zone, pip_size)
+        result = self._check_momentum(
+            m1_df, direction, zone, pip_size,
+            min_aligned=int(getattr(self._config, "m1_min_aligned", 2)),
+        )
         if result.confirmed:
             self.clear(symbol)
             logger.info(
@@ -179,6 +182,7 @@ class M1CandleConfirmer:
         direction: str,
         zone: Optional[EntryZone],
         pip_size: float,
+        min_aligned: int = 2,
     ) -> ConfirmationResult:
         """Momentum confirmation matching entry_engine logic.
 
@@ -186,7 +190,9 @@ class M1CandleConfirmer:
         1. Minimum 5 bars.
         2. Zone proximity — last candle must be near the zone.
         3. Volume filter — at least one aligned candle has above-average volume.
-        4. ≥3/5 aligned candles, or last-two consecutive, or higher-low pattern.
+        4. ≥``min_aligned``/5 aligned candles, or last-two consecutive, or
+           higher-low pattern. ``min_aligned`` defaults to 2 (retuned from 3)
+           for faster confirmation in volatile gold conditions.
         """
         if len(m1_df) < 5:
             return ConfirmationResult(False, "none", "M1 < 5 bars for momentum")
@@ -224,7 +230,7 @@ class M1CandleConfirmer:
 
         if direction == "LONG":
             bullish = sum(1 for c, o in zip(closes, opens) if c > o)
-            if bullish >= 3:
+            if bullish >= min_aligned:
                 return ConfirmationResult(True, "momentum", f"{bullish}/5 bullish candles")
             if len(closes) >= 2 and closes[-1] > opens[-1] and closes[-2] > opens[-2] and closes[-1] > closes[-2]:
                 return ConfirmationResult(True, "momentum", "Two consecutive rising bullish candles")
@@ -232,7 +238,7 @@ class M1CandleConfirmer:
                 return ConfirmationResult(True, "momentum", "Higher low + higher close pattern")
         else:
             bearish = sum(1 for c, o in zip(closes, opens) if c < o)
-            if bearish >= 3:
+            if bearish >= min_aligned:
                 return ConfirmationResult(True, "momentum", f"{bearish}/5 bearish candles")
             if len(closes) >= 2 and closes[-1] < opens[-1] and closes[-2] < opens[-2] and closes[-1] < closes[-2]:
                 return ConfirmationResult(True, "momentum", "Two consecutive falling bearish candles")

@@ -85,10 +85,10 @@ def _snap(
 
 
 class TestConfigAlignment:
-    def test_score_threshold_is_85(self):
+    def test_score_threshold_is_60(self):
         from entry.models import EntryConfig
         cfg = EntryConfig()
-        assert cfg.min_entry_score == 85
+        assert cfg.min_entry_score == 60
 
     def test_max_positions_is_5(self):
         cfg = WorkerConfig()
