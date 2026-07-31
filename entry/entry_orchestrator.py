@@ -648,7 +648,7 @@ class EntryOrchestrator:
         # the zone — the real-time signals lead the lagging blend for scalps);
         # or SKIP when neither holds.
         oppose_floor = -float(
-            getattr(self._config, "momentum_oppose_threshold", 0.20) or 0.20
+            getattr(self._config, "momentum_oppose_threshold", 0.50) or 0.50
         )
         momentum = self._entry_momentum(symbol, direction)
         if momentum is not None and momentum <= oppose_floor:
