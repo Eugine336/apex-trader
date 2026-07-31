@@ -146,8 +146,10 @@ class EntryConfig:
     # tick_momentum (real-time, sub-candle) plus the M5 structural trend — the
     # opposite is taken only when ticks are genuinely moving that way AND the M5
     # trend does not oppose it; otherwise the entry is SKIPPED rather than taken
-    # against momentum. 0.2 ≈ "clearly opposing" on the [-1, +1] scale.
-    momentum_oppose_threshold: float = 0.20
+    # against momentum. 0.5 ≈ "strongly opposing" on the [-1, +1] scale — in
+    # ranging markets a mild blended momentum (e.g. -0.32) is trivial noise and
+    # must not flip every zone, so only genuinely strong opposition triggers it.
+    momentum_oppose_threshold: float = 0.50
     # Minimum tick_momentum (signed for the flip direction) to confirm a
     # direction flip. tick_momentum measures directional efficiency of the
     # last ~20 ticks in [-1, +1]; 0.30 requires a clear, clean directional
