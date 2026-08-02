@@ -102,6 +102,49 @@ class InstrumentProfile:
     # is prep work for a future PR, not an activated feature.
     vwap_zone_enabled: bool = False
 
+    # ── Phase 2 Feature A: Stop-out flip ──────────────────────────────
+    # When a trade is stopped out (SL hit) the system immediately evaluates a
+    # flip into the opposite direction (using the orchestrator's live tick +
+    # M5 flip confirmation). ``stopout_flip_cooldown_s`` is the minimum seconds
+    # between flips on the same symbol; ``stopout_flip_max_per_zone`` caps how
+    # many flips one zone may spawn before it is exhausted (whipsaw guard). The
+    # detector reads the profile first, then the EntryConfig default.
+    stopout_flip_enabled: bool = True
+    stopout_flip_cooldown_s: float = 30.0
+    stopout_flip_max_per_zone: int = 2
+
+    # ── Phase 2 Feature B: Pre-staged limit orders ────────────────────
+    # When a zone is active and price is within ``staging_proximity_pips`` of a
+    # zone boundary, a pending LIMIT order is staged at the boundary instead of
+    # waiting for an M1-close market order. ``staging_cooldown_s`` throttles
+    # re-staging to prevent stage/cancel flapping. ``pre_staging_enabled`` is
+    # OFF by default — a profile opts in (Gold does).
+    pre_staging_enabled: bool = False
+    staging_proximity_pips: float = 5.0
+    staging_cooldown_s: float = 60.0
+
+    # ── Phase 2 Feature C: Active compression / session filtering ──────
+    # When the compression detector reads COMPRESSING the zone conviction is
+    # boosted by ``compression_conviction_boost``; EXPANDING boosts by
+    # ``expansion_conviction_boost`` (both multiply conviction before the score
+    # gate). A COMPRESSING + ASIAN combination is treated as dangerous chop —
+    # the entry is skipped unless conviction exceeds
+    # ``asian_compression_min_conviction``.
+    compression_conviction_boost: float = 1.2
+    expansion_conviction_boost: float = 1.5
+    asian_compression_min_conviction: int = 80
+
+    # ── Phase 2 Feature D: DXY correlation filter ─────────────────────
+    # For USD-denominated instruments (XAUUSD, forex USD pairs) a USD strength
+    # read moving AGAINST the trade (USD strengthening while LONG gold, or
+    # weakening while SHORT gold) emits a warning vote that reduces conviction
+    # by ``dxy_opposition_penalty`` (a penalty, never a hard block).
+    # ``dxy_lookback_bars`` is the correlation lookback window passed to the
+    # strength reader.
+    dxy_filter_enabled: bool = True
+    dxy_opposition_penalty: float = 0.15
+    dxy_lookback_bars: int = 20
+
 
 # ---------------------------------------------------------------------------
 # Profile definitions per category
@@ -263,6 +306,12 @@ _GOLD_PROFILE = InstrumentProfile(
     news_filter_enabled=True,           # FOMC/CPI/NFP move Gold $20-50
     session_score_contribution=True,    # Extremely session-driven: London open, NY open
     mtf_overlap_threshold_pips=200.0,   # = $2.00
+    # Phase 2: Gold opts in to pre-staged limit orders. staging_proximity_pips
+    # is scaled to Gold's dollar geometry ($3.00, matching fvg_proximity_pips) —
+    # the generic 5-pip ($0.05) default is meaningless at Gold's scale.
+    pre_staging_enabled=True,
+    staging_proximity_pips=300.0,       # = $3.00 — Gold-scaled staging proximity
+    dxy_filter_enabled=True,            # Gold's inverse-USD correlation is core
 )
 
 # Map category → profile

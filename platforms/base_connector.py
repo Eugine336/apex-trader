@@ -196,6 +196,14 @@ class BaseConnector(ABC):
             error="Pending orders not supported on this platform",
         )
 
+    def cancel_pending_order(self, order_id: str) -> bool:
+        """Cancel/delete a resting pending (limit/stop) order by its id.
+
+        Returns True on success. Default: not supported (returns False).
+        Override in a subclass that supports pending-order cancellation.
+        """
+        return False
+
     @abstractmethod
     def modify_order(
         self,

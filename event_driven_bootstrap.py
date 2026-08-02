@@ -29,6 +29,7 @@ from brain.symbol_mapper import resolve_to_internal
 from brain.world_model import WorldModelStore
 from brain.compression_detector import CompressionDetector
 from brain.session_context import SessionContext
+from brain.currency_strength import CurrencyStrengthMeter, CURRENCY_PAIRS
 from compliance import (
     ComplianceAccount,
     ComplianceBook,
@@ -48,7 +49,7 @@ from execution.position_worker import (
 from execution.position_snapshot import PositionSnapshot, build_position_snapshot
 from execution.management_state import ManagementStateStore
 from execution.management_scheduler import ManagementScheduler
-from entry import EntryOrchestrator, EntryConfig
+from entry import EntryOrchestrator, EntryConfig, ZoneOrderStager
 from platform_context import build_context_for_symbol
 from platforms.platform_manager import PlatformManager
 from platforms.order_idempotency import build_order_comment, generate_idempotency_key
@@ -3031,6 +3032,21 @@ class EventDrivenSystem:
             logger.warning("[event-driven] SessionContext init failed: {}", exc)
             self._session_context = None
 
+        # ── USD-strength meter (Phase 2 Feature D — DXY correlation) ────
+        # Ranks USD strength from the major USD pairs so the entry orchestrator
+        # can penalise (never block) a gold/USD trade whose direction opposes
+        # the USD move. The reading is cached briefly (~5 min) to avoid
+        # re-fetching every pair on each entry evaluation. Best-effort — a
+        # construction fault degrades to no DXY vote.
+        self._currency_strength_meter = None
+        self._dxy_strength_cache: Optional[Any] = None
+        self._dxy_strength_cache_ts: float = 0.0
+        try:
+            self._currency_strength_meter = CurrencyStrengthMeter()
+        except Exception as exc:
+            logger.warning("[event-driven] CurrencyStrengthMeter init failed: {}", exc)
+            self._currency_strength_meter = None
+
         self._candle_handler = CandleCloseHandler(
             event_bus=self._event_bus,
             world_model_store=self._wm_store,
@@ -3257,9 +3273,9 @@ class EventDrivenSystem:
                 if ctx is not None and ctx.ml_adapter is not None
                 else None
             ),
-            # Global market-state read (compression detector). Logging-only for
-            # now: the orchestrator records the MarketState + squeeze score as a
-            # round-table signal but does not gate entries on it yet.
+            # Global market-state read (compression detector). ACTIVE (Phase 2
+            # Feature C): the orchestrator boosts conviction on COMPRESSING /
+            # EXPANDING and applies the Asian-compression caution gate.
             get_market_state=(
                 self._compression_detector.get_market_state
                 if self._compression_detector is not None else None
@@ -3268,12 +3284,42 @@ class EventDrivenSystem:
                 self._compression_detector.get_compression_score
                 if self._compression_detector is not None else None
             ),
-            # Global session classifier read. Logging-only for now: the
-            # orchestrator records the current TradingSession + this symbol's
-            # size multiplier / zone weight as a round-table signal but does not
-            # size or gate entries on it yet.
+            # Global session classifier read. ACTIVE (Phase 2 Feature C): used
+            # for the Asian-compression caution gate; session-aware sizing is
+            # applied in _on_entry_decision.
             session_context=self._session_context,
+            # USD-strength reader for the DXY correlation filter (Phase 2
+            # Feature D). Penalises (never blocks) a USD-symbol trade whose
+            # direction opposes the USD move.
+            get_currency_strength=self._dxy_currency_strength,
         )
+
+        # ── Zone order stager (Phase 2 Feature B) ────────────────────
+        # Pre-stages pending LIMIT orders at zone boundaries as price approaches
+        # a zone, running the FULL gate pipeline (orchestrator gates + compliance
+        # + portfolio + correlation) BEFORE staging. OFF by default per
+        # EntryConfig; a profile (Gold) opts in via pre_staging_enabled. Fed by
+        # the tick bus and ZoneWatcher update callbacks (registered here).
+        # Best-effort — a construction fault degrades to no pre-staging.
+        self._zone_stager = None
+        self._stage_sizer = PositionSizer()
+        try:
+            self._zone_stager = ZoneOrderStager(
+                config=EntryConfig(),
+                get_active_zones=self._entry_orchestrator.zone_watcher.get_active_zones,
+                place_pending_order=self._stage_place_pending,
+                cancel_pending_order=self._stage_cancel_pending,
+                pip_size_lookup=self._safe_pip_size,
+                size_lookup=self._stage_size,
+                derive_targets=self._entry_orchestrator._derive_targets,
+                gate_check=self._staging_gate_allows,
+            )
+            self._entry_orchestrator.zone_watcher.register_update_callback(
+                self._zone_stager.on_zone_update,
+            )
+        except Exception as exc:
+            logger.warning("[event-driven] ZoneOrderStager init failed: {}", exc)
+            self._zone_stager = None
 
         # ── Compliance Division runtime binding ──────────────────────
         # The ComplianceDivision is constructed in SystemContext.create()
@@ -3344,6 +3390,10 @@ class EventDrivenSystem:
 
         # ── Event wiring ─────────────────────────────────────────────
         self._event_bus.subscribe("tick", self._entry_orchestrator.on_tick)
+        # Phase 2 Feature B: feed ticks to the zone-order stager so it can stage
+        # pending LIMIT orders as price approaches an active zone boundary.
+        if self._zone_stager is not None:
+            self._event_bus.subscribe("tick", self._zone_stager.on_tick)
         if self._mgmt_scheduler is not None:
             # Event-reactive management: mark a symbol active on each tick so
             # the tick-eval loop evaluates it on the next cycle.  Cheap + thread
@@ -8600,6 +8650,31 @@ class EventDrivenSystem:
                         symbol, exc,
                     )
 
+            # ── Phase 2 Feature C: session-aware sizing ──────────────
+            # Scale risk% by the current trading session's size multiplier from
+            # the InstrumentProfile (default Asian 0.5x, London 1.2x, NY 1.0x,
+            # LONDON_NY_OVERLAP 1.3x). Half-size the low-liquidity Asian chop and
+            # lean in during the liquid London/overlap windows. Best-effort — a
+            # fault leaves risk unchanged. The per-trade ceiling below still
+            # clamps the final result.
+            if self._session_context is not None:
+                try:
+                    session = self._session_context.get_session()
+                    sess_mult = float(
+                        self._session_context.get_session_multiplier(symbol, session)
+                    )
+                    if sess_mult > 0 and sess_mult != 1.0:
+                        logger.info(
+                            "[session-size] {} risk {:.3f}% -> {:.3f}% (x{:.2f} for {})",
+                            symbol, risk_pct * 100.0, risk_pct * sess_mult * 100.0,
+                            sess_mult, getattr(session, "value", session),
+                        )
+                        risk_pct *= sess_mult
+                except Exception as exc:
+                    logger.debug(
+                        "[session-size] {} session sizing failed: {}", symbol, exc,
+                    )
+
             # ── GAP 3: opportunity-quality-proportional sizing ───────
             # Size the best opportunities up and weaker ones down on top of the
             # existing de-risking chain. Identity (1.0) when disabled, so risk is
@@ -8939,6 +9014,7 @@ class EventDrivenSystem:
                         fill_price = float(entry_price or 0.0)
                     self._entry_context[result.order_id] = {
                         "zone_type": decision.get("zone_type", ""),
+                        "timeframe": str(timeframe or ""),
                         "source": decision.get("source", "zone") or "zone",
                         "regime": regime,
                         "concepts": sorted(set(concept_names)),
@@ -9444,6 +9520,274 @@ class EventDrivenSystem:
             return any(abs(float(v)) > 1e-9 for v in ctx.gate_tuner.all_offsets().values())
         except Exception:  # noqa: BLE001
             return False
+
+    # Major USD pairs used to rank USD strength for the DXY filter. Kept small
+    # (the majors + gold) so the reading stays cheap; USD appears in every one,
+    # so its ranking is well-determined from these alone.
+    _DXY_USD_PAIRS = (
+        "EURUSD", "GBPUSD", "USDJPY", "USDCHF",
+        "AUDUSD", "NZDUSD", "USDCAD", "XAUUSD",
+    )
+
+    # ── Phase 2 Feature B: zone-order stager wiring helpers ──────────
+    def _stage_place_pending(
+        self,
+        symbol: str,
+        order_kind: str,
+        entry_price: float,
+        lots: float,
+        sl: float,
+        tp: float,
+        comment: str = "",
+        idempotency_key: str = "",
+    ):
+        """Place a pending LIMIT via the per-symbol broker connector."""
+        connector = self._pm.get_connector(symbol)
+        if connector is None:
+            return None
+        return connector.place_pending_order(
+            symbol, order_kind, entry_price, lots, sl, tp, comment, idempotency_key,
+        )
+
+    def _stage_cancel_pending(self, symbol: str, order_id: str) -> bool:
+        """Cancel a resting pending order via the per-symbol broker connector."""
+        connector = self._pm.get_connector(symbol)
+        if connector is None:
+            return False
+        try:
+            return bool(connector.cancel_pending_order(order_id))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[zone-stager] cancel failed for {} {}: {}", symbol, order_id, exc)
+            return False
+
+    def _stage_size(
+        self, symbol: str, direction: str, entry_price: float, sl: float,
+    ) -> float:
+        """Size a pre-staged order using the shared sizer + session multiplier.
+
+        Uses the configured per-trade risk scaled by the session multiplier
+        (Phase 2 Feature C parity), the live platform balance, and the shared
+        PositionSizer. Returns 0.0 (skip staging) when balance is unavailable or
+        sizing resolves to nothing. Never raises.
+        """
+        try:
+            balance = float(self._pm.get_platform_balance(symbol) or 0.0)
+            if balance <= 0:
+                return 0.0
+            risk_pct = self._config.risk.risk_per_trade_pct / 100.0
+            if self._session_context is not None:
+                try:
+                    session = self._session_context.get_session()
+                    mult = float(
+                        self._session_context.get_session_multiplier(symbol, session)
+                    )
+                    if mult > 0:
+                        risk_pct *= mult
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                context = build_context_for_symbol(symbol)
+            except Exception:  # noqa: BLE001
+                context = None
+            res = self._stage_sizer.calculate_for_instrument(
+                symbol=symbol,
+                account_balance=balance,
+                risk_pct=risk_pct,
+                entry_price=entry_price,
+                stop_loss=sl,
+                context=context,
+            )
+            return float(getattr(res, "lots", 0.0) or 0.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[zone-stager] sizing failed for {}: {}", symbol, exc)
+            return 0.0
+
+    def _staging_gate_allows(
+        self,
+        symbol: str,
+        direction: str,
+        zone,
+        entry_price: float,
+        sl: float,
+        tp1: float,
+        tp2: float,
+    ) -> bool:
+        """Full pre-staging gate: orchestrator entry gates + compliance +
+        portfolio + correlation. This is an EARLIER run of the same gates a
+        market entry faces — not a bypass. Fails closed on any error.
+        """
+        try:
+            # Orchestrator entry-gate chain (conviction shaping + EV / score /
+            # spread / alignment / market-open / session / news / drawdown).
+            if not self._entry_orchestrator.evaluate_zone_gates(
+                symbol, direction, entry_price, sl, tp1, tp2, zone,
+            ):
+                return False
+
+            ctx = self._ctx
+            try:
+                open_positions = self._pm.get_all_open_positions()
+            except Exception:  # noqa: BLE001
+                open_positions = []
+            balance = float(self._pm.get_platform_balance(symbol) or 0.0)
+
+            if ctx is not None:
+                # Compliance Division — the single authoritative permit layer.
+                if ctx.compliance is None:
+                    return False
+                acct = ""
+                try:
+                    acct = ctx.account_key(symbol, self._pm)
+                except Exception:  # noqa: BLE001
+                    acct = ""
+                verdict = ctx.compliance.permit(
+                    ComplianceCandidate(symbol=symbol, direction=direction),
+                    ComplianceBook(open_positions=open_positions),
+                    ComplianceAccount(account_key=acct, balance=balance),
+                )
+                if verdict.rejected:
+                    logger.info(
+                        "[zone-stager] {} stage blocked — Compliance: {}",
+                        symbol, "; ".join(verdict.reasons),
+                    )
+                    return False
+
+                # PortfolioGovernor — concentration/exposure only.
+                if ctx.portfolio_governor is not None:
+                    pv = ctx.portfolio_governor.check_exposure_only(
+                        symbol=symbol,
+                        direction=direction,
+                        open_positions=open_positions,
+                        account_balance=balance,
+                    )
+                    if not pv.allowed:
+                        logger.info(
+                            "[zone-stager] {} stage blocked — Governor: {}",
+                            symbol, pv.reason,
+                        )
+                        return False
+
+                # CorrelationEngine — correlated-exposure check.
+                if ctx.correlation_engine is not None:
+                    from brain.correlation_engine import OpenTrade
+                    corr_trades = [
+                        OpenTrade(
+                            pair=getattr(pos, "symbol", ""),
+                            direction=getattr(pos, "direction", "LONG"),
+                            risk_pct=0.02,
+                        )
+                        for pos in open_positions
+                    ]
+                    approved, reason = ctx.correlation_engine.can_open_trade(
+                        pair=symbol, direction=direction, open_trades=corr_trades,
+                    )
+                    if not approved:
+                        logger.info(
+                            "[zone-stager] {} stage blocked — Correlation: {}",
+                            symbol, reason,
+                        )
+                        return False
+            return True
+        except Exception as exc:  # noqa: BLE001 — a faulty gate fails closed
+            logger.debug("[zone-stager] gate check failed for {}: {}", symbol, exc)
+            return False
+
+
+    def _dxy_currency_strength(self, symbol: str, lookback_bars: int = 20):
+        """Phase 2 Feature D provider — cached USD-strength analysis.
+
+        Builds M5 price data for the major USD pairs and returns a
+        ``StrengthAnalysis`` (from ``CurrencyStrengthMeter``) the orchestrator
+        reads for the USD ranking. ``lookback_bars`` sizes the candle window
+        (floored at 60 so the RSI/percentile maths stay valid). Cached ~5 min to
+        avoid re-fetching every pair on each entry. Returns ``None`` for
+        non-USD symbols or on any failure — the DXY vote is then a no-op.
+        """
+        if self._currency_strength_meter is None:
+            return None
+        if "USD" not in symbol.upper():
+            return None
+        try:
+            now = _time.monotonic()
+            if (
+                self._dxy_strength_cache is not None
+                and (now - self._dxy_strength_cache_ts) < 300.0
+            ):
+                return self._dxy_strength_cache
+            count = max(int(lookback_bars or 0), 60)
+            price_data: dict[str, Any] = {}
+            for pair in self._DXY_USD_PAIRS:
+                if pair not in CURRENCY_PAIRS:
+                    continue
+                try:
+                    df = self._fetch_candles(pair, "M5", count)
+                    if df is not None and len(df) >= 30:
+                        price_data[pair] = df
+                except Exception as exc:
+                    logger.debug("[dxy] fetch {} failed: {}", pair, exc)
+            if not price_data:
+                return None
+            analysis = self._currency_strength_meter.calculate(price_data)
+            self._dxy_strength_cache = analysis
+            self._dxy_strength_cache_ts = now
+            return analysis
+        except Exception as exc:
+            logger.debug("[dxy] currency-strength analysis failed: {}", exc)
+            return None
+
+    def _maybe_stopout_flip(
+        self,
+        symbol: str,
+        direction: str,
+        close_price: float,
+        exit_reason: Optional[str],
+        info: dict[str, Any],
+    ) -> None:
+        """Phase 2 Feature A — flip into the opposite direction after a stop-out.
+
+        Fires only when the close was a stop-loss fill (``ExitCause.STOP_LOSS``).
+        Delegates the decision to the orchestrator's ``evaluate_stopout_flip``,
+        which owns the flip confirmation (live tick momentum + M5 trend) and the
+        configurable cooldown / per-zone whipsaw guards, and — when confirmed —
+        emits the opposite-direction entry through the full on_entry_decision
+        pipeline. Reconstructs the flip context (entry, stop, zone) from the
+        closed trade's entry-context snapshot. Best-effort throughout.
+        """
+        if self._entry_orchestrator is None:
+            return
+
+        # Only a genuine stop-loss fill triggers a flip. Match the typed cause
+        # first, falling back to the free-text classifier for broker strings.
+        from management.exit_cause import ExitCause
+        _raw_cause = exit_reason or ""
+        try:
+            cause = ExitCause(_raw_cause)
+        except (ValueError, TypeError):
+            cause = ExitCause.from_reason(_raw_cause)
+        if cause is not ExitCause.STOP_LOSS:
+            return
+
+        entry_price = float(info.get("entry_price", 0.0) or 0.0)
+        stop_loss = float(info.get("sl", 0.0) or 0.0)
+        zone_type = str(info.get("zone_type", "") or "")
+        timeframe = str(info.get("timeframe", "") or "")
+        conviction = int(info.get("score", 0) or 0)
+        if entry_price <= 0 or stop_loss <= 0:
+            logger.debug(
+                "[stopout-flip] {} missing entry/stop context — skipping flip", symbol,
+            )
+            return
+
+        self._entry_orchestrator.evaluate_stopout_flip(
+            symbol,
+            direction,
+            entry_price,
+            stop_loss,
+            current_price=float(close_price or 0.0),
+            conviction=conviction,
+            zone_type=zone_type,
+            timeframe=timeframe,
+        )
 
     def _on_trade_closed(
         self,
@@ -9970,6 +10314,21 @@ class EventDrivenSystem:
         # Gate 0c in _on_entry_decision uses this to stop the zone path
         # re-arming the same symbol on the next M1 close after any exit.
         self._last_close_time[symbol] = _time.time()
+
+        # ── Phase 2 Feature A: stop-out flip ────────────────────────
+        # When this close was a stop-loss fill, immediately evaluate a flip into
+        # the opposite direction. The orchestrator owns the flip machinery
+        # (live-tick + M5 confirmation, cooldown + per-zone whipsaw guards) and,
+        # when confirmed, emits the opposite-direction decision through the SAME
+        # on_entry_decision pipeline (compliance, portfolio risk, sizing). This
+        # is a no-shortcut re-entry, not a bypass. Best-effort — a fault here
+        # never disturbs the close-feedback path above.
+        try:
+            self._maybe_stopout_flip(
+                symbol, direction, close_price, exit_reason, info,
+            )
+        except Exception as exc:
+            logger.debug("[stopout-flip] evaluation failed for {}: {}", symbol, exc)
 
         # ── Re-entry evaluation ──────────────────────────────────────
         # ReEntryManager only re-arms trades stopped at breakeven whose

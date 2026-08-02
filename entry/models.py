@@ -221,6 +221,45 @@ class EntryConfig:
     # InstrumentProfile.vwap_zone_enabled can override this global default.
     vwap_zone_enabled: bool = False
 
+    # ── Phase 2 Feature A: Stop-out flip ──────────────────────────────────
+    # Global fallbacks for the stop-out flip machinery. A per-instrument
+    # InstrumentProfile may override any of these. stopout_flip_enabled toggles
+    # the feature; stopout_flip_cooldown_s is the minimum seconds between flips
+    # on the same symbol; stopout_flip_max_per_zone caps flips originating from
+    # one zone before it is exhausted (whipsaw death-spiral guard).
+    stopout_flip_enabled: bool = True
+    stopout_flip_cooldown_s: float = 30.0
+    stopout_flip_max_per_zone: int = 2
+
+    # ── Phase 2 Feature B: Pre-staged limit orders ────────────────────────
+    # Global fallbacks for the zone-order stager. pre_staging_enabled is OFF by
+    # default (opt-in per profile — Gold turns it on). staging_proximity_pips is
+    # how close price must be to a zone boundary before a pending LIMIT is
+    # staged; staging_cooldown_s throttles re-staging to prevent flapping.
+    pre_staging_enabled: bool = False
+    staging_proximity_pips: float = 5.0
+    staging_cooldown_s: float = 60.0
+
+    # ── Phase 2 Feature C: Active compression / session filtering ──────────
+    # Global fallbacks for the compression/session-aware conviction shaping.
+    # COMPRESSING multiplies conviction by compression_conviction_boost,
+    # EXPANDING by expansion_conviction_boost (both before the score gate). A
+    # COMPRESSING + ASIAN setup is skipped unless conviction exceeds
+    # asian_compression_min_conviction (choppy low-vol compression is dangerous).
+    compression_conviction_boost: float = 1.2
+    expansion_conviction_boost: float = 1.5
+    asian_compression_min_conviction: int = 80
+
+    # ── Phase 2 Feature D: DXY correlation filter ─────────────────────────
+    # Global fallbacks for the USD-strength opposition vote. dxy_filter_enabled
+    # is ON by default but only takes effect for USD-denominated symbols
+    # (XAUUSD, forex USD pairs). dxy_opposition_penalty is the multiplicative
+    # conviction haircut applied when USD strength opposes the trade;
+    # dxy_lookback_bars is the correlation lookback window.
+    dxy_filter_enabled: bool = True
+    dxy_opposition_penalty: float = 0.15
+    dxy_lookback_bars: int = 20
+
     def __post_init__(self) -> None:
         if self.zone_expiry_seconds_by_tf is None:
             # Calibrated so a zone stays valid roughly as long as price could
