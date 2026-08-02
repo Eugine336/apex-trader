@@ -555,6 +555,7 @@ class BacktestEngine:
         backtest_flip_m15: bool = True,
         backtest_flip_volume: bool = True,
         backtest_flip_clean_break: bool = True,
+        backtest_flip_sequence_enabled: bool = False,
     ):
         from config import AppConfig
 
@@ -708,6 +709,12 @@ class BacktestEngine:
         self.backtest_flip_m15 = bool(backtest_flip_m15)
         self.backtest_flip_volume = bool(backtest_flip_volume)
         self.backtest_flip_clean_break = bool(backtest_flip_clean_break)
+        # ── Fast-then-slow flip sequencing (backtest parity, Session 16) ──
+        # OFF by default: enabling it feeds a FlipSequenceTracker from the M1/M5
+        # bar replay and requires the flip's fast-then-slow sequence to be
+        # FULLY_CONFIRMED (flip Check 7). Off ⇒ the tracker is never fed and the
+        # check skips, leaving flip behaviour identical to before.
+        self.backtest_flip_sequence_enabled = bool(backtest_flip_sequence_enabled)
         self.compression_detector = None
         self.session_context = None
         # Optional injected data sources (default None → the feature no-ops).
@@ -720,6 +727,12 @@ class BacktestEngine:
         # Per-symbol stop-out-flip state (last flip monotonic time + per-zone
         # count) so the whipsaw guards mirror the live orchestrator.
         self._bt_flip_state: dict[str, dict[str, Any]] = {}
+        # Fast-then-slow flip sequencing tracker (Session 16, flip Check 7) fed
+        # from the bar replay when backtest_flip_sequence_enabled is set. Built
+        # lazily so the import cost is only paid when the feature is on; the
+        # per-symbol last-M5-bar timestamp drives once-per-M5-bar feeding.
+        self._bt_flip_sequence_tracker: Optional[Any] = None
+        self._bt_last_m5_time: dict[str, Any] = {}
 
         if not self.legacy_mode:
             try:
@@ -1093,6 +1106,22 @@ class BacktestEngine:
         self._bt_day = None
         self._bt_daily_pnl = 0.0
 
+        # Reset / build the fast-then-slow flip sequence tracker for this run so
+        # consecutive backtests never leak confirmation state (Session 16).
+        self._bt_last_m5_time = {}
+        if self.backtest_flip_sequence_enabled:
+            try:
+                from entry.flip_sequence_tracker import FlipSequenceTracker
+                if self._bt_flip_sequence_tracker is None:
+                    self._bt_flip_sequence_tracker = FlipSequenceTracker(
+                        pip_size_lookup=lambda _s: float(self.pip_size or 0.0001),
+                    )
+                else:
+                    self._bt_flip_sequence_tracker.reset_all()
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[backtest] flip sequence tracker unavailable: {}", exc)
+                self._bt_flip_sequence_tracker = None
+
         # Reset the stateful risk / compliance subsystems so consecutive
         # backtests never leak state (heat, daily-loss halts, drawdown mode,
         # standing theses). Untouched in legacy mode. Re-seeds the per-account
@@ -1139,6 +1168,12 @@ class BacktestEngine:
             # sizing path can read this bar's market-state / session — live
             # parity for the opportunistic modules (Phase 3 Feature B).
             self._update_opportunistic_state(pair, slices)
+
+            # Feed the fast-then-slow flip sequence tracker from the bar replay
+            # (Session 16, flip Check 7) so a stop-out flip can require the M1→M5
+            # temporal ordering exactly as the live plane does. No-op unless the
+            # feature is enabled.
+            self._feed_flip_sequence(pair, slices, now)
 
             # Feed the cross-instrument volatility monitor from this bar's H1
             # regime analysis (single-symbol replay → one analysis per bar; the
@@ -2873,6 +2908,38 @@ class BacktestEngine:
         eff = 0.0 if path <= 0 else max(-1.0, min(1.0, net / path))
         return net, eff
 
+    def _feed_flip_sequence(self, pair, slices, now) -> None:
+        """Feed the M1/M5 bar replay into the flip sequence tracker.
+
+        Called every replay bar (an M1 step). Arms the fast confirmation from
+        the M1 slice for both directions on every bar; provides the slow
+        confirmation from the M5 slice ONCE per new M5 bar (detected by the M5
+        slice's last-bar time changing), advancing the tracker's M5 clock in
+        lockstep with the live plane. No-op when the feature is off or the
+        tracker failed to build. Never raises.
+        """
+        if not self.backtest_flip_sequence_enabled or self._bt_flip_sequence_tracker is None:
+            return
+        tracker = self._bt_flip_sequence_tracker
+        try:
+            m1_slice = slices.get("M1")
+            if m1_slice is not None and len(m1_slice) >= 5:
+                for direction in ("LONG", "SHORT"):
+                    tracker.on_m1_close(pair, direction, m1_slice)
+
+            m5_slice = slices.get("M5")
+            if m5_slice is not None and len(m5_slice) >= 1:
+                last_m5_time = m5_slice.iloc[-1].get("time")
+                if last_m5_time != self._bt_last_m5_time.get(pair):
+                    # A fresh M5 bar has closed — advance the slow timeframe once.
+                    self._bt_last_m5_time[pair] = last_m5_time
+                    m5_trend = self._bt_trend_str(m5_slice)
+                    tracker.on_m5_close(pair, "", m5_trend)
+
+            tracker.check_timeouts(pair)
+        except Exception as exc:  # noqa: BLE001 — feeding never breaks the replay
+            logger.debug("[backtest] flip sequence feed failed for {}: {}", pair, exc)
+
     def _bt_flip_confirmed(self, pair, new_dir, slices, now, setup) -> bool:
         """Run the hardened FlipConfirmer over the backtest bar slices.
 
@@ -2926,7 +2993,20 @@ class BacktestEngine:
             "m15": self.backtest_flip_m15,
             "volume": self.backtest_flip_volume,
             "clean_break": self.backtest_flip_clean_break,
+            # Tick-rule delta (Check 6) has no live tick stream in replay — leave
+            # it disabled so it always skips. Sequence (Check 7) engages only
+            # when the feature flag is set AND the tracker was fed.
+            "delta": False,
+            "sequence": self.backtest_flip_sequence_enabled,
         }
+
+        # When the sequence check is enabled, force ``flip_require_sequence`` on
+        # regardless of the profile default so the fed tracker actually gates the
+        # flip; every other tuning knob still resolves via ``_flip_param``.
+        def _flip_confirm_param(sym, name, default, _self=self):
+            if name == "flip_require_sequence" and _self.backtest_flip_sequence_enabled:
+                return True
+            return _self._flip_param(sym, name, default)
 
         confirmer = FlipConfirmer(
             get_atr_pips=lambda s, tf, _a=atr_pips: _a,
@@ -2938,9 +3018,10 @@ class BacktestEngine:
                 )
             ),
             get_m1_dataframe=lambda s, _df=m1_slice: _df,
+            sequence_tracker=self._bt_flip_sequence_tracker,
             session_context=sess,
             pip_size_lookup=lambda s, _p=pip_size: _p,
-            profile_param=self._flip_param,
+            profile_param=_flip_confirm_param,
         )
         result = confirmer.confirm(
             pair, new_dir, mode="flip",

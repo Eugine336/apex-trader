@@ -73,6 +73,8 @@ class EntryOrchestrator:
         get_currency_strength: Optional[Callable[..., Any]] = None,
         get_atr_pips: Optional[Callable[[str, str], float]] = None,
         get_tick_move_pips: Optional[Callable[[str, str, float], float]] = None,
+        get_recent_ticks: Optional[Callable[[str, int], list]] = None,
+        sequence_tracker: Optional[object] = None,
     ) -> None:
         self._config = config or EntryConfig()
         self._pip_size = pip_size_lookup or (lambda _: 0.0001)
@@ -114,6 +116,14 @@ class EntryOrchestrator:
         # ATR check to a graceful skip rather than blocking a flip.
         self._get_atr_pips = get_atr_pips or (lambda s, tf: 0.0)
         self._get_tick_move_pips = get_tick_move_pips or (lambda s, d, p: 0.0)
+        # Recent-tick reader ``(symbol, count) -> list[Tick]`` for the hardened
+        # FlipConfirmer's tick-rule order-flow delta check (Check 6). Wired to
+        # ``TickStore.get_recent`` live; defaults to None so the delta check
+        # degrades to a graceful skip when no tick store is available.
+        self._get_recent_ticks = get_recent_ticks
+        # FlipSequenceTracker for the fast-then-slow sequencing check (Check 7).
+        # Fed M1/M5 closes by the bootstrap; None ⇒ the sequence check skips.
+        self._flip_sequence_tracker = sequence_tracker
 
         self._is_market_open = is_market_open or (lambda _: True)
         self._is_session_active = is_session_active or (lambda _: True)
@@ -167,6 +177,8 @@ class EntryOrchestrator:
             get_tick_move_pips=self._get_tick_move_pips,
             get_structure_trend=self._wm_structure_trend,
             get_m1_dataframe=self._get_m1,
+            get_recent_ticks=self._get_recent_ticks,
+            sequence_tracker=self._flip_sequence_tracker,
             session_context=self._session_context,
             pip_size_lookup=self._pip_size,
             profile_param=self._profile_param,

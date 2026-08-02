@@ -62,6 +62,8 @@ def _make_confirmer(
     session=None,
     pip_size=0.01,
     profile_param=None,
+    get_recent_ticks=None,
+    sequence_tracker=None,
 ):
     """A FlipConfirmer whose every check passes by default; override to fail one."""
     if isinstance(m1_df, str) and m1_df == "__rising__":
@@ -73,6 +75,8 @@ def _make_confirmer(
         get_tick_move_pips=lambda s, d, p: move_pips,
         get_structure_trend=lambda s, tf: {"M5": m5, "M15": m15}.get(tf, "UNKNOWN"),
         get_m1_dataframe=lambda s: m1_df,
+        get_recent_ticks=get_recent_ticks,
+        sequence_tracker=sequence_tracker,
         session_context=sess,
         pip_size_lookup=lambda s: pip_size,
         profile_param=profile_param,
@@ -335,3 +339,103 @@ class TestChecksEnabledToggling:
                    "volume": False, "clean_break": False}
         res = c.confirm("XAUUSD", "SHORT", checks_enabled=enabled)
         assert res.confirmed is True
+
+
+# ── Check 6: tick-rule order-flow delta ────────────────────────────────────
+def _delta_ticks(prices, spread=0.01):
+    return [SimpleNamespace(bid=p, ask=p + spread) for p in prices]
+
+
+class TestDeltaCheck:
+    def test_delta_blocks_flip_when_opposing(self):
+        # LONG flip but recent ticks are all selling → delta rejects it.
+        sell = _delta_ticks([2000.0 - i for i in range(15)])
+        pp = _pp({"flip_require_delta_confirmation": True, "flip_delta_threshold": 0.2})
+        c = _make_confirmer(
+            atr_pips=0.0, m5="RANGING",
+            get_recent_ticks=lambda s, n: sell, profile_param=pp,
+        )
+        res = c.confirm("XAUUSD", "LONG")
+        assert res.confirmed is False
+        assert res.reason == "delta"
+        assert res.checks["delta"] == "fail"
+
+    def test_delta_confirms_when_aligned(self):
+        buy = _delta_ticks([2000.0 + i for i in range(15)])
+        pp = _pp({"flip_require_delta_confirmation": True, "flip_delta_threshold": 0.2})
+        c = _make_confirmer(
+            atr_pips=0.0, get_recent_ticks=lambda s, n: buy, profile_param=pp,
+        )
+        res = c.confirm("XAUUSD", "LONG")
+        assert res.confirmed is True
+        assert res.checks["delta"] == "pass"
+
+    def test_delta_skips_when_disabled(self):
+        # Feature flag off (profile default) → the delta check never runs.
+        sell = _delta_ticks([2000.0 - i for i in range(15)])
+        c = _make_confirmer(atr_pips=0.0, get_recent_ticks=lambda s, n: sell)
+        res = c.confirm("XAUUSD", "SHORT")
+        assert res.confirmed is True
+        assert res.checks["delta"] == "skip"
+
+    def test_delta_skips_on_insufficient_ticks(self):
+        few = _delta_ticks([2000.0 - i for i in range(5)])  # < 10 usable ticks
+        pp = _pp({"flip_require_delta_confirmation": True})
+        c = _make_confirmer(
+            atr_pips=0.0, get_recent_ticks=lambda s, n: few, profile_param=pp,
+        )
+        res = c.confirm("XAUUSD", "SHORT")
+        assert res.confirmed is True
+        assert res.checks["delta"] == "skip"
+
+    def test_delta_skips_when_no_tick_source(self):
+        pp = _pp({"flip_require_delta_confirmation": True})
+        c = _make_confirmer(atr_pips=0.0, get_recent_ticks=None, profile_param=pp)
+        res = c.confirm("XAUUSD", "SHORT")
+        assert res.confirmed is True
+        assert res.checks["delta"] == "skip"
+
+
+# ── Check 7: fast-then-slow temporal sequencing ────────────────────────────
+class TestSequenceCheck:
+    def test_sequence_blocks_when_not_fully_confirmed(self):
+        tracker = SimpleNamespace(is_confirmed=lambda s, d: False)
+        pp = _pp({"flip_require_sequence": True})
+        c = _make_confirmer(atr_pips=0.0, sequence_tracker=tracker, profile_param=pp)
+        res = c.confirm("XAUUSD", "SHORT")
+        assert res.confirmed is False
+        assert res.reason == "sequence"
+        assert res.checks["sequence"] == "fail"
+
+    def test_sequence_passes_when_fully_confirmed(self):
+        tracker = SimpleNamespace(is_confirmed=lambda s, d: True)
+        pp = _pp({"flip_require_sequence": True})
+        c = _make_confirmer(atr_pips=0.0, sequence_tracker=tracker, profile_param=pp)
+        res = c.confirm("XAUUSD", "SHORT")
+        assert res.confirmed is True
+        assert res.checks["sequence"] == "pass"
+
+    def test_sequence_skips_when_no_tracker(self):
+        pp = _pp({"flip_require_sequence": True})
+        c = _make_confirmer(atr_pips=0.0, sequence_tracker=None, profile_param=pp)
+        res = c.confirm("XAUUSD", "SHORT")
+        assert res.confirmed is True
+        assert res.checks["sequence"] == "skip"
+
+
+class TestCheck6And7DisabledByDefault:
+    def test_both_skip_when_feature_flags_false(self):
+        # Default profile flags (flip_require_delta_confirmation /
+        # flip_require_sequence) are False, so neither gate engages even with a
+        # rejecting tracker and opposing ticks wired.
+        sell = _delta_ticks([2000.0 - i for i in range(15)])
+        tracker = SimpleNamespace(is_confirmed=lambda s, d: False)
+        c = _make_confirmer(
+            atr_pips=0.0,
+            get_recent_ticks=lambda s, n: sell,
+            sequence_tracker=tracker,
+        )
+        res = c.confirm("XAUUSD", "SHORT")
+        assert res.confirmed is True
+        assert res.checks["delta"] == "skip"
+        assert res.checks["sequence"] == "skip"
