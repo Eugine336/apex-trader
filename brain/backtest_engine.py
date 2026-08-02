@@ -550,6 +550,11 @@ class BacktestEngine:
         backtest_prestaging_enabled: bool = True,
         backtest_dxy_enabled: bool = True,
         backtest_news_enabled: bool = True,
+        backtest_flip_atr: bool = True,
+        backtest_flip_tick: bool = False,
+        backtest_flip_m15: bool = True,
+        backtest_flip_volume: bool = True,
+        backtest_flip_clean_break: bool = True,
     ):
         from config import AppConfig
 
@@ -689,6 +694,20 @@ class BacktestEngine:
         self.backtest_prestaging_enabled = bool(backtest_prestaging_enabled)
         self.backtest_dxy_enabled = bool(backtest_dxy_enabled)
         self.backtest_news_enabled = bool(backtest_news_enabled)
+        # ── Hardened flip confirmation toggles (backtest parity) ─────────
+        # Each of the five FlipConfirmer checks can be toggled independently so
+        # the backtest can isolate the effect of any single hardening step. M5
+        # non-opposition (the original backtest behaviour) is always on; these
+        # gate the NEW checks: ATR-normalised magnitude, session-aware tick
+        # efficiency, M15 non-opposition, volume confirmation and the
+        # invalidation clean-break. Tick efficiency defaults OFF because the
+        # replay has no sub-candle tick stream — the other four run on real bar
+        # data and skip gracefully when a slice is unavailable.
+        self.backtest_flip_atr = bool(backtest_flip_atr)
+        self.backtest_flip_tick = bool(backtest_flip_tick)
+        self.backtest_flip_m15 = bool(backtest_flip_m15)
+        self.backtest_flip_volume = bool(backtest_flip_volume)
+        self.backtest_flip_clean_break = bool(backtest_flip_clean_break)
         self.compression_detector = None
         self.session_context = None
         # Optional injected data sources (default None → the feature no-ops).
@@ -2820,6 +2839,120 @@ class BacktestEngine:
             return "SHORT"
         return ""
 
+    def _bt_trend_str(self, df) -> str:
+        """Map the coarse close-delta trend to a structure trend string.
+
+        Returns "BULLISH"/"BEARISH" (or "UNKNOWN" when flat / unavailable) so
+        the FlipConfirmer's non-opposition check reads the same vocabulary the
+        live WorldModel structure reader produces.
+        """
+        d = self._m5_trend_dir(df) if df is not None else ""
+        if d == "LONG":
+            return "BULLISH"
+        if d == "SHORT":
+            return "BEARISH"
+        return "UNKNOWN"
+
+    @staticmethod
+    def _bt_series_move(closes, lookback: int = 20) -> tuple[float, float]:
+        """Return ``(net_price, efficiency)`` over the last ``lookback`` closes.
+
+        ``net_price`` is the first→last displacement; ``efficiency`` is the
+        net÷path directional-efficiency ratio in [-1, +1] — the bar-based analog
+        of the live sub-candle tick_momentum, used only when the tick check is
+        explicitly enabled in the replay.
+        """
+        try:
+            vals = [float(c) for c in list(closes)[-(lookback + 1):]]
+        except Exception:  # noqa: BLE001
+            return 0.0, 0.0
+        if len(vals) < 5:
+            return 0.0, 0.0
+        net = vals[-1] - vals[0]
+        path = sum(abs(vals[i] - vals[i - 1]) for i in range(1, len(vals)))
+        eff = 0.0 if path <= 0 else max(-1.0, min(1.0, net / path))
+        return net, eff
+
+    def _bt_flip_confirmed(self, pair, new_dir, slices, now, setup) -> bool:
+        """Run the hardened FlipConfirmer over the backtest bar slices.
+
+        Feeds the stateless :class:`~entry.flip_confirmer.FlipConfirmer` the data
+        it needs from the replay's bar slices — ATR (pips) from the M1 slice,
+        the recent net move + efficiency from M1 closes, the M5/M15 structure
+        trend from their slices, the M1 volume column, the original position's
+        invalidation (its stop-loss) and the session at the bar's timestamp —
+        and toggles each check via the ``backtest_flip_*`` flags. Returns True
+        when the flip is confirmed. Never raises — any fault degrades to the
+        original M5-only verdict via the confirmer's own graceful skips.
+        """
+        from types import SimpleNamespace
+
+        from entry.flip_confirmer import FlipConfirmer
+
+        m1_slice = slices.get("M1")
+        pip_size = float(self.pip_size or 0.0)
+        atr_pips = 0.0
+        move_pips = 0.0
+        tick_eff = 0.0
+        if m1_slice is not None and "close" in getattr(m1_slice, "columns", []):
+            try:
+                from brain.volatility_stop import latest_atr
+
+                atr_price = latest_atr(m1_slice, 14)
+                if atr_price and pip_size > 0:
+                    atr_pips = float(atr_price) / pip_size
+                net, eff = self._bt_series_move(m1_slice["close"])
+                sign = 1.0 if new_dir == "LONG" else -1.0
+                move_pips = (net / pip_size) * sign if pip_size > 0 else 0.0
+                tick_eff = eff * sign
+            except Exception:  # noqa: BLE001
+                atr_pips = move_pips = tick_eff = 0.0
+
+        m5_trend = self._bt_trend_str(slices.get("M5"))
+        m15_trend = self._bt_trend_str(slices.get("M15"))
+        inv = float(getattr(setup, "stop_loss", 0.0) or 0.0)
+
+        sess = None
+        if self.session_context is not None and self.backtest_session_enabled:
+            when = self._as_utc(now)
+            sess = SimpleNamespace(
+                get_session=lambda w=when: self.session_context.get_session(w)
+            )
+
+        checks_enabled = {
+            "atr": self.backtest_flip_atr,
+            "tick": self.backtest_flip_tick,
+            "m5": True,
+            "m15": self.backtest_flip_m15,
+            "volume": self.backtest_flip_volume,
+            "clean_break": self.backtest_flip_clean_break,
+        }
+
+        confirmer = FlipConfirmer(
+            get_atr_pips=lambda s, tf, _a=atr_pips: _a,
+            get_tick_momentum=lambda s, d, p, _t=tick_eff: _t,
+            get_tick_move_pips=lambda s, d, p, _m=move_pips: _m,
+            get_structure_trend=(
+                lambda s, tf, _m5=m5_trend, _m15=m15_trend: (
+                    {"M5": _m5, "M15": _m15}.get(tf, "UNKNOWN")
+                )
+            ),
+            get_m1_dataframe=lambda s, _df=m1_slice: _df,
+            session_context=sess,
+            pip_size_lookup=lambda s, _p=pip_size: _p,
+            profile_param=self._flip_param,
+        )
+        result = confirmer.confirm(
+            pair, new_dir, mode="flip",
+            invalidation_level=inv, checks_enabled=checks_enabled,
+        )
+        if not result.confirmed:
+            logger.debug(
+                "[backtest] flip {}→{} rejected ({}) checks={}",
+                pair, new_dir, result.reason, result.checks,
+            )
+        return result.confirmed
+
     def _maybe_stopout_flip(
         self, closed_trade, close_event, slices, pair, now, balance,
     ):
@@ -2843,10 +2976,14 @@ class BacktestEngine:
                 return None
             new_dir = "SHORT" if closed_dir == "LONG" else "LONG"
 
-            # M5 confirmation: the M5 trend must not oppose the flip (an M5
-            # trending in the CLOSED direction opposes flipping against it).
-            m5_trend = self._m5_trend_dir(slices.get("M5"))
-            if m5_trend == closed_dir:
+            # Hardened flip confirmation (entry/flip_confirmer.py) — live
+            # parity. Replaces the bare "M5 trend must not oppose" check with
+            # the full five-check FlipConfirmer fed from the bar slices. M5
+            # non-opposition is always on (the original behaviour); the ATR
+            # magnitude, M15 non-opposition, volume and clean-break checks each
+            # engage only when their backtest_flip_* flag is set AND the data is
+            # present, degrading to a graceful skip otherwise.
+            if not self._bt_flip_confirmed(pair, new_dir, slices, now, setup):
                 return None
 
             now_utc = self._as_utc(now)
