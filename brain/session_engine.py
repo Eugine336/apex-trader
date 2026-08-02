@@ -432,6 +432,57 @@ class NewsGuard:
             warning_message=warning,
         )
 
+    def upcoming_high_impact(
+        self,
+        pairs_in_play: list[str],
+        within_minutes: float,
+        utc_now: Optional[datetime] = None,
+    ) -> list[NewsEvent]:
+        """Return HIGH-impact events relevant to ``pairs_in_play`` that are
+        scheduled to occur within the next ``within_minutes`` minutes.
+
+        Unlike :meth:`check` (which answers "is it safe to trade *now*?" over a
+        narrow freeze window and returns a block verdict), this returns the
+        forward-looking list the news calendar pre-planner stages breakout
+        orders around. Relevance mirrors :meth:`check`: the event's currency is
+        in the pairs' affected set, or — when XAUUSD is in play — its title
+        matches a Gold-moving keyword. Each returned event carries an updated
+        ``minutes_away``. Returns ``[]`` when the feed is unavailable (fail
+        closed — no events to plan against) so the caller never stages blindly.
+        """
+        if utc_now is None:
+            utc_now = datetime.now(timezone.utc)
+
+        events = self._fetch_events(utc_now)
+        if not events:
+            return []
+
+        affected_currencies = self._get_currencies_from_pairs(pairs_in_play)
+        gold_in_play = "XAUUSD" in {str(p).upper() for p in pairs_in_play}
+
+        upcoming: list[NewsEvent] = []
+        for event in events:
+            if event.impact != "HIGH":
+                continue
+
+            currency_match = event.currency in affected_currencies
+            gold_keyword_match = False
+            if not currency_match and gold_in_play:
+                title_lc = (event.title or "").lower()
+                if any(kw in title_lc for kw in self.GOLD_EXTRA_KEYWORDS):
+                    gold_keyword_match = True
+            if not (currency_match or gold_keyword_match):
+                continue
+
+            mins = (event.time_utc - utc_now).total_seconds() / 60.0
+            if 0.0 <= mins <= float(within_minutes):
+                event.minutes_away = int(mins)
+                event.direction = "NOW" if abs(mins) <= 1 else "BEFORE"
+                upcoming.append(event)
+
+        upcoming.sort(key=lambda e: e.time_utc)
+        return upcoming
+
     def _get_currencies_from_pairs(self, pairs: list[str]) -> list[str]:
         """Extract unique currencies from pair list."""
         from brain.currency_strength import CURRENCY_PAIRS

@@ -260,6 +260,25 @@ class EntryConfig:
     dxy_opposition_penalty: float = 0.15
     dxy_lookback_bars: int = 20
 
+    # ── Phase 3 Feature A: News calendar pre-planning ─────────────────────
+    # Global fallbacks for the news calendar pre-planner (brain/news_planner.py).
+    # A per-instrument InstrumentProfile may override any of these; the planner
+    # reads the profile first and falls back to these EntryConfig defaults when a
+    # field is absent. news_pre_planning_enabled is OFF by default (opt-in per
+    # profile — Gold turns it on). news_pre_stage_minutes is how many minutes
+    # before a scheduled high-impact event the breakout stops are staged;
+    # news_range_lookback_bars is how many recent candles define the pre-event
+    # range; news_breakout_buffer_pips offsets each stop beyond the range edge;
+    # news_risk_multiplier sizes news-window orders down (spreads widen); and
+    # news_post_event_cooldown_s is how long after the event unfilled pending
+    # orders are left resting before cancellation.
+    news_pre_planning_enabled: bool = False
+    news_pre_stage_minutes: int = 5
+    news_range_lookback_bars: int = 10
+    news_breakout_buffer_pips: float = 5.0
+    news_risk_multiplier: float = 0.5
+    news_post_event_cooldown_s: float = 300.0
+
     def __post_init__(self) -> None:
         if self.zone_expiry_seconds_by_tf is None:
             # Calibrated so a zone stays valid roughly as long as price could

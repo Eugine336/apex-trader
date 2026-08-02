@@ -29,6 +29,7 @@ from brain.symbol_mapper import resolve_to_internal
 from brain.world_model import WorldModelStore
 from brain.compression_detector import CompressionDetector
 from brain.session_context import SessionContext
+from brain.news_planner import NewsPlanner
 from brain.currency_strength import CurrencyStrengthMeter, CURRENCY_PAIRS
 from compliance import (
     ComplianceAccount,
@@ -3321,6 +3322,30 @@ class EventDrivenSystem:
             logger.warning("[event-driven] ZoneOrderStager init failed: {}", exc)
             self._zone_stager = None
 
+        # ── News calendar pre-planner (Phase 3 Feature A) ────────────
+        # For scheduled HIGH-impact events (CPI/NFP/FOMC) it stages an OCO pair
+        # of breakout STOP orders straddling the pre-event range instead of
+        # blocking around the event. OFF by default per EntryConfig; a profile
+        # (Gold) opts in via news_pre_planning_enabled. Fed every ~60s from the
+        # watchdog loop (_run_news_planner_update). Best-effort — a construction
+        # fault degrades to no pre-planning (the old news block still applies).
+        self._news_planner = None
+        try:
+            self._news_planner = NewsPlanner(
+                config=EntryConfig(),
+                get_symbols=lambda: list(self._config.enabled_pairs),
+                get_events=self._news_upcoming_events,
+                get_candles=self._news_range_candles,
+                place_pending_order=self._stage_place_pending,
+                cancel_pending_order=self._stage_cancel_pending,
+                is_filled=self._news_order_filled,
+                pip_size_lookup=self._safe_pip_size,
+                size_lookup=self._news_size,
+            )
+        except Exception as exc:
+            logger.warning("[event-driven] NewsPlanner init failed: {}", exc)
+            self._news_planner = None
+
         # ── Compliance Division runtime binding ──────────────────────
         # The ComplianceDivision is constructed in SystemContext.create()
         # with the subsystem references it owns; bind the broker/platform-
@@ -4236,6 +4261,13 @@ class EventDrivenSystem:
                 self._news_impact_tracker.save()
             except Exception as exc:
                 logger.warning("[event-driven] news-impact save failed: {}", exc)
+        # Cancel any resting news-breakout pending orders so a shutdown never
+        # leaves staged OCO stops unmanaged on the broker.
+        if getattr(self, "_news_planner", None) is not None:
+            try:
+                self._news_planner.cancel_all()
+            except Exception as exc:
+                logger.debug("[event-driven] news-planner cancel_all failed: {}", exc)
         try:
             self._entry_pool.shutdown(wait=False)
         except Exception:
@@ -4600,7 +4632,27 @@ class EventDrivenSystem:
             if ctx is not None:
                 self._run_system_volatility_update(ctx)
 
+            # ── News calendar pre-planning (Phase 3 Feature A) ────────
+            # Stage / monitor / reap the OCO breakout orders around scheduled
+            # high-impact events. Throttled to ~60s inside the helper.
+            self._run_news_planner_update()
+
             _time.sleep(10.0)
+
+    def _run_news_planner_update(self) -> None:
+        """Drive the news pre-planner ~every 60s (staged breakouts + OCO)."""
+        planner = getattr(self, "_news_planner", None)
+        if planner is None:
+            return
+        now = _time.monotonic()
+        last = getattr(self, "_last_news_planner_update", 0.0)
+        if (now - last) < 60.0:
+            return
+        self._last_news_planner_update = now
+        try:
+            planner.update()
+        except Exception as exc:  # noqa: BLE001 — planning never breaks the watchdog
+            logger.debug("[news-planner] periodic update failed: {}", exc)
 
     def _run_system_volatility_update(self, ctx: SystemContext) -> None:
         """Feed the SystemVolatilityMonitor with per-symbol regime analyses."""
@@ -6024,16 +6076,48 @@ class EventDrivenSystem:
             return True
 
     def _check_news_clear(self, symbol: str) -> bool:
-        """NewsGuard callback for EntryOrchestrator gate."""
+        """NewsGuard callback for EntryOrchestrator gate.
+
+        Phase 3: when news pre-planning is enabled for the symbol, the planner
+        stages breakout orders around the event instead of blocking, so this
+        gate stops vetoing near news (return clear) and lets the staged OCO pair
+        capture the move. When pre-planning is disabled the legacy fail-closed
+        block is preserved unchanged.
+        """
         ctx = self._ctx
         if ctx is None or ctx.news_guard is None:
             return True
+        try:
+            if self._news_pre_planning_enabled(symbol):
+                return True
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[news-gate] pre-planning check failed for {}: {}", symbol, exc)
         try:
             news_status = ctx.news_guard.check([symbol])
             return news_status.is_clear
         except Exception as exc:
             logger.debug("[news-gate] NewsGuard check failed: {}", exc)
             return True
+
+    def _news_pre_planning_enabled(self, symbol: str) -> bool:
+        """Resolve news_pre_planning_enabled: profile first, then EntryConfig."""
+        try:
+            from brain.instrument_profile import get_profile as _get_profile
+            prof = _get_profile(symbol)
+            val = getattr(prof, "news_pre_planning_enabled", None)
+            if val is not None:
+                return bool(val)
+        except Exception:  # noqa: BLE001
+            pass
+        return bool(getattr(self._config_entry(), "news_pre_planning_enabled", False))
+
+    def _config_entry(self) -> EntryConfig:
+        """The active EntryConfig (cached), for news pre-planning resolution."""
+        cfg = getattr(self, "_entry_config_cache", None)
+        if cfg is None:
+            cfg = EntryConfig()
+            self._entry_config_cache = cfg
+        return cfg
 
     def _on_gate_trace(
         self,
@@ -9600,6 +9684,86 @@ class EventDrivenSystem:
             return float(getattr(res, "lots", 0.0) or 0.0)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[zone-stager] sizing failed for {}: {}", symbol, exc)
+            return 0.0
+
+    # ── Phase 3 Feature A: news-planner wiring helpers ───────────────
+    def _news_upcoming_events(
+        self, symbol: str, within_minutes: float, now: datetime,
+    ) -> list:
+        """Upcoming HIGH-impact events for a symbol within the pre-stage window."""
+        ctx = self._ctx
+        if ctx is None or ctx.news_guard is None:
+            return []
+        try:
+            return ctx.news_guard.upcoming_high_impact([symbol], within_minutes, now)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[news-planner] upcoming events read failed for {}: {}", symbol, exc)
+            return []
+
+    def _news_range_candles(self, symbol: str, bars: int):
+        """Last ``bars`` M5 candles for the pre-event breakout range."""
+        return self._fetch_candles(symbol, "M5", max(int(bars), 1))
+
+    def _news_order_filled(self, symbol: str, order_id: str) -> bool:
+        """True when a staged news order has filled into an open position."""
+        if not order_id:
+            return False
+        try:
+            for pos in self._pm.get_all_open_positions():
+                if str(getattr(pos, "order_id", "")) == str(order_id):
+                    return True
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[news-planner] fill check failed for {} {}: {}", symbol, order_id, exc)
+        return False
+
+    def _news_size(
+        self,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        sl: float,
+        risk_multiplier: float,
+    ) -> float:
+        """Size a staged news order: per-trade risk × session × news multiplier.
+
+        Mirrors ``_stage_size`` but auto-sizes DOWN for the news window (news
+        spreads widen) by the configured ``news_risk_multiplier``. Returns 0.0
+        (skip staging) when balance is unavailable or sizing resolves to
+        nothing. Never raises.
+        """
+        try:
+            balance = float(self._pm.get_platform_balance(symbol) or 0.0)
+            if balance <= 0:
+                return 0.0
+            risk_pct = self._config.risk.risk_per_trade_pct / 100.0
+            mult = float(risk_multiplier)
+            if mult > 0:
+                risk_pct *= mult
+            if self._session_context is not None:
+                try:
+                    session = self._session_context.get_session()
+                    smult = float(
+                        self._session_context.get_session_multiplier(symbol, session)
+                    )
+                    if smult > 0:
+                        risk_pct *= smult
+                except Exception:  # noqa: BLE001
+                    pass
+            try:
+                context = build_context_for_symbol(symbol)
+            except Exception:  # noqa: BLE001
+                context = None
+            res = self._stage_sizer.calculate_for_instrument(
+                symbol=symbol,
+                account_balance=balance,
+                risk_pct=risk_pct,
+                entry_price=entry_price,
+                stop_loss=sl,
+                context=context,
+            )
+            return float(getattr(res, "lots", 0.0) or 0.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[news-planner] sizing failed for {}: {}", symbol, exc)
             return 0.0
 
     def _staging_gate_allows(

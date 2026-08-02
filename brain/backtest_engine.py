@@ -22,7 +22,7 @@ import os
 import random
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Optional
+from typing import Any, Callable, Optional
 
 import numpy as np
 import pandas as pd
@@ -544,6 +544,12 @@ class BacktestEngine:
         broker_loader: Optional[BrokerDataLoader] = None,
         legacy_mode: bool = False,
         pip_value_per_lot: float = 10.0,
+        backtest_compression_enabled: bool = True,
+        backtest_session_enabled: bool = True,
+        backtest_stopout_flip_enabled: bool = True,
+        backtest_prestaging_enabled: bool = True,
+        backtest_dxy_enabled: bool = True,
+        backtest_news_enabled: bool = True,
     ):
         from config import AppConfig
 
@@ -668,6 +674,33 @@ class BacktestEngine:
         self.bt_execution_monitor = None
         self.bt_capital_allocator = None
         self.bt_oq_sizer = None
+
+        # ── Opportunistic-feature parity (Phase 3 Feature B) ─────────────
+        # Mirror the live opportunistic modules in the replay so backtests
+        # reflect live behaviour: compression detection, session-aware sizing,
+        # stop-out flip, pre-staged limit fills, DXY correlation and news
+        # pre-planning. Each is gated by its own flag so a feature can be
+        # toggled independently, and (re)built in ``_init_live_subsystems``. DXY
+        # and news degrade gracefully to a neutral 1.0 when the backtest data
+        # carries no USD-strength / news-event source.
+        self.backtest_compression_enabled = bool(backtest_compression_enabled)
+        self.backtest_session_enabled = bool(backtest_session_enabled)
+        self.backtest_stopout_flip_enabled = bool(backtest_stopout_flip_enabled)
+        self.backtest_prestaging_enabled = bool(backtest_prestaging_enabled)
+        self.backtest_dxy_enabled = bool(backtest_dxy_enabled)
+        self.backtest_news_enabled = bool(backtest_news_enabled)
+        self.compression_detector = None
+        self.session_context = None
+        # Optional injected data sources (default None → the feature no-ops).
+        # ``backtest_usd_strength(now) -> float`` returns a signed USD-strength
+        # trend (>0 strengthening) for the DXY penalty; ``backtest_news_events``
+        # is a list of event datetimes (or objects with ``time_utc``) that the
+        # news window sizing / breakout simulation reads.
+        self.backtest_usd_strength: Optional[Callable[[Any], float]] = None
+        self.backtest_news_events: list = []
+        # Per-symbol stop-out-flip state (last flip monotonic time + per-zone
+        # count) so the whipsaw guards mirror the live orchestrator.
+        self._bt_flip_state: dict[str, dict[str, Any]] = {}
 
         if not self.legacy_mode:
             try:
@@ -951,6 +984,31 @@ class BacktestEngine:
             logger.warning("[backtest] OpportunityQualitySizer unavailable: {}", exc)
             self.bt_oq_sizer = None
 
+        # ── Opportunistic modules (Phase 3 Feature B — compression + session) ─
+        # The SAME global classifiers the live entry plane reads: the
+        # CompressionDetector (fed M5/M15 each bar in ``run``) and the stateless
+        # SessionContext. Gated by their flags so each can be toggled off, and
+        # reset here so consecutive backtests never leak compression memory.
+        self.compression_detector = None
+        if self.backtest_compression_enabled:
+            try:
+                from brain.compression_detector import CompressionDetector
+                from entry.models import EntryConfig
+                self.compression_detector = CompressionDetector(entry_config=EntryConfig())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[backtest] CompressionDetector unavailable: {}", exc)
+                self.compression_detector = None
+
+        self.session_context = None
+        if self.backtest_session_enabled:
+            try:
+                from brain.session_context import SessionContext
+                from entry.models import EntryConfig
+                self.session_context = SessionContext(entry_config=EntryConfig())
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[backtest] SessionContext unavailable: {}", exc)
+                self.session_context = None
+
         logger.info(
             "[backtest] live subsystems — compliance={} portfolio_sm={} "
             "drawdown={} account_risk={} thesis={}",
@@ -1057,6 +1115,12 @@ class BacktestEngine:
             if not slices:
                 continue
 
+            # Feed the opportunistic classifiers (compression detector on the
+            # M5/M15 slices; the session context is stateless) so the entry
+            # sizing path can read this bar's market-state / session — live
+            # parity for the opportunistic modules (Phase 3 Feature B).
+            self._update_opportunistic_state(pair, slices)
+
             # Feed the cross-instrument volatility monitor from this bar's H1
             # regime analysis (single-symbol replay → one analysis per bar; the
             # monitor's pct thresholds collapse to "this pair spiking or not").
@@ -1073,7 +1137,7 @@ class BacktestEngine:
             if open_trade is None:
                 setup = self._decide_setup(pair, slices, now, balance)
                 if setup:
-                    open_trade = self._open_trade(setup, now)
+                    open_trade = self._open_trade(setup, now, entry_candle=candle)
                     open_trade["symbol"] = pair
 
                     if compare_atr_stop and open_trade is not None:
@@ -1172,7 +1236,22 @@ class BacktestEngine:
                 consecutive_losses = 0
 
             self._journal_trade(pair, open_trade, close_event, now)
-            open_trade = None
+
+            # Stop-out flip (Phase 3 Feature B): when the trade was stopped out
+            # (SL hit), evaluate a flip into the opposite direction and open it
+            # on the SAME bar — live parity with the orchestrator's
+            # evaluate_stopout_flip call from _on_trade_closed. Gated by flag /
+            # non-legacy; returns None when unconfirmed or guards block it.
+            flip_trade = None
+            if (
+                not self.legacy_mode
+                and self.backtest_stopout_flip_enabled
+                and close_event.get("outcome") == "LOSS"
+            ):
+                flip_trade = self._maybe_stopout_flip(
+                    open_trade, close_event, slices, pair, now, balance,
+                )
+            open_trade = flip_trade
 
         if open_trade:
             final_candle = m1.iloc[end_index]
@@ -1735,6 +1814,19 @@ class BacktestEngine:
         )
         if factors is None:
             return None
+
+        # ── Opportunistic risk shaping (Phase 3 Feature B) ──────────────────
+        # Fold the session-aware / compression / DXY / news multiplier onto the
+        # base risk exactly as the live opportunistic plane scales risk_pct,
+        # AFTER the pure sizing-factor composition (kept unchanged for parity).
+        opp_mult = self._opportunistic_risk_mult(pair, direction, slices, now)
+        if opp_mult != 1.0:
+            new_risk = round(float(getattr(factors, "base_risk_pct", base_risk_pct)) * opp_mult, 6)
+            try:
+                factors.base_risk_pct = new_risk
+            except Exception:  # noqa: BLE001 — frozen SizingFactors → rebuild via replace
+                from dataclasses import replace as _dc_replace
+                factors = _dc_replace(factors, base_risk_pct=new_risk)
 
         # ── Position sizing via PortfolioDivision → PositionSizer ───────────
         sized = self._size_trade(
@@ -2519,6 +2611,308 @@ class BacktestEngine:
             adapt_mult=adapt_mult,
         )
 
+    # ── Opportunistic-feature parity (Phase 3 Feature B) ─────────────────────
+
+    def _update_opportunistic_state(
+        self, pair: str, slices: dict[str, pd.DataFrame],
+    ) -> None:
+        """Feed the compression detector this bar's M5/M15 slices (live parity).
+
+        The session context is stateless (a pure function of the bar timestamp)
+        so it needs no feed. Best-effort — a detector fault never breaks replay.
+        """
+        det = self.compression_detector
+        if det is None:
+            return
+        for tf in ("M5", "M15"):
+            df = slices.get(tf)
+            if df is not None and len(df) > 0:
+                try:
+                    det.update(pair, tf, df)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "[backtest] compression update failed {}/{}: {}", pair, tf, exc,
+                    )
+
+    def get_market_state(self, pair: str):
+        """Current backtest market state for ``pair`` (RANGING when unknown).
+
+        Mirrors the live ``CompressionDetector.get_market_state`` read the entry
+        logic consumes; returns ``MarketState.RANGING`` when the detector is off.
+        """
+        from brain.compression_detector import MarketState
+        if self.compression_detector is None:
+            return MarketState.RANGING
+        try:
+            return self.compression_detector.get_market_state(pair)
+        except Exception:  # noqa: BLE001
+            return MarketState.RANGING
+
+    def _opportunistic_risk_mult(self, pair, direction, slices, now) -> float:
+        """Combined opportunistic risk multiplier (session × compression × DXY × news).
+
+        Mirrors the live opportunistic plane's risk shaping. Each term is gated
+        by its flag and degrades to a neutral 1.0 when its subsystem/data is
+        absent, so a single-pair backtest with no USD-strength or news source
+        still runs. Never raises — a faulty read contributes 1.0.
+        """
+        mult = 1.0
+        # Session-aware sizing.
+        if self.backtest_session_enabled and self.session_context is not None:
+            try:
+                session = self.session_context.get_session(now)
+                s = float(self.session_context.get_session_multiplier(pair, session))
+                if s > 0:
+                    mult *= s
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[backtest] session size-mult failed for {}: {}", pair, exc)
+        # Compression / expansion conviction boosts (applied as risk multipliers).
+        if self.backtest_compression_enabled and self.compression_detector is not None:
+            mult *= self._compression_risk_mult(pair)
+        # DXY correlation penalty (skips gracefully when no USD-strength source).
+        if self.backtest_dxy_enabled:
+            mult *= self._backtest_dxy_mult(pair, direction, now)
+        # News-window size-down (skips gracefully when no news events wired).
+        if self.backtest_news_enabled:
+            mult *= self._backtest_news_mult(pair, now)
+        return mult
+
+    def _compression_risk_mult(self, pair) -> float:
+        """COMPRESSING → compression_conviction_boost, EXPANDING → expansion boost."""
+        from brain.compression_detector import MarketState
+        try:
+            state = self.compression_detector.get_market_state(pair)
+            from brain.instrument_profile import get_profile
+            prof = get_profile(pair)
+            if state == MarketState.COMPRESSING:
+                return float(getattr(prof, "compression_conviction_boost", 1.2) or 1.0)
+            if state == MarketState.EXPANDING:
+                return float(getattr(prof, "expansion_conviction_boost", 1.5) or 1.0)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[backtest] compression risk-mult failed for {}: {}", pair, exc)
+        return 1.0
+
+    def _backtest_dxy_mult(self, pair, direction, now) -> float:
+        """DXY opposition penalty when a USD-strength source is available.
+
+        Reads ``self.backtest_usd_strength(now) -> float`` (a signed USD trend;
+        >0 = USD strengthening). For a USD-quoted symbol a strengthening USD
+        pushes the pair down — opposing a LONG (and a weakening USD opposing a
+        SHORT) — and applies ``dxy_opposition_penalty`` as a (1 - penalty) risk
+        haircut. Returns 1.0 (skip gracefully) when no source is wired or the
+        symbol is not USD-quoted.
+        """
+        src = getattr(self, "backtest_usd_strength", None)
+        if src is None:
+            return 1.0
+        if "USD" not in str(pair).upper():
+            return 1.0
+        try:
+            usd = float(src(now))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[backtest] usd-strength read failed for {}: {}", pair, exc)
+            return 1.0
+        if usd == 0.0:
+            return 1.0
+        opposes = (usd > 0 and direction == "LONG") or (usd < 0 and direction == "SHORT")
+        if not opposes:
+            return 1.0
+        from brain.instrument_profile import get_profile
+        try:
+            penalty = float(getattr(get_profile(pair), "dxy_opposition_penalty", 0.15) or 0.0)
+        except Exception:  # noqa: BLE001
+            penalty = 0.15
+        return max(0.0, 1.0 - penalty)
+
+    def _backtest_news_mult(self, pair, now) -> float:
+        """News-window size-down when the backtest carries news-event timestamps.
+
+        Returns ``news_risk_multiplier`` when ``now`` falls within
+        ``news_pre_stage_minutes`` before (through ``news_post_event_cooldown_s``
+        after) any configured event; 1.0 otherwise or when no events are wired
+        (skip gracefully) — auto-size-down for the news window, live parity.
+        """
+        events = getattr(self, "backtest_news_events", None)
+        if not events or now is None:
+            return 1.0
+        from brain.instrument_profile import get_profile
+        try:
+            prof = get_profile(pair)
+        except Exception:  # noqa: BLE001
+            prof = None
+        pre = float(getattr(prof, "news_pre_stage_minutes", 5) if prof else 5)
+        cooldown = float(getattr(prof, "news_post_event_cooldown_s", 300.0) if prof else 300.0)
+        risk_mult = float(getattr(prof, "news_risk_multiplier", 0.5) if prof else 0.5)
+        now_ts = self._as_utc(now)
+        if now_ts is None:
+            return 1.0
+        for ev in events:
+            et = self._as_utc(getattr(ev, "time_utc", ev))
+            if et is None:
+                continue
+            secs = (now_ts - et).total_seconds()
+            if -pre * 60.0 <= secs <= cooldown:
+                return risk_mult
+        return 1.0
+
+    @staticmethod
+    def _as_utc(value):
+        from datetime import timezone as _tz
+        if isinstance(value, datetime):
+            return value if value.tzinfo is not None else value.replace(tzinfo=_tz.utc)
+        try:
+            ts = pd.Timestamp(value).to_pydatetime()
+            return ts if ts.tzinfo is not None else ts.replace(tzinfo=_tz.utc)
+        except Exception:  # noqa: BLE001
+            return None
+
+    @staticmethod
+    def simulate_prestage_fill(direction, boundary, candle):
+        """Simulate a pre-staged LIMIT fill at a zone boundary within a bar.
+
+        Live pre-staging rests a LIMIT at the zone boundary, so when a bar's
+        WICK reaches the boundary the order fills AT the boundary price — even if
+        the bar CLOSES away from the zone (the "wick touches zone and bounces"
+        setup the old M1-close backtest misses). Returns the boundary fill price
+        when the candle's [low, high] straddles ``boundary``, else ``None``.
+        """
+        try:
+            low = float(candle["low"])
+            high = float(candle["high"])
+            b = float(boundary)
+        except Exception:  # noqa: BLE001
+            return None
+        if low <= b <= high:
+            return b
+        return None
+
+    def _flip_param(self, pair, name, default):
+        """Resolve a stop-out-flip tuning knob: profile → EntryConfig → default."""
+        try:
+            from brain.instrument_profile import get_profile
+            val = getattr(get_profile(pair), name, None)
+            if val is not None:
+                return val
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            from entry.models import EntryConfig
+            val = getattr(EntryConfig(), name, None)
+            if val is not None:
+                return val
+        except Exception:  # noqa: BLE001
+            pass
+        return default
+
+    @staticmethod
+    def _m5_trend_dir(m5_df, lookback: int = 5) -> str:
+        """Coarse M5 trend from the recent close delta ("LONG"/"SHORT"/"")."""
+        try:
+            closes = m5_df["close"]
+            if len(closes) <= lookback:
+                return ""
+            delta = float(closes.iloc[-1]) - float(closes.iloc[-1 - lookback])
+        except Exception:  # noqa: BLE001
+            return ""
+        if delta > 0:
+            return "LONG"
+        if delta < 0:
+            return "SHORT"
+        return ""
+
+    def _maybe_stopout_flip(
+        self, closed_trade, close_event, slices, pair, now, balance,
+    ):
+        """Evaluate + open an opposite-direction flip after a stop-out.
+
+        Mirrors the live orchestrator's ``evaluate_stopout_flip`` (called from
+        ``_on_trade_closed`` on a stop-loss fill): flip into the opposite
+        direction, mirror the SL/TP around the flip entry, and open it on the
+        SAME bar — subject to the same guards (per-symbol cooldown, per-zone
+        whipsaw cap) and confirmation (the M5 trend must not oppose the flip).
+        Returns the new open-trade dict, or ``None`` when a guard blocks it or
+        the flip is unconfirmed. Never raises.
+        """
+        try:
+            if not bool(self._flip_param(pair, "stopout_flip_enabled", True)):
+                return None
+
+            setup = closed_trade.get("setup")
+            closed_dir = str(getattr(setup, "direction", "") or "").upper()
+            if closed_dir not in ("LONG", "SHORT"):
+                return None
+            new_dir = "SHORT" if closed_dir == "LONG" else "LONG"
+
+            # M5 confirmation: the M5 trend must not oppose the flip (an M5
+            # trending in the CLOSED direction opposes flipping against it).
+            m5_trend = self._m5_trend_dir(slices.get("M5"))
+            if m5_trend == closed_dir:
+                return None
+
+            now_utc = self._as_utc(now)
+            state = self._bt_flip_state.setdefault(
+                pair, {"last_ts": None, "zone_counts": {}},
+            )
+            # Cooldown guard.
+            cooldown_s = float(self._flip_param(pair, "stopout_flip_cooldown_s", 30.0))
+            last_ts = state.get("last_ts")
+            if last_ts is not None and now_utc is not None:
+                if (now_utc - last_ts).total_seconds() < cooldown_s:
+                    return None
+
+            # Per-zone whipsaw cap.
+            entry = float(closed_trade.get("entry_price", 0.0) or 0.0)
+            risk = float(closed_trade.get("risk", 0.0) or 0.0)
+            if entry <= 0 or risk <= 0:
+                return None
+            zone_type = str(getattr(setup, "zone_type", "") or "")
+            zkey = f"{zone_type}|{round(entry, 5)}"
+            max_per_zone = int(self._flip_param(pair, "stopout_flip_max_per_zone", 2))
+            counts = state["zone_counts"]
+            if counts.get(zkey, 0) >= max_per_zone:
+                return None
+
+            # Flip enters at the stopped-out level (≈ current price); SL/TP
+            # mirror around the flip entry preserving the risk distance.
+            flip_entry = float(closed_trade.get("stop_loss", entry) or entry)
+            if new_dir == "LONG":
+                flip_sl = flip_entry - risk
+                tp1 = flip_entry + risk * 1.5
+                tp2 = flip_entry + risk * 3.0
+            else:
+                flip_sl = flip_entry + risk
+                tp1 = flip_entry - risk * 1.5
+                tp2 = flip_entry - risk * 3.0
+
+            flip_setup = BacktestSetup(
+                direction=new_dir,
+                entry_price=flip_entry,
+                stop_loss=flip_sl,
+                tp1=tp1,
+                tp2=tp2,
+                score=int(getattr(setup, "score", 0) or 0),
+                regime=str(getattr(setup, "regime", "") or ""),
+                timestamp=now,
+                entry_type="STOPOUT_FLIP",
+                zone_type=zone_type,
+                lots=float(closed_trade.get("lots", 0.0) or 0.0),
+                pip_value_per_lot=self.pip_value_per_lot,
+                source="stopout_flip",
+            )
+            flip_trade = self._open_trade(flip_setup, now)
+            flip_trade["symbol"] = pair
+
+            state["last_ts"] = now_utc
+            counts[zkey] = counts.get(zkey, 0) + 1
+            logger.info(
+                "[backtest] stop-out flip {}→{} on {} @ {:.5f} (risk {:.5f})",
+                closed_dir, new_dir, pair, flip_entry, risk,
+            )
+            return flip_trade
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[backtest] stop-out flip failed for {}: {}", pair, exc)
+            return None
+
     def _orchestrator_size_mult(
         self, pair: str, direction: str, wm, scan_score: float, de_conviction: float,
     ) -> tuple[float, bool]:
@@ -2881,12 +3275,35 @@ class BacktestEngine:
             logger.debug("[backtest] M1 micro-structure read failed: {}", exc)
         return out
 
-    def _open_trade(self, setup: BacktestSetup, now: datetime) -> dict:
+    def _open_trade(
+        self, setup: BacktestSetup, now: datetime, entry_candle=None,
+    ) -> dict:
         slippage_distance = self.slippage_pips * self.pip_size
-        if setup.direction == "LONG":
-            actual_entry = setup.entry_price + slippage_distance
-        else:
-            actual_entry = setup.entry_price - slippage_distance
+
+        # Pre-staged LIMIT fill (Phase 3 Feature B): a zone entry that rested a
+        # LIMIT at the boundary fills AT the boundary with NO adverse slippage
+        # when the bar's wick reached it — even if the bar closed away. Only for
+        # zone-sourced entries with the entry candle available; every other
+        # entry keeps the market-fill slippage model.
+        actual_entry = None
+        prestage_filled = False
+        if (
+            self.backtest_prestaging_enabled
+            and entry_candle is not None
+            and str(getattr(setup, "source", "")) == "zone"
+        ):
+            fill = self.simulate_prestage_fill(
+                setup.direction, setup.entry_price, entry_candle,
+            )
+            if fill is not None:
+                actual_entry = float(fill)
+                prestage_filled = True
+
+        if actual_entry is None:
+            if setup.direction == "LONG":
+                actual_entry = setup.entry_price + slippage_distance
+            else:
+                actual_entry = setup.entry_price - slippage_distance
 
         risk = abs(actual_entry - setup.stop_loss)
         if risk <= 0:
@@ -2907,7 +3324,7 @@ class BacktestEngine:
             "realized_r": 0.0,
             "session": self.session_engine.get_status(now).current_session,
             "entry_type": self._resolve_entry_type(setup),
-            "slippage_cost": slippage_distance,
+            "slippage_cost": 0.0 if prestage_filled else slippage_distance,
             # ── Live-parity sizing + management state ────────────────────
             "lots": float(getattr(setup, "lots", 0.0) or 0.0),
             "max_loss": float(getattr(setup, "max_loss", 0.0) or 0.0),
