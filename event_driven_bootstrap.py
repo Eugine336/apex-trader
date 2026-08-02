@@ -1226,6 +1226,40 @@ class PositionEvaluator:
         signed = efficiency if norm_dir == "BUY" else -efficiency
         return max(-1.0, min(1.0, signed))
 
+    def _compute_tick_move_pips(
+        self, symbol: str, norm_dir: str, pip_size: float,
+    ) -> float:
+        """Signed net displacement of the recent tick stream, in pips.
+
+        Reads the SAME recent tick window as :meth:`_compute_tick_momentum` and
+        returns the net (first→last) mid-price move converted to pips, signed
+        for ``norm_dir`` (positive when price moved in the trade's favour). The
+        hardened FlipConfirmer's ATR-normalised magnitude check divides this by
+        the M5 ATR so a flip must ride a move of real size, not a single wick or
+        a spread spike. Returns 0.0 when there are too few ticks or ``pip_size``
+        is non-positive so a missing feed degrades the check to a graceful skip.
+        """
+        try:
+            ticks = self._tick_store.get_recent(symbol, count=20)
+        except Exception:
+            return 0.0
+        if not ticks or len(ticks) < 5 or pip_size <= 0.0:
+            return 0.0
+        mids: list[float] = []
+        for t in ticks:
+            bid = float(getattr(t, "bid", 0.0) or 0.0)
+            ask = float(getattr(t, "ask", 0.0) or 0.0)
+            if bid > 0.0 and ask > 0.0:
+                mids.append((bid + ask) / 2.0)
+            elif bid > 0.0:
+                mids.append(bid)
+            elif ask > 0.0:
+                mids.append(ask)
+        if len(mids) < 5:
+            return 0.0
+        net_pips = (mids[-1] - mids[0]) / pip_size
+        return net_pips if norm_dir == "BUY" else -net_pips
+
     def _stamp_management_trace(
         self, symbol: str, order_id: str, trade_ctx, sa, de_result,
     ) -> None:
@@ -3351,6 +3385,14 @@ class EventDrivenSystem:
             # Feature D). Penalises (never blocks) a USD-symbol trade whose
             # direction opposes the USD move.
             get_currency_strength=self._dxy_currency_strength,
+            # Hardened flip confirmation magnitude sources: the M5 ATR (pips)
+            # from the CalibrationEngine's per-symbol InstrumentStats, and the
+            # signed net tick move (pips) from the live tick store. Together
+            # they gate the FlipConfirmer's ATR-normalised check so a flip must
+            # ride a move of real size. Both guarded → 0.0 (graceful skip) when
+            # calibration/ticks are unavailable.
+            get_atr_pips=self._calibrated_atr_pips,
+            get_tick_move_pips=self._evaluator._compute_tick_move_pips,
         )
 
         # ── Zone order stager (Phase 2 Feature B) ────────────────────
@@ -9969,6 +10011,24 @@ class EventDrivenSystem:
             logger.debug("[dxy] currency-strength analysis failed: {}", exc)
             return None
 
+    def _calibrated_atr_pips(self, symbol: str, tf: str) -> float:
+        """M5/other-TF ATR in pips from the CalibrationEngine (0.0 if absent).
+
+        Feeds the hardened FlipConfirmer's ATR-normalised magnitude check.
+        Guarded end-to-end — no calibration engine, no stats for the symbol, or
+        any read fault degrades to 0.0, which the confirmer treats as a graceful
+        skip of the magnitude check rather than a block.
+        """
+        try:
+            if self._calibration_engine is None:
+                return 0.0
+            stats = self._calibration_engine.store.get(symbol)
+            if stats is None:
+                return 0.0
+            return float(stats.atr_pips(tf) or 0.0)
+        except Exception:
+            return 0.0
+
     def _maybe_stopout_flip(
         self,
         symbol: str,
@@ -10006,6 +10066,14 @@ class EventDrivenSystem:
         zone_type = str(info.get("zone_type", "") or "")
         timeframe = str(info.get("timeframe", "") or "")
         conviction = int(info.get("score", 0) or 0)
+        # The original position's invalidation level for the flip's clean-break
+        # check (Check 5). The entry-context snapshot stores it as zone data at
+        # entry time; the trade's stop-loss is the invalidation proxy when an
+        # explicit level was not captured. 0.0 ⇒ the clean-break check is
+        # skipped (graceful degradation).
+        invalidation_level = float(
+            info.get("invalidation_level", info.get("sl", 0.0)) or 0.0
+        )
         if entry_price <= 0 or stop_loss <= 0:
             logger.debug(
                 "[stopout-flip] {} missing entry/stop context — skipping flip", symbol,
@@ -10021,6 +10089,7 @@ class EventDrivenSystem:
             conviction=conviction,
             zone_type=zone_type,
             timeframe=timeframe,
+            invalidation_level=invalidation_level,
         )
 
     def _on_trade_closed(

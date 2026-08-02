@@ -164,6 +164,34 @@ class InstrumentProfile:
     news_risk_multiplier: float = 0.5
     news_post_event_cooldown_s: float = 300.0
 
+    # ── Hardened flip confirmation (entry/flip_confirmer.py) ──────────
+    # Tuning for the 5-check flip confirmation that gates both the stop-out
+    # flip and the A1 direction-flip / momentum-override paths. Every value is
+    # per-instrument tunable here; the confirmer resolves the profile first,
+    # then the EntryConfig default, then the literal fallback.
+    #
+    # 1. ATR-normalised magnitude — the net directional move over the recent
+    #    tick window must clear ``flip_atr_move_threshold`` × the M5 ATR (so a
+    #    spread spike or single wick can never satisfy the flip).
+    # 2. Session-aware tick efficiency — the signed tick_momentum efficiency
+    #    must reach ``flip_tick_threshold_asian`` in the low-liquidity Asian
+    #    session and ``flip_tick_threshold_default`` in London / NY / overlap.
+    # 3. Multi-TF non-opposition — M5 must not oppose the flip and, when
+    #    ``flip_require_m15_non_opposition`` is set, M15 must not oppose either
+    #    (missing structure is permissive, never a block).
+    # 4. Volume confirmation — recent M1 tick_volume vs its 20-bar average must
+    #    clear ``flip_volume_ratio_min`` (``flip_volume_ratio_asian`` in Asian).
+    # 5. Invalidation clean-break — when ``flip_require_clean_break`` is set the
+    #    last CLOSED M1 candle must close cleanly beyond the invalidation level
+    #    (a wick-only breach that the close retreats from is rejected).
+    flip_atr_move_threshold: float = 0.3
+    flip_tick_threshold_default: float = 0.30
+    flip_tick_threshold_asian: float = 0.45
+    flip_require_m15_non_opposition: bool = True
+    flip_volume_ratio_min: float = 1.0
+    flip_volume_ratio_asian: float = 1.3
+    flip_require_clean_break: bool = True
+
 
 # ---------------------------------------------------------------------------
 # Profile definitions per category

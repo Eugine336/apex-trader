@@ -41,6 +41,7 @@ from entry.zone_watcher import ZoneWatcher
 from entry.tick_entry_detector import TickData, TickEntryDetector
 from entry.m1_confirmation import M1CandleConfirmer
 from entry.entry_gate import EntryGate
+from entry.flip_confirmer import FlipConfirmer
 
 if TYPE_CHECKING:
     from brain.candidate_models import Candidate
@@ -70,6 +71,8 @@ class EntryOrchestrator:
         get_compression_score: Optional[Callable[[str], float]] = None,
         session_context: Optional[object] = None,
         get_currency_strength: Optional[Callable[..., Any]] = None,
+        get_atr_pips: Optional[Callable[[str, str], float]] = None,
+        get_tick_move_pips: Optional[Callable[[str, str, float], float]] = None,
     ) -> None:
         self._config = config or EntryConfig()
         self._pip_size = pip_size_lookup or (lambda _: 0.0001)
@@ -104,6 +107,13 @@ class EntryOrchestrator:
         # flip confirmation so the flip rides real-time price, not a 60s-stale
         # M1 close. Defaults to neutral (0.0) when unwired.
         self._get_tick_momentum = get_tick_momentum or (lambda s, d, p: 0.0)
+        # ATR (pips) reader ``(symbol, tf) -> float`` and signed net tick move
+        # reader ``(symbol, norm_dir, pip_size) -> pips`` — the two magnitude
+        # sources the hardened FlipConfirmer's ATR-normalised check needs. Both
+        # default to neutral (0.0) so an unwired magnitude source degrades the
+        # ATR check to a graceful skip rather than blocking a flip.
+        self._get_atr_pips = get_atr_pips or (lambda s, tf: 0.0)
+        self._get_tick_move_pips = get_tick_move_pips or (lambda s, d, p: 0.0)
 
         self._is_market_open = is_market_open or (lambda _: True)
         self._is_session_active = is_session_active or (lambda _: True)
@@ -143,6 +153,24 @@ class EntryOrchestrator:
             "gate_failures": 0,
             "entries_emitted": 0,
         }
+
+        # ── Hardened flip confirmation (entry/flip_confirmer.py) ──────────
+        # The single stateless five-check confirmer used by BOTH the stop-out
+        # flip (evaluate_stopout_flip) and the A1 direction-flip / momentum-
+        # override paths. Fed the live data sources: ATR + signed tick move
+        # (magnitude), tick_momentum (efficiency), the WorldModel structure
+        # trend per TF, the M1 frame (volume + clean-break) and the session
+        # context. Every threshold resolves per-instrument via _profile_param.
+        self._flip_confirmer = FlipConfirmer(
+            get_atr_pips=self._get_atr_pips,
+            get_tick_momentum=self._get_tick_momentum,
+            get_tick_move_pips=self._get_tick_move_pips,
+            get_structure_trend=self._wm_structure_trend,
+            get_m1_dataframe=self._get_m1,
+            session_context=self._session_context,
+            pip_size_lookup=self._pip_size,
+            profile_param=self._profile_param,
+        )
 
     @property
     def stats(self) -> dict[str, int]:
@@ -471,119 +499,85 @@ class EntryOrchestrator:
         except Exception:
             return False
 
-    def _tick_m5_confirms_flip(
-        self, opposite: str, symbol: str,
-    ) -> tuple[bool, float, str]:
-        """Confirm a direction flip from live tick momentum + the M5 trend.
+    def _wm_structure_trend(self, symbol: str, tf: str) -> str:
+        """Confirmed structure trend string for ``tf`` from the WorldModel.
 
-        Replaces the 60s-stale M1 candle confirmation in the A1 flip path with
-        two real-time/structural reads:
-
-        1. ``tick_momentum`` (sub-candle, updates every tick) signed for the
-           OPPOSITE direction must reach ``tick_momentum_flip_threshold`` — the
-           flip only rides a clean, current move, not micro-drift.
-        2. The M5 structural trend must not OPPOSE the flip (flipping to LONG
-           against a BEARISH M5, or to SHORT against a BULLISH M5, is refused).
-           A RANGING/UNKNOWN M5 does not block — the flip stays permissive when
-           there is no opposing structure.
-
-        Returns ``(confirmed, tick_mom, m5_trend)`` so the caller can log the
-        actual values for production debugging. Fails closed (returns
-        ``(False, …)``) on any error — a failed read never flips a trade.
+        Returns "BULLISH"/"BEARISH"/"RANGING" or "UNKNOWN" when no WorldModel /
+        structure is available. Wired into the :class:`FlipConfirmer` as its
+        per-TF structure reader. Never raises — an unavailable read degrades to
+        "UNKNOWN" (permissive), so a missing WorldModel never blocks a flip.
         """
-        tick_mom = 0.0
-        m5_trend = "UNKNOWN"
         try:
-            norm_dir = "BUY" if str(opposite).upper() == "LONG" else "SELL"
-            pip_size = self._pip_size(symbol)
-            tick_mom = float(self._get_tick_momentum(symbol, norm_dir, pip_size))
+            if self._wm_store is None:
+                return "UNKNOWN"
+            wm = self._wm_store.get(symbol)
+            if wm is None:
+                return "UNKNOWN"
+            sa = wm.structure_by_tf().get(tf)
+            if sa is None:
+                return "UNKNOWN"
+            return str(getattr(getattr(sa, "trend", None), "value", "") or "UNKNOWN")
+        except Exception:  # noqa: BLE001 — a faulty read never blocks a flip
+            return "UNKNOWN"
 
-            threshold = float(
-                getattr(self._config, "tick_momentum_flip_threshold", 0.30) or 0.30
-            )
-            if tick_mom < threshold:
-                return False, tick_mom, m5_trend
+    def _tick_m5_confirms_flip(
+        self, opposite: str, symbol: str, invalidation_level: float = 0.0,
+    ) -> tuple[bool, float, str]:
+        """Confirm a direction flip via the hardened five-check FlipConfirmer.
 
-            if self._wm_store is not None:
-                wm = self._wm_store.get(symbol)
-                if wm is not None:
-                    m5_sa = wm.structure_by_tf().get("M5")
-                    if m5_sa is not None:
-                        m5_trend = str(
-                            getattr(getattr(m5_sa, "trend", None), "value", "")
-                            or "UNKNOWN"
-                        )
+        Replaces the old 2-check confirmation (tick efficiency ≥ threshold + M5
+        non-opposition) with the full :class:`FlipConfirmer` pipeline in
+        ``mode="flip"``: ATR-normalised magnitude, session-aware tick
+        efficiency, M5 + M15 non-opposition, M1 volume confirmation and the
+        invalidation clean-break. ``invalidation_level`` (the original zone's
+        invalidation price) enables the clean-break check for the stop-out flip
+        path; the A1 direction-flip passes ``0`` and the clean-break is skipped.
 
-            want = str(opposite).upper()
-            opposes = (
-                (want == "LONG" and m5_trend == "BEARISH")
-                or (want == "SHORT" and m5_trend == "BULLISH")
-            )
-            if opposes:
-                return False, tick_mom, m5_trend
-
-            return True, tick_mom, m5_trend
-        except Exception:
-            return False, tick_mom, m5_trend
+        Returns ``(confirmed, tick_mom, m5_trend)`` — the tick efficiency and M5
+        trend are read back out of the confirmation's ``checks`` dict so the
+        caller's existing return signature and logging are preserved. Fails
+        closed on any error (the confirmer never raises).
+        """
+        result = self._flip_confirmer.confirm(
+            symbol, opposite, mode="flip",
+            invalidation_level=float(invalidation_level or 0.0),
+        )
+        tick_mom = float(result.checks.get("tick_efficiency", 0.0) or 0.0)
+        m5_trend = str(result.checks.get("m5_trend", "UNKNOWN") or "UNKNOWN")
+        logger.debug(
+            "[flip-confirm] {} flip→{} {} ({}) checks={}",
+            symbol, opposite,
+            "confirmed" if result.confirmed else "rejected",
+            result.reason, result.checks,
+        )
+        return result.confirmed, tick_mom, m5_trend
 
     def _tick_m5_agree_direction(
         self, direction: str, symbol: str,
     ) -> tuple[bool, float, str]:
-        """True when live tick momentum agrees with the ORIGINAL zone
-        ``direction`` and the M5 trend does NOT actively oppose it.
+        """Confirm the ORIGINAL zone ``direction`` via the FlipConfirmer.
 
-        Admits an entry whose blended momentum score reads as opposing only
-        because it folds in LAGGING HTF momentum. For a scalp the leading
-        signals are the sub-candle ``tick_momentum`` and the M5 structural
-        trend: the entry proceeds when tick_momentum is the SAME sign as the
-        zone direction AND the M5 trend is non-opposing — i.e. it MATCHES the
-        zone (BULLISH for LONG, BEARISH for SHORT) OR is structureless
-        (RANGING / UNKNOWN).
-
-        A RANGING/UNKNOWN M5 is treated as PERMISSIVE (non-opposing), not as
-        disagreement. In ranging markets M5 is almost never BULLISH/BEARISH, so
-        the old "require positive structural agreement" rule meant this override
-        never fired — every entry with a mildly-negative blended momentum was
-        skipped or flipped (the bug that flipped every LONG to SHORT in ranging
-        gold). The override now fires when ticks agree and M5 is not actively
-        opposing.
+        The A1 momentum-override path: when the (lagging) blended momentum reads
+        as opposing the zone but the leading signals may still support it, this
+        runs the SAME hardened five-check pipeline in ``mode="agree"`` for the
+        original direction. The entry proceeds only when every non-skipped check
+        confirms the zone side — replacing the old permissive
+        "tick_momentum > 0 AND M5 non-opposing" rule that let entries through on
+        micro-drift.
 
         Returns ``(agree, tick_mom, m5_trend)`` so the caller can log the actual
-        values. Fails closed (returns ``(False, …)``) on any error — a failed
-        read never admits a momentum-opposed entry.
+        values. Fails closed on any error.
         """
-        tick_mom = 0.0
-        m5_trend = "UNKNOWN"
-        try:
-            norm_dir = "BUY" if str(direction).upper() == "LONG" else "SELL"
-            pip_size = self._pip_size(symbol)
-            tick_mom = float(self._get_tick_momentum(symbol, norm_dir, pip_size))
-            if tick_mom <= 0.0:
-                return False, tick_mom, m5_trend
-
-            if self._wm_store is not None:
-                wm = self._wm_store.get(symbol)
-                if wm is not None:
-                    m5_sa = wm.structure_by_tf().get("M5")
-                    if m5_sa is not None:
-                        m5_trend = str(
-                            getattr(getattr(m5_sa, "trend", None), "value", "")
-                            or "UNKNOWN"
-                        )
-
-            want = str(direction).upper()
-            # M5 is non-opposing when it either matches the zone direction OR is
-            # structureless (RANGING/UNKNOWN). Only an M5 trend that actively
-            # points the OTHER way (BEARISH for a LONG, BULLISH for a SHORT)
-            # blocks the override.
-            matches = (
-                m5_trend in ("RANGING", "UNKNOWN")
-                or (want == "LONG" and m5_trend == "BULLISH")
-                or (want == "SHORT" and m5_trend == "BEARISH")
-            )
-            return matches, tick_mom, m5_trend
-        except Exception:
-            return False, tick_mom, m5_trend
+        result = self._flip_confirmer.confirm(symbol, direction, mode="agree")
+        tick_mom = float(result.checks.get("tick_efficiency", 0.0) or 0.0)
+        m5_trend = str(result.checks.get("m5_trend", "UNKNOWN") or "UNKNOWN")
+        logger.debug(
+            "[flip-confirm] {} agree {} {} ({}) checks={}",
+            symbol, direction,
+            "confirmed" if result.confirmed else "rejected",
+            result.reason, result.checks,
+        )
+        return result.confirmed, tick_mom, m5_trend
 
     def _flip_zone(self, zone: EntryZone, new_direction: str, entry_price: float = 0.0) -> EntryZone:
         """Mirror a zone to the opposite trade direction.
@@ -716,6 +710,7 @@ class EntryOrchestrator:
         conviction: int = 0,
         zone_type: str = "",
         timeframe: str = "",
+        invalidation_level: float = 0.0,
         emit: bool = True,
     ) -> dict[str, Any]:
         """Phase 2 Feature A — evaluate (and emit) a flip after a stop-out.
@@ -779,7 +774,9 @@ class EntryOrchestrator:
             )
             return result
 
-        confirmed, tick_mom, m5_trend = self._tick_m5_confirms_flip(opposite, symbol)
+        confirmed, tick_mom, m5_trend = self._tick_m5_confirms_flip(
+            opposite, symbol, invalidation_level=float(invalidation_level or 0.0),
+        )
         result["tick_mom"] = tick_mom
         result["m5_trend"] = m5_trend
         logger.info(
