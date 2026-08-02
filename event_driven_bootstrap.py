@@ -226,6 +226,37 @@ def _broker_tp(pos) -> float:
     return float(v) if v else 0.0
 
 
+def _broker_pip_value_from_spec(
+    spec: dict, pip_size: float, fallback: float,
+) -> float:
+    """Broker-truth money-per-pip-per-lot derived from a symbol-spec dict.
+
+    Computed as ``trade_tick_value * (pip_size / trade_tick_size)``. Returns
+    *fallback* (the config-registry value) on any gap so sizing / heat / P&L
+    never break.
+
+    This is the single source of truth for the broker pip-value override. Every
+    pip-value site — the sizing path, the scale-in path and the portfolio heat
+    monitor — routes through it so the risk (heat) view and the sizing view of a
+    position can never disagree on money-per-pip. A wrong registry pip_value
+    (e.g. the 1.0 forex-scale placeholder on a sub-$10 crypto) diverging between
+    those views is what produced phantom EMERGENCY force-closes.
+    """
+    try:
+        tick_value = spec.get("trade_tick_value") if spec else None
+        tick_size = spec.get("trade_tick_size") if spec else None
+        if (
+            tick_value and tick_size and tick_size > 0
+            and pip_size and pip_size > 0
+        ):
+            pv = float(tick_value) * (float(pip_size) / float(tick_size))
+            if pv > 0:
+                return pv
+    except Exception as exc:
+        logger.debug("[symbol-spec] pip-value derive failed: {}", exc)
+    return fallback
+
+
 # Operations Division — scale-in / partial-close tuning (V13).
 # A scale-in is an *add* to an existing winner, so it risks a fraction of a
 # fresh entry's per-trade ceiling. The partial-close default banks half the
@@ -1064,6 +1095,31 @@ class PositionEvaluator:
                 "[pip-size] {} fallback to 0.0001 — risk sizing may be "
                 "inaccurate: {}", symbol, exc,
             )
+
+    def _effective_pip_value(
+        self, symbol: str, pip_size: Optional[float] = None,
+    ) -> float:
+        """Centralised money-per-pip-per-lot: registry fallback → broker truth.
+
+        Mirrors ``EventDrivenSystem._effective_pip_value`` for the scale-in
+        sizing path, sourcing the broker spec from the shared PlatformManager.
+        Both routes derive the override through the one shared
+        :func:`_broker_pip_value_from_spec`, so the scale-in add can never size
+        on a different pip value from the heat monitor or the entry sizer.
+        """
+        info = INSTRUMENT_REGISTRY.get(symbol)
+        fallback = info.pip_value_per_lot if info else 10.0
+        if pip_size is None:
+            pip_size = self._safe_pip_size(symbol)
+        spec: dict = {}
+        try:
+            spec = self._pm.get_symbol_spec(symbol) or {}
+        except Exception as exc:
+            logger.debug(
+                "[symbol-spec] scale-in pip-value spec lookup failed {}: {}",
+                symbol, exc,
+            )
+        return _broker_pip_value_from_spec(spec, pip_size, fallback)
 
     def suppress_ticket(self, ticket: str, duration: float = 60.0) -> None:
         """Suppress evaluation of a ticket for the given duration (seconds)."""
@@ -2393,8 +2449,10 @@ class PositionEvaluator:
                 return
 
             pip_size = self._safe_pip_size(symbol)
-            info = INSTRUMENT_REGISTRY.get(symbol)
-            pip_value = info.pip_value_per_lot if info else 10.0
+            # Broker-truth money-per-pip (registry fallback → live broker spec),
+            # centralised so the scale-in add is sized on the same pip value the
+            # heat monitor and the entry sizer use.
+            pip_value = self._effective_pip_value(symbol, pip_size)
             pctx = build_context_for_symbol(symbol)
 
             daily_pnl = 0.0
@@ -4861,8 +4919,12 @@ class EventDrivenSystem:
                     except Exception:
                         pass
                 pip_size = self._safe_pip_size(symbol)
-                info = INSTRUMENT_REGISTRY.get(symbol)
-                pip_value = info.pip_value_per_lot if info else 10.0
+                # Broker-truth money-per-pip — MUST match the sizing path so the
+                # heat monitor and the position sizer agree on capital-at-risk.
+                # Reading the registry alone (a 1.0 forex-scale placeholder on
+                # sub-$10 crypto) inflated heat by orders of magnitude and
+                # tripped phantom EMERGENCY force-closes.
+                pip_value = self._effective_pip_value(symbol, pip_size)
                 is_long = str(direction).upper() in ("BUY", "LONG")
                 at_be = (
                     (sl >= entry_price if is_long else sl <= entry_price)
@@ -5784,25 +5846,34 @@ class EventDrivenSystem:
     def _broker_pip_value(
         self, symbol: str, pip_size: float, fallback: float,
     ) -> float:
-        """Broker-truth money-per-pip-per-lot from the symbol spec.
+        """Broker-truth money-per-pip-per-lot from the (cached) symbol spec.
 
-        Derived as ``tick_value * (pip_size / tick_size)``.  Returns
-        ``fallback`` (config value) on any gap so sizing/P&L never break.
+        Thin instance wrapper around :func:`_broker_pip_value_from_spec` that
+        reuses the per-symbol spec cache. Returns ``fallback`` (config value)
+        on any gap so sizing/P&L never break.
         """
-        try:
-            spec = self._symbol_spec(symbol)
-            tick_value = spec.get("trade_tick_value")
-            tick_size = spec.get("trade_tick_size")
-            if (
-                tick_value and tick_size and tick_size > 0
-                and pip_size and pip_size > 0
-            ):
-                pv = float(tick_value) * (float(pip_size) / float(tick_size))
-                if pv > 0:
-                    return pv
-        except Exception as exc:
-            logger.debug("[symbol-spec] pip-value derive failed {}: {}", symbol, exc)
-        return fallback
+        return _broker_pip_value_from_spec(
+            self._symbol_spec(symbol), pip_size, fallback,
+        )
+
+    def _effective_pip_value(
+        self, symbol: str, pip_size: Optional[float] = None,
+    ) -> float:
+        """Centralised money-per-pip-per-lot: registry fallback → broker truth.
+
+        Reads the config registry value as a cold-start fallback, then overrides
+        it with the live broker symbol spec whenever available. This is the
+        single entry point shared by the heat monitor AND the sizing path so the
+        risk view and the sizing view of a position can never diverge on pip
+        value — the divergence that let a wrong registry ``pip_value_per_lot``
+        (e.g. the 1.0 placeholder on a sub-$10 crypto) trigger phantom EMERGENCY
+        force-closes.
+        """
+        info = INSTRUMENT_REGISTRY.get(symbol)
+        fallback = info.pip_value_per_lot if info else 10.0
+        if pip_size is None:
+            pip_size = self._safe_pip_size(symbol)
+        return self._broker_pip_value(symbol, pip_size, fallback)
 
     def _snap_to_broker_volume(self, symbol: str, lots: float) -> float:
         """Snap a lot size to the broker's volume_min/max/step.
@@ -8807,11 +8878,10 @@ class EventDrivenSystem:
                 )
             pctx = build_context_for_symbol(symbol)
 
-            info = INSTRUMENT_REGISTRY.get(symbol)
-            pip_value = info.pip_value_per_lot if info else 10.0
-            # Prefer broker-truth money-per-pip from the symbol spec; falls
-            # back to the config value when the spec is unavailable.
-            pip_value = self._broker_pip_value(symbol, pip_size, pip_value)
+            # Broker-truth money-per-pip (registry fallback → live spec). Shared
+            # with the heat monitor via _effective_pip_value so sizing and risk
+            # can never diverge on pip value.
+            pip_value = self._effective_pip_value(symbol, pip_size)
 
             # The Portfolio Division reuses the RiskEngine's shared PositionSizer
             # (so the per-trade risk ceiling stays authoritative). The same

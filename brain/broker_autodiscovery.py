@@ -88,6 +88,19 @@ APEX_ALIASES: dict[str, list[str]] = {
     "CHINA50": ["CHINA50", "CN50", "CHINA50m", "FTXIN9"],
     "SGP30":   ["SGP30", "STI30", "STI"],
 
+    # Crypto (24/7 — MT5 CFDs). Included so that when TRADING_MODE=full enables
+    # the crypto category, these symbols flow through the discovery pass and get
+    # their live broker constraints (contract_size, volume_min, tick value/size)
+    # cached — the gap that left crypto sizing/heat on config placeholders.
+    "BTCUSD":  ["BTCUSD", "BTC/USD", "BTC_USD", "XBTUSD"],
+    "ETHUSD":  ["ETHUSD", "ETH/USD", "ETH_USD"],
+    "LTCUSD":  ["LTCUSD", "LTC/USD", "LTC_USD"],
+    "XRPUSD":  ["XRPUSD", "XRP/USD", "XRP_USD"],
+    "BNBUSD":  ["BNBUSD", "BNB/USD", "BNB_USD"],
+    "SOLUSD":  ["SOLUSD", "SOL/USD", "SOL_USD"],
+    "ADAUSD":  ["ADAUSD", "ADA/USD", "ADA_USD"],
+    "DOTUSD":  ["DOTUSD", "DOT/USD", "DOT_USD"],
+
     # Deriv synthetics — these stay as-is (handled by deriv.json)
 }
 
@@ -166,8 +179,15 @@ class BrokerAutoDiscovery:
 
         overrides = self._match_all(broker_symbol_names)
 
-        # ── Discover symbol constraints (stops_level, volume) per symbol ──
-        constraints = discover_symbol_constraints(list(overrides.values()))
+        # ── Discover symbol constraints (stops_level, volume, tick value) ──
+        # Resolve over the FULL override universe — freshly matched symbols PLUS
+        # any preserved manual/earlier overrides (e.g. crypto that was mapped
+        # before its category was auto-matched). Otherwise a symbol present in
+        # the overrides map but not re-matched this pass (crypto in the shipped
+        # broker JSON) never gets its broker-truth constraints cached, which is
+        # exactly what left crypto sizing/heat running on config placeholders.
+        resolved = {**self._load_existing(), **overrides}
+        constraints = discover_symbol_constraints(list(resolved.values()))
 
         if constraints:
             logger.info(
