@@ -210,6 +210,16 @@ def extract_entry_zones(
             bias_direction="",
         ))
 
+    # TODO(vwap-as-zone): when ``cfg.vwap_zone_enabled`` (or the per-instrument
+    # ``InstrumentProfile.vwap_zone_enabled``) is True, extract VWAP-deviation
+    # entry zones here — the same way FVG/OB zones are built above. Session VWAP
+    # ± N standard-deviation bands (brain/session_vwap.py) would become zones:
+    # a touch of the lower band in an uptrend → LONG (ZoneType.VWAP_BAND), a
+    # touch of the upper band in a downtrend → SHORT, with the band edge as the
+    # invalidation level. Currently VWAP is only a round-table vote, not a zone
+    # source; the flag defaults OFF, so this is prep work for a future PR and no
+    # zones are emitted from VWAP yet.
+
     return zones
 
 

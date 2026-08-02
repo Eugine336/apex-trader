@@ -28,6 +28,7 @@ from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open,
 from brain.symbol_mapper import resolve_to_internal
 from brain.world_model import WorldModelStore
 from brain.compression_detector import CompressionDetector
+from brain.session_context import SessionContext
 from compliance import (
     ComplianceAccount,
     ComplianceBook,
@@ -3016,6 +3017,20 @@ class EventDrivenSystem:
             logger.warning("[event-driven] CompressionDetector init failed: {}", exc)
             self._compression_detector = None
 
+        # ── Global session classifier ─────────────────────────────────
+        # Stateless UTC-time → TradingSession (ASIAN / LONDON / NY /
+        # LONDON_NY_OVERLAP) classifier with per-instrument size multipliers and
+        # zone weights, tuned via InstrumentProfile (EntryConfig fallback). Read
+        # (logging-only for now) by the entry orchestrator on each entry eval;
+        # session-aware sizing lands in a later PR. Best-effort — a construction
+        # fault degrades to no session signal rather than breaking startup.
+        self._session_context = None
+        try:
+            self._session_context = SessionContext(entry_config=EntryConfig())
+        except Exception as exc:
+            logger.warning("[event-driven] SessionContext init failed: {}", exc)
+            self._session_context = None
+
         self._candle_handler = CandleCloseHandler(
             event_bus=self._event_bus,
             world_model_store=self._wm_store,
@@ -3253,6 +3268,11 @@ class EventDrivenSystem:
                 self._compression_detector.get_compression_score
                 if self._compression_detector is not None else None
             ),
+            # Global session classifier read. Logging-only for now: the
+            # orchestrator records the current TradingSession + this symbol's
+            # size multiplier / zone weight as a round-table signal but does not
+            # size or gate entries on it yet.
+            session_context=self._session_context,
         )
 
         # ── Compliance Division runtime binding ──────────────────────

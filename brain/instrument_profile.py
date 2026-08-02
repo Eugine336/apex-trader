@@ -10,12 +10,24 @@ No symbol names are hardcoded here. Everything is driven by category
 so the system scales to any number of instruments automatically.
 """
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional
 
 from loguru import logger
 
 from config import INSTRUMENT_REGISTRY
+
+# Default per-session tuning tables (opportunistic-trader rewire). Defined here
+# — not imported from brain.session_context — so this module stays free of a
+# circular import (session_context imports get_profile from here). The same
+# values are duplicated on EntryConfig and in session_context as ultimate
+# fallbacks, exactly as the compression-detector defaults are.
+_DEFAULT_SESSION_SIZE_MULTIPLIERS: dict[str, float] = {
+    "ASIAN": 0.5, "LONDON": 1.2, "NY": 1.0, "LONDON_NY_OVERLAP": 1.3,
+}
+_DEFAULT_SESSION_ZONE_WEIGHTS: dict[str, float] = {
+    "ASIAN": 0.8, "LONDON": 1.1, "NY": 1.0, "LONDON_NY_OVERLAP": 1.2,
+}
 
 
 @dataclass(frozen=True)
@@ -67,6 +79,28 @@ class InstrumentProfile:
     compression_threshold_pct: float = 15.0  # COMPRESSING = BBW in bottom Nth pctile
     adx_trending_threshold: float = 25.0     # TRENDING = ADX above this level
     expansion_threshold_pct: float = 70.0    # EXPANDING = BBW breaks above this pctile
+
+    # ── Session Context ───────────────────────────────────────────────
+    # Per-instrument tuning for the global session classifier
+    # (brain/session_context.py).  Defaulted so every existing profile inherits
+    # sensible values; a category or symbol profile can override either table to
+    # calibrate an instrument's own session behaviour (e.g. Gold's London/NY
+    # pattern).  ``session_size_multipliers`` scales position size per session;
+    # ``session_zone_weights`` scales a zone's conviction per session.  The
+    # session context reads the profile first and falls back to the EntryConfig
+    # defaults only when a profile omits a table.
+    session_size_multipliers: dict[str, float] = field(
+        default_factory=lambda: dict(_DEFAULT_SESSION_SIZE_MULTIPLIERS)
+    )
+    session_zone_weights: dict[str, float] = field(
+        default_factory=lambda: dict(_DEFAULT_SESSION_ZONE_WEIGHTS)
+    )
+
+    # ── VWAP-as-zone (prep, OFF by default) ───────────────────────────
+    # When enabled, VWAP deviation bands would generate entry zones alongside
+    # FVG/OB zones (see the TODO in entry/zone_watcher.py).  Default OFF — this
+    # is prep work for a future PR, not an activated feature.
+    vwap_zone_enabled: bool = False
 
 
 # ---------------------------------------------------------------------------

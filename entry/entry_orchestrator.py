@@ -66,6 +66,7 @@ class EntryOrchestrator:
         pair_learner: Optional[object] = None,
         get_market_state: Optional[Callable[[str], Any]] = None,
         get_compression_score: Optional[Callable[[str], float]] = None,
+        session_context: Optional[object] = None,
     ) -> None:
         self._config = config or EntryConfig()
         self._pip_size = pip_size_lookup or (lambda _: 0.0001)
@@ -84,6 +85,12 @@ class EntryOrchestrator:
         # compression-aware filtering / pre-staged breakouts land in a later PR.
         self._get_market_state = get_market_state
         self._get_compression_score = get_compression_score
+        # Global session classifier (brain/session_context.py), logging-only for
+        # now. Exposes the current TradingSession (ASIAN / LONDON / NY /
+        # LONDON_NY_OVERLAP) plus this symbol's resolved size multiplier and zone
+        # weight. The entry round table logs them as a new signal but does NOT
+        # yet size or gate on them — session-aware sizing lands in a later PR.
+        self._session_context = session_context
         # Live sub-candle momentum for the trade direction → [-1, +1]
         # (signature: ``(symbol, norm_dir, pip_size) → float``). Used by the A1
         # flip confirmation so the flip rides real-time price, not a 60s-stale
@@ -471,16 +478,24 @@ class EntryOrchestrator:
     def _tick_m5_agree_direction(
         self, direction: str, symbol: str,
     ) -> tuple[bool, float, str]:
-        """True when live tick momentum AND the M5 trend both agree with the
-        ORIGINAL zone ``direction``.
+        """True when live tick momentum agrees with the ORIGINAL zone
+        ``direction`` and the M5 trend does NOT actively oppose it.
 
         Admits an entry whose blended momentum score reads as opposing only
         because it folds in LAGGING HTF momentum. For a scalp the leading
         signals are the sub-candle ``tick_momentum`` and the M5 structural
         trend: the entry proceeds when tick_momentum is the SAME sign as the
-        zone direction AND the M5 trend MATCHES it (BULLISH for LONG, BEARISH
-        for SHORT). A RANGING/UNKNOWN M5 is NOT a match — the override requires
-        positive structural agreement, not merely the absence of opposition.
+        zone direction AND the M5 trend is non-opposing — i.e. it MATCHES the
+        zone (BULLISH for LONG, BEARISH for SHORT) OR is structureless
+        (RANGING / UNKNOWN).
+
+        A RANGING/UNKNOWN M5 is treated as PERMISSIVE (non-opposing), not as
+        disagreement. In ranging markets M5 is almost never BULLISH/BEARISH, so
+        the old "require positive structural agreement" rule meant this override
+        never fired — every entry with a mildly-negative blended momentum was
+        skipped or flipped (the bug that flipped every LONG to SHORT in ranging
+        gold). The override now fires when ticks agree and M5 is not actively
+        opposing.
 
         Returns ``(agree, tick_mom, m5_trend)`` so the caller can log the actual
         values. Fails closed (returns ``(False, …)``) on any error — a failed
@@ -506,8 +521,13 @@ class EntryOrchestrator:
                         )
 
             want = str(direction).upper()
+            # M5 is non-opposing when it either matches the zone direction OR is
+            # structureless (RANGING/UNKNOWN). Only an M5 trend that actively
+            # points the OTHER way (BEARISH for a LONG, BULLISH for a SHORT)
+            # blocks the override.
             matches = (
-                (want == "LONG" and m5_trend == "BULLISH")
+                m5_trend in ("RANGING", "UNKNOWN")
+                or (want == "LONG" and m5_trend == "BULLISH")
                 or (want == "SHORT" and m5_trend == "BEARISH")
             )
             return matches, tick_mom, m5_trend
@@ -664,6 +684,34 @@ class EntryOrchestrator:
         except Exception:
             logger.debug("[entry-orch] market-state logging failed for {}", symbol)
 
+    def _log_session_context(self, symbol: str, direction: str) -> None:
+        """Log the current trading session + its tuning for an entry.
+
+        Logging-only integration of the session classifier
+        (brain/session_context.py): it records the active ``TradingSession``
+        (ASIAN / LONDON / NY / LONDON_NY_OVERLAP) plus this symbol's resolved
+        size multiplier and zone weight as a round-table signal, but does NOT
+        size or gate the entry — session-aware sizing lands in a later PR. No-op
+        and never raises when the session context is unwired.
+        """
+        if self._session_context is None:
+            return
+        try:
+            session = self._session_context.get_session()
+            session_str = getattr(session, "value", session)
+            size_mult = self._session_context.get_session_multiplier(symbol, session)
+            zone_weight = self._session_context.get_session_zone_weight(symbol, session)
+            self._stats["session_signals"] = (
+                self._stats.get("session_signals", 0) + 1
+            )
+            logger.info(
+                "[entry-orch] {} {} session signal: session={} size_mult={:.2f} "
+                "zone_weight={:.2f} (logging-only, not sizing/gating)",
+                symbol, direction, session_str, size_mult, zone_weight,
+            )
+        except Exception:
+            logger.debug("[entry-orch] session logging failed for {}", symbol)
+
     def _run_gates_and_emit(
         self,
         symbol: str,
@@ -684,6 +732,16 @@ class EntryOrchestrator:
         # arrives in a later PR). Fully guarded so an unwired/faulty detector
         # can never affect an entry.
         self._log_market_state(symbol, direction)
+
+        # ── Session signal (logging-only round-table vote) ───────────────
+        # Surface the global session classifier's read as a new signal in the
+        # entry round table. Like the market-state signal above it is purely
+        # observational for now: it records the current TradingSession plus this
+        # symbol's resolved size multiplier / zone weight but never blocks or
+        # reshapes the decision (session-aware sizing arrives in a later PR).
+        # Fully guarded so an unwired/faulty session context can never affect
+        # an entry.
+        self._log_session_context(symbol, direction)
 
         # ── A1: opportunistic direction verification ─────────────────────
         # The zone's direction is mechanical (a bullish FVG ⇒ LONG). Before
@@ -717,10 +775,11 @@ class EntryOrchestrator:
             else:
                 # The blended momentum score folds in HTF momentum (RSI+MACD on
                 # M5/H1), which LAGS. For scalping, the leading signals are live
-                # tick momentum and the M5 structural trend. If BOTH agree with
-                # the zone direction, take the entry despite the negative blended
-                # score rather than skipping a setup that current price action
-                # actively supports.
+                # tick momentum and the M5 structural trend. If ticks agree with
+                # the zone direction and M5 is not actively opposing (it matches
+                # OR is RANGING/UNKNOWN), take the entry despite the negative
+                # blended score rather than skipping a setup that current price
+                # action actively supports.
                 agree, tick_dir_mom, m5_dir = self._tick_m5_agree_direction(
                     direction, symbol,
                 )
@@ -728,7 +787,7 @@ class EntryOrchestrator:
                     logger.warning(
                         "[entry-orch] {} {} entry PROCEEDS despite blended "
                         "momentum {:+.2f} opposing — live tick_mom={:+.2f} agrees "
-                        "and M5={} matches the zone (HTF momentum lags; tick+M5 "
+                        "and M5={} is non-opposing (HTF momentum lags; tick+M5 "
                         "lead for scalps)",
                         symbol, direction, momentum, tick_dir_mom, m5_dir,
                     )
