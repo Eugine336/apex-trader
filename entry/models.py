@@ -190,6 +190,75 @@ class EntryConfig:
     # geometry alone.
     counter_trend_conviction_mult_ev: float = 0.85
     coalesce_hz: float = 15.0
+    # ── Compression detector defaults (global market-state classifier) ────
+    # Global fallback tuning for brain/compression_detector.py. A per-instrument
+    # InstrumentProfile may override any of these; the detector reads the profile
+    # first and falls back to these EntryConfig defaults when a field is absent.
+    # compression_lookback:      rolling BBW-percentile window, in bars.
+    # compression_threshold_pct: COMPRESSING when BBW sits in the bottom Nth
+    #                            percentile of that window.
+    # adx_trending_threshold:    TRENDING when ADX exceeds this level.
+    # expansion_threshold_pct:   EXPANDING when BBW breaks above this percentile
+    #                            after having been compressed.
+    compression_lookback: int = 100
+    compression_threshold_pct: float = 15.0
+    adx_trending_threshold: float = 25.0
+    expansion_threshold_pct: float = 70.0
+
+    # ── Session context defaults (global session classifier) ──────────────
+    # Global fallback tuning for brain/session_context.py. A per-instrument
+    # InstrumentProfile may override either table; the session context reads the
+    # profile first and falls back to these EntryConfig defaults when a table is
+    # absent. session_size_multipliers scales position size per session;
+    # session_zone_weights scales a zone's conviction per session. Set in
+    # __post_init__ (mutable dict defaults), mirroring zone_expiry_seconds_by_tf.
+    session_size_multipliers: dict = None  # set in __post_init__
+    session_zone_weights: dict = None      # set in __post_init__
+    # ── VWAP-as-zone (Part C prep, OFF by default) ────────────────────────
+    # When enabled, VWAP deviation bands would generate entry zones alongside
+    # FVG/OB zones (see the TODO in entry/zone_watcher.py). Default OFF — this is
+    # prep work for a future PR, not an activated feature. A per-instrument
+    # InstrumentProfile.vwap_zone_enabled can override this global default.
+    vwap_zone_enabled: bool = False
+
+    # ── Phase 2 Feature A: Stop-out flip ──────────────────────────────────
+    # Global fallbacks for the stop-out flip machinery. A per-instrument
+    # InstrumentProfile may override any of these. stopout_flip_enabled toggles
+    # the feature; stopout_flip_cooldown_s is the minimum seconds between flips
+    # on the same symbol; stopout_flip_max_per_zone caps flips originating from
+    # one zone before it is exhausted (whipsaw death-spiral guard).
+    stopout_flip_enabled: bool = True
+    stopout_flip_cooldown_s: float = 30.0
+    stopout_flip_max_per_zone: int = 2
+
+    # ── Phase 2 Feature B: Pre-staged limit orders ────────────────────────
+    # Global fallbacks for the zone-order stager. pre_staging_enabled is OFF by
+    # default (opt-in per profile — Gold turns it on). staging_proximity_pips is
+    # how close price must be to a zone boundary before a pending LIMIT is
+    # staged; staging_cooldown_s throttles re-staging to prevent flapping.
+    pre_staging_enabled: bool = False
+    staging_proximity_pips: float = 5.0
+    staging_cooldown_s: float = 60.0
+
+    # ── Phase 2 Feature C: Active compression / session filtering ──────────
+    # Global fallbacks for the compression/session-aware conviction shaping.
+    # COMPRESSING multiplies conviction by compression_conviction_boost,
+    # EXPANDING by expansion_conviction_boost (both before the score gate). A
+    # COMPRESSING + ASIAN setup is skipped unless conviction exceeds
+    # asian_compression_min_conviction (choppy low-vol compression is dangerous).
+    compression_conviction_boost: float = 1.2
+    expansion_conviction_boost: float = 1.5
+    asian_compression_min_conviction: int = 80
+
+    # ── Phase 2 Feature D: DXY correlation filter ─────────────────────────
+    # Global fallbacks for the USD-strength opposition vote. dxy_filter_enabled
+    # is ON by default but only takes effect for USD-denominated symbols
+    # (XAUUSD, forex USD pairs). dxy_opposition_penalty is the multiplicative
+    # conviction haircut applied when USD strength opposes the trade;
+    # dxy_lookback_bars is the correlation lookback window.
+    dxy_filter_enabled: bool = True
+    dxy_opposition_penalty: float = 0.15
+    dxy_lookback_bars: int = 20
 
     def __post_init__(self) -> None:
         if self.zone_expiry_seconds_by_tf is None:
@@ -207,6 +276,14 @@ class EntryConfig:
                 "H4": 57600.0,      # 16 hours — ~4 bars
                 "D1": 259200.0,     # 3 days — ~3 bars
                 "W1": 1209600.0,    # 2 weeks — ~2 bars
+            }
+        if self.session_size_multipliers is None:
+            self.session_size_multipliers = {
+                "ASIAN": 0.5, "LONDON": 1.2, "NY": 1.0, "LONDON_NY_OVERLAP": 1.3,
+            }
+        if self.session_zone_weights is None:
+            self.session_zone_weights = {
+                "ASIAN": 0.8, "LONDON": 1.1, "NY": 1.0, "LONDON_NY_OVERLAP": 1.2,
             }
 
     def get_zone_expiry_seconds(self, timeframe: str) -> float:

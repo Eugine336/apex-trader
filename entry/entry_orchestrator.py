@@ -28,12 +28,14 @@ Usage::
 from __future__ import annotations
 
 import threading
+import time
 from typing import TYPE_CHECKING, Any, Callable, Optional
 
 import pandas as pd
 from loguru import logger
 
 from brain.world_model import WorldModelStore
+from brain.instrument_profile import get_profile
 from entry.models import EntryConfig, EntryZone
 from entry.zone_watcher import ZoneWatcher
 from entry.tick_entry_detector import TickData, TickEntryDetector
@@ -64,6 +66,10 @@ class EntryOrchestrator:
         on_gate_trace: Optional[Callable[..., None]] = None,
         gate_tuner: Optional[object] = None,
         pair_learner: Optional[object] = None,
+        get_market_state: Optional[Callable[[str], Any]] = None,
+        get_compression_score: Optional[Callable[[str], float]] = None,
+        session_context: Optional[object] = None,
+        get_currency_strength: Optional[Callable[..., Any]] = None,
     ) -> None:
         self._config = config or EntryConfig()
         self._pip_size = pip_size_lookup or (lambda _: 0.0001)
@@ -75,6 +81,24 @@ class EntryOrchestrator:
         # so trades can flow and the learning layer can bootstrap itself.
         # Once MIN_TRADES is reached, the learner's outcome data takes over.
         self._pair_learner = pair_learner
+        # Global market-state read (compression detector). ACTIVE (Phase 2
+        # Feature C): the orchestrator boosts zone conviction when the market is
+        # COMPRESSING / EXPANDING and applies the Asian-compression caution gate.
+        # Still fully guarded so an unwired/faulty detector degrades to neutral.
+        self._get_market_state = get_market_state
+        self._get_compression_score = get_compression_score
+        # Global session classifier (brain/session_context.py). ACTIVE (Phase 2
+        # Feature C): the orchestrator reads the current TradingSession for the
+        # Asian-compression caution gate (session-aware SIZING is applied
+        # downstream in the entry-decision pipeline). Guarded — an unwired
+        # context degrades to no session shaping.
+        self._session_context = session_context
+        # USD strength reader for the DXY correlation filter (Phase 2 Feature D).
+        # Contract: ``(symbol, lookback_bars) -> StrengthAnalysis | None``. When
+        # USD strength opposes the trade direction on a USD-denominated symbol
+        # the orchestrator applies a bounded conviction penalty (never a block).
+        # Defaults to unwired (no DXY vote).
+        self._get_currency_strength = get_currency_strength
         # Live sub-candle momentum for the trade direction → [-1, +1]
         # (signature: ``(symbol, norm_dir, pip_size) → float``). Used by the A1
         # flip confirmation so the flip rides real-time price, not a 60s-stale
@@ -101,6 +125,14 @@ class EntryOrchestrator:
 
         self._confirming: dict[str, dict] = {}
         self._lock = threading.Lock()
+
+        # ── Phase 2 Feature A: stop-out flip tracking ────────────────────
+        # Per-symbol monotonic time of the last flip (cooldown enforcement) and
+        # per-zone flip counter (whipsaw guard). The zone counter is keyed by
+        # (symbol, zone_type, timeframe) and reset to zero on a fresh zone touch
+        # so a genuinely new approach to a zone starts with a clean flip budget.
+        self._last_flip_time: dict[str, float] = {}
+        self._zone_flip_counts: dict[tuple[str, str, str], int] = {}
 
         self._stats = {
             "zones_extracted": 0,
@@ -184,10 +216,25 @@ class EntryOrchestrator:
         self._m1_confirmer.reset()
         with self._lock:
             self._confirming.clear()
+        self._last_flip_time.clear()
+        self._zone_flip_counts.clear()
 
     def _handle_zone_touch(self, pending) -> None:
         """Callback from TickEntryDetector when a zone touch is detected."""
         self._stats["zone_touches"] += 1
+        # Phase 2 Feature A: a fresh touch of a zone resets its flip budget — a
+        # new approach is a new opportunity, not a continuation of a prior
+        # whipsaw sequence.
+        try:
+            zone = pending.zone
+            key = (
+                pending.symbol,
+                getattr(getattr(zone, "zone_type", None), "value", ""),
+                getattr(zone, "timeframe", "") or "",
+            )
+            self._zone_flip_counts.pop(key, None)
+        except Exception:  # noqa: BLE001 — counter reset must never break a touch
+            pass
         with self._lock:
             self._confirming[pending.symbol] = {
                 "symbol": pending.symbol,
@@ -266,6 +313,26 @@ class EntryOrchestrator:
                 "[entry-orch] candidate match failed for {}: {}", symbol, exc,
             )
             return None
+
+    def _profile_param(self, symbol: str, name: str, default: Any) -> Any:
+        """Resolve a tuning value: InstrumentProfile first, then EntryConfig,
+        then the literal ``default``.
+
+        Mirrors the resolution order used by CompressionDetector / SessionContext
+        so every Phase 2 knob is per-instrument tunable via InstrumentProfile
+        while EntryConfig supplies the global fallback. Fully guarded — a failed
+        profile lookup degrades to the EntryConfig value or the literal default.
+        """
+        try:
+            prof = get_profile(symbol)
+        except Exception:  # noqa: BLE001 — tuning lookup must never break entry
+            prof = None
+        if prof is not None:
+            val = getattr(prof, name, None)
+            if val is not None:
+                return val
+        val = getattr(self._config, name, None)
+        return default if val is None else val
 
     def _htf_alignment(self, symbol: str, direction: str) -> Optional[float]:
         """Signed HTF alignment for a trade direction from the WorldModel bias.
@@ -462,16 +529,24 @@ class EntryOrchestrator:
     def _tick_m5_agree_direction(
         self, direction: str, symbol: str,
     ) -> tuple[bool, float, str]:
-        """True when live tick momentum AND the M5 trend both agree with the
-        ORIGINAL zone ``direction``.
+        """True when live tick momentum agrees with the ORIGINAL zone
+        ``direction`` and the M5 trend does NOT actively oppose it.
 
         Admits an entry whose blended momentum score reads as opposing only
         because it folds in LAGGING HTF momentum. For a scalp the leading
         signals are the sub-candle ``tick_momentum`` and the M5 structural
         trend: the entry proceeds when tick_momentum is the SAME sign as the
-        zone direction AND the M5 trend MATCHES it (BULLISH for LONG, BEARISH
-        for SHORT). A RANGING/UNKNOWN M5 is NOT a match — the override requires
-        positive structural agreement, not merely the absence of opposition.
+        zone direction AND the M5 trend is non-opposing — i.e. it MATCHES the
+        zone (BULLISH for LONG, BEARISH for SHORT) OR is structureless
+        (RANGING / UNKNOWN).
+
+        A RANGING/UNKNOWN M5 is treated as PERMISSIVE (non-opposing), not as
+        disagreement. In ranging markets M5 is almost never BULLISH/BEARISH, so
+        the old "require positive structural agreement" rule meant this override
+        never fired — every entry with a mildly-negative blended momentum was
+        skipped or flipped (the bug that flipped every LONG to SHORT in ranging
+        gold). The override now fires when ticks agree and M5 is not actively
+        opposing.
 
         Returns ``(agree, tick_mom, m5_trend)`` so the caller can log the actual
         values. Fails closed (returns ``(False, …)``) on any error — a failed
@@ -497,8 +572,13 @@ class EntryOrchestrator:
                         )
 
             want = str(direction).upper()
+            # M5 is non-opposing when it either matches the zone direction OR is
+            # structureless (RANGING/UNKNOWN). Only an M5 trend that actively
+            # points the OTHER way (BEARISH for a LONG, BULLISH for a SHORT)
+            # blocks the override.
             matches = (
-                (want == "LONG" and m5_trend == "BULLISH")
+                m5_trend in ("RANGING", "UNKNOWN")
+                or (want == "LONG" and m5_trend == "BULLISH")
                 or (want == "SHORT" and m5_trend == "BEARISH")
             )
             return matches, tick_mom, m5_trend
@@ -625,6 +705,370 @@ class EntryOrchestrator:
             return entry_price + risk * rr1, entry_price + risk * rr2
         return entry_price - risk * rr1, entry_price - risk * rr2
 
+    def evaluate_stopout_flip(
+        self,
+        symbol: str,
+        closed_direction: str,
+        closed_entry_price: float,
+        closed_stop_loss: float,
+        *,
+        current_price: float = 0.0,
+        conviction: int = 0,
+        zone_type: str = "",
+        timeframe: str = "",
+        emit: bool = True,
+    ) -> dict[str, Any]:
+        """Phase 2 Feature A — evaluate (and emit) a flip after a stop-out.
+
+        Called by the event-driven system's ``_on_trade_closed`` when a trade
+        exits on a stop-loss fill. Reuses the existing live-tick + M5 flip
+        confirmation (:meth:`_tick_m5_confirms_flip`) so the flip only rides a
+        clean, current move that structure does not oppose. Guards (all resolved
+        InstrumentProfile-first, then EntryConfig):
+
+        * ``stopout_flip_enabled`` toggles the feature.
+        * ``stopout_flip_cooldown_s`` — minimum seconds between flips on the same
+          symbol (rapid-flip / spread-burn guard).
+        * ``stopout_flip_max_per_zone`` — max flips one zone may spawn before it
+          is exhausted (whipsaw death-spiral guard); the per-zone counter resets
+          on a fresh zone touch (see :meth:`_handle_zone_touch`).
+
+        When confirmed the emitted decision is routed through the SAME
+        ``on_entry_decision`` callback as every other entry, so it runs the full
+        downstream pipeline (compliance, portfolio risk, sizing) — no shortcuts.
+
+        Returns ``{confirmed, direction, tick_mom, m5_trend, decision, reason}``
+        for logging and testing. Never raises.
+        """
+        opposite = "SHORT" if str(closed_direction).upper() == "LONG" else "LONG"
+        result: dict[str, Any] = {
+            "confirmed": False,
+            "direction": opposite,
+            "tick_mom": 0.0,
+            "m5_trend": "UNKNOWN",
+            "decision": None,
+            "reason": "",
+        }
+
+        if not bool(self._profile_param(symbol, "stopout_flip_enabled", True)):
+            result["reason"] = "disabled"
+            return result
+
+        zone_key = (symbol, str(zone_type or ""), str(timeframe or ""))
+        cooldown = float(self._profile_param(symbol, "stopout_flip_cooldown_s", 30.0))
+        max_per_zone = int(self._profile_param(symbol, "stopout_flip_max_per_zone", 2))
+
+        now = time.monotonic()
+        last = self._last_flip_time.get(symbol)
+        if last is not None and (now - last) < cooldown:
+            result["reason"] = "cooldown"
+            logger.info(
+                "[stopout-flip] {} SL hit on {} → flip check: rejected "
+                "(cooldown {:.0f}s not elapsed)",
+                symbol, closed_direction, cooldown,
+            )
+            return result
+
+        flips_from_zone = self._zone_flip_counts.get(zone_key, 0)
+        if flips_from_zone >= max_per_zone:
+            result["reason"] = "zone_exhausted"
+            logger.info(
+                "[stopout-flip] {} SL hit on {} → flip check: rejected "
+                "(zone exhausted {}/{} flips)",
+                symbol, closed_direction, flips_from_zone, max_per_zone,
+            )
+            return result
+
+        confirmed, tick_mom, m5_trend = self._tick_m5_confirms_flip(opposite, symbol)
+        result["tick_mom"] = tick_mom
+        result["m5_trend"] = m5_trend
+        logger.info(
+            "[stopout-flip] {} SL hit on {} → flip check: {} (tick_mom={:+.2f} M5={})",
+            symbol, closed_direction, "confirmed" if confirmed else "rejected",
+            tick_mom, m5_trend,
+        )
+        if not confirmed:
+            result["reason"] = "unconfirmed"
+            return result
+
+        # Build the opposite-direction entry decision. The flip enters at the
+        # current price (the stop-out fill) with the original risk distance
+        # mirrored to the correct side, and targets derived from structure.
+        flip_entry = (
+            float(current_price)
+            if current_price and current_price > 0
+            else float(closed_entry_price)
+        )
+        risk = abs(float(closed_entry_price) - float(closed_stop_loss))
+        if risk <= 0:
+            risk = flip_entry * 0.001 if flip_entry > 0 else 1.0
+        sl = flip_entry - risk if opposite == "LONG" else flip_entry + risk
+        tp1, tp2 = self._derive_targets(symbol, opposite, flip_entry, sl)
+
+        pip_size = self._pip_size(symbol)
+        risk_pips = (risk / pip_size) if pip_size > 0 else 0.0
+
+        decision = {
+            "symbol": symbol,
+            "direction": opposite,
+            "entry_price": flip_entry,
+            "stop_loss": sl,
+            "tp1": tp1,
+            "tp2": tp2,
+            "conviction": int(conviction or 0),
+            "zone_type": str(zone_type or ""),
+            "timeframe": str(timeframe or ""),
+            # Entry-source attribution: a stop-out flip is its own path so the
+            # learning loop can split its win rate from zone / consensus entries.
+            "source": "stopout_flip",
+            "risk_pips": risk_pips,
+            "has_sweep": False,
+            "is_counter_trend": False,
+            "bias_direction": "",
+        }
+        result["decision"] = decision
+        result["confirmed"] = True
+        result["reason"] = "confirmed"
+
+        self._zone_flip_counts[zone_key] = flips_from_zone + 1
+        self._last_flip_time[symbol] = now
+        self._stats["stopout_flips"] = self._stats.get("stopout_flips", 0) + 1
+
+        if emit and self._on_entry is not None:
+            try:
+                self._on_entry(decision)
+            except Exception:
+                logger.exception("[stopout-flip] on_entry callback failed for {}", symbol)
+        return result
+
+    def _read_market_state(self, symbol: str) -> str:
+        """Current MarketState value string for ``symbol`` ("" if unwired)."""
+        if self._get_market_state is None:
+            return ""
+        try:
+            state = self._get_market_state(symbol)
+            return str(getattr(state, "value", state) or "")
+        except Exception:  # noqa: BLE001 — a faulty read never affects an entry
+            return ""
+
+    def _current_session(self) -> str:
+        """Current TradingSession value string ("" if unwired)."""
+        if self._session_context is None:
+            return ""
+        try:
+            session = self._session_context.get_session()
+            return str(getattr(session, "value", session) or "")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def _conviction_multiplier(self, symbol: str, market_state: str) -> float:
+        """Phase 2 Feature C — conviction boost from the compression state.
+
+        COMPRESSING boosts by ``compression_conviction_boost`` (a squeeze
+        precedes a breakout); EXPANDING boosts by ``expansion_conviction_boost``
+        (the breakout is resolving). Any other state is neutral (1.0).
+        """
+        state = (market_state or "").upper()
+        if state == "COMPRESSING":
+            return float(self._profile_param(symbol, "compression_conviction_boost", 1.2))
+        if state == "EXPANDING":
+            return float(self._profile_param(symbol, "expansion_conviction_boost", 1.5))
+        return 1.0
+
+    def _dxy_opposition_penalty(self, symbol: str, direction: str) -> float:
+        """Phase 2 Feature D — conviction penalty when USD strength opposes.
+
+        Only active on USD-denominated symbols (XAUUSD, forex USD pairs) when
+        ``dxy_filter_enabled``. Reads the injected currency-strength meter for
+        the USD ranking: USD strengthening while LONG gold (or weakening while
+        SHORT gold) is opposition → returns ``dxy_opposition_penalty`` (a
+        bounded conviction haircut, NEVER a block). Returns 0.0 otherwise or on
+        any read failure. This is a warning vote, not a gate.
+        """
+        if self._get_currency_strength is None:
+            return 0.0
+        if not bool(self._profile_param(symbol, "dxy_filter_enabled", True)):
+            return 0.0
+        if "USD" not in symbol.upper():
+            return 0.0
+        try:
+            lookback = int(self._profile_param(symbol, "dxy_lookback_bars", 20))
+            analysis = self._get_currency_strength(symbol, lookback)
+            if analysis is None:
+                return 0.0
+            usd = None
+            for r in getattr(analysis, "rankings", []) or []:
+                if str(getattr(r, "currency", "")).upper() == "USD":
+                    usd = r
+                    break
+            if usd is None:
+                return 0.0
+            momentum = str(getattr(usd, "momentum", "") or "").upper()
+            score = float(getattr(usd, "score", 0.0) or 0.0)
+            # USD strengthening: RISING momentum, or a positive score when
+            # momentum is unavailable / STABLE. Weakening: FALLING / negative.
+            if momentum == "RISING":
+                strengthening = True
+            elif momentum == "FALLING":
+                strengthening = False
+            else:
+                strengthening = score > 0.0
+            want = str(direction).upper()
+            opposes = (
+                (want == "LONG" and strengthening)
+                or (want == "SHORT" and not strengthening)
+            )
+            if not opposes:
+                return 0.0
+            return float(self._profile_param(symbol, "dxy_opposition_penalty", 0.15))
+        except Exception:  # noqa: BLE001 — the DXY vote never breaks an entry
+            return 0.0
+
+    def _shaped_conviction(
+        self,
+        symbol: str,
+        direction: str,
+        base_score: int,
+        market_state: str,
+        session: str,
+    ) -> Optional[int]:
+        """Phase 2 Features C+D — shape a base conviction for the score gate.
+
+        Applies, in order: the Asian-compression caution gate (returns ``None``
+        to vote the entry skipped), the COMPRESSING/EXPANDING conviction boost,
+        and the DXY opposition penalty. Returns the bounded shaped score, or
+        ``None`` when the caution gate votes to skip. Shared by the live entry
+        path (:meth:`_run_gates_and_emit`) and the pre-staging gate
+        (:meth:`evaluate_zone_gates`) so both use identical shaping.
+        """
+        score = int(base_score)
+        state = (market_state or "").upper()
+        sess = (session or "").upper()
+
+        # Asian-compression caution: a COMPRESSING market in the low-liquidity
+        # ASIAN session is dangerous chop — skip unless conviction clears the
+        # configured minimum (checked on the pre-boost score so the boost below
+        # can't be what pushes a weak Asian-chop setup over the line).
+        if state == "COMPRESSING" and sess == "ASIAN":
+            asian_min = int(
+                self._profile_param(symbol, "asian_compression_min_conviction", 80)
+            )
+            if score <= asian_min:
+                logger.info(
+                    "[entry-orch] {} {} SKIPPED — Asian+COMPRESSING caution "
+                    "(conviction {} <= {})",
+                    symbol, direction, score, asian_min,
+                )
+                self._stats["asian_compression_skips"] = (
+                    self._stats.get("asian_compression_skips", 0) + 1
+                )
+                return None
+
+        boost = self._conviction_multiplier(symbol, state)
+        if boost != 1.0:
+            boosted = int(round(score * boost))
+            logger.info(
+                "[entry-orch] {} {} conviction {} -> {} (x{:.2f} for {})",
+                symbol, direction, score, boosted, boost, state or "?",
+            )
+            score = boosted
+
+        penalty = self._dxy_opposition_penalty(symbol, direction)
+        if penalty > 0.0:
+            penalised = int(round(score * (1.0 - penalty)))
+            logger.info(
+                "[entry-orch] {} {} DXY opposition — conviction {} -> {} "
+                "(-{:.0%}, USD opposes)",
+                symbol, direction, score, penalised, penalty,
+            )
+            self._stats["dxy_oppositions"] = self._stats.get("dxy_oppositions", 0) + 1
+            score = penalised
+
+        return max(0, min(int(score), 150))
+
+    def evaluate_zone_gates(
+        self,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        stop_loss: float,
+        tp1: float,
+        tp2: float,
+        zone: EntryZone,
+    ) -> bool:
+        """Phase 2 Feature B — run the entry gate chain for a hypothetical entry.
+
+        Runs the SAME gate pipeline :meth:`_run_gates_and_emit` uses (conviction
+        shaping + EV/score/spread/alignment gates) so a pre-staged limit order is
+        vetted by the same bar a market entry would face — it is an earlier
+        execution of the gates, not a bypass. Returns True only when every gate
+        passes. Never raises — a fault fails closed (returns False).
+        """
+        try:
+            alignment = self._htf_alignment(symbol, direction)
+            momentum = self._entry_momentum(symbol, direction)
+            posture = self._entry_posture(alignment, momentum)
+            long_p, short_p = self._entry_probabilities(symbol)
+            base_score = int(getattr(zone, "conviction", 0) or 0)
+            shaped = self._shaped_conviction(
+                symbol, direction, base_score,
+                self._read_market_state(symbol), self._current_session(),
+            )
+            if shaped is None:
+                return False
+            passed, _results = self._gate.validate_all(
+                symbol=symbol,
+                direction=direction,
+                entry_price=entry_price,
+                stop_loss=stop_loss,
+                tp1=tp1,
+                tp2=tp2,
+                score=shaped,
+                current_spread_pips=self._get_spread(symbol),
+                zone=zone,
+                alignment=alignment,
+                posture=posture,
+                long_probability=long_p,
+                short_probability=short_p,
+                is_instrument_known=self._is_instrument_known(symbol),
+                is_market_open=self._is_market_open(symbol),
+                is_session_active=self._is_session_active(symbol),
+                is_news_clear=self._is_news_clear(symbol),
+                is_drawdown_ok=self._is_drawdown_ok(),
+            )
+            return bool(passed)
+        except Exception:
+            logger.debug("[entry-orch] evaluate_zone_gates failed for {}", symbol)
+            return False
+
+    def _log_session_context(self, symbol: str, direction: str) -> None:
+        """Log the current trading session + its tuning for an entry.
+
+        Observability read of the session classifier (brain/session_context.py):
+        records the active ``TradingSession`` (ASIAN / LONDON / NY /
+        LONDON_NY_OVERLAP) plus this symbol's resolved size multiplier and zone
+        weight. Session-aware SIZING is applied downstream in the entry-decision
+        pipeline (Phase 2 Feature C); this method only surfaces the read. No-op
+        and never raises when the session context is unwired.
+        """
+        if self._session_context is None:
+            return
+        try:
+            session = self._session_context.get_session()
+            session_str = getattr(session, "value", session)
+            size_mult = self._session_context.get_session_multiplier(symbol, session)
+            zone_weight = self._session_context.get_session_zone_weight(symbol, session)
+            self._stats["session_signals"] = (
+                self._stats.get("session_signals", 0) + 1
+            )
+            logger.info(
+                "[entry-orch] {} {} session signal: session={} size_mult={:.2f} "
+                "zone_weight={:.2f}",
+                symbol, direction, session_str, size_mult, zone_weight,
+            )
+        except Exception:
+            logger.debug("[entry-orch] session logging failed for {}", symbol)
+
     def _run_gates_and_emit(
         self,
         symbol: str,
@@ -636,6 +1080,25 @@ class EntryOrchestrator:
         direction = info["direction"]
         entry_price = info["touch_price"]
         pip_size = self._pip_size(symbol)
+
+        # ── Market-state + session reads (Phase 2 Feature C — ACTIVE) ────
+        # The compression detector's MarketState now actively shapes the entry:
+        # COMPRESSING / EXPANDING boost the zone conviction (below) and, together
+        # with the trading session, drive the Asian-compression caution gate. The
+        # session classifier read is also logged for observability; session-aware
+        # SIZING is applied downstream in the entry-decision pipeline. Both reads
+        # are fully guarded so an unwired/faulty detector degrades to neutral.
+        market_state = self._read_market_state(symbol)
+        session = self._current_session()
+        if market_state:
+            self._stats["market_state_signals"] = (
+                self._stats.get("market_state_signals", 0) + 1
+            )
+            logger.info(
+                "[entry-orch] {} {} market-state={} session={} — active conviction shaping",
+                symbol, direction, market_state, session or "?",
+            )
+        self._log_session_context(symbol, direction)
 
         # ── A1: opportunistic direction verification ─────────────────────
         # The zone's direction is mechanical (a bullish FVG ⇒ LONG). Before
@@ -669,10 +1132,11 @@ class EntryOrchestrator:
             else:
                 # The blended momentum score folds in HTF momentum (RSI+MACD on
                 # M5/H1), which LAGS. For scalping, the leading signals are live
-                # tick momentum and the M5 structural trend. If BOTH agree with
-                # the zone direction, take the entry despite the negative blended
-                # score rather than skipping a setup that current price action
-                # actively supports.
+                # tick momentum and the M5 structural trend. If ticks agree with
+                # the zone direction and M5 is not actively opposing (it matches
+                # OR is RANGING/UNKNOWN), take the entry despite the negative
+                # blended score rather than skipping a setup that current price
+                # action actively supports.
                 agree, tick_dir_mom, m5_dir = self._tick_m5_agree_direction(
                     direction, symbol,
                 )
@@ -680,7 +1144,7 @@ class EntryOrchestrator:
                     logger.warning(
                         "[entry-orch] {} {} entry PROCEEDS despite blended "
                         "momentum {:+.2f} opposing — live tick_mom={:+.2f} agrees "
-                        "and M5={} matches the zone (HTF momentum lags; tick+M5 "
+                        "and M5={} is non-opposing (HTF momentum lags; tick+M5 "
                         "lead for scalps)",
                         symbol, direction, momentum, tick_dir_mom, m5_dir,
                     )
@@ -758,6 +1222,21 @@ class EntryOrchestrator:
                     )
             except Exception as exc:
                 logger.debug("[cold-start] score adjustment failed for {}: {}", symbol, exc)
+
+        # ── Phase 2 Features C+D: conviction shaping ─────────────────────
+        # Apply the compression/expansion boost, the DXY opposition penalty, and
+        # the Asian-compression caution gate to the (cold-start-adjusted) score
+        # before it reaches the gate. A None result means the caution gate voted
+        # to skip the entry entirely.
+        shaped = self._shaped_conviction(
+            symbol, direction, effective_score, market_state, session,
+        )
+        if shaped is None:
+            self._tick_detector.cancel_pending(symbol, "asian-compression caution")
+            with self._lock:
+                self._confirming.pop(symbol, None)
+            return
+        effective_score = shaped
 
         passed, results = self._gate.validate_all(
             symbol=symbol,

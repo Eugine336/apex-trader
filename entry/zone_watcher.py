@@ -210,6 +210,16 @@ def extract_entry_zones(
             bias_direction="",
         ))
 
+    # TODO(vwap-as-zone): when ``cfg.vwap_zone_enabled`` (or the per-instrument
+    # ``InstrumentProfile.vwap_zone_enabled``) is True, extract VWAP-deviation
+    # entry zones here — the same way FVG/OB zones are built above. Session VWAP
+    # ± N standard-deviation bands (brain/session_vwap.py) would become zones:
+    # a touch of the lower band in an uptrend → LONG (ZoneType.VWAP_BAND), a
+    # touch of the upper band in a downtrend → SHORT, with the band edge as the
+    # invalidation level. Currently VWAP is only a round-table vote, not a zone
+    # source; the flag defaults OFF, so this is prep work for a future PR and no
+    # zones are emitted from VWAP yet.
+
     return zones
 
 
@@ -226,6 +236,14 @@ class ZoneWatcher:
         self._zones: dict[str, list[EntryZone]] = {}
         self._lock = threading.Lock()
         self._last_versions: dict[str, int] = {}
+        # Observers notified (with the symbol) after each zone-set update, so
+        # downstream consumers (e.g. the Phase 2 ZoneOrderStager) can react to
+        # zones appearing / expiring / being invalidated. Best-effort dispatch.
+        self._update_callbacks: list[Callable[[str], None]] = []
+
+    def register_update_callback(self, callback: Callable[[str], None]) -> None:
+        """Register a ``callback(symbol)`` fired after each zone-set update."""
+        self._update_callbacks.append(callback)
 
     def on_world_model_update(self, symbol: str) -> None:
         """Called when a WorldModel for *symbol* is published.
@@ -278,6 +296,16 @@ class ZoneWatcher:
                 "[zone-watcher] {} → {} zone(s) (v{})",
                 symbol, len(zones), model.version,
             )
+
+        # Notify observers (e.g. the ZoneOrderStager) that this symbol's zone
+        # set changed — fired after the lock is released so callbacks may safely
+        # call back into get_active_zones. Best-effort — a faulty observer never
+        # breaks the WorldModel update path.
+        for cb in list(self._update_callbacks):
+            try:
+                cb(symbol)
+            except Exception:  # noqa: BLE001
+                logger.debug("[zone-watcher] update callback failed for {}", symbol)
 
     def get_active_zones(self, symbol: str) -> list[EntryZone]:
         """Return current entry zones for *symbol* (may be empty)."""

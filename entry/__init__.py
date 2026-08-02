@@ -23,6 +23,7 @@ from entry.tick_entry_detector import TickEntryDetector
 from entry.m1_confirmation import M1CandleConfirmer
 from entry.entry_gate import EntryGate
 from entry.entry_orchestrator import EntryOrchestrator
+from entry.zone_order_staging import ZoneOrderStager, StagedOrder
 
 __all__ = [
     "EntryZone",
@@ -34,4 +35,6 @@ __all__ = [
     "M1CandleConfirmer",
     "EntryGate",
     "EntryOrchestrator",
+    "ZoneOrderStager",
+    "StagedOrder",
 ]

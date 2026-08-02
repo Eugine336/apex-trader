@@ -958,6 +958,36 @@ class MT5Connector(BaseConnector):
             platform="mt5",
         )
 
+    def cancel_pending_order(self, order_id: str) -> bool:
+        """Delete a resting pending (limit/stop) order by its ticket.
+
+        Uses ``TRADE_ACTION_REMOVE`` to remove the order from the book. Returns
+        True on success, False on any failure (invalid ticket, broker reject,
+        no connection). Never raises — a failed cancel is reported, not thrown.
+        """
+        try:
+            self._require_connection()
+        except Exception as exc:  # noqa: BLE001 — surface as a failed cancel
+            logger.error("MT5 cancel pending — not connected: {}", exc)
+            return False
+        try:
+            ticket = int(order_id)
+        except (TypeError, ValueError):
+            logger.error("MT5 cancel pending — invalid ticket {!r}", order_id)
+            return False
+
+        request = {
+            "action": mt5.TRADE_ACTION_REMOVE,
+            "order": ticket,
+        }
+        result = mt5.order_send(request)
+        if result is None or result.retcode != mt5.TRADE_RETCODE_DONE:
+            err = result.comment if result else str(mt5.last_error())
+            logger.error("MT5 cancel pending failed — ticket {}: {}", ticket, err)
+            return False
+        logger.info("MT5 pending cancelled — ticket {}", ticket)
+        return True
+
     def _effective_min_stop_distance(
         self,
         broker_symbol: str,
