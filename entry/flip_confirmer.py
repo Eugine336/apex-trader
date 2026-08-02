@@ -3,8 +3,9 @@
 Replaces the weak 2-check flip confirmation (tick efficiency ≥ 0.30 + M5
 non-opposition) that gated both the stop-out flip and the A1 direction-flip /
 momentum-override paths. That old confirmation let flips fire on spread spikes,
-Asian-session drift and low-volume wicks. This module hardens it into FIVE
-checks, run cheapest-first with a short-circuit on the first failure:
+Asian-session drift and low-volume wicks. This module hardens it into an
+eight-check pipeline, run cheapest-first with a short-circuit on the first
+failure:
 
     1. ATR-normalised magnitude  — the recent net directional move must clear
        ``flip_atr_move_threshold`` × the M5 ATR, so a single wick / spread
@@ -20,6 +21,14 @@ checks, run cheapest-first with a short-circuit on the first failure:
     5. Invalidation clean-break — the last CLOSED M1 candle must close cleanly
        beyond the invalidation level; a wick-only breach the close retreats
        from is rejected.
+    6. Tick-rule order-flow delta — the recent stored ticks must show net
+       aggressor pressure in the flip direction (delta ratio clears
+       ``flip_delta_threshold``). Gated by ``flip_require_delta_confirmation``
+       and degrades to a skip below 10 usable ticks.
+    7. Fast-then-slow sequencing — M1 must have confirmed the flip direction
+       FIRST and M5 must have confirmed on a later bar (a
+       :class:`~entry.flip_sequence_tracker.FlipSequenceTracker` verdict). Gated
+       by ``flip_require_sequence``.
 
 The confirmer is STATELESS and fully injectable: every data source is supplied
 as a callable (or a small store object), so the same logic runs live (fed from
@@ -29,11 +38,11 @@ bar slices). Every threshold is resolved per-instrument via ``profile_param``
 are zero hardcoded tuning values.
 
 Graceful degradation: when a data source is unavailable (no ATR, no M1 frame,
-no session, no structure, no invalidation level) the affected check is SKIPPED
-rather than failing — a missing read must never block a flip on its own. Tick
-efficiency (check 2) is the one hard gate: an unconfirmed / weak move is always
-refused. Any unexpected error fails closed (``confirmed=False``) — a faulty
-read never flips a trade.
+no session, no structure, no invalidation level, no ticks, no sequence tracker)
+the affected check is SKIPPED rather than failing — a missing read must never
+block a flip on its own. Tick efficiency (check 2) is the one hard gate: an
+unconfirmed / weak move is always refused. Any unexpected error fails closed
+(``confirmed=False``) — a faulty read never flips a trade.
 """
 
 from __future__ import annotations
@@ -46,6 +55,7 @@ from loguru import logger
 
 from brain.instrument_profile import get_profile
 from brain.market_data_utils import drop_forming_bar
+from entry.tick_delta_analyzer import TickDeltaAnalyzer
 
 # Literal fallbacks — used only when neither the InstrumentProfile nor the
 # EntryConfig supplies a value. They mirror the InstrumentProfile field defaults
@@ -58,6 +68,10 @@ _DEFAULTS: dict[str, Any] = {
     "flip_volume_ratio_min": 1.0,
     "flip_volume_ratio_asian": 1.3,
     "flip_require_clean_break": True,
+    "flip_delta_threshold": 0.2,
+    "flip_delta_tick_count": 30,
+    "flip_require_delta_confirmation": False,
+    "flip_require_sequence": False,
 }
 
 _ASIAN = "ASIAN"
@@ -94,11 +108,12 @@ def _default_profile_param(symbol: str, name: str, default: Any) -> Any:
 
 
 class FlipConfirmer:
-    """Stateless five-check flip confirmer.
+    """Stateless eight-check flip confirmer.
 
     Construct once with the data-source callables (all optional and guarded);
-    call :meth:`confirm` per flip decision. Because it is stateless it is safe
-    to share across threads.
+    call :meth:`confirm` per flip decision. Because it holds no per-flip state
+    it is safe to share across threads (the injected ``sequence_tracker`` owns
+    its own thread-safe state).
     """
 
     def __init__(
@@ -109,6 +124,8 @@ class FlipConfirmer:
         get_tick_move_pips: Optional[Callable[[str, str, float], float]] = None,
         get_structure_trend: Optional[Callable[[str, str], str]] = None,
         get_m1_dataframe: Optional[Callable[[str], Optional[pd.DataFrame]]] = None,
+        get_recent_ticks: Optional[Callable[[str, int], list]] = None,
+        sequence_tracker: Optional[Any] = None,
         session_context: Optional[Any] = None,
         pip_size_lookup: Optional[Callable[[str], float]] = None,
         profile_param: Optional[Callable[[str, str, Any], Any]] = None,
@@ -128,11 +145,19 @@ class FlipConfirmer:
         # ``(symbol) -> M1 DataFrame`` (must carry a ``tick_volume`` column for
         # the volume check; missing ⇒ volume / clean-break skipped).
         self._get_m1 = get_m1_dataframe
+        # ``(symbol, count) -> list[Tick]`` for the tick-rule delta check
+        # (None ⇒ delta check skipped). Wired to ``TickStore.get_recent`` live.
+        self._get_recent_ticks = get_recent_ticks
+        # FlipSequenceTracker-like object exposing ``is_confirmed(symbol, dir)``
+        # for the fast-then-slow sequencing check (None ⇒ sequence skipped).
+        self._sequence_tracker = sequence_tracker
         # SessionContext-like object exposing ``get_session()``.
         self._session_context = session_context
         self._pip_size = pip_size_lookup or (lambda _s: 0.0001)
         self._profile_param = profile_param or _default_profile_param
         self._atr_tf = atr_tf
+        # Stateless helper for Check 6 — shared across all flips.
+        self._delta_analyzer = TickDeltaAnalyzer()
 
     # ── Public API ────────────────────────────────────────────────────
     def confirm(
@@ -144,16 +169,17 @@ class FlipConfirmer:
         invalidation_level: float = 0.0,
         checks_enabled: Optional[dict[str, bool]] = None,
     ) -> FlipConfirmation:
-        """Run the five checks for ``direction`` and return the verdict.
+        """Run the eight checks for ``direction`` and return the verdict.
 
         ``direction`` is the direction being validated — the OPPOSITE side for a
         stop-out / A1 flip (``mode="flip"``), or the ORIGINAL zone side for the
         A1 momentum-override (``mode="agree"``). ``invalidation_level`` is the
         original zone's invalidation price (``0`` ⇒ clean-break check skipped).
         ``checks_enabled`` optionally disables individual checks by key
-        (``atr`` / ``tick`` / ``m5`` / ``m15`` / ``volume`` / ``clean_break``)
-        — used by the backtest to toggle each check independently. All computed
-        values are captured in ``checks`` regardless of the outcome.
+        (``atr`` / ``tick`` / ``m5`` / ``m15`` / ``volume`` / ``clean_break`` /
+        ``delta`` / ``sequence``) — used by the backtest to toggle each check
+        independently. All computed values are captured in ``checks`` regardless
+        of the outcome.
         """
         checks: dict[str, Any] = {"mode": mode}
         want = str(direction).upper()
@@ -199,6 +225,18 @@ class FlipConfirmer:
                 ok, reason = self._check_clean_break(
                     symbol, want, invalidation_level, m1_df, checks,
                 )
+                if not ok:
+                    return FlipConfirmation(False, reason, checks)
+
+            # ── Check 6 — tick-rule order-flow delta ─────────────────
+            if self._enabled(checks_enabled, "delta"):
+                ok, reason = self._check_delta(symbol, want, checks)
+                if not ok:
+                    return FlipConfirmation(False, reason, checks)
+
+            # ── Check 7 — fast-then-slow temporal sequencing ─────────
+            if self._enabled(checks_enabled, "sequence"):
+                ok, reason = self._check_sequence(symbol, want, checks)
                 if not ok:
                     return FlipConfirmation(False, reason, checks)
 
@@ -351,6 +389,72 @@ class FlipConfirmer:
             checks["clean_break"] = "fail"
             return False, "clean_break"
         checks["clean_break"] = "pass"
+        return True, ""
+
+    def _check_delta(
+        self, symbol: str, want: str, checks: dict[str, Any],
+    ) -> tuple[bool, str]:
+        """Check 6 — tick-rule order-flow delta must back the flip direction.
+
+        Gated by ``flip_require_delta_confirmation`` (OFF by default). Reads the
+        last ``flip_delta_tick_count`` stored ticks and requires the signed
+        aggressor delta ratio to clear ``flip_delta_threshold`` in the flip
+        direction. Degrades to a graceful skip when the feature is off, no tick
+        source is wired, or fewer than 10 usable ticks are available.
+        """
+        require = bool(self._param(symbol, "flip_require_delta_confirmation"))
+        checks["flip_require_delta_confirmation"] = require
+        if not require or self._get_recent_ticks is None:
+            checks["delta"] = "skip"
+            return True, ""
+        count = int(self._param(symbol, "flip_delta_tick_count"))
+        threshold = float(self._param(symbol, "flip_delta_threshold"))
+        checks["flip_delta_threshold"] = threshold
+        try:
+            ticks = self._get_recent_ticks(symbol, count) or []
+        except Exception:  # noqa: BLE001 — an unavailable tick read never blocks
+            checks["delta"] = "skip"
+            return True, ""
+        res = self._delta_analyzer.confirm(ticks, want, threshold)
+        checks["delta_ratio"] = res.delta_ratio
+        checks["delta_buy"] = res.buy_count
+        checks["delta_sell"] = res.sell_count
+        checks["delta_neutral"] = res.neutral_count
+        if res.reason in ("insufficient_ticks", "unknown_direction"):
+            checks["delta"] = "skip"
+            return True, ""
+        if not res.confirmed:
+            checks["delta"] = "fail"
+            return False, "delta"
+        checks["delta"] = "pass"
+        return True, ""
+
+    def _check_sequence(
+        self, symbol: str, want: str, checks: dict[str, Any],
+    ) -> tuple[bool, str]:
+        """Check 7 — the fast-then-slow sequence must be FULLY_CONFIRMED.
+
+        Gated by ``flip_require_sequence`` (OFF by default). Consults the
+        injected :class:`~entry.flip_sequence_tracker.FlipSequenceTracker`: the
+        flip is allowed only when M1 confirmed first and M5 confirmed on a later
+        bar for this symbol+direction. Skips when the feature is off or no
+        tracker is wired.
+        """
+        require = bool(self._param(symbol, "flip_require_sequence"))
+        checks["flip_require_sequence"] = require
+        if not require or self._sequence_tracker is None:
+            checks["sequence"] = "skip"
+            return True, ""
+        try:
+            confirmed = bool(self._sequence_tracker.is_confirmed(symbol, want))
+        except Exception:  # noqa: BLE001 — a faulty tracker read never blocks
+            checks["sequence"] = "skip"
+            return True, ""
+        checks["sequence_confirmed"] = confirmed
+        if not confirmed:
+            checks["sequence"] = "fail"
+            return False, "sequence"
+        checks["sequence"] = "pass"
         return True, ""
 
     # ── Data-source helpers (all guarded) ─────────────────────────────

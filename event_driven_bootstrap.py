@@ -51,6 +51,7 @@ from execution.position_snapshot import PositionSnapshot, build_position_snapsho
 from execution.management_state import ManagementStateStore
 from execution.management_scheduler import ManagementScheduler
 from entry import EntryOrchestrator, EntryConfig, ZoneOrderStager
+from entry.flip_sequence_tracker import FlipSequenceTracker
 from platform_context import build_context_for_symbol
 from platforms.platform_manager import PlatformManager
 from platforms.order_idempotency import build_order_comment, generate_idempotency_key
@@ -3337,6 +3338,15 @@ class EventDrivenSystem:
         )
 
         # ── Entry plane ──────────────────────────────────────────────
+        # Fast-then-slow flip sequencing tracker (Session 16, flip Check 7).
+        # Stateful — fed M1/M5 closes below and read by the orchestrator's
+        # FlipConfirmer. OFF by default per InstrumentProfile
+        # (flip_require_sequence=False), so it only ever gates flips once a
+        # profile opts in; feeding it always keeps its state warm.
+        self._flip_sequence_tracker = FlipSequenceTracker(
+            pip_size_lookup=self._safe_pip_size,
+        )
+
         self._entry_orchestrator = EntryOrchestrator(
             world_model_store=self._wm_store,
             config=EntryConfig(),
@@ -3393,6 +3403,14 @@ class EventDrivenSystem:
             # calibration/ticks are unavailable.
             get_atr_pips=self._calibrated_atr_pips,
             get_tick_move_pips=self._evaluator._compute_tick_move_pips,
+            # Tick-rule order-flow delta (flip Check 6): the FlipConfirmer reads
+            # recent stored ticks straight from the TickStore (already populated
+            # on every tick event — no new collection needed). OFF by default
+            # per InstrumentProfile until validated live.
+            get_recent_ticks=lambda sym, n: self._tick_store.get_recent(sym, n),
+            # Fast-then-slow sequencing (flip Check 7): the shared tracker fed
+            # by the M1/M5 candle-close handlers below.
+            sequence_tracker=self._flip_sequence_tracker,
         )
 
         # ── Zone order stager (Phase 2 Feature B) ────────────────────
@@ -3533,6 +3551,22 @@ class EventDrivenSystem:
             "candle_close:M1",
             lambda ev: self._entry_pool.submit(
                 self._entry_orchestrator.on_m1_close, ev.symbol,
+            ),
+        )
+        # Feed the fast-then-slow flip sequence tracker (flip Check 7): M1 closes
+        # arm the fast confirmation, M5 closes provide the slow confirmation and
+        # advance the tracker's M5-bar clock. Both dispatched off the entry pool
+        # so a slow momentum read never stalls the event bus.
+        self._event_bus.subscribe(
+            "candle_close:M1",
+            lambda ev: self._entry_pool.submit(
+                self._feed_flip_sequence_m1, ev.symbol,
+            ),
+        )
+        self._event_bus.subscribe(
+            "candle_close:M5",
+            lambda ev: self._entry_pool.submit(
+                self._feed_flip_sequence_m5, ev.symbol,
             ),
         )
         self._event_bus.subscribe(
@@ -6020,6 +6054,54 @@ class EventDrivenSystem:
             return data.get("M1")
         except Exception:
             return None
+
+    def _flip_sequence_active(self, symbol: str) -> bool:
+        """True when the fast-then-slow sequence gate is enabled for ``symbol``.
+
+        The tracker is only fed when a profile opts in (flip_require_sequence),
+        so the extra M1 momentum reads stay zero-cost while the feature is OFF.
+        """
+        try:
+            from brain.instrument_profile import get_profile as _get_profile
+            return bool(getattr(_get_profile(symbol), "flip_require_sequence", False))
+        except Exception:  # noqa: BLE001 — a tuning read never breaks the feed
+            return False
+
+    def _feed_flip_sequence_m1(self, symbol: str) -> None:
+        """Feed an M1 close into the flip-sequence tracker (fast confirmation).
+
+        Evaluates M1 momentum for BOTH flip directions so the tracker arms
+        whichever way the fast timeframe shifted, then reaps any lapsed arming.
+        Best-effort — a fetch/read fault never disturbs the entry pipeline.
+        """
+        if not self._flip_sequence_active(symbol):
+            return
+        try:
+            m1_df = self._get_m1_dataframe(symbol)
+            if m1_df is None:
+                return
+            for direction in ("LONG", "SHORT"):
+                self._flip_sequence_tracker.on_m1_close(symbol, direction, m1_df)
+            self._flip_sequence_tracker.check_timeouts(symbol)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[flip-seq] M1 feed failed for {}: {}", symbol, exc)
+
+    def _feed_flip_sequence_m5(self, symbol: str) -> None:
+        """Feed an M5 close into the flip-sequence tracker (slow confirmation).
+
+        Reads the confirmed M5 structure trend from the WorldModel and advances
+        the tracker's per-symbol M5-bar clock exactly once. Best-effort.
+        """
+        if not self._flip_sequence_active(symbol):
+            return
+        try:
+            wm = self._wm_store.get(symbol)
+            structure = wm.structure_by_tf() if wm is not None else {}
+            m5_trend, _ = _struct_trend_conf(structure, "M5")
+            self._flip_sequence_tracker.on_m5_close(symbol, "", m5_trend)
+            self._flip_sequence_tracker.check_timeouts(symbol)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[flip-seq] M5 feed failed for {}: {}", symbol, exc)
 
     def _check_session_active(self, symbol: str) -> bool:
         """SessionEngine callback for EntryOrchestrator gate.
