@@ -174,17 +174,28 @@ _register("JD50",      "Jump 50",             _SYN, _DER, 0.01,  1.0, 0.5, "24/7
 # ── Crypto (24/7 — available on both MT5 CFD brokers and Deriv) ──────────
 # Pip sizes: 1.0 USD per pip for BTC-class, 0.01 for lower-price coins.
 # Typical spreads reflect CFD crypto; actual may vary by broker.
+#
+# pip_value_per_lot below are COLD-START FALLBACKS ONLY. For crypto CFDs on MT5
+# the true money-per-pip depends on the broker's contract_size (and, for some
+# brokers, the live price), so it is overridden at runtime by broker truth
+# (_effective_pip_value → trade_tick_value * pip_size / trade_tick_size). These
+# defaults are set to ≈ pip_size (i.e. contract_size ≈ 1, the common MT5 crypto
+# CFD convention) rather than the old 1.0 forex-scale placeholder: 1.0 was wrong
+# by up to 10,000× for sub-$10 coins (XRP/ADA at pip_size 0.0001) and, before
+# the broker-truth override reached the heat monitor, inflated portfolio heat
+# enough to trip phantom EMERGENCY force-closes. An order-of-magnitude-correct
+# fallback keeps risk math sane even if the broker spec is briefly unavailable.
 _CRY = InstrumentCategory.CRYPTO  # proper CRYPTO category — 24/7, on MT5
 _CRYMAR = MarginCategory.SYNTHETIC
 
-_register("BTCUSD",  "Bitcoin / US Dollar",      _CRY, _B, 1.0,   1.0, 50.0,  "24/7", _CRYMAR)
-_register("ETHUSD",  "Ethereum / US Dollar",     _CRY, _B, 0.1,   1.0, 3.0,   "24/7", _CRYMAR)
-_register("LTCUSD",  "Litecoin / US Dollar",     _CRY, _B, 0.01,  1.0, 0.5,   "24/7", _CRYMAR)
-_register("XRPUSD",  "Ripple / US Dollar",       _CRY, _B, 0.0001,1.0, 0.05,  "24/7", _CRYMAR)
-_register("BNBUSD",  "BNB / US Dollar",          _CRY, _B, 0.01,  1.0, 1.0,   "24/7", _CRYMAR)
-_register("SOLUSD",  "Solana / US Dollar",       _CRY, _B, 0.01,  1.0, 0.5,   "24/7", _CRYMAR)
-_register("ADAUSD",  "Cardano / US Dollar",      _CRY, _B, 0.0001,1.0, 0.01,  "24/7", _CRYMAR)
-_register("DOTUSD",  "Polkadot / US Dollar",     _CRY, _B, 0.001, 1.0, 0.1,   "24/7", _CRYMAR)
+_register("BTCUSD",  "Bitcoin / US Dollar",      _CRY, _B, 1.0,    1.0,    50.0,  "24/7", _CRYMAR)
+_register("ETHUSD",  "Ethereum / US Dollar",     _CRY, _B, 0.1,    0.1,    3.0,   "24/7", _CRYMAR)
+_register("LTCUSD",  "Litecoin / US Dollar",     _CRY, _B, 0.01,   0.01,   0.5,   "24/7", _CRYMAR)
+_register("XRPUSD",  "Ripple / US Dollar",       _CRY, _B, 0.0001, 0.0001, 0.05,  "24/7", _CRYMAR)
+_register("BNBUSD",  "BNB / US Dollar",          _CRY, _B, 0.01,   0.01,   1.0,   "24/7", _CRYMAR)
+_register("SOLUSD",  "Solana / US Dollar",       _CRY, _B, 0.01,   0.01,   0.5,   "24/7", _CRYMAR)
+_register("ADAUSD",  "Cardano / US Dollar",      _CRY, _B, 0.0001, 0.0001, 0.01,  "24/7", _CRYMAR)
+_register("DOTUSD",  "Polkadot / US Dollar",     _CRY, _B, 0.001,  0.001,  0.1,   "24/7", _CRYMAR)
 # DOGEUSD removed — not available on MetaQuotes MT5 or Deriv (confirmed 2026-05-31)
 
 
