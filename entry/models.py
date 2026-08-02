@@ -190,6 +190,20 @@ class EntryConfig:
     # geometry alone.
     counter_trend_conviction_mult_ev: float = 0.85
     coalesce_hz: float = 15.0
+    # ── Compression detector defaults (global market-state classifier) ────
+    # Global fallback tuning for brain/compression_detector.py. A per-instrument
+    # InstrumentProfile may override any of these; the detector reads the profile
+    # first and falls back to these EntryConfig defaults when a field is absent.
+    # compression_lookback:      rolling BBW-percentile window, in bars.
+    # compression_threshold_pct: COMPRESSING when BBW sits in the bottom Nth
+    #                            percentile of that window.
+    # adx_trending_threshold:    TRENDING when ADX exceeds this level.
+    # expansion_threshold_pct:   EXPANDING when BBW breaks above this percentile
+    #                            after having been compressed.
+    compression_lookback: int = 100
+    compression_threshold_pct: float = 15.0
+    adx_trending_threshold: float = 25.0
+    expansion_threshold_pct: float = 70.0
 
     def __post_init__(self) -> None:
         if self.zone_expiry_seconds_by_tf is None:
