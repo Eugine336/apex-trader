@@ -56,6 +56,18 @@ class InstrumentProfile:
     # ── MTF Confluence ────────────────────────────────────────────────
     mtf_overlap_threshold_pips: float   # Min overlap between M5 and M15 FVGs to count as confluence
 
+    # ── Compression Detector ──────────────────────────────────────────
+    # Per-instrument tuning for the global market-state classifier
+    # (brain/compression_detector.py).  Defaulted so every existing profile
+    # inherits sensible values; a category or symbol profile can override any
+    # of them to suit an instrument's own volatility behaviour.  These are the
+    # single source of truth — the detector reads the profile first and falls
+    # back to the EntryConfig defaults only when a profile omits a field.
+    compression_lookback: int = 100          # Rolling BBW-percentile window (bars)
+    compression_threshold_pct: float = 15.0  # COMPRESSING = BBW in bottom Nth pctile
+    adx_trending_threshold: float = 25.0     # TRENDING = ADX above this level
+    expansion_threshold_pct: float = 70.0    # EXPANDING = BBW breaks above this pctile
+
 
 # ---------------------------------------------------------------------------
 # Profile definitions per category

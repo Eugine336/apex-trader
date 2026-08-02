@@ -64,6 +64,8 @@ class EntryOrchestrator:
         on_gate_trace: Optional[Callable[..., None]] = None,
         gate_tuner: Optional[object] = None,
         pair_learner: Optional[object] = None,
+        get_market_state: Optional[Callable[[str], Any]] = None,
+        get_compression_score: Optional[Callable[[str], float]] = None,
     ) -> None:
         self._config = config or EntryConfig()
         self._pip_size = pip_size_lookup or (lambda _: 0.0001)
@@ -75,6 +77,13 @@ class EntryOrchestrator:
         # so trades can flow and the learning layer can bootstrap itself.
         # Once MIN_TRADES is reached, the learner's outcome data takes over.
         self._pair_learner = pair_learner
+        # Global market-state read (compression detector), logging-only for now.
+        # These expose the current MarketState (TRENDING/RANGING/COMPRESSING/
+        # EXPANDING) and squeeze score per symbol. The entry round table logs
+        # them as a new signal but does NOT yet block entries on them —
+        # compression-aware filtering / pre-staged breakouts land in a later PR.
+        self._get_market_state = get_market_state
+        self._get_compression_score = get_compression_score
         # Live sub-candle momentum for the trade direction → [-1, +1]
         # (signature: ``(symbol, norm_dir, pip_size) → float``). Used by the A1
         # flip confirmation so the flip rides real-time price, not a 60s-stale
@@ -625,6 +634,36 @@ class EntryOrchestrator:
             return entry_price + risk * rr1, entry_price + risk * rr2
         return entry_price - risk * rr1, entry_price - risk * rr2
 
+    def _log_market_state(self, symbol: str, direction: str) -> None:
+        """Log the global market state + squeeze score for an entry.
+
+        Logging-only integration of the compression detector: it records the
+        current ``MarketState`` (TRENDING / RANGING / COMPRESSING / EXPANDING)
+        and squeeze score as a round-table signal but does NOT gate the entry —
+        compression-aware filtering lands in a later PR. No-op and never raises
+        when the detector getters are unwired.
+        """
+        if self._get_market_state is None and self._get_compression_score is None:
+            return
+        try:
+            state = self._get_market_state(symbol) if self._get_market_state else None
+            score = (
+                self._get_compression_score(symbol)
+                if self._get_compression_score else None
+            )
+            state_str = getattr(state, "value", state)
+            self._stats["market_state_signals"] = (
+                self._stats.get("market_state_signals", 0) + 1
+            )
+            logger.info(
+                "[entry-orch] {} {} market-state signal: state={} squeeze={} "
+                "(logging-only, not gating)",
+                symbol, direction, state_str,
+                f"{score:.2f}" if isinstance(score, (int, float)) else score,
+            )
+        except Exception:
+            logger.debug("[entry-orch] market-state logging failed for {}", symbol)
+
     def _run_gates_and_emit(
         self,
         symbol: str,
@@ -636,6 +675,15 @@ class EntryOrchestrator:
         direction = info["direction"]
         entry_price = info["touch_price"]
         pip_size = self._pip_size(symbol)
+
+        # ── Market-state signal (logging-only round-table vote) ──────────
+        # Surface the global compression detector's read as a new signal in the
+        # entry round table. This is intentionally observational for now: it
+        # records the current MarketState + squeeze score alongside the entry
+        # but never blocks or reshapes the decision (compression-aware filtering
+        # arrives in a later PR). Fully guarded so an unwired/faulty detector
+        # can never affect an entry.
+        self._log_market_state(symbol, direction)
 
         # ── A1: opportunistic direction verification ─────────────────────
         # The zone's direction is mechanical (a bullish FVG ⇒ LONG). Before
