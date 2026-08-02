@@ -14,12 +14,13 @@ from __future__ import annotations
 import threading
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 from loguru import logger
 
 from brain.fvg_detector import FairValueGap, FVGStatus
 from brain.order_block import OrderBlock, OBStatus
+from brain.session_vwap import vwap_with_bands
 from brain.world_model import WorldModel, WorldModelStore
 from entry.models import EntryConfig, EntryZone, ZoneType
 
@@ -61,6 +62,10 @@ def extract_entry_zones(
     model: WorldModel,
     config: Optional[EntryConfig] = None,
     edge_weight: Optional[Callable[..., float]] = None,
+    *,
+    m5_df: Any = None,
+    session_open_minutes: int = 0,
+    profile: Optional[Any] = None,
 ) -> list[EntryZone]:
     """Derive actionable entry zones from a WorldModel snapshot.
 
@@ -77,6 +82,14 @@ def extract_entry_zones(
     the base conviction so a zone's score reflects its realized track record.
     It defaults to neutral (no change) and any lookup error is swallowed, so
     the analysis plane can never be broken by the learning layer.
+
+    ``m5_df`` / ``session_open_minutes`` / ``profile`` (optional) enable the
+    VWAP-as-zone source: when the ``vwap_zone_enabled`` flag is set (per
+    :class:`~brain.instrument_profile.InstrumentProfile` first, else the
+    :class:`EntryConfig` default) and an M5 DataFrame is supplied, session
+    VWAP ± N-σ deviation bands become additional entry zones that flow through
+    the same pipeline as FVG/OB zones.  Omitting them (the default) simply
+    yields no VWAP zones — every existing caller is unaffected.
     """
     cfg = config or EntryConfig()
     now = datetime.now(timezone.utc)
@@ -210,17 +223,156 @@ def extract_entry_zones(
             bias_direction="",
         ))
 
-    # TODO(vwap-as-zone): when ``cfg.vwap_zone_enabled`` (or the per-instrument
-    # ``InstrumentProfile.vwap_zone_enabled``) is True, extract VWAP-deviation
-    # entry zones here — the same way FVG/OB zones are built above. Session VWAP
-    # ± N standard-deviation bands (brain/session_vwap.py) would become zones:
-    # a touch of the lower band in an uptrend → LONG (ZoneType.VWAP_BAND), a
-    # touch of the upper band in a downtrend → SHORT, with the band edge as the
-    # invalidation level. Currently VWAP is only a round-table vote, not a zone
-    # source; the flag defaults OFF, so this is prep work for a future PR and no
-    # zones are emitted from VWAP yet.
+    # VWAP-as-zone: when enabled and an M5 series is supplied, session VWAP
+    # ± N-σ deviation bands become entry zones (LONG at the lower band in an
+    # uptrend, SHORT at the upper band in a downtrend). They are appended to the
+    # FVG/OB zones above and flow through the identical tick-entry / M1
+    # confirmation / gate / sizing pipeline. Omitting m5_df yields no VWAP zones.
+    zones.extend(
+        _extract_vwap_zones(
+            model, cfg, profile, m5_df, session_open_minutes, now, _conv,
+        )
+    )
 
     return zones
+
+
+def _resolve_param(profile: Optional[Any], cfg: EntryConfig, name: str, default: Any) -> Any:
+    """Resolve a tuning value: per-instrument profile first, then EntryConfig."""
+    val = getattr(profile, name, None)
+    if val is None:
+        val = getattr(cfg, name, default)
+    return default if val is None else val
+
+
+def _pip_size(symbol: str) -> Optional[float]:
+    """Best-effort pip size for ``symbol`` (None when unavailable)."""
+    try:
+        from config import get_pip_size
+
+        ps = float(get_pip_size(symbol))
+        return ps if ps > 0 else None
+    except Exception:  # noqa: BLE001 — a pip lookup miss falls back to band geometry
+        return None
+
+
+def _extract_vwap_zones(
+    model: WorldModel,
+    cfg: EntryConfig,
+    profile: Optional[Any],
+    m5_df: Any,
+    session_open_minutes: int,
+    now: datetime,
+    conv: Callable[..., int],
+) -> list[EntryZone]:
+    """Derive VWAP-deviation-band entry zones (the VWAP-as-zone source).
+
+    A session VWAP ± ``vwap_zone_deviation`` σ band becomes a with-trend entry
+    zone: price dipping to the lower band in an uptrend → LONG (buy the dip to
+    VWAP support); price rallying to the upper band in a downtrend → SHORT
+    (sell the rally to resistance). The touched band edge is the zone midpoint,
+    ``edge ± buffer`` are the boundaries, and the invalidation sits just beyond
+    the band. Returns an empty list whenever the feature is disabled, no M5
+    series is supplied, there is no HTF bias, or a VWAP band cannot be computed.
+    """
+    enabled = getattr(profile, "vwap_zone_enabled", None)
+    if enabled is None:
+        enabled = bool(getattr(cfg, "vwap_zone_enabled", False))
+    if not enabled:
+        return []
+
+    if m5_df is None or getattr(m5_df, "empty", False):
+        return []
+    try:
+        if len(m5_df) < 6:
+            return []
+    except TypeError:
+        return []
+
+    # VWAP zones are traded with the HTF trend only — no bias ⇒ no zone.
+    bias = _resolve_bias(model.structure_by_tf())
+    if bias not in ("LONG", "SHORT"):
+        return []
+
+    num_std = float(_resolve_param(profile, cfg, "vwap_zone_deviation", 1.5))
+    base_conv = int(_resolve_param(profile, cfg, "vwap_zone_conviction", 65))
+    expiry_s = float(_resolve_param(profile, cfg, "vwap_zone_expiry_seconds", 900.0))
+    proximity_pips = float(_resolve_param(profile, cfg, "vwap_zone_proximity_pips", 0.0))
+
+    try:
+        bands = vwap_with_bands(m5_df, int(session_open_minutes or 0), num_std=num_std)
+    except Exception:  # noqa: BLE001 — VWAP math must never break zone extraction
+        return []
+    if bands is None:
+        return []
+    vwap, upper, lower = bands
+    band_width = upper - lower
+    if band_width <= 0:
+        return []
+
+    try:
+        current_price = float(m5_df["close"].iloc[-1])
+    except Exception:  # noqa: BLE001
+        return []
+    if not (current_price > 0):
+        return []
+
+    pip_size = _pip_size(model.symbol)
+
+    # Proximity: explicit pip distance if given; else the ATR-scaled fvg
+    # geometry (``fvg_proximity_pips``); else a volatility fallback derived from
+    # the band width (the band half-width is itself a volatility measure).
+    if proximity_pips > 0 and pip_size:
+        proximity = proximity_pips * pip_size
+    else:
+        geo_pips = float(getattr(profile, "fvg_proximity_pips", 0.0) or 0.0) if profile else 0.0
+        proximity = geo_pips * pip_size if (geo_pips > 0 and pip_size) else band_width * 0.25
+
+    # Zone buffer: the SL-buffer geometry if available, else a band fraction.
+    buf_pips = float(getattr(profile, "sl_buffer_pips", 0.0) or 0.0) if profile else 0.0
+    buffer = buf_pips * pip_size if (buf_pips > 0 and pip_size) else band_width * 0.1
+    if buffer <= 0:
+        buffer = band_width * 0.1
+
+    expires_at = now + timedelta(seconds=expiry_s)
+
+    if bias == "LONG" and current_price <= lower + proximity:
+        return [EntryZone(
+            symbol=model.symbol,
+            direction="LONG",
+            zone_type=ZoneType.VWAP_BAND,
+            top=lower + buffer,
+            bottom=lower - buffer,
+            midpoint=lower,
+            invalidation_level=lower - buffer,
+            conviction=conv(base_conv, "LONG", ZoneType.VWAP_BAND, "M5"),
+            created_at=now,
+            expires_at=expires_at,
+            timeframe="M5",
+            has_sweep=False,
+            is_counter_trend=False,
+            bias_direction=bias,
+        )]
+
+    if bias == "SHORT" and current_price >= upper - proximity:
+        return [EntryZone(
+            symbol=model.symbol,
+            direction="SHORT",
+            zone_type=ZoneType.VWAP_BAND,
+            top=upper + buffer,
+            bottom=upper - buffer,
+            midpoint=upper,
+            invalidation_level=upper + buffer,
+            conviction=conv(base_conv, "SHORT", ZoneType.VWAP_BAND, "M5"),
+            created_at=now,
+            expires_at=expires_at,
+            timeframe="M5",
+            has_sweep=False,
+            is_counter_trend=False,
+            bias_direction=bias,
+        )]
+
+    return []
 
 
 class ZoneWatcher:

@@ -17,6 +17,7 @@ class ZoneType(str, Enum):
     FVG_OB_OVERLAP = "FVG_OB_OVERLAP"
     FVG_MIDPOINT = "FVG_MIDPOINT"
     OB_MIDPOINT = "OB_MIDPOINT"
+    VWAP_BAND = "VWAP_BAND"
 
 
 class EntryState(str, Enum):
@@ -214,12 +215,11 @@ class EntryConfig:
     # __post_init__ (mutable dict defaults), mirroring zone_expiry_seconds_by_tf.
     session_size_multipliers: dict = None  # set in __post_init__
     session_zone_weights: dict = None      # set in __post_init__
-    # ── VWAP-as-zone (Part C prep, OFF by default) ────────────────────────
-    # When enabled, VWAP deviation bands would generate entry zones alongside
-    # FVG/OB zones (see the TODO in entry/zone_watcher.py). Default OFF — this is
-    # prep work for a future PR, not an activated feature. A per-instrument
-    # InstrumentProfile.vwap_zone_enabled can override this global default.
-    vwap_zone_enabled: bool = False
+    # ── VWAP-as-zone ──────────────────────────────────────────────────────
+    # When enabled, VWAP deviation bands generate entry zones alongside FVG/OB
+    # zones (see entry/zone_watcher.py). ON by default. A per-instrument
+    # InstrumentProfile.vwap_zone_enabled overrides this global default.
+    vwap_zone_enabled: bool = True
 
     # ── Phase 2 Feature A: Stop-out flip ──────────────────────────────────
     # Global fallbacks for the stop-out flip machinery. A per-instrument

@@ -31,6 +31,7 @@ from loguru import logger
 
 from brain.instrument_profile import get_profile
 from brain.liquidity_mapper import LiquidityMapper
+from brain.session_vwap import session_open_minutes_from_df
 from brain.structure_engine import StructureEngine
 from brain.volume_analyzer import VolumeAnalyzer
 from brain.world_model import WorldModel, WorldModelStore, build_world_model
@@ -522,7 +523,28 @@ class CandleCloseHandler:
         # single source of truth for the entry plane — consumers read
         # ``wm.entry_zones`` instead of re-deriving zones.  The learned
         # ``edge_weight`` scales each zone's conviction by realized edge.
-        zones = extract_entry_zones(wm, self._entry_config, self._edge_weight)
+        # When VWAP-as-zone is enabled (profile first, else EntryConfig), fetch
+        # the M5 series so session VWAP ± σ bands can also become zones — a
+        # best-effort fetch that simply yields no VWAP zones on a miss.
+        prof = get_profile(symbol)
+        vwap_m5_df = None
+        vwap_session_minutes = 0
+        if getattr(prof, "vwap_zone_enabled", False) or getattr(
+            self._entry_config, "vwap_zone_enabled", False
+        ):
+            try:
+                vwap_m5_df = self._fetcher(symbol, "M5", self._candle_count)
+                vwap_session_minutes = session_open_minutes_from_df(vwap_m5_df)
+            except Exception as exc:
+                logger.debug(
+                    "[cc-handler] {} M5 fetch for VWAP zones failed: {}", symbol, exc
+                )
+        zones = extract_entry_zones(
+            wm, self._entry_config, self._edge_weight,
+            m5_df=vwap_m5_df,
+            session_open_minutes=vwap_session_minutes,
+            profile=prof,
+        )
         if zones:
             wm = replace(wm, entry_zones=tuple(zones))
 

@@ -33,6 +33,7 @@ from brain.instrument_profile import get_profile
 from brain.liquidity_mapper import LiquidityMapper
 from brain.market_data_utils import drop_forming_bar
 from brain.order_block import OrderBlockDetector
+from brain.session_vwap import session_open_minutes_from_df
 from brain.structure_engine import StructureEngine, StructureAnalysis
 from brain.volume_analyzer import VolumeAnalyzer
 from brain.wyckoff_engine import WyckoffEngine
@@ -1131,7 +1132,12 @@ def analyze_window(
         regime=regime,
     )
 
-    zones = extract_entry_zones(wm, cfg, edge_weight)
+    zones = extract_entry_zones(
+        wm, cfg, edge_weight,
+        m5_df=candles_by_tf.get("M5"),
+        session_open_minutes=session_open_minutes_from_df(candles_by_tf.get("M5")),
+        profile=get_profile(symbol),
+    )
     if zones:
         wm = replace(wm, entry_zones=tuple(zones))
 

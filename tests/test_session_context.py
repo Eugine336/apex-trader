@@ -11,7 +11,7 @@ Coverage:
   * get_session_multiplier / get_session_zone_weight — profile override vs
     EntryConfig fallback vs module default, unknown-session neutral fallback.
   * InstrumentProfile / EntryConfig default tables and the vwap_zone_enabled
-    prep flag.
+    flag.
 
 Deterministic: hand-built UTC datetimes; no network, disk, or wall-clock reads.
 """
@@ -245,9 +245,18 @@ def test_entry_config_has_session_defaults():
     assert cfg.session_zone_weights == _DEFAULT_SESSION_ZONE_WEIGHTS
 
 
-def test_vwap_zone_enabled_defaults_off():
-    assert EntryConfig().vwap_zone_enabled is False
-    assert get_profile("EURUSD").vwap_zone_enabled is False
+def test_vwap_zone_enabled_defaults_on():
+    assert EntryConfig().vwap_zone_enabled is True
+    assert get_profile("EURUSD").vwap_zone_enabled is True
+
+
+def test_flip_confirmation_checks_enabled_by_default():
+    # Session 16 checks 6 (order-flow delta) and 7 (temporal sequencing) are
+    # active out of the box on every profile, including the Gold override.
+    for sym in ("EURUSD", "XAUUSD"):
+        prof = get_profile(sym)
+        assert prof.flip_require_delta_confirmation is True
+        assert prof.flip_require_sequence is True
 
 
 def test_instrument_profiles_get_independent_default_dicts():
