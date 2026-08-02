@@ -1131,7 +1131,34 @@ def analyze_window(
         regime=regime,
     )
 
-    zones = extract_entry_zones(wm, cfg, edge_weight)
+    # VWAP-as-zone inputs: the M5 frame + session length + per-instrument
+    # profile let extract_entry_zones synthesize session-VWAP band zones
+    # alongside FVG/OB zones (no-op when the profile disables the feature).
+    m5_for_vwap = candles_by_tf.get("M5")
+    vwap_session_minutes = 0
+    if m5_for_vwap is not None and len(m5_for_vwap) > 1:
+        vwap_session_minutes = max(0, int((len(m5_for_vwap) - 1) * 5))
+    try:
+        vwap_profile = get_profile(symbol)
+    except Exception:  # noqa: BLE001 — profile lookup must never break analysis
+        vwap_profile = None
+    try:
+        from config import get_pip_size
+
+        vwap_pip_size = float(get_pip_size(symbol))
+    except Exception:  # noqa: BLE001
+        vwap_pip_size = 0.0
+
+    zones = extract_entry_zones(
+        wm,
+        cfg,
+        edge_weight,
+        m5_df=m5_for_vwap,
+        session_open_minutes=vwap_session_minutes,
+        current_price=current_price,
+        profile=vwap_profile,
+        pip_size=vwap_pip_size,
+    )
     if zones:
         wm = replace(wm, entry_zones=tuple(zones))
 

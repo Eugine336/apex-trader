@@ -521,8 +521,41 @@ class CandleCloseHandler:
         # Synthesize the actionable entry layer so the WorldModel is the
         # single source of truth for the entry plane — consumers read
         # ``wm.entry_zones`` instead of re-deriving zones.  The learned
-        # ``edge_weight`` scales each zone's conviction by realized edge.
-        zones = extract_entry_zones(wm, self._entry_config, self._edge_weight)
+        # ``edge_weight`` scales each zone's conviction by realized edge.  The
+        # M5 frame + session length + per-instrument profile additionally let
+        # session-VWAP band zones be synthesized alongside FVG/OB zones (a no-op
+        # when the profile disables the VWAP feature or no M5 frame is fetched).
+        vwap_m5_df = None
+        vwap_session_minutes = 0
+        vwap_profile = None
+        vwap_pip_size = 0.0
+        try:
+            vwap_m5_df = self._fetcher(symbol, "M5", self._candle_count)
+            if vwap_m5_df is not None and len(vwap_m5_df) > 1:
+                vwap_session_minutes = max(0, int((len(vwap_m5_df) - 1) * 5))
+        except Exception as exc:
+            logger.debug("[cc-handler] {} M5 fetch for VWAP zones failed: {}", symbol, exc)
+        try:
+            vwap_profile = get_profile(symbol)
+        except Exception as exc:
+            logger.debug("[cc-handler] {} profile lookup for VWAP zones failed: {}", symbol, exc)
+        try:
+            from config import get_pip_size
+
+            vwap_pip_size = float(get_pip_size(symbol))
+        except Exception:
+            vwap_pip_size = 0.0
+
+        zones = extract_entry_zones(
+            wm,
+            self._entry_config,
+            self._edge_weight,
+            m5_df=vwap_m5_df,
+            session_open_minutes=vwap_session_minutes,
+            current_price=current_price,
+            profile=vwap_profile,
+            pip_size=vwap_pip_size,
+        )
         if zones:
             wm = replace(wm, entry_zones=tuple(zones))
 

@@ -371,9 +371,13 @@ class TestDeltaCheck:
         assert res.checks["delta"] == "pass"
 
     def test_delta_skips_when_disabled(self):
-        # Feature flag off (profile default) → the delta check never runs.
+        # Feature flag explicitly disabled via the profile → the delta check
+        # never runs (the flag now defaults ON, so the test forces it off).
         sell = _delta_ticks([2000.0 - i for i in range(15)])
-        c = _make_confirmer(atr_pips=0.0, get_recent_ticks=lambda s, n: sell)
+        pp = _pp({"flip_require_delta_confirmation": False})
+        c = _make_confirmer(
+            atr_pips=0.0, get_recent_ticks=lambda s, n: sell, profile_param=pp,
+        )
         res = c.confirm("XAUUSD", "SHORT")
         assert res.confirmed is True
         assert res.checks["delta"] == "skip"
@@ -423,17 +427,23 @@ class TestSequenceCheck:
         assert res.checks["sequence"] == "skip"
 
 
-class TestCheck6And7DisabledByDefault:
+class TestCheck6And7SkipWhenDisabled:
     def test_both_skip_when_feature_flags_false(self):
-        # Default profile flags (flip_require_delta_confirmation /
-        # flip_require_sequence) are False, so neither gate engages even with a
-        # rejecting tracker and opposing ticks wired.
+        # With both flags explicitly disabled via the profile, neither gate
+        # engages even with a rejecting tracker and opposing ticks wired. (The
+        # flags now default ON, so the test forces them off to isolate the
+        # skip-when-disabled behaviour.)
         sell = _delta_ticks([2000.0 - i for i in range(15)])
         tracker = SimpleNamespace(is_confirmed=lambda s, d: False)
+        pp = _pp({
+            "flip_require_delta_confirmation": False,
+            "flip_require_sequence": False,
+        })
         c = _make_confirmer(
             atr_pips=0.0,
             get_recent_ticks=lambda s, n: sell,
             sequence_tracker=tracker,
+            profile_param=pp,
         )
         res = c.confirm("XAUUSD", "SHORT")
         assert res.confirmed is True
