@@ -205,6 +205,22 @@ class EntryConfig:
     adx_trending_threshold: float = 25.0
     expansion_threshold_pct: float = 70.0
 
+    # ── Session context defaults (global session classifier) ──────────────
+    # Global fallback tuning for brain/session_context.py. A per-instrument
+    # InstrumentProfile may override either table; the session context reads the
+    # profile first and falls back to these EntryConfig defaults when a table is
+    # absent. session_size_multipliers scales position size per session;
+    # session_zone_weights scales a zone's conviction per session. Set in
+    # __post_init__ (mutable dict defaults), mirroring zone_expiry_seconds_by_tf.
+    session_size_multipliers: dict = None  # set in __post_init__
+    session_zone_weights: dict = None      # set in __post_init__
+    # ── VWAP-as-zone (Part C prep, OFF by default) ────────────────────────
+    # When enabled, VWAP deviation bands would generate entry zones alongside
+    # FVG/OB zones (see the TODO in entry/zone_watcher.py). Default OFF — this is
+    # prep work for a future PR, not an activated feature. A per-instrument
+    # InstrumentProfile.vwap_zone_enabled can override this global default.
+    vwap_zone_enabled: bool = False
+
     def __post_init__(self) -> None:
         if self.zone_expiry_seconds_by_tf is None:
             # Calibrated so a zone stays valid roughly as long as price could
@@ -221,6 +237,14 @@ class EntryConfig:
                 "H4": 57600.0,      # 16 hours — ~4 bars
                 "D1": 259200.0,     # 3 days — ~3 bars
                 "W1": 1209600.0,    # 2 weeks — ~2 bars
+            }
+        if self.session_size_multipliers is None:
+            self.session_size_multipliers = {
+                "ASIAN": 0.5, "LONDON": 1.2, "NY": 1.0, "LONDON_NY_OVERLAP": 1.3,
+            }
+        if self.session_zone_weights is None:
+            self.session_zone_weights = {
+                "ASIAN": 0.8, "LONDON": 1.1, "NY": 1.0, "LONDON_NY_OVERLAP": 1.2,
             }
 
     def get_zone_expiry_seconds(self, timeframe: str) -> float:

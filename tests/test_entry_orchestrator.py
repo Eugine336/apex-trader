@@ -286,15 +286,21 @@ def _make_struct_trend(trend) -> StructureAnalysis:
 
 def _setup_flip(
     *,
-    tick_mom: float,
+    tick_mom: float = 0.0,
     m5_trend,
     momentum_dir: str = "SHORT",
     momentum_conf: float = 0.8,
     config=None,
+    tick_mom_fn=None,
 ):
     """Bullish-FVG (LONG) zone with an opposing momentum vote, wired with a
     mockable tick_momentum and an optional M5 structural trend so the A1 flip
     path can be exercised in isolation.
+
+    ``tick_mom`` returns the same value for either probed direction. Pass
+    ``tick_mom_fn=lambda s, d, p: ...`` for a DIRECTION-AWARE momentum (``d`` is
+    "BUY"/"SELL") — needed to exercise the agree-path where the SHORT flip is
+    unconfirmed but the original LONG is tick-supported.
     """
     store = WorldModelStore()
     decisions: list = []
@@ -306,7 +312,7 @@ def _setup_flip(
         pip_size_lookup=lambda _: 0.0001,
         on_entry_decision=lambda d: decisions.append(d),
         get_m1_dataframe=lambda _: m1_df,
-        get_tick_momentum=lambda s, d, p: tick_mom,
+        get_tick_momentum=tick_mom_fn or (lambda s, d, p: tick_mom),
     )
 
     votes = [
@@ -399,3 +405,47 @@ class TestEntryOrchestratorDirectionFlip:
         assert orch.stats.get("momentum_skips", 0) == 0
         assert len(decisions) == 1
         assert decisions[0]["direction"] == "LONG"
+
+    def test_ranging_m5_admits_original_entry_when_flip_unconfirmed(self):
+        # Part B regression: momentum opposes the LONG zone, the SHORT flip is
+        # UNCONFIRMED (ticks don't support SHORT), and M5 is RANGING. The
+        # original LONG must PROCEED via the override — previously a RANGING M5
+        # was treated as non-agreement, so the tick-supported LONG was wrongly
+        # skipped (the bug that flipped/killed every LONG in ranging markets).
+        orch, decisions = _setup_flip(
+            m5_trend=Trend.RANGING,
+            tick_mom_fn=lambda s, d, p: 0.5 if d == "BUY" else 0.0,
+        )
+        self._touch_and_close(orch)
+        assert orch.stats.get("direction_flips", 0) == 0
+        assert orch.stats.get("momentum_skips", 0) == 0
+        assert orch.stats.get("momentum_overrides", 0) == 1
+        assert len(decisions) == 1
+        assert decisions[0]["direction"] == "LONG"
+
+    def test_unknown_m5_admits_original_entry_when_flip_unconfirmed(self):
+        # Same as above but with NO M5 structure (UNKNOWN) — also permissive.
+        orch, decisions = _setup_flip(
+            m5_trend=None,
+            tick_mom_fn=lambda s, d, p: 0.5 if d == "BUY" else 0.0,
+        )
+        self._touch_and_close(orch)
+        assert orch.stats.get("direction_flips", 0) == 0
+        assert orch.stats.get("momentum_overrides", 0) == 1
+        assert len(decisions) == 1
+        assert decisions[0]["direction"] == "LONG"
+
+    def test_actively_opposing_m5_still_skips_when_flip_unconfirmed(self):
+        # The override must remain strict about ACTIVE opposition: a BEARISH M5
+        # opposes the LONG and, with the SHORT flip unconfirmed, the entry is
+        # SKIPPED — RANGING/UNKNOWN being permissive must not admit a truly
+        # counter-structural entry.
+        orch, decisions = _setup_flip(
+            m5_trend=Trend.BEARISH,
+            tick_mom_fn=lambda s, d, p: 0.5 if d == "BUY" else 0.0,
+        )
+        self._touch_and_close(orch)
+        assert orch.stats.get("direction_flips", 0) == 0
+        assert orch.stats.get("momentum_overrides", 0) == 0
+        assert orch.stats.get("momentum_skips", 0) == 1
+        assert len(decisions) == 0
