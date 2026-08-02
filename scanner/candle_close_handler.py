@@ -93,6 +93,7 @@ class CandleCloseHandler:
         calibration_spread_tf: str = "M5",
         news_impact_tracker: Optional[Any] = None,
         developing_store: Optional[WorldModelStore] = None,
+        compression_detector: Optional[Any] = None,
     ) -> None:
         self._bus = event_bus
         self._store = world_model_store
@@ -166,6 +167,12 @@ class CandleCloseHandler:
         # confirmed bias CONFIDENCE (never direction). None = confirmed-only
         # behaviour, unchanged.
         self._developing_store = developing_store
+        # Global compression / market-state detector (default-neutral when
+        # None). Fed the SAME candles this handler already fetches on each
+        # tracked (M5/M15) close so its BBW-percentile classification stays
+        # live. Read elsewhere (entry orchestrator logs it); it never blocks
+        # analysis here.
+        self._compression_detector = compression_detector
         self._pool = ThreadPoolExecutor(
             max_workers=max(1, max_workers),
             thread_name_prefix="cc-handler",
@@ -275,6 +282,7 @@ class CandleCloseHandler:
         results = self._run_modules(symbol, tf, df)
         if not results:
             return False
+        self._maybe_update_compression(symbol, tf, df)
         current_price = 0.0
         try:
             current_price = float(df["close"].iloc[-1])
@@ -322,6 +330,9 @@ class CandleCloseHandler:
                 self._last_bar_hash[(symbol, tf)] = bh
 
             results = self._run_modules(symbol, tf, df)
+            # Global compression / market-state update — piggybacks on the same
+            # candles already fetched for the tracked (M5/M15) timeframes.
+            self._maybe_update_compression(symbol, tf, df)
             # Spread sample — fed once per configured TF close (live only; the
             # getter reads the cached broker tick) so spread median/p95 calibrate.
             if (
@@ -394,6 +405,25 @@ class CandleCloseHandler:
             liquidity=self._liquidity,
             volume=self._volume,
         )
+
+    def _maybe_update_compression(
+        self, symbol: str, tf: str, df: pd.DataFrame,
+    ) -> None:
+        """Feed the global compression detector on a tracked-TF close.
+
+        No-op when no detector is wired. The detector itself ignores untracked
+        timeframes, so this is safe to call on every close. Best-effort — a
+        compression failure must never break the analysis path.
+        """
+        if self._compression_detector is None:
+            return
+        try:
+            self._compression_detector.update(symbol, tf, df)
+        except Exception as exc:  # noqa: BLE001 — detector must never block analysis
+            logger.debug(
+                "[cc-handler] compression update failed for {} {}: {}",
+                symbol, tf, exc,
+            )
 
     # ------------------------------------------------------------------
     # WorldModel merge

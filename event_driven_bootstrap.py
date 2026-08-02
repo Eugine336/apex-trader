@@ -27,6 +27,7 @@ from loguru import logger
 from config import AppConfig, INSTRUMENT_REGISTRY, get_pip_size, is_always_open, is_session_gated
 from brain.symbol_mapper import resolve_to_internal
 from brain.world_model import WorldModelStore
+from brain.compression_detector import CompressionDetector
 from compliance import (
     ComplianceAccount,
     ComplianceBook,
@@ -3001,6 +3002,20 @@ class EventDrivenSystem:
                 logger.warning("[event-driven] NewsImpactTracker init failed: {}", exc)
                 self._news_impact_tracker = None
 
+        # ── Global compression / market-state detector ───────────────
+        # Classifies each instrument as TRENDING / RANGING / COMPRESSING /
+        # EXPANDING from a rolling Bollinger-Band-width percentile plus ADX on
+        # M5/M15 closes, tuned per-instrument via InstrumentProfile. Fed by the
+        # CandleCloseHandler and read (logging-only for now) by the entry
+        # orchestrator. Best-effort — a construction fault degrades to no
+        # market-state signal rather than breaking startup.
+        self._compression_detector = None
+        try:
+            self._compression_detector = CompressionDetector(entry_config=EntryConfig())
+        except Exception as exc:
+            logger.warning("[event-driven] CompressionDetector init failed: {}", exc)
+            self._compression_detector = None
+
         self._candle_handler = CandleCloseHandler(
             event_bus=self._event_bus,
             world_model_store=self._wm_store,
@@ -3018,6 +3033,7 @@ class EventDrivenSystem:
             calibration_spread_tf=getattr(_calib_cfg, "spread_sample_tf", "M5"),
             news_impact_tracker=self._news_impact_tracker,
             developing_store=self._developing_wm_store,
+            compression_detector=self._compression_detector,
         )
 
         # ── Developing analysis loop (Phase 2) ───────────────────────
@@ -3225,6 +3241,17 @@ class EventDrivenSystem:
                 getattr(ctx.ml_adapter, "pair_learner", None)
                 if ctx is not None and ctx.ml_adapter is not None
                 else None
+            ),
+            # Global market-state read (compression detector). Logging-only for
+            # now: the orchestrator records the MarketState + squeeze score as a
+            # round-table signal but does not gate entries on it yet.
+            get_market_state=(
+                self._compression_detector.get_market_state
+                if self._compression_detector is not None else None
+            ),
+            get_compression_score=(
+                self._compression_detector.get_compression_score
+                if self._compression_detector is not None else None
             ),
         )
 
