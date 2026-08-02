@@ -114,6 +114,12 @@ def discover_symbol_constraints(broker_symbols: list[str]) -> dict[str, dict]:
                         "digits": int(info.digits),
                         "point": float(info.point),
                         "contract_size": float(info.trade_contract_size),
+                        # Money-per-tick inputs — the broker truth the pip-value
+                        # override (trade_tick_value * pip_size / trade_tick_size)
+                        # is derived from. Cached so sizing/heat have a source
+                        # even before a live symbol_info round-trip.
+                        "trade_tick_value": float(info.trade_tick_value),
+                        "trade_tick_size": float(info.trade_tick_size),
                     }
         finally:
             mt5.shutdown()
