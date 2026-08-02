@@ -96,11 +96,22 @@ class InstrumentProfile:
         default_factory=lambda: dict(_DEFAULT_SESSION_ZONE_WEIGHTS)
     )
 
-    # ── VWAP-as-zone (prep, OFF by default) ───────────────────────────
-    # When enabled, VWAP deviation bands would generate entry zones alongside
-    # FVG/OB zones (see the TODO in entry/zone_watcher.py).  Default OFF — this
-    # is prep work for a future PR, not an activated feature.
-    vwap_zone_enabled: bool = False
+    # ── VWAP-as-zone ──────────────────────────────────────────────────
+    # When enabled, VWAP deviation bands generate entry zones alongside FVG/OB
+    # zones (see entry/zone_watcher.py). ON by default: a session VWAP ±
+    # ``vwap_zone_deviation`` σ band becomes a zone — a touch of the lower band
+    # in an uptrend is a LONG (buy the dip to VWAP support), a touch of the
+    # upper band in a downtrend is a SHORT (sell the rally to resistance).
+    # ``vwap_zone_proximity_pips`` is how close price must be to a band to
+    # qualify (0 ⇒ derive proximity from the ATR-scaled ``fvg_proximity_pips``
+    # geometry). ``vwap_zone_conviction`` is the base score — moderate: below an
+    # FVG+OB overlap (100) but meaningful. ``vwap_zone_expiry_seconds`` is the
+    # zone TTL — VWAP zones are intraday and expire faster than structural ones.
+    vwap_zone_enabled: bool = True
+    vwap_zone_deviation: float = 1.5
+    vwap_zone_proximity_pips: float = 0.0
+    vwap_zone_conviction: int = 65
+    vwap_zone_expiry_seconds: float = 900.0
 
     # ── Phase 2 Feature A: Stop-out flip ──────────────────────────────
     # When a trade is stopped out (SL hit) the system immediately evaluates a
@@ -199,19 +210,18 @@ class InstrumentProfile:
     #    stored ticks must show net aggressor pressure in the flip direction.
     #    ``flip_delta_tick_count`` recent ticks are read; the signed delta ratio
     #    in [-1, +1] must clear ``flip_delta_threshold`` (LONG needs ≥ +thr,
-    #    SHORT ≤ −thr). Gated by ``flip_require_delta_confirmation`` — OFF by
-    #    default (needs live validation before enabling broadly); a graceful
-    #    skip when fewer than 10 usable ticks are available.
+    #    SHORT ≤ −thr). Gated by ``flip_require_delta_confirmation`` — ON by
+    #    default; a graceful skip when fewer than 10 usable ticks are available.
     # 7. Fast-then-slow temporal sequencing (entry/flip_sequence_tracker.py) —
     #    M1 momentum must shift into the flip direction FIRST and M5 must confirm
     #    on a LATER bar within ``flip_sequence_window_bars`` M5 bars (default 3 =
     #    15 minutes). Simultaneous M1+M5 flips are treated as noise. Gated by
-    #    ``flip_require_sequence`` — OFF by default (needs the tracker fed M1/M5
-    #    closes via bootstrap wiring).
+    #    ``flip_require_sequence`` — ON by default (the tracker is fed M1/M5
+    #    closes via bootstrap wiring; a graceful skip when it is not wired).
     flip_delta_threshold: float = 0.2
     flip_delta_tick_count: int = 30
-    flip_require_delta_confirmation: bool = False
-    flip_require_sequence: bool = False
+    flip_require_delta_confirmation: bool = True
+    flip_require_sequence: bool = True
     flip_sequence_window_bars: int = 3
 
 
@@ -387,11 +397,13 @@ _GOLD_PROFILE = InstrumentProfile(
     # geometry ($2.00) — the generic 5-pip ($0.05) default is meaningless here.
     news_pre_planning_enabled=True,
     news_breakout_buffer_pips=200.0,    # = $2.00 — clears widened news spreads
-    # Session 16: the tick-rule delta and fast-then-slow sequence gates stay OFF
-    # for Gold initially — both need live validation / M1+M5 feed warmup before
-    # they gate real flips. Listed explicitly so the intent is visible.
-    flip_require_delta_confirmation=False,
-    flip_require_sequence=False,
+    # Session 16: the tick-rule delta and fast-then-slow sequence gates are ON
+    # for Gold — the M1/M5 tracker feed and tick store are warmed via bootstrap
+    # wiring, so both checks gate real flips out of the box. Listed explicitly so
+    # the intent is visible. VWAP-as-zone is likewise on for Gold.
+    flip_require_delta_confirmation=True,
+    flip_require_sequence=True,
+    vwap_zone_enabled=True,
 )
 
 # Map category → profile
