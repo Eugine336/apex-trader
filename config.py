@@ -3584,6 +3584,56 @@ class ThesisConfig:
 
 
 @dataclass
+class CampaignConfig:
+    """Evolving market campaigns (not isolated trades).
+
+    A campaign is the *lifetime of a directional market thesis on a symbol* —
+    the continuing idea that a scatter of individual orders (open, scale-in,
+    partial, re-entry, reversal) are all legs of. :class:`brain.campaign.
+    CampaignRegistry` tracks that idea from birth (evidence supports a thesis)
+    to end (the thesis is invalidated, decays away, or flips), sitting beside
+    the :class:`brain.thesis_engine.ThesisEngine` that reports the live read.
+
+    Introduced OBSERVATIONALLY: with ``enabled`` False the registry is still
+    constructed and surfaced via Governance ``get_status`` but is only fed the
+    campaign narrative — it alters no execution decision. This mirrors how the
+    ThesisEngine (Gap 1a) was introduced before later sessions promoted it.
+    """
+
+    # Master switch. Default OFF — the registry records the campaign narrative
+    # observationally; a later session promotes it into a driver of scaling /
+    # re-entry / reversal decisions once the recorded behaviour is validated.
+    enabled: bool = False
+    # Seconds without a fresh actionable thesis read before a campaign fades to
+    # DORMANT (a pullback or quiet patch — not yet dead). Mirrors the thesis
+    # 15-minute decay half-life so the two layers age in step.
+    dormant_after_seconds: float = 900.0
+    # Seconds without fresh evidence before the campaign is declared INVALIDATED
+    # (the absence of confirming evidence is itself disconfirming). Clamped up to
+    # ``dormant_after_seconds`` if misconfigured below it.
+    invalidate_after_seconds: float = 3600.0
+    # Bounded terminal-campaign history kept for post-mortem / dashboard reads.
+    history_limit: int = 500
+
+    def __post_init__(self) -> None:
+        if float(self.dormant_after_seconds) <= 0:
+            raise ValueError(
+                "CampaignConfig.dormant_after_seconds must be > 0, got "
+                f"{self.dormant_after_seconds!r}"
+            )
+        if float(self.invalidate_after_seconds) <= 0:
+            raise ValueError(
+                "CampaignConfig.invalidate_after_seconds must be > 0, got "
+                f"{self.invalidate_after_seconds!r}"
+            )
+        if int(self.history_limit) <= 0:
+            raise ValueError(
+                "CampaignConfig.history_limit must be > 0, got "
+                f"{self.history_limit!r}"
+            )
+
+
+@dataclass
 class AdaptiveTunerConfig:
     """Phase 6 — closes the continuous-learning loop end to end.
 
@@ -3796,6 +3846,7 @@ class AppConfig:
         default_factory=DevelopingAnalysisConfig
     )
     thesis: ThesisConfig = field(default_factory=ThesisConfig)
+    campaign: CampaignConfig = field(default_factory=CampaignConfig)
     conviction_normalization: ConvictionNormalizationConfig = field(
         default_factory=ConvictionNormalizationConfig
     )
