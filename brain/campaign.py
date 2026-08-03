@@ -74,6 +74,17 @@ LEG_PARTIAL = "partial"
 LEG_RE_ENTRY = "re_entry"
 LEG_CLOSE = "close"
 
+# Post-mortem verdicts — reasoning quality crossed with realised outcome. The
+# mandate's stance made concrete: a win on thin evidence is a *process failure*
+# (LUCKY), and a loss on strong, persistent evidence still *validates* the
+# process (SOUND_BUT_UNLUCKY). Profit alone is an imperfect measure of decision
+# quality, so campaigns are graded on both axes.
+VERDICT_VALIDATED = "validated"                    # strong evidence + won
+VERDICT_LUCKY = "lucky"                            # thin evidence + won (a process failure)
+VERDICT_SOUND_BUT_UNLUCKY = "sound_but_unlucky"    # strong evidence + lost (process still sound)
+VERDICT_DESERVED_LOSS = "deserved_loss"            # thin evidence + lost
+VERDICT_INCONCLUSIVE = "inconclusive"              # too little evidence to judge
+
 # Exit-cause tokens (mirror ``management.exit_cause.ExitCause`` *values*; kept as
 # plain strings so this leaf module never imports the management package).
 _PARTIAL_CLOSE_TOKENS = frozenset({"tp1_partial", "heat_trim"})
@@ -162,6 +173,51 @@ class CampaignLeg:
 
 
 @dataclass
+class CampaignPostmortem:
+    """Autonomous grade of a terminated campaign on reasoning quality vs outcome.
+
+    ``reasoning_quality`` (== ``evidence_support``) is a 0..1 read of how well
+    the thesis *earned its standing* over the campaign's life — persistence
+    (how many times fresh evidence renewed it) blended with strength (average
+    supporting confidence). It is deliberately decoupled from P&L.
+
+    ``verdict`` crosses that with the realised outcome; ``confidence_delta`` is
+    the suggested nudge to the process's standing that the learning layer can
+    later consume (positive = trust the reasoning more, negative = less). Note
+    the asymmetry the mandate demands: LUCKY (won on thin evidence) yields a
+    *negative* delta — luck must not be rewarded — while SOUND_BUT_UNLUCKY
+    (lost on strong evidence) yields a small *positive* delta.
+    """
+
+    verdict: str
+    reasoning_quality: float            # 0..1 — evidence support (persistence × strength)
+    evidence_support: float             # 0..1 — alias kept explicit for the trace
+    outcome_won: bool
+    realized_pnl: float
+    confidence_delta: float             # suggested authority nudge for the process
+    refresh_count: int
+    peak_ev_over_flat: float
+    duration_seconds: float
+    leg_count: int
+    narrative: str = ""
+
+    def to_dict(self) -> dict:
+        return {
+            "verdict": self.verdict,
+            "reasoning_quality": round(self.reasoning_quality, 4),
+            "evidence_support": round(self.evidence_support, 4),
+            "outcome_won": bool(self.outcome_won),
+            "realized_pnl": round(self.realized_pnl, 4),
+            "confidence_delta": round(self.confidence_delta, 4),
+            "refresh_count": int(self.refresh_count),
+            "peak_ev_over_flat": round(self.peak_ev_over_flat, 4),
+            "duration_seconds": round(self.duration_seconds, 1),
+            "leg_count": int(self.leg_count),
+            "narrative": self.narrative,
+        }
+
+
+@dataclass
 class Campaign:
     """The lifetime of one directional market thesis on a symbol."""
 
@@ -171,6 +227,8 @@ class Campaign:
     state: CampaignState = CampaignState.ACTIVE
     ev_over_flat: float = 0.0            # latest thesis edge over the do-nothing baseline (R)
     confidence: float = 0.0             # latest supporting-evidence confidence (0..1)
+    peak_ev_over_flat: float = 0.0      # best edge the thesis ever reached
+    confidence_sum: float = 0.0         # running sum of refresh confidences (for the mean)
     opened_at_iso: str = ""
     opened_at_epoch: float = 0.0
     last_refreshed_iso: str = ""
@@ -180,6 +238,7 @@ class Campaign:
     refresh_count: int = 0              # times fresh actionable evidence renewed the thesis
     realized_pnl: float = 0.0           # summed realised P&L across closed legs
     legs: list[CampaignLeg] = field(default_factory=list)
+    postmortem: Optional[CampaignPostmortem] = None
 
     # ── Derived reads ────────────────────────────────────────────────────
     @property
@@ -199,11 +258,18 @@ class Campaign:
         """Fresh actionable evidence renewed this thesis — revive + record."""
         self.ev_over_flat = _safe_float(ev_over_flat)
         self.confidence = _clamp01(confidence)
+        self.peak_ev_over_flat = max(self.peak_ev_over_flat, self.ev_over_flat)
+        self.confidence_sum += self.confidence
         self.last_refreshed_iso = now_iso
         self.last_refreshed_epoch = now_epoch
         self.refresh_count += 1
         if self.state == CampaignState.DORMANT:
             self.state = CampaignState.ACTIVE
+
+    @property
+    def avg_confidence(self) -> float:
+        """Mean supporting confidence across all evidence refreshes."""
+        return self.confidence_sum / self.refresh_count if self.refresh_count else 0.0
 
     def to_dict(self) -> dict:
         return {
@@ -213,6 +279,8 @@ class Campaign:
             "state": self.state.value,
             "ev_over_flat": round(self.ev_over_flat, 4),
             "confidence": round(self.confidence, 4),
+            "peak_ev_over_flat": round(self.peak_ev_over_flat, 4),
+            "avg_confidence": round(self.avg_confidence, 4),
             "opened_at": self.opened_at_iso,
             "last_refreshed": self.last_refreshed_iso,
             "ended_at": self.ended_at_iso,
@@ -222,6 +290,7 @@ class Campaign:
             "leg_count": len(self.legs),
             "realized_pnl": round(self.realized_pnl, 4),
             "age_seconds": round(self.staleness_seconds(), 1),
+            "postmortem": self.postmortem.to_dict() if self.postmortem is not None else None,
         }
 
 
@@ -241,6 +310,9 @@ class CampaignRegistry:
         dormant_after_seconds: float = 900.0,
         invalidate_after_seconds: float = 3600.0,
         history_limit: int = 500,
+        postmortem_enabled: bool = True,
+        sound_evidence_threshold: float = 0.5,
+        evidence_full_refreshes: int = 5,
     ) -> None:
         self.enabled = bool(enabled)
         da = _safe_float(dormant_after_seconds, 900.0)
@@ -249,6 +321,10 @@ class CampaignRegistry:
         # Invalidation must not precede dormancy — clamp up if misconfigured.
         self.invalidate_after_seconds = max(ia, self.dormant_after_seconds)
         self._history_limit = max(1, int(history_limit))
+        self.postmortem_enabled = bool(postmortem_enabled)
+        self.sound_evidence_threshold = min(1.0, max(0.0,
+            _safe_float(sound_evidence_threshold, 0.5)))
+        self.evidence_full_refreshes = max(1, int(evidence_full_refreshes))
         self._live: dict[tuple[str, str], Campaign] = {}
         self._finalized: Deque[Campaign] = deque(maxlen=self._history_limit)
         self._seq = 0
@@ -448,12 +524,81 @@ class CampaignRegistry:
         camp.state = state
         camp.ended_at_iso = _now_iso()
         camp.ended_reason = str(reason or "")
+        if self.postmortem_enabled:
+            camp.postmortem = self._run_postmortem(camp, now)
         self._live.pop((camp.symbol, camp.direction), None)
         self._finalized.append(camp)
         logger.debug(
-            "[campaign] {} {} — {} legs, realised {:.2f}, reason={}",
+            "[campaign] {} {} — {} legs, realised {:.2f}, reason={}{}",
             state.value.upper(), camp.campaign_id,
             len(camp.legs), camp.realized_pnl, reason,
+            f", verdict={camp.postmortem.verdict}" if camp.postmortem else "",
+        )
+
+    def _run_postmortem(self, camp: Campaign, now: float) -> CampaignPostmortem:
+        """Grade a terminated campaign on reasoning quality vs realised outcome.
+
+        Reasoning quality is evidence *support*: persistence (refresh count,
+        saturating at ``evidence_full_refreshes``) blended 50/50 with strength
+        (mean supporting confidence). Crossed with the win/loss outcome it
+        yields one of the :data:`VERDICT_*` labels and a suggested
+        ``confidence_delta`` — positive to trust the process more, negative to
+        trust it less. Luck (a win on thin evidence) is penalised; a sound but
+        unlucky loss is mildly rewarded. Pure — never raises (caller wraps it).
+        """
+        persistence = min(1.0, camp.refresh_count / float(self.evidence_full_refreshes))
+        strength = _clamp01(camp.avg_confidence)
+        support = _clamp01(0.5 * persistence + 0.5 * strength)
+        won = camp.realized_pnl > 0.0
+        thr = self.sound_evidence_threshold
+
+        if camp.refresh_count <= 0:
+            verdict = VERDICT_INCONCLUSIVE
+            delta = 0.0
+            narrative = "no evidence refreshes recorded — too little to judge"
+        elif won and support >= thr:
+            verdict = VERDICT_VALIDATED
+            delta = round(0.5 * support, 4)
+            narrative = (
+                f"won on strong, persistent evidence (support {support:.2f}) — "
+                "the reasoning is confirmed"
+            )
+        elif won and support < thr:
+            verdict = VERDICT_LUCKY
+            delta = round(-0.25 * (thr - support), 4)
+            narrative = (
+                f"won despite thin evidence (support {support:.2f} < {thr:.2f}) — "
+                "a favourable outcome from weak reasoning; do not reward the luck"
+            )
+        elif (not won) and support >= thr:
+            verdict = VERDICT_SOUND_BUT_UNLUCKY
+            delta = round(0.15 * support, 4)
+            narrative = (
+                f"lost despite strong evidence (support {support:.2f}) — the "
+                "process was sound; a single adverse outcome does not invalidate it"
+            )
+        else:
+            verdict = VERDICT_DESERVED_LOSS
+            delta = round(-0.4 * (thr - support + 0.1), 4)
+            narrative = (
+                f"lost on thin evidence (support {support:.2f} < {thr:.2f}) — the "
+                "reasoning was weak and the outcome matched"
+            )
+
+        duration = max(0.0, _safe_float(now) - camp.opened_at_epoch) \
+            if camp.opened_at_epoch else 0.0
+        return CampaignPostmortem(
+            verdict=verdict,
+            reasoning_quality=support,
+            evidence_support=support,
+            outcome_won=won,
+            realized_pnl=_safe_float(camp.realized_pnl),
+            confidence_delta=delta,
+            refresh_count=int(camp.refresh_count),
+            peak_ev_over_flat=_safe_float(camp.peak_ev_over_flat),
+            duration_seconds=duration,
+            leg_count=len(camp.legs),
+            narrative=narrative,
         )
 
     # ── Introspection ─────────────────────────────────────────────────────
@@ -475,8 +620,12 @@ class CampaignRegistry:
             active = sum(1 for c in live if c.state == CampaignState.ACTIVE)
             dormant = sum(1 for c in live if c.state == CampaignState.DORMANT)
             term_counts: dict[str, int] = {}
+            verdict_counts: dict[str, int] = {}
             for c in finalized:
                 term_counts[c.state.value] = term_counts.get(c.state.value, 0) + 1
+                if c.postmortem is not None:
+                    v = c.postmortem.verdict
+                    verdict_counts[v] = verdict_counts.get(v, 0) + 1
             # Cap the per-campaign detail so a large book can't bloat status.
             live_out = [c.to_dict() for c in live[:50]]
             recent_out = [c.to_dict() for c in list(finalized)[-25:]]
@@ -487,6 +636,7 @@ class CampaignRegistry:
                 "dormant": dormant,
                 "finalized_tracked": len(finalized),
                 "terminal_counts": term_counts,
+                "postmortem_verdicts": verdict_counts,
                 "dormant_after_seconds": self.dormant_after_seconds,
                 "invalidate_after_seconds": self.invalidate_after_seconds,
                 "live": live_out,
@@ -507,6 +657,7 @@ class CampaignRegistry:
 __all__ = [
     "Campaign",
     "CampaignLeg",
+    "CampaignPostmortem",
     "CampaignState",
     "CampaignRegistry",
     "LONG",
@@ -517,4 +668,9 @@ __all__ = [
     "LEG_PARTIAL",
     "LEG_RE_ENTRY",
     "LEG_CLOSE",
+    "VERDICT_VALIDATED",
+    "VERDICT_LUCKY",
+    "VERDICT_SOUND_BUT_UNLUCKY",
+    "VERDICT_DESERVED_LOSS",
+    "VERDICT_INCONCLUSIVE",
 ]
