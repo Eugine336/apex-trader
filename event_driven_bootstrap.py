@@ -3906,6 +3906,43 @@ class EventDrivenSystem:
             "[tuner] registered {} tunable adapters with TunerAgent", registered,
         )
 
+    def _build_llm_evidence_source(self):
+        """Return a callable yielding ``{symbol: structured_evidence}`` for the
+        LLM worker.
+
+        Reads the ThesisEngine's competing-thesis status (and per-symbol campaign
+        context where available) — a read of already-computed state, so it never
+        touches the hot path, blocks, or triggers analysis. Fully fail-safe.
+        """
+        ctx = self._ctx
+
+        def _source() -> "dict[str, dict]":
+            out: dict[str, dict] = {}
+            try:
+                engine = getattr(ctx, "thesis_engine", None) if ctx is not None else None
+                if engine is None:
+                    return out
+                status = engine.get_status() or {}
+                theses = status.get("theses") or {}
+                camp_live: dict[str, dict] = {}
+                registry = getattr(ctx, "campaign_registry", None) if ctx is not None else None
+                if registry is not None:
+                    try:
+                        for c in (registry.get_status() or {}).get("live", []) or []:
+                            camp_live[str(c.get("symbol"))] = c
+                    except Exception:  # noqa: BLE001
+                        camp_live = {}
+                for sym, tdict in theses.items():
+                    ev: dict = {"thesis": tdict}
+                    if str(sym) in camp_live:
+                        ev["campaign"] = camp_live[str(sym)]
+                    out[str(sym)] = ev
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[llm-worker] evidence build fault: {}", exc)
+            return out
+
+        return _source
+
     # ── Lifecycle ────────────────────────────────────────────────────
 
     def start(self) -> None:
@@ -4099,6 +4136,47 @@ class EventDrivenSystem:
                 logger.warning(
                     "[event-driven] proactive scanner start failed: {}", exc,
                 )
+
+        # ── Start LLM reasoning worker (off the hot path) ────────────
+        # Drives the LLM reasoner on its own daemon thread — a blocking provider
+        # round-trip must never run in the tick/analysis loop. Only spins up when
+        # a provider is actually configured (reasoner.available); otherwise a
+        # pure no-op. Best-effort; never blocks startup.
+        self._llm_worker = None
+        try:
+            _reasoner = self._ctx.llm_reasoner if self._ctx is not None else None
+            if _reasoner is not None and getattr(_reasoner, "available", False):
+                from llm.worker import LLMReasoningWorker as _LLMReasoningWorker
+                _llm_cfg = getattr(self._config, "llm", None)
+                self._llm_worker = _LLMReasoningWorker(
+                    _reasoner,
+                    self._build_llm_evidence_source(),
+                    interval_seconds=float(
+                        getattr(_llm_cfg, "worker_interval_seconds", 60.0)
+                        if _llm_cfg is not None else 60.0
+                    ),
+                    max_symbols_per_cycle=int(
+                        getattr(_llm_cfg, "max_symbols_per_cycle", 8)
+                        if _llm_cfg is not None else 8
+                    ),
+                )
+                self._llm_worker.start()
+        except Exception as exc:
+            logger.warning("[event-driven] LLM reasoning worker start failed: {}", exc)
+
+        # ── Start the AI Cognitive Brain loop (Single Reasoner, shadow) ──
+        # Background daemon that drives the one Brain over consolidated evidence
+        # and records its decisions. Shadow by default — observational, off the
+        # hot path. Guarded + best-effort; never blocks startup.
+        try:
+            _cog_loop = self._ctx.cognition_loop if self._ctx is not None else None
+            _cog_cfg = getattr(self._config, "cognition", None)
+            if _cog_loop is not None and bool(
+                getattr(_cog_cfg, "enabled", True) if _cog_cfg is not None else True
+            ):
+                _cog_loop.start()
+        except Exception as exc:
+            logger.warning("[event-driven] cognition loop start failed: {}", exc)
 
         # ── Start ProcessWatchdog heartbeat thread ───────────────────
         ctx = self._ctx
@@ -4362,6 +4440,16 @@ class EventDrivenSystem:
         if getattr(self, "_proactive_scanner", None) is not None:
             try:
                 self._proactive_scanner.stop()
+            except Exception:
+                pass
+        if getattr(self, "_llm_worker", None) is not None:
+            try:
+                self._llm_worker.stop()
+            except Exception:
+                pass
+        if self._ctx is not None and getattr(self._ctx, "cognition_loop", None) is not None:
+            try:
+                self._ctx.cognition_loop.stop()
             except Exception:
                 pass
         if getattr(self, "_opportunity_queue", None) is not None:
@@ -6772,6 +6860,30 @@ class EventDrivenSystem:
                     before_act, after_act, before_dir or "-", after_dir or "-",
                     before_ev, after_ev, long_p, short_p,
                 )
+
+            # Fold the dominant thesis read into the evolving-campaign registry
+            # (observational; default OFF via ``campaign.enabled``). Records the
+            # continuing idea's birth / refresh / reversal without touching the
+            # entry decision. Fully decoupled — a fault here is swallowed.
+            registry = getattr(ctx, "campaign_registry", None)
+            if registry is not None and getattr(registry, "enabled", False):
+                try:
+                    # Age campaigns first (wall-clock, compute-on-tick): an idea
+                    # nothing refreshes fades to DORMANT then INVALIDATED.
+                    registry.decay()
+                    conf = 0.0
+                    tset = engine.get(symbol)
+                    if tset is not None and after_dir:
+                        conf = float(
+                            getattr(tset.get(after_dir), "confidence", 0.0) or 0.0
+                        )
+                    registry.observe_thesis(
+                        symbol, after_dir, after_act,
+                        ev_over_flat=after_ev, confidence=conf,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[campaign] thesis feed failed for {}: {}",
+                                 symbol, exc)
         except Exception as exc:
             logger.debug("[thesis-engine] feed failed for {}: {}", symbol, exc)
 
@@ -10228,6 +10340,26 @@ class EventDrivenSystem:
         ctx = self._ctx
         if ctx is None:
             return
+
+        # ── Evolving campaigns: record the closed leg / campaign end ────
+        # Observational (default OFF via ``campaign.enabled``). Ties the realised
+        # outcome back to the continuing idea so the post-mortem reads a full
+        # campaign narrative. Best-effort — never affects close accounting.
+        registry = getattr(ctx, "campaign_registry", None)
+        if registry is not None and getattr(registry, "enabled", False):
+            try:
+                won_flag = (pnl_dollars or 0.0) > 0.0 or (
+                    (pnl_dollars or 0.0) == 0.0 and (pnl_pips or 0.0) > 0.0
+                )
+                registry.observe_close(
+                    symbol, direction,
+                    exit_cause=str(exit_reason or ""),
+                    pnl=float(pnl_dollars or 0.0),
+                    won=won_flag,
+                    ticket=str(ticket or ""),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[campaign] close feed failed for {}: {}", symbol, exc)
 
         # ── Phase 6: feed per-TF structure agreement into the adaptive
         # evidence-weight provider so the probabilistic-bias weights learn
