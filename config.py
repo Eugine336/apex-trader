@@ -3763,6 +3763,89 @@ class LLMConfig:
 
 
 @dataclass
+class ComposioConfig:
+    """Autonomous Action Layer (Composio) — env-driven, default OFF + dry-run.
+
+    Configured entirely from the environment (no hardcoded secret):
+
+      COMPOSIO_API_KEY    your Composio key (blank ⇒ layer stays mock/off)
+      COMPOSIO_BASE_URL   API base (default https://backend.composio.dev)
+      COMPOSIO_ENTITY_ID  entity/user the actions run as (default "default")
+      COMPOSIO_ENABLED    force on/off (defaults ON when a key is present)
+      COMPOSIO_DRY_RUN    when true (default) actions run through a MOCK adapter —
+                          NO real external calls — even while enabled; set false
+                          to actually execute
+      COMPOSIO_AUTO_MAX_RISK  highest risk tier auto-authorised (default "low";
+                          capped at "medium" — high/destructive always need
+                          explicit approval)
+      COMPOSIO_MIN_CONFIDENCE / COMPOSIO_MEDIUM_CONFIDENCE_THRESHOLD / COMPOSIO_TIMEOUT_SECONDS
+
+    The key is read from the env into ``api_key`` and is NEVER logged. The layer
+    is fail-safe: an absent/mis-set config is a silent no-op, and even fully
+    enabled it does nothing real until ``dry_run`` is turned off.
+    """
+
+    enabled: bool = False
+    api_key: str = ""                 # resolved from env; never logged
+    base_url: str = "https://backend.composio.dev"
+    entity_id: str = "default"
+    dry_run: bool = True
+    require_source: bool = True
+    auto_max_risk: str = "low"
+    min_confidence: float = 0.2
+    medium_confidence_threshold: float = 0.7
+    timeout_seconds: float = 20.0
+
+    def __post_init__(self) -> None:
+        self.api_key = (os.getenv("COMPOSIO_API_KEY", self.api_key) or "").strip()
+        base = (os.getenv("COMPOSIO_BASE_URL", self.base_url) or "").strip()
+        self.base_url = base or "https://backend.composio.dev"
+        entity = (os.getenv("COMPOSIO_ENTITY_ID", self.entity_id) or "").strip()
+        self.entity_id = entity or "default"
+        self.auto_max_risk = (
+            os.getenv("COMPOSIO_AUTO_MAX_RISK", self.auto_max_risk) or "low"
+        ).strip().lower()
+        for env_name, attr, cast in (
+            ("COMPOSIO_MIN_CONFIDENCE", "min_confidence", float),
+            ("COMPOSIO_MEDIUM_CONFIDENCE_THRESHOLD", "medium_confidence_threshold", float),
+            ("COMPOSIO_TIMEOUT_SECONDS", "timeout_seconds", float),
+        ):
+            raw = os.getenv(env_name)
+            if raw is not None:
+                try:
+                    setattr(self, attr, cast(raw))
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "[config] bad {} value '{}' — keeping default", env_name, raw
+                    )
+        self.dry_run = _llm_env_bool("COMPOSIO_DRY_RUN", self.dry_run)
+        self.require_source = _llm_env_bool("COMPOSIO_REQUIRE_SOURCE", self.require_source)
+        # Auto-on when a key is present; explicit COMPOSIO_ENABLED overrides.
+        self.enabled = _llm_env_bool("COMPOSIO_ENABLED", bool(self.api_key))
+
+        if self.auto_max_risk not in (
+            "negligible", "low", "medium", "high", "destructive"
+        ):
+            raise ValueError(
+                "ComposioConfig.auto_max_risk must be one of negligible/low/"
+                f"medium/high/destructive, got {self.auto_max_risk!r}"
+            )
+        if not (0.0 <= float(self.min_confidence) <= 1.0):
+            raise ValueError(
+                f"ComposioConfig.min_confidence must be in [0, 1], got {self.min_confidence!r}"
+            )
+        if not (0.0 <= float(self.medium_confidence_threshold) <= 1.0):
+            raise ValueError(
+                "ComposioConfig.medium_confidence_threshold must be in [0, 1], got "
+                f"{self.medium_confidence_threshold!r}"
+            )
+        if float(self.timeout_seconds) <= 0:
+            raise ValueError(
+                f"ComposioConfig.timeout_seconds must be > 0, got {self.timeout_seconds!r}"
+            )
+
+
+@dataclass
 class AdaptiveTunerConfig:
     """Phase 6 — closes the continuous-learning loop end to end.
 
@@ -3977,6 +4060,7 @@ class AppConfig:
     thesis: ThesisConfig = field(default_factory=ThesisConfig)
     campaign: CampaignConfig = field(default_factory=CampaignConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
+    composio: ComposioConfig = field(default_factory=ComposioConfig)
     conviction_normalization: ConvictionNormalizationConfig = field(
         default_factory=ConvictionNormalizationConfig
     )

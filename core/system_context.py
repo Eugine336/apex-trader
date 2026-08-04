@@ -121,6 +121,10 @@ class SystemContext:
     # structured theses/votes. Provider-agnostic (env-driven), default OFF,
     # fail-safe; surfaced via Governance. Never overrides physics vetoes.
     llm_reasoner: Optional[Any] = None
+    # Autonomous Action Layer (Composio) — the single governed gateway through
+    # which Brain-authored objectives become external actions. Default OFF +
+    # dry-run; never reasons or originates objectives. Surfaced via Governance.
+    action_orchestrator: Optional[Any] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
     opportunity_executor: Optional[OpportunityExecutor] = None
@@ -1108,6 +1112,48 @@ class SystemContext:
             except Exception as exc:
                 logger.warning("[SystemContext] LLMReasoner init failed: {}", exc)
 
+            # ── Action Orchestrator (Autonomous Action Layer / Composio) ──
+            # The single governed gateway for external actions. It NEVER reasons
+            # or originates objectives — the Brain authors them, governance policy
+            # authorises, an adapter executes. Default OFF + dry-run (mock
+            # adapter, no external calls) until explicitly configured. Fail-safe.
+            try:
+                from action.composio import build_adapter as _build_action_adapter
+                from action.orchestrator import (
+                    ActionOrchestrator as _ActionOrchestrator,
+                    GovernancePolicy as _GovernancePolicy,
+                    tier_from as _tier_from,
+                )
+
+                comp_cfg = getattr(config, "composio", None)
+                _policy = _GovernancePolicy(
+                    enabled=bool(getattr(comp_cfg, "enabled", False)
+                                 if comp_cfg is not None else False),
+                    require_source=bool(getattr(comp_cfg, "require_source", True)
+                                        if comp_cfg is not None else True),
+                    min_confidence=float(getattr(comp_cfg, "min_confidence", 0.2)
+                                         if comp_cfg is not None else 0.2),
+                    auto_max_risk=_tier_from(
+                        getattr(comp_cfg, "auto_max_risk", "low")
+                        if comp_cfg is not None else "low"
+                    ),
+                    medium_confidence_threshold=float(
+                        getattr(comp_cfg, "medium_confidence_threshold", 0.7)
+                        if comp_cfg is not None else 0.7
+                    ),
+                )
+                _adapter = _build_action_adapter(comp_cfg)
+                ctx.action_orchestrator = _ActionOrchestrator(_policy, _adapter)
+                logger.info(
+                    "[SystemContext] Action layer ready — enabled={} adapter={} "
+                    "(dry_run={})",
+                    getattr(comp_cfg, "enabled", False) if comp_cfg else False,
+                    getattr(_adapter, "name", type(_adapter).__name__),
+                    getattr(comp_cfg, "dry_run", True) if comp_cfg else True,
+                )
+            except Exception as exc:
+                logger.warning("[SystemContext] ActionOrchestrator init failed: {}", exc)
+
             ctx.governance = _Governance(
                 module_governor=ctx.module_governor,
                 tuner_agent=ctx.tuner_agent,
@@ -1136,6 +1182,7 @@ class SystemContext:
                 thesis_engine=ctx.thesis_engine,
                 campaign_registry=ctx.campaign_registry,
                 llm_reasoner=ctx.llm_reasoner,
+                action_orchestrator=ctx.action_orchestrator,
             )
             # Install Governance as the authoriser on the Learning→Governance
             # gateway and require authorisation (per config; default on).
