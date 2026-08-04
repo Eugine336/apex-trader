@@ -6772,6 +6772,30 @@ class EventDrivenSystem:
                     before_act, after_act, before_dir or "-", after_dir or "-",
                     before_ev, after_ev, long_p, short_p,
                 )
+
+            # Fold the dominant thesis read into the evolving-campaign registry
+            # (observational; default OFF via ``campaign.enabled``). Records the
+            # continuing idea's birth / refresh / reversal without touching the
+            # entry decision. Fully decoupled — a fault here is swallowed.
+            registry = getattr(ctx, "campaign_registry", None)
+            if registry is not None and getattr(registry, "enabled", False):
+                try:
+                    # Age campaigns first (wall-clock, compute-on-tick): an idea
+                    # nothing refreshes fades to DORMANT then INVALIDATED.
+                    registry.decay()
+                    conf = 0.0
+                    tset = engine.get(symbol)
+                    if tset is not None and after_dir:
+                        conf = float(
+                            getattr(tset.get(after_dir), "confidence", 0.0) or 0.0
+                        )
+                    registry.observe_thesis(
+                        symbol, after_dir, after_act,
+                        ev_over_flat=after_ev, confidence=conf,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[campaign] thesis feed failed for {}: {}",
+                                 symbol, exc)
         except Exception as exc:
             logger.debug("[thesis-engine] feed failed for {}: {}", symbol, exc)
 
@@ -10228,6 +10252,26 @@ class EventDrivenSystem:
         ctx = self._ctx
         if ctx is None:
             return
+
+        # ── Evolving campaigns: record the closed leg / campaign end ────
+        # Observational (default OFF via ``campaign.enabled``). Ties the realised
+        # outcome back to the continuing idea so the post-mortem reads a full
+        # campaign narrative. Best-effort — never affects close accounting.
+        registry = getattr(ctx, "campaign_registry", None)
+        if registry is not None and getattr(registry, "enabled", False):
+            try:
+                won_flag = (pnl_dollars or 0.0) > 0.0 or (
+                    (pnl_dollars or 0.0) == 0.0 and (pnl_pips or 0.0) > 0.0
+                )
+                registry.observe_close(
+                    symbol, direction,
+                    exit_cause=str(exit_reason or ""),
+                    pnl=float(pnl_dollars or 0.0),
+                    won=won_flag,
+                    ticket=str(ticket or ""),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[campaign] close feed failed for {}: {}", symbol, exc)
 
         # ── Phase 6: feed per-TF structure agreement into the adaptive
         # evidence-weight provider so the probabilistic-bias weights learn

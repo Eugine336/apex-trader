@@ -113,6 +113,10 @@ class SystemContext:
     # Session 29 — anti-ping-pong gate for atomic reversals. Consulted when a
     # ``thesis_flip`` fires to decide whether to close + reverse (vs plain exit).
     reversal_manager: Optional[Any] = None
+    # Evolving market campaigns — the lifetime of a directional thesis on a
+    # symbol that individual orders (open/scale/partial/re-entry/reversal) are
+    # legs of. Observational (default OFF); surfaced via Governance.
+    campaign_registry: Optional[Any] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
     opportunity_executor: Optional[OpportunityExecutor] = None
@@ -1018,6 +1022,49 @@ class SystemContext:
             except Exception as exc:
                 logger.warning("[SystemContext] ReversalManager init failed: {}", exc)
 
+            # ── Campaign Registry (evolving market campaigns) ─────────────
+            # Tracks the lifetime of a directional thesis per symbol — the
+            # continuing idea that individual orders (open / scale-in / partial
+            # / re-entry / reversal) are legs of. Observational (default OFF):
+            # it records the campaign narrative and is surfaced via Governance
+            # ``get_status`` without altering any execution decision.
+            try:
+                from brain.campaign import CampaignRegistry as _CampaignRegistry
+
+                camp_cfg = getattr(config, "campaign", None)
+                ctx.campaign_registry = _CampaignRegistry(
+                    enabled=bool(
+                        getattr(camp_cfg, "enabled", False)
+                        if camp_cfg is not None else False
+                    ),
+                    dormant_after_seconds=float(
+                        getattr(camp_cfg, "dormant_after_seconds", 900.0)
+                        if camp_cfg is not None else 900.0
+                    ),
+                    invalidate_after_seconds=float(
+                        getattr(camp_cfg, "invalidate_after_seconds", 3600.0)
+                        if camp_cfg is not None else 3600.0
+                    ),
+                    history_limit=int(
+                        getattr(camp_cfg, "history_limit", 500)
+                        if camp_cfg is not None else 500
+                    ),
+                    postmortem_enabled=bool(
+                        getattr(camp_cfg, "postmortem_enabled", True)
+                        if camp_cfg is not None else True
+                    ),
+                    sound_evidence_threshold=float(
+                        getattr(camp_cfg, "sound_evidence_threshold", 0.5)
+                        if camp_cfg is not None else 0.5
+                    ),
+                    evidence_full_refreshes=int(
+                        getattr(camp_cfg, "evidence_full_refreshes", 5)
+                        if camp_cfg is not None else 5
+                    ),
+                )
+            except Exception as exc:
+                logger.warning("[SystemContext] CampaignRegistry init failed: {}", exc)
+
             ctx.governance = _Governance(
                 module_governor=ctx.module_governor,
                 tuner_agent=ctx.tuner_agent,
@@ -1044,6 +1091,7 @@ class SystemContext:
                 ),
                 gate_attributor=ctx.gate_attributor,
                 thesis_engine=ctx.thesis_engine,
+                campaign_registry=ctx.campaign_registry,
             )
             # Install Governance as the authoriser on the Learning→Governance
             # gateway and require authorisation (per config; default on).

@@ -3584,6 +3584,80 @@ class ThesisConfig:
 
 
 @dataclass
+class CampaignConfig:
+    """Evolving market campaigns (not isolated trades).
+
+    A campaign is the *lifetime of a directional market thesis on a symbol* —
+    the continuing idea that a scatter of individual orders (open, scale-in,
+    partial, re-entry, reversal) are all legs of. :class:`brain.campaign.
+    CampaignRegistry` tracks that idea from birth (evidence supports a thesis)
+    to end (the thesis is invalidated, decays away, or flips), sitting beside
+    the :class:`brain.thesis_engine.ThesisEngine` that reports the live read.
+
+    Introduced OBSERVATIONALLY: with ``enabled`` False the registry is still
+    constructed and surfaced via Governance ``get_status`` but is only fed the
+    campaign narrative — it alters no execution decision. This mirrors how the
+    ThesisEngine (Gap 1a) was introduced before later sessions promoted it.
+    """
+
+    # Master switch. Live on the demo build: the registry records the campaign
+    # narrative and runs the autonomous post-mortem. It remains OBSERVATIONAL —
+    # it never drives an execution decision (every feed is fail-safe and only
+    # reads thesis output / close outcomes), so enabling it is safe. A later
+    # session promotes it into a driver of scaling / re-entry / reversal.
+    enabled: bool = True
+    # Seconds without a fresh actionable thesis read before a campaign fades to
+    # DORMANT (a pullback or quiet patch — not yet dead). Mirrors the thesis
+    # 15-minute decay half-life so the two layers age in step.
+    dormant_after_seconds: float = 900.0
+    # Seconds without fresh evidence before the campaign is declared INVALIDATED
+    # (the absence of confirming evidence is itself disconfirming). Clamped up to
+    # ``dormant_after_seconds`` if misconfigured below it.
+    invalidate_after_seconds: float = 3600.0
+    # Bounded terminal-campaign history kept for post-mortem / dashboard reads.
+    history_limit: int = 500
+    # ── Autonomous post-mortem ────────────────────────────────────────────
+    # On termination every campaign is graded on REASONING QUALITY, not profit
+    # alone: winning on thin evidence is a process failure, losing on strong
+    # persistent evidence still validates the process. Produces a verdict and a
+    # suggested confidence delta the learning layer can later consume.
+    postmortem_enabled: bool = True
+    # Evidence-support threshold (0..1) separating a well-reasoned campaign from
+    # a thinly-supported one when classifying the win/loss × reasoning verdict.
+    sound_evidence_threshold: float = 0.5
+    # Refresh count at which a campaign's evidence persistence is considered
+    # "fully earned" (saturates the persistence half of the support score).
+    evidence_full_refreshes: int = 5
+
+    def __post_init__(self) -> None:
+        if float(self.dormant_after_seconds) <= 0:
+            raise ValueError(
+                "CampaignConfig.dormant_after_seconds must be > 0, got "
+                f"{self.dormant_after_seconds!r}"
+            )
+        if float(self.invalidate_after_seconds) <= 0:
+            raise ValueError(
+                "CampaignConfig.invalidate_after_seconds must be > 0, got "
+                f"{self.invalidate_after_seconds!r}"
+            )
+        if int(self.history_limit) <= 0:
+            raise ValueError(
+                "CampaignConfig.history_limit must be > 0, got "
+                f"{self.history_limit!r}"
+            )
+        if not (0.0 <= float(self.sound_evidence_threshold) <= 1.0):
+            raise ValueError(
+                "CampaignConfig.sound_evidence_threshold must be in [0, 1], got "
+                f"{self.sound_evidence_threshold!r}"
+            )
+        if int(self.evidence_full_refreshes) < 1:
+            raise ValueError(
+                "CampaignConfig.evidence_full_refreshes must be >= 1, got "
+                f"{self.evidence_full_refreshes!r}"
+            )
+
+
+@dataclass
 class AdaptiveTunerConfig:
     """Phase 6 — closes the continuous-learning loop end to end.
 
@@ -3796,6 +3870,7 @@ class AppConfig:
         default_factory=DevelopingAnalysisConfig
     )
     thesis: ThesisConfig = field(default_factory=ThesisConfig)
+    campaign: CampaignConfig = field(default_factory=CampaignConfig)
     conviction_normalization: ConvictionNormalizationConfig = field(
         default_factory=ConvictionNormalizationConfig
     )
