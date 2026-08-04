@@ -2184,10 +2184,14 @@ class PositionEvaluator:
                 # V13 — route the add-on through the SAME Compliance → Portfolio
                 # pipeline as a fresh entry (it was previously a direct
                 # Intent.open that bypassed both). Portfolio owns the size.
-                self._scale_in_position(
-                    pos, price, sl, symbol, direction, de_result,
-                    current_score, open_positions,
-                )
+                # Phase F — adding exposure requires the single Brain's
+                # authorization (fail-open in soft modes / fail-closed under
+                # authoritative). De-risking is never gated.
+                if self._cognition_management_allows(symbol, direction, "scale_in"):
+                    self._scale_in_position(
+                        pos, price, sl, symbol, direction, de_result,
+                        current_score, open_positions,
+                    )
             elif action_name == Action.PARTIAL_CLOSE.value:
                 # V13 — DE/governor can ask to bank part of a position; the
                 # verdict was previously journaled then dropped (no handler).
@@ -2390,6 +2394,28 @@ class PositionEvaluator:
         return too_close
 
     # ── Scale-in / partial-close handlers (V13) ──────────────────────
+    def _cognition_management_allows(self, symbol: str, direction: str, action: str) -> bool:
+        """AI Cognitive Brain management gate (Phase F) — fail-safe.
+
+        Only exposure-ADDING management actions (scale-in / re-entry) are gated;
+        de-risking always proceeds. Fail-open in the soft modes; fail-closed
+        under ``authoritative`` (no reasoning ⇒ no new exposure).
+        """
+        ctx = self._ctx
+        gate = getattr(ctx, "management_gate", None) if ctx is not None else None
+        if gate is None:
+            return True
+        try:
+            return bool(gate.evaluate(symbol, direction, action).allow)
+        except Exception as exc:  # noqa: BLE001
+            authoritative = str(getattr(gate, "mode", "")) == "authoritative"
+            logger.warning(
+                "[management-gate] {} errored — {} {} (fail-{}): {}",
+                symbol, "blocking" if authoritative else "allowing", action,
+                "closed" if authoritative else "open", exc,
+            )
+            return not authoritative
+
     def _scale_in_position(
         self,
         pos,

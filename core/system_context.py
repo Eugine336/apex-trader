@@ -133,6 +133,9 @@ class SystemContext:
     # Brain entry gate (Step C) — one-way authority that can veto (never
     # originate) a proposed entry when the Brain does not back it. Fail-open.
     cognition_gate: Optional[Any] = None
+    # Brain management gate (Phase F) — governs exposure-adding management actions
+    # (scale-in/re-entry); de-risking is never gated. Fail-safe.
+    management_gate: Optional[Any] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
     opportunity_executor: Optional[OpportunityExecutor] = None
@@ -1187,6 +1190,18 @@ class SystemContext:
                         getattr(cog_cfg, "max_uncertainty_to_act", 0.6)
                         if cog_cfg is not None else 0.6
                     ),
+                    allow_scale_in=bool(
+                        getattr(cog_cfg, "allow_scale_in", False)
+                        if cog_cfg is not None else False
+                    ),
+                    reverse_confidence=float(
+                        getattr(cog_cfg, "manage_reverse_confidence", 0.7)
+                        if cog_cfg is not None else 0.7
+                    ),
+                    exit_floor=float(
+                        getattr(cog_cfg, "manage_exit_floor", 0.3)
+                        if cog_cfg is not None else 0.3
+                    ),
                 )
                 _consolidator = _EvidenceConsolidator(
                     ctx=ctx,
@@ -1218,6 +1233,28 @@ class SystemContext:
                     except Exception:  # noqa: BLE001
                         return []
 
+                def _cognition_positions() -> list:
+                    # Open campaigns → PositionView so the Brain can manage them.
+                    try:
+                        from cognition.brain import PositionView as _PositionView
+                        reg = ctx.campaign_registry
+                        if reg is None:
+                            return []
+                        live = (reg.get_status() or {}).get("live", []) or []
+                        out = []
+                        for c in live:
+                            d = str(c.get("direction", "") or "").upper()
+                            if d not in ("LONG", "SHORT"):
+                                continue
+                            out.append(_PositionView(
+                                symbol=str(c.get("symbol", "") or ""),
+                                direction=d,
+                                campaign_id=str(c.get("campaign_id", "") or ""),
+                            ))
+                        return out
+                    except Exception:  # noqa: BLE001
+                        return []
+
                 ctx.cognition_loop = _CognitionLoop(
                     ctx.cognitive_brain, _consolidator, _cognition_symbols,
                     interval_seconds=float(
@@ -1233,9 +1270,20 @@ class SystemContext:
                         if cog_cfg is not None else True
                     ),
                     action_bridge=_bridge,
+                    position_source=_cognition_positions,
                 )
                 from cognition.gate import CognitionGate as _CognitionGate
                 ctx.cognition_gate = _CognitionGate(
+                    ctx.cognitive_brain,
+                    mode=str(getattr(cog_cfg, "gate_mode", "authoritative")
+                             if cog_cfg is not None else "authoritative"),
+                    max_decision_age_seconds=float(
+                        getattr(cog_cfg, "max_decision_age_seconds", 300.0)
+                        if cog_cfg is not None else 300.0
+                    ),
+                )
+                from cognition.management_gate import ManagementGate as _ManagementGate
+                ctx.management_gate = _ManagementGate(
                     ctx.cognitive_brain,
                     mode=str(getattr(cog_cfg, "gate_mode", "authoritative")
                              if cog_cfg is not None else "authoritative"),
@@ -1286,6 +1334,7 @@ class SystemContext:
                 cognitive_brain=ctx.cognitive_brain,
                 cognition_loop=ctx.cognition_loop,
                 cognition_gate=ctx.cognition_gate,
+                management_gate=ctx.management_gate,
             )
             # Install Governance as the authoriser on the Learning→Governance
             # gateway and require authorisation (per config; default on).

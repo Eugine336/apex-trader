@@ -3867,6 +3867,10 @@ class CognitionConfig:
     loop_interval_seconds: float = 30.0
     max_symbols_per_cycle: int = 12
     emit_operator_notifications: bool = True
+    # Phase F — Brain-driven management thresholds.
+    allow_scale_in: bool = False
+    manage_reverse_confidence: float = 0.7
+    manage_exit_floor: float = 0.3
 
     def __post_init__(self) -> None:
         self.enabled = _llm_env_bool("COGNITION_ENABLED", self.enabled)
@@ -3880,6 +3884,7 @@ class CognitionConfig:
         self.per_module_evidence = _llm_env_bool(
             "COGNITION_PER_MODULE_EVIDENCE", self.per_module_evidence
         )
+        self.allow_scale_in = _llm_env_bool("COGNITION_ALLOW_SCALE_IN", self.allow_scale_in)
         for env_name, attr in (
             ("COGNITION_LOOP_INTERVAL_SECONDS", "loop_interval_seconds"),
             ("COGNITION_MAX_DECISION_AGE_SECONDS", "max_decision_age_seconds"),
@@ -3899,6 +3904,10 @@ class CognitionConfig:
             raise ValueError(
                 f"CognitionConfig.max_decision_age_seconds must be >= 0, got {self.max_decision_age_seconds!r}"
             )
+        for name in ("manage_reverse_confidence", "manage_exit_floor"):
+            v = getattr(self, name)
+            if not (0.0 <= float(v) <= 1.0):
+                raise ValueError(f"CognitionConfig.{name} must be in [0, 1], got {v!r}")
         if not (0.0 <= float(self.min_confidence_to_act) <= 1.0):
             raise ValueError(
                 f"CognitionConfig.min_confidence_to_act must be in [0, 1], got {self.min_confidence_to_act!r}"

@@ -62,6 +62,19 @@ class BrainOutput:
         }
 
 
+@dataclass
+class PositionView:
+    """Minimal open-position/campaign state the Brain reasons over to manage it."""
+
+    symbol: str
+    direction: str                       # LONG | SHORT
+    profit_r: Optional[float] = None
+    hold_seconds: float = 0.0
+    size: float = 0.0
+    campaign_id: str = ""
+    entry_confidence: Optional[float] = None
+
+
 class CognitiveBrain:
     """The sole market reasoner. Evidence in → decision out. Fail-safe."""
 
@@ -72,16 +85,24 @@ class CognitiveBrain:
         min_confidence_to_act: float = 0.55,
         max_uncertainty_to_act: float = 0.6,
         reasoner_name: str = "ai_brain",
+        allow_scale_in: bool = False,
+        reverse_confidence: float = 0.7,
+        exit_floor: float = 0.3,
     ) -> None:
         self._reasoner = reasoner
         self.min_confidence_to_act = min(1.0, max(0.0, float(min_confidence_to_act)))
         self.max_uncertainty_to_act = min(1.0, max(0.0, float(max_uncertainty_to_act)))
         self.reasoner_name = str(reasoner_name or "ai_brain")
+        self.allow_scale_in = bool(allow_scale_in)
+        self.reverse_confidence = min(1.0, max(0.0, float(reverse_confidence)))
+        self.exit_floor = min(1.0, max(0.0, float(exit_floor)))
         self._decisions = 0
         self._campaigns_opened = 0
         self._observed = 0
         self._faults = 0
+        self._managed = 0
         self._last: dict[str, BrainOutput] = {}
+        self._last_management: dict[str, BrainOutput] = {}
         self._lock = threading.Lock()
 
     @property
@@ -192,6 +213,83 @@ class CognitiveBrain:
         )
         return self._record(BrainOutput(decision=decision, campaign=campaign, direction=direction))
 
+    # ── Management (Phase F — Brain drives the open campaign) ─────────────
+
+    def manage(self, position: "PositionView", market_state: MarketState, *,
+               now: Optional[float] = None) -> BrainOutput:
+        """Decide the management action for an OPEN position/campaign. Never raises.
+
+        Reasons over the current evidence + the held direction and emits a
+        management ``DecisionPackage`` (HOLD / SCALE_IN / TIGHTEN_RISK / EXIT /
+        REVERSE). Fallback = HOLD (do nothing) when the reasoner is unavailable.
+        """
+        symbol = getattr(position, "symbol", "") or getattr(market_state, "symbol", "") or ""
+        want = str(getattr(position, "direction", "") or "").upper()
+        try:
+            consolidation = market_state.consolidation(now)
+            uncertainty = _clamp01(consolidation.get("aggregate_uncertainty", 1.0))
+            if not self.available:
+                return self._record_management(self._manage_pkg(
+                    symbol, want, DecisionType.HOLD, 0.0, uncertainty,
+                    "reasoner unavailable — hold (no change)"))
+            opinion = self._reasoner.reason(
+                symbol, self._evidence_payload(market_state, consolidation), now=now)
+            if opinion is None:
+                return self._record_management(self._manage_pkg(
+                    symbol, want, DecisionType.HOLD, 0.0, uncertainty, "no opinion — hold"))
+            odir = str(getattr(opinion, "direction", FLAT) or FLAT).upper()
+            conf = _clamp01(getattr(opinion, "confidence", 0.0))
+            rationale = str(getattr(opinion, "rationale", "") or "")
+            aligned = odir == want and want in (LONG, SHORT)
+            opposite = odir in (LONG, SHORT) and odir != want and want in (LONG, SHORT)
+
+            if aligned and conf >= self.min_confidence_to_act and uncertainty <= self.max_uncertainty_to_act:
+                if self.allow_scale_in and conf >= self.reverse_confidence \
+                        and (getattr(position, "profit_r", None) or 0.0) > 0:
+                    action, why = DecisionType.SCALE_IN, "thesis strengthening + in profit — add"
+                else:
+                    action, why = DecisionType.HOLD, "thesis intact — hold"
+            elif aligned and conf >= self.exit_floor:
+                action, why = DecisionType.TIGHTEN_RISK, "supporting thesis weakening — tighten risk"
+            elif opposite and conf >= self.reverse_confidence:
+                action, why = DecisionType.REVERSE, "strong contrary evidence — reverse"
+            elif opposite and conf >= self.min_confidence_to_act:
+                action, why = DecisionType.EXIT, "contrary evidence dominant — exit"
+            else:
+                action, why = DecisionType.EXIT, "evidence no longer supports the position — exit"
+            return self._record_management(self._manage_pkg(
+                symbol, want, action, conf, uncertainty, rationale or why))
+        except Exception as exc:  # noqa: BLE001 — management reasoning must never break a cycle
+            logger.debug("[brain] manage(%s) ignored a fault: %s", symbol, exc)
+            with self._lock:
+                self._faults += 1
+            return self._record_management(self._manage_pkg(
+                symbol, want, DecisionType.HOLD, 0.0, 1.0, f"manage fault: {exc}"))
+
+    def _manage_pkg(self, symbol: str, held_dir: str, action: "DecisionType",
+                    confidence: float, uncertainty: float, reason: str) -> BrainOutput:
+        decision = DecisionPackage(
+            symbol=symbol, decision_type=action, thesis=reason,
+            confidence=confidence, uncertainty=uncertainty,
+            campaign_recommendation=action.value, risk_rationale=reason,
+            questions_answered={q: ("considered" if q == "should_i_do_nothing" else reason)
+                                for q in REQUIRED_QUESTIONS},
+            do_nothing_considered=True, reasoner=self.reasoner_name,
+        )
+        out_dir = _opp(held_dir) if action == DecisionType.REVERSE else held_dir
+        return BrainOutput(decision=decision, direction=out_dir)
+
+    def _record_management(self, output: BrainOutput) -> BrainOutput:
+        output.decided_at_epoch = time.time()
+        with self._lock:
+            self._managed += 1
+            self._last_management[output.decision.symbol] = output
+        return output
+
+    def latest_management(self, symbol: str) -> Optional[BrainOutput]:
+        with self._lock:
+            return self._last_management.get(str(symbol or ""))
+
     # ── Helpers ───────────────────────────────────────────────────────────
 
     @staticmethod
@@ -246,16 +344,21 @@ class CognitiveBrain:
     def get_status(self) -> dict:
         with self._lock:
             recent = {s: o.decision.decision_type.value for s, o in list(self._last.items())[-25:]}
+            recent_mgmt = {s: o.decision.decision_type.value
+                           for s, o in list(self._last_management.items())[-25:]}
             return {
                 "available": self.available,
                 "reasoner": self.reasoner_name,
                 "min_confidence_to_act": self.min_confidence_to_act,
                 "max_uncertainty_to_act": self.max_uncertainty_to_act,
+                "allow_scale_in": self.allow_scale_in,
                 "decisions": self._decisions,
                 "campaigns_opened": self._campaigns_opened,
                 "observed": self._observed,
+                "managed": self._managed,
                 "faults": self._faults,
                 "recent_decisions": recent,
+                "recent_management": recent_mgmt,
             }
 
 
@@ -269,4 +372,9 @@ def _clamp01(value: Any, default: float = 0.0) -> float:
     return min(1.0, max(0.0, f))
 
 
-__all__ = ["CognitiveBrain", "BrainOutput", "LONG", "SHORT", "FLAT"]
+def _opp(direction: str) -> str:
+    d = str(direction or "").upper()
+    return SHORT if d == LONG else (LONG if d == SHORT else FLAT)
+
+
+__all__ = ["CognitiveBrain", "BrainOutput", "PositionView", "LONG", "SHORT", "FLAT"]
