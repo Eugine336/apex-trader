@@ -4540,6 +4540,11 @@ class EventDrivenSystem:
                 self._ctx.cognition_loop.stop()
             except Exception:
                 pass
+        if self._ctx is not None and getattr(self._ctx, "campaign_memory", None) is not None:
+            try:
+                self._ctx.campaign_memory.close()
+            except Exception:
+                pass
         if getattr(self, "_opportunity_queue", None) is not None:
             try:
                 self._opportunity_queue.stop()

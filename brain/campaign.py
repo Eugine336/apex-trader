@@ -313,6 +313,7 @@ class CampaignRegistry:
         postmortem_enabled: bool = True,
         sound_evidence_threshold: float = 0.5,
         evidence_full_refreshes: int = 5,
+        memory_sink: Optional[Any] = None,
     ) -> None:
         self.enabled = bool(enabled)
         da = _safe_float(dormant_after_seconds, 900.0)
@@ -325,6 +326,10 @@ class CampaignRegistry:
         self.sound_evidence_threshold = min(1.0, max(0.0,
             _safe_float(sound_evidence_threshold, 0.5)))
         self.evidence_full_refreshes = max(1, int(evidence_full_refreshes))
+        # Optional Part VII institutional-memory sink: a callable invoked with the
+        # terminated :class:`Campaign` when a campaign is finalised. Best-effort —
+        # a memory fault must never break the campaign lifecycle.
+        self._memory_sink = memory_sink
         self._live: dict[tuple[str, str], Campaign] = {}
         self._finalized: Deque[Campaign] = deque(maxlen=self._history_limit)
         self._seq = 0
@@ -528,6 +533,12 @@ class CampaignRegistry:
             camp.postmortem = self._run_postmortem(camp, now)
         self._live.pop((camp.symbol, camp.direction), None)
         self._finalized.append(camp)
+        # Part VII — persist the terminated campaign to institutional memory.
+        if self._memory_sink is not None:
+            try:
+                self._memory_sink(camp)
+            except Exception as exc:  # noqa: BLE001 — memory must never break a close
+                logger.debug("[campaign] memory sink ignored a fault: {}", exc)
         logger.debug(
             "[campaign] {} {} — {} legs, realised {:.2f}, reason={}{}",
             state.value.upper(), camp.campaign_id,
@@ -652,6 +663,14 @@ class CampaignRegistry:
             self._live.clear()
             self._finalized.clear()
             self._seq = 0
+
+    def set_memory_sink(self, sink: Optional[Any]) -> None:
+        """Wire (or clear) the Part VII institutional-memory sink. Fail-safe.
+
+        The sink is invoked with the terminated :class:`Campaign` whenever a
+        campaign is finalised; a memory fault never breaks the lifecycle.
+        """
+        self._memory_sink = sink
 
 
 __all__ = [

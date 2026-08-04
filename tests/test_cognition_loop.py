@@ -258,3 +258,60 @@ def test_origination_flat_decision_never_originates():
     )
     loop.run_once()
     assert loop.get_status()["orig_intended"] == 0
+
+
+# ── Institutional memory (Phase H — Part VII) ─────────────────────────────────
+
+from cognition.contracts import Evidence, EvidenceDomain
+from cognition.memory import CampaignMemoryStore
+
+
+class _EvidenceConsolidator:
+    """Builds a MarketState with one directional momentum Evidence per symbol."""
+
+    def build(self, symbol, now=None):
+        ms = MarketState(symbol=symbol)
+        ms.add(Evidence(source_module="m", domain=EvidenceDomain.MOMENTUM,
+                        symbol=symbol, polarity=0.8, confidence=0.8))
+        return ms
+
+
+def test_loop_records_open_snapshot_to_memory():
+    store = CampaignMemoryStore(db_path=":memory:")
+    loop = CognitionLoop(
+        _OpenBrain(), _EvidenceConsolidator(), lambda: ["EURUSD"],
+        origination_mode="off", memory=store,
+    )
+    loop.run_once()
+    st = loop.get_status()
+    assert st["memory_enabled"] is True
+    assert st["memory_opens"] == 1
+    assert store.count() == 1        # one open snapshot recorded
+    store.close()
+
+
+def test_consolidator_injects_analogue_evidence_from_memory():
+    from cognition.loop import EvidenceConsolidator
+    from cognition.memory import fingerprint_from_market_state
+
+    store = CampaignMemoryStore(db_path=":memory:")
+    fp = fingerprint_from_market_state(MarketState(symbol="EURUSD"))
+    # Seed a completed winning LONG campaign with a momentum-heavy fingerprint.
+    ms_seed = MarketState(symbol="EURUSD")
+    ms_seed.add(Evidence(source_module="m", domain=EvidenceDomain.MOMENTUM,
+                         symbol="EURUSD", polarity=0.8, confidence=0.8))
+    store.record_open(symbol="EURUSD", direction="LONG",
+                      fingerprint=fingerprint_from_market_state(ms_seed))
+    store.record_close(SimpleNamespace(to_dict=lambda: {
+        "symbol": "EURUSD", "direction": "LONG", "state": "completed",
+        "realized_pnl": 10.0, "ended_reason": "tp",
+        "postmortem": {"outcome_won": True, "verdict": "validated", "reasoning_quality": 0.8},
+    }))
+    consolidator = EvidenceConsolidator(ctx=None, memory=store)
+    ms = consolidator.build("EURUSD", injected=[Evidence(
+        source_module="m", domain=EvidenceDomain.MOMENTUM, symbol="EURUSD",
+        polarity=0.7, confidence=0.8)])
+    analogue = [e for e in ms.evidence if e.domain == EvidenceDomain.HISTORICAL_ANALOGUE]
+    assert len(analogue) == 1
+    assert analogue[0].polarity > 0     # a won LONG analogue leans long
+    store.close()

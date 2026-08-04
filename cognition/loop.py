@@ -32,7 +32,11 @@ from typing import Any, Callable, Optional
 
 from cognition.campaign_translator import translate as _translate
 from cognition.contracts import DecisionType, MarketState
-from cognition.evidence_adapters import evidence_from_thesis_status, evidence_from_votes
+from cognition.evidence_adapters import (
+    evidence_from_analogues,
+    evidence_from_thesis_status,
+    evidence_from_votes,
+)
 
 logger = logging.getLogger("apex.cognition.loop")
 
@@ -55,10 +59,14 @@ class EvidenceConsolidator:
         *,
         vote_source: Optional[Callable[[str], Any]] = None,
         per_module: bool = True,
+        memory: Optional[Any] = None,
+        max_analogues: int = 5,
     ) -> None:
         self._ctx = ctx
         self._vote_source = vote_source
         self._per_module = bool(per_module)
+        self._memory = memory
+        self._max_analogues = max(1, int(max_analogues))
 
     def build(
         self,
@@ -86,6 +94,15 @@ class EvidenceConsolidator:
                         ms.add(e)
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[consolidator] vote source fault (%s): %s", symbol, exc)
+            # Part VII — consult institutional memory: surface similar past
+            # campaigns and their outcomes as a historical-analogue Evidence.
+            if self._memory is not None:
+                try:
+                    analogues = self._memory.find_analogues(ms, limit=self._max_analogues)
+                    for e in evidence_from_analogues(ms.symbol, analogues):
+                        ms.add(e)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[consolidator] memory recall fault (%s): %s", symbol, exc)
         except Exception as exc:  # noqa: BLE001 — consolidation must never break
             logger.debug("[consolidator] build(%s) ignored a fault: %s", symbol, exc)
         return ms
@@ -160,6 +177,7 @@ class CognitionLoop:
         origination_risk_fraction: float = 0.01,
         origination_max_exposure: float = 1.0,
         balance_provider: Optional[Callable[[str], float]] = None,
+        memory: Optional[Any] = None,
         name: str = "cognition-loop",
     ) -> None:
         self._brain = brain
@@ -175,6 +193,7 @@ class CognitionLoop:
         self._risk_fraction = max(0.0, float(origination_risk_fraction))
         self._max_exposure = min(1.0, max(0.0, float(origination_max_exposure)))
         self._balance_provider = balance_provider
+        self._memory = memory
         self._origination_sink: Optional[Callable[[Any], None]] = None
         self._name = str(name or "cognition-loop")
         self._running = False
@@ -185,6 +204,7 @@ class CognitionLoop:
         self._managed = 0
         self._orig_intended = 0
         self._orig_submitted = 0
+        self._memory_opens = 0
         self._open_keys: set = set()
 
     def set_origination_sink(self, sink: Optional[Callable[[Any], None]]) -> None:
@@ -212,6 +232,8 @@ class CognitionLoop:
                 made += 1
                 if self._action_bridge is not None:
                     self._action_bridge.on_decision(output)
+                if self._memory is not None:
+                    self._record_open_memory(output, ms, now=now)
                 if self.origination_mode != "off":
                     self._maybe_originate(output, now=now)
             except Exception as exc:  # noqa: BLE001 — one symbol must not stop the loop
@@ -240,6 +262,37 @@ class CognitionLoop:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition-loop] open-keys read fault: %s", exc)
         return keys
+
+    def _record_open_memory(self, output: Any, market_state: Any, *,
+                            now: Optional[float] = None) -> None:
+        """Persist the OPEN-time state fingerprint + spec to memory. Fail-safe.
+
+        Part VII: when the Brain opens a campaign, snapshot the market state that
+        justified it so a future reasoning pass can retrieve it as an analogue
+        once the outcome is known. Observational — runs in every origination mode
+        (memory never drives execution).
+        """
+        try:
+            decision = getattr(output, "decision", None)
+            campaign = getattr(output, "campaign", None)
+            if decision is None or campaign is None:
+                return
+            if getattr(decision, "decision_type", None) != DecisionType.OPEN_CAMPAIGN:
+                return
+            direction = str(getattr(output, "direction", "") or "").upper()
+            symbol = str(getattr(campaign, "symbol", "") or "")
+            if direction not in ("LONG", "SHORT") or not symbol:
+                return
+            from cognition.memory import fingerprint_from_market_state  # local, fail-safe
+            fp = fingerprint_from_market_state(market_state, now=now)
+            spec = campaign.to_dict() if hasattr(campaign, "to_dict") else {}
+            self._memory.record_open(
+                symbol=symbol, direction=direction, fingerprint=fp,
+                campaign_id=str(getattr(campaign, "campaign_id", "") or ""), spec=spec,
+            )
+            self._memory_opens += 1
+        except Exception as exc:  # noqa: BLE001 — memory must never break the loop
+            logger.debug("[cognition-loop] record-open-memory fault: %s", exc)
 
     def _maybe_originate(self, output: Any, *, now: Optional[float] = None) -> None:
         """Originate an entry from the Brain's CampaignSpecification. Fail-safe.
@@ -357,6 +410,8 @@ class CognitionLoop:
             "origination_sink_wired": self._origination_sink is not None,
             "orig_intended": self._orig_intended,
             "orig_submitted": self._orig_submitted,
+            "memory_enabled": self._memory is not None,
+            "memory_opens": self._memory_opens,
         }
 
 

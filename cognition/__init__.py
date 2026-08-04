@@ -40,6 +40,8 @@ __all__ = [
     "CognitionLoop",
     "OriginationIntent",
     "translate",
+    "CampaignMemoryStore",
+    "get_campaign_memory",
 ]
 
 
@@ -52,7 +54,8 @@ def __getattr__(name: str):
     if name in ("EvidenceConsolidator", "BrainActionBridge", "CognitionLoop", "SymbolsProvider"):
         from cognition import loop as _loop
         return getattr(_loop, name)
-    if name in ("classify_domain", "evidence_from_thesis_status", "evidence_from_votes"):
+    if name in ("classify_domain", "evidence_from_thesis_status", "evidence_from_votes",
+                "evidence_from_analogues"):
         from cognition import evidence_adapters as _ea
         return getattr(_ea, name)
     if name in ("CognitionGate", "GateVerdict", "normalise_mode",
@@ -65,4 +68,8 @@ def __getattr__(name: str):
     if name in ("OriginationIntent", "translate"):
         from cognition import campaign_translator as _ct
         return getattr(_ct, name)
+    if name in ("CampaignMemoryStore", "fingerprint_from_market_state",
+                "fingerprint_similarity", "get_campaign_memory"):
+        from cognition import memory as _mem
+        return getattr(_mem, name)
     raise AttributeError(f"module 'cognition' has no attribute {name!r}")

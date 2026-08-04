@@ -3,6 +3,7 @@
 from cognition.contracts import EvidenceDomain
 from cognition.evidence_adapters import (
     classify_domain,
+    evidence_from_analogues,
     evidence_from_thesis_status,
     evidence_from_votes,
 )
@@ -106,3 +107,31 @@ def test_evidence_from_votes():
 def test_evidence_from_votes_empty_and_fault_safe():
     assert evidence_from_votes("EURUSD", None) == []
     assert evidence_from_votes("EURUSD", [object()]) == []  # no module attr → skipped
+
+
+# ── Historical analogues (Phase H — Part VII memory) ──────────────────────────
+
+def test_evidence_from_analogues_won_long_leans_long():
+    analogues = [
+        {"direction": "LONG", "similarity": 0.9, "outcome_won": True, "reasoning_quality": 0.8},
+        {"direction": "LONG", "similarity": 0.7, "outcome_won": True, "reasoning_quality": 0.7},
+    ]
+    ev = evidence_from_analogues("EURUSD", analogues)
+    assert len(ev) == 1
+    assert ev[0].domain == EvidenceDomain.HISTORICAL_ANALOGUE
+    assert ev[0].polarity > 0
+    assert ev[0].measurements["wins"] == 2
+
+
+def test_evidence_from_analogues_lost_long_leans_short():
+    analogues = [
+        {"direction": "LONG", "similarity": 0.9, "outcome_won": False, "reasoning_quality": 0.8},
+    ]
+    ev = evidence_from_analogues("EURUSD", analogues)
+    assert ev[0].polarity < 0          # that LONG setup previously failed → bearish lean
+
+
+def test_evidence_from_analogues_empty_and_fault_safe():
+    assert evidence_from_analogues("EURUSD", None) == []
+    assert evidence_from_analogues("EURUSD", []) == []
+    assert evidence_from_analogues("EURUSD", [object()]) == []  # non-dict → skipped

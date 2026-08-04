@@ -136,6 +136,10 @@ class SystemContext:
     # Brain management gate (Phase F) — governs exposure-adding management actions
     # (scale-in/re-entry); de-risking is never gated. Fail-safe.
     management_gate: Optional[Any] = None
+    # Institutional memory (Phase H, Part VII) — persists campaign state
+    # fingerprints + realised outcomes so the Brain can consult analogous
+    # history. Observational; fail-safe; surfaced via cognition status.
+    campaign_memory: Optional[Any] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
     opportunity_executor: Optional[OpportunityExecutor] = None
@@ -1203,11 +1207,34 @@ class SystemContext:
                         if cog_cfg is not None else 0.3
                     ),
                 )
+                # Part VII — institutional memory (Phase H). Best-effort: a
+                # store fault leaves memory None (observational, fail-open).
+                _memory = None
+                try:
+                    if bool(getattr(cog_cfg, "memory_enabled", True)
+                            if cog_cfg is not None else True):
+                        from cognition.memory import get_campaign_memory as _get_memory
+                        _memory = _get_memory()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[SystemContext] campaign memory init failed: {}", exc)
+                    _memory = None
+                ctx.campaign_memory = _memory
+                # Part VII — the registry writes terminal outcomes to memory.
+                if _memory is not None and ctx.campaign_registry is not None:
+                    try:
+                        ctx.campaign_registry.set_memory_sink(_memory.record_close)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("[SystemContext] memory sink wiring failed: {}", exc)
                 _consolidator = _EvidenceConsolidator(
                     ctx=ctx,
                     per_module=bool(
                         getattr(cog_cfg, "per_module_evidence", True)
                         if cog_cfg is not None else True
+                    ),
+                    memory=_memory,
+                    max_analogues=int(
+                        getattr(cog_cfg, "memory_max_analogues", 5)
+                        if cog_cfg is not None else 5
                     ),
                 )
                 _bridge = _BrainActionBridge(
@@ -1291,6 +1318,7 @@ class SystemContext:
                         if cog_cfg is not None else 1.0
                     ),
                     balance_provider=_cognition_balance,
+                    memory=_memory,
                 )
                 from cognition.gate import CognitionGate as _CognitionGate
                 ctx.cognition_gate = _CognitionGate(
@@ -1355,6 +1383,7 @@ class SystemContext:
                 cognition_loop=ctx.cognition_loop,
                 cognition_gate=ctx.cognition_gate,
                 management_gate=ctx.management_gate,
+                campaign_memory=ctx.campaign_memory,
             )
             # Install Governance as the authoriser on the Learning→Governance
             # gateway and require authorisation (per config; default on).

@@ -48,7 +48,7 @@
 | VI.3 | Execution feasibility validation | ✅ | `execution/risk_gate.py`, `execution/action_executor.py`, compliance | — |
 | VI.4 | Renewed Brain authorization per execution/management action | 🟡 | entry gated + freshness (C/D); risk-adding management (scale-in/re-entry) gated (F); exit/reverse *execution* still G | F, G |
 | VI.5 | Brain-driven management (hold/scale/protect/exit/reverse) | ✅ | `cognition/brain.py` `manage()` + `cognition/management_gate.py` (adds gated live; de-risking never blocked); legacy managers demoted to evidence | F ✅ (exit/reverse execution in G) |
-| VII.1–6 | Post-trade reconstruction, decision audit, memory | 🟡 | `brain/campaign.py` post-mortem (in-memory, bounded); `adaptive/counterfactual.py` | H |
+| VII.1–6 | Post-trade reconstruction, decision audit, memory | ✅ | `cognition/memory.py` persists fingerprint+spec+outcome+post-mortem (SQLite); `find_analogues` retrieval feeds the Brain a `historical_analogue` Evidence | H ✅ |
 | VII (memory) | Persistent institutional memory + retrieval | ❌ | campaigns not persisted to `persistence/event_store.py`; no similarity retrieval | **H** |
 | VIII | Adaptive influence over evidence + Brain, validated | 🟡 | `adaptive/*` grades legacy vote emitters, not new `Evidence`/Brain | J |
 | IX | Composio: AI objective → governance → execute → observe → memory | 🟡 | `action/*` gateway + `BrainActionBridge` (notify only); no capability registry / self-improvement objectives | I |
@@ -174,25 +174,38 @@ legacy market-judging candidate path is Phase K.
 
 ---
 
-## 5. Phase H — Persistent institutional memory (Part VII)
+## 5. Phase H — Persistent institutional memory (Part VII) — ✅ DONE
 
 **Goal:** every campaign is reconstructed, audited, and persisted for retrieval
 and future reasoning.
 
-**Current state:** `brain/campaign.py` keeps a bounded in-memory history +
-post-mortem; `adaptive/counterfactual.py` exists; nothing persisted to
-`persistence/event_store.py`; no similarity retrieval.
+**Shipped:**
+- `cognition/memory.py` (new): `CampaignMemoryStore` — a self-contained SQLite
+  store (WAL, thread-safe, synchronous under a lock; stdlib `sqlite3` +
+  `logging` so it stays natively importable/offline-testable, `:memory:` for
+  tests). Persists a per-campaign row: the OPEN-time market-state fingerprint +
+  `CampaignSpecification`, stitched to the CLOSE-time realised outcome +
+  post-mortem. Bounded/pruned; fail-safe throughout.
+- Deterministic similarity: `fingerprint_from_market_state()` renders a
+  MarketState as a per-domain evidential-polarity vector; `fingerprint_similarity()`
+  is a bounded [0, 1] cosine (opposing states → 0). `find_analogues(market_state)`
+  returns the most similar *completed* past campaigns with their outcomes.
+- Phase E historical-analogue adapter: `evidence_from_analogues()` folds the
+  retrieved analogues into a single `historical_analogue` Evidence (a won
+  directional analogue leans that way; a lost one leans opposite), so the Brain
+  literally consults memory when reasoning. Wired into `EvidenceConsolidator`.
+- Write paths (matched heuristically by `(symbol, direction)`, newest-open-first,
+  since the Brain-spec and legacy-campaign id spaces differ): the loop's
+  `_record_open_memory()` snapshots the state fingerprint when the Brain opens a
+  campaign; `brain/campaign.py`'s finalize hook (`_finalize_locked`) writes the
+  terminal outcome via a fail-safe `memory_sink` (wired in `system_context`).
+- Config: `CognitionConfig.memory_enabled` (default True) + `memory_max_analogues`
+  + env `COGNITION_MEMORY_ENABLED`. Store status surfaced under
+  governance `cognition.memory`; loop status adds `memory_opens`.
 
-**Tasks**
-- `cognition/memory.py`: persist each terminated campaign (spec, evidence
-  snapshot, decision packages, executions, outcome, post-mortem, counterfactual)
-  via `persistence/event_store.py` / a `campaign_memory` store.
-- Similarity retrieval (`find_analogues(market_state)`) feeding the Phase E
-  historical-analogue adapter, so the Brain consults memory when reasoning.
-- Wire campaign close (`_on_trade_closed` / registry finalize) to write memory.
-
-**Acceptance:** campaigns persisted across restarts and retrievable; analogue
-evidence appears in `MarketState`; post-mortem verdicts feed Phase J.
+**Acceptance:** ✅ campaigns persist across restarts (SQLite) and are retrievable;
+✅ analogue evidence appears in `MarketState`; ✅ post-mortem verdicts are stored
+per campaign and feed Phase J. Observational — memory never drives execution.
 
 ---
 
