@@ -3969,6 +3969,62 @@ class EventDrivenSystem:
 
         return _source
 
+    def _make_origination_sink(self):
+        """Build the LIVE origination sink for Brain-originated entries (Phase G).
+
+        The returned callable accepts a
+        :class:`cognition.campaign_translator.OriginationIntent` and submits an
+        :class:`~execution.intents.Intent` OPEN onto the shared aggregator — the
+        SAME execution plane (aggregator → RiskGate → broker) as every other
+        entry. Fail-safe: a malformed intent, a missing protective stop, or any
+        fault is logged and dropped (never raises into the cognition loop). A
+        missing stop is refused because an entry without a stop would bypass the
+        constitutional deterministic-safety floor (Part X).
+        """
+        def _sink(origination: Any) -> None:
+            try:
+                symbol = str(getattr(origination, "symbol", "") or "")
+                direction = str(getattr(origination, "direction", "") or "").upper()
+                sl = getattr(origination, "sl", None)
+                tp = getattr(origination, "tp", None)
+                if not symbol or direction not in ("LONG", "SHORT"):
+                    return
+                if sl is None or tp is None:
+                    logger.info(
+                        "[origination-sink] {} {} skipped — no protective stop/target "
+                        "(refusing to bypass Part X safety floor)",
+                        symbol, direction,
+                    )
+                    return
+                stake = getattr(origination, "stake_usd", None)
+                lots = float(getattr(origination, "lots", 0.0) or 0.0)
+                idem_key = generate_idempotency_key(symbol, direction, stake or lots)
+                comment = build_order_comment(
+                    "APEX", idem_key,
+                    score=round(float(getattr(origination, "confidence", 0.0) or 0.0), 4),
+                )
+                self._aggregator.submit([Intent.open(
+                    symbol=symbol,
+                    direction=direction,
+                    lots=lots,
+                    sl=float(sl),
+                    tp=float(tp),
+                    stake_usd=None if stake is None else float(stake),
+                    comment=comment,
+                    idempotency_key=idem_key,
+                    source="ai_brain",
+                    reason=str(getattr(origination, "reason", "") or "brain_origination")[:200],
+                )])
+                logger.info(
+                    "[origination-sink] submitted {} {} (stake={}) from campaign {}",
+                    symbol, direction, stake,
+                    getattr(origination, "campaign_id", ""),
+                )
+            except Exception as exc:  # noqa: BLE001 — sink must never break the loop
+                logger.warning("[origination-sink] submit failed: {}", exc)
+
+        return _sink
+
     # ── Lifecycle ────────────────────────────────────────────────────
 
     def start(self) -> None:
@@ -4200,6 +4256,12 @@ class EventDrivenSystem:
             if _cog_loop is not None and bool(
                 getattr(_cog_cfg, "enabled", True) if _cog_cfg is not None else True
             ):
+                # Phase G — when origination is LIVE, wire the executor sink so the
+                # Brain's originated entries reach the SAME execution plane as
+                # every other entry (aggregator → RiskGate → broker). Shadow/off
+                # leave the sink unset, so the loop only records intended orders.
+                if str(getattr(_cog_loop, "origination_mode", "shadow")) == "live":
+                    _cog_loop.set_origination_sink(self._make_origination_sink())
                 _cog_loop.start()
         except Exception as exc:
             logger.warning("[event-driven] cognition loop start failed: {}", exc)

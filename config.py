@@ -3854,7 +3854,8 @@ class CognitionConfig:
     observational — it produces and surfaces decisions without driving execution
     — so the legacy path stays authoritative until the cutover is validated
     (Parts XIII/XV: shadow → paper → controlled rollout). Env overrides:
-    COGNITION_ENABLED, COGNITION_SHADOW_MODE, COGNITION_LOOP_INTERVAL_SECONDS.
+    COGNITION_ENABLED, COGNITION_SHADOW_MODE, COGNITION_LOOP_INTERVAL_SECONDS,
+    COGNITION_ORIGINATION_MODE (off|shadow|live; default shadow).
     """
 
     enabled: bool = True
@@ -3871,6 +3872,13 @@ class CognitionConfig:
     allow_scale_in: bool = False
     manage_reverse_confidence: float = 0.7
     manage_exit_floor: float = 0.3
+    # Phase G — Brain-originated entries from its CampaignSpecification.
+    # "off"    — never originate (management/observation only).
+    # "shadow" — record intended orders, submit nothing (default; safe).
+    # "live"   — submit originated entries via the wired executor sink.
+    origination_mode: str = "shadow"
+    origination_risk_fraction: float = 0.01   # fraction of balance risked per originated entry
+    origination_max_exposure: float = 1.0     # cap on the campaign's desired exposure (0..1)
 
     def __post_init__(self) -> None:
         self.enabled = _llm_env_bool("COGNITION_ENABLED", self.enabled)
@@ -3885,9 +3893,14 @@ class CognitionConfig:
             "COGNITION_PER_MODULE_EVIDENCE", self.per_module_evidence
         )
         self.allow_scale_in = _llm_env_bool("COGNITION_ALLOW_SCALE_IN", self.allow_scale_in)
+        self.origination_mode = (
+            os.getenv("COGNITION_ORIGINATION_MODE", self.origination_mode) or "shadow"
+        ).strip().lower()
         for env_name, attr in (
             ("COGNITION_LOOP_INTERVAL_SECONDS", "loop_interval_seconds"),
             ("COGNITION_MAX_DECISION_AGE_SECONDS", "max_decision_age_seconds"),
+            ("COGNITION_ORIGINATION_RISK_FRACTION", "origination_risk_fraction"),
+            ("COGNITION_ORIGINATION_MAX_EXPOSURE", "origination_max_exposure"),
         ):
             raw = os.getenv(env_name)
             if raw is not None:
@@ -3923,6 +3936,19 @@ class CognitionConfig:
         if int(self.max_symbols_per_cycle) < 1:
             raise ValueError(
                 f"CognitionConfig.max_symbols_per_cycle must be >= 1, got {self.max_symbols_per_cycle!r}"
+            )
+        if self.origination_mode not in ("off", "shadow", "live"):
+            raise ValueError(
+                "CognitionConfig.origination_mode must be off|shadow|live, got "
+                f"{self.origination_mode!r}"
+            )
+        if not (0.0 <= float(self.origination_risk_fraction) <= 1.0):
+            raise ValueError(
+                f"CognitionConfig.origination_risk_fraction must be in [0, 1], got {self.origination_risk_fraction!r}"
+            )
+        if not (0.0 <= float(self.origination_max_exposure) <= 1.0):
+            raise ValueError(
+                f"CognitionConfig.origination_max_exposure must be in [0, 1], got {self.origination_max_exposure!r}"
             )
 
 

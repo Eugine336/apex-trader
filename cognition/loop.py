@@ -30,7 +30,8 @@ import logging
 import threading
 from typing import Any, Callable, Optional
 
-from cognition.contracts import MarketState
+from cognition.campaign_translator import translate as _translate
+from cognition.contracts import DecisionType, MarketState
 from cognition.evidence_adapters import evidence_from_thesis_status, evidence_from_votes
 
 logger = logging.getLogger("apex.cognition.loop")
@@ -155,6 +156,10 @@ class CognitionLoop:
         shadow_mode: bool = True,
         action_bridge: Optional[BrainActionBridge] = None,
         position_source: Optional[Callable[[], Any]] = None,
+        origination_mode: str = "shadow",
+        origination_risk_fraction: float = 0.01,
+        origination_max_exposure: float = 1.0,
+        balance_provider: Optional[Callable[[str], float]] = None,
         name: str = "cognition-loop",
     ) -> None:
         self._brain = brain
@@ -165,6 +170,12 @@ class CognitionLoop:
         self.shadow_mode = bool(shadow_mode)
         self._action_bridge = action_bridge
         self._position_source = position_source
+        m = str(origination_mode or "shadow").strip().lower()
+        self.origination_mode = m if m in ("off", "shadow", "live") else "shadow"
+        self._risk_fraction = max(0.0, float(origination_risk_fraction))
+        self._max_exposure = min(1.0, max(0.0, float(origination_max_exposure)))
+        self._balance_provider = balance_provider
+        self._origination_sink: Optional[Callable[[Any], None]] = None
         self._name = str(name or "cognition-loop")
         self._running = False
         self._thread: Optional[threading.Thread] = None
@@ -172,6 +183,14 @@ class CognitionLoop:
         self._cycles = 0
         self._decisions = 0
         self._managed = 0
+        self._orig_intended = 0
+        self._orig_submitted = 0
+        self._open_keys: set = set()
+
+    def set_origination_sink(self, sink: Optional[Callable[[Any], None]]) -> None:
+        """Wire the live order-submission sink (set by the system that owns the
+        executor). When unset, ``live`` origination degrades to shadow-record."""
+        self._origination_sink = sink
 
     @property
     def running(self) -> bool:
@@ -184,6 +203,7 @@ class CognitionLoop:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition-loop] symbols provider fault: %s", exc)
             return 0
+        self._open_keys = self._current_open_keys()
         made = 0
         for symbol in symbols[: self.max_symbols_per_cycle]:
             try:
@@ -192,6 +212,8 @@ class CognitionLoop:
                 made += 1
                 if self._action_bridge is not None:
                     self._action_bridge.on_decision(output)
+                if self.origination_mode != "off":
+                    self._maybe_originate(output, now=now)
             except Exception as exc:  # noqa: BLE001 — one symbol must not stop the loop
                 logger.debug("[cognition-loop] reason(%s) fault: %s", symbol, exc)
                 continue
@@ -199,6 +221,81 @@ class CognitionLoop:
         self._decisions += made
         self._manage_open_positions(now=now)
         return made
+
+    def _current_open_keys(self) -> set:
+        """Set of ``(symbol, direction)`` for currently open positions/campaigns.
+
+        Used to suppress duplicate origination for a book the Brain already holds.
+        Fail-safe: an unreadable position source yields an empty set.
+        """
+        keys: set = set()
+        if self._position_source is None:
+            return keys
+        try:
+            for pos in list(self._position_source() or []):
+                sym = str(getattr(pos, "symbol", "") or "")
+                d = str(getattr(pos, "direction", "") or "").upper()
+                if sym and d in ("LONG", "SHORT"):
+                    keys.add((sym, d))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[cognition-loop] open-keys read fault: %s", exc)
+        return keys
+
+    def _maybe_originate(self, output: Any, *, now: Optional[float] = None) -> None:
+        """Originate an entry from the Brain's CampaignSpecification. Fail-safe.
+
+        Constitution Part VI Art 2: the Brain ORIGINATES campaigns; execution
+        realises them. This fires only on a fresh ``OPEN_CAMPAIGN`` decision that
+        carries a directional campaign the book does not already hold. In
+        ``shadow`` mode it records the intended order and submits nothing; in
+        ``live`` mode it hands a translated :class:`OriginationIntent` to the
+        wired sink (and degrades to shadow-record when no sink is wired).
+        """
+        try:
+            decision = getattr(output, "decision", None)
+            campaign = getattr(output, "campaign", None)
+            if decision is None or campaign is None:
+                return
+            if getattr(decision, "decision_type", None) != DecisionType.OPEN_CAMPAIGN:
+                return
+            direction = str(getattr(output, "direction", "") or "").upper()
+            symbol = str(getattr(campaign, "symbol", "") or "")
+            if direction not in ("LONG", "SHORT") or not symbol:
+                return
+            if (symbol, direction) in self._open_keys:
+                return
+            balance = 0.0
+            if self._balance_provider is not None:
+                try:
+                    balance = float(self._balance_provider(symbol) or 0.0)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[cognition-loop] balance provider fault: %s", exc)
+                    balance = 0.0
+            intent = _translate(
+                campaign,
+                balance=balance,
+                risk_fraction=self._risk_fraction,
+                max_exposure=self._max_exposure,
+            )
+            if intent is None:
+                return
+            # Suppress repeats within a cycle regardless of submission outcome.
+            self._open_keys.add((symbol, direction))
+            if self.origination_mode == "live" and self._origination_sink is not None:
+                self._origination_sink(intent)
+                self._orig_submitted += 1
+                logger.info(
+                    "[cognition-loop] originated LIVE %s %s (stake=%s)",
+                    symbol, direction, intent.stake_usd,
+                )
+            else:
+                self._orig_intended += 1
+                logger.info(
+                    "[cognition-loop] originated SHADOW %s %s (stake=%s)",
+                    symbol, direction, intent.stake_usd,
+                )
+        except Exception as exc:  # noqa: BLE001 — origination must never break the loop
+            logger.debug("[cognition-loop] originate fault: %s", exc)
 
     def _manage_open_positions(self, *, now: Optional[float] = None) -> int:
         """Produce a Brain management decision for each open position. Fail-safe."""
@@ -256,6 +353,10 @@ class CognitionLoop:
             "cycles": self._cycles,
             "decisions": self._decisions,
             "managed": self._managed,
+            "origination_mode": self.origination_mode,
+            "origination_sink_wired": self._origination_sink is not None,
+            "orig_intended": self._orig_intended,
+            "orig_submitted": self._orig_submitted,
         }
 
 

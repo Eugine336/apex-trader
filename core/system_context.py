@@ -1255,6 +1255,13 @@ class SystemContext:
                     except Exception:  # noqa: BLE001
                         return []
 
+                def _cognition_balance(symbol: str) -> float:
+                    # Per-symbol platform balance for Brain-originated sizing.
+                    try:
+                        return float(platform_manager.get_platform_balance(symbol) or 0.0)
+                    except Exception:  # noqa: BLE001
+                        return 0.0
+
                 ctx.cognition_loop = _CognitionLoop(
                     ctx.cognitive_brain, _consolidator, _cognition_symbols,
                     interval_seconds=float(
@@ -1271,6 +1278,19 @@ class SystemContext:
                     ),
                     action_bridge=_bridge,
                     position_source=_cognition_positions,
+                    origination_mode=str(
+                        getattr(cog_cfg, "origination_mode", "shadow")
+                        if cog_cfg is not None else "shadow"
+                    ),
+                    origination_risk_fraction=float(
+                        getattr(cog_cfg, "origination_risk_fraction", 0.01)
+                        if cog_cfg is not None else 0.01
+                    ),
+                    origination_max_exposure=float(
+                        getattr(cog_cfg, "origination_max_exposure", 1.0)
+                        if cog_cfg is not None else 1.0
+                    ),
+                    balance_provider=_cognition_balance,
                 )
                 from cognition.gate import CognitionGate as _CognitionGate
                 ctx.cognition_gate = _CognitionGate(

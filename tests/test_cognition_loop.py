@@ -147,3 +147,114 @@ def test_bridge_respects_disabled():
     orch = _StubOrchestrator()
     BrainActionBridge(orch, notify_enabled=False).on_decision(_brain_output())
     assert orch.submitted == []
+
+
+# ── Origination (Phase G — Brain originates entries from its campaign spec) ────
+
+from cognition.contracts import CampaignSpecification, DecisionPackage
+
+
+class _OpenBrain:
+    """Emits an OPEN_CAMPAIGN BrainOutput with a directional campaign per symbol."""
+
+    def __init__(self, direction="LONG", exposure=0.5, confidence=0.8):
+        self._dir = direction
+        self._exp = exposure
+        self._conf = confidence
+
+    def reason(self, market_state, now=None):
+        sym = market_state.symbol
+        decision = DecisionPackage(
+            symbol=sym, decision_type=DecisionType.OPEN_CAMPAIGN,
+            thesis="breakout", confidence=self._conf,
+        )
+        campaign = CampaignSpecification(
+            symbol=sym, direction=self._dir, desired_exposure=self._exp,
+            confidence=self._conf, decision_id=decision.decision_id,
+        )
+        return SimpleNamespace(decision=decision, campaign=campaign, direction=self._dir)
+
+
+def test_origination_shadow_records_intended_submits_nothing():
+    loop = CognitionLoop(
+        _OpenBrain(), _StubConsolidator(), lambda: ["EURUSD"],
+        origination_mode="shadow", balance_provider=lambda s: 10_000.0,
+    )
+    loop.run_once()
+    st = loop.get_status()
+    assert st["origination_mode"] == "shadow"
+    assert st["orig_intended"] == 1
+    assert st["orig_submitted"] == 0
+
+
+def test_origination_live_calls_sink():
+    submitted = []
+    loop = CognitionLoop(
+        _OpenBrain(), _StubConsolidator(), lambda: ["EURUSD"],
+        origination_mode="live", balance_provider=lambda s: 10_000.0,
+    )
+    loop.set_origination_sink(lambda intent: submitted.append(intent))
+    loop.run_once()
+    st = loop.get_status()
+    assert st["orig_submitted"] == 1
+    assert st["orig_intended"] == 0
+    assert submitted and submitted[0].symbol == "EURUSD"
+    assert abs(submitted[0].stake_usd - 50.0) < 1e-6
+
+
+def test_origination_live_without_sink_degrades_to_shadow():
+    loop = CognitionLoop(
+        _OpenBrain(), _StubConsolidator(), lambda: ["EURUSD"],
+        origination_mode="live", balance_provider=lambda s: 10_000.0,
+    )
+    loop.run_once()
+    assert loop.get_status()["orig_intended"] == 1
+
+
+def test_origination_off_never_originates():
+    loop = CognitionLoop(
+        _OpenBrain(), _StubConsolidator(), lambda: ["EURUSD"],
+        origination_mode="off", balance_provider=lambda s: 10_000.0,
+    )
+    loop.run_once()
+    st = loop.get_status()
+    assert st["orig_intended"] == 0
+    assert st["orig_submitted"] == 0
+
+
+def test_origination_suppressed_for_already_open_book():
+    pos = SimpleNamespace(symbol="EURUSD", direction="LONG")
+    loop = CognitionLoop(
+        _OpenBrain(direction="LONG"), _StubConsolidator(), lambda: ["EURUSD"],
+        origination_mode="shadow", balance_provider=lambda s: 10_000.0,
+        position_source=lambda: [pos],
+    )
+    loop.run_once()
+    assert loop.get_status()["orig_intended"] == 0
+
+
+def test_origination_deduplicates_within_cycle():
+    loop = CognitionLoop(
+        _OpenBrain(direction="LONG"), _StubConsolidator(),
+        lambda: ["EURUSD", "EURUSD"],
+        origination_mode="shadow", balance_provider=lambda s: 10_000.0,
+    )
+    loop.run_once()
+    assert loop.get_status()["orig_intended"] == 1
+
+
+def test_origination_flat_decision_never_originates():
+    class _FlatBrain:
+        def reason(self, market_state, now=None):
+            decision = DecisionPackage(
+                symbol=market_state.symbol,
+                decision_type=DecisionType.CONTINUE_OBSERVING,
+            )
+            return SimpleNamespace(decision=decision, campaign=None, direction="FLAT")
+
+    loop = CognitionLoop(
+        _FlatBrain(), _StubConsolidator(), lambda: ["EURUSD"],
+        origination_mode="shadow", balance_provider=lambda s: 10_000.0,
+    )
+    loop.run_once()
+    assert loop.get_status()["orig_intended"] == 0
