@@ -3700,6 +3700,15 @@ class LLMConfig:
     min_interval_seconds: float = 30.0
     worker_interval_seconds: float = 60.0
     max_symbols_per_cycle: int = 8
+    # Part XVI Art 9 — Model Manager. The Brain never depends on one model:
+    # ``extra_models`` lists additional candidate models the manager may select
+    # (each a dict: provider/model, optional api_key/base_url/priority/cost —
+    # omitted key/base_url inherit the primary, the "one gateway, many models"
+    # case). ``model_policy`` is "priority" (operator order) or "performance"
+    # (observed success-rate/latency). Env: LLM_EXTRA_MODELS (JSON array),
+    # LLM_MODEL_POLICY.
+    extra_models: list = field(default_factory=list)
+    model_policy: str = "priority"
 
     def __post_init__(self) -> None:
         # The environment is the single source of truth — no vendor is baked in.
@@ -3760,6 +3769,27 @@ class LLMConfig:
                 "LLMConfig.max_symbols_per_cycle must be >= 1, got "
                 f"{self.max_symbols_per_cycle!r}"
             )
+        # Part XVI Art 9 — Model Manager candidates + policy.
+        self.model_policy = (
+            os.getenv("LLM_MODEL_POLICY", self.model_policy) or "priority"
+        ).strip().lower()
+        if self.model_policy not in ("priority", "performance"):
+            raise ValueError(
+                "LLMConfig.model_policy must be priority|performance, got "
+                f"{self.model_policy!r}"
+            )
+        raw_models = os.getenv("LLM_EXTRA_MODELS")
+        if raw_models is not None:
+            try:
+                import json as _json
+                parsed = _json.loads(raw_models)
+                self.extra_models = [m for m in parsed if isinstance(m, dict)] \
+                    if isinstance(parsed, list) else []
+            except (TypeError, ValueError):
+                logger.warning("[config] bad LLM_EXTRA_MODELS JSON — ignoring")
+                self.extra_models = []
+        if not isinstance(self.extra_models, list):
+            self.extra_models = []
 
 
 @dataclass
@@ -3883,7 +3913,8 @@ class CognitionConfig:
     COGNITION_ENABLED, COGNITION_SHADOW_MODE, COGNITION_LOOP_INTERVAL_SECONDS,
     COGNITION_ORIGINATION_MODE (off|shadow|live; default shadow),
     COGNITION_MEMORY_ENABLED (default true),
-    COGNITION_OPERATIONS_ENABLED (default false).
+    COGNITION_OPERATIONS_ENABLED (default false),
+    COGNITION_INFLUENCE_ENABLED (default false — shadow learning).
     """
 
     enabled: bool = True
@@ -3921,6 +3952,15 @@ class CognitionConfig:
     operations_report_period_seconds: float = 86_400.0
     operations_loss_streak: int = 3
     operations_cooldown_seconds: float = 3_600.0
+    # Phase J — adaptive influence over evidence sources + Brain calibration
+    # (Part VIII). The influence ledger always learns from realised outcomes;
+    # ``influence_enabled`` (default False = shadow) controls whether the learned
+    # weights are APPLIED to live consolidation. Weights move only past
+    # ``influence_min_samples`` (statistical-significance floor) and stay bounded.
+    influence_enabled: bool = False
+    influence_min_samples: int = 20
+    influence_min_weight: float = 0.5
+    influence_max_weight: float = 1.5
 
     def __post_init__(self) -> None:
         self.enabled = _llm_env_bool("COGNITION_ENABLED", self.enabled)
@@ -3938,6 +3978,9 @@ class CognitionConfig:
         self.memory_enabled = _llm_env_bool("COGNITION_MEMORY_ENABLED", self.memory_enabled)
         self.operations_enabled = _llm_env_bool(
             "COGNITION_OPERATIONS_ENABLED", self.operations_enabled
+        )
+        self.influence_enabled = _llm_env_bool(
+            "COGNITION_INFLUENCE_ENABLED", self.influence_enabled
         )
         self.origination_mode = (
             os.getenv("COGNITION_ORIGINATION_MODE", self.origination_mode) or "shadow"
@@ -4003,6 +4046,18 @@ class CognitionConfig:
         if int(self.operations_loss_streak) < 1:
             raise ValueError(
                 f"CognitionConfig.operations_loss_streak must be >= 1, got {self.operations_loss_streak!r}"
+            )
+        if int(self.influence_min_samples) < 1:
+            raise ValueError(
+                f"CognitionConfig.influence_min_samples must be >= 1, got {self.influence_min_samples!r}"
+            )
+        if not (0.0 <= float(self.influence_min_weight) <= 1.0):
+            raise ValueError(
+                f"CognitionConfig.influence_min_weight must be in [0, 1], got {self.influence_min_weight!r}"
+            )
+        if float(self.influence_max_weight) < 1.0:
+            raise ValueError(
+                f"CognitionConfig.influence_max_weight must be >= 1, got {self.influence_max_weight!r}"
             )
 
 

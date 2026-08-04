@@ -189,6 +189,11 @@ class MarketState:
     evidence: list[Evidence] = field(default_factory=list)
     created_iso: str = ""
     created_epoch: float = 0.0
+    # Part VIII — optional per-source influence weights (source_module → weight).
+    # When set (by the consolidator from the InfluenceLedger), consolidation
+    # weights each evidence's contribution by its source's learned influence.
+    # ``None`` ⇒ unweighted (every source counts equally) — the default.
+    influence_weights: Optional[dict] = None
 
     def __post_init__(self) -> None:
         if not self.created_epoch:
@@ -213,12 +218,27 @@ class MarketState:
         total = len(self.evidence)
         n = len(fresh)
         domains = {e.domain.value for e in fresh}
-        pos = sum(1 for e in fresh if e.polarity > 0.05)
-        neg = sum(1 for e in fresh if e.polarity < -0.05)
-        # Conflict scaled to [0, 1]: 0 = unanimous lean, 1 = perfectly split.
-        conflict = min(1.0, (2.0 * min(pos, neg)) / n) if n else 0.0
-        mean_conf = sum(e.confidence for e in fresh) / n if n else 0.0
-        mean_unc = sum(e.uncertainty for e in fresh) / n if n else 1.0
+        weights = self.influence_weights
+        if not weights:
+            # Unweighted (default) — every source counts equally.
+            pos = sum(1 for e in fresh if e.polarity > 0.05)
+            neg = sum(1 for e in fresh if e.polarity < -0.05)
+            conflict = min(1.0, (2.0 * min(pos, neg)) / n) if n else 0.0
+            mean_conf = sum(e.confidence for e in fresh) / n if n else 0.0
+            mean_unc = sum(e.uncertainty for e in fresh) / n if n else 1.0
+        else:
+            # Part VIII — weight each source's contribution by learned influence.
+            def _w(e: Evidence) -> float:
+                try:
+                    return max(0.0, float(weights.get(e.source_module, 1.0)))
+                except Exception:  # noqa: BLE001
+                    return 1.0
+            wsum = sum(_w(e) for e in fresh)
+            pos = sum(_w(e) for e in fresh if e.polarity > 0.05)
+            neg = sum(_w(e) for e in fresh if e.polarity < -0.05)
+            conflict = min(1.0, (2.0 * min(pos, neg)) / wsum) if wsum else 0.0
+            mean_conf = (sum(_w(e) * e.confidence for e in fresh) / wsum) if wsum else 0.0
+            mean_unc = (sum(_w(e) * e.uncertainty for e in fresh) / wsum) if wsum else 1.0
         # No evidence ⇒ maximal uncertainty (Part IV, Article 2).
         aggregate_uncertainty = 1.0 if n == 0 else _clamp01(
             0.5 * mean_unc + 0.5 * conflict + 0.25 * (1.0 - mean_conf)
@@ -233,6 +253,7 @@ class MarketState:
             "mean_confidence": round(mean_conf, 4),
             "mean_uncertainty": round(mean_unc, 4),
             "aggregate_uncertainty": round(aggregate_uncertainty, 4),
+            "influence_weighted": bool(weights),
         }
 
     def to_dict(self, *, include_evidence: bool = True) -> dict:

@@ -148,6 +148,12 @@ class SystemContext:
     # outcomes into operational objectives (issue/notify/report) for the Action
     # Planner. Ecosystem-only, never broker orders. Default-off.
     operations_author: Optional[Any] = None
+    # Adaptive influence + Brain calibration (Phase J, Part VIII). The ledger
+    # grades each evidence source by realised outcome; the tracker grades the
+    # Brain's confidence-vs-reality. Learning is always on; applying the weights
+    # to consolidation is gated (shadow by default). Surfaced via cognition.
+    influence_ledger: Optional[Any] = None
+    brain_calibration: Optional[Any] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
     opportunity_executor: Optional[OpportunityExecutor] = None
@@ -1105,12 +1111,20 @@ class SystemContext:
             # the same authority layer and never overriding physics vetoes.
             try:
                 from llm.client import build_client as _build_llm_client
+                from llm.model_manager import build_model_manager as _build_model_manager
                 from llm.reasoner import LLMReasoner as _LLMReasoner
 
                 llm_cfg = getattr(config, "llm", None)
                 _llm_client = None
                 if llm_cfg is not None and bool(getattr(llm_cfg, "enabled", False)):
-                    _llm_client = _build_llm_client(llm_cfg)
+                    # Part XVI Art 9 — prefer the Model Manager (policy-driven
+                    # multi-model selection + failover). It is a drop-in for a
+                    # single client and degrades to the primary model when only
+                    # one candidate is configured. Fall back to a lone client if
+                    # the manager cannot be built.
+                    _llm_client = _build_model_manager(llm_cfg)
+                    if _llm_client is None:
+                        _llm_client = _build_llm_client(llm_cfg)
                 ctx.llm_reasoner = _LLMReasoner(
                     client=_llm_client,
                     enabled=bool(
@@ -1247,6 +1261,33 @@ class SystemContext:
                     logger.warning("[SystemContext] campaign memory init failed: {}", exc)
                     _memory = None
                 ctx.campaign_memory = _memory
+                # Phase J (Part VIII) — adaptive influence ledger + Brain
+                # calibration. The ledger always learns from outcomes; whether its
+                # weights are APPLIED to consolidation is gated by influence_enabled
+                # (default shadow). Fail-safe: a fault leaves them None.
+                _influence = None
+                _calibration = None
+                try:
+                    from cognition.influence import (
+                        CalibrationTracker as _CalibrationTracker,
+                        InfluenceLedger as _InfluenceLedger,
+                    )
+                    _influence = _InfluenceLedger(
+                        min_samples=int(getattr(cog_cfg, "influence_min_samples", 20)
+                                        if cog_cfg is not None else 20),
+                        min_weight=float(getattr(cog_cfg, "influence_min_weight", 0.5)
+                                         if cog_cfg is not None else 0.5),
+                        max_weight=float(getattr(cog_cfg, "influence_max_weight", 1.5)
+                                         if cog_cfg is not None else 1.5),
+                    )
+                    _calibration = _CalibrationTracker()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[SystemContext] influence/calibration init failed: {}", exc)
+                    _influence = _calibration = None
+                ctx.influence_ledger = _influence
+                ctx.brain_calibration = _calibration
+                _influence_enabled = bool(getattr(cog_cfg, "influence_enabled", False)
+                                          if cog_cfg is not None else False)
                 # Phase I (Part IX Art 9) — operational-intelligence author.
                 # Turns terminated-campaign outcomes into operational objectives
                 # (issue on recurring loss, notify on a validated win, periodic
@@ -1273,17 +1314,24 @@ class SystemContext:
                 ctx.operations_author = _ops_author
 
                 # Part VII — the registry writes terminal outcomes to memory, and
-                # (Part IX Art 9) feeds the same outcomes to the operations author.
+                # (Part IX Art 9) feeds the same outcomes to the operations author,
+                # and (Part VIII) grades evidence sources + Brain calibration.
                 def _campaign_close_sink(camp: Any) -> None:
+                    stitched = None
                     if _memory is not None:
                         try:
-                            _memory.record_close(camp)
+                            stitched = _memory.record_close(camp)
                         except Exception:  # noqa: BLE001
-                            pass
+                            stitched = None
+                    data = {}
+                    pm = {}
+                    try:
+                        data = camp.to_dict() if hasattr(camp, "to_dict") else {}
+                        pm = data.get("postmortem") or {}
+                    except Exception:  # noqa: BLE001
+                        data, pm = {}, {}
                     if _ops_author is not None:
                         try:
-                            data = camp.to_dict() if hasattr(camp, "to_dict") else {}
-                            pm = data.get("postmortem") or {}
                             _ops_author.observe_campaign_outcome(
                                 symbol=str(data.get("symbol", "") or ""),
                                 direction=str(data.get("direction", "") or ""),
@@ -1294,8 +1342,26 @@ class SystemContext:
                             )
                         except Exception:  # noqa: BLE001
                             pass
+                    # Part VIII — credit/debit the evidence sources that backed
+                    # this campaign, and record the Brain's confidence-vs-outcome.
+                    if stitched is not None:
+                        won = bool(stitched.get("won", False))
+                        if _influence is not None:
+                            try:
+                                _influence.observe_many(
+                                    stitched.get("supporting_sources") or [], won)
+                            except Exception:  # noqa: BLE001
+                                pass
+                        if _calibration is not None:
+                            ec = stitched.get("entry_confidence")
+                            if ec is not None:
+                                try:
+                                    _calibration.observe(ec, won)
+                                except Exception:  # noqa: BLE001
+                                    pass
 
-                if (_memory is not None or _ops_author is not None) \
+                if (_memory is not None or _ops_author is not None
+                        or _influence is not None) \
                         and ctx.campaign_registry is not None:
                     try:
                         ctx.campaign_registry.set_memory_sink(_campaign_close_sink)
@@ -1312,6 +1378,8 @@ class SystemContext:
                         getattr(cog_cfg, "memory_max_analogues", 5)
                         if cog_cfg is not None else 5
                     ),
+                    influence=_influence,
+                    influence_enabled=_influence_enabled,
                 )
                 _bridge = _BrainActionBridge(
                     ctx.action_orchestrator,
@@ -1465,6 +1533,8 @@ class SystemContext:
                 campaign_memory=ctx.campaign_memory,
                 action_planner=ctx.action_planner,
                 operations_author=ctx.operations_author,
+                influence_ledger=ctx.influence_ledger,
+                brain_calibration=ctx.brain_calibration,
             )
             # Install Governance as the authoriser on the Learning→Governance
             # gateway and require authorisation (per config; default on).

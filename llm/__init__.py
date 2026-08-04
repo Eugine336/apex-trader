@@ -11,6 +11,12 @@ Public surface:
 """
 
 from llm.client import LLMClient, Transport, build_client
+from llm.model_manager import (
+    POLICY_PERFORMANCE,
+    POLICY_PRIORITY,
+    ModelManager,
+    build_model_manager,
+)
 from llm.reasoner import FLAT, LONG, SHORT, LLMOpinion, LLMReasoner
 from llm.worker import EvidenceSource, LLMReasoningWorker
 
@@ -18,6 +24,10 @@ __all__ = [
     "LLMClient",
     "Transport",
     "build_client",
+    "ModelManager",
+    "build_model_manager",
+    "POLICY_PRIORITY",
+    "POLICY_PERFORMANCE",
     "LLMReasoner",
     "LLMOpinion",
     "LLMReasoningWorker",

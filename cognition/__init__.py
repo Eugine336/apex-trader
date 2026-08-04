@@ -44,6 +44,8 @@ __all__ = [
     "get_campaign_memory",
     "OperationalIntent",
     "OperationsAuthor",
+    "InfluenceLedger",
+    "CalibrationTracker",
 ]
 
 
@@ -77,4 +79,7 @@ def __getattr__(name: str):
     if name in ("OperationalIntent", "OperationsAuthor"):
         from cognition import operations as _ops
         return getattr(_ops, name)
+    if name in ("InfluenceLedger", "CalibrationTracker"):
+        from cognition import influence as _inf
+        return getattr(_inf, name)
     raise AttributeError(f"module 'cognition' has no attribute {name!r}")

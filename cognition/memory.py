@@ -219,25 +219,32 @@ class CampaignMemoryStore:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[memory] record_open(%s %s) fault: %s", sym, d, exc)
 
-    def record_close(self, campaign: Any, *, now_ms: Optional[int] = None) -> None:
+    def record_close(self, campaign: Any, *, now_ms: Optional[int] = None) -> Optional[dict]:
         """Persist a terminal campaign outcome + post-mortem, stitched to its OPEN.
 
         Accepts a :class:`~brain.campaign.Campaign` (or any object exposing the
         same ``to_dict()`` shape). Updates the most recent still-open row for the
         campaign's ``(symbol, direction)``; if none exists, inserts an
         outcome-only row. Fail-safe.
+
+        Returns a small dict stitching the OPEN snapshot to this outcome —
+        ``{"won", "verdict", "supporting_sources", "entry_confidence"}`` — so the
+        caller can feed the Part VIII influence ledger / calibration tracker.
+        ``supporting_sources`` / ``entry_confidence`` come from the matched open
+        row's spec (empty / None when there was no open snapshot). Returns
+        ``None`` only when nothing could be recorded.
         """
         if self._conn is None or self._degraded:
-            return
+            return None
         try:
             data = campaign.to_dict() if hasattr(campaign, "to_dict") else dict(campaign)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[memory] record_close serialise fault: %s", exc)
-            return
+            return None
         sym = str(data.get("symbol", "") or "")
         d = str(data.get("direction", "") or "").upper()
         if not sym or d not in (LONG, SHORT):
-            return
+            return None
         pm = data.get("postmortem") or {}
         won = 1 if bool(pm.get("outcome_won", data.get("realized_pnl", 0.0) > 0)) else 0
         pnl = _clampf(data.get("realized_pnl", 0.0), -1e12, 1e12)
@@ -250,14 +257,27 @@ class CampaignMemoryStore:
         except (TypeError, ValueError):
             pm_json = "{}"
         t = int(now_ms if now_ms is not None else _now_ms())
+        stitched = {"won": bool(won), "verdict": verdict,
+                    "supporting_sources": [], "entry_confidence": None}
         try:
             with self._lock:
                 row = self._conn.execute(
-                    "SELECT id FROM campaign_memory WHERE symbol=? AND direction=? "
+                    "SELECT id, spec_json FROM campaign_memory WHERE symbol=? AND direction=? "
                     "AND closed=0 ORDER BY opened_ms DESC, id DESC LIMIT 1",
                     (sym, d),
                 ).fetchone()
                 if row is not None:
+                    try:
+                        spec = json.loads(row[1]) if row[1] else {}
+                        if isinstance(spec, dict):
+                            srcs = spec.get("supporting_sources")
+                            if isinstance(srcs, list):
+                                stitched["supporting_sources"] = [str(s) for s in srcs]
+                            ec = spec.get("confidence")
+                            if ec is not None:
+                                stitched["entry_confidence"] = _clampf(ec, 0.0, 1.0, 0.0)
+                    except (TypeError, ValueError):
+                        pass
                     self._conn.execute(
                         "UPDATE campaign_memory SET closed=1, closed_ms=?, outcome_won=?, "
                         "realized_pnl=?, verdict=?, reasoning_quality=?, state=?, "
@@ -278,6 +298,7 @@ class CampaignMemoryStore:
                 self._closes += 1
         except Exception as exc:  # noqa: BLE001
             logger.debug("[memory] record_close(%s %s) fault: %s", sym, d, exc)
+        return stitched
 
     def _prune_locked(self) -> None:
         """Bound the table to ``max_rows`` (oldest first). Caller holds the lock."""

@@ -61,12 +61,16 @@ class EvidenceConsolidator:
         per_module: bool = True,
         memory: Optional[Any] = None,
         max_analogues: int = 5,
+        influence: Optional[Any] = None,
+        influence_enabled: bool = False,
     ) -> None:
         self._ctx = ctx
         self._vote_source = vote_source
         self._per_module = bool(per_module)
         self._memory = memory
         self._max_analogues = max(1, int(max_analogues))
+        self._influence = influence
+        self._influence_enabled = bool(influence_enabled)
 
     def build(
         self,
@@ -103,6 +107,17 @@ class EvidenceConsolidator:
                         ms.add(e)
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[consolidator] memory recall fault (%s): %s", symbol, exc)
+            # Part VIII — attach learned per-source influence weights so the
+            # Brain's consolidation weights each source by demonstrated quality.
+            # Observational unless explicitly enabled (shadow → authoritative).
+            if self._influence_enabled and self._influence is not None:
+                try:
+                    sources = {e.source_module for e in ms.evidence if e.source_module}
+                    ms.influence_weights = {
+                        s: self._influence.weight_for(s) for s in sources
+                    }
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[consolidator] influence weighting fault (%s): %s", symbol, exc)
         except Exception as exc:  # noqa: BLE001 — consolidation must never break
             logger.debug("[consolidator] build(%s) ignored a fault: %s", symbol, exc)
         return ms
@@ -320,6 +335,19 @@ class CognitionLoop:
             from cognition.memory import fingerprint_from_market_state  # local, fail-safe
             fp = fingerprint_from_market_state(market_state, now=now)
             spec = campaign.to_dict() if hasattr(campaign, "to_dict") else {}
+            # Part VIII — record which evidence sources leaned the campaign's way,
+            # so the influence ledger can credit/debit them once the outcome lands.
+            try:
+                want = 1.0 if direction == "LONG" else -1.0
+                sources = sorted({
+                    e.source_module for e in market_state.fresh_evidence(now)
+                    if e.source_module and (e.polarity * want) > 0.05
+                })
+                if sources:
+                    spec = dict(spec)
+                    spec["supporting_sources"] = sources
+            except Exception:  # noqa: BLE001
+                pass
             self._memory.record_open(
                 symbol=symbol, direction=direction, fingerprint=fp,
                 campaign_id=str(getattr(campaign, "campaign_id", "") or ""), spec=spec,
