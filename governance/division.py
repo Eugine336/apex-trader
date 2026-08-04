@@ -142,6 +142,8 @@ class GovernanceDivision:
         campaign_memory: Optional[object] = None,
         action_planner: Optional[object] = None,
         operations_author: Optional[object] = None,
+        influence_ledger: Optional[object] = None,
+        brain_calibration: Optional[object] = None,
     ) -> None:
         self._module_governor = module_governor
         self._tuner_agent = tuner_agent
@@ -211,6 +213,10 @@ class GovernanceDivision:
         # operational objective authoring, never market reasoning.
         self._action_planner = action_planner
         self._operations_author = operations_author
+        # Adaptive influence + Brain calibration (Phase J, Part VIII).
+        # Observational — read in get_status only.
+        self._influence_ledger = influence_ledger
+        self._brain_calibration = brain_calibration
 
     # ── Wiring (injected after construction) ──────────────────────────────
 
@@ -233,6 +239,8 @@ class GovernanceDivision:
         campaign_memory: Optional[object] = None,
         action_planner: Optional[object] = None,
         operations_author: Optional[object] = None,
+        influence_ledger: Optional[object] = None,
+        brain_calibration: Optional[object] = None,
     ) -> None:
         """Inject the enforcement-arm references after construction.
 
@@ -270,6 +278,10 @@ class GovernanceDivision:
             self._action_planner = action_planner
         if operations_author is not None:
             self._operations_author = operations_author
+        if influence_ledger is not None:
+            self._influence_ledger = influence_ledger
+        if brain_calibration is not None:
+            self._brain_calibration = brain_calibration
 
     # ── Learning recommendation authorisation (the ⑦→⑧ boundary) ──────────
 
@@ -838,7 +850,8 @@ class GovernanceDivision:
         if (self._cognitive_brain is not None or self._cognition_loop is not None
                 or self._cognition_gate is not None or self._management_gate is not None
                 or self._campaign_memory is not None or self._action_planner is not None
-                or self._operations_author is not None):
+                or self._operations_author is not None or self._influence_ledger is not None
+                or self._brain_calibration is not None):
             cognition = {}
             if self._cognitive_brain is not None:
                 try:
@@ -875,6 +888,16 @@ class GovernanceDivision:
                     cognition["operations"] = self._operations_author.get_status()
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[governance] operations-author status failed: {}", exc)
+            if self._influence_ledger is not None:
+                try:
+                    cognition["influence"] = self._influence_ledger.get_status()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[governance] influence-ledger status failed: {}", exc)
+            if self._brain_calibration is not None:
+                try:
+                    cognition["calibration"] = self._brain_calibration.get_status()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[governance] brain-calibration status failed: {}", exc)
         return {
             "enforce_toxic_pairs": self._enforce_toxic,
             "has_module_governor": self._module_governor is not None,

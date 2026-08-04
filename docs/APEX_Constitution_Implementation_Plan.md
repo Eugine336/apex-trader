@@ -50,7 +50,7 @@
 | VI.5 | Brain-driven management (hold/scale/protect/exit/reverse) | ✅ | `cognition/brain.py` `manage()` + `cognition/management_gate.py` (adds gated live; de-risking never blocked); legacy managers demoted to evidence | F ✅ (exit/reverse execution in G) |
 | VII.1–6 | Post-trade reconstruction, decision audit, memory | ✅ | `cognition/memory.py` persists fingerprint+spec+outcome+post-mortem (SQLite); `find_analogues` retrieval feeds the Brain a `historical_analogue` Evidence | H ✅ |
 | VII (memory) | Persistent institutional memory + retrieval | ❌ | campaigns not persisted to `persistence/event_store.py`; no similarity retrieval | **H** |
-| VIII | Adaptive influence over evidence + Brain, validated | 🟡 | `adaptive/*` grades legacy vote emitters, not new `Evidence`/Brain | J |
+| VIII | Adaptive influence over evidence + Brain, validated | ✅ | `cognition/influence.py` (`InfluenceLedger` per `Evidence.source_module` + `CalibrationTracker`); weighted `consolidation()`; shadow-apply, significance-gated | J ✅ |
 | IX | Composio: AI objective → Action Planner (capability+provider) → governance → execute → observe → memory | 🟡 | `action/capabilities.py` registry + `action/planner.py` (Article 11) + `cognition/operations.py` (Article 9); default-off; live retrieval→Evidence pending | I 🟡 |
 | X | Governance & safety (policy, approvals, ceilings, audit) | ✅ | `action/orchestrator.py` `GovernancePolicy`, `governance/division.py`, risk stack | — |
 | XI | Modular, testable, no hidden decision logic | 🟡 | `event_driven_bootstrap.py` 10.8k-line god-file; legacy decision code present | K |
@@ -256,21 +256,46 @@ approval; ⏳ live retrieval→Evidence + real-key verification.
 
 ---
 
-## 7. Phase J — Adaptive intelligence over evidence + Brain (Part VIII)
+## 7. Phase J — Adaptive intelligence over evidence + Brain (Part VIII) — ✅ DONE (shadow-apply)
 
 **Goal:** evidence-source influence and the Brain's own influence are graded by
 demonstrated decision quality, via governance-validated updates.
 
-**Tasks**
-- Feed campaign post-mortems (Phase H) into the adaptive layer keyed by
-  `Evidence.source_module`, so each evidence source earns/loses influence.
-- Weight `Evidence` in `MarketState.consolidation()` by learned influence.
-- Measure Brain reasoning quality (calibration: predicted confidence vs realised)
-  and surface it; adaptation via the existing governance gateway (no bypass).
+**Shipped:**
+- `cognition/influence.py` (new): `InfluenceLedger` — per `Evidence.source_module`
+  win/loss tally → a bounded influence weight around the neutral 1.0. A source
+  earns/loses influence only past `influence_min_samples` (statistical-significance
+  floor), from its *full-sample* win rate (robustness over a recent lucky streak).
+  Plus `CalibrationTracker` — records (predicted-confidence, realised-outcome) and
+  reports the Brain's reliability gap + Brier score (reasoning quality).
+- `MarketState.influence_weights` + weighted `consolidation()` (backward-compatible;
+  `None` ⇒ identical unweighted behaviour). The consolidator attaches the ledger's
+  weights so each source's contribution to confidence/conflict/uncertainty is
+  scaled by demonstrated quality.
+- Outcome plumbing: the loop records the *supporting* evidence sources at campaign
+  open (memory `spec.supporting_sources`); `CampaignMemoryStore.record_close`
+  stitches them + the entry confidence back to the terminal outcome and returns
+  them; the campaign close-sink credits/debits the ledger and feeds calibration.
+- Config: `CognitionConfig.influence_enabled` (default **False = shadow**) +
+  `influence_min_samples`/`influence_min_weight`/`influence_max_weight` + env.
+  The ledger *always learns*; weights are only *applied* to live consolidation
+  when enabled (shadow → authoritative rollout, operator-gated). Influence +
+  calibration status surfaced under governance `cognition.influence` /
+  `cognition.calibration`.
 
-**Acceptance:** evidence weights move only on statistically-significant samples
-through governance; Brain calibration tracked; robustness prioritised over
-recent profit.
+**Also (Part XVI Art 9 — full model abstraction):** `llm/model_manager.py`
+(new) `ModelManager` — a drop-in for a single client that holds many candidate
+models and selects by policy (`priority` | `performance`), failing over on error
+and tracking per-model health (success-rate, EWMA latency). The Brain/reasoner
+now depends on the manager, never a single vendor; adding/removing a model is a
+config change (`LLMConfig.extra_models` / `model_policy`, env `LLM_EXTRA_MODELS` /
+`LLM_MODEL_POLICY`). Degrades to the single primary when only one candidate is
+configured (behaviour-neutral).
+
+**Acceptance:** ✅ evidence weights move only past a significance floor and stay
+bounded; ✅ Brain calibration (reliability gap + Brier) tracked + surfaced;
+✅ robustness (full-sample win rate) over recent profit; application is shadow by
+default and operator/governance-gated before it steers live consolidation.
 
 ---
 
