@@ -51,6 +51,43 @@ def test_known_providers_usable(provider):
     assert LLMClient(provider=provider, model="m", api_key="k").usable is True
 
 
+def test_agentrouter_requires_base_url():
+    # AgentRouter is a gateway — recognised, but no built-in endpoint, so it is
+    # unusable until a base_url is supplied (never silently hits OpenAI).
+    assert LLMClient(provider="agentrouter", model="m", api_key="k").usable is False
+    c = LLMClient(provider="agentrouter", model="m", api_key="k",
+                  base_url="https://agentrouter.example/v1")
+    assert c.usable is True
+    assert c._shape == "openai"
+
+
+def test_agentrouter_posts_openai_compatible():
+    t = _transport(200, {"choices": [{"message": {"content": "router-reply"}}]})
+    c = LLMClient(provider="agentrouter", model="glm-4", api_key="ar_key",
+                  base_url="https://agentrouter.example/v1", transport=t)
+    assert c.complete("s", "u") == "router-reply"
+    assert t.calls[0]["url"] == "https://agentrouter.example/v1/chat/completions"
+    assert t.calls[0]["headers"]["authorization"] == "Bearer ar_key"
+
+
+def test_self_hosted_alias_requires_base_url():
+    # Regression: a gateway/self-hosted alias must NOT default to OpenAI's URL.
+    assert LLMClient(provider="vllm", model="m", api_key="k").usable is False
+
+
+def test_openai_needs_no_base_url():
+    assert LLMClient(provider="openai", model="m", api_key="k").usable is True
+
+
+def test_build_client_none_for_gateway_without_base_url():
+    class Cfg:
+        provider = "agentrouter"
+        model = "glm-4"
+        api_key = "k"
+        base_url = ""
+    assert build_client(Cfg()) is None
+
+
 # ── Per-provider request shaping + response parsing ──────────────────────────
 
 def test_openai_shape_and_parse():

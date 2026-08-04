@@ -45,11 +45,21 @@ Transport = Callable[[str, dict, bytes, float], "tuple[int, str]"]
 _OPENAI_ALIASES = frozenset({
     "openai", "openai_compatible", "openai-compatible", "azure_openai",
     "vllm", "lmstudio", "lm_studio", "together", "groq", "openrouter",
+    "agentrouter", "agent_router", "agent-router",
     "deepseek", "mistral", "self_hosted", "self-hosted", "local",
 })
 _ANTHROPIC_ALIASES = frozenset({"anthropic", "claude"})
 _GEMINI_ALIASES = frozenset({"gemini", "google", "google_gemini", "vertex"})
 _OLLAMA_ALIASES = frozenset({"ollama"})
+
+# Providers that carry a sensible built-in default endpoint, so ``base_url`` is
+# optional. EVERY other provider — gateways (AgentRouter, OpenRouter), Azure,
+# and self-hosted servers (vLLM, LM Studio, …) — MUST supply ``base_url``: they
+# have no single canonical host, and silently falling back to OpenAI's URL would
+# send the operator's key to the wrong place. Those are marked base-required.
+_NO_BASE_REQUIRED = (
+    _ANTHROPIC_ALIASES | _GEMINI_ALIASES | _OLLAMA_ALIASES | frozenset({"openai"})
+)
 
 _DEFAULT_BASE_URLS = {
     "openai": "https://api.openai.com/v1",
@@ -75,6 +85,11 @@ def _shape_for(provider: str, base_url: str) -> Optional[str]:
     # Unknown vendor: usable only as an OpenAI-compatible endpoint when the
     # operator has given us a base_url to POST to. Otherwise fail-safe (None).
     return "openai" if base_url else None
+
+
+def _requires_base_url(provider: str) -> bool:
+    """True when the provider has no built-in default endpoint (see _NO_BASE_REQUIRED)."""
+    return (provider or "").strip().lower() not in _NO_BASE_REQUIRED
 
 
 def _urllib_transport(url: str, headers: dict, body: bytes, timeout: float) -> "tuple[int, str]":
@@ -109,12 +124,22 @@ class LLMClient:
 
     def __post_init__(self) -> None:
         self._shape = _shape_for(self.provider, self.base_url)
+        self._requires_base_url = _requires_base_url(self.provider)
         self._transport: Transport = self.transport or _urllib_transport
 
     @property
     def usable(self) -> bool:
-        """True when the provider resolves to a known request shape."""
-        return self._shape is not None and bool(self.model)
+        """True when the provider resolves to a known shape and is reachable.
+
+        A gateway / self-hosted provider (AgentRouter, OpenRouter, vLLM, …) is
+        only usable once ``base_url`` is supplied — it never silently defaults
+        to a vendor endpoint.
+        """
+        if self._shape is None or not self.model:
+            return False
+        if self._requires_base_url and not self.base_url:
+            return False
+        return True
 
     def _effective_base(self) -> str:
         if self.base_url:
@@ -248,6 +273,7 @@ class LLMClient:
             "model": self.model,
             "base_url": self._effective_base(),
             "has_api_key": bool(self.api_key),
+            "requires_base_url": self._requires_base_url,
             "usable": self.usable,
             "timeout_seconds": self.timeout_seconds,
             "max_tokens": self.max_tokens,
@@ -276,10 +302,16 @@ def build_client(config: Any, transport: Optional[Transport] = None) -> Optional
         transport=transport,
     )
     if not client.usable:
-        logger.warning(
-            "[llm] provider '{}' not usable (no known shape and no base_url) — "
-            "reasoner disabled", provider,
-        )
+        if client._requires_base_url and not client.base_url:
+            logger.warning(
+                "[llm] provider '{}' needs LLM_BASE_URL (gateway/self-hosted has "
+                "no default endpoint) — reasoner disabled", provider,
+            )
+        else:
+            logger.warning(
+                "[llm] provider '{}' not usable (unknown provider and no "
+                "LLM_BASE_URL, or no model set) — reasoner disabled", provider,
+            )
         return None
     return client
 
