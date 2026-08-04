@@ -113,6 +113,26 @@ class SystemContext:
     # Session 29 — anti-ping-pong gate for atomic reversals. Consulted when a
     # ``thesis_flip`` fires to decide whether to close + reverse (vs plain exit).
     reversal_manager: Optional[Any] = None
+    # Evolving market campaigns — the lifetime of a directional thesis on a
+    # symbol that individual orders (open/scale/partial/re-entry/reversal) are
+    # legs of. Observational (default OFF); surfaced via Governance.
+    campaign_registry: Optional[Any] = None
+    # LLM reasoning subsystem — an additional evidence-emitting reasoner over the
+    # structured theses/votes. Provider-agnostic (env-driven), default OFF,
+    # fail-safe; surfaced via Governance. Never overrides physics vetoes.
+    llm_reasoner: Optional[Any] = None
+    # Autonomous Action Layer (Composio) — the single governed gateway through
+    # which Brain-authored objectives become external actions. Default OFF +
+    # dry-run; never reasons or originates objectives. Surfaced via Governance.
+    action_orchestrator: Optional[Any] = None
+    # The AI Cognitive Brain (Single Reasoner) + its background cognition loop.
+    # Consumes consolidated Evidence, emits DecisionPackages/CampaignSpecs. Runs
+    # in shadow by default (observational); surfaced via Governance.
+    cognitive_brain: Optional[Any] = None
+    cognition_loop: Optional[Any] = None
+    # Brain entry gate (Step C) — one-way authority that can veto (never
+    # originate) a proposed entry when the Brain does not back it. Fail-open.
+    cognition_gate: Optional[Any] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
     opportunity_executor: Optional[OpportunityExecutor] = None
@@ -1018,6 +1038,222 @@ class SystemContext:
             except Exception as exc:
                 logger.warning("[SystemContext] ReversalManager init failed: {}", exc)
 
+            # ── Campaign Registry (evolving market campaigns) ─────────────
+            # Tracks the lifetime of a directional thesis per symbol — the
+            # continuing idea that individual orders (open / scale-in / partial
+            # / re-entry / reversal) are legs of. Observational (default OFF):
+            # it records the campaign narrative and is surfaced via Governance
+            # ``get_status`` without altering any execution decision.
+            try:
+                from brain.campaign import CampaignRegistry as _CampaignRegistry
+
+                camp_cfg = getattr(config, "campaign", None)
+                ctx.campaign_registry = _CampaignRegistry(
+                    enabled=bool(
+                        getattr(camp_cfg, "enabled", False)
+                        if camp_cfg is not None else False
+                    ),
+                    dormant_after_seconds=float(
+                        getattr(camp_cfg, "dormant_after_seconds", 900.0)
+                        if camp_cfg is not None else 900.0
+                    ),
+                    invalidate_after_seconds=float(
+                        getattr(camp_cfg, "invalidate_after_seconds", 3600.0)
+                        if camp_cfg is not None else 3600.0
+                    ),
+                    history_limit=int(
+                        getattr(camp_cfg, "history_limit", 500)
+                        if camp_cfg is not None else 500
+                    ),
+                    postmortem_enabled=bool(
+                        getattr(camp_cfg, "postmortem_enabled", True)
+                        if camp_cfg is not None else True
+                    ),
+                    sound_evidence_threshold=float(
+                        getattr(camp_cfg, "sound_evidence_threshold", 0.5)
+                        if camp_cfg is not None else 0.5
+                    ),
+                    evidence_full_refreshes=int(
+                        getattr(camp_cfg, "evidence_full_refreshes", 5)
+                        if camp_cfg is not None else 5
+                    ),
+                )
+            except Exception as exc:
+                logger.warning("[SystemContext] CampaignRegistry init failed: {}", exc)
+
+            # ── LLM Reasoner (provider-agnostic reasoning subsystem) ──────
+            # Builds a provider client purely from config/env (no hardcoded
+            # vendor): self-hosted (Ollama / vLLM / any OpenAI-compatible
+            # endpoint) or commercial API (OpenAI / Anthropic / Gemini). Default
+            # OFF and fail-safe: with no provider set the client is None and the
+            # reasoner is inert. Emits opinions as evidence only — governed by
+            # the same authority layer and never overriding physics vetoes.
+            try:
+                from llm.client import build_client as _build_llm_client
+                from llm.reasoner import LLMReasoner as _LLMReasoner
+
+                llm_cfg = getattr(config, "llm", None)
+                _llm_client = None
+                if llm_cfg is not None and bool(getattr(llm_cfg, "enabled", False)):
+                    _llm_client = _build_llm_client(llm_cfg)
+                ctx.llm_reasoner = _LLMReasoner(
+                    client=_llm_client,
+                    enabled=bool(
+                        getattr(llm_cfg, "enabled", False)
+                        if llm_cfg is not None else False
+                    ),
+                    drive_decisions=bool(
+                        getattr(llm_cfg, "drive_decisions", False)
+                        if llm_cfg is not None else False
+                    ),
+                    min_interval_seconds=float(
+                        getattr(llm_cfg, "min_interval_seconds", 30.0)
+                        if llm_cfg is not None else 30.0
+                    ),
+                )
+                if ctx.llm_reasoner.available:
+                    logger.info(
+                        "[SystemContext] LLM reasoner ONLINE — provider '{}' model '{}'",
+                        getattr(llm_cfg, "provider", "?"),
+                        getattr(llm_cfg, "model", "?"),
+                    )
+            except Exception as exc:
+                logger.warning("[SystemContext] LLMReasoner init failed: {}", exc)
+
+            # ── Action Orchestrator (Autonomous Action Layer / Composio) ──
+            # The single governed gateway for external actions. It NEVER reasons
+            # or originates objectives — the Brain authors them, governance policy
+            # authorises, an adapter executes. Default OFF + dry-run (mock
+            # adapter, no external calls) until explicitly configured. Fail-safe.
+            try:
+                from action.composio import build_adapter as _build_action_adapter
+                from action.orchestrator import (
+                    ActionOrchestrator as _ActionOrchestrator,
+                    GovernancePolicy as _GovernancePolicy,
+                    tier_from as _tier_from,
+                )
+
+                comp_cfg = getattr(config, "composio", None)
+                _policy = _GovernancePolicy(
+                    enabled=bool(getattr(comp_cfg, "enabled", False)
+                                 if comp_cfg is not None else False),
+                    require_source=bool(getattr(comp_cfg, "require_source", True)
+                                        if comp_cfg is not None else True),
+                    min_confidence=float(getattr(comp_cfg, "min_confidence", 0.2)
+                                         if comp_cfg is not None else 0.2),
+                    auto_max_risk=_tier_from(
+                        getattr(comp_cfg, "auto_max_risk", "low")
+                        if comp_cfg is not None else "low"
+                    ),
+                    medium_confidence_threshold=float(
+                        getattr(comp_cfg, "medium_confidence_threshold", 0.7)
+                        if comp_cfg is not None else 0.7
+                    ),
+                )
+                _adapter = _build_action_adapter(comp_cfg)
+                ctx.action_orchestrator = _ActionOrchestrator(_policy, _adapter)
+                logger.info(
+                    "[SystemContext] Action layer ready — enabled={} adapter={} "
+                    "(dry_run={})",
+                    getattr(comp_cfg, "enabled", False) if comp_cfg else False,
+                    getattr(_adapter, "name", type(_adapter).__name__),
+                    getattr(comp_cfg, "dry_run", True) if comp_cfg else True,
+                )
+            except Exception as exc:
+                logger.warning("[SystemContext] ActionOrchestrator init failed: {}", exc)
+
+            # ── AI Cognitive Brain (Single Reasoner) + cognition loop ─────
+            # The one subsystem permitted to reason (Constitution Part I Art 4 /
+            # Part II). Consumes consolidated Evidence, emits decisions. Runs in
+            # SHADOW by default: it produces/surfaces decisions for observability
+            # without driving execution, so the legacy path stays authoritative
+            # until the cutover is validated (Parts XIII/XV). Fail-safe.
+            try:
+                from cognition.brain import CognitiveBrain as _CognitiveBrain
+                from cognition.loop import (
+                    BrainActionBridge as _BrainActionBridge,
+                    CognitionLoop as _CognitionLoop,
+                    EvidenceConsolidator as _EvidenceConsolidator,
+                )
+
+                cog_cfg = getattr(config, "cognition", None)
+                ctx.cognitive_brain = _CognitiveBrain(
+                    reasoner=ctx.llm_reasoner,
+                    min_confidence_to_act=float(
+                        getattr(cog_cfg, "min_confidence_to_act", 0.55)
+                        if cog_cfg is not None else 0.55
+                    ),
+                    max_uncertainty_to_act=float(
+                        getattr(cog_cfg, "max_uncertainty_to_act", 0.6)
+                        if cog_cfg is not None else 0.6
+                    ),
+                )
+                _consolidator = _EvidenceConsolidator(
+                    ctx=ctx,
+                    per_module=bool(
+                        getattr(cog_cfg, "per_module_evidence", True)
+                        if cog_cfg is not None else True
+                    ),
+                )
+                _bridge = _BrainActionBridge(
+                    ctx.action_orchestrator,
+                    notify_enabled=bool(
+                        getattr(cog_cfg, "emit_operator_notifications", True)
+                        if cog_cfg is not None else True
+                    ),
+                )
+
+                def _cognition_symbols() -> list:
+                    try:
+                        eng = ctx.thesis_engine
+                        if eng is not None:
+                            st = eng.get_status() or {}
+                            syms = list((st.get("theses") or {}).keys())
+                            if syms:
+                                return syms
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        return list(config.enabled_pairs)
+                    except Exception:  # noqa: BLE001
+                        return []
+
+                ctx.cognition_loop = _CognitionLoop(
+                    ctx.cognitive_brain, _consolidator, _cognition_symbols,
+                    interval_seconds=float(
+                        getattr(cog_cfg, "loop_interval_seconds", 30.0)
+                        if cog_cfg is not None else 30.0
+                    ),
+                    max_symbols_per_cycle=int(
+                        getattr(cog_cfg, "max_symbols_per_cycle", 12)
+                        if cog_cfg is not None else 12
+                    ),
+                    shadow_mode=bool(
+                        getattr(cog_cfg, "shadow_mode", True)
+                        if cog_cfg is not None else True
+                    ),
+                    action_bridge=_bridge,
+                )
+                from cognition.gate import CognitionGate as _CognitionGate
+                ctx.cognition_gate = _CognitionGate(
+                    ctx.cognitive_brain,
+                    mode=str(getattr(cog_cfg, "gate_mode", "authoritative")
+                             if cog_cfg is not None else "authoritative"),
+                    max_decision_age_seconds=float(
+                        getattr(cog_cfg, "max_decision_age_seconds", 300.0)
+                        if cog_cfg is not None else 300.0
+                    ),
+                )
+                logger.info(
+                    "[SystemContext] Cognitive Brain ready — reasoner_available={} "
+                    "shadow={} gate_mode={}",
+                    ctx.cognitive_brain.available,
+                    getattr(cog_cfg, "shadow_mode", False) if cog_cfg else False,
+                    getattr(cog_cfg, "gate_mode", "authoritative") if cog_cfg else "authoritative",
+                )
+            except Exception as exc:
+                logger.warning("[SystemContext] CognitiveBrain init failed: {}", exc)
+
             ctx.governance = _Governance(
                 module_governor=ctx.module_governor,
                 tuner_agent=ctx.tuner_agent,
@@ -1044,6 +1280,12 @@ class SystemContext:
                 ),
                 gate_attributor=ctx.gate_attributor,
                 thesis_engine=ctx.thesis_engine,
+                campaign_registry=ctx.campaign_registry,
+                llm_reasoner=ctx.llm_reasoner,
+                action_orchestrator=ctx.action_orchestrator,
+                cognitive_brain=ctx.cognitive_brain,
+                cognition_loop=ctx.cognition_loop,
+                cognition_gate=ctx.cognition_gate,
             )
             # Install Governance as the authoriser on the Learning→Governance
             # gateway and require authorisation (per config; default on).
