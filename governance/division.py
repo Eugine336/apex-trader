@@ -130,6 +130,9 @@ class GovernanceDivision:
         # LLM reasoning subsystem — emits opinions as evidence. Observational —
         # surfaced in get_status (secret-safe). Never blocks / overrides.
         llm_reasoner: Optional[object] = None,
+        # Autonomous Action Layer gateway — surfaced in get_status (secret-safe).
+        # Governs/executes Brain-authored objectives; never reasons.
+        action_orchestrator: Optional[object] = None,
     ) -> None:
         self._module_governor = module_governor
         self._tuner_agent = tuner_agent
@@ -183,6 +186,9 @@ class GovernanceDivision:
         # LLM reasoning subsystem (observational). Read in get_status only.
         self._llm_reasoner = llm_reasoner
 
+        # Autonomous Action Layer gateway (observational). Read in get_status.
+        self._action_orchestrator = action_orchestrator
+
     # ── Wiring (injected after construction) ──────────────────────────────
 
     def bind_runtime(
@@ -196,6 +202,7 @@ class GovernanceDivision:
         thesis_engine: Optional[object] = None,
         campaign_registry: Optional[object] = None,
         llm_reasoner: Optional[object] = None,
+        action_orchestrator: Optional[object] = None,
     ) -> None:
         """Inject the enforcement-arm references after construction.
 
@@ -217,6 +224,8 @@ class GovernanceDivision:
             self._campaign_registry = campaign_registry
         if llm_reasoner is not None:
             self._llm_reasoner = llm_reasoner
+        if action_orchestrator is not None:
+            self._action_orchestrator = action_orchestrator
 
     # ── Learning recommendation authorisation (the ⑦→⑧ boundary) ──────────
 
@@ -775,6 +784,12 @@ class GovernanceDivision:
                 llm_reasoner = self._llm_reasoner.get_status()
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[governance] llm-reasoner status failed: {}", exc)
+        action_layer = None
+        if self._action_orchestrator is not None:
+            try:
+                action_layer = self._action_orchestrator.get_status()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[governance] action-layer status failed: {}", exc)
         return {
             "enforce_toxic_pairs": self._enforce_toxic,
             "has_module_governor": self._module_governor is not None,
@@ -789,6 +804,7 @@ class GovernanceDivision:
             "thesis_engine": thesis_engine,
             "campaign_registry": campaign_registry,
             "llm_reasoner": llm_reasoner,
+            "action_layer": action_layer,
             "bounds": {
                 "size_multiplier": [self._min_size_mult, self._max_size_mult],
                 "max_weight_multiplier": self._max_weight_mult,
