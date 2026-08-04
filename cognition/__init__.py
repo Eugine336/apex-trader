@@ -38,6 +38,8 @@ __all__ = [
     "EvidenceConsolidator",
     "BrainActionBridge",
     "CognitionLoop",
+    "OriginationIntent",
+    "translate",
 ]
 
 
@@ -60,4 +62,7 @@ def __getattr__(name: str):
     if name in ("ManagementGate", "classify_action"):
         from cognition import management_gate as _mg
         return getattr(_mg, name)
+    if name in ("OriginationIntent", "translate"):
+        from cognition import campaign_translator as _ct
+        return getattr(_ct, name)
     raise AttributeError(f"module 'cognition' has no attribute {name!r}")

@@ -41,10 +41,10 @@
 | III.2 | No module emits buy/sell/hold/close/reverse | 🟡 | legacy `directional_consensus`, `thesis_engine` still emit directional votes/should_act | E, K |
 | III.3 | All evidence domains feed the Brain | ✅ | `cognition/evidence_adapters.py` + `cognition/loop.py` consolidator (per-module, domain-classified) | E ✅ |
 | III.4 | Evidence format (id/ts/source/conf/uncertainty/horizon) | ✅ | `cognition/contracts.py` `Evidence` | — |
-| IV.1–8 | Pre-trade cognitive cycle → campaign spec | 🟡 | Brain produces `DecisionPackage`/`CampaignSpecification`; spec not consumed | E, G |
-| V.1–8 | Opportunity harvesting / campaign lifecycle | 🟡 | `brain/campaign.py` observational registry; not Brain-driven | F, G, H |
-| VI.1 | Execution never reinterprets market intent | 🟡 | legacy Gates 1–7 (RiskEngine-EV, RL, DecisionEngine, TradePlanner) still judge markets | G, K |
-| VI.2 | Execution consumes Brain `CampaignSpecification` | ❌ | spec produced, never consumed (`grep`: no refs outside `cognition/`) | **G** |
+| IV.1–8 | Pre-trade cognitive cycle → campaign spec | 🟡 | Brain produces `DecisionPackage`/`CampaignSpecification`; spec now originates entries (G, shadow-default) | G✅(shadow), K |
+| V.1–8 | Opportunity harvesting / campaign lifecycle | 🟡 | `brain/campaign.py` registry + Brain-driven management (F) + Brain origination (G, shadow) | G✅, H |
+| VI.1 | Execution never reinterprets market intent | 🟡 | Brain-originated entries reach executor unchanged (G); legacy Gates 1–7 still judge markets on the legacy path | G🟡, K |
+| VI.2 | Execution consumes Brain `CampaignSpecification` | 🟡 | `cognition/campaign_translator.py` + loop origination + `event_driven_bootstrap` live sink (shadow-default; live inert until stops emitted) | **G✅ (shadow)** |
 | VI.3 | Execution feasibility validation | ✅ | `execution/risk_gate.py`, `execution/action_executor.py`, compliance | — |
 | VI.4 | Renewed Brain authorization per execution/management action | 🟡 | entry gated + freshness (C/D); risk-adding management (scale-in/re-entry) gated (F); exit/reverse *execution* still G | F, G |
 | VI.5 | Brain-driven management (hold/scale/protect/exit/reverse) | ✅ | `cognition/brain.py` `manage()` + `cognition/management_gate.py` (adds gated live; de-risking never blocked); legacy managers demoted to evidence | F ✅ (exit/reverse execution in G) |
@@ -130,27 +130,47 @@ authorization; shadow mode records would-manage; legacy managers no longer close
 
 ## 4. Phase G — Campaign origination + execution consumes the spec (Parts IV.8, VI.1–2)
 
+## 4. Phase G — Campaign origination + execution consumes the spec (Parts IV.8, VI.1–2) — 🟡 SHIPPED SHADOW
+
 **Goal:** the Brain *originates* entries from its `CampaignSpecification`, and
 execution consumes the spec without reinterpreting it.
 
-**Current state:** the entry still originates from the legacy candidate; the
-Brain only authorises/vetoes. `CampaignSpecification` is produced, never
-consumed.
+**Shipped (shadow-by-default):**
+- `cognition/campaign_translator.py`: pure, fail-safe `translate(spec, *, balance,
+  risk_fraction, max_exposure) -> OriginationIntent` — sizes `stake_usd = balance
+  × risk_fraction × exposure`, carries direction + optional stop/target + full
+  provenance (campaign_id/decision_id/confidence). Carries no market judgment.
+- `cognition/loop.py`: on a fresh `OPEN_CAMPAIGN` decision carrying a directional
+  campaign the book does not already hold, `_maybe_originate()` translates the
+  spec and either records the intended order (`shadow`, default) or hands the
+  `OriginationIntent` to the wired executor sink (`live`). Deduplicates within a
+  cycle and against currently-open `(symbol, direction)` keys. `get_status()`
+  surfaces `origination_mode` / `orig_intended` / `orig_submitted`.
+- `config.py` `CognitionConfig`: `origination_mode` (off|shadow|**live**; default
+  **shadow**) + `origination_risk_fraction` / `origination_max_exposure`, with env
+  overrides (`COGNITION_ORIGINATION_MODE`, …) and validation.
+- `event_driven_bootstrap.py`: `_make_origination_sink()` submits a Brain-
+  originated `Intent.open` onto the SAME execution plane (aggregator → RiskGate →
+  broker) as every other entry; wired only when `origination_mode == "live"`.
+  Fail-safe: refuses to submit without a protective stop/target (never bypasses
+  the Part X deterministic-safety floor).
 
-**Tasks**
-- `cognition/campaign_translator.py`: translate a `CampaignSpecification` into an
-  execution intent for `execution/action_executor.py` (size from desired
-  exposure via the existing sizer; feasibility validated by `risk_gate.py`).
-- `cognition/loop.py`: when the Brain emits `OPEN_CAMPAIGN`, submit the intent
-  through the single executor gateway (behind an origination flag, shadow first).
+**Why shadow-first:** the live order/sizing/stop path cannot be verified offline
+(no broker, no deps). `shadow` records intended orders so origination is fully
+observable before a single real submission; `live` stays inert until the Brain
+emits stops AND an operator flips the flag. This honours Part XIII (shadow →
+controlled rollout) exactly as the entry gate (C/D) and management gate (F) did.
+
+**Remaining for full VI.1 (tracked into K):**
 - Reduce the legacy candidate generator (`brain/opportunity_ranker.py`,
   `directional_consensus.py`) to an *opportunity/evidence feed* (surfaces
   candidate symbols; the Brain decides). Gates 1–7 become feasibility-only or
-  evidence — no market judgment.
+  evidence — no market judgment. Deferred to Phase K (legacy removal) so the
+  authoritative path stays validated first.
 
-**Acceptance:** an entry can originate purely from a Brain campaign spec through
-the feasibility-validated executor; execution performs exactly the authorised
-intent; no post-Brain gate re-judges market direction/EV.
+**Acceptance:** ✅ an entry can originate purely from a Brain campaign spec and
+reach the feasibility-validated executor unchanged (live sink); ⏳ retiring the
+legacy market-judging candidate path is Phase K.
 
 ---
 
