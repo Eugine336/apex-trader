@@ -39,7 +39,7 @@
 | I.4 / II.1 | Single cognitive authority | 🟡 entry-only | `cognition/gate.py` (authoritative on entry); management still legacy | E, F, G, K |
 | II.7 / II.3 | Structured decision package + required questions | ✅ | `cognition/contracts.py` `DecisionPackage`; `cognition/brain.py` | — |
 | III.2 | No module emits buy/sell/hold/close/reverse | 🟡 | legacy `directional_consensus`, `thesis_engine` still emit directional votes/should_act | E, K |
-| III.3 | All evidence domains feed the Brain | ❌ | `cognition/loop.py` converts only `thesis_engine` → `Evidence` | **E** |
+| III.3 | All evidence domains feed the Brain | ✅ | `cognition/evidence_adapters.py` + `cognition/loop.py` consolidator (per-module, domain-classified) | E ✅ |
 | III.4 | Evidence format (id/ts/source/conf/uncertainty/horizon) | ✅ | `cognition/contracts.py` `Evidence` | — |
 | IV.1–8 | Pre-trade cognitive cycle → campaign spec | 🟡 | Brain produces `DecisionPackage`/`CampaignSpecification`; spec not consumed | E, G |
 | V.1–8 | Opportunity harvesting / campaign lifecycle | 🟡 | `brain/campaign.py` observational registry; not Brain-driven | F, G, H |
@@ -66,7 +66,7 @@ evidence-consolidation + background loop + Brain→Composio bridge
 
 ---
 
-## 2. Phase E — Full evidence consolidation (Part III.3) — **NEXT**
+## 2. Phase E — Full evidence consolidation (Part III.3) — ✅ DONE
 
 **Goal:** the Brain reasons over ALL evidence domains, not just the ThesisEngine.
 

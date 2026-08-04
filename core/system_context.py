@@ -1188,7 +1188,13 @@ class SystemContext:
                         if cog_cfg is not None else 0.6
                     ),
                 )
-                _consolidator = _EvidenceConsolidator(ctx=ctx)
+                _consolidator = _EvidenceConsolidator(
+                    ctx=ctx,
+                    per_module=bool(
+                        getattr(cog_cfg, "per_module_evidence", True)
+                        if cog_cfg is not None else True
+                    ),
+                )
                 _bridge = _BrainActionBridge(
                     ctx.action_orchestrator,
                     notify_enabled=bool(
