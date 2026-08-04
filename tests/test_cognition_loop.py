@@ -315,3 +315,37 @@ def test_consolidator_injects_analogue_evidence_from_memory():
     assert len(analogue) == 1
     assert analogue[0].polarity > 0     # a won LONG analogue leans long
     store.close()
+
+
+# ── Operations author → sink wiring (Phase I, Part IX Art 9/11) ───────────────
+
+from cognition.operations import CAP_OPERATOR_NOTIFY, OperationsAuthor
+
+
+def test_loop_drains_operations_author_to_sink():
+    submitted = []
+    author = OperationsAuthor(enabled=True, cooldown_seconds=0.0,
+                              report_period_seconds=1e12)
+    author.observe_campaign_outcome(symbol="EURUSD", direction="LONG",
+                                    verdict="validated", reasoning_quality=0.9)
+    loop = CognitionLoop(
+        _OpenBrain(), _StubConsolidator(), lambda: [],
+        operations_author=author, operations_sink=lambda i: submitted.append(i),
+    )
+    loop.run_once()
+    assert len(submitted) == 1
+    assert submitted[0].intent == CAP_OPERATOR_NOTIFY
+    assert loop.get_status()["operations_enabled"] is True
+    assert loop.get_status()["ops_submitted"] == 1
+
+
+def test_loop_operations_inert_when_author_disabled():
+    submitted = []
+    author = OperationsAuthor(enabled=False)
+    loop = CognitionLoop(
+        _OpenBrain(), _StubConsolidator(), lambda: [],
+        operations_author=author, operations_sink=lambda i: submitted.append(i),
+    )
+    loop.run_once()
+    assert submitted == []
+    assert loop.get_status()["ops_submitted"] == 0

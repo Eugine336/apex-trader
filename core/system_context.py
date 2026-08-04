@@ -125,6 +125,10 @@ class SystemContext:
     # which Brain-authored objectives become external actions. Default OFF +
     # dry-run; never reasons or originates objectives. Surfaced via Governance.
     action_orchestrator: Optional[Any] = None
+    # Action Planner (Part IX Art 11) — turns the Brain's semantic objectives
+    # into provider-bound, governed Composio actions. The Brain never names a
+    # provider; the planner selects capability + provider. Default-off.
+    action_planner: Optional[Any] = None
     # The AI Cognitive Brain (Single Reasoner) + its background cognition loop.
     # Consumes consolidated Evidence, emits DecisionPackages/CampaignSpecs. Runs
     # in shadow by default (observational); surfaced via Governance.
@@ -140,6 +144,10 @@ class SystemContext:
     # fingerprints + realised outcomes so the Brain can consult analogous
     # history. Observational; fail-safe; surfaced via cognition status.
     campaign_memory: Optional[Any] = None
+    # Operational-intelligence author (Phase I, Part IX Art 9) — turns campaign
+    # outcomes into operational objectives (issue/notify/report) for the Action
+    # Planner. Ecosystem-only, never broker orders. Default-off.
+    operations_author: Optional[Any] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
     opportunity_executor: Optional[OpportunityExecutor] = None
@@ -1159,6 +1167,26 @@ class SystemContext:
                 )
                 _adapter = _build_action_adapter(comp_cfg)
                 ctx.action_orchestrator = _ActionOrchestrator(_policy, _adapter)
+                # Part IX Article 11 — the Action Planner: turns the Brain's
+                # semantic objectives into provider-bound, governed Composio
+                # actions. Enabled only when the action layer is; default-off is
+                # doubly safe (planner.submit is inert while disabled).
+                try:
+                    from action.capabilities import default_registry as _default_registry
+                    from action.planner import ActionPlanner as _ActionPlanner
+                    ctx.action_planner = _ActionPlanner(
+                        ctx.action_orchestrator,
+                        _default_registry(),
+                        enabled=bool(getattr(comp_cfg, "enabled", False)
+                                     if comp_cfg is not None else False),
+                        available_providers=(comp_cfg.available_providers_list()
+                                             if comp_cfg is not None else None),
+                        provider_preferences=(comp_cfg.provider_preferences_map()
+                                              if comp_cfg is not None else None),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[SystemContext] ActionPlanner init failed: {}", exc)
+                    ctx.action_planner = None
                 logger.info(
                     "[SystemContext] Action layer ready — enabled={} adapter={} "
                     "(dry_run={})",
@@ -1219,12 +1247,60 @@ class SystemContext:
                     logger.warning("[SystemContext] campaign memory init failed: {}", exc)
                     _memory = None
                 ctx.campaign_memory = _memory
-                # Part VII — the registry writes terminal outcomes to memory.
-                if _memory is not None and ctx.campaign_registry is not None:
+                # Phase I (Part IX Art 9) — operational-intelligence author.
+                # Turns terminated-campaign outcomes into operational objectives
+                # (issue on recurring loss, notify on a validated win, periodic
+                # report). Default-off; ecosystem-only, never broker orders.
+                _ops_author = None
+                try:
+                    from cognition.operations import OperationsAuthor as _OperationsAuthor
+                    _ops_author = _OperationsAuthor(
+                        enabled=bool(getattr(cog_cfg, "operations_enabled", False)
+                                     if cog_cfg is not None else False),
+                        loss_streak_threshold=int(
+                            getattr(cog_cfg, "operations_loss_streak", 3)
+                            if cog_cfg is not None else 3),
+                        report_period_seconds=float(
+                            getattr(cog_cfg, "operations_report_period_seconds", 86_400.0)
+                            if cog_cfg is not None else 86_400.0),
+                        cooldown_seconds=float(
+                            getattr(cog_cfg, "operations_cooldown_seconds", 3_600.0)
+                            if cog_cfg is not None else 3_600.0),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[SystemContext] OperationsAuthor init failed: {}", exc)
+                    _ops_author = None
+                ctx.operations_author = _ops_author
+
+                # Part VII — the registry writes terminal outcomes to memory, and
+                # (Part IX Art 9) feeds the same outcomes to the operations author.
+                def _campaign_close_sink(camp: Any) -> None:
+                    if _memory is not None:
+                        try:
+                            _memory.record_close(camp)
+                        except Exception:  # noqa: BLE001
+                            pass
+                    if _ops_author is not None:
+                        try:
+                            data = camp.to_dict() if hasattr(camp, "to_dict") else {}
+                            pm = data.get("postmortem") or {}
+                            _ops_author.observe_campaign_outcome(
+                                symbol=str(data.get("symbol", "") or ""),
+                                direction=str(data.get("direction", "") or ""),
+                                verdict=str(pm.get("verdict", "") or ""),
+                                reasoning_quality=float(pm.get("reasoning_quality", 0.0) or 0.0),
+                                realized_pnl=float(data.get("realized_pnl", 0.0) or 0.0),
+                                evidence_ref=str(data.get("campaign_id", "") or ""),
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+
+                if (_memory is not None or _ops_author is not None) \
+                        and ctx.campaign_registry is not None:
                     try:
-                        ctx.campaign_registry.set_memory_sink(_memory.record_close)
+                        ctx.campaign_registry.set_memory_sink(_campaign_close_sink)
                     except Exception as exc:  # noqa: BLE001
-                        logger.debug("[SystemContext] memory sink wiring failed: {}", exc)
+                        logger.debug("[SystemContext] close sink wiring failed: {}", exc)
                 _consolidator = _EvidenceConsolidator(
                     ctx=ctx,
                     per_module=bool(
@@ -1319,6 +1395,9 @@ class SystemContext:
                     ),
                     balance_provider=_cognition_balance,
                     memory=_memory,
+                    operations_author=_ops_author,
+                    operations_sink=(ctx.action_planner.submit
+                                     if ctx.action_planner is not None else None),
                 )
                 from cognition.gate import CognitionGate as _CognitionGate
                 ctx.cognition_gate = _CognitionGate(
@@ -1384,6 +1463,8 @@ class SystemContext:
                 cognition_gate=ctx.cognition_gate,
                 management_gate=ctx.management_gate,
                 campaign_memory=ctx.campaign_memory,
+                action_planner=ctx.action_planner,
+                operations_author=ctx.operations_author,
             )
             # Install Governance as the authoriser on the Learning→Governance
             # gateway and require authorisation (per config; default on).

@@ -1132,13 +1132,100 @@ merely recent profitability.
 
 # Part IX --- Composio Operational Intelligence Constitution
 
-Composio is Apex's operational action layer.
+> Version: Draft 2.0
 
--   AI creates objectives.
--   Governance authorizes.
--   Composio executes approved operational actions.
--   Trading execution remains outside Composio.
--   Every action is audited, observable and reversible where practical.
+## Purpose
+
+Composio is Apex's Universal Operational Capability Layer. Composio is not an AI,
+not a reasoning engine, not a trading engine, and not an execution engine. It
+extends Apex beyond market reasoning by allowing the AI Cognitive Brain to safely
+perceive, retrieve, create, update and coordinate information across external
+systems. Its purpose is not to make Apex smarter — it is to allow Apex to *act
+upon* its intelligence.
+
+**Article 1 — The operational nervous system.** The Brain is cognition; Composio
+is action. Brain → Decision → Nervous System → Muscles → Action. Without Composio
+the Brain only understands; with Composio it can influence the outside world.
+
+**Article 2 — The AI never thinks about APIs.** The AI shall never reason in
+terms of APIs, HTTP requests, or software providers. It reasons only in terms of
+objectives ("I need historical research", "I should notify the operator", "this
+recurring engineering failure should become a GitHub issue"). The AI creates
+objectives, never integrations.
+
+**Article 3 — Composio is a capability layer.** Composio exposes capabilities,
+not software or APIs: retrieve research / documents / datasets / historical
+reports; create engineering tasks / documentation; send notifications; store
+institutional knowledge; schedule work; monitor infrastructure; update
+dashboards; generate reports; coordinate workflows. The AI selects objectives;
+the Action Planner selects capabilities; Composio performs execution.
+
+**Article 4 — Information flow.** The AI does not directly consume Composio; it
+requests knowledge. AI → "I need macroeconomic context" → Action Planner →
+Composio → source → raw information → Evidence Engine → structured Evidence →
+Brain. Composio never injects conclusions; it only retrieves reality.
+
+**Article 5 — Action flow.** When the AI decides an external action should occur:
+Reasoning → Objective → Governance → Action Planner → Composio → External System
+→ Observation → Memory → Learning. Every action becomes another learning
+opportunity.
+
+**Article 6 — No direct trading authority.** Composio shall never become part of
+the trading decision: never Buy, Sell, Exit, Reverse, Campaign, Expected value,
+or Market thesis. Composio has zero market intelligence. The AI Brain remains the
+only cognitive authority.
+
+**Article 7 — No broker authority.** Broker execution remains inside Apex's
+deterministic execution architecture (AI Brain → Execution Validation →
+Execution Engine → Broker). Composio shall never be the path through which broker
+orders are placed, modified or cancelled, and remains completely outside it.
+
+**Article 8 — Knowledge retrieval.** Composio lets the Brain retrieve knowledge
+from external systems (economic calendars, research repositories, institutional
+documents, GitHub, Google Drive, Notion, documentation, historical archives,
+cloud storage, reports). Every retrieved item becomes structured Evidence; the
+Brain never reasons over raw APIs.
+
+**Article 9 — Operational intelligence.** After reasoning, the Brain may
+determine that a recurring software failure requires investigation, a discovery
+should become documentation, today's campaigns require a report, infrastructure
+health should be checked, a retraining job should be scheduled, historical data
+should be archived, research should be organised, or engineering should
+investigate a behaviour. Composio performs these operational tasks.
+
+**Article 10 — Institutional ecosystem.** The objective is not automation; it is
+institutional intelligence. Every external system becomes an extension of Apex's
+operational ecosystem: GitHub = engineering memory, Google Drive = research
+storage, Notion = institutional documentation, Slack = operational coordination,
+Telegram = immediate communication, Cloud = computational infrastructure,
+Calendar = future planning. The AI sees capabilities, never applications.
+
+**Article 11 — Action Planner.** Between the AI Brain and Composio exists the
+Action Planner. Its responsibilities: interpret objectives; select the
+appropriate capability; choose the appropriate provider; construct the execution
+plan; submit to Governance; execute through Composio; observe the result; return
+observations to Memory. The Brain never needs to know whether GitHub, Jira,
+Notion or another provider performed the task — only the objective matters.
+
+**Article 12 — Governance.** Every external action requires governance, which
+evaluates permissions, operational risk, business policy, security, approval
+requirements and audit requirements. Only approved objectives become executable
+actions.
+
+**Article 13 — Observation.** Every completed external action returns
+observations (issue created, dataset archived, notification delivered, calendar
+retrieved, infrastructure restarted, documentation updated). These observations
+become institutional memory.
+
+**Article 14 — Learning.** The AI evaluates whether an action achieved its
+objective and improved operations / research / engineering, and whether similar
+actions should recur. Operational behaviour continuously improves through
+feedback.
+
+**Article 15 — Constitutional rule.** Composio shall never become Apex's Brain,
+trader, or broker. Composio is Apex's universal operational capability layer: the
+AI Cognitive Brain reasons; the Action Planner transforms objectives into
+capabilities; Composio executes.
 
 **Rule:** Composio operates the ecosystem, not broker orders.
 

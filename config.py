@@ -3795,6 +3795,11 @@ class ComposioConfig:
     min_confidence: float = 0.2
     medium_confidence_threshold: float = 0.7
     timeout_seconds: float = 20.0
+    # Part IX Article 11 — Action Planner provider selection. ``available_providers``
+    # is a CSV allow-list of providers the planner may choose (blank ⇒ any
+    # candidate); ``provider_preferences`` is CSV "capability=provider" hints.
+    available_providers: str = ""
+    provider_preferences: str = ""
 
     def __post_init__(self) -> None:
         self.api_key = (os.getenv("COMPOSIO_API_KEY", self.api_key) or "").strip()
@@ -3822,6 +3827,12 @@ class ComposioConfig:
         self.require_source = _llm_env_bool("COMPOSIO_REQUIRE_SOURCE", self.require_source)
         # Auto-on when a key is present; explicit COMPOSIO_ENABLED overrides.
         self.enabled = _llm_env_bool("COMPOSIO_ENABLED", bool(self.api_key))
+        self.available_providers = (
+            os.getenv("COMPOSIO_AVAILABLE_PROVIDERS", self.available_providers) or ""
+        ).strip()
+        self.provider_preferences = (
+            os.getenv("COMPOSIO_PROVIDER_PREFERENCES", self.provider_preferences) or ""
+        ).strip()
 
         if self.auto_max_risk not in (
             "negligible", "low", "medium", "high", "destructive"
@@ -3844,6 +3855,21 @@ class ComposioConfig:
                 f"ComposioConfig.timeout_seconds must be > 0, got {self.timeout_seconds!r}"
             )
 
+    def available_providers_list(self) -> list:
+        """Parse ``available_providers`` CSV into a list (blank ⇒ empty)."""
+        return [p.strip().lower() for p in str(self.available_providers or "").split(",") if p.strip()]
+
+    def provider_preferences_map(self) -> dict:
+        """Parse ``provider_preferences`` CSV ("cap=provider,…") into a dict."""
+        out: dict = {}
+        for pair in str(self.provider_preferences or "").split(","):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                k, v = k.strip(), v.strip().lower()
+                if k and v:
+                    out[k] = v
+        return out
+
 
 @dataclass
 class CognitionConfig:
@@ -3856,7 +3882,8 @@ class CognitionConfig:
     (Parts XIII/XV: shadow → paper → controlled rollout). Env overrides:
     COGNITION_ENABLED, COGNITION_SHADOW_MODE, COGNITION_LOOP_INTERVAL_SECONDS,
     COGNITION_ORIGINATION_MODE (off|shadow|live; default shadow),
-    COGNITION_MEMORY_ENABLED (default true).
+    COGNITION_MEMORY_ENABLED (default true),
+    COGNITION_OPERATIONS_ENABLED (default false).
     """
 
     enabled: bool = True
@@ -3886,6 +3913,14 @@ class CognitionConfig:
     # reasoning. Observational — memory never drives execution.
     memory_enabled: bool = True
     memory_max_analogues: int = 5             # analogues surfaced to the Brain per symbol
+    # Phase I — operational intelligence (Part IX Article 9). When enabled, the
+    # loop authors operational objectives (issue on recurring loss, notify on a
+    # validated win, periodic report) and submits them through the Action Planner
+    # → governed Composio. Default OFF; ecosystem-only, never broker orders.
+    operations_enabled: bool = False
+    operations_report_period_seconds: float = 86_400.0
+    operations_loss_streak: int = 3
+    operations_cooldown_seconds: float = 3_600.0
 
     def __post_init__(self) -> None:
         self.enabled = _llm_env_bool("COGNITION_ENABLED", self.enabled)
@@ -3901,6 +3936,9 @@ class CognitionConfig:
         )
         self.allow_scale_in = _llm_env_bool("COGNITION_ALLOW_SCALE_IN", self.allow_scale_in)
         self.memory_enabled = _llm_env_bool("COGNITION_MEMORY_ENABLED", self.memory_enabled)
+        self.operations_enabled = _llm_env_bool(
+            "COGNITION_OPERATIONS_ENABLED", self.operations_enabled
+        )
         self.origination_mode = (
             os.getenv("COGNITION_ORIGINATION_MODE", self.origination_mode) or "shadow"
         ).strip().lower()
@@ -3961,6 +3999,10 @@ class CognitionConfig:
         if int(self.memory_max_analogues) < 1:
             raise ValueError(
                 f"CognitionConfig.memory_max_analogues must be >= 1, got {self.memory_max_analogues!r}"
+            )
+        if int(self.operations_loss_streak) < 1:
+            raise ValueError(
+                f"CognitionConfig.operations_loss_streak must be >= 1, got {self.operations_loss_streak!r}"
             )
 
 

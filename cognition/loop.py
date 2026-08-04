@@ -178,6 +178,8 @@ class CognitionLoop:
         origination_max_exposure: float = 1.0,
         balance_provider: Optional[Callable[[str], float]] = None,
         memory: Optional[Any] = None,
+        operations_author: Optional[Any] = None,
+        operations_sink: Optional[Callable[[Any], None]] = None,
         name: str = "cognition-loop",
     ) -> None:
         self._brain = brain
@@ -194,6 +196,8 @@ class CognitionLoop:
         self._max_exposure = min(1.0, max(0.0, float(origination_max_exposure)))
         self._balance_provider = balance_provider
         self._memory = memory
+        self._operations_author = operations_author
+        self._operations_sink = operations_sink
         self._origination_sink: Optional[Callable[[Any], None]] = None
         self._name = str(name or "cognition-loop")
         self._running = False
@@ -205,6 +209,7 @@ class CognitionLoop:
         self._orig_intended = 0
         self._orig_submitted = 0
         self._memory_opens = 0
+        self._ops_submitted = 0
         self._open_keys: set = set()
 
     def set_origination_sink(self, sink: Optional[Callable[[Any], None]]) -> None:
@@ -242,7 +247,36 @@ class CognitionLoop:
         self._cycles += 1
         self._decisions += made
         self._manage_open_positions(now=now)
+        self._maybe_author_operations(now=now)
         return made
+
+    def _maybe_author_operations(self, *, now: Optional[float] = None) -> None:
+        """Drain the operations author and submit objectives via the sink. Fail-safe.
+
+        Part IX Article 9/11: the Brain-side author emits operational objectives
+        (semantic); the wired sink is the Action Planner, which selects a provider
+        and submits through governed Composio. Inert unless both are wired and the
+        author is enabled.
+        """
+        author = self._operations_author
+        sink = self._operations_sink
+        if author is None or sink is None or not getattr(author, "enabled", False):
+            return
+        try:
+            mem_status = None
+            if self._memory is not None:
+                try:
+                    mem_status = self._memory.get_status()
+                except Exception:  # noqa: BLE001
+                    mem_status = None
+            for intent in author.tick(now=now, memory_status=mem_status) or []:
+                try:
+                    sink(intent)
+                    self._ops_submitted += 1
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[cognition-loop] operations sink fault: %s", exc)
+        except Exception as exc:  # noqa: BLE001 — operations must never break the loop
+            logger.debug("[cognition-loop] author operations fault: %s", exc)
 
     def _current_open_keys(self) -> set:
         """Set of ``(symbol, direction)`` for currently open positions/campaigns.
@@ -412,6 +446,9 @@ class CognitionLoop:
             "orig_submitted": self._orig_submitted,
             "memory_enabled": self._memory is not None,
             "memory_opens": self._memory_opens,
+            "operations_enabled": (self._operations_author is not None
+                                   and getattr(self._operations_author, "enabled", False)),
+            "ops_submitted": self._ops_submitted,
         }
 
 
