@@ -248,6 +248,22 @@ class LLMReasoner:
             model=str(getattr(self._client, "model", "") or ""),
         )
 
+    def latest_opinion(self, symbol: str) -> Optional[LLMOpinion]:
+        """Most recent recorded opinion for ``symbol`` (or None). Fail-safe.
+
+        The panel-feeding path (when ``drive_decisions`` is enabled) reads this
+        to pull the latest LLM read for a symbol without triggering a call.
+        """
+        try:
+            sym = str(symbol or "")
+            with self._lock:
+                for op in reversed(self._recent):
+                    if op.symbol == sym:
+                        return op
+            return None
+        except Exception:  # noqa: BLE001
+            return None
+
     def get_status(self) -> dict:
         """Secret-safe status for the dashboard / governance."""
         try:
