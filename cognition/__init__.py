@@ -50,4 +50,8 @@ def __getattr__(name: str):
     if name in ("EvidenceConsolidator", "BrainActionBridge", "CognitionLoop", "SymbolsProvider"):
         from cognition import loop as _loop
         return getattr(_loop, name)
+    if name in ("CognitionGate", "GateVerdict", "normalise_mode",
+                "MODE_OFF", "MODE_SHADOW", "MODE_VETO"):
+        from cognition import gate as _gate
+        return getattr(_gate, name)
     raise AttributeError(f"module 'cognition' has no attribute {name!r}")

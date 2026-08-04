@@ -7052,6 +7052,36 @@ class EventDrivenSystem:
             )
             return True
 
+    def _cognition_gate_allows(self, symbol: str, direction: str) -> bool:
+        """AI Cognitive Brain entry gate (Step C) — fail-open.
+
+        Consults the single Brain's latest shadow decision for ``symbol``. In
+        ``shadow`` mode (default) it only records what it WOULD do and always
+        allows; in ``veto`` mode it blocks an entry the legacy path proposed when
+        the Brain has a fresh read that does not back this direction. It can only
+        make the system MORE conservative — it never originates a trade. Fail-
+        open: no Brain, no read yet (cold start), or any fault ALLOWS the entry.
+        """
+        ctx = self._ctx
+        gate = getattr(ctx, "cognition_gate", None) if ctx is not None else None
+        if gate is None:
+            return True
+        try:
+            verdict = gate.evaluate(symbol, direction)
+            if not bool(verdict.allow):
+                logger.info(
+                    "EVENT-DRIVEN ENTRY SKIPPED | {} — AI Cognitive Brain vetoed "
+                    "({} {}): {}",
+                    symbol, direction, verdict.brain_decision_type or "-", verdict.reason,
+                )
+            return bool(verdict.allow)
+        except Exception as exc:  # noqa: BLE001 — a gate fault must never block a trade
+            logger.warning(
+                "[cognition-gate] {} evaluation errored — allowing entry "
+                "(fail-safe): {}", symbol, exc,
+            )
+            return True
+
     def _build_consensus_candidate_item(
         self, symbol: str, candidate: Any, cfg: Any,
     ) -> Optional[tuple]:
@@ -8060,6 +8090,15 @@ class EventDrivenSystem:
             # (cold start), or anything errors, the entry is ALLOWED — the gate
             # never blocks on absent evidence or a tracking fault.
             if not self._thesis_gate_allows(symbol, direction):
+                return
+
+            # ── Gate 0e: AI Cognitive Brain (Single Reasoner, Step C) ─
+            # The one reasoner's authority on the decision path. In "shadow"
+            # (default) it only records what it WOULD decide; in "veto" it can
+            # suppress an entry the legacy path proposed when the Brain does not
+            # back this direction. One-way — it never originates a trade here.
+            # Fail-open: absent/stale Brain read or any fault ALLOWS the entry.
+            if not self._cognition_gate_allows(symbol, direction):
                 return
 
             # ── Compliance Division: single authoritative permit ─────

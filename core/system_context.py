@@ -130,6 +130,9 @@ class SystemContext:
     # in shadow by default (observational); surfaced via Governance.
     cognitive_brain: Optional[Any] = None
     cognition_loop: Optional[Any] = None
+    # Brain entry gate (Step C) — one-way authority that can veto (never
+    # originate) a proposed entry when the Brain does not back it. Fail-open.
+    cognition_gate: Optional[Any] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
     opportunity_executor: Optional[OpportunityExecutor] = None
@@ -1225,10 +1228,18 @@ class SystemContext:
                     ),
                     action_bridge=_bridge,
                 )
+                from cognition.gate import CognitionGate as _CognitionGate
+                ctx.cognition_gate = _CognitionGate(
+                    ctx.cognitive_brain,
+                    mode=str(getattr(cog_cfg, "gate_mode", "shadow")
+                             if cog_cfg is not None else "shadow"),
+                )
                 logger.info(
-                    "[SystemContext] Cognitive Brain ready — reasoner_available={} shadow={}",
+                    "[SystemContext] Cognitive Brain ready — reasoner_available={} "
+                    "shadow={} gate_mode={}",
                     ctx.cognitive_brain.available,
                     getattr(cog_cfg, "shadow_mode", True) if cog_cfg else True,
+                    getattr(cog_cfg, "gate_mode", "shadow") if cog_cfg else "shadow",
                 )
             except Exception as exc:
                 logger.warning("[SystemContext] CognitiveBrain init failed: {}", exc)
@@ -1264,6 +1275,7 @@ class SystemContext:
                 action_orchestrator=ctx.action_orchestrator,
                 cognitive_brain=ctx.cognitive_brain,
                 cognition_loop=ctx.cognition_loop,
+                cognition_gate=ctx.cognition_gate,
             )
             # Install Governance as the authoriser on the Learning→Governance
             # gateway and require authorisation (per config; default on).
