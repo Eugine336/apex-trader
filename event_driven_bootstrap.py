@@ -3906,6 +3906,43 @@ class EventDrivenSystem:
             "[tuner] registered {} tunable adapters with TunerAgent", registered,
         )
 
+    def _build_llm_evidence_source(self):
+        """Return a callable yielding ``{symbol: structured_evidence}`` for the
+        LLM worker.
+
+        Reads the ThesisEngine's competing-thesis status (and per-symbol campaign
+        context where available) — a read of already-computed state, so it never
+        touches the hot path, blocks, or triggers analysis. Fully fail-safe.
+        """
+        ctx = self._ctx
+
+        def _source() -> "dict[str, dict]":
+            out: dict[str, dict] = {}
+            try:
+                engine = getattr(ctx, "thesis_engine", None) if ctx is not None else None
+                if engine is None:
+                    return out
+                status = engine.get_status() or {}
+                theses = status.get("theses") or {}
+                camp_live: dict[str, dict] = {}
+                registry = getattr(ctx, "campaign_registry", None) if ctx is not None else None
+                if registry is not None:
+                    try:
+                        for c in (registry.get_status() or {}).get("live", []) or []:
+                            camp_live[str(c.get("symbol"))] = c
+                    except Exception:  # noqa: BLE001
+                        camp_live = {}
+                for sym, tdict in theses.items():
+                    ev: dict = {"thesis": tdict}
+                    if str(sym) in camp_live:
+                        ev["campaign"] = camp_live[str(sym)]
+                    out[str(sym)] = ev
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[llm-worker] evidence build fault: {}", exc)
+            return out
+
+        return _source
+
     # ── Lifecycle ────────────────────────────────────────────────────
 
     def start(self) -> None:
@@ -4099,6 +4136,33 @@ class EventDrivenSystem:
                 logger.warning(
                     "[event-driven] proactive scanner start failed: {}", exc,
                 )
+
+        # ── Start LLM reasoning worker (off the hot path) ────────────
+        # Drives the LLM reasoner on its own daemon thread — a blocking provider
+        # round-trip must never run in the tick/analysis loop. Only spins up when
+        # a provider is actually configured (reasoner.available); otherwise a
+        # pure no-op. Best-effort; never blocks startup.
+        self._llm_worker = None
+        try:
+            _reasoner = self._ctx.llm_reasoner if self._ctx is not None else None
+            if _reasoner is not None and getattr(_reasoner, "available", False):
+                from llm.worker import LLMReasoningWorker as _LLMReasoningWorker
+                _llm_cfg = getattr(self._config, "llm", None)
+                self._llm_worker = _LLMReasoningWorker(
+                    _reasoner,
+                    self._build_llm_evidence_source(),
+                    interval_seconds=float(
+                        getattr(_llm_cfg, "worker_interval_seconds", 60.0)
+                        if _llm_cfg is not None else 60.0
+                    ),
+                    max_symbols_per_cycle=int(
+                        getattr(_llm_cfg, "max_symbols_per_cycle", 8)
+                        if _llm_cfg is not None else 8
+                    ),
+                )
+                self._llm_worker.start()
+        except Exception as exc:
+            logger.warning("[event-driven] LLM reasoning worker start failed: {}", exc)
 
         # ── Start ProcessWatchdog heartbeat thread ───────────────────
         ctx = self._ctx
@@ -4362,6 +4426,11 @@ class EventDrivenSystem:
         if getattr(self, "_proactive_scanner", None) is not None:
             try:
                 self._proactive_scanner.stop()
+            except Exception:
+                pass
+        if getattr(self, "_llm_worker", None) is not None:
+            try:
+                self._llm_worker.stop()
             except Exception:
                 pass
         if getattr(self, "_opportunity_queue", None) is not None:

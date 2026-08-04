@@ -12,6 +12,7 @@ Public surface:
 
 from llm.client import LLMClient, Transport, build_client
 from llm.reasoner import FLAT, LONG, SHORT, LLMOpinion, LLMReasoner
+from llm.worker import EvidenceSource, LLMReasoningWorker
 
 __all__ = [
     "LLMClient",
@@ -19,6 +20,8 @@ __all__ = [
     "build_client",
     "LLMReasoner",
     "LLMOpinion",
+    "LLMReasoningWorker",
+    "EvidenceSource",
     "LONG",
     "SHORT",
     "FLAT",

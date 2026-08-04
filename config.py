@@ -3698,6 +3698,8 @@ class LLMConfig:
     max_tokens: int = 512
     temperature: float = 0.2
     min_interval_seconds: float = 30.0
+    worker_interval_seconds: float = 60.0
+    max_symbols_per_cycle: int = 8
 
     def __post_init__(self) -> None:
         # The environment is the single source of truth — no vendor is baked in.
@@ -3712,6 +3714,8 @@ class LLMConfig:
             ("LLM_MAX_TOKENS", "max_tokens", int),
             ("LLM_TEMPERATURE", "temperature", float),
             ("LLM_MIN_INTERVAL_SECONDS", "min_interval_seconds", float),
+            ("LLM_WORKER_INTERVAL_SECONDS", "worker_interval_seconds", float),
+            ("LLM_MAX_SYMBOLS_PER_CYCLE", "max_symbols_per_cycle", int),
         ):
             raw = os.getenv(env_name)
             if raw is not None:
@@ -3745,6 +3749,16 @@ class LLMConfig:
             raise ValueError(
                 "LLMConfig.min_interval_seconds must be >= 0, got "
                 f"{self.min_interval_seconds!r}"
+            )
+        if float(self.worker_interval_seconds) < 1:
+            raise ValueError(
+                "LLMConfig.worker_interval_seconds must be >= 1, got "
+                f"{self.worker_interval_seconds!r}"
+            )
+        if int(self.max_symbols_per_cycle) < 1:
+            raise ValueError(
+                "LLMConfig.max_symbols_per_cycle must be >= 1, got "
+                f"{self.max_symbols_per_cycle!r}"
             )
 
 
