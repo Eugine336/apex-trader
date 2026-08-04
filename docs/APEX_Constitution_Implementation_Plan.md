@@ -219,11 +219,13 @@ Action Planner, Article 11, is now the mandated layer between Brain and Composio
 **Shipped:**
 - `action/capabilities.py` (new): typed capability layer (Article 3) — `Capability`
   + `ProviderBinding` + `CapabilityRegistry` with a curated `default_registry()`:
-  `operator.notify`, `github.create_issue`, `docs.update`, `report.publish`,
-  `research.record`, `knowledge.retrieve`, `noop`. Each carries a risk tier,
-  required params, and an ordered list of provider→Composio-action bindings.
-  Deterministic `resolve_provider()` (preference → availability → first
-  candidate) realises Article 11's "choose the appropriate provider".
+  `operator.notify`, `engineering.create_task`, `docs.update`, `report.publish`,
+  `research.record`, `knowledge.retrieve`, `noop` (provider-agnostic objectives —
+  Part XVI Art 4). Each carries a risk tier, required params, and an ordered list
+  of provider→Composio-action bindings (e.g. `engineering.create_task` →
+  github/jira/linear, interchangeable per Part XVI Art 8). Deterministic
+  `resolve_provider()` (preference → availability → first candidate) realises
+  Article 11's "choose the appropriate provider".
 - `action/planner.py` (new): the **Action Planner** (Article 11) — `ObjectiveRequest`
   (semantic; no provider/API, per Article 2) → resolve capability → select
   provider → build an `ActionObjective` whose `capability` is the exact Composio
@@ -232,7 +234,7 @@ Action Planner, Article 11, is now the mandated layer between Brain and Composio
   and fail-safe; originates nothing itself (Article 6).
 - `cognition/operations.py` (new): `OperationsAuthor` (Article 9) — turns campaign
   outcomes into operational objectives (recurring `deserved_loss` streak →
-  `github.create_issue`; `validated` win → `operator.notify`; periodic
+  `engineering.create_task`; `validated` win → `operator.notify`; periodic
   `report.publish`), throttled + de-duplicated. Emits plain `OperationalIntent`s
   (stdlib; no `action` import) the planner consumes by duck-typing.
 - Wiring: the campaign close-sink feeds both memory (Phase H) and the author; the

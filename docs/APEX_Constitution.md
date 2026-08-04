@@ -46,6 +46,7 @@ Its purpose is to:
 13. [Part XIII --- Validation & Testing Constitution](#part-xiii)
 14. [Part XIV --- Acceptance Criteria](#part-xiv)
 15. [Part XV --- Future Evolution Constitution](#part-xv)
+16. [Part XVI --- Hardcoding & Architectural Abstraction Constitution](#part-xvi)
 
 ------------------------------------------------------------------------
 
@@ -1328,3 +1329,95 @@ The Constitution evolves deliberately, never accidentally.
 
 
 ------------------------------------------------------------------------
+
+# Part XVI --- Hardcoding & Architectural Abstraction Constitution
+
+> Version: Draft 1.0
+
+## Purpose
+
+This Constitution defines what is permitted to be hardcoded within Apex and what
+must remain abstract, discoverable and replaceable. The objective is to ensure
+Apex evolves independently of specific technologies, vendors, APIs, providers or
+infrastructure. Architecture shall remain permanent; implementations shall remain
+replaceable.
+
+**Article 1 — The fundamental law.** Architecture is permanent; implementations
+are temporary. Therefore architecture may be hardcoded; implementations shall
+not.
+
+**Article 2 — What may be hardcoded.** Only architectural concepts may be
+permanently encoded: AI Cognitive Brain, Evidence Engine, Campaign Manager,
+Memory, Learning Engine, Adaptive Layer, Action Planner, Governance, Execution
+Engine, Execution Validation, Capability Registry, Institutional Memory,
+Reasoning Pipeline, Opportunity Harvesting, Campaign Lifecycle. These
+constitutional concepts define Apex itself.
+
+**Article 3 — What shall never be hardcoded.** Applications, providers, vendors,
+API endpoints, cloud vendors, database vendors, messaging platforms,
+documentation platforms, storage providers, research providers, communication
+providers. Examples (implementations, not architecture): GitHub, GitLab, Jira,
+Linear, Slack, Discord, Telegram, WhatsApp, Google Drive, Dropbox, Notion,
+Confluence, AWS, Azure, GCP, Cloudflare, OpenAI, Anthropic, Llama, DeepSeek,
+Qwen, Mistral.
+
+**Article 4 — The AI never knows applications.** The Brain shall never reason
+about software. Not "Create a GitHub issue" but "Create an engineering task"; not
+"Read Google Drive" but "Retrieve historical research"; not "Send Telegram
+message" but "Notify the operator". The AI reasons only about objectives.
+
+**Article 5 — Capabilities.** Every external integration shall expose
+capabilities (Retrieve Document, Store Document, Notify Operator, Create
+Engineering Task, Retrieve Market Context, Retrieve Calendar, Archive Research,
+Generate Report, Monitor Infrastructure, Schedule Activity, Retrieve
+Institutional Knowledge). The AI understands capabilities, never providers.
+
+**Article 6 — The Capability Registry.** Apex maintains a Capability Registry
+mapping a capability to its available providers (e.g. Notify Operator → Slack,
+Telegram, Discord, Email; Create Engineering Task → GitHub, Jira, Linear). The
+registry is dynamic; the AI never changes.
+
+**Article 7 — Action Planner.** The Action Planner receives an objective,
+searches the registry, determines available providers, evaluates availability,
+permissions, reliability, latency, business policy and governance, chooses the
+optimal provider, and executes. The Brain never performs provider selection.
+
+**Article 8 — Provider replacement.** Replacing a provider shall never require
+changing the AI. GitHub today, Jira tomorrow — the AI keeps reasoning "Create
+Engineering Task"; only the Capability Registry changes.
+
+**Article 9 — Model abstraction.** The Brain shall never depend on one language
+model (OpenAI, Llama, DeepSeek, Anthropic, Qwen, Mistral, future models — all
+implementations). The Brain reasons; the Model Manager selects the reasoning
+model by policy, capability, latency, cost, availability and performance.
+
+**Article 10 — Infrastructure abstraction.** Not "Launch AWS / Restart Kubernetes
+/ Scale Docker" but "Increase computational resources / Restart reasoning
+infrastructure / Recover failed worker". The Infrastructure Manager determines
+the implementation.
+
+**Article 11 — Communication abstraction.** Not "Send Slack / Telegram / Email"
+but "Notify Operator". The Communication Manager chooses the implementation.
+
+**Article 12 — Knowledge abstraction.** Not "Search Google Drive / Notion /
+Confluence" but "Retrieve Institutional Knowledge". The Knowledge Manager
+determines the source.
+
+**Article 13 — Market data abstraction.** Not "Query Alpha Vantage / Polygon /
+Broker API" but "Retrieve Market Context". The Market Data Manager determines the
+source.
+
+**Article 14 — Future extensibility.** New providers may be added, old ones
+removed; providers may fail or become obsolete. None of these shall require
+redesigning the Brain — only the Capability Registry and provider adapters
+change.
+
+**Article 15 — Constitutional rule.** The Brain reasons exclusively in
+objectives; architecture reasons in capabilities; infrastructure reasons in
+providers. Providers remain replaceable, capabilities remain stable, architecture
+remains permanent. If replacing an external application requires modifying the AI
+Cognitive Brain, the architecture has violated this Constitution and must be
+redesigned.
+
+**Rule:** Objectives are permanent; capabilities are stable; providers are
+replaceable.

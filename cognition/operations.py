@@ -1,9 +1,9 @@
 """APEX TRADER — Operational intelligence author (Constitution Part IX, Article 9).
 
 After reasoning, the Brain may determine that an *operational* action should
-occur — a recurring failure should become a GitHub issue, a significant discovery
-should be surfaced to the operator, today's campaigns deserve a report. This
-module turns such patterns (drawn from institutional memory and campaign
+occur — a recurring failure should become an engineering task, a significant
+discovery should be surfaced to the operator, today's campaigns deserve a report.
+This module turns such patterns (drawn from institutional memory and campaign
 outcomes) into **objective requests** — the semantic vocabulary of Article 2.
 
 It is deliberately Brain-side and dependency-light: it emits plain
@@ -28,8 +28,10 @@ logger = logging.getLogger("apex.cognition.operations")
 
 # Semantic capability names — must match action.capabilities (kept as literals so
 # this module does not import the action layer and stays natively importable).
+# Provider-agnostic objectives only (Part XVI Art 4): the Brain reasons about
+# "create an engineering task", never "create a GitHub issue".
 CAP_OPERATOR_NOTIFY = "operator.notify"
-CAP_GITHUB_CREATE_ISSUE = "github.create_issue"
+CAP_CREATE_ENGINEERING_TASK = "engineering.create_task"
 CAP_REPORT_PUBLISH = "report.publish"
 
 # Post-mortem verdicts the author reacts to (mirror brain.campaign values).
@@ -112,9 +114,10 @@ class OperationsAuthor:
     ) -> None:
         """Fold one terminated-campaign outcome into the author's state. Fail-safe.
 
-        A run of ``deserved_loss`` verdicts on the same book queues a GitHub issue
-        (a recurring failure worth engineering attention); a ``validated`` win
-        queues an operator notification (a significant, high-quality discovery).
+        A run of ``deserved_loss`` verdicts on the same book queues an engineering
+        task (a recurring failure worth engineering attention); a ``validated``
+        win queues an operator notification (a significant, high-quality
+        discovery).
         """
         if not self.enabled:
             return
@@ -129,7 +132,7 @@ class OperationsAuthor:
                         and self._loss_streak[key] >= self.loss_streak_threshold):
                     streak = self._loss_streak[key]
                     self._queue(OperationalIntent(
-                        intent=CAP_GITHUB_CREATE_ISSUE,
+                        intent=CAP_CREATE_ENGINEERING_TASK,
                         objective=f"Recurring deserved losses on {sym} {d}",
                         params={
                             "title": f"[apex] recurring deserved losses: {sym} {d}",
@@ -139,7 +142,7 @@ class OperationsAuthor:
                             "labels": ["apex", "reasoning-quality"],
                         },
                         confidence=0.7, priority=2, evidence_ref=evidence_ref,
-                    ), dedup_key=f"issue:{sym}:{d}")
+                    ), dedup_key=f"task:{sym}:{d}")
                     self._loss_streak[key] = 0     # reset after raising
             else:
                 # Any non-deserved-loss outcome breaks the streak.
@@ -226,4 +229,4 @@ class OperationsAuthor:
 
 
 __all__ = ["OperationalIntent", "OperationsAuthor",
-           "CAP_OPERATOR_NOTIFY", "CAP_GITHUB_CREATE_ISSUE", "CAP_REPORT_PUBLISH"]
+           "CAP_OPERATOR_NOTIFY", "CAP_CREATE_ENGINEERING_TASK", "CAP_REPORT_PUBLISH"]
