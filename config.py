@@ -3858,8 +3858,9 @@ class CognitionConfig:
     """
 
     enabled: bool = True
-    shadow_mode: bool = True
-    gate_mode: str = "shadow"          # off | shadow | veto (Brain authority on entries)
+    shadow_mode: bool = False
+    gate_mode: str = "authoritative"   # off | shadow | veto | authoritative (Brain = sole decider)
+    max_decision_age_seconds: float = 300.0
     min_confidence_to_act: float = 0.55
     max_uncertainty_to_act: float = 0.6
     loop_interval_seconds: float = 30.0
@@ -3870,20 +3871,29 @@ class CognitionConfig:
         self.enabled = _llm_env_bool("COGNITION_ENABLED", self.enabled)
         self.shadow_mode = _llm_env_bool("COGNITION_SHADOW_MODE", self.shadow_mode)
         self.gate_mode = (
-            os.getenv("COGNITION_GATE_MODE", self.gate_mode) or "shadow"
+            os.getenv("COGNITION_GATE_MODE", self.gate_mode) or "authoritative"
         ).strip().lower()
         self.emit_operator_notifications = _llm_env_bool(
             "COGNITION_EMIT_OPERATOR_NOTIFICATIONS", self.emit_operator_notifications
         )
-        raw = os.getenv("COGNITION_LOOP_INTERVAL_SECONDS")
-        if raw is not None:
-            try:
-                self.loop_interval_seconds = float(raw)
-            except (TypeError, ValueError):
-                logger.warning("[config] bad COGNITION_LOOP_INTERVAL_SECONDS '{}'", raw)
-        if self.gate_mode not in ("off", "shadow", "veto"):
+        for env_name, attr in (
+            ("COGNITION_LOOP_INTERVAL_SECONDS", "loop_interval_seconds"),
+            ("COGNITION_MAX_DECISION_AGE_SECONDS", "max_decision_age_seconds"),
+        ):
+            raw = os.getenv(env_name)
+            if raw is not None:
+                try:
+                    setattr(self, attr, float(raw))
+                except (TypeError, ValueError):
+                    logger.warning("[config] bad {} '{}' — keeping default", env_name, raw)
+        if self.gate_mode not in ("off", "shadow", "veto", "authoritative"):
             raise ValueError(
-                f"CognitionConfig.gate_mode must be off|shadow|veto, got {self.gate_mode!r}"
+                "CognitionConfig.gate_mode must be off|shadow|veto|authoritative, got "
+                f"{self.gate_mode!r}"
+            )
+        if float(self.max_decision_age_seconds) < 0:
+            raise ValueError(
+                f"CognitionConfig.max_decision_age_seconds must be >= 0, got {self.max_decision_age_seconds!r}"
             )
         if not (0.0 <= float(self.min_confidence_to_act) <= 1.0):
             raise ValueError(

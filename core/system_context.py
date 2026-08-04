@@ -1231,15 +1231,19 @@ class SystemContext:
                 from cognition.gate import CognitionGate as _CognitionGate
                 ctx.cognition_gate = _CognitionGate(
                     ctx.cognitive_brain,
-                    mode=str(getattr(cog_cfg, "gate_mode", "shadow")
-                             if cog_cfg is not None else "shadow"),
+                    mode=str(getattr(cog_cfg, "gate_mode", "authoritative")
+                             if cog_cfg is not None else "authoritative"),
+                    max_decision_age_seconds=float(
+                        getattr(cog_cfg, "max_decision_age_seconds", 300.0)
+                        if cog_cfg is not None else 300.0
+                    ),
                 )
                 logger.info(
                     "[SystemContext] Cognitive Brain ready — reasoner_available={} "
                     "shadow={} gate_mode={}",
                     ctx.cognitive_brain.available,
-                    getattr(cog_cfg, "shadow_mode", True) if cog_cfg else True,
-                    getattr(cog_cfg, "gate_mode", "shadow") if cog_cfg else "shadow",
+                    getattr(cog_cfg, "shadow_mode", False) if cog_cfg else False,
+                    getattr(cog_cfg, "gate_mode", "authoritative") if cog_cfg else "authoritative",
                 )
             except Exception as exc:
                 logger.warning("[SystemContext] CognitiveBrain init failed: {}", exc)

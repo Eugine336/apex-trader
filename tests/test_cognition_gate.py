@@ -1,20 +1,31 @@
-"""Tests for the AI Cognitive Brain entry gate (Step C) — Constitution Part VI."""
+"""Tests for the AI Cognitive Brain entry gate (Steps C/D) — Constitution Part VI."""
 
+import time
 from types import SimpleNamespace
 
-from cognition.gate import MODE_OFF, MODE_SHADOW, MODE_VETO, CognitionGate, normalise_mode
+from cognition.gate import (
+    MODE_AUTHORITATIVE,
+    MODE_OFF,
+    MODE_SHADOW,
+    MODE_VETO,
+    CognitionGate,
+    normalise_mode,
+)
 
 
 def _brain(latest):
     return SimpleNamespace(latest=lambda symbol: latest)
 
 
-def _output(direction="LONG", authorises=True, dtype="open_campaign"):
+def _output(direction="LONG", authorises=True, dtype="open_campaign", decided_at_epoch=None):
     decision = SimpleNamespace(
         decision_type=SimpleNamespace(value=dtype),
         authorises_action=authorises,
     )
-    return SimpleNamespace(decision=decision, direction=direction)
+    return SimpleNamespace(
+        decision=decision, direction=direction,
+        decided_at_epoch=time.time() if decided_at_epoch is None else decided_at_epoch,
+    )
 
 
 def test_normalise_mode():
@@ -74,3 +85,56 @@ def test_gate_fault_fails_open():
 
     g = CognitionGate(_BadBrain(), mode=MODE_VETO)
     assert g.evaluate("EURUSD", "LONG").allow is True
+
+
+# ── Step D: authoritative mode (Brain = sole decider, fail-closed) ────────────
+
+def test_authoritative_no_brain_fails_closed():
+    assert CognitionGate(None, mode=MODE_AUTHORITATIVE).evaluate("EURUSD", "LONG").allow is False
+
+
+def test_authoritative_cold_start_fails_closed():
+    # No decision yet ⇒ no trade (unlike veto, which fails open on cold start).
+    assert CognitionGate(_brain(None), mode=MODE_AUTHORITATIVE).evaluate("EURUSD", "LONG").allow is False
+
+
+def test_authoritative_allows_when_brain_authorises_fresh():
+    g = CognitionGate(_brain(_output("LONG", authorises=True)), mode=MODE_AUTHORITATIVE)
+    v = g.evaluate("EURUSD", "LONG")
+    assert v.allow is True and v.aligned is True
+
+
+def test_authoritative_blocks_on_disagreement():
+    g = CognitionGate(_brain(_output("SHORT", authorises=True)), mode=MODE_AUTHORITATIVE)
+    assert g.evaluate("EURUSD", "LONG").allow is False
+
+
+def test_authoritative_blocks_on_observe():
+    g = CognitionGate(_brain(_output("FLAT", authorises=False, dtype="continue_observing")),
+                      mode=MODE_AUTHORITATIVE)
+    assert g.evaluate("EURUSD", "LONG").allow is False
+
+
+def test_authoritative_blocks_stale_authorization():
+    # A fresh, aligned OPEN_CAMPAIGN but decided long ago ⇒ stale ⇒ blocked
+    # (renewed authorization per action).
+    old = 1_000.0
+    g = CognitionGate(_brain(_output("LONG", authorises=True, decided_at_epoch=old)),
+                      mode=MODE_AUTHORITATIVE, max_decision_age_seconds=60.0)
+    assert g.evaluate("EURUSD", "LONG", now=old + 120.0).allow is False
+    # Within the freshness window it is allowed.
+    assert g.evaluate("EURUSD", "LONG", now=old + 30.0).allow is True
+
+
+def test_authoritative_fault_fails_closed():
+    class _BadBrain:
+        def latest(self, symbol):
+            raise RuntimeError("boom")
+
+    assert CognitionGate(_BadBrain(), mode=MODE_AUTHORITATIVE).evaluate("EURUSD", "LONG").allow is False
+
+
+def test_status_reports_authoritative():
+    g = CognitionGate(_brain(_output()), mode=MODE_AUTHORITATIVE)
+    st = g.get_status()
+    assert st["authoritative"] is True and st["mode"] == "authoritative"

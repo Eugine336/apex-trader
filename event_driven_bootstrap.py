@@ -7070,17 +7070,22 @@ class EventDrivenSystem:
             verdict = gate.evaluate(symbol, direction)
             if not bool(verdict.allow):
                 logger.info(
-                    "EVENT-DRIVEN ENTRY SKIPPED | {} — AI Cognitive Brain vetoed "
-                    "({} {}): {}",
-                    symbol, direction, verdict.brain_decision_type or "-", verdict.reason,
+                    "EVENT-DRIVEN ENTRY BLOCKED | {} — AI Cognitive Brain ({}, {} {}): {}",
+                    symbol, verdict.mode, direction,
+                    verdict.brain_decision_type or "-", verdict.reason,
                 )
             return bool(verdict.allow)
-        except Exception as exc:  # noqa: BLE001 — a gate fault must never block a trade
+        except Exception as exc:  # noqa: BLE001
+            # Authoritative = single reasoner: a gate fault means we cannot
+            # confirm Brain authorization, so DO NOT trade (fail-closed). In the
+            # softer modes, fail-open so a gate bug never halts trading.
+            authoritative = str(getattr(gate, "mode", "")) == "authoritative"
             logger.warning(
-                "[cognition-gate] {} evaluation errored — allowing entry "
-                "(fail-safe): {}", symbol, exc,
+                "[cognition-gate] {} evaluation errored — {} entry (fail-{}): {}",
+                symbol, "blocking" if authoritative else "allowing",
+                "closed" if authoritative else "open", exc,
             )
-            return True
+            return not authoritative
 
     def _build_consensus_candidate_item(
         self, symbol: str, candidate: Any, cfg: Any,
