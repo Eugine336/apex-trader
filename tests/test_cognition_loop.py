@@ -1,0 +1,149 @@
+"""Tests for the cognition loop, evidence consolidator, and Brain→action bridge."""
+
+from types import SimpleNamespace
+
+from cognition.contracts import DecisionType, Evidence, MarketState
+from cognition.loop import BrainActionBridge, CognitionLoop, EvidenceConsolidator
+
+
+# ── EvidenceConsolidator ──────────────────────────────────────────────────────
+
+def test_consolidator_empty_without_ctx():
+    ms = EvidenceConsolidator(ctx=None).build("EURUSD")
+    assert isinstance(ms, MarketState)
+    assert ms.consolidation()["evidence_fresh"] == 0
+
+
+def test_consolidator_reads_thesis_status():
+    thesis = SimpleNamespace(get_status=lambda: {
+        "theses": {"EURUSD": {
+            "long": {"confidence": 0.8}, "short": {"confidence": 0.1},
+            "flat": {"confidence": 0.2},
+            "effective": {"dominant": "LONG", "long_ev": 0.6, "short_ev": -0.2, "flat_ev": 0.0},
+        }}
+    })
+    ctx = SimpleNamespace(thesis_engine=thesis)
+    ms = EvidenceConsolidator(ctx=ctx).build("EURUSD")
+    fresh = ms.fresh_evidence()
+    assert len(fresh) == 1
+    assert fresh[0].polarity > 0            # LONG dominant ⇒ positive lean
+    assert fresh[0].source_module == "brain.thesis_engine"
+
+
+def test_consolidator_short_is_negative_polarity():
+    thesis = SimpleNamespace(get_status=lambda: {
+        "theses": {"EURUSD": {
+            "short": {"confidence": 0.7},
+            "effective": {"dominant": "SHORT", "long_ev": -0.1, "short_ev": 0.5, "flat_ev": 0.0},
+        }}
+    })
+    ms = EvidenceConsolidator(ctx=SimpleNamespace(thesis_engine=thesis)).build("EURUSD")
+    assert ms.fresh_evidence()[0].polarity < 0
+
+
+# ── CognitionLoop ─────────────────────────────────────────────────────────────
+
+class _StubBrain:
+    def __init__(self):
+        self.calls = []
+
+    def reason(self, market_state, now=None):
+        self.calls.append(market_state.symbol)
+        return SimpleNamespace(
+            decision=SimpleNamespace(symbol=market_state.symbol, authorises_action=True),
+            direction="LONG",
+        )
+
+
+class _StubConsolidator:
+    def build(self, symbol, now=None):
+        return MarketState(symbol=symbol)
+
+
+class _StubBridge:
+    def __init__(self):
+        self.seen = []
+
+    def on_decision(self, output):
+        self.seen.append(output)
+
+
+def test_loop_run_once_drives_brain_per_symbol():
+    brain = _StubBrain()
+    bridge = _StubBridge()
+    loop = CognitionLoop(brain, _StubConsolidator(), lambda: ["EURUSD", "GBPUSD"],
+                         action_bridge=bridge)
+    made = loop.run_once()
+    assert made == 2
+    assert brain.calls == ["EURUSD", "GBPUSD"]
+    assert len(bridge.seen) == 2
+
+
+def test_loop_symbols_provider_fault_is_fail_safe():
+    def _boom():
+        raise RuntimeError("down")
+
+    loop = CognitionLoop(_StubBrain(), _StubConsolidator(), _boom)
+    assert loop.run_once() == 0
+
+
+def test_loop_caps_symbols():
+    brain = _StubBrain()
+    loop = CognitionLoop(brain, _StubConsolidator(),
+                         lambda: [f"S{i}" for i in range(30)], max_symbols_per_cycle=4)
+    assert loop.run_once() == 4
+    assert len(brain.calls) == 4
+
+
+def test_loop_start_stop_toggles():
+    loop = CognitionLoop(_StubBrain(), _StubConsolidator(), lambda: ["X"], interval_seconds=1.0)
+    loop.start()
+    assert loop.running is True
+    loop.stop()
+    assert loop.running is False
+
+
+# ── BrainActionBridge ─────────────────────────────────────────────────────────
+
+class _StubOrchestrator:
+    def __init__(self):
+        self.submitted = []
+
+    def submit(self, objective):
+        self.submitted.append(objective)
+        return SimpleNamespace(objective=objective)
+
+
+def _brain_output(symbol="EURUSD", direction="LONG", authorises=True, confidence=0.8):
+    decision = SimpleNamespace(
+        symbol=symbol, authorises_action=authorises, confidence=confidence,
+        thesis="t", decision_id="d1",
+    )
+    return SimpleNamespace(decision=decision, direction=direction)
+
+
+def test_bridge_emits_on_campaign_open():
+    orch = _StubOrchestrator()
+    bridge = BrainActionBridge(orch, notify_enabled=True)
+    bridge.on_decision(_brain_output(authorises=True))
+    assert len(orch.submitted) == 1
+    obj = orch.submitted[0]
+    assert obj.capability == "operator.notify"
+    assert obj.source == "ai_brain"
+
+
+def test_bridge_silent_on_non_authorising_decision():
+    orch = _StubOrchestrator()
+    BrainActionBridge(orch).on_decision(_brain_output(authorises=False))
+    assert orch.submitted == []
+
+
+def test_bridge_noop_without_orchestrator():
+    # Must not raise when there is no orchestrator.
+    BrainActionBridge(None).on_decision(_brain_output())
+
+
+def test_bridge_respects_disabled():
+    orch = _StubOrchestrator()
+    BrainActionBridge(orch, notify_enabled=False).on_decision(_brain_output())
+    assert orch.submitted == []
