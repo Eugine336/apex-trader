@@ -34,6 +34,7 @@ from cognition.campaign_translator import translate as _translate
 from cognition.contracts import DecisionType, MarketState
 from cognition.evidence_adapters import (
     evidence_from_analogues,
+    evidence_from_reasoning,
     evidence_from_thesis_status,
     evidence_from_votes,
 )
@@ -63,6 +64,7 @@ class EvidenceConsolidator:
         max_analogues: int = 5,
         influence: Optional[Any] = None,
         influence_enabled: bool = False,
+        reasoning: Optional[Any] = None,
     ) -> None:
         self._ctx = ctx
         self._vote_source = vote_source
@@ -71,6 +73,7 @@ class EvidenceConsolidator:
         self._max_analogues = max(1, int(max_analogues))
         self._influence = influence
         self._influence_enabled = bool(influence_enabled)
+        self._reasoning = reasoning
 
     def build(
         self,
@@ -98,6 +101,20 @@ class EvidenceConsolidator:
                         ms.add(e)
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[consolidator] vote source fault (%s): %s", symbol, exc)
+            # Part XVII — consult multiple reasoning engines; each opinion becomes
+            # advisory Evidence (never a vote). The Brain synthesises them.
+            if self._reasoning is not None:
+                try:
+                    if getattr(self._reasoning, "available", False):
+                        payload = {
+                            "consolidation": ms.consolidation(now),
+                            "evidence": [e.to_dict() for e in ms.fresh_evidence(now)[:64]],
+                        }
+                        consult = self._reasoning.consult(ms.symbol, payload, now=now)
+                        for e in evidence_from_reasoning(ms.symbol, consult):
+                            ms.add(e)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[consolidator] reasoning consult fault (%s): %s", symbol, exc)
             # Part VII — consult institutional memory: surface similar past
             # campaigns and their outcomes as a historical-analogue Evidence.
             if self._memory is not None:

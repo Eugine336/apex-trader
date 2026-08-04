@@ -3709,6 +3709,13 @@ class LLMConfig:
     # LLM_MODEL_POLICY.
     extra_models: list = field(default_factory=list)
     model_policy: str = "priority"
+    # Part XVII — multi-model consultative reasoning. When ``consult_multi`` is
+    # on, the Reasoning Orchestrator consults up to ``consult_max_engines``
+    # engines (the primary + extra_models) and injects each opinion as advisory
+    # Evidence (never a vote). Default OFF (shadow). Env: LLM_CONSULT_MULTI,
+    # LLM_CONSULT_MAX_ENGINES.
+    consult_multi: bool = False
+    consult_max_engines: int = 3
 
     def __post_init__(self) -> None:
         # The environment is the single source of truth — no vendor is baked in.
@@ -3790,6 +3797,17 @@ class LLMConfig:
                 self.extra_models = []
         if not isinstance(self.extra_models, list):
             self.extra_models = []
+        self.consult_multi = _llm_env_bool("LLM_CONSULT_MULTI", self.consult_multi)
+        raw_max = os.getenv("LLM_CONSULT_MAX_ENGINES")
+        if raw_max is not None:
+            try:
+                self.consult_max_engines = int(raw_max)
+            except (TypeError, ValueError):
+                logger.warning("[config] bad LLM_CONSULT_MAX_ENGINES '{}' — keeping default", raw_max)
+        if int(self.consult_max_engines) < 1:
+            raise ValueError(
+                f"LLMConfig.consult_max_engines must be >= 1, got {self.consult_max_engines!r}"
+            )
 
 
 @dataclass

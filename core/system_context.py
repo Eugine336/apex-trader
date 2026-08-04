@@ -129,6 +129,10 @@ class SystemContext:
     # into provider-bound, governed Composio actions. The Brain never names a
     # provider; the planner selects capability + provider. Default-off.
     action_planner: Optional[Any] = None
+    # Reasoning Orchestrator (Part XVII) — lets the one Brain consult several
+    # reasoning engines; each opinion becomes advisory Evidence (never a vote).
+    # Default-off (consult_multi); the Brain remains the sole decision-maker.
+    reasoning_orchestrator: Optional[Any] = None
     # The AI Cognitive Brain (Single Reasoner) + its background cognition loop.
     # Consumes consolidated Evidence, emits DecisionPackages/CampaignSpecs. Runs
     # in shadow by default (observational); surfaced via Governance.
@@ -1288,6 +1292,26 @@ class SystemContext:
                 ctx.brain_calibration = _calibration
                 _influence_enabled = bool(getattr(cog_cfg, "influence_enabled", False)
                                           if cog_cfg is not None else False)
+                # Part XVII — Reasoning Orchestrator: the one Brain may consult
+                # several reasoning engines whose opinions become advisory
+                # Evidence (never a vote). Built only when LLM is enabled AND
+                # consult_multi is on. Reliability-informed by the Phase VIII
+                # influence ledger (measured usefulness, not assumption — Art 11).
+                _reasoning_orch = None
+                try:
+                    _llm_cfg = getattr(config, "llm", None)
+                    if (_llm_cfg is not None and bool(getattr(_llm_cfg, "enabled", False))
+                            and bool(getattr(_llm_cfg, "consult_multi", False))):
+                        from llm.reasoning_orchestrator import (
+                            build_reasoning_orchestrator as _build_reasoning_orch,
+                        )
+                        _rel = _influence.weight_for if _influence is not None else None
+                        _reasoning_orch = _build_reasoning_orch(
+                            _llm_cfg, reliability_provider=_rel)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[SystemContext] ReasoningOrchestrator init failed: {}", exc)
+                    _reasoning_orch = None
+                ctx.reasoning_orchestrator = _reasoning_orch
                 # Phase I (Part IX Art 9) — operational-intelligence author.
                 # Turns terminated-campaign outcomes into operational objectives
                 # (issue on recurring loss, notify on a validated win, periodic
@@ -1380,6 +1404,7 @@ class SystemContext:
                     ),
                     influence=_influence,
                     influence_enabled=_influence_enabled,
+                    reasoning=_reasoning_orch,
                 )
                 _bridge = _BrainActionBridge(
                     ctx.action_orchestrator,
@@ -1535,6 +1560,7 @@ class SystemContext:
                 operations_author=ctx.operations_author,
                 influence_ledger=ctx.influence_ledger,
                 brain_calibration=ctx.brain_calibration,
+                reasoning_orchestrator=ctx.reasoning_orchestrator,
             )
             # Install Governance as the authoriser on the Learning→Governance
             # gateway and require authorisation (per config; default on).

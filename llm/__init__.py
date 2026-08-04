@@ -17,6 +17,13 @@ from llm.model_manager import (
     ModelManager,
     build_model_manager,
 )
+from llm.reasoning_orchestrator import (
+    EngineOpinion,
+    ReasoningConsultation,
+    ReasoningEngine,
+    ReasoningOrchestrator,
+    build_reasoning_orchestrator,
+)
 from llm.reasoner import FLAT, LONG, SHORT, LLMOpinion, LLMReasoner
 from llm.worker import EvidenceSource, LLMReasoningWorker
 
@@ -28,6 +35,11 @@ __all__ = [
     "build_model_manager",
     "POLICY_PRIORITY",
     "POLICY_PERFORMANCE",
+    "ReasoningOrchestrator",
+    "ReasoningEngine",
+    "ReasoningConsultation",
+    "EngineOpinion",
+    "build_reasoning_orchestrator",
     "LLMReasoner",
     "LLMOpinion",
     "LLMReasoningWorker",
