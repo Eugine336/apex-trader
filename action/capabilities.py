@@ -9,12 +9,15 @@ opinion; it is an inert lookup table with a deterministic provider-selection
 rule.
 
 Each :class:`Capability` is a semantic verb (e.g. ``operator.notify``,
-``github.create_issue``) carrying a risk tier, its required parameters, and an
-ordered list of :class:`ProviderBinding` candidates — each binding a provider
-name (``slack``, ``telegram``, ``github``, ``notion``, …) to the exact Composio
-action string that realises the capability on that provider. Provider selection
-(Article 11: "choose the appropriate provider") is a pure function of the
-capability's candidates, an optional operator preference, and the set of
+``engineering.create_task``) carrying a risk tier, its required parameters, and
+an ordered list of :class:`ProviderBinding` candidates — each binding a provider
+name (``slack``, ``telegram``, ``github``, ``jira``, ``notion``, …) to the exact
+Composio action string that realises the capability on that provider. Capability
+names are provider-agnostic objectives (Part XVI Art 4): the Brain reasons about
+"create an engineering task", never "create a GitHub issue" — swapping GitHub for
+Jira changes only a binding here, never the Brain (Part XVI Art 8). Provider
+selection (Article 11: "choose the appropriate provider") is a pure function of
+the capability's candidates, an optional operator preference, and the set of
 currently-available providers.
 
 Pure standard library (``logging``); the RiskTier vocabulary is shared with the
@@ -155,7 +158,7 @@ class CapabilityRegistry:
 # Semantic capability names — the vocabulary the Brain authors objectives in.
 CAP_NOOP = "noop"
 CAP_OPERATOR_NOTIFY = "operator.notify"
-CAP_GITHUB_CREATE_ISSUE = "github.create_issue"
+CAP_CREATE_ENGINEERING_TASK = "engineering.create_task"
 CAP_DOCS_UPDATE = "docs.update"
 CAP_REPORT_PUBLISH = "report.publish"
 CAP_RESEARCH_RECORD = "research.record"
@@ -184,12 +187,17 @@ def default_registry() -> CapabilityRegistry:
         description="Notify the operator (Article 10 — operational coordination).",
     ))
     reg.register(Capability(
-        name=CAP_GITHUB_CREATE_ISSUE, category=CapabilityCategory.OPERATIONAL,
+        name=CAP_CREATE_ENGINEERING_TASK, category=CapabilityCategory.OPERATIONAL,
         risk_tier=RiskTier.MEDIUM,
-        providers=(ProviderBinding("github", "GITHUB_CREATE_AN_ISSUE"),),
+        # Part XVI Art 6/8 — one abstract objective, interchangeable providers.
+        # Replacing GitHub with Jira/Linear changes only these bindings; the
+        # Brain keeps reasoning "create an engineering task".
+        providers=(ProviderBinding("github", "GITHUB_CREATE_AN_ISSUE"),
+                   ProviderBinding("jira", "JIRA_CREATE_ISSUE"),
+                   ProviderBinding("linear", "LINEAR_CREATE_ISSUE")),
         required_params=("title", "body"), reversible=True,
-        required_permissions=("github:issues:write",),
-        description="File an engineering issue (Article 9 — GitHub = engineering memory).",
+        required_permissions=("engineering:tasks:write",),
+        description="Create an engineering task (Article 9 — engineering memory).",
     ))
     reg.register(Capability(
         name=CAP_DOCS_UPDATE, category=CapabilityCategory.OPERATIONAL,
@@ -234,7 +242,7 @@ __all__ = [
     "default_registry",
     "CAP_NOOP",
     "CAP_OPERATOR_NOTIFY",
-    "CAP_GITHUB_CREATE_ISSUE",
+    "CAP_CREATE_ENGINEERING_TASK",
     "CAP_DOCS_UPDATE",
     "CAP_REPORT_PUBLISH",
     "CAP_RESEARCH_RECORD",

@@ -1,7 +1,7 @@
 """Tests for the operational-intelligence author (Part IX, Article 9)."""
 
 from cognition.operations import (
-    CAP_GITHUB_CREATE_ISSUE,
+    CAP_CREATE_ENGINEERING_TASK,
     CAP_OPERATOR_NOTIFY,
     CAP_REPORT_PUBLISH,
     OperationsAuthor,
@@ -22,13 +22,13 @@ def test_disabled_author_emits_nothing():
     assert author.tick(now=2_000_000.0) == []
 
 
-def test_repeated_deserved_loss_authors_github_issue():
+def test_repeated_deserved_loss_authors_engineering_task():
     author = _author()
     for _ in range(3):
         author.observe_campaign_outcome(symbol="EURUSD", direction="LONG",
                                         verdict="deserved_loss")
     out = author.tick(now=0.0)   # report not due at t=0 (last_report seeds to 0)
-    issues = [i for i in out if i.intent == CAP_GITHUB_CREATE_ISSUE]
+    issues = [i for i in out if i.intent == CAP_CREATE_ENGINEERING_TASK]
     assert len(issues) == 1
     assert "title" in issues[0].params and "body" in issues[0].params
 
@@ -40,7 +40,7 @@ def test_loss_streak_resets_on_non_loss():
     author.observe_campaign_outcome(symbol="EURUSD", direction="LONG", verdict="validated")
     author.observe_campaign_outcome(symbol="EURUSD", direction="LONG", verdict="deserved_loss")
     out = author.tick(now=0.0)
-    assert [i for i in out if i.intent == CAP_GITHUB_CREATE_ISSUE] == []
+    assert [i for i in out if i.intent == CAP_CREATE_ENGINEERING_TASK] == []
 
 
 def test_validated_win_authors_operator_notify():
@@ -67,12 +67,12 @@ def test_cooldown_suppresses_duplicate_issue():
     for _ in range(3):
         author.observe_campaign_outcome(symbol="EURUSD", direction="LONG", verdict="deserved_loss")
     first = author.tick(now=0.0)
-    assert len([i for i in first if i.intent == CAP_GITHUB_CREATE_ISSUE]) == 1
+    assert len([i for i in first if i.intent == CAP_CREATE_ENGINEERING_TASK]) == 1
     # Re-trigger within cooldown → suppressed
     for _ in range(3):
         author.observe_campaign_outcome(symbol="EURUSD", direction="LONG", verdict="deserved_loss")
     second = author.tick(now=1.0)
-    assert [i for i in second if i.intent == CAP_GITHUB_CREATE_ISSUE] == []
+    assert [i for i in second if i.intent == CAP_CREATE_ENGINEERING_TASK] == []
     assert author.get_status()["suppressed"] >= 1
 
 

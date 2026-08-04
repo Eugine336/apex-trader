@@ -110,7 +110,7 @@ class ActionObjective:
     and ``evidence_ref`` links to the supporting thesis/evidence for the audit.
     """
 
-    capability: str                              # e.g. "operator.notify", "github.create_issue", "noop"
+    capability: str                              # e.g. "operator.notify", "engineering.create_task", "noop"
     objective: str = ""                          # human-readable WHY
     params: dict = field(default_factory=dict)   # capability inputs
     expected_outcome: str = ""
