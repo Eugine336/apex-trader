@@ -124,6 +124,24 @@ class GovernanceDivision:
         # Persistent competing Long/Short/Flat theses (Gap 1a). Observational —
         # surfaced in get_status. Never freezes / blocks on its own.
         thesis_engine: Optional[object] = None,
+        # Evolving market campaigns — the lifetime of a directional thesis per
+        # symbol. Observational — surfaced in get_status. Never blocks.
+        campaign_registry: Optional[object] = None,
+        # LLM reasoning subsystem — emits opinions as evidence. Observational —
+        # surfaced in get_status (secret-safe). Never blocks / overrides.
+        llm_reasoner: Optional[object] = None,
+        # Autonomous Action Layer gateway — surfaced in get_status (secret-safe).
+        # Governs/executes Brain-authored objectives; never reasons.
+        action_orchestrator: Optional[object] = None,
+        # AI Cognitive Brain (Single Reasoner) + its loop — surfaced in
+        # get_status. The Brain reasons; Governance only observes it here.
+        cognitive_brain: Optional[object] = None,
+        cognition_loop: Optional[object] = None,
+        cognition_gate: Optional[object] = None,
+        management_gate: Optional[object] = None,
+        campaign_memory: Optional[object] = None,
+        action_planner: Optional[object] = None,
+        operations_author: Optional[object] = None,
     ) -> None:
         self._module_governor = module_governor
         self._tuner_agent = tuner_agent
@@ -171,6 +189,29 @@ class GovernanceDivision:
         # Persistent competing theses (observational). Read in get_status only.
         self._thesis_engine = thesis_engine
 
+        # Evolving market campaigns (observational). Read in get_status only.
+        self._campaign_registry = campaign_registry
+
+        # LLM reasoning subsystem (observational). Read in get_status only.
+        self._llm_reasoner = llm_reasoner
+
+        # Autonomous Action Layer gateway (observational). Read in get_status.
+        self._action_orchestrator = action_orchestrator
+
+        # AI Cognitive Brain + loop (observational). Read in get_status only.
+        self._cognitive_brain = cognitive_brain
+        self._cognition_loop = cognition_loop
+        self._cognition_gate = cognition_gate
+        self._management_gate = management_gate
+        # Institutional memory (Phase H, Part VII). Observational — read in
+        # get_status only; the Brain/loop own the actual reads and writes.
+        self._campaign_memory = campaign_memory
+        # Action Planner + operations author (Phase I, Part IX). Observational —
+        # read in get_status only; they own capability/provider selection and
+        # operational objective authoring, never market reasoning.
+        self._action_planner = action_planner
+        self._operations_author = operations_author
+
     # ── Wiring (injected after construction) ──────────────────────────────
 
     def bind_runtime(
@@ -182,6 +223,16 @@ class GovernanceDivision:
         health_assessor: Optional[object] = None,
         gate_attributor: Optional[object] = None,
         thesis_engine: Optional[object] = None,
+        campaign_registry: Optional[object] = None,
+        llm_reasoner: Optional[object] = None,
+        action_orchestrator: Optional[object] = None,
+        cognitive_brain: Optional[object] = None,
+        cognition_loop: Optional[object] = None,
+        cognition_gate: Optional[object] = None,
+        management_gate: Optional[object] = None,
+        campaign_memory: Optional[object] = None,
+        action_planner: Optional[object] = None,
+        operations_author: Optional[object] = None,
     ) -> None:
         """Inject the enforcement-arm references after construction.
 
@@ -199,6 +250,26 @@ class GovernanceDivision:
             self._gate_attributor = gate_attributor
         if thesis_engine is not None:
             self._thesis_engine = thesis_engine
+        if campaign_registry is not None:
+            self._campaign_registry = campaign_registry
+        if llm_reasoner is not None:
+            self._llm_reasoner = llm_reasoner
+        if action_orchestrator is not None:
+            self._action_orchestrator = action_orchestrator
+        if cognitive_brain is not None:
+            self._cognitive_brain = cognitive_brain
+        if cognition_loop is not None:
+            self._cognition_loop = cognition_loop
+        if cognition_gate is not None:
+            self._cognition_gate = cognition_gate
+        if management_gate is not None:
+            self._management_gate = management_gate
+        if campaign_memory is not None:
+            self._campaign_memory = campaign_memory
+        if action_planner is not None:
+            self._action_planner = action_planner
+        if operations_author is not None:
+            self._operations_author = operations_author
 
     # ── Learning recommendation authorisation (the ⑦→⑧ boundary) ──────────
 
@@ -745,6 +816,65 @@ class GovernanceDivision:
                 thesis_engine = self._thesis_engine.get_status()
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[governance] thesis-engine status failed: {}", exc)
+        campaign_registry = None
+        if self._campaign_registry is not None:
+            try:
+                campaign_registry = self._campaign_registry.get_status()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[governance] campaign-registry status failed: {}", exc)
+        llm_reasoner = None
+        if self._llm_reasoner is not None:
+            try:
+                llm_reasoner = self._llm_reasoner.get_status()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[governance] llm-reasoner status failed: {}", exc)
+        action_layer = None
+        if self._action_orchestrator is not None:
+            try:
+                action_layer = self._action_orchestrator.get_status()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[governance] action-layer status failed: {}", exc)
+        cognition = None
+        if (self._cognitive_brain is not None or self._cognition_loop is not None
+                or self._cognition_gate is not None or self._management_gate is not None
+                or self._campaign_memory is not None or self._action_planner is not None
+                or self._operations_author is not None):
+            cognition = {}
+            if self._cognitive_brain is not None:
+                try:
+                    cognition["brain"] = self._cognitive_brain.get_status()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[governance] cognitive-brain status failed: {}", exc)
+            if self._cognition_loop is not None:
+                try:
+                    cognition["loop"] = self._cognition_loop.get_status()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[governance] cognition-loop status failed: {}", exc)
+            if self._cognition_gate is not None:
+                try:
+                    cognition["gate"] = self._cognition_gate.get_status()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[governance] cognition-gate status failed: {}", exc)
+            if self._management_gate is not None:
+                try:
+                    cognition["management_gate"] = self._management_gate.get_status()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[governance] management-gate status failed: {}", exc)
+            if self._campaign_memory is not None:
+                try:
+                    cognition["memory"] = self._campaign_memory.get_status()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[governance] campaign-memory status failed: {}", exc)
+            if self._action_planner is not None:
+                try:
+                    cognition["planner"] = self._action_planner.get_status()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[governance] action-planner status failed: {}", exc)
+            if self._operations_author is not None:
+                try:
+                    cognition["operations"] = self._operations_author.get_status()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[governance] operations-author status failed: {}", exc)
         return {
             "enforce_toxic_pairs": self._enforce_toxic,
             "has_module_governor": self._module_governor is not None,
@@ -757,6 +887,10 @@ class GovernanceDivision:
             "health": health,
             "gate_attribution": gate_attribution,
             "thesis_engine": thesis_engine,
+            "campaign_registry": campaign_registry,
+            "llm_reasoner": llm_reasoner,
+            "action_layer": action_layer,
+            "cognition": cognition,
             "bounds": {
                 "size_multiplier": [self._min_size_mult, self._max_size_mult],
                 "max_weight_multiplier": self._max_weight_mult,
