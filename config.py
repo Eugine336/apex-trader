@@ -3855,7 +3855,8 @@ class CognitionConfig:
     — so the legacy path stays authoritative until the cutover is validated
     (Parts XIII/XV: shadow → paper → controlled rollout). Env overrides:
     COGNITION_ENABLED, COGNITION_SHADOW_MODE, COGNITION_LOOP_INTERVAL_SECONDS,
-    COGNITION_ORIGINATION_MODE (off|shadow|live; default shadow).
+    COGNITION_ORIGINATION_MODE (off|shadow|live; default shadow),
+    COGNITION_MEMORY_ENABLED (default true).
     """
 
     enabled: bool = True
@@ -3879,6 +3880,12 @@ class CognitionConfig:
     origination_mode: str = "shadow"
     origination_risk_fraction: float = 0.01   # fraction of balance risked per originated entry
     origination_max_exposure: float = 1.0     # cap on the campaign's desired exposure (0..1)
+    # Phase H — persistent institutional memory (Part VII). When enabled, the
+    # loop snapshots the market state at campaign open and the registry persists
+    # terminal outcomes, so the Brain can consult analogous history when
+    # reasoning. Observational — memory never drives execution.
+    memory_enabled: bool = True
+    memory_max_analogues: int = 5             # analogues surfaced to the Brain per symbol
 
     def __post_init__(self) -> None:
         self.enabled = _llm_env_bool("COGNITION_ENABLED", self.enabled)
@@ -3893,6 +3900,7 @@ class CognitionConfig:
             "COGNITION_PER_MODULE_EVIDENCE", self.per_module_evidence
         )
         self.allow_scale_in = _llm_env_bool("COGNITION_ALLOW_SCALE_IN", self.allow_scale_in)
+        self.memory_enabled = _llm_env_bool("COGNITION_MEMORY_ENABLED", self.memory_enabled)
         self.origination_mode = (
             os.getenv("COGNITION_ORIGINATION_MODE", self.origination_mode) or "shadow"
         ).strip().lower()
@@ -3949,6 +3957,10 @@ class CognitionConfig:
         if not (0.0 <= float(self.origination_max_exposure) <= 1.0):
             raise ValueError(
                 f"CognitionConfig.origination_max_exposure must be in [0, 1], got {self.origination_max_exposure!r}"
+            )
+        if int(self.memory_max_analogues) < 1:
+            raise ValueError(
+                f"CognitionConfig.memory_max_analogues must be >= 1, got {self.memory_max_analogues!r}"
             )
 
 

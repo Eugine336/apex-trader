@@ -169,4 +169,66 @@ def evidence_from_votes(symbol: str, votes: Any) -> "list[Evidence]":
     return out
 
 
-__all__ = ["classify_domain", "evidence_from_thesis_status", "evidence_from_votes"]
+def evidence_from_analogues(symbol: str, analogues: Any) -> "list[Evidence]":
+    """Summarise similar past campaigns (institutional memory) as one Evidence.
+
+    Part VII: the Brain consults history. Each analogue carries a similarity, a
+    held ``direction``, a realised ``outcome_won`` and a ``reasoning_quality``.
+    A won campaign in a direction is *supporting* evidence for that direction; a
+    lost one is *contradicting* (that setup previously failed). Contributions are
+    weighted by similarity × reasoning_quality and summed into a single bounded
+    ``historical_analogue`` Evidence. Never a signal — just the memory's lean.
+    Fail-safe: returns ``[]`` on empty input or any fault.
+    """
+    out: list[Evidence] = []
+    try:
+        items = [a for a in list(analogues or []) if isinstance(a, dict)]
+        if not items:
+            return out
+        num = 0.0
+        wsum = 0.0
+        wins = 0
+        losses = 0
+        for a in items:
+            sim = _clamp01(a.get("similarity", 0.0))
+            if sim <= 0.0:
+                continue
+            sign = _sign(a.get("direction", ""))
+            if sign == 0.0:
+                continue
+            won = bool(a.get("outcome_won", False))
+            rq = _clamp01(a.get("reasoning_quality", 0.0)) or 0.5
+            weight = sim * rq
+            # A won directional analogue leans that way; a lost one leans opposite.
+            num += weight * sign * (1.0 if won else -1.0)
+            wsum += weight
+            wins += 1 if won else 0
+            losses += 0 if won else 1
+        n = wins + losses
+        if wsum <= 0.0 or n == 0:
+            return out
+        polarity = max(-1.0, min(1.0, num / wsum))
+        mean_sim = sum(_clamp01(a.get("similarity", 0.0)) for a in items) / len(items)
+        # Confidence rises with how similar and how numerous the analogues are.
+        confidence = _clamp01(mean_sim * min(1.0, n / 5.0))
+        out.append(Evidence(
+            source_module="cognition.memory.analogues",
+            domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol=str(symbol or ""),
+            observation=(f"{n} analogous past campaigns: {wins} won / {losses} lost "
+                         f"(avg similarity {mean_sim:.2f})"),
+            confidence=confidence, uncertainty=1.0 - confidence, polarity=polarity,
+            measurements={"analogues": n, "wins": wins, "losses": losses,
+                          "mean_similarity": round(mean_sim, 4)},
+            relevance_horizon_seconds=1800.0,
+        ))
+    except Exception:  # noqa: BLE001 — consolidation must never raise
+        return out
+    return out
+
+
+__all__ = [
+    "classify_domain",
+    "evidence_from_thesis_status",
+    "evidence_from_votes",
+    "evidence_from_analogues",
+]

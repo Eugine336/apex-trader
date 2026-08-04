@@ -139,6 +139,7 @@ class GovernanceDivision:
         cognition_loop: Optional[object] = None,
         cognition_gate: Optional[object] = None,
         management_gate: Optional[object] = None,
+        campaign_memory: Optional[object] = None,
     ) -> None:
         self._module_governor = module_governor
         self._tuner_agent = tuner_agent
@@ -200,6 +201,9 @@ class GovernanceDivision:
         self._cognition_loop = cognition_loop
         self._cognition_gate = cognition_gate
         self._management_gate = management_gate
+        # Institutional memory (Phase H, Part VII). Observational — read in
+        # get_status only; the Brain/loop own the actual reads and writes.
+        self._campaign_memory = campaign_memory
 
     # ── Wiring (injected after construction) ──────────────────────────────
 
@@ -219,6 +223,7 @@ class GovernanceDivision:
         cognition_loop: Optional[object] = None,
         cognition_gate: Optional[object] = None,
         management_gate: Optional[object] = None,
+        campaign_memory: Optional[object] = None,
     ) -> None:
         """Inject the enforcement-arm references after construction.
 
@@ -250,6 +255,8 @@ class GovernanceDivision:
             self._cognition_gate = cognition_gate
         if management_gate is not None:
             self._management_gate = management_gate
+        if campaign_memory is not None:
+            self._campaign_memory = campaign_memory
 
     # ── Learning recommendation authorisation (the ⑦→⑧ boundary) ──────────
 
@@ -816,7 +823,8 @@ class GovernanceDivision:
                 logger.debug("[governance] action-layer status failed: {}", exc)
         cognition = None
         if (self._cognitive_brain is not None or self._cognition_loop is not None
-                or self._cognition_gate is not None or self._management_gate is not None):
+                or self._cognition_gate is not None or self._management_gate is not None
+                or self._campaign_memory is not None):
             cognition = {}
             if self._cognitive_brain is not None:
                 try:
@@ -838,6 +846,11 @@ class GovernanceDivision:
                     cognition["management_gate"] = self._management_gate.get_status()
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[governance] management-gate status failed: {}", exc)
+            if self._campaign_memory is not None:
+                try:
+                    cognition["memory"] = self._campaign_memory.get_status()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[governance] campaign-memory status failed: {}", exc)
         return {
             "enforce_toxic_pairs": self._enforce_toxic,
             "has_module_governor": self._module_governor is not None,
