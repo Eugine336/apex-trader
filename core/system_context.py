@@ -117,6 +117,10 @@ class SystemContext:
     # symbol that individual orders (open/scale/partial/re-entry/reversal) are
     # legs of. Observational (default OFF); surfaced via Governance.
     campaign_registry: Optional[Any] = None
+    # LLM reasoning subsystem — an additional evidence-emitting reasoner over the
+    # structured theses/votes. Provider-agnostic (env-driven), default OFF,
+    # fail-safe; surfaced via Governance. Never overrides physics vetoes.
+    llm_reasoner: Optional[Any] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
     opportunity_executor: Optional[OpportunityExecutor] = None
@@ -1065,6 +1069,45 @@ class SystemContext:
             except Exception as exc:
                 logger.warning("[SystemContext] CampaignRegistry init failed: {}", exc)
 
+            # ── LLM Reasoner (provider-agnostic reasoning subsystem) ──────
+            # Builds a provider client purely from config/env (no hardcoded
+            # vendor): self-hosted (Ollama / vLLM / any OpenAI-compatible
+            # endpoint) or commercial API (OpenAI / Anthropic / Gemini). Default
+            # OFF and fail-safe: with no provider set the client is None and the
+            # reasoner is inert. Emits opinions as evidence only — governed by
+            # the same authority layer and never overriding physics vetoes.
+            try:
+                from llm.client import build_client as _build_llm_client
+                from llm.reasoner import LLMReasoner as _LLMReasoner
+
+                llm_cfg = getattr(config, "llm", None)
+                _llm_client = None
+                if llm_cfg is not None and bool(getattr(llm_cfg, "enabled", False)):
+                    _llm_client = _build_llm_client(llm_cfg)
+                ctx.llm_reasoner = _LLMReasoner(
+                    client=_llm_client,
+                    enabled=bool(
+                        getattr(llm_cfg, "enabled", False)
+                        if llm_cfg is not None else False
+                    ),
+                    drive_decisions=bool(
+                        getattr(llm_cfg, "drive_decisions", False)
+                        if llm_cfg is not None else False
+                    ),
+                    min_interval_seconds=float(
+                        getattr(llm_cfg, "min_interval_seconds", 30.0)
+                        if llm_cfg is not None else 30.0
+                    ),
+                )
+                if ctx.llm_reasoner.available:
+                    logger.info(
+                        "[SystemContext] LLM reasoner ONLINE — provider '{}' model '{}'",
+                        getattr(llm_cfg, "provider", "?"),
+                        getattr(llm_cfg, "model", "?"),
+                    )
+            except Exception as exc:
+                logger.warning("[SystemContext] LLMReasoner init failed: {}", exc)
+
             ctx.governance = _Governance(
                 module_governor=ctx.module_governor,
                 tuner_agent=ctx.tuner_agent,
@@ -1092,6 +1135,7 @@ class SystemContext:
                 gate_attributor=ctx.gate_attributor,
                 thesis_engine=ctx.thesis_engine,
                 campaign_registry=ctx.campaign_registry,
+                llm_reasoner=ctx.llm_reasoner,
             )
             # Install Governance as the authoriser on the Learning→Governance
             # gateway and require authorisation (per config; default on).
