@@ -51,7 +51,7 @@
 | VII.1–6 | Post-trade reconstruction, decision audit, memory | ✅ | `cognition/memory.py` persists fingerprint+spec+outcome+post-mortem (SQLite); `find_analogues` retrieval feeds the Brain a `historical_analogue` Evidence | H ✅ |
 | VII (memory) | Persistent institutional memory + retrieval | ❌ | campaigns not persisted to `persistence/event_store.py`; no similarity retrieval | **H** |
 | VIII | Adaptive influence over evidence + Brain, validated | 🟡 | `adaptive/*` grades legacy vote emitters, not new `Evidence`/Brain | J |
-| IX | Composio: AI objective → governance → execute → observe → memory | 🟡 | `action/*` gateway + `BrainActionBridge` (notify only); no capability registry / self-improvement objectives | I |
+| IX | Composio: AI objective → Action Planner (capability+provider) → governance → execute → observe → memory | 🟡 | `action/capabilities.py` registry + `action/planner.py` (Article 11) + `cognition/operations.py` (Article 9); default-off; live retrieval→Evidence pending | I 🟡 |
 | X | Governance & safety (policy, approvals, ceilings, audit) | ✅ | `action/orchestrator.py` `GovernancePolicy`, `governance/division.py`, risk stack | — |
 | XI | Modular, testable, no hidden decision logic | 🟡 | `event_driven_bootstrap.py` 10.8k-line god-file; legacy decision code present | K |
 | XII | Observability (metrics/logs/traces/lifecycle) | 🟡 | governance `get_status` surfaces cognition; no cognition metrics/traces/dashboards | L |
@@ -209,27 +209,48 @@ per campaign and feed Phase J. Observational — memory never drives execution.
 
 ---
 
-## 6. Phase I — Composio operational intelligence (Part IX)
+## 6. Phase I — Composio operational intelligence (Part IX) — 🟡 CORE SHIPPED (default-off)
 
-**Goal:** the Brain proposes operational objectives; governance authorises;
-Composio executes; observation verifies; memory records — end to end.
+**Goal:** the Brain proposes operational objectives; the Action Planner selects
+capability + provider; governance authorises; Composio executes; observation
+verifies; memory records — end to end. (Aligned to **Part IX Draft 2.0** — the
+Action Planner, Article 11, is now the mandated layer between Brain and Composio.)
 
-**Current state:** `action/*` gateway + policy tiers done; `BrainActionBridge`
-emits only `operator.notify`; no capability registry; no self-improvement
-objectives.
+**Shipped:**
+- `action/capabilities.py` (new): typed capability layer (Article 3) — `Capability`
+  + `ProviderBinding` + `CapabilityRegistry` with a curated `default_registry()`:
+  `operator.notify`, `github.create_issue`, `docs.update`, `report.publish`,
+  `research.record`, `knowledge.retrieve`, `noop`. Each carries a risk tier,
+  required params, and an ordered list of provider→Composio-action bindings.
+  Deterministic `resolve_provider()` (preference → availability → first
+  candidate) realises Article 11's "choose the appropriate provider".
+- `action/planner.py` (new): the **Action Planner** (Article 11) — `ObjectiveRequest`
+  (semantic; no provider/API, per Article 2) → resolve capability → select
+  provider → build an `ActionObjective` whose `capability` is the exact Composio
+  action → submit to the orchestrator (governance/execute/verify/record). The
+  chosen provider is recorded in the audit (`_provider`/`_capability`). Default-off
+  and fail-safe; originates nothing itself (Article 6).
+- `cognition/operations.py` (new): `OperationsAuthor` (Article 9) — turns campaign
+  outcomes into operational objectives (recurring `deserved_loss` streak →
+  `github.create_issue`; `validated` win → `operator.notify`; periodic
+  `report.publish`), throttled + de-duplicated. Emits plain `OperationalIntent`s
+  (stdlib; no `action` import) the planner consumes by duck-typing.
+- Wiring: the campaign close-sink feeds both memory (Phase H) and the author; the
+  cognition loop drains the author each cycle and submits via the planner
+  (`operations_sink`), so the whole chain is inert until `operations_enabled` +
+  the action layer are on. Config: `ComposioConfig.available_providers` /
+  `provider_preferences`; `CognitionConfig.operations_*` + env. Planner + author
+  status surfaced under governance `cognition.planner` / `cognition.operations`.
+- Constitution: Part IX rewritten to **Draft 2.0** (Articles 1–15).
 
-**Tasks**
-- `action/capabilities.py`: typed capability registry (operator.notify,
-  github.create_issue, docs.update, report.publish, research.record) with
-  per-capability risk tier + required params.
-- `cognition/operations.py`: Brain-authored operational objectives from
-  institutional memory (recurring failure → issue; significant discovery →
-  notify; weekly report). Ecosystem-only — never broker orders.
-- Observation/verification: confirm the external effect and record to memory.
-- `.env`: real Composio key + `COMPOSIO_DRY_RUN=false` (already staged).
+**Remaining (Phase I follow-ups):** knowledge-retrieval → Evidence wiring
+(Articles 4/8) end-to-end against the live Composio catalogue; confirm the exact
+provider→action strings + response verification once a key is configured
+(`.env`: real key + `COMPOSIO_DRY_RUN=false`).
 
-**Acceptance:** end-to-end objective→governance→Composio→observation→memory for
-≥2 capabilities; high/destructive still require approval.
+**Acceptance:** ✅ objective→planner(provider-select)→governance→Composio(mock)
+verified offline for multiple capabilities; ✅ high/destructive still require
+approval; ⏳ live retrieval→Evidence + real-key verification.
 
 ---
 

@@ -13,6 +13,13 @@ Public surface:
 """
 
 from action.composio import ComposioAdapter, MockActionAdapter, build_adapter
+from action.capabilities import (
+    Capability,
+    CapabilityRegistry,
+    ProviderBinding,
+    default_registry,
+)
+from action.planner import ActionPlanner, ObjectiveRequest
 from action.orchestrator import (
     NOOP_CAPABILITY,
     ActionObjective,
@@ -40,4 +47,10 @@ __all__ = [
     "MockActionAdapter",
     "ComposioAdapter",
     "build_adapter",
+    "Capability",
+    "CapabilityRegistry",
+    "ProviderBinding",
+    "default_registry",
+    "ActionPlanner",
+    "ObjectiveRequest",
 ]

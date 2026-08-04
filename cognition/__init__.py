@@ -42,6 +42,8 @@ __all__ = [
     "translate",
     "CampaignMemoryStore",
     "get_campaign_memory",
+    "OperationalIntent",
+    "OperationsAuthor",
 ]
 
 
@@ -72,4 +74,7 @@ def __getattr__(name: str):
                 "fingerprint_similarity", "get_campaign_memory"):
         from cognition import memory as _mem
         return getattr(_mem, name)
+    if name in ("OperationalIntent", "OperationsAuthor"):
+        from cognition import operations as _ops
+        return getattr(_ops, name)
     raise AttributeError(f"module 'cognition' has no attribute {name!r}")
