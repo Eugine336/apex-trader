@@ -124,6 +124,12 @@ class GovernanceDivision:
         # Persistent competing Long/Short/Flat theses (Gap 1a). Observational —
         # surfaced in get_status. Never freezes / blocks on its own.
         thesis_engine: Optional[object] = None,
+        # Evolving market campaigns — the lifetime of a directional thesis per
+        # symbol. Observational — surfaced in get_status. Never blocks.
+        campaign_registry: Optional[object] = None,
+        # LLM reasoning subsystem — emits opinions as evidence. Observational —
+        # surfaced in get_status (secret-safe). Never blocks / overrides.
+        llm_reasoner: Optional[object] = None,
     ) -> None:
         self._module_governor = module_governor
         self._tuner_agent = tuner_agent
@@ -171,6 +177,12 @@ class GovernanceDivision:
         # Persistent competing theses (observational). Read in get_status only.
         self._thesis_engine = thesis_engine
 
+        # Evolving market campaigns (observational). Read in get_status only.
+        self._campaign_registry = campaign_registry
+
+        # LLM reasoning subsystem (observational). Read in get_status only.
+        self._llm_reasoner = llm_reasoner
+
     # ── Wiring (injected after construction) ──────────────────────────────
 
     def bind_runtime(
@@ -182,6 +194,8 @@ class GovernanceDivision:
         health_assessor: Optional[object] = None,
         gate_attributor: Optional[object] = None,
         thesis_engine: Optional[object] = None,
+        campaign_registry: Optional[object] = None,
+        llm_reasoner: Optional[object] = None,
     ) -> None:
         """Inject the enforcement-arm references after construction.
 
@@ -199,6 +213,10 @@ class GovernanceDivision:
             self._gate_attributor = gate_attributor
         if thesis_engine is not None:
             self._thesis_engine = thesis_engine
+        if campaign_registry is not None:
+            self._campaign_registry = campaign_registry
+        if llm_reasoner is not None:
+            self._llm_reasoner = llm_reasoner
 
     # ── Learning recommendation authorisation (the ⑦→⑧ boundary) ──────────
 
@@ -745,6 +763,18 @@ class GovernanceDivision:
                 thesis_engine = self._thesis_engine.get_status()
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[governance] thesis-engine status failed: {}", exc)
+        campaign_registry = None
+        if self._campaign_registry is not None:
+            try:
+                campaign_registry = self._campaign_registry.get_status()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[governance] campaign-registry status failed: {}", exc)
+        llm_reasoner = None
+        if self._llm_reasoner is not None:
+            try:
+                llm_reasoner = self._llm_reasoner.get_status()
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[governance] llm-reasoner status failed: {}", exc)
         return {
             "enforce_toxic_pairs": self._enforce_toxic,
             "has_module_governor": self._module_governor is not None,
@@ -757,6 +787,8 @@ class GovernanceDivision:
             "health": health,
             "gate_attribution": gate_attribution,
             "thesis_engine": thesis_engine,
+            "campaign_registry": campaign_registry,
+            "llm_reasoner": llm_reasoner,
             "bounds": {
                 "size_multiplier": [self._min_size_mult, self._max_size_mult],
                 "max_weight_multiplier": self._max_weight_mult,
