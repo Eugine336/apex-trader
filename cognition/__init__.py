@@ -44,7 +44,7 @@ __all__ = [
 def __getattr__(name: str):
     # Lazy re-export of the brain/loop so ``import cognition.contracts`` stays
     # dependency-free while ``from cognition import CognitiveBrain`` still works.
-    if name in ("CognitiveBrain", "BrainOutput", "LONG", "SHORT", "FLAT"):
+    if name in ("CognitiveBrain", "BrainOutput", "PositionView", "LONG", "SHORT", "FLAT"):
         from cognition import brain as _brain
         return getattr(_brain, name)
     if name in ("EvidenceConsolidator", "BrainActionBridge", "CognitionLoop", "SymbolsProvider"):
@@ -57,4 +57,7 @@ def __getattr__(name: str):
                 "MODE_OFF", "MODE_SHADOW", "MODE_VETO", "MODE_AUTHORITATIVE"):
         from cognition import gate as _gate
         return getattr(_gate, name)
+    if name in ("ManagementGate", "classify_action"):
+        from cognition import management_gate as _mg
+        return getattr(_mg, name)
     raise AttributeError(f"module 'cognition' has no attribute {name!r}")

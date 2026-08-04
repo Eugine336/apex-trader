@@ -46,8 +46,8 @@
 | VI.1 | Execution never reinterprets market intent | 🟡 | legacy Gates 1–7 (RiskEngine-EV, RL, DecisionEngine, TradePlanner) still judge markets | G, K |
 | VI.2 | Execution consumes Brain `CampaignSpecification` | ❌ | spec produced, never consumed (`grep`: no refs outside `cognition/`) | **G** |
 | VI.3 | Execution feasibility validation | ✅ | `execution/risk_gate.py`, `execution/action_executor.py`, compliance | — |
-| VI.4 | Renewed Brain authorization per execution/management action | 🟡 | entry gated + freshness; scale/partial/re-entry/reversal still legacy | F, G |
-| VI.5 | Brain-driven management (hold/scale/protect/exit/reverse) | ❌ | `management/*` (trade_manager, reversal_manager, …) decide independently | **F** |
+| VI.4 | Renewed Brain authorization per execution/management action | 🟡 | entry gated + freshness (C/D); risk-adding management (scale-in/re-entry) gated (F); exit/reverse *execution* still G | F, G |
+| VI.5 | Brain-driven management (hold/scale/protect/exit/reverse) | ✅ | `cognition/brain.py` `manage()` + `cognition/management_gate.py` (adds gated live; de-risking never blocked); legacy managers demoted to evidence | F ✅ (exit/reverse execution in G) |
 | VII.1–6 | Post-trade reconstruction, decision audit, memory | 🟡 | `brain/campaign.py` post-mortem (in-memory, bounded); `adaptive/counterfactual.py` | H |
 | VII (memory) | Persistent institutional memory + retrieval | ❌ | campaigns not persisted to `persistence/event_store.py`; no similarity retrieval | **H** |
 | VIII | Adaptive influence over evidence + Brain, validated | 🟡 | `adaptive/*` grades legacy vote emitters, not new `Evidence`/Brain | J |
@@ -102,7 +102,7 @@ stays as configured.
 
 ---
 
-## 3. Phase F — Brain-driven campaign management (Parts V, VI.5, VI.4)
+## 3. Phase F — Brain-driven campaign management (Parts V, VI.5, VI.4) — ✅ DONE
 
 **Goal:** the Brain, not the legacy management engine, decides HOLD / SCALE_IN /
 SCALE_OUT / PROTECT / TIGHTEN / EXIT / REVERSE / TERMINATE for open campaigns.

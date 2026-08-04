@@ -138,6 +138,7 @@ class GovernanceDivision:
         cognitive_brain: Optional[object] = None,
         cognition_loop: Optional[object] = None,
         cognition_gate: Optional[object] = None,
+        management_gate: Optional[object] = None,
     ) -> None:
         self._module_governor = module_governor
         self._tuner_agent = tuner_agent
@@ -198,6 +199,7 @@ class GovernanceDivision:
         self._cognitive_brain = cognitive_brain
         self._cognition_loop = cognition_loop
         self._cognition_gate = cognition_gate
+        self._management_gate = management_gate
 
     # ── Wiring (injected after construction) ──────────────────────────────
 
@@ -216,6 +218,7 @@ class GovernanceDivision:
         cognitive_brain: Optional[object] = None,
         cognition_loop: Optional[object] = None,
         cognition_gate: Optional[object] = None,
+        management_gate: Optional[object] = None,
     ) -> None:
         """Inject the enforcement-arm references after construction.
 
@@ -245,6 +248,8 @@ class GovernanceDivision:
             self._cognition_loop = cognition_loop
         if cognition_gate is not None:
             self._cognition_gate = cognition_gate
+        if management_gate is not None:
+            self._management_gate = management_gate
 
     # ── Learning recommendation authorisation (the ⑦→⑧ boundary) ──────────
 
@@ -811,7 +816,7 @@ class GovernanceDivision:
                 logger.debug("[governance] action-layer status failed: {}", exc)
         cognition = None
         if (self._cognitive_brain is not None or self._cognition_loop is not None
-                or self._cognition_gate is not None):
+                or self._cognition_gate is not None or self._management_gate is not None):
             cognition = {}
             if self._cognitive_brain is not None:
                 try:
@@ -828,6 +833,11 @@ class GovernanceDivision:
                     cognition["gate"] = self._cognition_gate.get_status()
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[governance] cognition-gate status failed: {}", exc)
+            if self._management_gate is not None:
+                try:
+                    cognition["management_gate"] = self._management_gate.get_status()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[governance] management-gate status failed: {}", exc)
         return {
             "enforce_toxic_pairs": self._enforce_toxic,
             "has_module_governor": self._module_governor is not None,

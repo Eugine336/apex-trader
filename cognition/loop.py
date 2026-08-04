@@ -154,6 +154,7 @@ class CognitionLoop:
         max_symbols_per_cycle: int = 12,
         shadow_mode: bool = True,
         action_bridge: Optional[BrainActionBridge] = None,
+        position_source: Optional[Callable[[], Any]] = None,
         name: str = "cognition-loop",
     ) -> None:
         self._brain = brain
@@ -163,12 +164,14 @@ class CognitionLoop:
         self.max_symbols_per_cycle = max(1, int(max_symbols_per_cycle))
         self.shadow_mode = bool(shadow_mode)
         self._action_bridge = action_bridge
+        self._position_source = position_source
         self._name = str(name or "cognition-loop")
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self._cycles = 0
         self._decisions = 0
+        self._managed = 0
 
     @property
     def running(self) -> bool:
@@ -194,7 +197,30 @@ class CognitionLoop:
                 continue
         self._cycles += 1
         self._decisions += made
+        self._manage_open_positions(now=now)
         return made
+
+    def _manage_open_positions(self, *, now: Optional[float] = None) -> int:
+        """Produce a Brain management decision for each open position. Fail-safe."""
+        if self._position_source is None or not hasattr(self._brain, "manage"):
+            return 0
+        try:
+            positions = list(self._position_source() or [])
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[cognition-loop] position source fault: %s", exc)
+            return 0
+        managed = 0
+        for pos in positions[: self.max_symbols_per_cycle]:
+            try:
+                symbol = getattr(pos, "symbol", "") or ""
+                ms = self._consolidator.build(symbol, now=now)
+                self._brain.manage(pos, ms, now=now)
+                managed += 1
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[cognition-loop] manage fault: %s", exc)
+                continue
+        self._managed += managed
+        return managed
 
     def _loop(self) -> None:
         while not self._stop.wait(self.interval_seconds):
@@ -229,6 +255,7 @@ class CognitionLoop:
             "interval_seconds": self.interval_seconds,
             "cycles": self._cycles,
             "decisions": self._decisions,
+            "managed": self._managed,
         }
 
 
