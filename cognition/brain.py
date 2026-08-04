@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -50,12 +51,14 @@ class BrainOutput:
     decision: DecisionPackage
     campaign: Optional[CampaignSpecification] = None
     direction: str = FLAT
+    decided_at_epoch: float = 0.0
 
     def to_dict(self) -> dict:
         return {
             "decision": self.decision.to_dict(),
             "campaign": self.campaign.to_dict() if self.campaign is not None else None,
             "direction": self.direction,
+            "decided_at_epoch": round(self.decided_at_epoch, 3),
         }
 
 
@@ -226,6 +229,7 @@ class CognitiveBrain:
         return self._record(BrainOutput(decision=decision, direction=FLAT))
 
     def _record(self, output: BrainOutput) -> BrainOutput:
+        output.decided_at_epoch = time.time()
         with self._lock:
             self._decisions += 1
             if output.decision.decision_type == DecisionType.OPEN_CAMPAIGN:
