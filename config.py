@@ -3584,6 +3584,171 @@ class ThesisConfig:
 
 
 @dataclass
+class CampaignConfig:
+    """Evolving market campaigns (not isolated trades).
+
+    A campaign is the *lifetime of a directional market thesis on a symbol* —
+    the continuing idea that a scatter of individual orders (open, scale-in,
+    partial, re-entry, reversal) are all legs of. :class:`brain.campaign.
+    CampaignRegistry` tracks that idea from birth (evidence supports a thesis)
+    to end (the thesis is invalidated, decays away, or flips), sitting beside
+    the :class:`brain.thesis_engine.ThesisEngine` that reports the live read.
+
+    Introduced OBSERVATIONALLY: with ``enabled`` False the registry is still
+    constructed and surfaced via Governance ``get_status`` but is only fed the
+    campaign narrative — it alters no execution decision. This mirrors how the
+    ThesisEngine (Gap 1a) was introduced before later sessions promoted it.
+    """
+
+    # Master switch. Live on the demo build: the registry records the campaign
+    # narrative and runs the autonomous post-mortem. It remains OBSERVATIONAL —
+    # it never drives an execution decision (every feed is fail-safe and only
+    # reads thesis output / close outcomes), so enabling it is safe. A later
+    # session promotes it into a driver of scaling / re-entry / reversal.
+    enabled: bool = True
+    # Seconds without a fresh actionable thesis read before a campaign fades to
+    # DORMANT (a pullback or quiet patch — not yet dead). Mirrors the thesis
+    # 15-minute decay half-life so the two layers age in step.
+    dormant_after_seconds: float = 900.0
+    # Seconds without fresh evidence before the campaign is declared INVALIDATED
+    # (the absence of confirming evidence is itself disconfirming). Clamped up to
+    # ``dormant_after_seconds`` if misconfigured below it.
+    invalidate_after_seconds: float = 3600.0
+    # Bounded terminal-campaign history kept for post-mortem / dashboard reads.
+    history_limit: int = 500
+    # ── Autonomous post-mortem ────────────────────────────────────────────
+    # On termination every campaign is graded on REASONING QUALITY, not profit
+    # alone: winning on thin evidence is a process failure, losing on strong
+    # persistent evidence still validates the process. Produces a verdict and a
+    # suggested confidence delta the learning layer can later consume.
+    postmortem_enabled: bool = True
+    # Evidence-support threshold (0..1) separating a well-reasoned campaign from
+    # a thinly-supported one when classifying the win/loss × reasoning verdict.
+    sound_evidence_threshold: float = 0.5
+    # Refresh count at which a campaign's evidence persistence is considered
+    # "fully earned" (saturates the persistence half of the support score).
+    evidence_full_refreshes: int = 5
+
+    def __post_init__(self) -> None:
+        if float(self.dormant_after_seconds) <= 0:
+            raise ValueError(
+                "CampaignConfig.dormant_after_seconds must be > 0, got "
+                f"{self.dormant_after_seconds!r}"
+            )
+        if float(self.invalidate_after_seconds) <= 0:
+            raise ValueError(
+                "CampaignConfig.invalidate_after_seconds must be > 0, got "
+                f"{self.invalidate_after_seconds!r}"
+            )
+        if int(self.history_limit) <= 0:
+            raise ValueError(
+                "CampaignConfig.history_limit must be > 0, got "
+                f"{self.history_limit!r}"
+            )
+        if not (0.0 <= float(self.sound_evidence_threshold) <= 1.0):
+            raise ValueError(
+                "CampaignConfig.sound_evidence_threshold must be in [0, 1], got "
+                f"{self.sound_evidence_threshold!r}"
+            )
+        if int(self.evidence_full_refreshes) < 1:
+            raise ValueError(
+                "CampaignConfig.evidence_full_refreshes must be >= 1, got "
+                f"{self.evidence_full_refreshes!r}"
+            )
+
+
+def _llm_env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+@dataclass
+class LLMConfig:
+    """LLM reasoning subsystem — provider-agnostic, configured from the env.
+
+    No provider is hardcoded. Set these environment variables and the subsystem
+    uses them, self-hosted or commercial API alike:
+
+      LLM_PROVIDER   openai | anthropic | gemini | ollama | <any custom name>
+      LLM_MODEL      model id, e.g. gpt-4o-mini, claude-3-5-sonnet, llama3.1
+      LLM_API_KEY    API key (blank for a keyless self-hosted endpoint)
+      LLM_BASE_URL   endpoint override — required for self-hosted / custom vendors
+                     (an unknown provider WITH a base_url is treated as an
+                     OpenAI-compatible endpoint)
+      LLM_ENABLED    force on/off; defaults ON when a provider is set and a key
+                     or a base_url is present
+      LLM_DRIVE_DECISIONS  when true the opinion is fed into the vote panel;
+                     default false (record observationally only)
+      LLM_TIMEOUT_SECONDS / LLM_MAX_TOKENS / LLM_TEMPERATURE /
+      LLM_MIN_INTERVAL_SECONDS   optional numeric overrides
+
+    The key is read from the env into ``api_key`` and is NEVER logged. The
+    subsystem is fail-safe — an absent or mis-set provider is a silent no-op.
+    """
+
+    enabled: bool = False
+    provider: str = ""
+    model: str = ""
+    api_key: str = ""          # resolved from env; never logged
+    base_url: str = ""
+    drive_decisions: bool = False
+    timeout_seconds: float = 20.0
+    max_tokens: int = 512
+    temperature: float = 0.2
+    min_interval_seconds: float = 30.0
+
+    def __post_init__(self) -> None:
+        # The environment is the single source of truth — no vendor is baked in.
+        self.provider = (os.getenv("LLM_PROVIDER", self.provider) or "").strip()
+        self.model = (os.getenv("LLM_MODEL", self.model) or "").strip()
+        self.base_url = (os.getenv("LLM_BASE_URL", self.base_url) or "").strip()
+        key = os.getenv("LLM_API_KEY")
+        if key is not None:
+            self.api_key = key.strip()
+        for env_name, attr, cast in (
+            ("LLM_TIMEOUT_SECONDS", "timeout_seconds", float),
+            ("LLM_MAX_TOKENS", "max_tokens", int),
+            ("LLM_TEMPERATURE", "temperature", float),
+            ("LLM_MIN_INTERVAL_SECONDS", "min_interval_seconds", float),
+        ):
+            raw = os.getenv(env_name)
+            if raw is not None:
+                try:
+                    setattr(self, attr, cast(raw))
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "[config] bad {} value '{}' — keeping default",
+                        env_name, raw,
+                    )
+        self.drive_decisions = _llm_env_bool("LLM_DRIVE_DECISIONS", self.drive_decisions)
+        # Enable rule: explicit LLM_ENABLED wins; otherwise auto-on when a
+        # provider is configured with either a key or a base_url to reach it.
+        has_creds = bool(self.api_key) or bool(self.base_url)
+        default_enabled = bool(self.provider) and has_creds
+        self.enabled = _llm_env_bool("LLM_ENABLED", default_enabled)
+
+        if float(self.timeout_seconds) <= 0:
+            raise ValueError(
+                f"LLMConfig.timeout_seconds must be > 0, got {self.timeout_seconds!r}"
+            )
+        if int(self.max_tokens) < 1:
+            raise ValueError(
+                f"LLMConfig.max_tokens must be >= 1, got {self.max_tokens!r}"
+            )
+        if not (0.0 <= float(self.temperature) <= 2.0):
+            raise ValueError(
+                f"LLMConfig.temperature must be in [0, 2], got {self.temperature!r}"
+            )
+        if float(self.min_interval_seconds) < 0:
+            raise ValueError(
+                "LLMConfig.min_interval_seconds must be >= 0, got "
+                f"{self.min_interval_seconds!r}"
+            )
+
+
+@dataclass
 class AdaptiveTunerConfig:
     """Phase 6 — closes the continuous-learning loop end to end.
 
@@ -3796,6 +3961,8 @@ class AppConfig:
         default_factory=DevelopingAnalysisConfig
     )
     thesis: ThesisConfig = field(default_factory=ThesisConfig)
+    campaign: CampaignConfig = field(default_factory=CampaignConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
     conviction_normalization: ConvictionNormalizationConfig = field(
         default_factory=ConvictionNormalizationConfig
     )
