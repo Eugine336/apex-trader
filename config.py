@@ -3859,6 +3859,7 @@ class CognitionConfig:
 
     enabled: bool = True
     shadow_mode: bool = True
+    gate_mode: str = "shadow"          # off | shadow | veto (Brain authority on entries)
     min_confidence_to_act: float = 0.55
     max_uncertainty_to_act: float = 0.6
     loop_interval_seconds: float = 30.0
@@ -3868,6 +3869,9 @@ class CognitionConfig:
     def __post_init__(self) -> None:
         self.enabled = _llm_env_bool("COGNITION_ENABLED", self.enabled)
         self.shadow_mode = _llm_env_bool("COGNITION_SHADOW_MODE", self.shadow_mode)
+        self.gate_mode = (
+            os.getenv("COGNITION_GATE_MODE", self.gate_mode) or "shadow"
+        ).strip().lower()
         self.emit_operator_notifications = _llm_env_bool(
             "COGNITION_EMIT_OPERATOR_NOTIFICATIONS", self.emit_operator_notifications
         )
@@ -3877,6 +3881,10 @@ class CognitionConfig:
                 self.loop_interval_seconds = float(raw)
             except (TypeError, ValueError):
                 logger.warning("[config] bad COGNITION_LOOP_INTERVAL_SECONDS '{}'", raw)
+        if self.gate_mode not in ("off", "shadow", "veto"):
+            raise ValueError(
+                f"CognitionConfig.gate_mode must be off|shadow|veto, got {self.gate_mode!r}"
+            )
         if not (0.0 <= float(self.min_confidence_to_act) <= 1.0):
             raise ValueError(
                 f"CognitionConfig.min_confidence_to_act must be in [0, 1], got {self.min_confidence_to_act!r}"
