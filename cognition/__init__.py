@@ -50,6 +50,9 @@ def __getattr__(name: str):
     if name in ("EvidenceConsolidator", "BrainActionBridge", "CognitionLoop", "SymbolsProvider"):
         from cognition import loop as _loop
         return getattr(_loop, name)
+    if name in ("classify_domain", "evidence_from_thesis_status", "evidence_from_votes"):
+        from cognition import evidence_adapters as _ea
+        return getattr(_ea, name)
     if name in ("CognitionGate", "GateVerdict", "normalise_mode",
                 "MODE_OFF", "MODE_SHADOW", "MODE_VETO", "MODE_AUTHORITATIVE"):
         from cognition import gate as _gate

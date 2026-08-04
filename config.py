@@ -3861,6 +3861,7 @@ class CognitionConfig:
     shadow_mode: bool = False
     gate_mode: str = "authoritative"   # off | shadow | veto | authoritative (Brain = sole decider)
     max_decision_age_seconds: float = 300.0
+    per_module_evidence: bool = True   # Phase E: emit one Evidence per contributing module/domain
     min_confidence_to_act: float = 0.55
     max_uncertainty_to_act: float = 0.6
     loop_interval_seconds: float = 30.0
@@ -3875,6 +3876,9 @@ class CognitionConfig:
         ).strip().lower()
         self.emit_operator_notifications = _llm_env_bool(
             "COGNITION_EMIT_OPERATOR_NOTIFICATIONS", self.emit_operator_notifications
+        )
+        self.per_module_evidence = _llm_env_bool(
+            "COGNITION_PER_MODULE_EVIDENCE", self.per_module_evidence
         )
         for env_name, attr in (
             ("COGNITION_LOOP_INTERVAL_SECONDS", "loop_interval_seconds"),

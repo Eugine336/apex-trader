@@ -30,8 +30,8 @@ import logging
 import threading
 from typing import Any, Callable, Optional
 
-from cognition.brain import LONG, SHORT
-from cognition.contracts import Evidence, EvidenceDomain, MarketState
+from cognition.contracts import MarketState
+from cognition.evidence_adapters import evidence_from_thesis_status, evidence_from_votes
 
 logger = logging.getLogger("apex.cognition.loop")
 
@@ -39,16 +39,31 @@ SymbolsProvider = Callable[[], "list[str]"]
 
 
 class EvidenceConsolidator:
-    """Builds a consolidated :class:`MarketState` from live subsystem readings."""
+    """Builds a consolidated :class:`MarketState` from live subsystem readings.
 
-    def __init__(self, ctx: Optional[Any] = None) -> None:
+    Phase E: converts the full vote panel (every contributing analytical module,
+    surfaced via the ThesisEngine's supporting/opposing modules) into
+    domain-classified :class:`~cognition.contracts.Evidence`, plus an aggregate
+    read. Read-only and fail-safe. An optional ``vote_source`` callable supplies
+    the raw WorldModel vote panel for even richer evidence when available.
+    """
+
+    def __init__(
+        self,
+        ctx: Optional[Any] = None,
+        *,
+        vote_source: Optional[Callable[[str], Any]] = None,
+        per_module: bool = True,
+    ) -> None:
         self._ctx = ctx
+        self._vote_source = vote_source
+        self._per_module = bool(per_module)
 
     def build(
         self,
         symbol: str,
         *,
-        injected: Optional["list[Evidence]"] = None,
+        injected: Optional[list] = None,
         now: Optional[float] = None,
     ) -> MarketState:
         ms = MarketState(symbol=str(symbol or ""))
@@ -56,46 +71,23 @@ class EvidenceConsolidator:
             if injected:
                 for e in injected:
                     ms.add(e)
-            self._add_thesis_evidence(ms)
+            ctx = self._ctx
+            engine = getattr(ctx, "thesis_engine", None) if ctx is not None else None
+            if engine is not None:
+                status = engine.get_status() or {}
+                for e in evidence_from_thesis_status(status, ms.symbol):
+                    # When per-module is off, keep only the aggregate read.
+                    if self._per_module or e.source_module == "brain.thesis_engine":
+                        ms.add(e)
+            if self._vote_source is not None:
+                try:
+                    for e in evidence_from_votes(ms.symbol, self._vote_source(ms.symbol)):
+                        ms.add(e)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[consolidator] vote source fault (%s): %s", symbol, exc)
         except Exception as exc:  # noqa: BLE001 — consolidation must never break
             logger.debug("[consolidator] build(%s) ignored a fault: %s", symbol, exc)
         return ms
-
-    def _add_thesis_evidence(self, ms: MarketState) -> None:
-        ctx = self._ctx
-        engine = getattr(ctx, "thesis_engine", None) if ctx is not None else None
-        if engine is None:
-            return
-        status = engine.get_status() or {}
-        entry = (status.get("theses") or {}).get(ms.symbol)
-        if not isinstance(entry, dict):
-            return
-        eff = entry.get("effective") or {}
-        dominant = str(eff.get("dominant", "FLAT") or "FLAT").upper()
-        long_ev = float(eff.get("long_ev", 0.0) or 0.0)
-        short_ev = float(eff.get("short_ev", 0.0) or 0.0)
-        flat_ev = float(eff.get("flat_ev", 0.0) or 0.0)
-        if dominant == LONG:
-            polarity = max(0.0, min(1.0, long_ev - flat_ev))
-            conf = float((entry.get("long") or {}).get("confidence", 0.0) or 0.0)
-        elif dominant == SHORT:
-            polarity = -max(0.0, min(1.0, short_ev - flat_ev))
-            conf = float((entry.get("short") or {}).get("confidence", 0.0) or 0.0)
-        else:
-            polarity = 0.0
-            conf = float((entry.get("flat") or {}).get("confidence", 0.0) or 0.0)
-        ms.add(Evidence(
-            source_module="brain.thesis_engine",
-            domain=EvidenceDomain.MULTI_TIMEFRAME,
-            symbol=ms.symbol,
-            observation=f"dominant competing thesis {dominant} (effective EV over flat)",
-            confidence=conf,
-            uncertainty=1.0 - conf,
-            polarity=polarity,
-            measurements={"long_ev": long_ev, "short_ev": short_ev, "flat_ev": flat_ev,
-                          "dominant": dominant},
-            relevance_horizon_seconds=900.0,
-        ))
 
 
 class BrainActionBridge:
