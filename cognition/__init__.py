@@ -32,4 +32,22 @@ __all__ = [
     "DecisionPackage",
     "CampaignSpecification",
     "REQUIRED_QUESTIONS",
+    # Cognitive core (imported lazily below to keep contracts import-light).
+    "CognitiveBrain",
+    "BrainOutput",
+    "EvidenceConsolidator",
+    "BrainActionBridge",
+    "CognitionLoop",
 ]
+
+
+def __getattr__(name: str):
+    # Lazy re-export of the brain/loop so ``import cognition.contracts`` stays
+    # dependency-free while ``from cognition import CognitiveBrain`` still works.
+    if name in ("CognitiveBrain", "BrainOutput", "LONG", "SHORT", "FLAT"):
+        from cognition import brain as _brain
+        return getattr(_brain, name)
+    if name in ("EvidenceConsolidator", "BrainActionBridge", "CognitionLoop", "SymbolsProvider"):
+        from cognition import loop as _loop
+        return getattr(_loop, name)
+    raise AttributeError(f"module 'cognition' has no attribute {name!r}")

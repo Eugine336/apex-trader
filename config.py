@@ -3846,6 +3846,56 @@ class ComposioConfig:
 
 
 @dataclass
+class CognitionConfig:
+    """The AI Cognitive Brain loop (Single Reasoner) — Constitution Parts I/II/IV.
+
+    Runs the one Brain over consolidated Evidence on a background loop and
+    records its DecisionPackages. ``shadow_mode`` (default True) keeps the Brain
+    observational — it produces and surfaces decisions without driving execution
+    — so the legacy path stays authoritative until the cutover is validated
+    (Parts XIII/XV: shadow → paper → controlled rollout). Env overrides:
+    COGNITION_ENABLED, COGNITION_SHADOW_MODE, COGNITION_LOOP_INTERVAL_SECONDS.
+    """
+
+    enabled: bool = True
+    shadow_mode: bool = True
+    min_confidence_to_act: float = 0.55
+    max_uncertainty_to_act: float = 0.6
+    loop_interval_seconds: float = 30.0
+    max_symbols_per_cycle: int = 12
+    emit_operator_notifications: bool = True
+
+    def __post_init__(self) -> None:
+        self.enabled = _llm_env_bool("COGNITION_ENABLED", self.enabled)
+        self.shadow_mode = _llm_env_bool("COGNITION_SHADOW_MODE", self.shadow_mode)
+        self.emit_operator_notifications = _llm_env_bool(
+            "COGNITION_EMIT_OPERATOR_NOTIFICATIONS", self.emit_operator_notifications
+        )
+        raw = os.getenv("COGNITION_LOOP_INTERVAL_SECONDS")
+        if raw is not None:
+            try:
+                self.loop_interval_seconds = float(raw)
+            except (TypeError, ValueError):
+                logger.warning("[config] bad COGNITION_LOOP_INTERVAL_SECONDS '{}'", raw)
+        if not (0.0 <= float(self.min_confidence_to_act) <= 1.0):
+            raise ValueError(
+                f"CognitionConfig.min_confidence_to_act must be in [0, 1], got {self.min_confidence_to_act!r}"
+            )
+        if not (0.0 <= float(self.max_uncertainty_to_act) <= 1.0):
+            raise ValueError(
+                f"CognitionConfig.max_uncertainty_to_act must be in [0, 1], got {self.max_uncertainty_to_act!r}"
+            )
+        if float(self.loop_interval_seconds) < 1.0:
+            raise ValueError(
+                f"CognitionConfig.loop_interval_seconds must be >= 1, got {self.loop_interval_seconds!r}"
+            )
+        if int(self.max_symbols_per_cycle) < 1:
+            raise ValueError(
+                f"CognitionConfig.max_symbols_per_cycle must be >= 1, got {self.max_symbols_per_cycle!r}"
+            )
+
+
+@dataclass
 class AdaptiveTunerConfig:
     """Phase 6 — closes the continuous-learning loop end to end.
 
@@ -4061,6 +4111,7 @@ class AppConfig:
     campaign: CampaignConfig = field(default_factory=CampaignConfig)
     llm: LLMConfig = field(default_factory=LLMConfig)
     composio: ComposioConfig = field(default_factory=ComposioConfig)
+    cognition: CognitionConfig = field(default_factory=CognitionConfig)
     conviction_normalization: ConvictionNormalizationConfig = field(
         default_factory=ConvictionNormalizationConfig
     )

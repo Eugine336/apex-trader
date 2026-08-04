@@ -125,6 +125,11 @@ class SystemContext:
     # which Brain-authored objectives become external actions. Default OFF +
     # dry-run; never reasons or originates objectives. Surfaced via Governance.
     action_orchestrator: Optional[Any] = None
+    # The AI Cognitive Brain (Single Reasoner) + its background cognition loop.
+    # Consumes consolidated Evidence, emits DecisionPackages/CampaignSpecs. Runs
+    # in shadow by default (observational); surfaced via Governance.
+    cognitive_brain: Optional[Any] = None
+    cognition_loop: Optional[Any] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
     opportunity_executor: Optional[OpportunityExecutor] = None
@@ -1154,6 +1159,80 @@ class SystemContext:
             except Exception as exc:
                 logger.warning("[SystemContext] ActionOrchestrator init failed: {}", exc)
 
+            # ── AI Cognitive Brain (Single Reasoner) + cognition loop ─────
+            # The one subsystem permitted to reason (Constitution Part I Art 4 /
+            # Part II). Consumes consolidated Evidence, emits decisions. Runs in
+            # SHADOW by default: it produces/surfaces decisions for observability
+            # without driving execution, so the legacy path stays authoritative
+            # until the cutover is validated (Parts XIII/XV). Fail-safe.
+            try:
+                from cognition.brain import CognitiveBrain as _CognitiveBrain
+                from cognition.loop import (
+                    BrainActionBridge as _BrainActionBridge,
+                    CognitionLoop as _CognitionLoop,
+                    EvidenceConsolidator as _EvidenceConsolidator,
+                )
+
+                cog_cfg = getattr(config, "cognition", None)
+                ctx.cognitive_brain = _CognitiveBrain(
+                    reasoner=ctx.llm_reasoner,
+                    min_confidence_to_act=float(
+                        getattr(cog_cfg, "min_confidence_to_act", 0.55)
+                        if cog_cfg is not None else 0.55
+                    ),
+                    max_uncertainty_to_act=float(
+                        getattr(cog_cfg, "max_uncertainty_to_act", 0.6)
+                        if cog_cfg is not None else 0.6
+                    ),
+                )
+                _consolidator = _EvidenceConsolidator(ctx=ctx)
+                _bridge = _BrainActionBridge(
+                    ctx.action_orchestrator,
+                    notify_enabled=bool(
+                        getattr(cog_cfg, "emit_operator_notifications", True)
+                        if cog_cfg is not None else True
+                    ),
+                )
+
+                def _cognition_symbols() -> list:
+                    try:
+                        eng = ctx.thesis_engine
+                        if eng is not None:
+                            st = eng.get_status() or {}
+                            syms = list((st.get("theses") or {}).keys())
+                            if syms:
+                                return syms
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        return list(config.enabled_pairs)
+                    except Exception:  # noqa: BLE001
+                        return []
+
+                ctx.cognition_loop = _CognitionLoop(
+                    ctx.cognitive_brain, _consolidator, _cognition_symbols,
+                    interval_seconds=float(
+                        getattr(cog_cfg, "loop_interval_seconds", 30.0)
+                        if cog_cfg is not None else 30.0
+                    ),
+                    max_symbols_per_cycle=int(
+                        getattr(cog_cfg, "max_symbols_per_cycle", 12)
+                        if cog_cfg is not None else 12
+                    ),
+                    shadow_mode=bool(
+                        getattr(cog_cfg, "shadow_mode", True)
+                        if cog_cfg is not None else True
+                    ),
+                    action_bridge=_bridge,
+                )
+                logger.info(
+                    "[SystemContext] Cognitive Brain ready — reasoner_available={} shadow={}",
+                    ctx.cognitive_brain.available,
+                    getattr(cog_cfg, "shadow_mode", True) if cog_cfg else True,
+                )
+            except Exception as exc:
+                logger.warning("[SystemContext] CognitiveBrain init failed: {}", exc)
+
             ctx.governance = _Governance(
                 module_governor=ctx.module_governor,
                 tuner_agent=ctx.tuner_agent,
@@ -1183,6 +1262,8 @@ class SystemContext:
                 campaign_registry=ctx.campaign_registry,
                 llm_reasoner=ctx.llm_reasoner,
                 action_orchestrator=ctx.action_orchestrator,
+                cognitive_brain=ctx.cognitive_brain,
+                cognition_loop=ctx.cognition_loop,
             )
             # Install Governance as the authoriser on the Learning→Governance
             # gateway and require authorisation (per config; default on).

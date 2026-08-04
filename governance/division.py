@@ -133,6 +133,10 @@ class GovernanceDivision:
         # Autonomous Action Layer gateway — surfaced in get_status (secret-safe).
         # Governs/executes Brain-authored objectives; never reasons.
         action_orchestrator: Optional[object] = None,
+        # AI Cognitive Brain (Single Reasoner) + its loop — surfaced in
+        # get_status. The Brain reasons; Governance only observes it here.
+        cognitive_brain: Optional[object] = None,
+        cognition_loop: Optional[object] = None,
     ) -> None:
         self._module_governor = module_governor
         self._tuner_agent = tuner_agent
@@ -189,6 +193,10 @@ class GovernanceDivision:
         # Autonomous Action Layer gateway (observational). Read in get_status.
         self._action_orchestrator = action_orchestrator
 
+        # AI Cognitive Brain + loop (observational). Read in get_status only.
+        self._cognitive_brain = cognitive_brain
+        self._cognition_loop = cognition_loop
+
     # ── Wiring (injected after construction) ──────────────────────────────
 
     def bind_runtime(
@@ -203,6 +211,8 @@ class GovernanceDivision:
         campaign_registry: Optional[object] = None,
         llm_reasoner: Optional[object] = None,
         action_orchestrator: Optional[object] = None,
+        cognitive_brain: Optional[object] = None,
+        cognition_loop: Optional[object] = None,
     ) -> None:
         """Inject the enforcement-arm references after construction.
 
@@ -226,6 +236,10 @@ class GovernanceDivision:
             self._llm_reasoner = llm_reasoner
         if action_orchestrator is not None:
             self._action_orchestrator = action_orchestrator
+        if cognitive_brain is not None:
+            self._cognitive_brain = cognitive_brain
+        if cognition_loop is not None:
+            self._cognition_loop = cognition_loop
 
     # ── Learning recommendation authorisation (the ⑦→⑧ boundary) ──────────
 
@@ -790,6 +804,19 @@ class GovernanceDivision:
                 action_layer = self._action_orchestrator.get_status()
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[governance] action-layer status failed: {}", exc)
+        cognition = None
+        if self._cognitive_brain is not None or self._cognition_loop is not None:
+            cognition = {}
+            if self._cognitive_brain is not None:
+                try:
+                    cognition["brain"] = self._cognitive_brain.get_status()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[governance] cognitive-brain status failed: {}", exc)
+            if self._cognition_loop is not None:
+                try:
+                    cognition["loop"] = self._cognition_loop.get_status()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[governance] cognition-loop status failed: {}", exc)
         return {
             "enforce_toxic_pairs": self._enforce_toxic,
             "has_module_governor": self._module_governor is not None,
@@ -805,6 +832,7 @@ class GovernanceDivision:
             "campaign_registry": campaign_registry,
             "llm_reasoner": llm_reasoner,
             "action_layer": action_layer,
+            "cognition": cognition,
             "bounds": {
                 "size_multiplier": [self._min_size_mult, self._max_size_mult],
                 "max_weight_multiplier": self._max_weight_mult,

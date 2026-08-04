@@ -4164,6 +4164,20 @@ class EventDrivenSystem:
         except Exception as exc:
             logger.warning("[event-driven] LLM reasoning worker start failed: {}", exc)
 
+        # ── Start the AI Cognitive Brain loop (Single Reasoner, shadow) ──
+        # Background daemon that drives the one Brain over consolidated evidence
+        # and records its decisions. Shadow by default — observational, off the
+        # hot path. Guarded + best-effort; never blocks startup.
+        try:
+            _cog_loop = self._ctx.cognition_loop if self._ctx is not None else None
+            _cog_cfg = getattr(self._config, "cognition", None)
+            if _cog_loop is not None and bool(
+                getattr(_cog_cfg, "enabled", True) if _cog_cfg is not None else True
+            ):
+                _cog_loop.start()
+        except Exception as exc:
+            logger.warning("[event-driven] cognition loop start failed: {}", exc)
+
         # ── Start ProcessWatchdog heartbeat thread ───────────────────
         ctx = self._ctx
         if ctx is not None and ctx.process_watchdog is not None:
@@ -4431,6 +4445,11 @@ class EventDrivenSystem:
         if getattr(self, "_llm_worker", None) is not None:
             try:
                 self._llm_worker.stop()
+            except Exception:
+                pass
+        if self._ctx is not None and getattr(self._ctx, "cognition_loop", None) is not None:
+            try:
+                self._ctx.cognition_loop.stop()
             except Exception:
                 pass
         if getattr(self, "_opportunity_queue", None) is not None:
