@@ -198,3 +198,87 @@ def test_disabled_registry_still_functions_but_reports_disabled():
     camp = reg.observe_thesis("EURUSD", "LONG", True, ev_over_flat=0.5)
     assert isinstance(camp, Campaign)
     assert reg.get_status()["enabled"] is False
+
+
+# ── Autonomous post-mortem (reasoning quality vs outcome) ────────────────────
+
+def _pm_reg(**kw) -> CampaignRegistry:
+    params = dict(
+        enabled=True,
+        dormant_after_seconds=100.0,
+        invalidate_after_seconds=300.0,
+        postmortem_enabled=True,
+        sound_evidence_threshold=0.5,
+        evidence_full_refreshes=2,
+    )
+    params.update(kw)
+    return CampaignRegistry(**params)
+
+
+def test_postmortem_validated_win_on_strong_evidence():
+    reg = _pm_reg()
+    reg.observe_thesis("EURUSD", "LONG", True, ev_over_flat=0.6, confidence=0.9)
+    reg.observe_thesis("EURUSD", "LONG", True, ev_over_flat=0.7, confidence=0.9)
+    camp = reg.observe_close("EURUSD", "LONG", "tp2_target", pnl=40.0, won=True)
+    pm = camp.postmortem
+    assert pm is not None
+    assert pm.verdict == "validated"
+    assert pm.outcome_won is True
+    assert pm.reasoning_quality >= 0.5
+    assert pm.confidence_delta > 0.0
+
+
+def test_postmortem_lucky_win_on_thin_evidence_is_penalised():
+    # Thin evidence: one low-confidence refresh, full-refresh bar of 5.
+    reg = _pm_reg(evidence_full_refreshes=5)
+    reg.observe_thesis("EURUSD", "LONG", True, ev_over_flat=0.2, confidence=0.1)
+    camp = reg.observe_close("EURUSD", "LONG", "tp2_target", pnl=30.0, won=True)
+    pm = camp.postmortem
+    assert pm.verdict == "lucky"
+    assert pm.outcome_won is True
+    assert pm.confidence_delta <= 0.0  # a win must not be rewarded when reasoning was weak
+
+
+def test_postmortem_sound_but_unlucky_loss_on_strong_evidence():
+    reg = _pm_reg()
+    reg.observe_thesis("EURUSD", "LONG", True, ev_over_flat=0.6, confidence=0.9)
+    reg.observe_thesis("EURUSD", "LONG", True, ev_over_flat=0.7, confidence=0.9)
+    camp = reg.observe_close("EURUSD", "LONG", "stop_loss", pnl=-20.0, won=False)
+    pm = camp.postmortem
+    assert pm.verdict == "sound_but_unlucky"
+    assert pm.outcome_won is False
+    assert pm.confidence_delta > 0.0  # sound process is mildly reinforced despite the loss
+
+
+def test_postmortem_deserved_loss_on_thin_evidence():
+    reg = _pm_reg(evidence_full_refreshes=5)
+    reg.observe_thesis("EURUSD", "LONG", True, ev_over_flat=0.1, confidence=0.1)
+    camp = reg.observe_close("EURUSD", "LONG", "stop_loss", pnl=-10.0, won=False)
+    pm = camp.postmortem
+    assert pm.verdict == "deserved_loss"
+    assert pm.confidence_delta < 0.0
+
+
+def test_postmortem_verdict_counts_in_status():
+    reg = _pm_reg()
+    reg.observe_thesis("EURUSD", "LONG", True, ev_over_flat=0.6, confidence=0.9)
+    reg.observe_thesis("EURUSD", "LONG", True, ev_over_flat=0.7, confidence=0.9)
+    reg.observe_close("EURUSD", "LONG", "tp2_target", pnl=40.0, won=True)
+    status = reg.get_status()
+    assert status["postmortem_verdicts"].get("validated") == 1
+
+
+def test_avg_confidence_and_peak_tracked():
+    reg = _pm_reg()
+    reg.observe_thesis("EURUSD", "LONG", True, ev_over_flat=0.3, confidence=0.4)
+    camp = reg.observe_thesis("EURUSD", "LONG", True, ev_over_flat=0.9, confidence=0.6)
+    assert camp.peak_ev_over_flat == pytest.approx(0.9)
+    assert camp.avg_confidence == pytest.approx(0.5)
+
+
+def test_postmortem_can_be_disabled():
+    reg = _pm_reg(postmortem_enabled=False)
+    reg.observe_thesis("EURUSD", "LONG", True, ev_over_flat=0.6, confidence=0.9)
+    camp = reg.observe_close("EURUSD", "LONG", "tp2_target", pnl=40.0, won=True)
+    assert camp.postmortem is None
+

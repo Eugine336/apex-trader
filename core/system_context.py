@@ -1049,6 +1049,18 @@ class SystemContext:
                         getattr(camp_cfg, "history_limit", 500)
                         if camp_cfg is not None else 500
                     ),
+                    postmortem_enabled=bool(
+                        getattr(camp_cfg, "postmortem_enabled", True)
+                        if camp_cfg is not None else True
+                    ),
+                    sound_evidence_threshold=float(
+                        getattr(camp_cfg, "sound_evidence_threshold", 0.5)
+                        if camp_cfg is not None else 0.5
+                    ),
+                    evidence_full_refreshes=int(
+                        getattr(camp_cfg, "evidence_full_refreshes", 5)
+                        if camp_cfg is not None else 5
+                    ),
                 )
             except Exception as exc:
                 logger.warning("[SystemContext] CampaignRegistry init failed: {}", exc)

@@ -3600,10 +3600,12 @@ class CampaignConfig:
     ThesisEngine (Gap 1a) was introduced before later sessions promoted it.
     """
 
-    # Master switch. Default OFF — the registry records the campaign narrative
-    # observationally; a later session promotes it into a driver of scaling /
-    # re-entry / reversal decisions once the recorded behaviour is validated.
-    enabled: bool = False
+    # Master switch. Live on the demo build: the registry records the campaign
+    # narrative and runs the autonomous post-mortem. It remains OBSERVATIONAL —
+    # it never drives an execution decision (every feed is fail-safe and only
+    # reads thesis output / close outcomes), so enabling it is safe. A later
+    # session promotes it into a driver of scaling / re-entry / reversal.
+    enabled: bool = True
     # Seconds without a fresh actionable thesis read before a campaign fades to
     # DORMANT (a pullback or quiet patch — not yet dead). Mirrors the thesis
     # 15-minute decay half-life so the two layers age in step.
@@ -3614,6 +3616,18 @@ class CampaignConfig:
     invalidate_after_seconds: float = 3600.0
     # Bounded terminal-campaign history kept for post-mortem / dashboard reads.
     history_limit: int = 500
+    # ── Autonomous post-mortem ────────────────────────────────────────────
+    # On termination every campaign is graded on REASONING QUALITY, not profit
+    # alone: winning on thin evidence is a process failure, losing on strong
+    # persistent evidence still validates the process. Produces a verdict and a
+    # suggested confidence delta the learning layer can later consume.
+    postmortem_enabled: bool = True
+    # Evidence-support threshold (0..1) separating a well-reasoned campaign from
+    # a thinly-supported one when classifying the win/loss × reasoning verdict.
+    sound_evidence_threshold: float = 0.5
+    # Refresh count at which a campaign's evidence persistence is considered
+    # "fully earned" (saturates the persistence half of the support score).
+    evidence_full_refreshes: int = 5
 
     def __post_init__(self) -> None:
         if float(self.dormant_after_seconds) <= 0:
@@ -3630,6 +3644,16 @@ class CampaignConfig:
             raise ValueError(
                 "CampaignConfig.history_limit must be > 0, got "
                 f"{self.history_limit!r}"
+            )
+        if not (0.0 <= float(self.sound_evidence_threshold) <= 1.0):
+            raise ValueError(
+                "CampaignConfig.sound_evidence_threshold must be in [0, 1], got "
+                f"{self.sound_evidence_threshold!r}"
+            )
+        if int(self.evidence_full_refreshes) < 1:
+            raise ValueError(
+                "CampaignConfig.evidence_full_refreshes must be >= 1, got "
+                f"{self.evidence_full_refreshes!r}"
             )
 
 
