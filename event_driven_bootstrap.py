@@ -2184,10 +2184,14 @@ class PositionEvaluator:
                 # V13 — route the add-on through the SAME Compliance → Portfolio
                 # pipeline as a fresh entry (it was previously a direct
                 # Intent.open that bypassed both). Portfolio owns the size.
-                self._scale_in_position(
-                    pos, price, sl, symbol, direction, de_result,
-                    current_score, open_positions,
-                )
+                # Phase F — adding exposure requires the single Brain's
+                # authorization (fail-open in soft modes / fail-closed under
+                # authoritative). De-risking is never gated.
+                if self._cognition_management_allows(symbol, direction, "scale_in"):
+                    self._scale_in_position(
+                        pos, price, sl, symbol, direction, de_result,
+                        current_score, open_positions,
+                    )
             elif action_name == Action.PARTIAL_CLOSE.value:
                 # V13 — DE/governor can ask to bank part of a position; the
                 # verdict was previously journaled then dropped (no handler).
@@ -2390,6 +2394,28 @@ class PositionEvaluator:
         return too_close
 
     # ── Scale-in / partial-close handlers (V13) ──────────────────────
+    def _cognition_management_allows(self, symbol: str, direction: str, action: str) -> bool:
+        """AI Cognitive Brain management gate (Phase F) — fail-safe.
+
+        Only exposure-ADDING management actions (scale-in / re-entry) are gated;
+        de-risking always proceeds. Fail-open in the soft modes; fail-closed
+        under ``authoritative`` (no reasoning ⇒ no new exposure).
+        """
+        ctx = self._ctx
+        gate = getattr(ctx, "management_gate", None) if ctx is not None else None
+        if gate is None:
+            return True
+        try:
+            return bool(gate.evaluate(symbol, direction, action).allow)
+        except Exception as exc:  # noqa: BLE001
+            authoritative = str(getattr(gate, "mode", "")) == "authoritative"
+            logger.warning(
+                "[management-gate] {} errored — {} {} (fail-{}): {}",
+                symbol, "blocking" if authoritative else "allowing", action,
+                "closed" if authoritative else "open", exc,
+            )
+            return not authoritative
+
     def _scale_in_position(
         self,
         pos,
@@ -3906,6 +3932,99 @@ class EventDrivenSystem:
             "[tuner] registered {} tunable adapters with TunerAgent", registered,
         )
 
+    def _build_llm_evidence_source(self):
+        """Return a callable yielding ``{symbol: structured_evidence}`` for the
+        LLM worker.
+
+        Reads the ThesisEngine's competing-thesis status (and per-symbol campaign
+        context where available) — a read of already-computed state, so it never
+        touches the hot path, blocks, or triggers analysis. Fully fail-safe.
+        """
+        ctx = self._ctx
+
+        def _source() -> "dict[str, dict]":
+            out: dict[str, dict] = {}
+            try:
+                engine = getattr(ctx, "thesis_engine", None) if ctx is not None else None
+                if engine is None:
+                    return out
+                status = engine.get_status() or {}
+                theses = status.get("theses") or {}
+                camp_live: dict[str, dict] = {}
+                registry = getattr(ctx, "campaign_registry", None) if ctx is not None else None
+                if registry is not None:
+                    try:
+                        for c in (registry.get_status() or {}).get("live", []) or []:
+                            camp_live[str(c.get("symbol"))] = c
+                    except Exception:  # noqa: BLE001
+                        camp_live = {}
+                for sym, tdict in theses.items():
+                    ev: dict = {"thesis": tdict}
+                    if str(sym) in camp_live:
+                        ev["campaign"] = camp_live[str(sym)]
+                    out[str(sym)] = ev
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[llm-worker] evidence build fault: {}", exc)
+            return out
+
+        return _source
+
+    def _make_origination_sink(self):
+        """Build the LIVE origination sink for Brain-originated entries (Phase G).
+
+        The returned callable accepts a
+        :class:`cognition.campaign_translator.OriginationIntent` and submits an
+        :class:`~execution.intents.Intent` OPEN onto the shared aggregator — the
+        SAME execution plane (aggregator → RiskGate → broker) as every other
+        entry. Fail-safe: a malformed intent, a missing protective stop, or any
+        fault is logged and dropped (never raises into the cognition loop). A
+        missing stop is refused because an entry without a stop would bypass the
+        constitutional deterministic-safety floor (Part X).
+        """
+        def _sink(origination: Any) -> None:
+            try:
+                symbol = str(getattr(origination, "symbol", "") or "")
+                direction = str(getattr(origination, "direction", "") or "").upper()
+                sl = getattr(origination, "sl", None)
+                tp = getattr(origination, "tp", None)
+                if not symbol or direction not in ("LONG", "SHORT"):
+                    return
+                if sl is None or tp is None:
+                    logger.info(
+                        "[origination-sink] {} {} skipped — no protective stop/target "
+                        "(refusing to bypass Part X safety floor)",
+                        symbol, direction,
+                    )
+                    return
+                stake = getattr(origination, "stake_usd", None)
+                lots = float(getattr(origination, "lots", 0.0) or 0.0)
+                idem_key = generate_idempotency_key(symbol, direction, stake or lots)
+                comment = build_order_comment(
+                    "APEX", idem_key,
+                    score=round(float(getattr(origination, "confidence", 0.0) or 0.0), 4),
+                )
+                self._aggregator.submit([Intent.open(
+                    symbol=symbol,
+                    direction=direction,
+                    lots=lots,
+                    sl=float(sl),
+                    tp=float(tp),
+                    stake_usd=None if stake is None else float(stake),
+                    comment=comment,
+                    idempotency_key=idem_key,
+                    source="ai_brain",
+                    reason=str(getattr(origination, "reason", "") or "brain_origination")[:200],
+                )])
+                logger.info(
+                    "[origination-sink] submitted {} {} (stake={}) from campaign {}",
+                    symbol, direction, stake,
+                    getattr(origination, "campaign_id", ""),
+                )
+            except Exception as exc:  # noqa: BLE001 — sink must never break the loop
+                logger.warning("[origination-sink] submit failed: {}", exc)
+
+        return _sink
+
     # ── Lifecycle ────────────────────────────────────────────────────
 
     def start(self) -> None:
@@ -4099,6 +4218,53 @@ class EventDrivenSystem:
                 logger.warning(
                     "[event-driven] proactive scanner start failed: {}", exc,
                 )
+
+        # ── Start LLM reasoning worker (off the hot path) ────────────
+        # Drives the LLM reasoner on its own daemon thread — a blocking provider
+        # round-trip must never run in the tick/analysis loop. Only spins up when
+        # a provider is actually configured (reasoner.available); otherwise a
+        # pure no-op. Best-effort; never blocks startup.
+        self._llm_worker = None
+        try:
+            _reasoner = self._ctx.llm_reasoner if self._ctx is not None else None
+            if _reasoner is not None and getattr(_reasoner, "available", False):
+                from llm.worker import LLMReasoningWorker as _LLMReasoningWorker
+                _llm_cfg = getattr(self._config, "llm", None)
+                self._llm_worker = _LLMReasoningWorker(
+                    _reasoner,
+                    self._build_llm_evidence_source(),
+                    interval_seconds=float(
+                        getattr(_llm_cfg, "worker_interval_seconds", 60.0)
+                        if _llm_cfg is not None else 60.0
+                    ),
+                    max_symbols_per_cycle=int(
+                        getattr(_llm_cfg, "max_symbols_per_cycle", 8)
+                        if _llm_cfg is not None else 8
+                    ),
+                )
+                self._llm_worker.start()
+        except Exception as exc:
+            logger.warning("[event-driven] LLM reasoning worker start failed: {}", exc)
+
+        # ── Start the AI Cognitive Brain loop (Single Reasoner, shadow) ──
+        # Background daemon that drives the one Brain over consolidated evidence
+        # and records its decisions. Shadow by default — observational, off the
+        # hot path. Guarded + best-effort; never blocks startup.
+        try:
+            _cog_loop = self._ctx.cognition_loop if self._ctx is not None else None
+            _cog_cfg = getattr(self._config, "cognition", None)
+            if _cog_loop is not None and bool(
+                getattr(_cog_cfg, "enabled", True) if _cog_cfg is not None else True
+            ):
+                # Phase G — when origination is LIVE, wire the executor sink so the
+                # Brain's originated entries reach the SAME execution plane as
+                # every other entry (aggregator → RiskGate → broker). Shadow/off
+                # leave the sink unset, so the loop only records intended orders.
+                if str(getattr(_cog_loop, "origination_mode", "shadow")) == "live":
+                    _cog_loop.set_origination_sink(self._make_origination_sink())
+                _cog_loop.start()
+        except Exception as exc:
+            logger.warning("[event-driven] cognition loop start failed: {}", exc)
 
         # ── Start ProcessWatchdog heartbeat thread ───────────────────
         ctx = self._ctx
@@ -4362,6 +4528,16 @@ class EventDrivenSystem:
         if getattr(self, "_proactive_scanner", None) is not None:
             try:
                 self._proactive_scanner.stop()
+            except Exception:
+                pass
+        if getattr(self, "_llm_worker", None) is not None:
+            try:
+                self._llm_worker.stop()
+            except Exception:
+                pass
+        if self._ctx is not None and getattr(self._ctx, "cognition_loop", None) is not None:
+            try:
+                self._ctx.cognition_loop.stop()
             except Exception:
                 pass
         if getattr(self, "_opportunity_queue", None) is not None:
@@ -6772,6 +6948,30 @@ class EventDrivenSystem:
                     before_act, after_act, before_dir or "-", after_dir or "-",
                     before_ev, after_ev, long_p, short_p,
                 )
+
+            # Fold the dominant thesis read into the evolving-campaign registry
+            # (observational; default OFF via ``campaign.enabled``). Records the
+            # continuing idea's birth / refresh / reversal without touching the
+            # entry decision. Fully decoupled — a fault here is swallowed.
+            registry = getattr(ctx, "campaign_registry", None)
+            if registry is not None and getattr(registry, "enabled", False):
+                try:
+                    # Age campaigns first (wall-clock, compute-on-tick): an idea
+                    # nothing refreshes fades to DORMANT then INVALIDATED.
+                    registry.decay()
+                    conf = 0.0
+                    tset = engine.get(symbol)
+                    if tset is not None and after_dir:
+                        conf = float(
+                            getattr(tset.get(after_dir), "confidence", 0.0) or 0.0
+                        )
+                    registry.observe_thesis(
+                        symbol, after_dir, after_act,
+                        ev_over_flat=after_ev, confidence=conf,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[campaign] thesis feed failed for {}: {}",
+                                 symbol, exc)
         except Exception as exc:
             logger.debug("[thesis-engine] feed failed for {}: {}", symbol, exc)
 
@@ -6939,6 +7139,41 @@ class EventDrivenSystem:
                 "(fail-safe): {}", symbol, exc,
             )
             return True
+
+    def _cognition_gate_allows(self, symbol: str, direction: str) -> bool:
+        """AI Cognitive Brain entry gate (Step C) — fail-open.
+
+        Consults the single Brain's latest shadow decision for ``symbol``. In
+        ``shadow`` mode (default) it only records what it WOULD do and always
+        allows; in ``veto`` mode it blocks an entry the legacy path proposed when
+        the Brain has a fresh read that does not back this direction. It can only
+        make the system MORE conservative — it never originates a trade. Fail-
+        open: no Brain, no read yet (cold start), or any fault ALLOWS the entry.
+        """
+        ctx = self._ctx
+        gate = getattr(ctx, "cognition_gate", None) if ctx is not None else None
+        if gate is None:
+            return True
+        try:
+            verdict = gate.evaluate(symbol, direction)
+            if not bool(verdict.allow):
+                logger.info(
+                    "EVENT-DRIVEN ENTRY BLOCKED | {} — AI Cognitive Brain ({}, {} {}): {}",
+                    symbol, verdict.mode, direction,
+                    verdict.brain_decision_type or "-", verdict.reason,
+                )
+            return bool(verdict.allow)
+        except Exception as exc:  # noqa: BLE001
+            # Authoritative = single reasoner: a gate fault means we cannot
+            # confirm Brain authorization, so DO NOT trade (fail-closed). In the
+            # softer modes, fail-open so a gate bug never halts trading.
+            authoritative = str(getattr(gate, "mode", "")) == "authoritative"
+            logger.warning(
+                "[cognition-gate] {} evaluation errored — {} entry (fail-{}): {}",
+                symbol, "blocking" if authoritative else "allowing",
+                "closed" if authoritative else "open", exc,
+            )
+            return not authoritative
 
     def _build_consensus_candidate_item(
         self, symbol: str, candidate: Any, cfg: Any,
@@ -7948,6 +8183,15 @@ class EventDrivenSystem:
             # (cold start), or anything errors, the entry is ALLOWED — the gate
             # never blocks on absent evidence or a tracking fault.
             if not self._thesis_gate_allows(symbol, direction):
+                return
+
+            # ── Gate 0e: AI Cognitive Brain (Single Reasoner, Step C) ─
+            # The one reasoner's authority on the decision path. In "shadow"
+            # (default) it only records what it WOULD decide; in "veto" it can
+            # suppress an entry the legacy path proposed when the Brain does not
+            # back this direction. One-way — it never originates a trade here.
+            # Fail-open: absent/stale Brain read or any fault ALLOWS the entry.
+            if not self._cognition_gate_allows(symbol, direction):
                 return
 
             # ── Compliance Division: single authoritative permit ─────
@@ -10228,6 +10472,26 @@ class EventDrivenSystem:
         ctx = self._ctx
         if ctx is None:
             return
+
+        # ── Evolving campaigns: record the closed leg / campaign end ────
+        # Observational (default OFF via ``campaign.enabled``). Ties the realised
+        # outcome back to the continuing idea so the post-mortem reads a full
+        # campaign narrative. Best-effort — never affects close accounting.
+        registry = getattr(ctx, "campaign_registry", None)
+        if registry is not None and getattr(registry, "enabled", False):
+            try:
+                won_flag = (pnl_dollars or 0.0) > 0.0 or (
+                    (pnl_dollars or 0.0) == 0.0 and (pnl_pips or 0.0) > 0.0
+                )
+                registry.observe_close(
+                    symbol, direction,
+                    exit_cause=str(exit_reason or ""),
+                    pnl=float(pnl_dollars or 0.0),
+                    won=won_flag,
+                    ticket=str(ticket or ""),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[campaign] close feed failed for {}: {}", symbol, exc)
 
         # ── Phase 6: feed per-TF structure agreement into the adaptive
         # evidence-weight provider so the probabilistic-bias weights learn
