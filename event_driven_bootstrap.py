@@ -2679,6 +2679,7 @@ class EventDrivenSystem:
                 size_lookup=self._stage_size,
                 derive_targets=self._entry_orchestrator._derive_targets,
                 gate_check=self._staging_gate_allows,
+                single_path_active=self._single_reasoner_path_active,
             )
             self._entry_orchestrator.zone_watcher.register_update_callback(
                 self._zone_stager.on_zone_update,
