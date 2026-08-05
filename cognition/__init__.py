@@ -52,6 +52,7 @@ __all__ = [
     "readiness_verdict",
     "audit_competing_decision_code",
     "CompetingDecisionAudit",
+    "legacy_entry_suppressed",
 ]
 
 
@@ -98,4 +99,7 @@ def __getattr__(name: str):
                 "KNOWN_LEGACY_SURFACES", "LegacySurface", "DecisionFinding"):
         from cognition import legacy_audit as _la
         return getattr(_la, name)
+    if name in ("legacy_entry_suppressed", "BRAIN_SOURCE"):
+        from cognition import single_path as _sp
+        return getattr(_sp, name)
     raise AttributeError(f"module 'cognition' has no attribute {name!r}")
