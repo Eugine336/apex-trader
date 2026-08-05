@@ -4912,12 +4912,14 @@ class EventDrivenSystem:
                 # another's idle capital. Falls back to combined-equity heat
                 # only when per-account data is unavailable.
                 heat_pct = 0.0
+                equity_basis = 0.0
                 if ctx.account_risk is not None and acct_risk_dollars:
                     for _acct, _risk_d in acct_risk_dollars.items():
                         _bal = ctx.account_risk.balance(_acct)
                         _h = (_risk_d / _bal * 100.0) if _bal > 0 else 0.0
                         if _h > heat_pct:
                             heat_pct = _h
+                            equity_basis = _bal
                 else:
                     equity = 0.0
                     try:
@@ -4926,10 +4928,30 @@ class EventDrivenSystem:
                         equity = 0.0
                     if equity <= 0 and ctx.account_risk is not None:
                         equity = ctx.account_risk.total_balance()
+                    equity_basis = equity
                     heat_pct = (
                         compute_live_heat_pct(position_risks, equity)
                         if equity > 0 else 0.0
                     )
+                # Self-heal the heat ladder to the live micro-account equity.
+                # The SM is constructed once at startup when the broker balance
+                # is often still unknown, leaving the base ~$10k thresholds in
+                # place — which force-close every min-lot trade seconds after
+                # entry. Recalibrating each cycle (idempotent, from the same
+                # equity the heat is measured against) fixes the calibration
+                # once the balance is known. Fully fail-safe.
+                if equity_basis <= 0.0:
+                    try:
+                        equity_basis = float(self._pm.get_total_equity() or 0.0)
+                    except Exception:
+                        equity_basis = 0.0
+                if equity_basis > 0.0:
+                    try:
+                        ctx.portfolio_risk_sm.recalibrate_for_equity(equity_basis)
+                    except Exception as exc:
+                        logger.debug(
+                            "[risk-state] heat recalibrate failed: {}", exc,
+                        )
                 corr_safe, max_exposure = self._portfolio_correlation_state(positions)
                 snapshot = PortfolioRiskSnapshot(
                     live_heat_pct=heat_pct,
