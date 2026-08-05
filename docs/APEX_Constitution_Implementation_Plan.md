@@ -361,10 +361,19 @@ the Brain-driven path.
     into the bootstrap so every call site — and the existing
     `from event_driven_bootstrap import _broker_pip_value_from_spec` path —
     resolves identically. Behaviour unchanged; 17 characterization tests pin it.
-  - ⏳ Next slices (each its own behaviour-preserving PR): the structure/micro
-    helpers (`_struct_*`, `_micro_confirmation_from_event`, `_compute_m1_micro`),
-    then the tick-source threads, `FlushLoop`/`TickEvalLoop`, `PositionEvaluator`,
-    and the entry pipeline — characterization tests first each time.
+  - ✅ **`brain/structure_context.py`** — the WorldModel-structure / M1
+    micro-context readers (`_struct_trend_conf` / `_struct_event` /
+    `_struct_swings` / `_compute_m1_micro` / `_micro_confirmation_from_event`)
+    lifted out and re-imported (preserves the existing
+    `from event_driven_bootstrap import _struct_swings` / `_micro_confirmation_from_event`
+    test import paths). Behaviour unchanged; 12 characterization tests pin it.
+    Follow-up: `brain/backtest_engine.py` keeps byte-mirrored copies of four of
+    these ("Mirrors `event_driven_bootstrap._struct_*`") — de-duplicate it onto
+    this shared module in a later slice (deferred: the backtest path needs the
+    full numeric stack to verify offline).
+  - ⏳ Next slices (each its own behaviour-preserving PR): the tick-source
+    threads, `FlushLoop`/`TickEvalLoop`, `PositionEvaluator`, and the entry
+    pipeline — characterization tests first each time.
 
 **Acceptance:** no competing decision code remains (grep audit); god-file split;
 characterization tests green; behaviour unchanged for the Brain-driven path.
