@@ -943,51 +943,15 @@ class PositionEvaluator:
           captured for this position, or the WorldModel carries no votes; the
           caller falls back to the unchanged net-summed read.
         """
-        dcfg = getattr(self._config, "decision", None) if self._config else None
-        if dcfg is not None and not getattr(
-            dcfg, "candidate_scoped_management_enabled", True,
-        ):
-            return None
-        prov = self._candidate_positions.get(str(order_id))
-        if prov is None or not getattr(prov, "contributing_modules", None):
-            return None
-        if wm is None:
-            return None
-        try:
-            votes = wm.votes_list()
-        except Exception:
-            return None
-        if not votes:
-            return None
-
-        scoped = self._scope_votes_to_candidate(votes, prov)
-        want = "LONG" if str(pos_direction).upper() in ("LONG", "BUY") else "SHORT"
-        directional = [
-            v for v in scoped
-            if str(getattr(v, "direction", "")).upper() in ("LONG", "SHORT")
-        ]
-
-        min_live = 1
-        if dcfg is not None:
-            try:
-                min_live = max(1, int(getattr(dcfg, "candidate_thesis_min_live_votes", 1)))
-            except Exception:
-                min_live = 1
-        # Contributing panel has gone quiet (no live directional reads from the
-        # modules that opened this trade) → conservative exit.
-        if len(directional) < min_live:
-            return ("CLOSE", "thesis_silent")
-
-        supporting = sum(
-            1 for v in directional
-            if str(getattr(v, "direction", "")).upper() == want
-        )
-        opposing = len(directional) - supporting
-        # Majority of the opening panel now opposes the position → the reason
-        # this trade existed is gone. Raise a scoped invalidation close.
-        if opposing > supporting:
-            return ("CLOSE", "thesis_invalidated")
-        return ("HOLD", scoped)
+        # ── Candidate-scoped thesis exit — RETIRED (Single Reasoner cutover) ──
+        # This legacy read emitted CLOSE / HOLD market-judgment verdicts from the
+        # opening vote panel — a module deciding close/hold, which Constitution
+        # III.2 forbids. The one AI Cognitive Brain now owns exit judgment (via
+        # its manage() path), and the deterministic mechanical stop / R-ladder
+        # still protects the position. Always returns None → the caller applies no
+        # scoped close and reports thesis_status "" (falls back to the unchanged
+        # net-summed read for the Position Health panel only).
+        return None
 
     def _check_evidence_exit(
         self,

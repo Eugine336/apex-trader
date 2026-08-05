@@ -106,8 +106,9 @@ KNOWN_LEGACY_SURFACES = (
         module="event_driven_bootstrap.py",
         authority="legacy management CLOSE/HOLD verdicts on the god-file eval path",
         article="III.2 / VI.4 (renewed authorization) / XI (god-file)",
-        note="superseded by cognition/management_gate; removed with the coupled-core "
-        "decomposition (PositionEvaluator/EventDrivenSystem) at cutover",
+        note="RETIRED — the candidate-scoped thesis exit verdict is neutralised "
+        "(returns None); the Brain owns exit judgment, mechanical stops own safety. "
+        "Reports as 'removed'. God-file decomposition of the coupled cores remains.",
     ),
 )
 

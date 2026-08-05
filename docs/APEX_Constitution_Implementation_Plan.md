@@ -28,18 +28,25 @@
 >   consumers were already `None`-guarded → neutral sizing (×1.0), no veto. The
 >   one pure helper (`gate_quality_multiplier`) is inlined in `trigger/entry_engine`.
 >   (Not an audit-tracked verdict/vote emitter, so the audit count is unchanged.)
+> - **Stage 2c (god-file exit verdict retired) — done:** the candidate-scoped
+>   thesis exit (`event_driven_bootstrap._check_candidate_thesis`) emitted
+>   `CLOSE/HOLD` market-judgment verdicts; it is neutralised to `return None`
+>   (the Brain owns exit judgment; mechanical stops own safety). The audit now
+>   reports **1 present / 2 removed** (`event_driven_bootstrap` cleared).
 >
 > Deterministic safety/feasibility (Part X) and position closing/de-risking are
-> retained untouched. **Remaining (the validated tail, demo-gated per Part XV):**
-> (1) move exit/reverse *execution* authority from the legacy managers to the
-> Brain's `manage()`; (2) relocate the shared `Vote`/`VoteResult` types, rewire
-> `decision_core`/scanner/consensus consumers to Evidence, then delete
-> `brain/directional_consensus.py`; (3) remove the god-file `CLOSE/HOLD`
-> management verdicts and decompose the two coupled cores (`PositionEvaluator`,
-> `EventDrivenSystem`) — driving `legacy_audit` to `clean=True`. These change live
-> control flow and MUST be validated on the demo (a valid `LLM_API_KEY` is
-> required for the Brain to reason — with no reasoning the single path fail-safes
-> to NO entries).
+> retained untouched. **Remaining — the ONE emitter left is
+> `brain/directional_consensus.py`.** Its `decide`/`form_thesis` consensus
+> *decisions* are already runtime-severed (single-path), but its `vote_from_*`
+> extractors construct evidence-polarity `VoteResult`s (Constitution III.4
+> Evidence, not a III.2 decision) that still feed **live non-Brain analysis**
+> (`brain/decision_core`, `brain/developing_analysis`, the adaptive subsystem,
+> `scanner/candle_close_handler`). Reaching `clean=True` therefore requires the
+> coupled-core migration: move the vote-Evidence production into a sanctioned
+> Evidence module, physically delete the consensus decision functions, and rewire
+> those live consumers. This changes live control flow and MUST be validated on
+> the demo (Part XV) — a valid `LLM_API_KEY` is required for the Brain to reason;
+> with no reasoning the single path fail-safes to NO entries.
 
 ---
 
