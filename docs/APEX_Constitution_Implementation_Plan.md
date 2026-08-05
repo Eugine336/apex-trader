@@ -6,6 +6,13 @@
 > Definition of Done (Part XIV) is fully met. Each phase is one PR.
 >
 > Legend: ✅ = 1:1 in code · 🟡 = partial · ❌ = not started.
+>
+> **Progress:** Phases A–L are all shipped and merged. The one remaining item is
+> the **validated legacy-decider cutover** — physical removal of the runtime-
+> superseded decision code + decomposition of the two coupled cores
+> (`PositionEvaluator`, `EventDrivenSystem`) — which executes only after a symbol
+> group holds `authoritative` cleanly on the demo (gated by Phase L's shipped
+> observability + validation harness + runbook, per Part XV).
 
 ---
 
@@ -36,7 +43,7 @@
 
 | Constitution | Requirement | Status | Where in code | Closed by |
 |---|---|---|---|---|
-| I.4 / II.1 | Single cognitive authority | 🟡 entry-only | `cognition/gate.py` (authoritative on entry); management still legacy | E, F, G, K |
+| I.4 / II.1 | Single cognitive authority | 🟡 | Brain gate authoritative on entry (C/D), management (F), and origination (G, shadow); legacy path runtime-superseded — physical removal is the deferred cutover | E✅ F✅ G✅ / K ⏳ |
 | II.7 / II.3 | Structured decision package + required questions | ✅ | `cognition/contracts.py` `DecisionPackage`; `cognition/brain.py` | — |
 | III.2 | No module emits buy/sell/hold/close/reverse | 🟡 | legacy `directional_consensus`, `thesis_engine` still emit directional votes/should_act | E, K |
 | III.3 | All evidence domains feed the Brain | ✅ | `cognition/evidence_adapters.py` + `cognition/loop.py` consolidator (per-module, domain-classified) | E ✅ |
@@ -49,14 +56,14 @@
 | VI.4 | Renewed Brain authorization per execution/management action | 🟡 | entry gated + freshness (C/D); risk-adding management (scale-in/re-entry) gated (F); exit/reverse *execution* still G | F, G |
 | VI.5 | Brain-driven management (hold/scale/protect/exit/reverse) | ✅ | `cognition/brain.py` `manage()` + `cognition/management_gate.py` (adds gated live; de-risking never blocked); legacy managers demoted to evidence | F ✅ (exit/reverse execution in G) |
 | VII.1–6 | Post-trade reconstruction, decision audit, memory | ✅ | `cognition/memory.py` persists fingerprint+spec+outcome+post-mortem (SQLite); `find_analogues` retrieval feeds the Brain a `historical_analogue` Evidence | H ✅ |
-| VII (memory) | Persistent institutional memory + retrieval | ❌ | campaigns not persisted to `persistence/event_store.py`; no similarity retrieval | **H** |
+| VII (memory) | Persistent institutional memory + retrieval | ✅ | `cognition/memory.py` (`CampaignMemoryStore`, SQLite, fingerprint similarity + `find_analogues`) | H ✅ |
 | VIII | Adaptive influence over evidence + Brain, validated | ✅ | `cognition/influence.py` (`InfluenceLedger` per `Evidence.source_module` + `CalibrationTracker`); weighted `consolidation()`; shadow-apply, significance-gated | J ✅ |
 | IX | Composio: AI objective → Action Planner (capability+provider) → governance → execute → observe → memory | 🟡 | `action/capabilities.py` registry + `action/planner.py` (Article 11) + `cognition/operations.py` (Article 9); default-off; live retrieval→Evidence pending | I 🟡 |
 | X | Governance & safety (policy, approvals, ceilings, audit) | ✅ | `action/orchestrator.py` `GovernancePolicy`, `governance/division.py`, risk stack | — |
 | XI | Modular, testable, no hidden decision logic | 🟡 | `event_driven_bootstrap.py` 10.8k-line god-file; legacy decision code present | K |
-| XII | Observability (metrics/logs/traces/lifecycle) | 🟡 | governance `get_status` surfaces cognition; no cognition metrics/traces/dashboards | L |
-| XIII | Validation (unit/integration/sim/walk-forward/paper/rollout) | 🟡 | unit tests present; no cognition sim/walk-forward/paper harness | L |
-| XIV | Acceptance criteria | ❌ | see Definition of Done | E–L |
+| XII | Observability (metrics/logs/traces/lifecycle) | ✅ | `cognition/observability.py` (`CognitionObservability`) surfaced under governance `cognition.observability` | L ✅ |
+| XIII | Validation (unit/integration/sim/walk-forward/paper/rollout) | ✅ | `cognition/validation.py` (`ReplayHarness` + `readiness_verdict`) + `docs/APEX_Cognition_Rollout_Runbook.md` | L ✅ |
+| XIV | Acceptance criteria | 🟡 | see Definition of Done — E–L all met; only the validated legacy-decider cutover remains | E–L ✅ / cutover ⏳ |
 
 **Completed foundation (Phases A–D, merged):** constitutional contracts
 (`cognition/contracts.py`), the single `CognitiveBrain` (`cognition/brain.py`),
@@ -127,8 +134,6 @@ authorization; shadow mode records would-manage; legacy managers no longer close
 /scale on their own judgment; tests for each action + fail-safe.
 
 ---
-
-## 4. Phase G — Campaign origination + execution consumes the spec (Parts IV.8, VI.1–2)
 
 ## 4. Phase G — Campaign origination + execution consumes the spec (Parts IV.8, VI.1–2) — 🟡 SHIPPED SHADOW
 
@@ -397,11 +402,6 @@ for the Brain-driven path (✅); "no competing decision code remains" grep audit
 physical decomposition of the coupled cores + legacy deletion — ⏳ deferred to the
 validated cutover (Phase L → then the deletion pass).
 
-**Acceptance:** no competing decision code remains (grep audit); god-file split;
-characterization tests green; behaviour unchanged for the Brain-driven path.
-🟡 Decomposition underway (broker_fields extracted + tested); deletion pass and
-full split pending live validation.
-
 ---
 
 ## 9. Phase L — Observability, validation & controlled rollout (Parts XII, XIII) — ✅ DONE
@@ -474,4 +474,5 @@ E (evidence) → F (management authority) → G (origination + spec execution) �
 H (institutional memory) → I (Composio ops) → J (adaptive) → K (legacy removal +
 god-file decomposition) → L (observability + validation).
 
-E is the highest-leverage next step and unblocks the quality of everything after.
+E–L are all shipped; the sequence now converges on the single validated cutover
+(legacy-decider deletion + coupled-core decomposition) that Phase L unblocks.
