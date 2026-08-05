@@ -3226,10 +3226,15 @@ class EventDrivenSystem:
                 tp = getattr(origination, "tp", None)
                 if not symbol or direction not in ("LONG", "SHORT"):
                     return
+                # Part X — every entry MUST carry a protective stop. When the
+                # Brain's spec omits one, derive it deterministically from the
+                # live price + structure rather than refusing to trade.
+                if sl is None or tp is None:
+                    sl, tp = self._derive_origination_levels(symbol, direction)
                 if sl is None or tp is None:
                     logger.info(
-                        "[origination-sink] {} {} skipped — no protective stop/target "
-                        "(refusing to bypass Part X safety floor)",
+                        "[origination-sink] {} {} skipped — could not derive a "
+                        "protective stop/target (Part X safety floor)",
                         symbol, direction,
                     )
                     return
@@ -3261,6 +3266,55 @@ class EventDrivenSystem:
                 logger.warning("[origination-sink] submit failed: {}", exc)
 
         return _sink
+
+    def _derive_origination_levels(self, symbol: str, direction: str):
+        """Deterministic protective ``(sl, tp)`` for a Brain-originated entry.
+
+        Reads the live price (tick) and the WorldModel's structural targets, then
+        defers the arithmetic to the pure
+        :func:`cognition.campaign_translator.derive_protective_levels`. Honors the
+        Part X safety floor: returns ``(None, None)`` when it cannot form a valid,
+        correctly-ordered stop/target (the sink then declines to submit). Never
+        raises.
+        """
+        try:
+            from cognition.campaign_translator import derive_protective_levels
+
+            tick = self._tick_store.get_latest(symbol) if self._tick_store is not None else None
+            if tick is None:
+                return (None, None)
+            is_long = direction == "LONG"
+            entry = float(getattr(tick, "ask", 0.0) if is_long
+                          else getattr(tick, "bid", 0.0)) or float(getattr(tick, "mid", 0.0) or 0.0)
+            if entry <= 0:
+                return (None, None)
+            cog = getattr(self._config, "cognition", None)
+            stop_fraction = float(getattr(cog, "origination_stop_fraction", 0.004)
+                                  if cog is not None else 0.004)
+            reward_multiple = float(getattr(cog, "origination_reward_multiple", 2.0)
+                                    if cog is not None else 2.0)
+            min_rr = float(getattr(cog, "origination_min_rr", 1.0)
+                           if cog is not None else 1.0)
+            targets = None
+            try:
+                wm = self._wm_store.get(symbol) if self._wm_store is not None else None
+                if wm is not None:
+                    targets = wm.get_structural_targets(
+                        direction, entry, min_distance=entry * stop_fraction * max(min_rr, 0.0),
+                    )
+            except Exception as exc:  # noqa: BLE001 — structure is best-effort
+                logger.debug("[origination-sink] structural targets failed for {}: {}", symbol, exc)
+                targets = None
+            return derive_protective_levels(
+                direction, entry,
+                stop_fraction=stop_fraction,
+                reward_multiple=reward_multiple,
+                min_rr=min_rr,
+                structural_targets=targets,
+            )
+        except Exception as exc:  # noqa: BLE001 — never break the sink
+            logger.debug("[origination-sink] level derivation failed for {}: {}", symbol, exc)
+            return (None, None)
 
     def _cognition_vote_panel(self, symbol: str) -> list:
         """Live per-module vote panel for one symbol, for the cognition loop.

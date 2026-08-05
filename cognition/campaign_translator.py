@@ -65,6 +65,72 @@ class OriginationIntent:
         }
 
 
+def derive_protective_levels(
+    direction: str,
+    entry_price: float,
+    *,
+    stop_fraction: float = 0.004,
+    reward_multiple: float = 2.0,
+    min_rr: float = 1.0,
+    structural_targets: Optional[list] = None,
+) -> "tuple[Optional[float], Optional[float]]":
+    """Deterministically derive a protective ``(sl, tp)`` for an originated entry.
+
+    Constitution Part X: every entry must carry a deterministic protective stop.
+    When the Brain's spec omits one, execution derives it here rather than
+    trading unprotected (or refusing to trade at all). Instrument-agnostic:
+
+    * ``sl`` sits ``stop_fraction`` of price on the protective side (0.4% by
+      default) — a bounded, always-valid distance that scales across gold/FX.
+    * ``tp`` is the nearest live structural level at least ``min_rr`` × risk
+      ahead (from the WorldModel) when one exists, else a ``reward_multiple`` ×
+      risk target.
+
+    Returns ``(None, None)`` on any invalid input or if the computed levels are
+    not correctly ordered around ``entry_price`` — the caller then declines to
+    submit rather than send an unsafe order. Never raises.
+    """
+    try:
+        d = str(direction or "").upper()
+        price = float(entry_price)
+        if d not in ("LONG", "SHORT") or price <= 0:
+            return (None, None)
+        frac = float(stop_fraction)
+        if not (frac > 0.0):
+            return (None, None)
+        risk = price * frac
+        if risk <= 0:
+            return (None, None)
+        is_long = d == "LONG"
+        sl = price - risk if is_long else price + risk
+        rr = max(float(min_rr), 0.0)
+        min_ahead = risk * rr
+        tp = None
+        for t in list(structural_targets or []):
+            try:
+                tv = float(t)
+            except (TypeError, ValueError):
+                continue
+            if is_long and tv >= price + min_ahead:
+                tp = tv
+                break
+            if (not is_long) and tv <= price - min_ahead:
+                tp = tv
+                break
+        if tp is None:
+            reward = risk * max(float(reward_multiple), 0.1)
+            tp = price + reward if is_long else price - reward
+        sl = round(sl, 6)
+        tp = round(tp, 6)
+        if is_long and not (sl < price < tp):
+            return (None, None)
+        if (not is_long) and not (tp < price < sl):
+            return (None, None)
+        return (sl, tp)
+    except Exception:  # noqa: BLE001 — derivation must never raise
+        return (None, None)
+
+
 def translate(
     spec: Any,
     *,
@@ -108,4 +174,4 @@ def translate(
         return None
 
 
-__all__ = ["OriginationIntent", "translate"]
+__all__ = ["OriginationIntent", "translate", "derive_protective_levels"]

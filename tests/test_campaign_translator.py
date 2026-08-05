@@ -1,6 +1,10 @@
 """Tests for the campaign translator (Phase G — origination from the Brain's spec)."""
 
-from cognition.campaign_translator import OriginationIntent, translate
+from cognition.campaign_translator import (
+    OriginationIntent,
+    derive_protective_levels,
+    translate,
+)
 from cognition.contracts import CampaignSpecification
 
 
@@ -68,3 +72,42 @@ def test_translate_carries_provenance():
 def test_translate_never_raises_on_garbage():
     assert translate(object()) is None
     assert translate(None) is None
+
+
+# ── derive_protective_levels (Part X deterministic stop/target) ────────────────
+
+def test_derive_long_default_fraction_and_reward():
+    sl, tp = derive_protective_levels("LONG", 2000.0)  # 0.4% stop, 2x reward
+    assert abs(sl - 1992.0) < 1e-6
+    assert abs(tp - 2016.0) < 1e-6
+    assert sl < 2000.0 < tp
+
+
+def test_derive_short_is_mirrored():
+    sl, tp = derive_protective_levels("SHORT", 2000.0)
+    assert abs(sl - 2008.0) < 1e-6
+    assert abs(tp - 1984.0) < 1e-6
+    assert tp < 2000.0 < sl
+
+
+def test_derive_prefers_structural_target_far_enough_ahead():
+    # 2005 is only +5 (< risk*min_rr=8) so it's skipped; 2050 qualifies.
+    sl, tp = derive_protective_levels("LONG", 2000.0, structural_targets=[2005.0, 2050.0])
+    assert tp == 2050.0
+
+
+def test_derive_falls_back_to_reward_multiple_when_no_structure():
+    sl, tp = derive_protective_levels("LONG", 2000.0, structural_targets=[])
+    assert abs(tp - 2016.0) < 1e-6
+
+
+def test_derive_instrument_agnostic_for_fx():
+    sl, tp = derive_protective_levels("LONG", 1.08)
+    assert sl < 1.08 < tp
+
+
+def test_derive_rejects_invalid_inputs():
+    assert derive_protective_levels("FLAT", 2000.0) == (None, None)
+    assert derive_protective_levels("LONG", 0.0) == (None, None)
+    assert derive_protective_levels("LONG", 2000.0, stop_fraction=0.0) == (None, None)
+    assert derive_protective_levels("LONG", "x") == (None, None)  # never raises
