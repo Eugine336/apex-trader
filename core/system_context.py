@@ -113,6 +113,51 @@ class SystemContext:
     # Session 29 — anti-ping-pong gate for atomic reversals. Consulted when a
     # ``thesis_flip`` fires to decide whether to close + reverse (vs plain exit).
     reversal_manager: Optional[Any] = None
+    # Evolving market campaigns — the lifetime of a directional thesis on a
+    # symbol that individual orders (open/scale/partial/re-entry/reversal) are
+    # legs of. Observational (default OFF); surfaced via Governance.
+    campaign_registry: Optional[Any] = None
+    # LLM reasoning subsystem — an additional evidence-emitting reasoner over the
+    # structured theses/votes. Provider-agnostic (env-driven), default OFF,
+    # fail-safe; surfaced via Governance. Never overrides physics vetoes.
+    llm_reasoner: Optional[Any] = None
+    # Autonomous Action Layer (Composio) — the single governed gateway through
+    # which Brain-authored objectives become external actions. Default OFF +
+    # dry-run; never reasons or originates objectives. Surfaced via Governance.
+    action_orchestrator: Optional[Any] = None
+    # Action Planner (Part IX Art 11) — turns the Brain's semantic objectives
+    # into provider-bound, governed Composio actions. The Brain never names a
+    # provider; the planner selects capability + provider. Default-off.
+    action_planner: Optional[Any] = None
+    # Reasoning Orchestrator (Part XVII) — lets the one Brain consult several
+    # reasoning engines; each opinion becomes advisory Evidence (never a vote).
+    # Default-off (consult_multi); the Brain remains the sole decision-maker.
+    reasoning_orchestrator: Optional[Any] = None
+    # The AI Cognitive Brain (Single Reasoner) + its background cognition loop.
+    # Consumes consolidated Evidence, emits DecisionPackages/CampaignSpecs. Runs
+    # in shadow by default (observational); surfaced via Governance.
+    cognitive_brain: Optional[Any] = None
+    cognition_loop: Optional[Any] = None
+    # Brain entry gate (Step C) — one-way authority that can veto (never
+    # originate) a proposed entry when the Brain does not back it. Fail-open.
+    cognition_gate: Optional[Any] = None
+    # Brain management gate (Phase F) — governs exposure-adding management actions
+    # (scale-in/re-entry); de-risking is never gated. Fail-safe.
+    management_gate: Optional[Any] = None
+    # Institutional memory (Phase H, Part VII) — persists campaign state
+    # fingerprints + realised outcomes so the Brain can consult analogous
+    # history. Observational; fail-safe; surfaced via cognition status.
+    campaign_memory: Optional[Any] = None
+    # Operational-intelligence author (Phase I, Part IX Art 9) — turns campaign
+    # outcomes into operational objectives (issue/notify/report) for the Action
+    # Planner. Ecosystem-only, never broker orders. Default-off.
+    operations_author: Optional[Any] = None
+    # Adaptive influence + Brain calibration (Phase J, Part VIII). The ledger
+    # grades each evidence source by realised outcome; the tracker grades the
+    # Brain's confidence-vs-reality. Learning is always on; applying the weights
+    # to consolidation is gated (shadow by default). Surfaced via cognition.
+    influence_ledger: Optional[Any] = None
+    brain_calibration: Optional[Any] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
     opportunity_executor: Optional[OpportunityExecutor] = None
@@ -1018,6 +1063,465 @@ class SystemContext:
             except Exception as exc:
                 logger.warning("[SystemContext] ReversalManager init failed: {}", exc)
 
+            # ── Campaign Registry (evolving market campaigns) ─────────────
+            # Tracks the lifetime of a directional thesis per symbol — the
+            # continuing idea that individual orders (open / scale-in / partial
+            # / re-entry / reversal) are legs of. Observational (default OFF):
+            # it records the campaign narrative and is surfaced via Governance
+            # ``get_status`` without altering any execution decision.
+            try:
+                from brain.campaign import CampaignRegistry as _CampaignRegistry
+
+                camp_cfg = getattr(config, "campaign", None)
+                ctx.campaign_registry = _CampaignRegistry(
+                    enabled=bool(
+                        getattr(camp_cfg, "enabled", False)
+                        if camp_cfg is not None else False
+                    ),
+                    dormant_after_seconds=float(
+                        getattr(camp_cfg, "dormant_after_seconds", 900.0)
+                        if camp_cfg is not None else 900.0
+                    ),
+                    invalidate_after_seconds=float(
+                        getattr(camp_cfg, "invalidate_after_seconds", 3600.0)
+                        if camp_cfg is not None else 3600.0
+                    ),
+                    history_limit=int(
+                        getattr(camp_cfg, "history_limit", 500)
+                        if camp_cfg is not None else 500
+                    ),
+                    postmortem_enabled=bool(
+                        getattr(camp_cfg, "postmortem_enabled", True)
+                        if camp_cfg is not None else True
+                    ),
+                    sound_evidence_threshold=float(
+                        getattr(camp_cfg, "sound_evidence_threshold", 0.5)
+                        if camp_cfg is not None else 0.5
+                    ),
+                    evidence_full_refreshes=int(
+                        getattr(camp_cfg, "evidence_full_refreshes", 5)
+                        if camp_cfg is not None else 5
+                    ),
+                )
+            except Exception as exc:
+                logger.warning("[SystemContext] CampaignRegistry init failed: {}", exc)
+
+            # ── LLM Reasoner (provider-agnostic reasoning subsystem) ──────
+            # Builds a provider client purely from config/env (no hardcoded
+            # vendor): self-hosted (Ollama / vLLM / any OpenAI-compatible
+            # endpoint) or commercial API (OpenAI / Anthropic / Gemini). Default
+            # OFF and fail-safe: with no provider set the client is None and the
+            # reasoner is inert. Emits opinions as evidence only — governed by
+            # the same authority layer and never overriding physics vetoes.
+            try:
+                from llm.client import build_client as _build_llm_client
+                from llm.model_manager import build_model_manager as _build_model_manager
+                from llm.reasoner import LLMReasoner as _LLMReasoner
+
+                llm_cfg = getattr(config, "llm", None)
+                _llm_client = None
+                if llm_cfg is not None and bool(getattr(llm_cfg, "enabled", False)):
+                    # Part XVI Art 9 — prefer the Model Manager (policy-driven
+                    # multi-model selection + failover). It is a drop-in for a
+                    # single client and degrades to the primary model when only
+                    # one candidate is configured. Fall back to a lone client if
+                    # the manager cannot be built.
+                    _llm_client = _build_model_manager(llm_cfg)
+                    if _llm_client is None:
+                        _llm_client = _build_llm_client(llm_cfg)
+                ctx.llm_reasoner = _LLMReasoner(
+                    client=_llm_client,
+                    enabled=bool(
+                        getattr(llm_cfg, "enabled", False)
+                        if llm_cfg is not None else False
+                    ),
+                    drive_decisions=bool(
+                        getattr(llm_cfg, "drive_decisions", False)
+                        if llm_cfg is not None else False
+                    ),
+                    min_interval_seconds=float(
+                        getattr(llm_cfg, "min_interval_seconds", 30.0)
+                        if llm_cfg is not None else 30.0
+                    ),
+                )
+                if ctx.llm_reasoner.available:
+                    logger.info(
+                        "[SystemContext] LLM reasoner ONLINE — provider '{}' model '{}'",
+                        getattr(llm_cfg, "provider", "?"),
+                        getattr(llm_cfg, "model", "?"),
+                    )
+            except Exception as exc:
+                logger.warning("[SystemContext] LLMReasoner init failed: {}", exc)
+
+            # ── Action Orchestrator (Autonomous Action Layer / Composio) ──
+            # The single governed gateway for external actions. It NEVER reasons
+            # or originates objectives — the Brain authors them, governance policy
+            # authorises, an adapter executes. Default OFF + dry-run (mock
+            # adapter, no external calls) until explicitly configured. Fail-safe.
+            try:
+                from action.composio import build_adapter as _build_action_adapter
+                from action.orchestrator import (
+                    ActionOrchestrator as _ActionOrchestrator,
+                    GovernancePolicy as _GovernancePolicy,
+                    tier_from as _tier_from,
+                )
+
+                comp_cfg = getattr(config, "composio", None)
+                _policy = _GovernancePolicy(
+                    enabled=bool(getattr(comp_cfg, "enabled", False)
+                                 if comp_cfg is not None else False),
+                    require_source=bool(getattr(comp_cfg, "require_source", True)
+                                        if comp_cfg is not None else True),
+                    min_confidence=float(getattr(comp_cfg, "min_confidence", 0.2)
+                                         if comp_cfg is not None else 0.2),
+                    auto_max_risk=_tier_from(
+                        getattr(comp_cfg, "auto_max_risk", "low")
+                        if comp_cfg is not None else "low"
+                    ),
+                    medium_confidence_threshold=float(
+                        getattr(comp_cfg, "medium_confidence_threshold", 0.7)
+                        if comp_cfg is not None else 0.7
+                    ),
+                )
+                _adapter = _build_action_adapter(comp_cfg)
+                ctx.action_orchestrator = _ActionOrchestrator(_policy, _adapter)
+                # Part IX Article 11 — the Action Planner: turns the Brain's
+                # semantic objectives into provider-bound, governed Composio
+                # actions. Enabled only when the action layer is; default-off is
+                # doubly safe (planner.submit is inert while disabled).
+                try:
+                    from action.capabilities import default_registry as _default_registry
+                    from action.planner import ActionPlanner as _ActionPlanner
+                    ctx.action_planner = _ActionPlanner(
+                        ctx.action_orchestrator,
+                        _default_registry(),
+                        enabled=bool(getattr(comp_cfg, "enabled", False)
+                                     if comp_cfg is not None else False),
+                        available_providers=(comp_cfg.available_providers_list()
+                                             if comp_cfg is not None else None),
+                        provider_preferences=(comp_cfg.provider_preferences_map()
+                                              if comp_cfg is not None else None),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[SystemContext] ActionPlanner init failed: {}", exc)
+                    ctx.action_planner = None
+                logger.info(
+                    "[SystemContext] Action layer ready — enabled={} adapter={} "
+                    "(dry_run={})",
+                    getattr(comp_cfg, "enabled", False) if comp_cfg else False,
+                    getattr(_adapter, "name", type(_adapter).__name__),
+                    getattr(comp_cfg, "dry_run", True) if comp_cfg else True,
+                )
+            except Exception as exc:
+                logger.warning("[SystemContext] ActionOrchestrator init failed: {}", exc)
+
+            # ── AI Cognitive Brain (Single Reasoner) + cognition loop ─────
+            # The one subsystem permitted to reason (Constitution Part I Art 4 /
+            # Part II). Consumes consolidated Evidence, emits decisions. Runs in
+            # SHADOW by default: it produces/surfaces decisions for observability
+            # without driving execution, so the legacy path stays authoritative
+            # until the cutover is validated (Parts XIII/XV). Fail-safe.
+            try:
+                from cognition.brain import CognitiveBrain as _CognitiveBrain
+                from cognition.loop import (
+                    BrainActionBridge as _BrainActionBridge,
+                    CognitionLoop as _CognitionLoop,
+                    EvidenceConsolidator as _EvidenceConsolidator,
+                )
+
+                cog_cfg = getattr(config, "cognition", None)
+                ctx.cognitive_brain = _CognitiveBrain(
+                    reasoner=ctx.llm_reasoner,
+                    min_confidence_to_act=float(
+                        getattr(cog_cfg, "min_confidence_to_act", 0.55)
+                        if cog_cfg is not None else 0.55
+                    ),
+                    max_uncertainty_to_act=float(
+                        getattr(cog_cfg, "max_uncertainty_to_act", 0.6)
+                        if cog_cfg is not None else 0.6
+                    ),
+                    allow_scale_in=bool(
+                        getattr(cog_cfg, "allow_scale_in", False)
+                        if cog_cfg is not None else False
+                    ),
+                    reverse_confidence=float(
+                        getattr(cog_cfg, "manage_reverse_confidence", 0.7)
+                        if cog_cfg is not None else 0.7
+                    ),
+                    exit_floor=float(
+                        getattr(cog_cfg, "manage_exit_floor", 0.3)
+                        if cog_cfg is not None else 0.3
+                    ),
+                )
+                # Part VII — institutional memory (Phase H). Best-effort: a
+                # store fault leaves memory None (observational, fail-open).
+                _memory = None
+                try:
+                    if bool(getattr(cog_cfg, "memory_enabled", True)
+                            if cog_cfg is not None else True):
+                        from cognition.memory import get_campaign_memory as _get_memory
+                        _memory = _get_memory()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[SystemContext] campaign memory init failed: {}", exc)
+                    _memory = None
+                ctx.campaign_memory = _memory
+                # Phase J (Part VIII) — adaptive influence ledger + Brain
+                # calibration. The ledger always learns from outcomes; whether its
+                # weights are APPLIED to consolidation is gated by influence_enabled
+                # (default shadow). Fail-safe: a fault leaves them None.
+                _influence = None
+                _calibration = None
+                try:
+                    from cognition.influence import (
+                        CalibrationTracker as _CalibrationTracker,
+                        InfluenceLedger as _InfluenceLedger,
+                    )
+                    _influence = _InfluenceLedger(
+                        min_samples=int(getattr(cog_cfg, "influence_min_samples", 20)
+                                        if cog_cfg is not None else 20),
+                        min_weight=float(getattr(cog_cfg, "influence_min_weight", 0.5)
+                                         if cog_cfg is not None else 0.5),
+                        max_weight=float(getattr(cog_cfg, "influence_max_weight", 1.5)
+                                         if cog_cfg is not None else 1.5),
+                    )
+                    _calibration = _CalibrationTracker()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[SystemContext] influence/calibration init failed: {}", exc)
+                    _influence = _calibration = None
+                ctx.influence_ledger = _influence
+                ctx.brain_calibration = _calibration
+                _influence_enabled = bool(getattr(cog_cfg, "influence_enabled", False)
+                                          if cog_cfg is not None else False)
+                # Part XVII — Reasoning Orchestrator: the one Brain may consult
+                # several reasoning engines whose opinions become advisory
+                # Evidence (never a vote). Built only when LLM is enabled AND
+                # consult_multi is on. Reliability-informed by the Phase VIII
+                # influence ledger (measured usefulness, not assumption — Art 11).
+                _reasoning_orch = None
+                try:
+                    _llm_cfg = getattr(config, "llm", None)
+                    if (_llm_cfg is not None and bool(getattr(_llm_cfg, "enabled", False))
+                            and bool(getattr(_llm_cfg, "consult_multi", False))):
+                        from llm.reasoning_orchestrator import (
+                            build_reasoning_orchestrator as _build_reasoning_orch,
+                        )
+                        _rel = _influence.weight_for if _influence is not None else None
+                        _reasoning_orch = _build_reasoning_orch(
+                            _llm_cfg, reliability_provider=_rel)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[SystemContext] ReasoningOrchestrator init failed: {}", exc)
+                    _reasoning_orch = None
+                ctx.reasoning_orchestrator = _reasoning_orch
+                # Phase I (Part IX Art 9) — operational-intelligence author.
+                # Turns terminated-campaign outcomes into operational objectives
+                # (issue on recurring loss, notify on a validated win, periodic
+                # report). Default-off; ecosystem-only, never broker orders.
+                _ops_author = None
+                try:
+                    from cognition.operations import OperationsAuthor as _OperationsAuthor
+                    _ops_author = _OperationsAuthor(
+                        enabled=bool(getattr(cog_cfg, "operations_enabled", False)
+                                     if cog_cfg is not None else False),
+                        loss_streak_threshold=int(
+                            getattr(cog_cfg, "operations_loss_streak", 3)
+                            if cog_cfg is not None else 3),
+                        report_period_seconds=float(
+                            getattr(cog_cfg, "operations_report_period_seconds", 86_400.0)
+                            if cog_cfg is not None else 86_400.0),
+                        cooldown_seconds=float(
+                            getattr(cog_cfg, "operations_cooldown_seconds", 3_600.0)
+                            if cog_cfg is not None else 3_600.0),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[SystemContext] OperationsAuthor init failed: {}", exc)
+                    _ops_author = None
+                ctx.operations_author = _ops_author
+
+                # Part VII — the registry writes terminal outcomes to memory, and
+                # (Part IX Art 9) feeds the same outcomes to the operations author,
+                # and (Part VIII) grades evidence sources + Brain calibration.
+                def _campaign_close_sink(camp: Any) -> None:
+                    stitched = None
+                    if _memory is not None:
+                        try:
+                            stitched = _memory.record_close(camp)
+                        except Exception:  # noqa: BLE001
+                            stitched = None
+                    data = {}
+                    pm = {}
+                    try:
+                        data = camp.to_dict() if hasattr(camp, "to_dict") else {}
+                        pm = data.get("postmortem") or {}
+                    except Exception:  # noqa: BLE001
+                        data, pm = {}, {}
+                    if _ops_author is not None:
+                        try:
+                            _ops_author.observe_campaign_outcome(
+                                symbol=str(data.get("symbol", "") or ""),
+                                direction=str(data.get("direction", "") or ""),
+                                verdict=str(pm.get("verdict", "") or ""),
+                                reasoning_quality=float(pm.get("reasoning_quality", 0.0) or 0.0),
+                                realized_pnl=float(data.get("realized_pnl", 0.0) or 0.0),
+                                evidence_ref=str(data.get("campaign_id", "") or ""),
+                            )
+                        except Exception:  # noqa: BLE001
+                            pass
+                    # Part VIII — credit/debit the evidence sources that backed
+                    # this campaign, and record the Brain's confidence-vs-outcome.
+                    if stitched is not None:
+                        won = bool(stitched.get("won", False))
+                        if _influence is not None:
+                            try:
+                                _influence.observe_many(
+                                    stitched.get("supporting_sources") or [], won)
+                            except Exception:  # noqa: BLE001
+                                pass
+                        if _calibration is not None:
+                            ec = stitched.get("entry_confidence")
+                            if ec is not None:
+                                try:
+                                    _calibration.observe(ec, won)
+                                except Exception:  # noqa: BLE001
+                                    pass
+
+                if (_memory is not None or _ops_author is not None
+                        or _influence is not None) \
+                        and ctx.campaign_registry is not None:
+                    try:
+                        ctx.campaign_registry.set_memory_sink(_campaign_close_sink)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("[SystemContext] close sink wiring failed: {}", exc)
+                _consolidator = _EvidenceConsolidator(
+                    ctx=ctx,
+                    per_module=bool(
+                        getattr(cog_cfg, "per_module_evidence", True)
+                        if cog_cfg is not None else True
+                    ),
+                    memory=_memory,
+                    max_analogues=int(
+                        getattr(cog_cfg, "memory_max_analogues", 5)
+                        if cog_cfg is not None else 5
+                    ),
+                    influence=_influence,
+                    influence_enabled=_influence_enabled,
+                    reasoning=_reasoning_orch,
+                )
+                _bridge = _BrainActionBridge(
+                    ctx.action_orchestrator,
+                    notify_enabled=bool(
+                        getattr(cog_cfg, "emit_operator_notifications", True)
+                        if cog_cfg is not None else True
+                    ),
+                )
+
+                def _cognition_symbols() -> list:
+                    try:
+                        eng = ctx.thesis_engine
+                        if eng is not None:
+                            st = eng.get_status() or {}
+                            syms = list((st.get("theses") or {}).keys())
+                            if syms:
+                                return syms
+                    except Exception:  # noqa: BLE001
+                        pass
+                    try:
+                        return list(config.enabled_pairs)
+                    except Exception:  # noqa: BLE001
+                        return []
+
+                def _cognition_positions() -> list:
+                    # Open campaigns → PositionView so the Brain can manage them.
+                    try:
+                        from cognition.brain import PositionView as _PositionView
+                        reg = ctx.campaign_registry
+                        if reg is None:
+                            return []
+                        live = (reg.get_status() or {}).get("live", []) or []
+                        out = []
+                        for c in live:
+                            d = str(c.get("direction", "") or "").upper()
+                            if d not in ("LONG", "SHORT"):
+                                continue
+                            out.append(_PositionView(
+                                symbol=str(c.get("symbol", "") or ""),
+                                direction=d,
+                                campaign_id=str(c.get("campaign_id", "") or ""),
+                            ))
+                        return out
+                    except Exception:  # noqa: BLE001
+                        return []
+
+                def _cognition_balance(symbol: str) -> float:
+                    # Per-symbol platform balance for Brain-originated sizing.
+                    try:
+                        return float(platform_manager.get_platform_balance(symbol) or 0.0)
+                    except Exception:  # noqa: BLE001
+                        return 0.0
+
+                ctx.cognition_loop = _CognitionLoop(
+                    ctx.cognitive_brain, _consolidator, _cognition_symbols,
+                    interval_seconds=float(
+                        getattr(cog_cfg, "loop_interval_seconds", 30.0)
+                        if cog_cfg is not None else 30.0
+                    ),
+                    max_symbols_per_cycle=int(
+                        getattr(cog_cfg, "max_symbols_per_cycle", 12)
+                        if cog_cfg is not None else 12
+                    ),
+                    shadow_mode=bool(
+                        getattr(cog_cfg, "shadow_mode", True)
+                        if cog_cfg is not None else True
+                    ),
+                    action_bridge=_bridge,
+                    position_source=_cognition_positions,
+                    origination_mode=str(
+                        getattr(cog_cfg, "origination_mode", "shadow")
+                        if cog_cfg is not None else "shadow"
+                    ),
+                    origination_risk_fraction=float(
+                        getattr(cog_cfg, "origination_risk_fraction", 0.01)
+                        if cog_cfg is not None else 0.01
+                    ),
+                    origination_max_exposure=float(
+                        getattr(cog_cfg, "origination_max_exposure", 1.0)
+                        if cog_cfg is not None else 1.0
+                    ),
+                    balance_provider=_cognition_balance,
+                    memory=_memory,
+                    operations_author=_ops_author,
+                    operations_sink=(ctx.action_planner.submit
+                                     if ctx.action_planner is not None else None),
+                )
+                from cognition.gate import CognitionGate as _CognitionGate
+                ctx.cognition_gate = _CognitionGate(
+                    ctx.cognitive_brain,
+                    mode=str(getattr(cog_cfg, "gate_mode", "authoritative")
+                             if cog_cfg is not None else "authoritative"),
+                    max_decision_age_seconds=float(
+                        getattr(cog_cfg, "max_decision_age_seconds", 300.0)
+                        if cog_cfg is not None else 300.0
+                    ),
+                )
+                from cognition.management_gate import ManagementGate as _ManagementGate
+                ctx.management_gate = _ManagementGate(
+                    ctx.cognitive_brain,
+                    mode=str(getattr(cog_cfg, "gate_mode", "authoritative")
+                             if cog_cfg is not None else "authoritative"),
+                    max_decision_age_seconds=float(
+                        getattr(cog_cfg, "max_decision_age_seconds", 300.0)
+                        if cog_cfg is not None else 300.0
+                    ),
+                )
+                logger.info(
+                    "[SystemContext] Cognitive Brain ready — reasoner_available={} "
+                    "shadow={} gate_mode={}",
+                    ctx.cognitive_brain.available,
+                    getattr(cog_cfg, "shadow_mode", False) if cog_cfg else False,
+                    getattr(cog_cfg, "gate_mode", "authoritative") if cog_cfg else "authoritative",
+                )
+            except Exception as exc:
+                logger.warning("[SystemContext] CognitiveBrain init failed: {}", exc)
+
             ctx.governance = _Governance(
                 module_governor=ctx.module_governor,
                 tuner_agent=ctx.tuner_agent,
@@ -1044,6 +1548,19 @@ class SystemContext:
                 ),
                 gate_attributor=ctx.gate_attributor,
                 thesis_engine=ctx.thesis_engine,
+                campaign_registry=ctx.campaign_registry,
+                llm_reasoner=ctx.llm_reasoner,
+                action_orchestrator=ctx.action_orchestrator,
+                cognitive_brain=ctx.cognitive_brain,
+                cognition_loop=ctx.cognition_loop,
+                cognition_gate=ctx.cognition_gate,
+                management_gate=ctx.management_gate,
+                campaign_memory=ctx.campaign_memory,
+                action_planner=ctx.action_planner,
+                operations_author=ctx.operations_author,
+                influence_ledger=ctx.influence_ledger,
+                brain_calibration=ctx.brain_calibration,
+                reasoning_orchestrator=ctx.reasoning_orchestrator,
             )
             # Install Governance as the authoriser on the Learning→Governance
             # gateway and require authorisation (per config; default on).
