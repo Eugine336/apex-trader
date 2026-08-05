@@ -85,6 +85,7 @@ class EvidenceDomain(Enum):
     EXECUTION_QUALITY = "execution_quality"
     PORTFOLIO = "portfolio"
     HISTORICAL_ANALOGUE = "historical_analogue"
+    REASONING = "reasoning"
     OTHER = "other"
 
     def __str__(self) -> str:  # pragma: no cover - trivial

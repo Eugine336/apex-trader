@@ -47,6 +47,7 @@ Its purpose is to:
 14. [Part XIV --- Acceptance Criteria](#part-xiv)
 15. [Part XV --- Future Evolution Constitution](#part-xv)
 16. [Part XVI --- Hardcoding & Architectural Abstraction Constitution](#part-xvi)
+17. [Part XVII --- Multi-Model Reasoning Constitution](#part-xvii)
 
 ------------------------------------------------------------------------
 
@@ -1421,3 +1422,72 @@ redesigned.
 
 **Rule:** Objectives are permanent; capabilities are stable; providers are
 replaceable.
+
+# Part XVII --- Multi-Model Reasoning Constitution
+
+> Version: Draft 1.0
+
+## Purpose
+
+Defines how Apex interacts with multiple AI reasoning models while preserving the
+Single Reasoner Principle. The objective is not multiple competing brains — it is
+one Cognitive Brain capable of consulting multiple reasoning engines before
+reaching a final conclusion.
+
+**Article 1 — The Cognitive Brain.** There is only one cognitive authority: the
+AI Cognitive Brain. It owns understanding, reasoning, hypothesis generation,
+expected-value estimation, campaign creation/evolution/termination and learning.
+No external model becomes a second brain.
+
+**Article 2 — Reasoning engines.** Language models (OpenAI, Claude, Gemini,
+Llama, DeepSeek, Qwen, Mistral, future models) are reasoning engines —
+implementations that perform inference. They do not become Apex.
+
+**Article 3 — Model independence.** Apex shall never depend on one reasoning
+provider. The Brain is permanent; engines are replaceable; replacing a provider
+never requires redesigning the Brain.
+
+**Article 4 — Internal reasoning.** Apex may maintain preferred models via direct
+API integrations or locally hosted models; these are the Brain's internal
+reasoning infrastructure, available regardless of Composio.
+
+**Article 5 — Composio AI capabilities.** Composio may expose additional
+reasoning providers as *optional* resources. They extend the Brain's ability to
+seek perspectives; they do not replace it. The Brain remains final authority.
+
+**Article 6 — Consultative reasoning.** The Brain may consult one or more
+engines: evidence → Brain constructs an initial thesis → requests specialist
+analysis → engines respond → Brain evaluates and *challenges* every response →
+Brain constructs the final thesis. External engines never directly create
+campaigns.
+
+**Article 7 — No majority voting.** The Brain shall never blindly follow the
+majority. Three models agreeing does not make a thesis correct. Every external
+opinion is *evidence, not truth*, evaluated on supporting/contradictory evidence,
+historical reliability, current context and expected value.
+
+**Article 8 — Specialist reasoning.** Engines have different strengths (deep
+reasoning, code, pattern explanation, risk analysis, research, long-context).
+Provider selection depends on capability, not preference.
+
+**Article 9 — Reasoning Orchestrator.** Between the Brain and external engines
+exists the Reasoning Orchestrator: it selects appropriate engine(s), manages
+latency/cost/privacy/reliability, collects responses, and returns structured
+reasoning to the Brain. The Brain never communicates directly with providers.
+
+**Article 10 — Final decision authority.** External engines never determine buy,
+sell, campaign, expected value, campaign termination or expansion. Only the Brain
+has constitutional authority over market decisions.
+
+**Article 11 — Continuous validation.** The Brain continuously measures each
+engine's reasoning quality, contribution quality, historical usefulness, latency,
+reliability and cost; future selection is informed by measured performance, not
+assumption.
+
+**Article 12 — Constitutional rule.** Apex possesses one Brain; it may consult
+many engines; every engine is an advisor. The Brain alone synthesizes all
+evidence, evaluates all external opinions, constructs the final thesis, authorizes
+campaigns and remains the sole decision-maker. Multiple engines increase
+perspective; they do not divide authority.
+
+**Rule:** Many advisors, one Brain — opinions are evidence, never votes.

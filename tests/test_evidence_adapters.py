@@ -4,6 +4,7 @@ from cognition.contracts import EvidenceDomain
 from cognition.evidence_adapters import (
     classify_domain,
     evidence_from_analogues,
+    evidence_from_reasoning,
     evidence_from_thesis_status,
     evidence_from_votes,
 )
@@ -135,3 +136,40 @@ def test_evidence_from_analogues_empty_and_fault_safe():
     assert evidence_from_analogues("EURUSD", None) == []
     assert evidence_from_analogues("EURUSD", []) == []
     assert evidence_from_analogues("EURUSD", [object()]) == []  # non-dict → skipped
+
+
+# ── Multi-model reasoning opinions → Evidence (Part XVII, Art 7) ──────────────
+
+from types import SimpleNamespace
+
+
+def _consult(*opinions):
+    return SimpleNamespace(opinions=[
+        SimpleNamespace(engine=e, direction=d, confidence=c, rationale="r", latency_ms=12.0)
+        for (e, d, c) in opinions
+    ])
+
+
+def test_evidence_from_reasoning_one_per_engine_not_a_vote():
+    # Two engines agree LONG, one SHORT — each becomes its OWN evidence item;
+    # the adapter never collapses them into a majority (Art 7).
+    ev = evidence_from_reasoning("EURUSD", _consult(
+        ("openai", "LONG", 0.8), ("claude", "LONG", 0.7), ("deepseek", "SHORT", 0.6)))
+    assert len(ev) == 3
+    assert all(e.domain == EvidenceDomain.REASONING for e in ev)
+    srcs = {e.source_module for e in ev}
+    assert srcs == {"reasoning_engine.openai", "reasoning_engine.claude",
+                    "reasoning_engine.deepseek"}
+    longs = [e for e in ev if e.polarity > 0]
+    shorts = [e for e in ev if e.polarity < 0]
+    assert len(longs) == 2 and len(shorts) == 1     # opinions preserved, not voted
+
+
+def test_evidence_from_reasoning_classify_domain():
+    assert classify_domain("reasoning_engine.openai") == EvidenceDomain.REASONING
+
+
+def test_evidence_from_reasoning_empty_and_fault_safe():
+    assert evidence_from_reasoning("EURUSD", None) == []
+    assert evidence_from_reasoning("EURUSD", SimpleNamespace(opinions=[])) == []
+    assert evidence_from_reasoning("EURUSD", object()) == []

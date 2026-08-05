@@ -299,6 +299,38 @@ default and operator/governance-gated before it steers live consolidation.
 
 ---
 
+## 7b. Part XVII — Multi-model consultative reasoning — ✅ DONE (default-off)
+
+**Goal:** the one Cognitive Brain may *consult* several reasoning engines, each
+opinion becoming advisory Evidence (never a vote); the Brain remains the sole
+decision-maker.
+
+**Shipped:**
+- `llm/reasoning_orchestrator.py` (new): `ReasoningOrchestrator` (Article 9) —
+  sits between Brain and engines; `ReasoningEngine` wraps each reasoner with
+  capability tags + health (calls/faults/EWMA latency, Article 11). `consult()`
+  fans out to selected engines and returns **all** opinions with **no vote /
+  average / majority** (Article 7). Selection is capability-first with fallback
+  (Article 8), ordered by measured usefulness via an optional
+  `reliability_provider` (wired to the Phase VIII influence ledger — Article 11).
+  `build_reasoning_orchestrator` builds one engine per candidate model
+  (primary + `extra_models`).
+- `EvidenceDomain.REASONING` + `evidence_from_reasoning()` — each engine opinion
+  → its own `reasoning_engine.<name>` Evidence; the consolidator consults the
+  orchestrator and injects them so the Brain synthesises them alongside all other
+  evidence (Article 6/12), and the influence ledger grades each engine by
+  realised outcome (Article 11).
+- Config: `LLMConfig.consult_multi` (default **False**) + `consult_max_engines`
+  + env. Wired in `system_context` (reliability from the influence ledger);
+  surfaced under governance `cognition.reasoning_orchestrator`.
+
+**Acceptance:** ✅ many advisors, one Brain — opinions are Evidence, never votes;
+✅ Brain never talks to providers directly (orchestrator mediates); ✅ external
+engines never decide (they only add evidence); ✅ per-engine continuous
+validation. Default-off — behaviour-neutral until `LLM_CONSULT_MULTI=true`.
+
+---
+
 ## 8. Phase K — Legacy decider removal + god-file decomposition (Part XI)
 
 **Goal:** physically remove the now-dead legacy *decision* code; decompose the

@@ -46,6 +46,7 @@ _DOMAIN_RULES: tuple[tuple[tuple[str, ...], EvidenceDomain], ...] = (
     (("portfolio", "exposure", "heat"), EvidenceDomain.PORTFOLIO),
     (("analogue", "historical", "instrument_stats", "stats"),
      EvidenceDomain.HISTORICAL_ANALOGUE),
+    (("reasoning_engine", "reasoner", "llm"), EvidenceDomain.REASONING),
 )
 
 
@@ -231,4 +232,40 @@ __all__ = [
     "evidence_from_thesis_status",
     "evidence_from_votes",
     "evidence_from_analogues",
+    "evidence_from_reasoning",
 ]
+
+
+def evidence_from_reasoning(symbol: str, consultation: Any) -> "list[Evidence]":
+    """Turn a multi-engine reasoning consultation into per-engine Evidence.
+
+    Part XVII Art 7: every external opinion is *evidence, not truth* — so each
+    engine's opinion becomes its own :class:`~cognition.contracts.Evidence`
+    (``source_module="reasoning_engine.<name>"``, domain ``REASONING``), never a
+    vote or an average. The Brain synthesises them alongside all other evidence,
+    and the Phase VIII influence ledger grades each engine by realised outcome
+    (Art 11). Fail-safe: returns ``[]`` on empty input or any fault.
+    """
+    out: list[Evidence] = []
+    try:
+        opinions = list(getattr(consultation, "opinions", None) or [])
+        for op in opinions:
+            engine = str(getattr(op, "engine", "") or "").strip()
+            if not engine:
+                continue
+            direction = str(getattr(op, "direction", FLAT) or FLAT).upper()
+            conf = _clamp01(getattr(op, "confidence", 0.0))
+            rationale = str(getattr(op, "rationale", "") or "")
+            out.append(Evidence(
+                source_module=f"reasoning_engine.{engine}",
+                domain=EvidenceDomain.REASONING, symbol=str(symbol or ""),
+                observation=f"{engine} reasons {direction}: {rationale[:160]}",
+                confidence=conf, uncertainty=1.0 - conf,
+                polarity=_sign(direction) * conf,
+                measurements={"engine": engine,
+                              "latency_ms": round(float(getattr(op, "latency_ms", 0.0) or 0.0), 1)},
+                relevance_horizon_seconds=900.0,
+            ))
+    except Exception:  # noqa: BLE001 — consolidation must never raise
+        return out
+    return out
