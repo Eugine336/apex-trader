@@ -1491,3 +1491,105 @@ campaigns and remains the sole decision-maker. Multiple engines increase
 perspective; they do not divide authority.
 
 **Rule:** Many advisors, one Brain — opinions are evidence, never votes.
+
+----------------------------------------------------------------------
+
+# Part XVIII --- Live Campaign Management Constitution
+
+> Version: 1.0
+
+## Purpose
+
+Defines how Apex manages every active market opportunity after execution.
+Management is not a secondary subsystem, a collection of trading rules, stop-loss
+movement or profit taking — management is **continuous reasoning**. The AI
+Cognitive Brain shall continuously reason about every active campaign until the
+campaign no longer exists. A trade begins a campaign; management determines its
+outcome. Management is therefore one of the highest responsibilities of the Brain.
+
+**Article 1 — The campaign is the unit of management.** Apex never manages
+positions; it manages campaigns. A position is only one expression of a campaign,
+which may hold one or many positions, partial exits, multiple entries, scaling,
+re-entry, profit protection or complete liquidation. A campaign persists until
+reasoning determines the opportunity has ended.
+
+**Article 2 — The Brain never stops thinking.** Execution does not end reasoning;
+it begins continuous reasoning. The Brain continuously asks what changed, what
+stayed the same, whether the thesis strengthened or weakened, what evidence
+appeared or disappeared, whether the campaign should evolve, whether exposure
+should change, and whether it should do nothing — until termination.
+
+**Article 3 — Every campaign is an independent cognitive process.** Every active
+instrument owns an independent campaign with its own evidence, reasoning,
+expected value, confidence, uncertainty, management, objectives and lifecycle.
+Campaigns never share reasoning unless portfolio reasoning requires it.
+
+**Article 4 — The global Cognitive Brain.** Although campaigns are independent,
+there is only one Brain. It simultaneously reasons across every active campaign
+and maintains campaign, portfolio, market, operational and institutional
+intelligence. The Brain remains the single cognitive authority.
+
+**Article 5 — Continuous reasoning.** Every meaningful market event triggers
+reasoning (new candle, liquidity shift, momentum change, volatility expansion,
+spread widening, order flow, news, correlation change, portfolio change,
+execution failure). Every event becomes evidence; every evidence update may
+change campaign behaviour.
+
+**Article 6 — Position management.** The Brain may hold, increase, reduce, scale,
+protect profit, re-enter, exit partially, exit completely, reverse or do nothing.
+Every management action must originate from reasoning — never from predetermined
+rules alone.
+
+**Article 7 — Opportunity harvesting.** The objective is not position management
+but opportunity harvesting. The Brain continuously asks whether additional value
+can still be extracted; the campaign exists only while positive expected value
+exists.
+
+**Article 8 — Scalping campaigns.** A scalp campaign is rapid reasoning,
+execution, re-evaluation, profit extraction and termination. Every completed
+scalp immediately returns to reasoning: if the opportunity still exists, trade
+again; if not, stop. Every scalp trade earns its own existence.
+
+**Article 9 — Longer-horizon campaigns.** The same reasoning applies to intraday,
+swing and multi-day campaigns. Only the expected holding horizon changes; the
+management philosophy never changes.
+
+**Article 10 — Consultative reasoning.** The Brain may request advisory analysis
+from external engines (OpenAI, Claude, local Llama, DeepSeek, future engines).
+These provide opinions, never decisions; every opinion becomes evidence the Brain
+critiques before accepting. The Brain alone produces the campaign decision.
+
+**Article 11 — Portfolio intelligence.** The Brain continuously reasons across the
+whole portfolio: correlation, capital concentration, redistribution, whether one
+campaign raises another's risk, and whether a campaign should terminate because a
+higher expected-value opportunity exists. Portfolio reasoning interacts
+continuously with campaign reasoning.
+
+**Article 12 — Campaign health.** Every campaign continuously maintains its current
+thesis, expected value, confidence, uncertainty, opportunity strength, evidence
+quality, risk, remaining upside/downside and management objectives. Health is
+recalculated continuously.
+
+**Article 13 — Management never ends.** Management does not occur on a fixed
+interval; it occurs whenever meaningful evidence changes. The Brain never waits
+for arbitrary timers when important market information becomes available.
+Reasoning follows reality, not clocks.
+
+**Article 14 — Campaign termination.** Campaigns terminate only when reasoning
+concludes expected value no longer justifies participation, the opportunity has
+disappeared, contradictory evidence dominates, risk exceeds acceptable limits, or
+the original thesis has failed. Termination is immediate.
+
+**Article 15 — Post-termination.** Closure immediately begins audit, learning,
+institutional memory, counterfactual analysis and adaptive learning. Every
+completed campaign becomes another teacher.
+
+**Article 16 — Constitutional rule.** The Brain remains responsible for every
+active campaign from birth to death. Execution opens campaigns; the Brain manages
+them; learning improves them; memory preserves them; external engines advise them;
+portfolio intelligence coordinates them. No other subsystem shall independently
+manage market opportunities. Excellent campaign management — not merely excellent
+entries — is the primary determinant of Apex's long-term performance.
+
+**Rule:** One Brain, continuous reasoning, every campaign, birth to death — no
+other subsystem manages market opportunities in parallel.

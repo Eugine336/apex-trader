@@ -312,6 +312,11 @@ class CognitionLoop:
         self._event_throttled = 0
         self._manage_intended = 0
         self._manage_submitted = 0
+        # Part XVIII Art 13 — management follows evidence, not clocks. A per-
+        # symbol floor (reusing event_min_interval_seconds) prevents a fast feed
+        # from re-managing the same campaign on every micro-event, while the
+        # periodic cycle still acts as a backstop.
+        self._last_manage_at: dict = {}
         self._open_keys: set = set()
 
     def set_origination_sink(self, sink: Optional[Callable[[Any], None]]) -> None:
@@ -400,6 +405,13 @@ class CognitionLoop:
                 self._record_open_memory(output, ms, now=now)
             if self.origination_mode != "off":
                 self._maybe_originate(output, now=now)
+            # Part XVIII Art 13 — management is continuous and event-driven, not
+            # clock-gated: the instant a symbol's evidence is re-reasoned (on a
+            # periodic pass OR an event wake), immediately manage that symbol's
+            # open campaign too. The periodic _manage_open_positions remains a
+            # backstop for positions whose symbol wasn't in this pass's slice.
+            if self.management_mode != "off":
+                self._manage_symbol(symbol, now=now)
             return 1
         except Exception as exc:  # noqa: BLE001 — one symbol must not stop the loop
             logger.debug("[cognition-loop] reason(%s) fault: %s", symbol, exc)
@@ -622,7 +634,14 @@ class CognitionLoop:
             logger.debug("[cognition-loop] originate fault: %s", exc)
 
     def _manage_open_positions(self, *, now: Optional[float] = None) -> int:
-        """Produce a Brain management decision for each open position. Fail-safe."""
+        """Produce a Brain management decision for each open position. Fail-safe.
+
+        The periodic backstop (Part XVIII Art 13): guarantees every open campaign
+        is re-reasoned each cycle even when its symbol was not in this cycle's
+        reasoning slice. Event-driven per-symbol management (``_manage_symbol``,
+        called from ``_reason_over_symbol``) does the fast, evidence-driven work;
+        the shared throttle keeps the two from double-managing the same campaign.
+        """
         if self._position_source is None or not hasattr(self._brain, "manage"):
             return 0
         try:
@@ -631,19 +650,58 @@ class CognitionLoop:
             logger.debug("[cognition-loop] position source fault: %s", exc)
             return 0
         managed = 0
-        for pos in positions[: self.max_symbols_per_cycle]:
-            try:
-                symbol = getattr(pos, "symbol", "") or ""
-                ms = self._consolidator.build(symbol, now=now)
-                output = self._brain.manage(pos, ms, now=now)
-                managed += 1
-                if self.management_mode != "off":
-                    self._realise_management(output, pos)
-            except Exception as exc:  # noqa: BLE001
-                logger.debug("[cognition-loop] manage fault: %s", exc)
-                continue
-        self._managed += managed
+        for pos in positions:
+            managed += self._manage_one(pos, now=now)
         return managed
+
+    def _manage_symbol(self, symbol: str, *, now: Optional[float] = None) -> int:
+        """Immediately manage every open campaign on ``symbol`` (event-driven).
+
+        Called the instant a symbol is re-reasoned so management follows evidence
+        rather than a timer (Part XVIII Art 13). Fail-safe.
+        """
+        if self._position_source is None or not hasattr(self._brain, "manage"):
+            return 0
+        sym = str(symbol or "")
+        if not sym:
+            return 0
+        try:
+            positions = list(self._position_source() or [])
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[cognition-loop] position source fault: %s", exc)
+            return 0
+        managed = 0
+        for pos in positions:
+            if str(getattr(pos, "symbol", "") or "") != sym:
+                continue
+            managed += self._manage_one(pos, now=now)
+        return managed
+
+    def _manage_one(self, pos: Any, *, now: Optional[float] = None) -> int:
+        """Re-reason + realise management for ONE open campaign. Fail-safe.
+
+        Applies a per-symbol floor (``event_min_interval_seconds``) so the same
+        campaign is not re-managed on every micro-event or by both the event
+        path and the periodic backstop within the same window. Returns 1 when a
+        management decision was produced, else 0 (throttled / faulted)."""
+        try:
+            symbol = getattr(pos, "symbol", "") or ""
+            t = self._clock() if now is None else float(now)
+            if symbol and self.event_min_interval_seconds > 0.0:
+                last = self._last_manage_at.get(symbol, 0.0)
+                if (t - last) < self.event_min_interval_seconds:
+                    return 0
+            ms = self._consolidator.build(symbol, now=now)
+            output = self._brain.manage(pos, ms, now=now)
+            if symbol:
+                self._last_manage_at[symbol] = t
+            self._managed += 1
+            if self.management_mode != "off":
+                self._realise_management(output, pos)
+            return 1
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[cognition-loop] manage fault: %s", exc)
+            return 0
 
     def _realise_management(self, output: Any, position: Any) -> None:
         """Turn a Brain management verdict into a shadow record or a live action.
