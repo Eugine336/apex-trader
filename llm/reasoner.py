@@ -196,6 +196,10 @@ class LLMReasoner:
         try:
             with self._lock:
                 if self._throttled(sym, t):
+                    logger.debug(
+                        "[llm] {} throttled ({}s min interval) — no fresh model call this cycle",
+                        sym, self.min_interval_seconds,
+                    )
                     return None
                 self._last_call[sym] = t
             user = self._build_user_prompt(sym, evidence)
@@ -221,6 +225,14 @@ class LLMReasoner:
                     getattr(opinion, "direction", "?"),
                     round(float(getattr(opinion, "confidence", 0.0) or 0.0), 3),
                     str(getattr(opinion, "rationale", "") or "")[:160],
+                )
+            else:
+                # 2xx reply that did not parse into a directional opinion — the
+                # single most common "why is the Brain idle?" cause. Surface the
+                # raw reply (key-free) so the prompt/format can be corrected.
+                logger.warning(
+                    "[llm] {} model replied but NO opinion parsed (fail-safe: observe) — reply[:220]={}",
+                    sym, str(reply)[:220],
                 )
             return opinion
         except Exception as exc:  # noqa: BLE001 — reasoning must never break a cycle
