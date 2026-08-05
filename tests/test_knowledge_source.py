@@ -92,3 +92,69 @@ def test_end_to_end_with_real_mock_adapter():
     assert len(ev) >= 2   # one research item + one advisor answer
     domains = {e.domain.value for e in ev}
     assert "macro" in domains and "reasoning" in domains
+
+
+# ── Connected-app wiring: per-symbol query, arg templates, provider prefs ────
+
+def test_symbol_query_maps_known_instruments():
+    from cognition.knowledge_source import symbol_query
+    assert "gold" in symbol_query("XAUUSD").lower()
+    assert "bitcoin" in symbol_query("BTCUSD").lower()
+    assert "s&p 500" in symbol_query("US500").lower()
+    # FX pair → both currency names + the raw pair.
+    q = symbol_query("EURUSD").lower()
+    assert "euro" in q and "us dollar" in q and "eurusd" in q
+
+
+def test_build_tool_args_defaults_to_query():
+    from cognition.knowledge_source import build_tool_args
+    assert build_tool_args("COMPOSIO_SEARCH_SEARCH", "XAUUSD", "gold news") == {
+        "query": "gold news"}
+
+
+def test_build_tool_args_applies_override_template():
+    from cognition.knowledge_source import build_tool_args
+    overrides = {"ALPHAVANTAGE_NEWS_SENTIMENT": {"tickers": "{ticker}", "q": "{query}"}}
+    args = build_tool_args("ALPHAVANTAGE_NEWS_SENTIMENT", "EURUSD", "euro news", overrides)
+    assert args == {"tickers": "EUR", "q": "euro news"}
+
+
+def test_knowledge_uses_default_symbol_query():
+    a = _Adapter()
+    ks = KnowledgeSource(a, enabled=True, interval_seconds=0.0)
+    ks.evidence_for("XAUUSD")
+    assert a.calls, "no retrieval was issued"
+    q = a.calls[0]["params"].get("query", "").lower()
+    assert "gold" in q
+
+
+def test_preferred_provider_selects_connected_app_action():
+    from action.capabilities import default_registry
+    reg = default_registry()
+    a = _Adapter()
+    ks = KnowledgeSource(
+        a, reg, enabled=True, interval_seconds=0.0,
+        available_providers=["composio_search", "alphavantage"],
+        knowledge_provider="alphavantage",
+        arg_overrides={"ALPHAVANTAGE_NEWS_SENTIMENT": {"tickers": "{ticker}"}},
+    )
+    ks.evidence_for("EURUSD")
+    call = a.calls[0]
+    assert call["capability"] == "ALPHAVANTAGE_NEWS_SENTIMENT"
+    assert call["params"] == {"tickers": "EUR"}
+
+
+def test_unavailable_provider_falls_back_to_web_search():
+    from action.capabilities import default_registry
+    reg = default_registry()
+    a = _Adapter()
+    # Prefer alphavantage but it is NOT in the available set → first available
+    # candidate (web search) is used instead.
+    ks = KnowledgeSource(
+        a, reg, enabled=True, interval_seconds=0.0,
+        available_providers=["composio_search"],
+        knowledge_provider="alphavantage",
+    )
+    ks.evidence_for("EURUSD")
+    assert a.calls[0]["capability"] == "COMPOSIO_SEARCH_SEARCH"
+    assert "query" in a.calls[0]["params"]

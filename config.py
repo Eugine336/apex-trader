@@ -3874,6 +3874,12 @@ class ComposioConfig:
     # candidate); ``provider_preferences`` is CSV "capability=provider" hints.
     available_providers: str = ""
     provider_preferences: str = ""
+    # Optional JSON map of Composio action-slug → argument template so the
+    # knowledge/advisor layer can call a connected app's tool with its exact
+    # argument schema (tokens {query}/{symbol}/{ticker} are substituted). Blank
+    # ⇒ every retrieval uses the safe {"query": ...} default (web search). E.g.
+    # '{"ALPHAVANTAGE_NEWS_SENTIMENT": {"tickers": "{ticker}"}}'.
+    knowledge_arg_overrides: str = ""
     # Part IX v3.0 — the READ half (Operational Intelligence Layer). When
     # ``knowledge_enabled`` the cognition consolidator pulls external market
     # context / research (and, when ``advisor_enabled``, AI advisors) through
@@ -3951,6 +3957,9 @@ class ComposioConfig:
         ).strip()
         self.provider_preferences = (
             os.getenv("COMPOSIO_PROVIDER_PREFERENCES", self.provider_preferences) or ""
+        )
+        self.knowledge_arg_overrides = (
+            os.getenv("COMPOSIO_KNOWLEDGE_ARG_OVERRIDES", self.knowledge_arg_overrides) or ""
         ).strip()
 
         if self.auto_max_risk not in (
@@ -3992,6 +4001,18 @@ class ComposioConfig:
                 if k and v:
                     out[k] = v
         return out
+
+    def knowledge_arg_overrides_map(self) -> dict:
+        """Parse the JSON ``knowledge_arg_overrides`` into a dict (blank ⇒ {})."""
+        raw = str(self.knowledge_arg_overrides or "").strip()
+        if not raw:
+            return {}
+        try:
+            import json as _json
+            parsed = _json.loads(raw)
+            return parsed if isinstance(parsed, dict) else {}
+        except Exception:  # noqa: BLE001 — a bad override must never break startup
+            return {}
 
 
 @dataclass

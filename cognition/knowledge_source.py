@@ -33,6 +33,73 @@ from cognition.evidence_adapters import evidence_from_knowledge
 logger = logging.getLogger("apex.cognition.knowledge")
 
 
+# ── Per-symbol query + per-tool argument helpers ─────────────────────────────
+
+# Human/market descriptors so a web/news search is relevant to the instrument
+# rather than an opaque broker code. Covers metals, energy, crypto and index
+# CFDs; FX pairs and anything unlisted fall back to a generated description.
+_SYMBOL_QUERY: dict = {
+    "XAUUSD": "gold (XAU/USD)", "XAGUSD": "silver (XAG/USD)",
+    "XBRUSD": "brent crude oil", "XTIUSD": "WTI crude oil",
+    "BTCUSD": "bitcoin (BTC)", "ETHUSD": "ethereum (ETH)",
+    "US500": "S&P 500 index", "US30": "Dow Jones index",
+    "NAS100": "Nasdaq 100 index", "GER40": "DAX 40 index",
+    "UK100": "FTSE 100 index", "JP225": "Nikkei 225 index",
+    "HK50": "Hang Seng index", "AUS200": "ASX 200 index",
+    "US2000": "Russell 2000 index",
+}
+
+_FX_NAMES: dict = {
+    "USD": "US dollar", "EUR": "euro", "GBP": "British pound",
+    "JPY": "Japanese yen", "AUD": "Australian dollar", "NZD": "New Zealand dollar",
+    "CAD": "Canadian dollar", "CHF": "Swiss franc", "CNH": "Chinese yuan",
+}
+
+
+def symbol_query(symbol: str) -> str:
+    """Turn a broker symbol into a market-relevant news/research query.
+
+    ``XAUUSD`` → "latest market news, macro drivers and sentiment for gold
+    (XAU/USD)"; ``EURUSD`` → "... for euro vs US dollar (EURUSD)". Pure.
+    """
+    s = str(symbol or "").upper().strip()
+    if not s:
+        return "latest market news and macro drivers"
+    if s in _SYMBOL_QUERY:
+        subject = _SYMBOL_QUERY[s]
+    elif len(s) == 6 and s.isalpha() and s[:3] in _FX_NAMES and s[3:] in _FX_NAMES:
+        subject = f"{_FX_NAMES[s[:3]]} vs {_FX_NAMES[s[3:]]} ({s})"
+    else:
+        subject = s
+    return f"latest market news, macro drivers and sentiment for {subject}"
+
+
+def build_tool_args(
+    action: str, symbol: str, query: str, overrides: Optional[dict] = None,
+) -> dict:
+    """Build tool-appropriate arguments for a Composio action.
+
+    Web search and generic advisors take ``{"query": ...}`` — the safe default
+    used for anything not explicitly mapped, so retrieval always works. An
+    ``overrides`` map (action-slug → template dict) lets the operator supply the
+    exact argument schema for a connected app's tool without a code change; the
+    tokens ``{query}``, ``{symbol}`` and ``{ticker}`` are substituted. Pure.
+    """
+    act = str(action or "").upper()
+    sym = str(symbol or "").upper()
+    ticker = sym[:3] if (len(sym) == 6 and sym.isalpha()) else sym
+    if overrides:
+        tmpl = overrides.get(action) or overrides.get(act)
+        if isinstance(tmpl, dict):
+            def _sub(v: Any) -> Any:
+                if isinstance(v, str):
+                    return v.replace("{query}", query).replace(
+                        "{symbol}", sym).replace("{ticker}", ticker)
+                return v
+            return {k: _sub(v) for k, v in tmpl.items()}
+    return {"query": query}
+
+
 class KnowledgeSource:
     """Composio-backed data/research/advisor layer → advisory Evidence."""
 
@@ -48,6 +115,10 @@ class KnowledgeSource:
         knowledge_capability: str = "knowledge.retrieve",
         advisor_capability: str = "advisor.consult",
         query_builder: Optional[Callable[[str], str]] = None,
+        available_providers: Optional[list] = None,
+        knowledge_provider: str = "",
+        advisor_provider: str = "",
+        arg_overrides: Optional[dict] = None,
         clock: Optional[Callable[[], float]] = None,
     ) -> None:
         self._adapter = adapter
@@ -59,6 +130,14 @@ class KnowledgeSource:
         self._knowledge_cap = str(knowledge_capability or "knowledge.retrieve")
         self._advisor_cap = str(advisor_capability or "advisor.consult")
         self._query_builder = query_builder
+        # Part IX Art 11 — provider selection: which connected apps this entity
+        # may use, and the preferred provider per knowledge/advisor capability
+        # (e.g. knowledge.retrieve → alphavantage). Blank ⇒ the capability's
+        # first candidate (web search) is used.
+        self._available = {str(p).strip().lower() for p in (available_providers or []) if str(p).strip()}
+        self._knowledge_provider = str(knowledge_provider or "").strip().lower()
+        self._advisor_provider = str(advisor_provider or "").strip().lower()
+        self._arg_overrides = dict(arg_overrides or {})
         self._clock = clock or _time.monotonic
         self._last_at: dict = {}
         # ── value metrics (Article 12) ────────────────────────────────────
@@ -80,12 +159,14 @@ class KnowledgeSource:
         except Exception:  # noqa: BLE001
             return True
 
-    def _resolve_action(self, capability: str) -> str:
+    def _resolve_action(self, capability: str, preferred: str = "") -> str:
         """Turn a semantic capability into its provider action string.
 
         Uses the capability registry when wired (so the Brain/loop reason in
-        capabilities while the adapter receives the concrete Composio action);
-        falls back to the capability name when no registry is available.
+        capabilities while the adapter receives the concrete Composio action),
+        honouring the operator's preferred provider + the connected-provider
+        availability set. Falls back to the capability name when no registry is
+        available.
         """
         try:
             if self._registry is None:
@@ -93,13 +174,16 @@ class KnowledgeSource:
             cap = self._registry.get(capability)
             if cap is None:
                 return capability
-            binding = self._registry.resolve_provider(cap)
+            binding = self._registry.resolve_provider(
+                cap, preferred=preferred,
+                available=(self._available or None),
+            )
             return getattr(binding, "action", "") or capability
         except Exception:  # noqa: BLE001
             return capability
 
     def _default_query(self, symbol: str) -> str:
-        return f"latest market news, macro drivers and sentiment for {symbol}"
+        return symbol_query(symbol)
 
     def evidence_for(self, symbol: str, *, now: Optional[float] = None) -> list:
         """Return advisory Evidence for ``symbol`` (``[]`` when off/throttled)."""
@@ -120,18 +204,26 @@ class KnowledgeSource:
             else self._default_query(sym)
         )
         out: list = []
-        out.extend(self._consult(self._knowledge_cap, sym, query, "composio.knowledge"))
+        out.extend(self._consult(
+            self._knowledge_cap, sym, query, "composio.knowledge",
+            preferred=self._knowledge_provider,
+        ))
         if self._advisor_enabled:
-            out.extend(self._consult(self._advisor_cap, sym, query, "composio.advisor"))
+            out.extend(self._consult(
+                self._advisor_cap, sym, query, "composio.advisor",
+                preferred=self._advisor_provider,
+            ))
         self._evidence_produced += len(out)
         return out
 
-    def _consult(self, capability: str, symbol: str, query: str, source: str) -> list:
+    def _consult(self, capability: str, symbol: str, query: str, source: str,
+                 *, preferred: str = "") -> list:
         started = self._clock()
         try:
-            action = self._resolve_action(capability)
+            action = self._resolve_action(capability, preferred=preferred)
             self._queries += 1
-            result = self._adapter.execute(action, {"query": query})
+            args = build_tool_args(action, symbol, query, self._arg_overrides)
+            result = self._adapter.execute(action, args)
             payload = getattr(result, "data", None) or {}
             if not bool(getattr(result, "ok", False)) or not payload:
                 return []
@@ -162,4 +254,4 @@ class KnowledgeSource:
         }
 
 
-__all__ = ["KnowledgeSource"]
+__all__ = ["KnowledgeSource", "symbol_query", "build_tool_args"]
