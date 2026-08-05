@@ -34,6 +34,7 @@ from cognition.campaign_translator import translate as _translate
 from cognition.contracts import DecisionType, MarketState
 from cognition.evidence_adapters import (
     evidence_from_analogues,
+    evidence_from_developing_bias,
     evidence_from_reasoning,
     evidence_from_thesis_status,
     evidence_from_votes,
@@ -59,6 +60,7 @@ class EvidenceConsolidator:
         ctx: Optional[Any] = None,
         *,
         vote_source: Optional[Callable[[str], Any]] = None,
+        developing_source: Optional[Callable[[str], Any]] = None,
         per_module: bool = True,
         memory: Optional[Any] = None,
         max_analogues: int = 5,
@@ -68,6 +70,7 @@ class EvidenceConsolidator:
     ) -> None:
         self._ctx = ctx
         self._vote_source = vote_source
+        self._developing_source = developing_source
         self._per_module = bool(per_module)
         self._memory = memory
         self._max_analogues = max(1, int(max_analogues))
@@ -83,6 +86,15 @@ class EvidenceConsolidator:
         domain-classified Evidence. Fail-safe callable — never invoked eagerly.
         """
         self._vote_source = vote_source
+
+    def set_developing_source(self, developing_source: Optional[Callable[[str], Any]]) -> None:
+        """Wire (or clear) the DEVELOPING (forming-bar) bias source.
+
+        Returns the developing WorldModel's bias dict for a symbol; the
+        consolidator surfaces it as one short-lived multi-timeframe Evidence so
+        the Brain also sees the fresher between-close read. Fail-safe callable.
+        """
+        self._developing_source = developing_source
 
     def build(
         self,
@@ -110,6 +122,14 @@ class EvidenceConsolidator:
                         ms.add(e)
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[consolidator] vote source fault (%s): %s", symbol, exc)
+            if self._developing_source is not None:
+                try:
+                    for e in evidence_from_developing_bias(
+                        ms.symbol, self._developing_source(ms.symbol),
+                    ):
+                        ms.add(e)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[consolidator] developing source fault (%s): %s", symbol, exc)
             # Part XVII — consult multiple reasoning engines; each opinion becomes
             # advisory Evidence (never a vote). The Brain synthesises them.
             if self._reasoning is not None:
@@ -268,6 +288,17 @@ class CognitionLoop:
             self._consolidator.set_vote_source(vote_source)
         except Exception as exc:  # noqa: BLE001 — wiring must never break startup
             logger.debug("[cognition-loop] set_vote_source ignored a fault: %s", exc)
+
+    def set_developing_source(self, developing_source: Optional[Callable[[str], Any]]) -> None:
+        """Wire the DEVELOPING (forming-bar) bias source onto the consolidator.
+
+        Delegates to :meth:`EvidenceConsolidator.set_developing_source` so the
+        Brain also sees the fresher between-close read alongside the confirmed
+        vote panel. Fail-safe — a wiring fault must never break startup."""
+        try:
+            self._consolidator.set_developing_source(developing_source)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[cognition-loop] set_developing_source ignored a fault: %s", exc)
 
     @property
     def running(self) -> bool:

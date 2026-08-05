@@ -209,6 +209,70 @@ def evidence_from_votes(symbol: str, votes: Any) -> "list[Evidence]":
     return out
 
 
+def _num(value: Any, default: float = 0.0) -> float:
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return default
+    if f != f or f in (float("inf"), float("-inf")):
+        return default
+    return f
+
+
+def evidence_from_developing_bias(symbol: str, bias: Any) -> "list[Evidence]":
+    """Convert the DEVELOPING (forming-bar) WorldModel bias into one Evidence.
+
+    Closed-candle votes are the confirmed read; the developing store carries the
+    *fresher* directional synthesis computed on the still-forming bar (no votes,
+    only a bias dict). Surfacing it as a single, clearly-labelled multi-timeframe
+    Evidence lets the Brain react between candle closes without mistaking it for
+    a confirmed module vote. It is deliberately short-lived (a forming bar's read
+    goes stale in seconds) and directionally attenuated so it informs rather than
+    dominates the confirmed panel. Fail-safe: returns ``[]`` on empty/any fault.
+    """
+    out: list[Evidence] = []
+    try:
+        b = dict(bias or {})
+        if not b:
+            return out
+        direction = str(b.get("direction", "") or "").upper()
+        # Prefer the explicit confidence; fall back to the dominant probability.
+        conf = _clamp01(b.get("confidence", 0.0))
+        if conf <= 0.0:
+            conf = _clamp01(max(_num(b.get("long_probability")),
+                               _num(b.get("short_probability"))))
+        # A forming-bar read is fresher but less settled: attenuate its lean so
+        # it never outweighs the confirmed panel on its own.
+        polarity = _sign(direction) * conf * 0.7
+        conflict = _clamp01(b.get("conflict_score", 0.0))
+        observation = (
+            f"developing-candle bias {direction or 'FLAT'} "
+            f"(conf {conf:.2f}, conflict {conflict:.2f})"
+        )
+        out.append(Evidence(
+            source_module="world_model.developing",
+            domain=EvidenceDomain.MULTI_TIMEFRAME, symbol=symbol,
+            observation=observation,
+            confidence=conf,
+            # Higher directional conflict ⇒ more source-side doubt.
+            uncertainty=_clamp01(max(1.0 - conf, conflict)),
+            polarity=polarity,
+            measurements={
+                "developing": True,
+                "long_probability": round(_num(b.get("long_probability")), 4),
+                "short_probability": round(_num(b.get("short_probability")), 4),
+                "conflict_score": round(conflict, 4),
+                "score": round(_num(b.get("score")), 4),
+                "strength": str(b.get("strength", "") or "")[:32],
+                "tradeable": bool(b.get("tradeable", False)),
+            },
+            relevance_horizon_seconds=120.0,
+        ))
+    except Exception:  # noqa: BLE001
+        return out
+    return out
+
+
 def evidence_from_analogues(symbol: str, analogues: Any) -> "list[Evidence]":
     """Summarise similar past campaigns (institutional memory) as one Evidence.
 

@@ -4,6 +4,7 @@ from cognition.contracts import EvidenceDomain
 from cognition.evidence_adapters import (
     classify_domain,
     evidence_from_analogues,
+    evidence_from_developing_bias,
     evidence_from_reasoning,
     evidence_from_thesis_status,
     evidence_from_votes,
@@ -145,6 +146,45 @@ def test_evidence_from_votes_richness_is_bounded():
     ev = evidence_from_votes("XAUUSD", [_RichVote("momentum", "LONG", 0.7, evidence=big)])
     assert len(ev) == 1
     assert len(ev[0].measurements) <= 24
+
+
+# ── evidence_from_developing_bias (forming-bar read) ──────────────────────────
+
+def test_developing_bias_long_is_attenuated_multi_tf():
+    ev = evidence_from_developing_bias("XAUUSD", {
+        "direction": "LONG", "confidence": 0.8, "conflict_score": 0.2,
+        "long_probability": 0.8, "short_probability": 0.2,
+        "score": 0.6, "strength": "STRONG", "tradeable": True,
+    })
+    assert len(ev) == 1
+    e = ev[0]
+    assert e.domain == EvidenceDomain.MULTI_TIMEFRAME
+    assert e.source_module == "world_model.developing"
+    # Directionally attenuated (×0.7) so it never dominates the confirmed panel.
+    assert 0.0 < e.polarity < 0.8
+    assert abs(e.polarity - 0.8 * 0.7) < 1e-6
+    assert e.measurements["developing"] is True
+    assert e.measurements["tradeable"] is True
+    assert e.relevance_horizon_seconds == 120.0
+    assert "developing-candle bias LONG" in e.observation
+
+
+def test_developing_bias_short_is_negative():
+    ev = evidence_from_developing_bias("XAUUSD", {"direction": "SHORT", "confidence": 0.6})
+    assert ev[0].polarity < 0
+
+
+def test_developing_bias_falls_back_to_probability():
+    ev = evidence_from_developing_bias("XAUUSD", {
+        "direction": "LONG", "long_probability": 0.7, "short_probability": 0.3,
+    })
+    assert abs(ev[0].confidence - 0.7) < 1e-6
+
+
+def test_developing_bias_empty_and_fault_safe():
+    assert evidence_from_developing_bias("XAUUSD", None) == []
+    assert evidence_from_developing_bias("XAUUSD", {}) == []
+    assert evidence_from_developing_bias("XAUUSD", "not-a-dict") == []
 
 
 # ── Historical analogues (Phase H — Part VII memory) ──────────────────────────
