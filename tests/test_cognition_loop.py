@@ -74,6 +74,36 @@ def test_loop_set_vote_source_delegates_to_consolidator():
     assert consolidator._vote_source is fn
 
 
+def test_consolidator_set_developing_source_surfaces_bias():
+    cons = EvidenceConsolidator(ctx=None)
+    assert cons.build("XAUUSD").consolidation()["evidence_fresh"] == 0
+    cons.set_developing_source(lambda sym: {
+        "direction": "LONG", "confidence": 0.7, "conflict_score": 0.1,
+        "long_probability": 0.7, "short_probability": 0.3,
+    })
+    fresh = cons.build("XAUUSD").fresh_evidence()
+    assert len(fresh) == 1
+    assert fresh[0].source_module == "world_model.developing"
+    assert fresh[0].polarity > 0
+    assert fresh[0].measurements.get("developing") is True
+
+
+def test_consolidator_developing_source_is_fault_safe():
+    cons = EvidenceConsolidator(ctx=None)
+    def _boom(_sym):
+        raise RuntimeError("store down")
+    cons.set_developing_source(_boom)
+    assert cons.build("XAUUSD").consolidation()["evidence_fresh"] == 0  # must not raise
+
+
+def test_loop_set_developing_source_delegates_to_consolidator():
+    consolidator = EvidenceConsolidator(ctx=None)
+    loop = CognitionLoop(_StubBrain(), consolidator, lambda: ["X"], interval_seconds=1.0)
+    fn = lambda sym: {}
+    loop.set_developing_source(fn)
+    assert consolidator._developing_source is fn
+
+
 # ── CognitionLoop ─────────────────────────────────────────────────────────────
 
 class _StubBrain:

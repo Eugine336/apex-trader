@@ -3284,6 +3284,27 @@ class EventDrivenSystem:
             logger.debug("[cognition] vote panel fetch failed for {}: {}", symbol, exc)
             return []
 
+    def _cognition_developing_bias(self, symbol: str) -> dict:
+        """Fresher forming-bar directional bias for one symbol, for cognition.
+
+        Returns the DEVELOPING WorldModel's ``bias`` dict — the between-close
+        directional synthesis computed on the still-forming bar. The consolidator
+        turns it into one short-lived multi-timeframe Evidence so the Brain reacts
+        to developing shifts without waiting for the next candle close. Fail-safe:
+        returns ``{}`` when the store is empty or on any fault.
+        """
+        try:
+            store = self._developing_wm_store
+            if store is None:
+                return {}
+            wm = store.get(symbol)
+            if wm is None:
+                return {}
+            return wm.bias_dict()
+        except Exception as exc:  # noqa: BLE001 — never break the cognition loop
+            logger.debug("[cognition] developing bias fetch failed for {}: {}", symbol, exc)
+            return {}
+
     # ── Lifecycle ────────────────────────────────────────────────────
 
     def start(self) -> None:
@@ -3523,6 +3544,13 @@ class EventDrivenSystem:
                     _cog_loop.set_vote_source(self._cognition_vote_panel)
                 except Exception as exc:
                     logger.debug("[event-driven] vote-source wiring failed: {}", exc)
+                # Also feed the fresher forming-bar read: the developing store's
+                # bias becomes one short-lived multi-timeframe Evidence so the
+                # Brain reacts between candle closes, not only on close.
+                try:
+                    _cog_loop.set_developing_source(self._cognition_developing_bias)
+                except Exception as exc:
+                    logger.debug("[event-driven] developing-source wiring failed: {}", exc)
                 # Phase G — when origination is LIVE, wire the executor sink so the
                 # Brain's originated entries reach the SAME execution plane as
                 # every other entry (aggregator → RiskGate → broker). Shadow/off
