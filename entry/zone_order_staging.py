@@ -88,6 +88,7 @@ class ZoneOrderStager:
         derive_targets: Optional[Callable[[str, str, float, float], tuple[float, float]]] = None,
         gate_check: Optional[Callable[..., bool]] = None,
         profile_lookup: Optional[Callable[[str], Any]] = get_profile,
+        single_path_active: Optional[Callable[[], bool]] = None,
     ) -> None:
         """Wire the stager to its (all-injected) dependencies.
 
@@ -101,6 +102,12 @@ class ZoneOrderStager:
         tp1, tp2) -> bool`` runs the full gate pipeline (None ⇒ always allow, for
         tests). ``derive_targets`` computes ``(tp1, tp2)`` (a risk-multiple
         fallback is used when omitted).
+        ``single_path_active() -> bool`` reports whether the Single Reasoner
+        cutover is active (Constitution I.4 / III.2). When it returns True the
+        stager is fully disabled: the AI Cognitive Brain is the sole authority
+        that may open trades, so this legacy pending-order path must not stage
+        anything (existing resting orders are reaped by ``on_zone_update``).
+        ``None`` ⇒ treated as inactive (legacy behaviour, for tests).
         """
         self._config = config or EntryConfig()
         self._get_active_zones = get_active_zones
@@ -111,6 +118,7 @@ class ZoneOrderStager:
         self._derive_targets = derive_targets
         self._gate_check = gate_check
         self._profile_lookup = profile_lookup
+        self._single_path_active = single_path_active
 
         # zone_key -> StagedOrder for every resting order we placed.
         self._staged: dict[str, StagedOrder] = {}
@@ -152,6 +160,15 @@ class ZoneOrderStager:
         return default if val is None else val
 
     def _enabled(self, symbol: str) -> bool:
+        # Single Reasoner cutover (Constitution I.4 / III.2): when active, the AI
+        # Cognitive Brain is the SOLE authority that may open trades. This legacy
+        # pending-order stager is a competing entry path, so it is fully off —
+        # no new staging (on_zone_update still reaps any resting orders).
+        try:
+            if self._single_path_active is not None and bool(self._single_path_active()):
+                return False
+        except Exception:  # noqa: BLE001 — a config read must never break the tick path
+            pass
         return bool(self._param(symbol, "pre_staging_enabled", False))
 
     # ── Price helpers ─────────────────────────────────────────────────
