@@ -67,6 +67,7 @@ class EvidenceConsolidator:
         influence: Optional[Any] = None,
         influence_enabled: bool = False,
         reasoning: Optional[Any] = None,
+        knowledge: Optional[Any] = None,
     ) -> None:
         self._ctx = ctx
         self._vote_source = vote_source
@@ -77,6 +78,7 @@ class EvidenceConsolidator:
         self._influence = influence
         self._influence_enabled = bool(influence_enabled)
         self._reasoning = reasoning
+        self._knowledge = knowledge
 
     def set_vote_source(self, vote_source: Optional[Callable[[str], Any]]) -> None:
         """Wire (or clear) the live WorldModel vote-panel source.
@@ -144,6 +146,16 @@ class EvidenceConsolidator:
                             ms.add(e)
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[consolidator] reasoning consult fault (%s): %s", symbol, exc)
+            # Part IX v3.0 — the Operational Intelligence Layer: external market
+            # context, institutional research and AI advisors reached through
+            # Composio become advisory Evidence (never a vote). Read-only, gated,
+            # throttled and self-measuring; a fault degrades to no evidence.
+            if self._knowledge is not None:
+                try:
+                    for e in self._knowledge.evidence_for(ms.symbol, now=now):
+                        ms.add(e)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[consolidator] knowledge source fault (%s): %s", symbol, exc)
             # Part VII — consult institutional memory: surface similar past
             # campaigns and their outcomes as a historical-analogue Evidence.
             if self._memory is not None:

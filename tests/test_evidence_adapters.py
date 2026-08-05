@@ -5,6 +5,7 @@ from cognition.evidence_adapters import (
     classify_domain,
     evidence_from_analogues,
     evidence_from_developing_bias,
+    evidence_from_knowledge,
     evidence_from_reasoning,
     evidence_from_thesis_status,
     evidence_from_votes,
@@ -185,6 +186,42 @@ def test_developing_bias_empty_and_fault_safe():
     assert evidence_from_developing_bias("XAUUSD", None) == []
     assert evidence_from_developing_bias("XAUUSD", {}) == []
     assert evidence_from_developing_bias("XAUUSD", "not-a-dict") == []
+
+
+# ── evidence_from_knowledge (Composio Operational Intelligence, Part IX v3.0) ──
+
+def test_knowledge_research_items_are_macro_context():
+    ev = evidence_from_knowledge("XAUUSD", {"items": [
+        {"title": "Gold rallies", "snippet": "safe-haven bid", "source": "news",
+         "sentiment": "bullish"},
+        {"title": "DXY firm", "snippet": "dollar strength", "sentiment": "bearish"},
+    ]})
+    assert len(ev) == 2
+    assert all(e.domain == EvidenceDomain.MACRO for e in ev)
+    bull = next(e for e in ev if "Gold rallies" in e.observation)
+    bear = next(e for e in ev if "DXY firm" in e.observation)
+    assert bull.polarity > 0 and bear.polarity < 0
+    assert bull.measurements["external"] is True
+
+
+def test_knowledge_advisor_answer_is_reasoning_domain():
+    ev = evidence_from_knowledge("XAUUSD", {
+        "answer": "Range-bound; wait for a sweep.", "direction": "neutral",
+        "confidence": 0.5, "advisor": "gpt-advisor",
+    })
+    assert len(ev) == 1
+    assert ev[0].domain == EvidenceDomain.REASONING
+    assert ev[0].measurements.get("advisor") is True
+    assert abs(ev[0].polarity) < 1e-9  # neutral ⇒ directionless
+
+
+def test_knowledge_is_bounded_and_fault_safe():
+    items = [{"title": f"h{i}", "snippet": "s"} for i in range(50)]
+    ev = evidence_from_knowledge("XAUUSD", {"items": items}, max_items=3)
+    assert len(ev) == 3
+    assert evidence_from_knowledge("XAUUSD", None) == []
+    assert evidence_from_knowledge("XAUUSD", {}) == []
+    assert evidence_from_knowledge("XAUUSD", {"items": [42, "x"]}) == []  # non-dict items skipped
 
 
 # ── Historical analogues (Phase H — Part VII memory) ──────────────────────────

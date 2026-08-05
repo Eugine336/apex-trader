@@ -52,6 +52,34 @@ def _urllib_transport(url: str, headers: dict, body: bytes, timeout: float) -> "
         return 0, f"{type(exc).__name__}: {exc}"
 
 
+def _mock_knowledge_payload(capability: str, params: dict) -> dict:
+    """Representative READ payload for the offline/dry-run adapter.
+
+    Lets the whole knowledge/research/advisor → Evidence path be exercised with
+    no network: knowledge/research capabilities return a couple of search-style
+    items; an advisor capability returns one advisory answer. Non-read
+    capabilities (notify/ticket/docs) return an empty payload, as they do live.
+    """
+    cap = str(capability or "").lower()
+    query = str((params or {}).get("query", "") or "")
+    if "advis" in cap or "consult" in cap or "reason" in cap:
+        return {
+            "answer": f"Advisory read on {query or 'the market'}: mixed context, no strong edge.",
+            "direction": "NEUTRAL",
+            "confidence": 0.4,
+            "advisor": "mock-advisor",
+        }
+    if "knowledge" in cap or "research" in cap or "search" in cap or "retriev" in cap:
+        return {
+            "items": [
+                {"title": f"Context for {query or 'market'}",
+                 "snippet": "Mock research passage — offline placeholder.",
+                 "source": "mock", "sentiment": "neutral"},
+            ],
+        }
+    return {}
+
+
 class MockActionAdapter:
     """No-op adapter — records calls, performs no external I/O, always succeeds."""
 
@@ -69,6 +97,7 @@ class MockActionAdapter:
             external_ref=f"mock:{capability}#{self._seq}",
             detail="mock/dry-run — no external call made",
             verified=True,
+            data=_mock_knowledge_payload(capability, params),
         )
 
 
@@ -131,7 +160,24 @@ class ComposioAdapter:
             ref = str(data.get("id"))
         elif isinstance(data.get("data"), dict) and data["data"].get("id") is not None:
             ref = str(data["data"]["id"])
-        return ActionResult(ok=ok, external_ref=ref, detail="composio ok" if ok else "composio reported failure")
+        # Preserve the tool's returned payload so READ capabilities can become
+        # Evidence. Composio usually nests the tool output under "data" (or
+        # "response_data"); fall back to the whole object when it doesn't.
+        payload: dict = {}
+        for key in ("data", "response_data", "result", "output"):
+            val = data.get(key)
+            if isinstance(val, dict) and val:
+                payload = val
+                break
+        if not payload and any(
+            k in data for k in ("items", "answer", "results", "content")
+        ):
+            payload = data
+        return ActionResult(
+            ok=ok, external_ref=ref,
+            detail="composio ok" if ok else "composio reported failure",
+            data=payload,
+        )
 
 
 def build_adapter(config: Any, transport: Optional[Transport] = None) -> Any:

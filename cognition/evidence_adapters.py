@@ -273,6 +273,99 @@ def evidence_from_developing_bias(symbol: str, bias: Any) -> "list[Evidence]":
     return out
 
 
+_SENTIMENT_SIGN = {
+    "bullish": 1.0, "positive": 1.0, "long": 1.0, "up": 1.0,
+    "bearish": -1.0, "negative": -1.0, "short": -1.0, "down": -1.0,
+    "neutral": 0.0, "mixed": 0.0, "flat": 0.0,
+}
+
+
+def _sentiment_polarity(value: Any) -> float:
+    return _SENTIMENT_SIGN.get(str(value or "").strip().lower(), 0.0)
+
+
+def _text(item: dict, *keys: str, limit: int = 200) -> str:
+    for k in keys:
+        v = item.get(k)
+        if v:
+            return str(v)[:limit]
+    return ""
+
+
+def evidence_from_knowledge(
+    symbol: str,
+    payload: Any,
+    *,
+    source: str = "composio.knowledge",
+    max_items: int = 5,
+) -> "list[Evidence]":
+    """Convert a Composio READ payload into advisory Evidence (Part IX v3.0).
+
+    Handles two shapes returned by the knowledge layer:
+
+    * **Research / market context** — ``{"items": [{title, snippet, source,
+      sentiment, ...}]}`` (or a bare list). Each item becomes one MACRO-domain
+      Evidence: external context, directionless unless the provider states a
+      sentiment/direction, and modestly confident. This is *context*, never a
+      trade signal.
+    * **Advisor answer** — ``{"answer": ..., "direction": ..., "confidence":
+      ...}`` from an AI advisor reached through Composio. Becomes one REASONING
+      Evidence (Article 8 — advisory, never a second Brain).
+
+    Bounded (``max_items``), string-capped and fully fail-safe (``[]`` on any
+    fault) so an untrusted external payload can never break consolidation.
+    """
+    out: list[Evidence] = []
+    try:
+        data = payload if isinstance(payload, dict) else {"items": payload}
+        # ── Advisor answer → one REASONING evidence ───────────────────────
+        answer = _text(data, "answer", "summary", "content", limit=400)
+        if answer:
+            conf = _clamp01(data.get("confidence", 0.4))
+            direction = data.get("direction", data.get("sentiment", ""))
+            advisor = str(data.get("advisor", data.get("source", "")) or "advisor")[:48]
+            out.append(Evidence(
+                source_module=f"{source}.{advisor}"[:80],
+                domain=EvidenceDomain.REASONING, symbol=symbol,
+                observation=f"advisor {advisor}: {answer}",
+                confidence=conf, uncertainty=1.0 - conf,
+                polarity=_sentiment_polarity(direction) * conf,
+                measurements={"advisor": True},
+                relevance_horizon_seconds=1800.0,
+            ))
+        # ── Research / market-context items → MACRO evidence each ─────────
+        items = data.get("items", data.get("results", []))
+        if isinstance(items, dict):
+            items = [items]
+        for item in list(items or [])[: max(1, int(max_items))]:
+            if not isinstance(item, dict):
+                continue
+            title = _text(item, "title", "headline", "name")
+            snippet = _text(item, "snippet", "summary", "description", "content")
+            if not title and not snippet:
+                continue
+            conf = _clamp01(item.get("confidence", 0.35))
+            polarity = _sentiment_polarity(
+                item.get("sentiment", item.get("direction", ""))
+            ) * conf
+            out.append(Evidence(
+                source_module=source,
+                domain=EvidenceDomain.MACRO, symbol=symbol,
+                observation=(f"{title}: {snippet}" if title and snippet
+                             else (title or snippet))[:280],
+                confidence=conf, uncertainty=1.0 - conf,
+                polarity=polarity,
+                measurements={
+                    "provider": str(item.get("source", "") or "")[:48],
+                    "external": True,
+                },
+                relevance_horizon_seconds=1800.0,
+            ))
+    except Exception:  # noqa: BLE001
+        return out
+    return out
+
+
 def evidence_from_analogues(symbol: str, analogues: Any) -> "list[Evidence]":
     """Summarise similar past campaigns (institutional memory) as one Evidence.
 

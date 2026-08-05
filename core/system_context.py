@@ -128,6 +128,10 @@ class SystemContext:
     # into provider-bound, governed Composio actions. The Brain never names a
     # provider; the planner selects capability + provider. Default-off.
     action_planner: Optional[Any] = None
+    # Knowledge source (Part IX v3.0) — Composio-backed external market context,
+    # research and AI advisors turned into advisory Evidence for the Brain.
+    # Read-only, gated, throttled and self-measuring. Default-off.
+    knowledge_source: Optional[Any] = None
     # Reasoning Orchestrator (Part XVII) — lets the one Brain consult several
     # reasoning engines; each opinion becomes advisory Evidence (never a vote).
     # Default-off (consult_multi); the Brain remains the sole decision-maker.
@@ -1165,9 +1169,10 @@ class SystemContext:
                 try:
                     from action.capabilities import default_registry as _default_registry
                     from action.planner import ActionPlanner as _ActionPlanner
+                    _capability_registry = _default_registry()
                     ctx.action_planner = _ActionPlanner(
                         ctx.action_orchestrator,
-                        _default_registry(),
+                        _capability_registry,
                         enabled=bool(getattr(comp_cfg, "enabled", False)
                                      if comp_cfg is not None else False),
                         available_providers=(comp_cfg.available_providers_list()
@@ -1178,6 +1183,42 @@ class SystemContext:
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("[SystemContext] ActionPlanner init failed: {}", exc)
                     ctx.action_planner = None
+                    _capability_registry = None
+                # Part IX v3.0 — the Operational Intelligence READ layer. Turns
+                # external market context / research / AI advisors (via Composio)
+                # into advisory Evidence for the Brain. Gated by both the action
+                # layer being enabled AND its own knowledge switch; default-off.
+                try:
+                    from cognition.knowledge_source import KnowledgeSource as _KnowledgeSource
+                    _know_on = bool(
+                        getattr(comp_cfg, "enabled", False)
+                        and getattr(comp_cfg, "knowledge_enabled", False)
+                    ) if comp_cfg is not None else False
+                    ctx.knowledge_source = _KnowledgeSource(
+                        _adapter,
+                        _capability_registry,
+                        enabled=_know_on,
+                        interval_seconds=float(
+                            getattr(comp_cfg, "knowledge_interval_seconds", 300.0)
+                            if comp_cfg is not None else 300.0
+                        ),
+                        max_items=int(
+                            getattr(comp_cfg, "knowledge_max_items", 5)
+                            if comp_cfg is not None else 5
+                        ),
+                        advisor_enabled=bool(
+                            getattr(comp_cfg, "advisor_enabled", False)
+                            if comp_cfg is not None else False
+                        ),
+                    )
+                    logger.info(
+                        "[SystemContext] Knowledge source ready — enabled={} advisor={}",
+                        _know_on,
+                        getattr(comp_cfg, "advisor_enabled", False) if comp_cfg else False,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[SystemContext] KnowledgeSource init failed: {}", exc)
+                    ctx.knowledge_source = None
                 logger.info(
                     "[SystemContext] Action layer ready — enabled={} adapter={} "
                     "(dry_run={})",
@@ -1378,6 +1419,7 @@ class SystemContext:
                     influence=_influence,
                     influence_enabled=_influence_enabled,
                     reasoning=_reasoning_orch,
+                    knowledge=ctx.knowledge_source,
                 )
                 _bridge = _BrainActionBridge(
                     ctx.action_orchestrator,

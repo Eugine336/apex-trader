@@ -3848,6 +3848,15 @@ class ComposioConfig:
     # candidate); ``provider_preferences`` is CSV "capability=provider" hints.
     available_providers: str = ""
     provider_preferences: str = ""
+    # Part IX v3.0 — the READ half (Operational Intelligence Layer). When
+    # ``knowledge_enabled`` the cognition consolidator pulls external market
+    # context / research (and, when ``advisor_enabled``, AI advisors) through
+    # Composio as advisory Evidence. Periodic per symbol (cost-aware); default
+    # OFF so it changes nothing until explicitly turned on.
+    knowledge_enabled: bool = False
+    knowledge_interval_seconds: float = 300.0
+    knowledge_max_items: int = 5
+    advisor_enabled: bool = False
 
     def __post_init__(self) -> None:
         self.api_key = (os.getenv("COMPOSIO_API_KEY", self.api_key) or "").strip()
@@ -3862,6 +3871,8 @@ class ComposioConfig:
             ("COMPOSIO_MIN_CONFIDENCE", "min_confidence", float),
             ("COMPOSIO_MEDIUM_CONFIDENCE_THRESHOLD", "medium_confidence_threshold", float),
             ("COMPOSIO_TIMEOUT_SECONDS", "timeout_seconds", float),
+            ("COMPOSIO_KNOWLEDGE_INTERVAL_SECONDS", "knowledge_interval_seconds", float),
+            ("COMPOSIO_KNOWLEDGE_MAX_ITEMS", "knowledge_max_items", int),
         ):
             raw = os.getenv(env_name)
             if raw is not None:
@@ -3873,6 +3884,12 @@ class ComposioConfig:
                     )
         self.dry_run = _llm_env_bool("COMPOSIO_DRY_RUN", self.dry_run)
         self.require_source = _llm_env_bool("COMPOSIO_REQUIRE_SOURCE", self.require_source)
+        self.knowledge_enabled = _llm_env_bool(
+            "COMPOSIO_KNOWLEDGE_ENABLED", self.knowledge_enabled
+        )
+        self.advisor_enabled = _llm_env_bool(
+            "COMPOSIO_ADVISOR_ENABLED", self.advisor_enabled
+        )
         # Auto-on when a key is present; explicit COMPOSIO_ENABLED overrides.
         self.enabled = _llm_env_bool("COMPOSIO_ENABLED", bool(self.api_key))
         self.available_providers = (
