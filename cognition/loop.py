@@ -75,6 +75,15 @@ class EvidenceConsolidator:
         self._influence_enabled = bool(influence_enabled)
         self._reasoning = reasoning
 
+    def set_vote_source(self, vote_source: Optional[Callable[[str], Any]]) -> None:
+        """Wire (or clear) the live WorldModel vote-panel source.
+
+        The bootstrap supplies this once the WorldModel store exists so the
+        consolidator can turn each symbol's live per-module vote panel into
+        domain-classified Evidence. Fail-safe callable — never invoked eagerly.
+        """
+        self._vote_source = vote_source
+
     def build(
         self,
         symbol: str,
@@ -248,6 +257,17 @@ class CognitionLoop:
         """Wire the live order-submission sink (set by the system that owns the
         executor). When unset, ``live`` origination degrades to shadow-record."""
         self._origination_sink = sink
+
+    def set_vote_source(self, vote_source: Optional[Callable[[str], Any]]) -> None:
+        """Wire the live WorldModel vote-panel source onto the consolidator.
+
+        Delegates to :meth:`EvidenceConsolidator.set_vote_source`. The owning
+        system calls this once its WorldModel store exists, so the Brain reasons
+        over the live per-module market read instead of an empty MarketState."""
+        try:
+            self._consolidator.set_vote_source(vote_source)
+        except Exception as exc:  # noqa: BLE001 — wiring must never break startup
+            logger.debug("[cognition-loop] set_vote_source ignored a fault: %s", exc)
 
     @property
     def running(self) -> bool:

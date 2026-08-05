@@ -110,6 +110,43 @@ def test_evidence_from_votes_empty_and_fault_safe():
     assert evidence_from_votes("EURUSD", [object()]) == []  # no module attr → skipped
 
 
+class _RichVote:
+    def __init__(self, module, direction, confidence, weight=1.0, timeframe="", evidence=None):
+        self.module = module
+        self.direction = direction
+        self.confidence = confidence
+        self.weight = weight
+        self.timeframe = timeframe
+        self.evidence = evidence or {}
+
+
+def test_evidence_from_votes_preserves_per_module_richness():
+    # The richer per-module read (Vote.evidence) must survive onto the Evidence
+    # measurements instead of being collapsed to a bare direction+weight.
+    votes = [_RichVote(
+        "liquidity", "SHORT", 0.6, weight=1.0, timeframe="M5",
+        evidence={"sweep_type": "buyside", "pool_count": 3, "stacked": True,
+                  "note": "x" * 400},
+    )]
+    ev = evidence_from_votes("XAUUSD", votes)
+    assert len(ev) == 1
+    m = ev[0].measurements
+    assert m["timeframe"] == "M5"
+    assert m["sweep_type"] == "buyside"
+    assert m["pool_count"] == 3
+    assert m["stacked"] is True
+    assert len(m["note"]) == 120  # long strings capped, never unbounded
+    assert "on M5" in ev[0].observation
+
+
+def test_evidence_from_votes_richness_is_bounded():
+    # A pathological evidence dict must not explode the measurements payload.
+    big = {f"k{i}": i for i in range(200)}
+    ev = evidence_from_votes("XAUUSD", [_RichVote("momentum", "LONG", 0.7, evidence=big)])
+    assert len(ev) == 1
+    assert len(ev[0].measurements) <= 24
+
+
 # ── Historical analogues (Phase H — Part VII memory) ──────────────────────────
 
 def test_evidence_from_analogues_won_long_leans_long():
