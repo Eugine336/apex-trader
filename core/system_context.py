@@ -158,6 +158,10 @@ class SystemContext:
     # to consolidation is gated (shadow by default). Surfaced via cognition.
     influence_ledger: Optional[Any] = None
     brain_calibration: Optional[Any] = None
+    # Cognition observability (Phase L, Part XII) — read-only aggregator of the
+    # cognitive components' status into derived rollout metrics. Surfaced via
+    # governance cognition.observability.
+    cognition_observability: Optional[Any] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
     opportunity_executor: Optional[OpportunityExecutor] = None
@@ -1512,6 +1516,27 @@ class SystemContext:
                         if cog_cfg is not None else 300.0
                     ),
                 )
+                # Phase L (Part XII) — observability aggregator over the cognitive
+                # components. Read-only; surfaces derived metrics (throughput,
+                # veto/authorise rates, reasoning-quality score) for the rollout.
+                try:
+                    from cognition.observability import (
+                        CognitionObservability as _CognitionObservability,
+                    )
+                    ctx.cognition_observability = _CognitionObservability(
+                        brain=ctx.cognitive_brain,
+                        loop=ctx.cognition_loop,
+                        gate=ctx.cognition_gate,
+                        management_gate=ctx.management_gate,
+                        calibration=ctx.brain_calibration,
+                        memory=ctx.campaign_memory,
+                        min_calibration_samples=int(
+                            getattr(cog_cfg, "influence_min_samples", 20)
+                            if cog_cfg is not None else 20),
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[SystemContext] CognitionObservability init failed: {}", exc)
+                    ctx.cognition_observability = None
                 logger.info(
                     "[SystemContext] Cognitive Brain ready — reasoner_available={} "
                     "shadow={} gate_mode={}",
@@ -1561,6 +1586,7 @@ class SystemContext:
                 influence_ledger=ctx.influence_ledger,
                 brain_calibration=ctx.brain_calibration,
                 reasoning_orchestrator=ctx.reasoning_orchestrator,
+                cognition_observability=ctx.cognition_observability,
             )
             # Install Governance as the authoriser on the Learning→Governance
             # gateway and require authorisation (per config; default on).

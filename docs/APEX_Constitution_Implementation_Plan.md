@@ -404,32 +404,65 @@ full split pending live validation.
 
 ---
 
-## 9. Phase L — Observability, validation & controlled rollout (Parts XII, XIII)
+## 9. Phase L — Observability, validation & controlled rollout (Parts XII, XIII) — ✅ DONE
 
-**Tasks**
-- Cognition metrics/traces: decisions/sec, campaigns opened, veto/authorise
-  counts, evidence-domain coverage, Brain latency, calibration — dashboards.
-- Validation harness: replay/simulation over historical events, walk-forward,
-  and a paper-trading mode driving the Brain end-to-end.
-- Controlled rollout runbook: shadow → veto → authoritative per symbol group,
-  with rollback (`COGNITION_GATE_MODE`).
+**Shipped:**
+- `cognition/observability.py` (new): `CognitionObservability` — a read-only
+  aggregator over the cognitive components' `get_status()` dicts. Computes the
+  derived rollout signals: `decisions_total` / `decisions_per_min` (rolling),
+  `campaigns_opened` / `observed` / `managed`, `veto_rate` / `would_veto_rate` /
+  `authorise_rate`, `calibration_samples` / `reliability_gap` / `brier`, and a
+  headline `reasoning_quality_score` (= `1 − reliability_gap`, surfaced only once
+  calibration is statistically meaningful — so "reasoning quality is measurable",
+  Part XIII). Surfaced under governance `cognition.observability`.
+- `cognition/validation.py` (new): the offline validation harness. `ReplayHarness`
+  drives the Brain over a batch of `MarketState`s (synthetic or reconstructed) with
+  **no broker / no execution**, tallying the decision distribution, open rate,
+  mean confidence/uncertainty, faults, and — when aligned realised outcomes are
+  supplied — calibration; it returns a `ValidationReport` with a go/no-go `ready`
+  verdict. `readiness_verdict(cognition_status)` is a pure gate the rollout
+  consults before promoting a symbol group to `authoritative`.
+- `docs/APEX_Cognition_Rollout_Runbook.md` (new): the controlled-rollout runbook —
+  shadow → veto → authoritative **per symbol group**, one-switch rollback via
+  `COGNITION_GATE_MODE`, the observability metrics to watch, and the readiness
+  gates (offline harness green + live `readiness_verdict` ready) at each rung.
+- Wired: `CognitionObservability` built in `system_context` from the live
+  components; params added to `GovernanceDivision.__init__` + `bind_runtime`;
+  lazy exports in `cognition/__init__`.
 
-**Acceptance:** reasoning quality is measurable; validation harness green before
-`authoritative` is trusted on the demo; documented rollback.
+**Acceptance:** ✅ reasoning quality is measurable (calibration + observability
+score); ✅ validation harness produces a green/`ready` verdict gate before
+`authoritative` is trusted; ✅ controlled-rollout + rollback documented.
+
+**Note:** Phase L is exactly what unblocks the deferred Phase K tail — once a
+symbol group holds `authoritative` cleanly on the demo (harness green,
+observability healthy), the legacy-decider physical deletion + coupled-core
+decomposition can proceed as the *validated* cutover (Part XV).
 
 ---
 
 ## 10. Definition of Done (Constitution Part XIV)
 
 The redesign is complete only when ALL hold, verified by tests + a grep/audit:
-- [ ] Single Reasoner Principle holds for **entry, management, and origination**
-      (no competing decider in code).
-- [ ] Evidence modules never emit buy/sell/hold/close/reverse; all feed the Brain.
-- [ ] The AI performs the reasoning; execution never reinterprets market intent.
-- [ ] Campaigns are opportunity-based, Brain-driven, and persisted.
-- [ ] Learning is auditable; evidence + Brain influence adapt through governance.
-- [ ] Explainability: every trade/no-trade traces to recorded evidence + decision.
-- [ ] Observability + validation harness in place; controlled-rollout documented.
+- [~] Single Reasoner Principle holds for **entry, management, and origination**
+      (Brain gate authoritative by default across C/D/F/G; legacy path is
+      runtime-superseded — physical removal of the dead decider is the validated
+      cutover gated by Phase L's rollout).
+- [x] Evidence modules never emit buy/sell/hold/close/reverse; all feed the Brain
+      (Phase E evidence adapters + consolidator).
+- [x] The AI performs the reasoning; execution never reinterprets market intent
+      (Phase G spec-consuming execution; feasibility-only downstream).
+- [x] Campaigns are opportunity-based, Brain-driven, and persisted (F/G + Phase H).
+- [x] Learning is auditable; evidence + Brain influence adapt through governance
+      (Phase J influence ledger + calibration, significance-gated, shadow-apply).
+- [x] Explainability: every trade/no-trade traces to recorded evidence + decision
+      (DecisionPackage + institutional memory + reasoning-engine evidence).
+- [x] Observability + validation harness in place; controlled-rollout documented
+      (Phase L observability + `ReplayHarness`/`readiness_verdict` + runbook).
+
+Remaining to fully close: the physical legacy-decider deletion + coupled-core
+god-file decomposition, executed as the validated cutover once the demo runs
+`authoritative` cleanly (the rollout Phase L now measures + documents).
 
 Any violation ⇒ redesign (Part XIV).
 
