@@ -118,6 +118,20 @@ def _norm_dir(direction: Any) -> str:
     return d if d in (LONG, SHORT) else FLAT
 
 
+def symbol_components(symbol: str) -> "set[str]":
+    """Decompose an instrument into its correlated components (Part XVIII Art 11).
+
+    A 6-letter code is split into its two currency/asset legs (``EURUSD`` →
+    ``{EUR, USD}``, ``XAUUSD`` → ``{XAU, USD}``, ``BTCUSD`` → ``{BTC, USD}``) so
+    the portfolio layer can see stacked exposure to a shared leg. Anything else
+    (indices like ``GER40``, ``US500``) is treated as its own atomic component.
+    """
+    s = str(symbol or "").upper().strip()
+    if len(s) == 6 and s.isalpha():
+        return {s[:3], s[3:]}
+    return {s} if s else set()
+
+
 def _now_iso() -> str:
     return time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime())
 
@@ -239,6 +253,13 @@ class Campaign:
     realized_pnl: float = 0.0           # summed realised P&L across closed legs
     legs: list[CampaignLeg] = field(default_factory=list)
     postmortem: Optional[CampaignPostmortem] = None
+    # Part XVIII Art 12 — live campaign health written by the Brain each time it
+    # re-reasons an OPEN campaign (management). ``objective`` is the current
+    # management intent (hold/scale_in/tighten_risk/exit/…); ``uncertainty`` is
+    # the Brain's own doubt; ``last_action`` mirrors the most recent verdict.
+    objective: str = ""
+    last_action: str = ""
+    uncertainty: float = 0.0
 
     # ── Derived reads ────────────────────────────────────────────────────
     @property
@@ -271,6 +292,45 @@ class Campaign:
         """Mean supporting confidence across all evidence refreshes."""
         return self.confidence_sum / self.refresh_count if self.refresh_count else 0.0
 
+    def health(self, now: Optional[float] = None) -> dict:
+        """Continuously-recalculated campaign health (Part XVIII Art 12).
+
+        A pure read over the campaign's own state — thesis/objective, expected
+        value (edge over do-nothing, in R), confidence, uncertainty, opportunity
+        strength, evidence quality, give-back risk and remaining upside. Derived
+        entirely from fields the Brain already maintains; never raises.
+        """
+        ev = _safe_float(self.ev_over_flat)
+        peak = _safe_float(self.peak_ev_over_flat)
+        conf = _clamp01(self.confidence)
+        avg = _clamp01(self.avg_confidence)
+        # Opportunity strength: how much live edge remains, blended with how
+        # strongly the evidence still supports the thesis.
+        opportunity = _clamp01(0.5 * conf + 0.5 * _clamp01(ev))
+        return {
+            "campaign_id": self.campaign_id,
+            "symbol": self.symbol,
+            "direction": self.direction,
+            "state": self.state.value,
+            "thesis": self.objective or "",
+            "last_action": self.last_action,
+            "ev_over_flat": round(ev, 4),
+            "peak_ev_over_flat": round(peak, 4),
+            "confidence": round(conf, 4),
+            "avg_confidence": round(avg, 4),
+            "uncertainty": round(_clamp01(self.uncertainty), 4),
+            "opportunity_strength": round(opportunity, 4),
+            "evidence_quality": round(avg, 4),
+            # Give-back risk: how far live edge has fallen from its peak (R).
+            "giveback_r": round(max(0.0, peak - ev), 4),
+            "remaining_upside_r": round(max(0.0, ev), 4),
+            "refresh_count": int(self.refresh_count),
+            "open_legs": int(self.open_legs),
+            "leg_count": len(self.legs),
+            "realized_pnl": round(self.realized_pnl, 4),
+            "age_seconds": round(self.staleness_seconds(now), 1),
+        }
+
     def to_dict(self) -> dict:
         return {
             "campaign_id": self.campaign_id,
@@ -281,6 +341,9 @@ class Campaign:
             "confidence": round(self.confidence, 4),
             "peak_ev_over_flat": round(self.peak_ev_over_flat, 4),
             "avg_confidence": round(self.avg_confidence, 4),
+            "objective": self.objective,
+            "last_action": self.last_action,
+            "uncertainty": round(_clamp01(self.uncertainty), 4),
             "opened_at": self.opened_at_iso,
             "last_refreshed": self.last_refreshed_iso,
             "ended_at": self.ended_at_iso,
@@ -396,6 +459,53 @@ class CampaignRegistry:
             return None
 
     # ── Ingest: order legs ────────────────────────────────────────────────
+
+    def record_management(
+        self,
+        symbol: str,
+        direction: str,
+        objective: str,
+        *,
+        confidence: float = 0.0,
+        ev_over_flat: float = 0.0,
+        uncertainty: float = 0.0,
+        now: Optional[float] = None,
+    ) -> Optional[Campaign]:
+        """Fold ONE Brain management verdict into the campaign (Part XVIII Art 12).
+
+        The Brain continuously re-reasons every OPEN campaign; each verdict is a
+        fresh actionable read that renews the thesis and updates live health
+        (objective / confidence / EV / uncertainty). The campaign is BORN here if
+        one is not yet tracked, so every open position the Brain manages is a
+        first-class campaign (Art 1/16) even when it was opened outside the Brain
+        origination path. Fail-safe — never raises into the management cycle.
+        """
+        try:
+            sym = str(symbol or "")
+            d = _norm_dir(direction)
+            if not sym or d == FLAT:
+                return None
+            t = _now_epoch() if now is None else _safe_float(now)
+            now_iso = _now_iso()
+            with self._lock:
+                camp = self._live.get((sym, d))
+                if camp is None:
+                    self._seq += 1
+                    camp = Campaign(
+                        campaign_id=f"{sym}:{d}:{self._seq}",
+                        symbol=sym, direction=d, state=CampaignState.ACTIVE,
+                        opened_at_iso=now_iso, opened_at_epoch=t,
+                    )
+                    self._live[(sym, d)] = camp
+                camp.refresh(ev_over_flat, confidence, now_iso, t)
+                camp.objective = str(objective or "")[:64]
+                camp.last_action = camp.objective
+                camp.uncertainty = _clamp01(uncertainty)
+                return camp
+        except Exception as exc:  # noqa: BLE001 — management must never break
+            logger.debug("[campaign] record_management({}) ignored a fault: {}",
+                         symbol, exc)
+            return None
 
     def record_leg(
         self,
@@ -622,6 +732,60 @@ class CampaignRegistry:
         except Exception:  # noqa: BLE001
             return None
 
+    def live_campaigns(self) -> "list[Campaign]":
+        """Snapshot of every live campaign (Part XVIII Art 3/16). Fail-safe."""
+        try:
+            with self._lock:
+                return list(self._live.values())
+        except Exception:  # noqa: BLE001
+            return []
+
+    def portfolio_assessment(self, now: Optional[float] = None) -> dict:
+        """Reason across the whole book of live campaigns (Part XVIII Art 11).
+
+        Aggregates exposure by shared component (currency/asset leg), measures
+        concentration (largest share of campaigns on one component) and surfaces
+        *correlated clusters* — components carried by two or more campaigns — so
+        the Brain can see stacked/redundant risk when it reasons any one symbol.
+        Pure and fail-safe; returns an empty assessment on any fault.
+        """
+        empty = {
+            "campaign_count": 0, "by_component": {}, "correlated_clusters": [],
+            "concentration": 0.0, "concentration_warning": False,
+        }
+        try:
+            live = self.live_campaigns()
+            n = len(live)
+            if n == 0:
+                return empty
+            by_comp: dict[str, list] = {}
+            for c in live:
+                for comp in symbol_components(c.symbol):
+                    by_comp.setdefault(comp, []).append(
+                        {"symbol": c.symbol, "direction": c.direction}
+                    )
+            comp_summary = {
+                comp: {"count": len(members), "members": members}
+                for comp, members in by_comp.items()
+            }
+            clusters = [
+                {"component": comp, "count": len(members), "members": members}
+                for comp, members in by_comp.items() if len(members) >= 2
+            ]
+            clusters.sort(key=lambda x: x["count"], reverse=True)
+            max_share = max((len(m) for m in by_comp.values()), default=0)
+            concentration = round(max_share / float(n), 4) if n else 0.0
+            return {
+                "campaign_count": n,
+                "by_component": comp_summary,
+                "correlated_clusters": clusters,
+                "concentration": concentration,
+                "concentration_warning": bool(n >= 2 and concentration >= 0.5),
+            }
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[campaign] portfolio_assessment ignored a fault: {}", exc)
+            return empty
+
     def get_status(self) -> dict:
         """Summary of live + recent campaigns for the dashboard / governance."""
         try:
@@ -679,6 +843,7 @@ __all__ = [
     "CampaignPostmortem",
     "CampaignState",
     "CampaignRegistry",
+    "symbol_components",
     "LONG",
     "SHORT",
     "FLAT",

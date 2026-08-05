@@ -1572,6 +1572,7 @@ class SystemContext:
                         getattr(cog_cfg, "event_confidence_delta", 0.15)
                         if cog_cfg is not None else 0.15
                     ),
+                    campaign_registry=ctx.campaign_registry,
                 )
                 from cognition.gate import CognitionGate as _CognitionGate
                 ctx.cognition_gate = _CognitionGate(

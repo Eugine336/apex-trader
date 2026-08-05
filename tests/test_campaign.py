@@ -282,3 +282,75 @@ def test_postmortem_can_be_disabled():
     camp = reg.observe_close("EURUSD", "LONG", "tp2_target", pnl=40.0, won=True)
     assert camp.postmortem is None
 
+
+
+# ── Part XVIII — Brain-driven management, health & portfolio ─────────────────
+
+def test_record_management_births_and_sets_health():
+    reg = _reg()
+    camp = reg.record_management(
+        "XAUUSD", "LONG", "tighten_risk",
+        confidence=0.72, ev_over_flat=1.5, uncertainty=0.2,
+    )
+    assert camp is not None
+    assert camp.objective == "tighten_risk"
+    assert camp.last_action == "tighten_risk"
+    assert camp.refresh_count == 1
+    assert reg.get("XAUUSD", "LONG") is camp
+
+
+def test_record_management_refreshes_existing_campaign():
+    reg = _reg()
+    reg.observe_thesis("EURUSD", "LONG", True, ev_over_flat=0.3, confidence=0.6)
+    camp = reg.record_management("EURUSD", "LONG", "hold", confidence=0.7)
+    assert camp.refresh_count == 2       # birth + management refresh
+    assert camp.objective == "hold"
+
+
+def test_campaign_health_reports_expected_fields():
+    reg = _reg()
+    reg.record_management("GBPUSD", "SHORT", "hold", confidence=0.8, ev_over_flat=2.0)
+    h = reg.get("GBPUSD", "SHORT").health()
+    for key in ("thesis", "ev_over_flat", "confidence", "uncertainty",
+                "opportunity_strength", "evidence_quality", "giveback_r",
+                "state", "open_legs"):
+        assert key in h
+    assert h["ev_over_flat"] == pytest.approx(2.0)
+    assert h["thesis"] == "hold"
+
+
+def test_live_campaigns_snapshot():
+    reg = _reg()
+    reg.record_management("EURUSD", "LONG", "hold", confidence=0.6)
+    reg.record_management("USDJPY", "SHORT", "hold", confidence=0.6)
+    live = reg.live_campaigns()
+    assert {c.symbol for c in live} == {"EURUSD", "USDJPY"}
+
+
+def test_portfolio_assessment_flags_correlated_usd_cluster():
+    reg = _reg()
+    # Three campaigns all sharing USD as a leg → concentrated correlated book.
+    reg.record_management("EURUSD", "LONG", "hold", confidence=0.6)
+    reg.record_management("GBPUSD", "LONG", "hold", confidence=0.6)
+    reg.record_management("AUDUSD", "LONG", "hold", confidence=0.6)
+    pa = reg.portfolio_assessment()
+    assert pa["campaign_count"] == 3
+    usd = [c for c in pa["correlated_clusters"] if c["component"] == "USD"]
+    assert usd and usd[0]["count"] == 3
+    assert pa["concentration"] == pytest.approx(1.0)   # USD in every campaign
+    assert pa["concentration_warning"] is True
+
+
+def test_portfolio_assessment_empty_below_two():
+    reg = _reg()
+    reg.record_management("EURUSD", "LONG", "hold", confidence=0.6)
+    pa = reg.portfolio_assessment()
+    assert pa["campaign_count"] == 1
+    assert pa["correlated_clusters"] == []
+
+
+def test_symbol_components_split():
+    from brain.campaign import symbol_components
+    assert symbol_components("EURUSD") == {"EUR", "USD"}
+    assert symbol_components("XAUUSD") == {"XAU", "USD"}
+    assert symbol_components("GER40") == {"GER40"}

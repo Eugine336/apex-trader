@@ -666,3 +666,98 @@ def test_periodic_backstop_manages_unreasoned_symbol():
     loop.set_management_sink(lambda action, pos: calls.append(action))
     loop.run_once()
     assert len(calls) == 1 and calls[0].kind == "close"
+
+
+# ── Part XVIII Art 1/8/11/12 — campaign registry driven by the Brain ─────────
+
+class _FakeRegistry:
+    """Records the loop's campaign-lifecycle calls for assertions."""
+
+    def __init__(self):
+        self.theses = []
+        self.legs = []
+        self.managed = []
+
+    def observe_thesis(self, symbol, direction, should_act, ev_over_flat=0.0,
+                       confidence=0.0, now=None):
+        self.theses.append((symbol, direction, should_act, ev_over_flat, confidence))
+
+    def record_leg(self, symbol, direction, kind, *, size=0.0, price=0.0,
+                   pnl=0.0, ticket="", now=None):
+        self.legs.append((symbol, direction, kind, size))
+
+    def record_management(self, symbol, direction, objective, *, confidence=0.0,
+                          ev_over_flat=0.0, uncertainty=0.0, now=None):
+        self.managed.append((symbol, direction, objective, confidence))
+
+    def portfolio_assessment(self, now=None):
+        return {"campaign_count": 0, "correlated_clusters": [],
+                "concentration": 0.0, "concentration_warning": False}
+
+    def live_campaigns(self):
+        return []
+
+
+def test_origination_live_births_campaign():
+    reg = _FakeRegistry()
+    loop = CognitionLoop(
+        _OpenBrain(direction="LONG"), _StubConsolidator(), lambda: ["EURUSD"],
+        origination_mode="live", campaign_registry=reg,
+    )
+    loop.set_origination_sink(lambda intent: None)
+    loop.run_once()
+    assert ("EURUSD", "LONG", True) == reg.theses[0][:3]
+    assert ("EURUSD", "LONG", "open") == reg.legs[0][:3]
+
+
+def test_management_records_campaign_health():
+    reg = _FakeRegistry()
+    loop = CognitionLoop(
+        _ManageBrain(DecisionType.TIGHTEN_RISK), _StubConsolidator(), lambda: [],
+        position_source=lambda: [_mgmt_pos("XAUUSD", "LONG")],
+        management_mode="live", campaign_registry=reg,
+    )
+    loop.set_management_sink(lambda action, pos: None)
+    loop.run_once()
+    assert reg.managed
+    sym, direction, objective, _conf = reg.managed[0]
+    assert sym == "XAUUSD" and direction == "LONG"
+    assert objective == "tighten_risk"
+
+
+def test_closed_campaign_rearms_reasoning():
+    """Art 8 — the instant a campaign's position leaves the book, reasoning is
+    re-armed so the Brain immediately re-checks the opportunity."""
+    book = {"n": 0}
+
+    def _positions():
+        # First backstop pass sees the position; the next sees it gone.
+        book["n"] += 1
+        return [_mgmt_pos("XAUUSD", "LONG")] if book["n"] == 1 else []
+
+    reg = _FakeRegistry()
+    loop = CognitionLoop(
+        _ManageBrain(DecisionType.HOLD), _StubConsolidator(), lambda: [],
+        position_source=_positions, management_mode="live",
+        event_driven=True, campaign_registry=reg, clock=_ManualClock(),
+    )
+    loop._manage_open_positions()          # sees XAUUSD → known_open={XAUUSD}
+    loop._manage_open_positions()          # XAUUSD gone → re-arm
+    assert "XAUUSD" in loop._drain_pending()
+
+
+def test_portfolio_evidence_reaches_market_state():
+    """Art 11 — the consolidator surfaces correlated-book context for a symbol
+    that shares a leg with a live cluster."""
+    from brain.campaign import CampaignRegistry
+    from cognition.loop import EvidenceConsolidator
+    reg = CampaignRegistry(enabled=True)
+    reg.record_management("EURUSD", "LONG", "hold", confidence=0.6)
+    reg.record_management("GBPUSD", "LONG", "hold", confidence=0.6)
+    cons = EvidenceConsolidator()
+    cons.set_portfolio_source(reg.portfolio_assessment)
+    ms = cons.build("AUDUSD")   # shares USD with the live cluster
+    portfolio = [e for e in ms.evidence
+                 if e.domain.value == "portfolio"]
+    assert portfolio, "no portfolio-context evidence surfaced"
+    assert any("USD" in e.observation for e in portfolio)

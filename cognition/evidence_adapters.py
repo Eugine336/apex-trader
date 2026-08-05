@@ -465,3 +465,80 @@ def evidence_from_reasoning(symbol: str, consultation: Any) -> "list[Evidence]":
     except Exception:  # noqa: BLE001 — consolidation must never raise
         return out
     return out
+
+
+def _components(symbol: str) -> "set[str]":
+    """Split a symbol into correlated legs (mirrors brain.campaign). Local to
+    avoid a cognition→brain import; kept tiny and pure."""
+    s = str(symbol or "").upper().strip()
+    if len(s) == 6 and s.isalpha():
+        return {s[:3], s[3:]}
+    return {s} if s else set()
+
+
+def evidence_from_portfolio(symbol: str, assessment: Any) -> "list[Evidence]":
+    """Turn the live portfolio assessment into portfolio-context Evidence.
+
+    Part XVIII Art 11: the Brain reasons across the whole book. When it reasons
+    one symbol it must see how that symbol's exposure stacks against the rest —
+    correlated clusters sharing a currency/asset leg, and overall concentration.
+    This is a *risk context*, not a directional signal, so polarity is 0; the
+    Brain decides whether concentration argues against adding exposure. Only the
+    correlated cluster(s) that share a leg with ``symbol`` (plus a book-wide
+    concentration note) are surfaced. Fail-safe: ``[]`` on empty/any fault.
+    """
+    out: list[Evidence] = []
+    try:
+        a = dict(assessment or {})
+        n = int(a.get("campaign_count", 0) or 0)
+        if n < 2:
+            return out
+        sym = str(symbol or "").upper()
+        my_comps = _components(sym)
+        clusters = [c for c in (a.get("correlated_clusters") or []) if isinstance(c, dict)]
+        relevant = [c for c in clusters if str(c.get("component", "")) in my_comps]
+        concentration = _clamp01(a.get("concentration", 0.0))
+        for c in relevant:
+            comp = str(c.get("component", ""))
+            members = [m for m in (c.get("members") or []) if isinstance(m, dict)]
+            peers = [
+                f"{m.get('symbol')}:{m.get('direction')}" for m in members
+                if str(m.get("symbol", "")).upper() != sym
+            ]
+            share = _clamp01(len(members) / float(n)) if n else 0.0
+            out.append(Evidence(
+                source_module="portfolio.correlation",
+                domain=EvidenceDomain.PORTFOLIO, symbol=sym,
+                observation=(
+                    f"{len(members)} live campaign(s) share '{comp}' exposure "
+                    f"({', '.join(peers) or 'this symbol'}) — correlated/"
+                    "concentrated book risk"
+                ),
+                confidence=max(share, concentration),
+                uncertainty=1.0 - max(share, concentration),
+                polarity=0.0,  # risk context, never a directional instruction
+                measurements={
+                    "component": comp,
+                    "cluster_count": int(c.get("count", len(members))),
+                    "concentration": round(concentration, 4),
+                    "campaign_count": n,
+                },
+                relevance_horizon_seconds=300.0,
+            ))
+        if not relevant and bool(a.get("concentration_warning", False)):
+            out.append(Evidence(
+                source_module="portfolio.concentration",
+                domain=EvidenceDomain.PORTFOLIO, symbol=sym,
+                observation=(
+                    f"book concentration {concentration:.0%} across {n} campaigns "
+                    "— limited diversification"
+                ),
+                confidence=concentration, uncertainty=1.0 - concentration,
+                polarity=0.0,
+                measurements={"concentration": round(concentration, 4),
+                              "campaign_count": n},
+                relevance_horizon_seconds=300.0,
+            ))
+    except Exception:  # noqa: BLE001 — consolidation must never raise
+        return out
+    return out
