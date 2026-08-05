@@ -41,6 +41,39 @@ def test_consolidator_short_is_negative_polarity():
     assert ms.fresh_evidence()[0].polarity < 0
 
 
+def test_consolidator_set_vote_source_surfaces_live_votes():
+    # With no thesis engine (single-path), the vote source is the Brain's only
+    # window onto the live market — set_vote_source must wire it end-to-end.
+    votes = [SimpleNamespace(module="structure", direction="LONG", confidence=0.8,
+                             weight=1.0, timeframe="H1", evidence={"bos": True})]
+    cons = EvidenceConsolidator(ctx=None)
+    assert cons.build("XAUUSD").consolidation()["evidence_fresh"] == 0
+    cons.set_vote_source(lambda sym: votes if sym == "XAUUSD" else [])
+    ms = cons.build("XAUUSD")
+    fresh = ms.fresh_evidence()
+    assert len(fresh) == 1
+    assert fresh[0].source_module == "structure" and fresh[0].polarity > 0
+    assert fresh[0].measurements.get("bos") is True
+
+
+def test_consolidator_vote_source_is_fault_safe():
+    cons = EvidenceConsolidator(ctx=None)
+    def _boom(_sym):
+        raise RuntimeError("store down")
+    cons.set_vote_source(_boom)
+    ms = cons.build("XAUUSD")  # must not raise
+    assert ms.consolidation()["evidence_fresh"] == 0
+
+
+def test_loop_set_vote_source_delegates_to_consolidator():
+    seen = {}
+    consolidator = EvidenceConsolidator(ctx=None)
+    loop = CognitionLoop(_StubBrain(), consolidator, lambda: ["X"], interval_seconds=1.0)
+    fn = lambda sym: []
+    loop.set_vote_source(fn)
+    assert consolidator._vote_source is fn
+
+
 # ── CognitionLoop ─────────────────────────────────────────────────────────────
 
 class _StubBrain:

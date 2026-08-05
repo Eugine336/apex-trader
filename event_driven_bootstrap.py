@@ -3262,6 +3262,28 @@ class EventDrivenSystem:
 
         return _sink
 
+    def _cognition_vote_panel(self, symbol: str) -> list:
+        """Live per-module vote panel for one symbol, for the cognition loop.
+
+        Returns the confirmed WorldModel's ``votes`` — the full per-module
+        directional read (structure, liquidity, momentum, volume, order-flow, …)
+        derived from live MT5 candles on each close, each carrying its richer
+        secondary ``evidence``. The consolidator turns these into domain-
+        classified Evidence so the Brain reasons over the real market picture
+        rather than an empty MarketState. Fail-safe: returns ``[]`` on any fault.
+        """
+        try:
+            store = self._wm_store
+            if store is None:
+                return []
+            wm = store.get(symbol)
+            if wm is None:
+                return []
+            return wm.votes_list()
+        except Exception as exc:  # noqa: BLE001 — never break the cognition loop
+            logger.debug("[cognition] vote panel fetch failed for {}: {}", symbol, exc)
+            return []
+
     # ── Lifecycle ────────────────────────────────────────────────────
 
     def start(self) -> None:
@@ -3493,6 +3515,14 @@ class EventDrivenSystem:
             if _cog_loop is not None and bool(
                 getattr(_cog_cfg, "enabled", True) if _cog_cfg is not None else True
             ):
+                # Feed the Brain the live per-module market read: wire the
+                # WorldModel vote panel as the consolidator's vote source so each
+                # cognition cycle reasons over real MT5-derived evidence across
+                # every analytical domain instead of an empty MarketState.
+                try:
+                    _cog_loop.set_vote_source(self._cognition_vote_panel)
+                except Exception as exc:
+                    logger.debug("[event-driven] vote-source wiring failed: {}", exc)
                 # Phase G — when origination is LIVE, wire the executor sink so the
                 # Brain's originated entries reach the SAME execution plane as
                 # every other entry (aggregator → RiskGate → broker). Shadow/off

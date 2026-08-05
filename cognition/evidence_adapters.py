@@ -142,11 +142,46 @@ def evidence_from_thesis_status(status: dict, symbol: str) -> "list[Evidence]":
     return out
 
 
+def _vote_measurements(vote: Any, weight: Any, timeframe: str) -> dict:
+    """Flatten a vote's rich per-module ``evidence`` dict into JSON-safe
+    measurements.
+
+    The ``(direction, confidence)`` collapse used to discard every secondary
+    read a module computed (RSI level, MACD histogram, zone stacking, sweep
+    type, …). ``Vote.evidence`` preserves it; this surfaces it to the Brain as
+    structured measurements so the reasoner sees the full per-module picture
+    instead of a single collapsed lean. Only scalar values are carried (numbers,
+    bools, short strings) so the LLM payload stays clean and serialisable.
+    """
+    out: dict = {"weight": _clamp01(weight, 1.0)}
+    if timeframe:
+        out["timeframe"] = timeframe
+    try:
+        raw = getattr(vote, "evidence", None)
+        if isinstance(raw, dict):
+            for k, val in raw.items():
+                if len(out) >= 24:
+                    break
+                key = str(k)[:48]
+                if key in out:
+                    continue
+                if isinstance(val, bool) or isinstance(val, (int, float)):
+                    out[key] = val
+                elif isinstance(val, str):
+                    out[key] = val[:120]
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 def evidence_from_votes(symbol: str, votes: Any) -> "list[Evidence]":
     """Convert a raw vote panel (module/direction/confidence/weight) to Evidence.
 
-    Available for the fuller wiring once the loop can supply the WorldModel vote
-    panel directly; each vote becomes one domain-classified Evidence. Fail-safe.
+    Each contributing analytical module (structure, liquidity, momentum, volume,
+    order-flow, …) becomes one domain-classified :class:`Evidence`, carrying the
+    module's richer secondary read (``Vote.evidence``) as measurements so nothing
+    is collapsed away. This is the live bridge from the WorldModel's per-module
+    vote panel onto the Brain's consolidated MarketState. Fail-safe.
     """
     out: list[Evidence] = []
     try:
@@ -157,12 +192,16 @@ def evidence_from_votes(symbol: str, votes: Any) -> "list[Evidence]":
             direction = getattr(v, "direction", "")
             conf = _clamp01(getattr(v, "confidence", 0.0))
             weight = getattr(v, "weight", 1.0)
+            timeframe = str(getattr(v, "timeframe", "") or "")
+            observation = f"{module} votes {str(direction or '').upper() or 'FLAT'}"
+            if timeframe:
+                observation += f" on {timeframe}"
             out.append(Evidence(
                 source_module=module, domain=classify_domain(module), symbol=symbol,
-                observation=f"{module} votes {str(direction or '').upper() or 'FLAT'}",
+                observation=observation,
                 confidence=conf, uncertainty=1.0 - conf,
                 polarity=_sign(direction) * conf,
-                measurements={"weight": _clamp01(weight, 1.0)},
+                measurements=_vote_measurements(v, weight, timeframe),
                 relevance_horizon_seconds=900.0,
             ))
     except Exception:  # noqa: BLE001
