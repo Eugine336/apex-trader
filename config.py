@@ -3860,7 +3860,7 @@ class ComposioConfig:
     # retuned from .env if Composio revises the shape (defaults match the
     # current COMPOSIO_MULTI_EXECUTE_TOOL convention).
     mcp_router_tool: str = "COMPOSIO_MULTI_EXECUTE_TOOL"
-    mcp_router_tools_key: str = "tool_calls"
+    mcp_router_tools_key: str = "tools"
     mcp_router_slug_key: str = "tool_slug"
     mcp_router_args_key: str = "arguments"
     dry_run: bool = True
@@ -3908,7 +3908,7 @@ class ComposioConfig:
         ).strip()
         self.mcp_router_tools_key = (
             os.getenv("COMPOSIO_MCP_ROUTER_TOOLS_KEY", self.mcp_router_tools_key)
-            or "tool_calls"
+            or "tools"
         ).strip()
         self.mcp_router_slug_key = (
             os.getenv("COMPOSIO_MCP_ROUTER_SLUG_KEY", self.mcp_router_slug_key)

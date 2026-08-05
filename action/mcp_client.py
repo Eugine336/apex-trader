@@ -127,7 +127,7 @@ class McpActionAdapter:
         protocol_version: str = "2025-06-18",
         transport: Optional[McpTransport] = None,
         router_tool: str = "COMPOSIO_MULTI_EXECUTE_TOOL",
-        router_tools_key: str = "tool_calls",
+        router_tools_key: str = "tools",
         router_slug_key: str = "tool_slug",
         router_args_key: str = "arguments",
     ) -> None:
@@ -145,7 +145,7 @@ class McpActionAdapter:
         # arguments. These knobs describe that wrapper so it can be adjusted
         # from config without a code change if Composio revises the shape.
         self._router_tool = str(router_tool or "COMPOSIO_MULTI_EXECUTE_TOOL")
-        self._router_tools_key = str(router_tools_key or "tool_calls")
+        self._router_tools_key = str(router_tools_key or "tools")
         self._router_slug_key = str(router_slug_key or "tool_slug")
         self._router_args_key = str(router_args_key or "arguments")
         self._session_id = ""
