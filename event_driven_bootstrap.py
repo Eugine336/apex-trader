@@ -1096,6 +1096,13 @@ class PositionEvaluator:
         ctx = self._ctx
         if ctx is None or ctx.decision_engine is None or ctx.situation_engine is None:
             return
+        # Single Reasoner (Constitution I.4 / III.2): under single-path the AI
+        # Cognitive Brain is the SOLE market manager. The legacy DecisionEngine
+        # management pass is a competing decider, so it is severed here — the
+        # deterministic protectors (PositionWorker trailing/breakeven/TP and the
+        # portfolio heat monitor) keep running as Part X safety.
+        if self._single_reasoner_path_active():
+            return
         if now_mono - self._last_de_eval.get(order_id, 0.0) < self._de_interval:
             return
         self._last_de_eval[order_id] = now_mono
