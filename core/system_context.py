@@ -1573,6 +1573,22 @@ class SystemContext:
                         if cog_cfg is not None else 0.15
                     ),
                     campaign_registry=ctx.campaign_registry,
+                    reallocation_enabled=bool(
+                        getattr(cog_cfg, "reallocation_enabled", False)
+                        if cog_cfg is not None else False
+                    ),
+                    reallocation_max_per_component=int(
+                        getattr(cog_cfg, "reallocation_max_per_component", 2)
+                        if cog_cfg is not None else 2
+                    ),
+                    reallocation_concentration_limit=float(
+                        getattr(cog_cfg, "reallocation_concentration_limit", 0.6)
+                        if cog_cfg is not None else 0.6
+                    ),
+                    reallocation_trim_fraction=float(
+                        getattr(cog_cfg, "reallocation_trim_fraction", 0.5)
+                        if cog_cfg is not None else 0.5
+                    ),
                 )
                 from cognition.gate import CognitionGate as _CognitionGate
                 ctx.cognition_gate = _CognitionGate(

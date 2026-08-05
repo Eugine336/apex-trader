@@ -761,3 +761,51 @@ def test_portfolio_evidence_reaches_market_state():
                  if e.domain.value == "portfolio"]
     assert portfolio, "no portfolio-context evidence surfaced"
     assert any("USD" in e.observation for e in portfolio)
+
+
+def _pos_r(symbol, direction="LONG", profit_r=0.0):
+    return SimpleNamespace(symbol=symbol, direction=direction,
+                           profit_r=profit_r, size=0.01)
+
+
+def test_reallocation_trims_weakest_correlated_via_sink():
+    """Art 11 — an over-concentrated correlated book trims its weakest campaign
+    through the SAME management sink (partial_close), driven by Brain health."""
+    from brain.campaign import CampaignRegistry
+    reg = CampaignRegistry(enabled=True)
+    positions = [
+        _pos_r("EURUSD", "LONG", profit_r=2.0),
+        _pos_r("GBPUSD", "LONG", profit_r=1.0),
+        _pos_r("AUDUSD", "LONG", profit_r=-0.5),   # weakest USD-correlated campaign
+    ]
+    calls = []
+    loop = CognitionLoop(
+        _ManageBrain(DecisionType.HOLD), _StubConsolidator(), lambda: [],
+        position_source=lambda: positions, management_mode="live",
+        campaign_registry=reg, reallocation_enabled=True, clock=_ManualClock(),
+    )
+    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.run_once()
+    trims = [a for a in calls if a.kind == "partial_close"]
+    assert trims, "no reallocation trim was issued"
+    assert any(a.symbol == "AUDUSD" for a in trims)
+    assert loop.get_status()["reallocations"] >= 1
+
+
+def test_reallocation_disabled_is_noop():
+    from brain.campaign import CampaignRegistry
+    reg = CampaignRegistry(enabled=True)
+    positions = [
+        _pos_r("EURUSD", "LONG", 2.0),
+        _pos_r("GBPUSD", "LONG", 1.0),
+        _pos_r("AUDUSD", "LONG", -0.5),
+    ]
+    calls = []
+    loop = CognitionLoop(
+        _ManageBrain(DecisionType.HOLD), _StubConsolidator(), lambda: [],
+        position_source=lambda: positions, management_mode="live",
+        campaign_registry=reg, reallocation_enabled=False, clock=_ManualClock(),
+    )
+    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.run_once()
+    assert [a for a in calls if a.kind == "partial_close"] == []

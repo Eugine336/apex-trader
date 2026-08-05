@@ -354,3 +354,41 @@ def test_symbol_components_split():
     assert symbol_components("EURUSD") == {"EUR", "USD"}
     assert symbol_components("XAUUSD") == {"XAU", "USD"}
     assert symbol_components("GER40") == {"GER40"}
+
+
+# ── Part XVIII Art 11 — portfolio reallocation + scale saturation ────────────
+
+def test_reallocation_trims_weakest_correlated_campaign():
+    reg = _reg()
+    reg.record_management("EURUSD", "LONG", "hold", confidence=0.9, ev_over_flat=2.0)
+    reg.record_management("GBPUSD", "LONG", "hold", confidence=0.8, ev_over_flat=1.0)
+    reg.record_management("AUDUSD", "LONG", "hold", confidence=0.2, ev_over_flat=0.0)
+    targets = reg.reallocation_targets(max_per_component=2, concentration_limit=0.6)
+    assert len(targets) == 1
+    assert targets[0].symbol == "AUDUSD"        # weakest of the USD cluster
+    assert targets[0].kind == "partial_close"
+    assert 0.0 < targets[0].fraction < 1.0
+
+
+def test_reallocation_none_when_within_allowance():
+    reg = _reg()
+    # USD carried by exactly two campaigns == the allowance → nothing to trim.
+    reg.record_management("EURUSD", "LONG", "hold", confidence=0.8, ev_over_flat=1.0)
+    reg.record_management("USDJPY", "SHORT", "hold", confidence=0.8, ev_over_flat=1.0)
+    assert reg.reallocation_targets(max_per_component=2, concentration_limit=0.6) == []
+
+
+def test_reallocation_respects_concentration_limit():
+    reg = _reg()
+    for s in ("EURUSD", "GBPUSD", "AUDUSD"):
+        reg.record_management(s, "LONG", "hold", confidence=0.6, ev_over_flat=1.0)
+    # Concentration is 1.0 (USD everywhere); a limit above that suppresses action.
+    assert reg.reallocation_targets(max_per_component=2, concentration_limit=1.5) == []
+
+
+def test_is_component_saturated():
+    reg = _reg()
+    for s in ("EURUSD", "GBPUSD", "AUDUSD"):
+        reg.record_management(s, "LONG", "hold", confidence=0.6, ev_over_flat=1.0)
+    assert reg.is_component_saturated("NZDUSD", max_per_component=2) is True   # USD x3 > 2
+    assert reg.is_component_saturated("EURGBP", max_per_component=2) is False  # EUR x1, GBP x1

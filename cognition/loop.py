@@ -34,6 +34,7 @@ from typing import Any, Callable, Optional
 from cognition.campaign_translator import translate as _translate
 from cognition.contracts import DecisionType, MarketState
 from cognition.management_translator import translate_management as _translate_management
+from cognition.management_translator import ManagementAction as _ManagementAction
 from cognition.evidence_adapters import (
     evidence_from_analogues,
     evidence_from_developing_bias,
@@ -282,6 +283,10 @@ class CognitionLoop:
         event_confidence_delta: float = 0.15,
         clock: Optional[Callable[[], float]] = None,
         campaign_registry: Optional[Any] = None,
+        reallocation_enabled: bool = False,
+        reallocation_max_per_component: int = 2,
+        reallocation_concentration_limit: float = 0.6,
+        reallocation_trim_fraction: float = 0.5,
         name: str = "cognition-loop",
     ) -> None:
         self._brain = brain
@@ -346,6 +351,17 @@ class CognitionLoop:
         # "does the opportunity still exist?" (Art 8 scalp re-entry).
         self._campaigns = campaign_registry
         self._known_open: set = set()
+        # Part XVIII Art 11 — portfolio capital reallocation. When the live book
+        # is over-concentrated in one correlated leg, trim the weakest campaign
+        # in that cluster (ranked by the Brain's own health) to free capital for
+        # higher-EV opportunities. Off unless explicitly enabled; throttled so a
+        # trim is not re-issued every cycle.
+        self.reallocation_enabled = bool(reallocation_enabled)
+        self._realloc_max_per_component = max(1, int(reallocation_max_per_component))
+        self._realloc_concentration_limit = float(reallocation_concentration_limit)
+        self._realloc_trim_fraction = min(0.95, max(0.05, float(reallocation_trim_fraction)))
+        self._last_realloc_at: dict = {}
+        self._reallocations = 0
         if self._campaigns is not None:
             try:
                 self._consolidator.set_portfolio_source(
@@ -725,7 +741,76 @@ class CognitionLoop:
                     )
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition-loop] campaign re-arm fault: %s", exc)
+        # Part XVIII Art 11 — after managing each campaign, reason across the
+        # whole book and redistribute capital away from over-concentrated
+        # correlated risk. Runs once per backstop cycle on the same snapshot.
+        self._maybe_reallocate(positions, now=now)
         return managed
+
+    def _maybe_reallocate(self, positions: Any, *, now: Optional[float] = None) -> int:
+        """Trim the weakest campaign(s) in an over-concentrated correlated
+        cluster to free capital (Part XVIII Art 11). Gated + throttled.
+
+        Uses the campaign registry's health-ranked reallocation targets and
+        realises each trim through the SAME management sink the Brain uses (no
+        parallel executor). Fully fail-safe. Returns the number of trims issued.
+        """
+        reg = self._campaigns
+        if (not self.reallocation_enabled or reg is None
+                or self.management_mode != "live"
+                or self._management_sink is None):
+            return 0
+        try:
+            targets = reg.reallocation_targets(
+                max_per_component=self._realloc_max_per_component,
+                concentration_limit=self._realloc_concentration_limit,
+                trim_fraction=self._realloc_trim_fraction,
+            )
+            if not targets:
+                return 0
+            pos_by_key = {}
+            for p in positions or []:
+                pos_by_key[(str(getattr(p, "symbol", "") or ""),
+                            str(getattr(p, "direction", "") or "").upper())] = p
+            t = self._clock() if now is None else float(now)
+            floor = max(self.interval_seconds, self.event_min_interval_seconds)
+            issued = 0
+            for tgt in targets:
+                sym = str(getattr(tgt, "symbol", "") or "")
+                direction = str(getattr(tgt, "direction", "") or "").upper()
+                pos = pos_by_key.get((sym, direction))
+                if pos is None:
+                    continue
+                last = self._last_realloc_at.get((sym, direction), 0.0)
+                if (t - last) < floor:
+                    continue
+                action = _ManagementAction(
+                    symbol=sym, kind=str(getattr(tgt, "kind", "partial_close")),
+                    direction=direction,
+                    fraction=float(getattr(tgt, "fraction", 0.5) or 0.5),
+                    confidence=0.0,
+                    reason=str(getattr(tgt, "reason", "") or "portfolio_reallocation"),
+                )
+                self._management_sink(action, pos)
+                self._last_realloc_at[(sym, direction)] = t
+                self._reallocations += 1
+                issued += 1
+                logger.info(
+                    "[cognition-loop] REALLOCATE %s %s %s — %s",
+                    sym, direction, action.kind, action.reason,
+                )
+                if reg is not None:
+                    try:
+                        reg.record_management(
+                            sym, direction, "reallocate",
+                            confidence=0.0, uncertainty=0.0, now=now,
+                        )
+                    except Exception:  # noqa: BLE001
+                        pass
+            return issued
+        except Exception as exc:  # noqa: BLE001 — reallocation must never break the loop
+            logger.debug("[cognition-loop] reallocation fault: %s", exc)
+            return 0
 
     def _campaign_open(self, symbol: str, direction: str, campaign: Any,
                        decision: Any) -> None:
@@ -940,6 +1025,8 @@ class CognitionLoop:
                 len(self._campaigns.live_campaigns())
                 if self._campaigns is not None else 0
             ),
+            "reallocation_enabled": self.reallocation_enabled,
+            "reallocations": self._reallocations,
         }
 
 

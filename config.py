@@ -4035,9 +4035,24 @@ class CognitionConfig:
     event_min_interval_seconds: float = 8.0
     event_confidence_delta: float = 0.15
     # Phase F — Brain-driven management thresholds.
-    allow_scale_in: bool = False
+    # allow_scale_in: the Brain may ADD to a winning campaign (Part XVIII Art 1 —
+    # one campaign spans multiple entries). Enabled by default; the management
+    # sink still requires a protective stop + a broker-valid lot, and a scale is
+    # suppressed when the symbol's correlated cluster is over-concentrated
+    # (Art 11). Set false to forbid scaling entirely.
+    allow_scale_in: bool = True
     manage_reverse_confidence: float = 0.7
     manage_exit_floor: float = 0.3
+    # Part XVIII Art 11 — portfolio capital reallocation. When the live book is
+    # over-concentrated in one correlated leg (concentration >= the limit) the
+    # weakest campaign(s) in a cluster carrying more than
+    # ``reallocation_max_per_component`` campaigns are trimmed to free capital
+    # for higher-EV opportunities. Realised through the Brain's own management
+    # sink (management_mode must be "live"); default on.
+    reallocation_enabled: bool = True
+    reallocation_max_per_component: int = 2
+    reallocation_concentration_limit: float = 0.6
+    reallocation_trim_fraction: float = 0.5
     # Phase G — Brain-originated entries from its CampaignSpecification.
     # "off"    — never originate (management/observation only).
     # "shadow" — record intended orders, submit nothing (default; safe).

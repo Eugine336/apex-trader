@@ -187,6 +187,38 @@ class CampaignLeg:
 
 
 @dataclass
+class ReallocationTarget:
+    """A capital-reallocation instruction the portfolio layer derives from
+    live campaign health (Part XVIII Art 11).
+
+    When the book is over-concentrated in one correlated component, the weakest
+    campaigns in that cluster (by the Brain's own health ranking) are trimmed to
+    free capital for higher-expected-value opportunities. ``kind`` is a
+    :class:`~cognition.management_translator.ManagementAction` kind
+    (``partial_close`` to trim, ``close`` to exit); ``fraction`` applies to a
+    partial. It carries no broker specifics — the management sink resolves the
+    live position and realises it on the same execution plane the Brain uses.
+    """
+
+    symbol: str
+    direction: str
+    kind: str = "partial_close"
+    fraction: float = 0.5
+    reason: str = ""
+    opportunity_strength: float = 0.0
+
+    def to_dict(self) -> dict:
+        return {
+            "symbol": self.symbol,
+            "direction": self.direction,
+            "kind": self.kind,
+            "fraction": round(self.fraction, 4),
+            "reason": self.reason,
+            "opportunity_strength": round(self.opportunity_strength, 4),
+        }
+
+
+@dataclass
 class CampaignPostmortem:
     """Autonomous grade of a terminated campaign on reasoning quality vs outcome.
 
@@ -786,6 +818,106 @@ class CampaignRegistry:
             logger.debug("[campaign] portfolio_assessment ignored a fault: {}", exc)
             return empty
 
+    def _health_rank_key(self, camp: Optional[Campaign]) -> tuple:
+        """Weakest-first sort key from live campaign health (Brain-sourced)."""
+        if camp is None:
+            return (0.0, 0.0, 0.0)
+        h = camp.health()
+        return (
+            float(h.get("opportunity_strength", 0.0) or 0.0),
+            float(h.get("confidence", 0.0) or 0.0),
+            float(h.get("ev_over_flat", 0.0) or 0.0),
+        )
+
+    def is_component_saturated(self, symbol: str, max_per_component: int = 2) -> bool:
+        """True when ``symbol`` shares a leg with an over-concentrated cluster.
+
+        Part XVIII Art 11 — adding exposure (a scale-in) to a symbol whose
+        currency/asset leg is already carried by more than ``max_per_component``
+        live campaigns stacks correlated risk; the Brain's scale should be
+        suppressed. Pure and fail-safe.
+        """
+        try:
+            comps = symbol_components(symbol)
+            if not comps:
+                return False
+            pa = self.portfolio_assessment()
+            limit = max(1, int(max_per_component))
+            for cluster in pa.get("correlated_clusters", []) or []:
+                if str(cluster.get("component", "")) in comps and \
+                        int(cluster.get("count", 0) or 0) > limit:
+                    return True
+            return False
+        except Exception:  # noqa: BLE001
+            return False
+
+    def reallocation_targets(
+        self,
+        *,
+        max_per_component: int = 2,
+        concentration_limit: float = 0.6,
+        trim_fraction: float = 0.5,
+    ) -> "list[ReallocationTarget]":
+        """Derive capital-reallocation trims from the live book (Part XVIII Art 11).
+
+        When overall concentration is at/above ``concentration_limit`` the book
+        is under-diversified; for each correlated cluster carried by more than
+        ``max_per_component`` campaigns, the *weakest* members beyond the
+        allowance (ranked by the Brain's own campaign health) are returned as
+        partial-close trims — redistributing capital away from redundant
+        correlated risk toward stronger opportunities. Pure and fail-safe;
+        returns ``[]`` when the book is adequately diversified.
+        """
+        out: list[ReallocationTarget] = []
+        try:
+            pa = self.portfolio_assessment()
+            n = int(pa.get("campaign_count", 0) or 0)
+            if n < 2:
+                return out
+            if float(pa.get("concentration", 0.0) or 0.0) < float(concentration_limit):
+                return out
+            limit = max(1, int(max_per_component))
+            frac = min(0.95, max(0.05, float(trim_fraction)))
+            live = {(c.symbol, c.direction): c for c in self.live_campaigns()}
+            seen: set = set()
+            clusters = sorted(
+                (pa.get("correlated_clusters", []) or []),
+                key=lambda c: int(c.get("count", 0) or 0), reverse=True,
+            )
+            for cluster in clusters:
+                members = [m for m in (cluster.get("members") or []) if isinstance(m, dict)]
+                if len(members) <= limit:
+                    continue
+                ranked = sorted(
+                    members,
+                    key=lambda m: self._health_rank_key(
+                        live.get((str(m.get("symbol", "")), str(m.get("direction", ""))))
+                    ),
+                )
+                excess = len(members) - limit
+                comp = str(cluster.get("component", ""))
+                for m in ranked[:excess]:
+                    key = (str(m.get("symbol", "")), str(m.get("direction", "")))
+                    if not key[0] or key in seen:
+                        continue
+                    seen.add(key)
+                    camp = live.get(key)
+                    strength = float(camp.health().get("opportunity_strength", 0.0)) \
+                        if camp is not None else 0.0
+                    out.append(ReallocationTarget(
+                        symbol=key[0], direction=key[1],
+                        kind="partial_close", fraction=frac,
+                        reason=(
+                            f"reallocate: '{comp}' cluster over-concentrated "
+                            f"({len(members)} correlated campaigns) — trim weakest"
+                        ),
+                        opportunity_strength=strength,
+                    ))
+            return out
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[campaign] reallocation_targets ignored a fault: {}", exc)
+            return out
+
     def get_status(self) -> dict:
         """Summary of live + recent campaigns for the dashboard / governance."""
         try:
@@ -841,6 +973,7 @@ __all__ = [
     "Campaign",
     "CampaignLeg",
     "CampaignPostmortem",
+    "ReallocationTarget",
     "CampaignState",
     "CampaignRegistry",
     "symbol_components",
