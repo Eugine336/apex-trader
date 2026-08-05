@@ -1448,22 +1448,69 @@ class SystemContext:
                         return []
 
                 def _cognition_positions() -> list:
-                    # Open campaigns → PositionView so the Brain can manage them.
+                    # Constitution Part VI — the Brain manages the ACTUAL open
+                    # broker book (every live position, independently), NOT the
+                    # campaign ledger. Brain-originated entries reach the broker
+                    # through the execution plane and are never registered as
+                    # "campaigns", so sourcing from the registry left the Brain
+                    # with nothing to manage (open-and-forget). Read the live
+                    # positions and present each as a PositionView; enrich with
+                    # campaign_id/entry_confidence when a matching campaign
+                    # happens to exist. Fully fail-safe.
                     try:
                         from cognition.brain import PositionView as _PositionView
+                        from cognition.position_adapter import (
+                            canonical_side as _canon,
+                            broker_profit_r as _profit_r,
+                            hold_seconds_from as _hold,
+                        )
+                        try:
+                            positions = (
+                                platform_manager.get_all_open_positions() or []
+                            )
+                        except Exception:  # noqa: BLE001
+                            positions = []
+                        # Best-effort campaign enrichment, keyed by (symbol, side).
+                        camp_by_key: dict = {}
                         reg = ctx.campaign_registry
-                        if reg is None:
-                            return []
-                        live = (reg.get_status() or {}).get("live", []) or []
+                        if reg is not None:
+                            try:
+                                for c in (reg.get_status() or {}).get("live", []) or []:
+                                    key = (
+                                        str(c.get("symbol", "") or ""),
+                                        _canon(c.get("direction", "")),
+                                    )
+                                    camp_by_key[key] = c
+                            except Exception:  # noqa: BLE001
+                                camp_by_key = {}
                         out = []
-                        for c in live:
-                            d = str(c.get("direction", "") or "").upper()
-                            if d not in ("LONG", "SHORT"):
+                        for p in positions:
+                            side = _canon(getattr(p, "direction", ""))
+                            if side not in ("LONG", "SHORT"):
                                 continue
+                            sym = str(getattr(p, "symbol", "") or "")
+                            if not sym:
+                                continue
+                            camp = camp_by_key.get((sym, side)) or {}
+                            ec = camp.get("entry_confidence") if isinstance(camp, dict) else None
                             out.append(_PositionView(
-                                symbol=str(c.get("symbol", "") or ""),
-                                direction=d,
-                                campaign_id=str(c.get("campaign_id", "") or ""),
+                                symbol=sym,
+                                direction=side,
+                                profit_r=_profit_r(
+                                    side,
+                                    getattr(p, "open_price", 0.0),
+                                    getattr(p, "current_price", 0.0),
+                                    getattr(p, "sl", 0.0),
+                                ),
+                                hold_seconds=_hold(getattr(p, "open_time", None)),
+                                size=float(getattr(p, "lots", 0.0) or 0.0),
+                                campaign_id=(
+                                    str(camp.get("campaign_id", "") or "")
+                                    if isinstance(camp, dict) else ""
+                                ),
+                                entry_confidence=(
+                                    float(ec) if ec is not None else None
+                                ),
                             ))
                         return out
                     except Exception:  # noqa: BLE001

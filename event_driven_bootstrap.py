@@ -3413,11 +3413,15 @@ class EventDrivenSystem:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[mgmt-sink] positions fetch failed for {}: {}", symbol, exc)
                 return None
-            want = str(direction or "").upper()
+            # Broker positions report BUY/SELL; the Brain verdict carries
+            # LONG/SHORT. Compare on the canonical axis or the match ALWAYS fails
+            # and every EXIT/PARTIAL/PROTECT/TIGHTEN is silently dropped.
+            from cognition.position_adapter import canonical_side as _canon
+            want = _canon(direction)
             for p in positions or []:
                 if str(getattr(p, "symbol", "") or "") != symbol:
                     continue
-                if want and str(getattr(p, "direction", "") or "").upper() != want:
+                if want and _canon(getattr(p, "direction", "")) != want:
                     continue
                 return p
             return None
