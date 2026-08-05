@@ -3470,6 +3470,21 @@ class EventDrivenSystem:
                 intents: list = []
 
                 if kind == "scale_in":
+                    # Part XVIII Art 11 — never stack correlated risk: skip a
+                    # scale when the symbol's currency/asset leg is already
+                    # carried by an over-concentrated cluster of campaigns.
+                    reg = getattr(self._ctx, "campaign_registry", None) \
+                        if self._ctx is not None else None
+                    if reg is not None:
+                        try:
+                            if reg.is_component_saturated(symbol):
+                                logger.info(
+                                    "[mgmt-sink] {} scale_in skipped — correlated "
+                                    "cluster saturated (Art 11)", symbol,
+                                )
+                                return
+                        except Exception:  # noqa: BLE001
+                            pass
                     sl, tp = self._derive_origination_levels(symbol, held)
                     if sl is None or tp is None:
                         logger.info("[mgmt-sink] {} scale_in skipped — no protective stop", symbol)
