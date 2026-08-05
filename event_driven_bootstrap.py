@@ -60,202 +60,33 @@ from ops.lifecycle import ShutdownManager
 from adaptive.zone_edge_tracker import ZoneEdgeTracker
 
 
-def _struct_trend_conf(struct_by_tf: dict, tf: str) -> tuple[str, float]:
-    """Read ``(trend, confidence)`` for a timeframe from a WorldModel's
-    ``structure_by_tf()`` mapping of ``StructureAnalysis`` objects.
-
-    Returns ``("UNKNOWN", 0.0)`` when the timeframe is absent.  Centralises
-    the correct way to read the WorldModel's structure layer so consumers
-    never treat it as a dict-of-dicts.
-    """
-    sa = struct_by_tf.get(tf)
-    if sa is None:
-        return "UNKNOWN", 0.0
-    trend = sa.trend.value if hasattr(sa.trend, "value") else str(sa.trend)
-    return trend, float(getattr(sa, "confidence", 0.0) or 0.0)
-
-
-def _struct_event(struct_by_tf: dict, tf: str) -> str:
-    """Read the last structural event (BOS/CHOCH) for a timeframe from a
-    WorldModel's ``structure_by_tf()`` mapping of ``StructureAnalysis``.
-
-    Returns ``"NONE"`` when the timeframe is absent or has no event.  The
-    DecisionEngine's structure-integrity dimension keys off these BOS/CHOCH
-    strings (``BOS_BEARISH``/``CHOCH_BULLISH``/…) to tell whether market
-    structure has broken for or against an open position.
-    """
-    sa = struct_by_tf.get(tf)
-    if sa is None:
-        return "NONE"
-    ev = getattr(sa, "last_event", None)
-    if ev is None:
-        return "NONE"
-    return ev.value if hasattr(ev, "value") else str(ev)
-
-
-def _struct_swings(struct_by_tf: dict, tf: str) -> tuple[Optional[float], Optional[float]]:
-    """Read ``(swing_high, swing_low)`` for a timeframe from a WorldModel's
-    ``structure_by_tf()`` mapping of ``StructureAnalysis`` objects.
-
-    Returns ``(None, None)`` when the timeframe is absent.  Feeds the
-    DecisionEngine's structure-based protective stop for adopted trades, whose
-    candidate swing-level lists were always empty (and so the stop never placed
-    a level) because neither management builder populated these.
-    """
-    sa = struct_by_tf.get(tf)
-    if sa is None:
-        return None, None
-    return getattr(sa, "swing_high", None), getattr(sa, "swing_low", None)
-
-
-def _compute_m1_micro(pm, symbol: str, norm_dir: str, pip_size: float) -> dict:
-    """Live M1 momentum (aligned count + micro-structure event/trend) for one
-    symbol/direction.
-
-    Shared by the in-trade management micro-context AND the entry-side
-    DecisionEngine context so BOTH planes read the SAME live M1 evidence
-    instead of a static default (the entry plane previously pinned
-    ``m1_aligned_count`` at 3, ``m1_event`` at ``""`` and ``m1_trend`` at
-    ``"UNKNOWN"`` because the orchestrator decision dict never carried them).
-
-    Reads go through the cached ``fetch_market_data`` (the M1@100 key the
-    entry/analysis planes already warm), so no extra broker round-trip is
-    added.  Returns the EntryContext/TradeContext safe defaults when data is
-    unavailable, so a missing/short feed never changes behaviour or raises.
-    """
-    out: dict[str, Any] = {
-        "m1_aligned_count": 0,
-        "m1_event": "NONE",
-        "m1_trend": "UNKNOWN",
-        "m1_pattern": "",
-    }
-    is_long = norm_dir.upper() in ("BUY", "LONG")
-    try:
-        from brain.market_data_utils import drop_forming_bar
-        from brain.structure_engine import StructureEngine
-        from entry.m1_patterns import detect_m1_pattern
-
-        m1_data = pm.fetch_market_data(symbol, ["M1"], 100)
-        m1_df = m1_data.get("M1") if m1_data else None
-        if m1_df is not None and len(m1_df) >= 5:
-            closed = drop_forming_bar(m1_df)
-            if closed is not None and len(closed) >= 5:
-                last5 = closed.iloc[-5:]
-                closes = last5["close"].values
-                opens = last5["open"].values
-                if is_long:
-                    aligned = sum(1 for c, o in zip(closes, opens) if c > o)
-                else:
-                    aligned = sum(1 for c, o in zip(closes, opens) if c < o)
-                out["m1_aligned_count"] = int(aligned)
-                out["m1_pattern"] = detect_m1_pattern(closed, is_long)
-                try:
-                    engine = StructureEngine(swing_lookback=3, pip_size=pip_size)
-                    analysis = engine.analyze(closed.iloc[-min(len(closed), 100):])
-                    out["m1_event"] = analysis.last_event.value
-                    out["m1_trend"] = analysis.trend.value
-                except Exception as exc:
-                    logger.warning(
-                        "[m1-micro] M1 structure read failed for {}: {}",
-                        symbol, exc,
-                    )
-    except Exception as exc:
-        logger.debug("[m1-micro] M1 momentum read failed for {}: {}", symbol, exc)
-    return out
-
-
-def _micro_confirmation_from_event(
-    m1_event: str, direction: str, m1_pattern: str = "",
-) -> tuple[str, str]:
-    """Derive ``(micro_confirmation, entry_mode)`` from live M1 evidence.
-
-    An M1 BOS/CHoCH aligned with the trade direction is a market-confirmation
-    trigger, so the DecisionEngine's MARKET fast-path becomes reachable instead
-    of every entry defaulting to PENDING.  When no structural event confirms,
-    an aligned M1 candle pattern (engulfing / pin bar from
-    ``entry.m1_patterns.detect_m1_pattern``) also confirms the entry — so the
-    ``micro_confirmation`` field and the MARKET path are no longer reachable
-    only via BOS/CHoCH.  Returns ``("", "PENDING")`` when nothing confirms
-    (unchanged behaviour).  This only affects the entry-action label (MARKET vs
-    PENDING); both still enter, and the reversal-evidence terms read
-    ``m1_event``/``micro_confirmation`` directly.
-    """
-    ev = str(m1_event or "").upper()
-    is_long = direction.upper() in ("BUY", "LONG")
-    aligned = ("BULLISH" in ev) if is_long else ("BEARISH" in ev)
-    if ("BOS" in ev or "CHOCH" in ev) and aligned:
-        return "choch_bos", "MARKET"
-    pat = str(m1_pattern or "").strip().lower()
-    if pat in ("engulfing", "pin_bar"):
-        return pat, "MARKET"
-    return "", "PENDING"
+# ── Structure & M1 micro-context readers ─────────────────────────────
+# Phase K (Part XI — modular design): these WorldModel-structure / M1
+# micro-structure readers were lifted into :mod:`brain.structure_context`. They
+# are re-imported here so every call site below (and the existing
+# ``from event_driven_bootstrap import _struct_swings`` /
+# ``_micro_confirmation_from_event`` paths used by the tests) resolves
+# identically — behaviour unchanged.
+from brain.structure_context import (  # noqa: E402
+    _compute_m1_micro,
+    _micro_confirmation_from_event,
+    _struct_event,
+    _struct_swings,
+    _struct_trend_conf,
+)
 
 
 # ── Broker-truth field readers ───────────────────────────────────────
-# Open positions returned by the platform layer are broker ``PositionInfo``
-# objects (fields: ``pnl``, ``lots``, ``open_price``, ``current_price``,
-# ``sl``, ``tp``, ``swap``).  Older call sites read legacy attribute names
-# (``profit``, ``entry_price``, ``tp1``/``tp2``) that do not exist on
-# ``PositionInfo`` and so silently resolved to defaults.  These helpers
-# prefer the broker-reported field and fall back to the legacy name so both
-# real broker objects and any legacy/test doubles resolve correctly.
-
-
-def _broker_pnl(pos) -> float:
-    """Broker-reported P&L for an open position (falls back to legacy)."""
-    v = getattr(pos, "pnl", None)
-    if v is None:
-        v = getattr(pos, "profit", None)
-    if v is None:
-        v = getattr(pos, "broker_pnl", None)
-    return float(v) if v is not None else 0.0
-
-
-def _broker_entry_price(pos, default: float = 0.0) -> float:
-    """Broker open price for a position (falls back to legacy ``entry_price``)."""
-    v = getattr(pos, "open_price", None)
-    if not v:
-        v = getattr(pos, "entry_price", None)
-    return float(v) if v else float(default)
-
-
-def _broker_tp(pos) -> float:
-    """Broker take-profit for a position (single broker TP == tp1)."""
-    v = getattr(pos, "tp", None)
-    if not v:
-        v = getattr(pos, "tp1", None)
-    return float(v) if v else 0.0
-
-
-def _broker_pip_value_from_spec(
-    spec: dict, pip_size: float, fallback: float,
-) -> float:
-    """Broker-truth money-per-pip-per-lot derived from a symbol-spec dict.
-
-    Computed as ``trade_tick_value * (pip_size / trade_tick_size)``. Returns
-    *fallback* (the config-registry value) on any gap so sizing / heat / P&L
-    never break.
-
-    This is the single source of truth for the broker pip-value override. Every
-    pip-value site — the sizing path, the scale-in path and the portfolio heat
-    monitor — routes through it so the risk (heat) view and the sizing view of a
-    position can never disagree on money-per-pip. A wrong registry pip_value
-    (e.g. the 1.0 forex-scale placeholder on a sub-$10 crypto) diverging between
-    those views is what produced phantom EMERGENCY force-closes.
-    """
-    try:
-        tick_value = spec.get("trade_tick_value") if spec else None
-        tick_size = spec.get("trade_tick_size") if spec else None
-        if (
-            tick_value and tick_size and tick_size > 0
-            and pip_size and pip_size > 0
-        ):
-            pv = float(tick_value) * (float(pip_size) / float(tick_size))
-            if pv > 0:
-                return pv
-    except Exception as exc:
-        logger.debug("[symbol-spec] pip-value derive failed: {}", exc)
-    return fallback
+# Phase K (Part XI — modular design): these pure, shared readers were lifted
+# into :mod:`execution.broker_fields`. They are re-imported here so every call
+# site below (and the existing ``from event_driven_bootstrap import
+# _broker_pip_value_from_spec`` path) resolves identically — behaviour unchanged.
+from execution.broker_fields import (  # noqa: E402
+    _broker_entry_price,
+    _broker_pip_value_from_spec,
+    _broker_pnl,
+    _broker_tp,
+)
 
 
 # Operations Division — scale-in / partial-close tuning (V13).
@@ -283,282 +114,9 @@ _DEFAULT_PARTIAL_CLOSE_RATIO = 0.5
 _SL_MODIFY_PENDING_GRACE_S = 30.0
 
 
-# ── Tick source threads ──────────────────────────────────────────────
-
-
-class MT5TickPoller:
-    """Polls MT5 prices and injects Tick objects into the TickRouter."""
-
-    def __init__(
-        self,
-        platform_manager: PlatformManager,
-        tick_router: TickRouter,
-        symbols: list[str],
-        poll_interval: float = 0.05,
-        should_poll: Optional[Callable[[str], bool]] = None,
-    ) -> None:
-        self._pm = platform_manager
-        self._router = tick_router
-        self._symbols = list(symbols)
-        self._interval = poll_interval
-        # Gate that returns False when a symbol's market is currently closed
-        # (e.g. session-gated FX/commodity/index instruments on the weekend).
-        # Closed symbols are skipped before any broker call, so they neither
-        # emit stale-tick warnings nor accrue toward permanent removal.
-        self._should_poll = should_poll or (lambda _sym: True)
-        self._running = False
-        self._thread: Optional[threading.Thread] = None
-        self._error_counts: dict[str, int] = {}
-        self._last_error_log: dict[str, float] = {}
-
-    def start(self) -> None:
-        if self._running or not self._symbols:
-            return
-        self._running = True
-        self._thread = threading.Thread(
-            target=self._poll_loop, daemon=True, name="mt5-tick-poller",
-        )
-        self._thread.start()
-        logger.info("[mt5-poller] started for {} symbols", len(self._symbols))
-
-    def stop(self) -> None:
-        self._running = False
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-        logger.info("[mt5-poller] stopped")
-
-    def _poll_loop(self) -> None:
-        error_counts: dict[str, int] = defaultdict(int)
-        last_error_log: dict[str, float] = {}
-        remove_after = 500
-        removed: set[str] = set()
-        # Transient failures (terminal hiccup, stale tick during a broker
-        # reconnect) must NOT permanently retire a symbol — that silently
-        # un-polls the FX book until a restart. Instead, after `remove_after`
-        # consecutive errors a symbol enters a bounded cooldown and is retried
-        # once it elapses. Only symbols the broker confirms are *not available*
-        # are removed permanently (they will never recover this process).
-        cooldown_until: dict[str, float] = {}
-        COOLDOWN_SECONDS = 60.0
-
-        while self._running:
-            for sym in list(self._symbols):
-                if not self._running:
-                    break
-                if sym in removed:
-                    continue
-                # Skip symbols whose market is closed (weekend FX/commodity/
-                # index).  No broker call, no stale-tick warning, no failure
-                # count — polling resumes automatically when the market reopens.
-                if not self._should_poll(sym):
-                    continue
-                # Honour an active cooldown: a symbol that recently tripped the
-                # failure threshold is paused (not removed) and retried once the
-                # backoff window elapses.
-                cd = cooldown_until.get(sym, 0.0)
-                if cd:
-                    if _time.monotonic() < cd:
-                        continue
-                    # Cooldown elapsed — give the symbol a fresh chance.
-                    cooldown_until.pop(sym, None)
-                    error_counts[sym] = 0
-                try:
-                    td = self._pm.get_price(sym)
-                    if td is not None and td.bid > 0:
-                        tick = Tick(
-                            symbol=sym,
-                            bid=td.bid,
-                            ask=td.ask,
-                            timestamp=datetime.now(timezone.utc),
-                            source="mt5",
-                        )
-                        self._router.on_tick(tick)
-                        error_counts[sym] = 0
-                    else:
-                        error_counts[sym] += 1
-                except Exception as exc:
-                    error_counts[sym] += 1
-                    now = _time.monotonic()
-                    if now - last_error_log.get(sym, 0) >= 60.0:
-                        last_error_log[sym] = now
-                        logger.warning(
-                            "[mt5-poller] {} tick error (count={}): {}",
-                            sym, error_counts[sym], exc,
-                        )
-                    # A symbol confirmed unavailable on the broker will never
-                    # recover — drop it immediately instead of spinning to the
-                    # 500-failure threshold.
-                    if "not available on broker" in str(exc):
-                        logger.warning(
-                            "[mt5-poller] {} removed from poll — not available on broker",
-                            sym,
-                        )
-                        self._symbols.remove(sym)
-                        removed.add(sym)
-                        continue
-
-                if error_counts.get(sym, 0) >= remove_after:
-                    # Bounded backoff instead of permanent removal: pause the
-                    # symbol for COOLDOWN_SECONDS, then retry. Keeps the FX book
-                    # polled across transient broker disconnects/reconnects.
-                    cooldown_until[sym] = _time.monotonic() + COOLDOWN_SECONDS
-                    logger.warning(
-                        "[mt5-poller] {} paused for {:.0f}s — {} consecutive "
-                        "failures (will retry after cooldown)",
-                        sym, COOLDOWN_SECONDS, remove_after,
-                    )
-            _time.sleep(self._interval)
-
-
-class DerivTickAdapter:
-    """Hooks into Deriv WebSocket tick stream and injects into TickRouter."""
-
-    def __init__(
-        self,
-        platform_manager: PlatformManager,
-        tick_router: TickRouter,
-        symbols: list[str],
-        poll_interval: float = 0.1,
-        should_poll: Optional[Callable[[str], bool]] = None,
-    ) -> None:
-        self._pm = platform_manager
-        self._router = tick_router
-        self._symbols = list(symbols)
-        self._interval = poll_interval
-        # Gate that returns False when a symbol's market is currently closed.
-        # Deriv serves both 24/7 synthetics (always polled) and session-gated
-        # FX/commodity mirrors (skipped on the weekend) — the gate keeps the
-        # weekend log quiet without dropping the 24/7 feed.
-        self._should_poll = should_poll or (lambda _sym: True)
-        self._running = False
-        self._thread: Optional[threading.Thread] = None
-        self._error_counts: dict[str, int] = {}
-        self._last_error_log: dict[str, float] = {}
-
-    def start(self) -> None:
-        if self._running or not self._symbols:
-            return
-        self._running = True
-        self._thread = threading.Thread(
-            target=self._poll_loop, daemon=True, name="deriv-tick-adapter",
-        )
-        self._thread.start()
-        logger.info("[deriv-adapter] started for {} symbols", len(self._symbols))
-
-    def stop(self) -> None:
-        self._running = False
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-        logger.info("[deriv-adapter] stopped")
-
-    def _poll_loop(self) -> None:
-        error_counts: dict[str, int] = defaultdict(int)
-        last_error_log: dict[str, float] = {}
-        # Connection-level errors (disconnect / reconnecting) hit every symbol
-        # at once and would otherwise flood the log with one line per symbol
-        # per cycle. Collapse them into a single throttled summary covering all
-        # affected symbols, and emit one line when the connection recovers.
-        conn_down = False
-        conn_first_log = 0.0
-        conn_last_summary = 0.0
-        conn_err_count = 0
-        conn_symbols: set[str] = set()
-        CONN_SUMMARY_INTERVAL = 60.0
-
-        def _is_conn_error(msg: str) -> bool:
-            m = msg.lower()
-            return (
-                "not connected" in m
-                or "reconnect" in m
-                or "request blocked" in m
-            )
-
-        while self._running:
-            # Per-cycle connection stats. The connection state is evaluated once
-            # at the end of the full symbol sweep — never mid-cycle — so a flaky
-            # link that mixes good and bad ticks within a single pass cannot flap
-            # the disconnect/recover log lines.
-            cycle_good_ticks = 0
-            cycle_conn_errors = 0
-            cycle_conn_symbols: set[str] = set()
-
-            for sym in self._symbols:
-                if not self._running:
-                    break
-                # Skip closed-market symbols (weekend FX/commodity mirrors).
-                # 24/7 synthetics always pass the gate and keep streaming.
-                if not self._should_poll(sym):
-                    continue
-                try:
-                    td = self._pm.get_price(sym)
-                    if td is not None and td.bid > 0:
-                        tick = Tick(
-                            symbol=sym,
-                            bid=td.bid,
-                            ask=td.ask,
-                            timestamp=datetime.now(timezone.utc),
-                            source="deriv",
-                        )
-                        # Route immediately — ticks must keep flowing regardless
-                        # of connection-state bookkeeping.
-                        self._router.on_tick(tick)
-                        error_counts[sym] = 0
-                        cycle_good_ticks += 1
-                    else:
-                        error_counts[sym] += 1
-                except Exception as exc:
-                    error_counts[sym] += 1
-                    now = _time.monotonic()
-                    if _is_conn_error(str(exc)):
-                        # Tally connection-down errors for end-of-cycle evaluation;
-                        # do not flip state or log here.
-                        cycle_conn_symbols.add(sym)
-                        cycle_conn_errors += 1
-                        continue
-                    # Genuine per-symbol error — keep the existing 60s throttle.
-                    if now - last_error_log.get(sym, 0) >= 60.0:
-                        last_error_log[sym] = now
-                        logger.warning(
-                            "[deriv-adapter] {} tick error (count={}): {}",
-                            sym, error_counts[sym], exc,
-                        )
-
-            # ── Evaluate connection state once per full cycle (with hysteresis) ──
-            now = _time.monotonic()
-            if cycle_conn_errors > 0 and cycle_good_ticks == 0:
-                # Entire cycle failed — connection is down.
-                conn_symbols.update(cycle_conn_symbols)
-                conn_err_count += cycle_conn_errors
-                if not conn_down:
-                    conn_down = True
-                    conn_first_log = now
-                    conn_last_summary = now
-                    logger.warning(
-                        "[deriv-adapter] Deriv disconnected — suppressing "
-                        "per-symbol tick errors; a summary will follow "
-                        "every {:.0f}s until reconnect", CONN_SUMMARY_INTERVAL,
-                    )
-                elif now - conn_last_summary >= CONN_SUMMARY_INTERVAL:
-                    conn_last_summary = now
-                    logger.warning(
-                        "[deriv-adapter] still disconnected for {:.0f}s — "
-                        "{} tick error(s) across {} symbol(s) suppressed",
-                        now - conn_first_log, conn_err_count, len(conn_symbols),
-                    )
-            elif conn_down and cycle_good_ticks > 0 and cycle_conn_errors == 0:
-                # A full, clean cycle after an outage — genuinely recovered.
-                logger.info(
-                    "[deriv-adapter] connection recovered — resuming tick "
-                    "polling ({} suppressed error(s) across {} symbol(s) "
-                    "during {:.0f}s outage)",
-                    conn_err_count, len(conn_symbols), now - conn_first_log,
-                )
-                conn_down = False
-                conn_err_count = 0
-                conn_symbols = set()
-            # Mixed cycle (some good, some conn errors): hold current state — no flap.
-
-            _time.sleep(self._interval)
+# -- Tick source threads (extracted) --
+# Phase K: extracted to tick.tick_sources (behaviour-preserving).
+from tick.tick_sources import DerivTickAdapter, MT5TickPoller  # noqa: E402
 
 
 # ── Management evaluation loop ───────────────────────────────────────
@@ -1385,51 +943,15 @@ class PositionEvaluator:
           captured for this position, or the WorldModel carries no votes; the
           caller falls back to the unchanged net-summed read.
         """
-        dcfg = getattr(self._config, "decision", None) if self._config else None
-        if dcfg is not None and not getattr(
-            dcfg, "candidate_scoped_management_enabled", True,
-        ):
-            return None
-        prov = self._candidate_positions.get(str(order_id))
-        if prov is None or not getattr(prov, "contributing_modules", None):
-            return None
-        if wm is None:
-            return None
-        try:
-            votes = wm.votes_list()
-        except Exception:
-            return None
-        if not votes:
-            return None
-
-        scoped = self._scope_votes_to_candidate(votes, prov)
-        want = "LONG" if str(pos_direction).upper() in ("LONG", "BUY") else "SHORT"
-        directional = [
-            v for v in scoped
-            if str(getattr(v, "direction", "")).upper() in ("LONG", "SHORT")
-        ]
-
-        min_live = 1
-        if dcfg is not None:
-            try:
-                min_live = max(1, int(getattr(dcfg, "candidate_thesis_min_live_votes", 1)))
-            except Exception:
-                min_live = 1
-        # Contributing panel has gone quiet (no live directional reads from the
-        # modules that opened this trade) → conservative exit.
-        if len(directional) < min_live:
-            return ("CLOSE", "thesis_silent")
-
-        supporting = sum(
-            1 for v in directional
-            if str(getattr(v, "direction", "")).upper() == want
-        )
-        opposing = len(directional) - supporting
-        # Majority of the opening panel now opposes the position → the reason
-        # this trade existed is gone. Raise a scoped invalidation close.
-        if opposing > supporting:
-            return ("CLOSE", "thesis_invalidated")
-        return ("HOLD", scoped)
+        # ── Candidate-scoped thesis exit — RETIRED (Single Reasoner cutover) ──
+        # This legacy read emitted CLOSE / HOLD market-judgment verdicts from the
+        # opening vote panel — a module deciding close/hold, which Constitution
+        # III.2 forbids. The one AI Cognitive Brain now owns exit judgment (via
+        # its manage() path), and the deterministic mechanical stop / R-ladder
+        # still protects the position. Always returns None → the caller applies no
+        # scoped close and reports thesis_status "" (falls back to the unchanged
+        # net-summed read for the Position Health panel only).
+        return None
 
     def _check_evidence_exit(
         self,
@@ -2184,10 +1706,14 @@ class PositionEvaluator:
                 # V13 — route the add-on through the SAME Compliance → Portfolio
                 # pipeline as a fresh entry (it was previously a direct
                 # Intent.open that bypassed both). Portfolio owns the size.
-                self._scale_in_position(
-                    pos, price, sl, symbol, direction, de_result,
-                    current_score, open_positions,
-                )
+                # Phase F — adding exposure requires the single Brain's
+                # authorization (fail-open in soft modes / fail-closed under
+                # authoritative). De-risking is never gated.
+                if self._cognition_management_allows(symbol, direction, "scale_in"):
+                    self._scale_in_position(
+                        pos, price, sl, symbol, direction, de_result,
+                        current_score, open_positions,
+                    )
             elif action_name == Action.PARTIAL_CLOSE.value:
                 # V13 — DE/governor can ask to bank part of a position; the
                 # verdict was previously journaled then dropped (no handler).
@@ -2390,6 +1916,28 @@ class PositionEvaluator:
         return too_close
 
     # ── Scale-in / partial-close handlers (V13) ──────────────────────
+    def _cognition_management_allows(self, symbol: str, direction: str, action: str) -> bool:
+        """AI Cognitive Brain management gate (Phase F) — fail-safe.
+
+        Only exposure-ADDING management actions (scale-in / re-entry) are gated;
+        de-risking always proceeds. Fail-open in the soft modes; fail-closed
+        under ``authoritative`` (no reasoning ⇒ no new exposure).
+        """
+        ctx = self._ctx
+        gate = getattr(ctx, "management_gate", None) if ctx is not None else None
+        if gate is None:
+            return True
+        try:
+            return bool(gate.evaluate(symbol, direction, action).allow)
+        except Exception as exc:  # noqa: BLE001
+            authoritative = str(getattr(gate, "mode", "")) == "authoritative"
+            logger.warning(
+                "[management-gate] {} errored — {} {} (fail-{}): {}",
+                symbol, "blocking" if authoritative else "allowing", action,
+                "closed" if authoritative else "open", exc,
+            )
+            return not authoritative
+
     def _scale_in_position(
         self,
         pos,
@@ -2631,317 +2179,16 @@ class PositionEvaluator:
         return self._eval_count
 
 
-# ── Flush loop ───────────────────────────────────────────────────────
-
-
-class FlushLoop:
-    """Periodically drains the IntentAggregator and executes via ActionExecutor."""
-
-    def __init__(
-        self,
-        aggregator: IntentAggregator,
-        executor: ActionExecutor,
-        platform_manager: PlatformManager,
-        evaluator: Optional[PositionEvaluator] = None,
-        on_close_callback: Optional[Any] = None,
-        on_manage_callback: Optional[Any] = None,
-        interval: float = 0.1,
-    ) -> None:
-        self._aggregator = aggregator
-        self._executor = executor
-        self._pm = platform_manager
-        self._evaluator = evaluator
-        self._on_close = on_close_callback
-        self._on_manage = on_manage_callback
-        self._interval = interval
-        self._running = False
-        self._thread: Optional[threading.Thread] = None
-        self._flush_count = 0
-        self._intents_executed = 0
-
-    def start(self) -> None:
-        if self._running:
-            return
-        self._running = True
-        self._thread = threading.Thread(
-            target=self._loop, daemon=True, name="flush-loop",
-        )
-        self._thread.start()
-        logger.info("[flush-loop] started (interval={:.0f}ms)", self._interval * 1000)
-
-    def stop(self) -> None:
-        self._running = False
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-        logger.info(
-            "[flush-loop] stopped (flushed {} times, {} intents executed)",
-            self._flush_count, self._intents_executed,
-        )
-
-    def _loop(self) -> None:
-        while self._running:
-            intents: list[Intent] = []
-            try:
-                intents = self._aggregator.flush()
-                if intents:
-                    open_positions = self._build_position_map()
-                    results = self._executor.execute_batch(
-                        intents, open_positions,
-                    )
-                    for i, r in enumerate(results):
-                        intent = intents[i] if i < len(intents) else None
-                        if r.success:
-                            self._intents_executed += 1
-                            if intent is not None and intent.intent_type == IntentType.CLOSE:
-                                # Stop the evaluator from re-emitting another
-                                # CLOSE for this ticket while the local position
-                                # book still shows it open (it refreshes on the
-                                # next reconcile cycle).  Without this the same
-                                # position is closed once at the broker and then
-                                # a second CLOSE races in ~3s later and is
-                                # rejected as "no longer open".
-                                if self._evaluator is not None:
-                                    tkt = intent.position_ticket
-                                    if tkt:
-                                        self._evaluator.suppress_ticket(tkt, 60.0)
-                                if self._on_close is not None:
-                                    try:
-                                        self._on_close(intent, r)
-                                    except Exception as exc:
-                                        logger.debug("[flush-loop] close callback error: {}", exc)
-                            elif intent is not None:
-                                # SL/TP modify or partial close — commit the
-                                # optimistic management state (callback) and
-                                # surface the during-trade action on the dashboard.
-                                if self._on_manage is not None:
-                                    try:
-                                        self._on_manage(intent, r)
-                                    except Exception as exc:
-                                        logger.debug("[flush-loop] manage callback error: {}", exc)
-                                try:
-                                    self._emit_modify_event(intent)
-                                except Exception as exc:
-                                    logger.debug("[flush-loop] modify event error: {}", exc)
-                        else:
-                            # Failed execution: roll back any optimistic
-                            # management mutation so the action retries rather
-                            # than leaving phantom state (breakeven/partial).
-                            if (
-                                intent is not None
-                                and intent.intent_type != IntentType.OPEN
-                                and intent.intent_type != IntentType.CLOSE
-                                and self._on_manage is not None
-                            ):
-                                try:
-                                    self._on_manage(intent, r)
-                                except Exception as exc:
-                                    logger.debug("[flush-loop] manage rollback error: {}", exc)
-                            if self._evaluator:
-                                err_msg = str(getattr(r, "error", "") or "").lower()
-                                if "market closed" in err_msg or "market is closed" in err_msg or "market_closed" in err_msg:
-                                    ticket = intent.position_ticket if intent is not None else ""
-                                    if ticket:
-                                        self._evaluator.suppress_ticket(ticket, 60.0)
-                                elif "no longer open" in err_msg:
-                                    # The position is already gone at the broker
-                                    # but still in the local book — suppress so
-                                    # the evaluator stops re-emitting closes for
-                                    # it until the book refreshes next reconcile.
-                                    ticket = intent.position_ticket if intent is not None else ""
-                                    if ticket:
-                                        self._evaluator.suppress_ticket(ticket, 60.0)
-                self._flush_count += 1
-            except Exception as exc:
-                # The aggregator was already drained by flush(); if execution
-                # raised, re-queue the intents so risk-reducing actions
-                # (emergency close, breakeven moves) are retried next cycle
-                # instead of being silently lost.
-                if intents:
-                    try:
-                        self._aggregator.submit(intents)
-                    except Exception as resubmit_exc:
-                        logger.error(
-                            "[flush-loop] re-queue failed, {} intents lost: {}",
-                            len(intents), resubmit_exc,
-                        )
-                logger.warning(
-                    "[flush-loop] error ({} intents re-queued): {}",
-                    len(intents), exc,
-                )
-            _time.sleep(self._interval)
-
-    def _emit_modify_event(self, intent: Intent) -> None:
-        """Emit TRADE_MODIFIED for an executed SL/TP modify or partial close so
-        the action surfaces on the dashboard activity feed (best-effort)."""
-        store = get_event_store()
-        if store is None:
-            return
-        store.emit(
-            event_type=DE.TRADE_MODIFIED,
-            severity="INFO",
-            symbol=intent.symbol,
-            parent_id=intent.position_ticket or None,
-            source_module=intent.source or "execution",
-            payload={
-                "action": intent.intent_type.name,
-                "order_id": intent.position_ticket,
-                "symbol": intent.symbol,
-                "new_sl": intent.new_sl,
-                "new_tp": intent.new_tp,
-                "close_fraction": intent.close_fraction,
-                "source": intent.source,
-                "reason": (intent.reason or "")[:200],
-            },
-        )
-
-    def _build_position_map(self) -> dict[str, dict]:
-        """Build the open_positions dict the executor expects."""
-        try:
-            positions = self._pm.get_all_open_positions()
-        except Exception:
-            return {}
-        result: dict[str, dict] = {}
-        for pos in positions:
-            ticket = str(getattr(pos, "order_id", getattr(pos, "ticket", "")))
-            result[ticket] = {
-                "symbol": getattr(pos, "symbol", ""),
-                "direction": getattr(pos, "direction", ""),
-                "sl": getattr(pos, "sl", 0.0),
-                "platform": getattr(pos, "platform", ""),
-                "lots": getattr(pos, "lots", 0.0),
-                "remaining_lots": getattr(pos, "remaining_lots", getattr(pos, "lots", 0.0)),
-            }
-        return result
-
-
-# ── Tick evaluation loop ─────────────────────────────────────────────
-
-
-class TickEvalLoop:
-    """On each tick cycle, evaluates positions and critical levels.
-
-    Runs at a configurable frequency (default 10 Hz) and coordinates:
-    1. Position evaluation via PositionEvaluator
-    2. Entry detection is handled by EntryOrchestrator subscribing to tick events
-    """
-
-    def __init__(
-        self,
-        evaluator: PositionEvaluator,
-        interval: float = 0.1,
-        scheduler: Optional[ManagementScheduler] = None,
-    ) -> None:
-        self._evaluator = evaluator
-        self._interval = interval
-        self._scheduler = scheduler
-        self._running = False
-        self._thread: Optional[threading.Thread] = None
-        self._durations_ms: deque = deque(maxlen=500)
-        self._slow_ticks: deque = deque(maxlen=20)
-        self._lock = threading.Lock()
-        self._slow_threshold_ms = 250.0
-
-    def start(self) -> None:
-        if self._running:
-            return
-        self._running = True
-        self._thread = threading.Thread(
-            target=self._loop, daemon=True, name="tick-eval-loop",
-        )
-        self._thread.start()
-        logger.info("[tick-eval] started (interval={:.0f}ms)", self._interval * 1000)
-
-    def stop(self) -> None:
-        self._running = False
-        if self._thread is not None:
-            self._thread.join(timeout=2.0)
-        self._evaluator.shutdown()
-        logger.info("[tick-eval] stopped ({} evals)", self._evaluator.eval_count)
-
-    def _loop(self) -> None:
-        while self._running:
-            t0 = _time.perf_counter()
-            try:
-                self._evaluator.evaluate_all(scheduler=self._scheduler)
-            except Exception as exc:
-                logger.warning("[tick-eval] error: {}", exc)
-            finally:
-                elapsed_ms = (_time.perf_counter() - t0) * 1000.0
-                with self._lock:
-                    self._durations_ms.append(elapsed_ms)
-                    if elapsed_ms >= self._slow_threshold_ms:
-                        self._slow_ticks.append({
-                            "ts": datetime.now(timezone.utc).isoformat(),
-                            "duration_ms": round(elapsed_ms, 2),
-                        })
-            _time.sleep(self._interval)
-
-    def get_profile(self) -> dict[str, Any]:
-        """Latency profile of the position-evaluation cycle (milliseconds)."""
-        with self._lock:
-            durations = list(self._durations_ms)
-            slow = list(self._slow_ticks)
-        if not durations:
-            return {
-                "samples": 0, "last_ms": 0.0, "avg_ms": 0.0,
-                "p50_ms": 0.0, "p95_ms": 0.0, "max_ms": 0.0, "slow_ticks": [],
-            }
-        ordered = sorted(durations)
-        n = len(ordered)
-        return {
-            "samples": n,
-            "last_ms": round(durations[-1], 3),
-            "avg_ms": round(sum(ordered) / n, 3),
-            "p50_ms": round(ordered[int(n * 0.50)], 3),
-            "p95_ms": round(ordered[min(n - 1, int(n * 0.95))], 3),
-            "max_ms": round(ordered[-1], 3),
-            "slow_ticks": slow,
-        }
+# -- Execution lifecycle loops (extracted) --
+# Phase K: extracted to execution.lifecycle_loops (behaviour-preserving).
+from execution.lifecycle_loops import FlushLoop, TickEvalLoop  # noqa: E402
 
 
 # ── Main orchestrator ────────────────────────────────────────────────
 
 
-def select_cycle_candidates(items: list) -> tuple[list, list, str]:
-    """Pure cycle-boundary selector for per-candidate entry decisions.
-
-    ``items`` is a list of ``(CandidateEntryDecision, decision_dict)`` tuples
-    collected from BOTH entry paths during one analysis cycle. Candidates are
-    ranked best-first by their composite ``score`` (expected value as the
-    stable tie-break), and the top candidate's direction wins this cycle:
-    opposing-direction candidates are dropped so a single analysis cycle never
-    submits both a LONG and a SHORT on the same symbol at once.
-
-    Returns ``(survivors, dropped, winning_direction)``. ``survivors`` keeps the
-    best-first order so the caller dispatches the strongest idea first.
-
-    Session note: this within-cycle direction lock is intentionally simple. It
-    is replaced in Session 3 by ``PortfolioGovernor.allocate`` which can fund
-    opposing horizons (a LONG swing alongside a capped SHORT scalp) under a net
-    exposure budget. Keeping the lock here prevents over-trading until those
-    capital-allocation caps exist.
-    """
-    if not items:
-        return [], [], ""
-
-    def _rank_key(item):
-        cand = item[0].candidate
-        return (
-            float(getattr(cand, "score", 0.0) or 0.0),
-            float(getattr(cand, "ev_estimate", 0.0) or 0.0),
-        )
-
-    ranked = sorted(items, key=_rank_key, reverse=True)
-    winning_direction = str(getattr(ranked[0][0].candidate, "direction", "") or "")
-    survivors = [
-        it for it in ranked
-        if str(getattr(it[0].candidate, "direction", "") or "") == winning_direction
-    ]
-    dropped = [
-        it for it in ranked
-        if str(getattr(it[0].candidate, "direction", "") or "") != winning_direction
-    ]
-    return survivors, dropped, winning_direction
+# Phase K: extracted to scanner.cycle_selection (behaviour-preserving).
+from scanner.cycle_selection import select_cycle_candidates  # noqa: E402
 
 
 class EventDrivenSystem:
@@ -3432,6 +2679,7 @@ class EventDrivenSystem:
                 size_lookup=self._stage_size,
                 derive_targets=self._entry_orchestrator._derive_targets,
                 gate_check=self._staging_gate_allows,
+                single_path_active=self._single_reasoner_path_active,
             )
             self._entry_orchestrator.zone_watcher.register_update_callback(
                 self._zone_stager.on_zone_update,
@@ -3532,9 +2780,22 @@ class EventDrivenSystem:
         )
 
         # ── Event wiring ─────────────────────────────────────────────
-        self._event_bus.subscribe("tick", self._entry_orchestrator.on_tick)
+        # Single Reasoner cutover (Constitution I.4 / III.2): when single-path is
+        # active the legacy entry-decision pipeline (EntryOrchestrator → zone
+        # touch → M1 confirm → gates → emit) must not RUN at all — the one AI
+        # Cognitive Brain is the sole entry authority and originates via the
+        # cognition loop. So we simply do NOT subscribe the orchestrator to the
+        # tick / M1-close / world-model events. The analysis feeds (WorldModel,
+        # developing analysis, scanner) that populate the Brain's Evidence, and
+        # the management / execution / safety wiring below, are untouched — so the
+        # Brain still gets full evidence and open positions are still managed and
+        # protected. Fail-safe: a config fault reports legacy-on (no silent halt).
+        _legacy_entry_on = not self._single_reasoner_path_active()
+        if _legacy_entry_on:
+            self._event_bus.subscribe("tick", self._entry_orchestrator.on_tick)
         # Phase 2 Feature B: feed ticks to the zone-order stager so it can stage
         # pending LIMIT orders as price approaches an active zone boundary.
+        # (Self-gated under single-path: its _enabled() returns False.)
         if self._zone_stager is not None:
             self._event_bus.subscribe("tick", self._zone_stager.on_tick)
         if self._mgmt_scheduler is not None:
@@ -3547,12 +2808,13 @@ class EventDrivenSystem:
                     getattr(tick, "symbol", ""),
                 ),
             )
-        self._event_bus.subscribe(
-            "candle_close:M1",
-            lambda ev: self._entry_pool.submit(
-                self._entry_orchestrator.on_m1_close, ev.symbol,
-            ),
-        )
+        if _legacy_entry_on:
+            self._event_bus.subscribe(
+                "candle_close:M1",
+                lambda ev: self._entry_pool.submit(
+                    self._entry_orchestrator.on_m1_close, ev.symbol,
+                ),
+            )
         # Feed the fast-then-slow flip sequence tracker (flip Check 7): M1 closes
         # arm the fast confirmation, M5 closes provide the slow confirmation and
         # advance the tracker's M5-bar clock. Both dispatched off the entry pool
@@ -3569,9 +2831,10 @@ class EventDrivenSystem:
                 self._feed_flip_sequence_m5, ev.symbol,
             ),
         )
-        self._event_bus.subscribe(
-            "world_model_update", self._entry_orchestrator.on_world_model_update,
-        )
+        if _legacy_entry_on:
+            self._event_bus.subscribe(
+                "world_model_update", self._entry_orchestrator.on_world_model_update,
+            )
         self._event_bus.subscribe(
             "world_model_update", self._on_world_model_update,
         )
@@ -3906,6 +3169,142 @@ class EventDrivenSystem:
             "[tuner] registered {} tunable adapters with TunerAgent", registered,
         )
 
+    def _build_llm_evidence_source(self):
+        """Return a callable yielding ``{symbol: structured_evidence}`` for the
+        LLM worker.
+
+        Reads the ThesisEngine's competing-thesis status (and per-symbol campaign
+        context where available) — a read of already-computed state, so it never
+        touches the hot path, blocks, or triggers analysis. Fully fail-safe.
+        """
+        ctx = self._ctx
+
+        def _source() -> "dict[str, dict]":
+            out: dict[str, dict] = {}
+            try:
+                engine = getattr(ctx, "thesis_engine", None) if ctx is not None else None
+                if engine is None:
+                    return out
+                status = engine.get_status() or {}
+                theses = status.get("theses") or {}
+                camp_live: dict[str, dict] = {}
+                registry = getattr(ctx, "campaign_registry", None) if ctx is not None else None
+                if registry is not None:
+                    try:
+                        for c in (registry.get_status() or {}).get("live", []) or []:
+                            camp_live[str(c.get("symbol"))] = c
+                    except Exception:  # noqa: BLE001
+                        camp_live = {}
+                for sym, tdict in theses.items():
+                    ev: dict = {"thesis": tdict}
+                    if str(sym) in camp_live:
+                        ev["campaign"] = camp_live[str(sym)]
+                    out[str(sym)] = ev
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[llm-worker] evidence build fault: {}", exc)
+            return out
+
+        return _source
+
+    def _make_origination_sink(self):
+        """Build the LIVE origination sink for Brain-originated entries (Phase G).
+
+        The returned callable accepts a
+        :class:`cognition.campaign_translator.OriginationIntent` and submits an
+        :class:`~execution.intents.Intent` OPEN onto the shared aggregator — the
+        SAME execution plane (aggregator → RiskGate → broker) as every other
+        entry. Fail-safe: a malformed intent, a missing protective stop, or any
+        fault is logged and dropped (never raises into the cognition loop). A
+        missing stop is refused because an entry without a stop would bypass the
+        constitutional deterministic-safety floor (Part X).
+        """
+        def _sink(origination: Any) -> None:
+            try:
+                symbol = str(getattr(origination, "symbol", "") or "")
+                direction = str(getattr(origination, "direction", "") or "").upper()
+                sl = getattr(origination, "sl", None)
+                tp = getattr(origination, "tp", None)
+                if not symbol or direction not in ("LONG", "SHORT"):
+                    return
+                if sl is None or tp is None:
+                    logger.info(
+                        "[origination-sink] {} {} skipped — no protective stop/target "
+                        "(refusing to bypass Part X safety floor)",
+                        symbol, direction,
+                    )
+                    return
+                stake = getattr(origination, "stake_usd", None)
+                lots = float(getattr(origination, "lots", 0.0) or 0.0)
+                idem_key = generate_idempotency_key(symbol, direction, stake or lots)
+                comment = build_order_comment(
+                    "APEX", idem_key,
+                    score=round(float(getattr(origination, "confidence", 0.0) or 0.0), 4),
+                )
+                self._aggregator.submit([Intent.open(
+                    symbol=symbol,
+                    direction=direction,
+                    lots=lots,
+                    sl=float(sl),
+                    tp=float(tp),
+                    stake_usd=None if stake is None else float(stake),
+                    comment=comment,
+                    idempotency_key=idem_key,
+                    source="ai_brain",
+                    reason=str(getattr(origination, "reason", "") or "brain_origination")[:200],
+                )])
+                logger.info(
+                    "[origination-sink] submitted {} {} (stake={}) from campaign {}",
+                    symbol, direction, stake,
+                    getattr(origination, "campaign_id", ""),
+                )
+            except Exception as exc:  # noqa: BLE001 — sink must never break the loop
+                logger.warning("[origination-sink] submit failed: {}", exc)
+
+        return _sink
+
+    def _cognition_vote_panel(self, symbol: str) -> list:
+        """Live per-module vote panel for one symbol, for the cognition loop.
+
+        Returns the confirmed WorldModel's ``votes`` — the full per-module
+        directional read (structure, liquidity, momentum, volume, order-flow, …)
+        derived from live MT5 candles on each close, each carrying its richer
+        secondary ``evidence``. The consolidator turns these into domain-
+        classified Evidence so the Brain reasons over the real market picture
+        rather than an empty MarketState. Fail-safe: returns ``[]`` on any fault.
+        """
+        try:
+            store = self._wm_store
+            if store is None:
+                return []
+            wm = store.get(symbol)
+            if wm is None:
+                return []
+            return wm.votes_list()
+        except Exception as exc:  # noqa: BLE001 — never break the cognition loop
+            logger.debug("[cognition] vote panel fetch failed for {}: {}", symbol, exc)
+            return []
+
+    def _cognition_developing_bias(self, symbol: str) -> dict:
+        """Fresher forming-bar directional bias for one symbol, for cognition.
+
+        Returns the DEVELOPING WorldModel's ``bias`` dict — the between-close
+        directional synthesis computed on the still-forming bar. The consolidator
+        turns it into one short-lived multi-timeframe Evidence so the Brain reacts
+        to developing shifts without waiting for the next candle close. Fail-safe:
+        returns ``{}`` when the store is empty or on any fault.
+        """
+        try:
+            store = self._developing_wm_store
+            if store is None:
+                return {}
+            wm = store.get(symbol)
+            if wm is None:
+                return {}
+            return wm.bias_dict()
+        except Exception as exc:  # noqa: BLE001 — never break the cognition loop
+            logger.debug("[cognition] developing bias fetch failed for {}: {}", symbol, exc)
+            return {}
+
     # ── Lifecycle ────────────────────────────────────────────────────
 
     def start(self) -> None:
@@ -4099,6 +3498,68 @@ class EventDrivenSystem:
                 logger.warning(
                     "[event-driven] proactive scanner start failed: {}", exc,
                 )
+
+        # ── Start LLM reasoning worker (off the hot path) ────────────
+        # Drives the LLM reasoner on its own daemon thread — a blocking provider
+        # round-trip must never run in the tick/analysis loop. Only spins up when
+        # a provider is actually configured (reasoner.available); otherwise a
+        # pure no-op. Best-effort; never blocks startup.
+        self._llm_worker = None
+        try:
+            _reasoner = self._ctx.llm_reasoner if self._ctx is not None else None
+            if _reasoner is not None and getattr(_reasoner, "available", False):
+                from llm.worker import LLMReasoningWorker as _LLMReasoningWorker
+                _llm_cfg = getattr(self._config, "llm", None)
+                self._llm_worker = _LLMReasoningWorker(
+                    _reasoner,
+                    self._build_llm_evidence_source(),
+                    interval_seconds=float(
+                        getattr(_llm_cfg, "worker_interval_seconds", 60.0)
+                        if _llm_cfg is not None else 60.0
+                    ),
+                    max_symbols_per_cycle=int(
+                        getattr(_llm_cfg, "max_symbols_per_cycle", 8)
+                        if _llm_cfg is not None else 8
+                    ),
+                )
+                self._llm_worker.start()
+        except Exception as exc:
+            logger.warning("[event-driven] LLM reasoning worker start failed: {}", exc)
+
+        # ── Start the AI Cognitive Brain loop (Single Reasoner, shadow) ──
+        # Background daemon that drives the one Brain over consolidated evidence
+        # and records its decisions. Shadow by default — observational, off the
+        # hot path. Guarded + best-effort; never blocks startup.
+        try:
+            _cog_loop = self._ctx.cognition_loop if self._ctx is not None else None
+            _cog_cfg = getattr(self._config, "cognition", None)
+            if _cog_loop is not None and bool(
+                getattr(_cog_cfg, "enabled", True) if _cog_cfg is not None else True
+            ):
+                # Feed the Brain the live per-module market read: wire the
+                # WorldModel vote panel as the consolidator's vote source so each
+                # cognition cycle reasons over real MT5-derived evidence across
+                # every analytical domain instead of an empty MarketState.
+                try:
+                    _cog_loop.set_vote_source(self._cognition_vote_panel)
+                except Exception as exc:
+                    logger.debug("[event-driven] vote-source wiring failed: {}", exc)
+                # Also feed the fresher forming-bar read: the developing store's
+                # bias becomes one short-lived multi-timeframe Evidence so the
+                # Brain reacts between candle closes, not only on close.
+                try:
+                    _cog_loop.set_developing_source(self._cognition_developing_bias)
+                except Exception as exc:
+                    logger.debug("[event-driven] developing-source wiring failed: {}", exc)
+                # Phase G — when origination is LIVE, wire the executor sink so the
+                # Brain's originated entries reach the SAME execution plane as
+                # every other entry (aggregator → RiskGate → broker). Shadow/off
+                # leave the sink unset, so the loop only records intended orders.
+                if str(getattr(_cog_loop, "origination_mode", "shadow")) == "live":
+                    _cog_loop.set_origination_sink(self._make_origination_sink())
+                _cog_loop.start()
+        except Exception as exc:
+            logger.warning("[event-driven] cognition loop start failed: {}", exc)
 
         # ── Start ProcessWatchdog heartbeat thread ───────────────────
         ctx = self._ctx
@@ -4362,6 +3823,21 @@ class EventDrivenSystem:
         if getattr(self, "_proactive_scanner", None) is not None:
             try:
                 self._proactive_scanner.stop()
+            except Exception:
+                pass
+        if getattr(self, "_llm_worker", None) is not None:
+            try:
+                self._llm_worker.stop()
+            except Exception:
+                pass
+        if self._ctx is not None and getattr(self._ctx, "cognition_loop", None) is not None:
+            try:
+                self._ctx.cognition_loop.stop()
+            except Exception:
+                pass
+        if self._ctx is not None and getattr(self._ctx, "campaign_memory", None) is not None:
+            try:
+                self._ctx.campaign_memory.close()
             except Exception:
                 pass
         if getattr(self, "_opportunity_queue", None) is not None:
@@ -6772,6 +6248,30 @@ class EventDrivenSystem:
                     before_act, after_act, before_dir or "-", after_dir or "-",
                     before_ev, after_ev, long_p, short_p,
                 )
+
+            # Fold the dominant thesis read into the evolving-campaign registry
+            # (observational; default OFF via ``campaign.enabled``). Records the
+            # continuing idea's birth / refresh / reversal without touching the
+            # entry decision. Fully decoupled — a fault here is swallowed.
+            registry = getattr(ctx, "campaign_registry", None)
+            if registry is not None and getattr(registry, "enabled", False):
+                try:
+                    # Age campaigns first (wall-clock, compute-on-tick): an idea
+                    # nothing refreshes fades to DORMANT then INVALIDATED.
+                    registry.decay()
+                    conf = 0.0
+                    tset = engine.get(symbol)
+                    if tset is not None and after_dir:
+                        conf = float(
+                            getattr(tset.get(after_dir), "confidence", 0.0) or 0.0
+                        )
+                    registry.observe_thesis(
+                        symbol, after_dir, after_act,
+                        ev_over_flat=after_ev, confidence=conf,
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[campaign] thesis feed failed for {}: {}",
+                                 symbol, exc)
         except Exception as exc:
             logger.debug("[thesis-engine] feed failed for {}: {}", symbol, exc)
 
@@ -6939,6 +6439,58 @@ class EventDrivenSystem:
                 "(fail-safe): {}", symbol, exc,
             )
             return True
+
+    def _cognition_gate_allows(self, symbol: str, direction: str) -> bool:
+        """AI Cognitive Brain entry gate (Step C) — fail-open.
+
+        Consults the single Brain's latest shadow decision for ``symbol``. In
+        ``shadow`` mode (default) it only records what it WOULD do and always
+        allows; in ``veto`` mode it blocks an entry the legacy path proposed when
+        the Brain has a fresh read that does not back this direction. It can only
+        make the system MORE conservative — it never originates a trade. Fail-
+        open: no Brain, no read yet (cold start), or any fault ALLOWS the entry.
+        """
+        ctx = self._ctx
+        gate = getattr(ctx, "cognition_gate", None) if ctx is not None else None
+        if gate is None:
+            return True
+        try:
+            verdict = gate.evaluate(symbol, direction)
+            if not bool(verdict.allow):
+                logger.info(
+                    "EVENT-DRIVEN ENTRY BLOCKED | {} — AI Cognitive Brain ({}, {} {}): {}",
+                    symbol, verdict.mode, direction,
+                    verdict.brain_decision_type or "-", verdict.reason,
+                )
+            return bool(verdict.allow)
+        except Exception as exc:  # noqa: BLE001
+            # Authoritative = single reasoner: a gate fault means we cannot
+            # confirm Brain authorization, so DO NOT trade (fail-closed). In the
+            # softer modes, fail-open so a gate bug never halts trading.
+            authoritative = str(getattr(gate, "mode", "")) == "authoritative"
+            logger.warning(
+                "[cognition-gate] {} evaluation errored — {} entry (fail-{}): {}",
+                symbol, "blocking" if authoritative else "allowing",
+                "closed" if authoritative else "open", exc,
+            )
+            return not authoritative
+
+    def _single_reasoner_path_active(self) -> bool:
+        """True when the legacy market-decision authority is severed (single path).
+
+        Constitution I.4 / III.2 — when ``CognitionConfig.single_path`` is on, the
+        AI Cognitive Brain is the SOLE authority that may open trades (via its
+        origination path). Legacy entry emitters (consensus / zone-thesis) are
+        demoted to Evidence and their entries are refused at ``_on_entry_decision``.
+        Fail-safe: any config fault reports False (legacy path retained) so a
+        lookup bug can never silently halt trading — the change is only ever an
+        explicit, configured severance.
+        """
+        try:
+            cog = getattr(self._config, "cognition", None)
+            return bool(getattr(cog, "single_path", False)) if cog is not None else False
+        except Exception:  # noqa: BLE001 — never break the entry path on a config read
+            return False
 
     def _build_consensus_candidate_item(
         self, symbol: str, candidate: Any, cfg: Any,
@@ -7880,6 +7432,25 @@ class EventDrivenSystem:
             symbol, direction, entry_price, sl, tp1, conviction,
         )
 
+        # ── Single Reasoner cutover (Constitution I.4 / III.2) ───────────
+        # When single-path is active the legacy market-decision authority
+        # (consensus / zone-thesis entry emitters that produced this decision)
+        # is SEVERED: only the AI Cognitive Brain may open trades, via its
+        # origination path (loop → origination sink → aggregator → RiskGate →
+        # broker; source="ai_brain", which never routes through here). Every
+        # decision reaching this legacy funnel is therefore demoted to Evidence
+        # and MUST NOT open a position. Fail-safe and one-way: this only
+        # SUPPRESSES a legacy entry — it can never cause a trade, and it leaves
+        # position-closing / de-risking / safety mechanics completely untouched.
+        from cognition.single_path import legacy_entry_suppressed
+        if legacy_entry_suppressed(source, self._single_reasoner_path_active()):
+            logger.info(
+                "ENTRY_SUPPRESSED_SINGLE_PATH | source={} symbol={} direction={} — "
+                "legacy entry authority severed; only the AI Brain may originate entries",
+                source, symbol, direction,
+            )
+            return
+
         try:
             ctx = self._ctx
             try:
@@ -7948,6 +7519,15 @@ class EventDrivenSystem:
             # (cold start), or anything errors, the entry is ALLOWED — the gate
             # never blocks on absent evidence or a tracking fault.
             if not self._thesis_gate_allows(symbol, direction):
+                return
+
+            # ── Gate 0e: AI Cognitive Brain (Single Reasoner, Step C) ─
+            # The one reasoner's authority on the decision path. In "shadow"
+            # (default) it only records what it WOULD decide; in "veto" it can
+            # suppress an entry the legacy path proposed when the Brain does not
+            # back this direction. One-way — it never originates a trade here.
+            # Fail-open: absent/stale Brain read or any fault ALLOWS the entry.
+            if not self._cognition_gate_allows(symbol, direction):
                 return
 
             # ── Compliance Division: single authoritative permit ─────
@@ -8560,111 +8140,11 @@ class EventDrivenSystem:
                 except Exception as exc:
                     logger.debug("[atr-levels] EntryEngine ATR calc failed: {}", exc)
 
-            # ── Orchestrator round table — graded sizing ─────────────
+            # ── Orchestrator round table — RETIRED (Single Reasoner cutover) ──
+            # The legacy graded-sizing / physics-veto decider is deleted; sizing
+            # stays neutral here (the Brain owns market judgment, and the
+            # deterministic risk stack still validates feasibility downstream).
             orch_mult = 1.0
-            if ctx is not None and ctx.orchestrator is not None:
-                try:
-                    from brain.orchestrator import TradeProposal
-                    wm = self._wm_store.get(symbol)
-                    structure = wm.structure_by_tf() if wm is not None else {}
-                    h4_sa = structure.get("H4")
-                    h4_alignment = (
-                        float(getattr(h4_sa, "confidence", 0.0) or 0.0)
-                        if h4_sa is not None else None
-                    )
-
-                    want_dir = "LONG" if direction.upper() in ("BUY", "LONG") else "SHORT"
-
-                    # Select the ranked opportunity matching the entry direction
-                    # (highest EV) so the orchestrator's ranker_ev sizing
-                    # dimension is fed by the calibrated candidate EV instead of
-                    # staying neutral.  Gated by ``orchestrator.use_ranker_ev``
-                    # (default off) so sizing is unchanged until the operator
-                    # opts in; best-effort selection leaves the fields None
-                    # (neutral) on any miss.
-                    ranker_ev = None
-                    ranker_coherence = None
-                    ranker_confidence = None
-                    candidate_count = 0
-                    _use_ranker_ev = False
-                    try:
-                        _orch_cfg = getattr(self._config, "orchestrator", None)
-                        _use_ranker_ev = bool(
-                            getattr(_orch_cfg, "use_ranker_ev", False)
-                        )
-                    except Exception:
-                        _use_ranker_ev = False
-                    if _use_ranker_ev:
-                        try:
-                            cands = (
-                                wm.candidates_list()
-                                if wm is not None and hasattr(wm, "candidates_list")
-                                else list(getattr(wm, "candidates", ()) or [])
-                            )
-                            matching = [
-                                c for c in cands
-                                if str(getattr(c, "direction", "")).upper() == want_dir
-                            ]
-                            candidate_count = len(cands)
-                            if matching:
-                                best = max(
-                                    matching,
-                                    key=lambda c: float(getattr(c, "expected_value", 0.0) or 0.0),
-                                )
-                                ranker_ev = float(getattr(best, "expected_value", 0.0) or 0.0)
-                                ranker_coherence = float(getattr(best, "coherence", 0.0) or 0.0)
-                                ranker_confidence = float(getattr(best, "confidence", 0.0) or 0.0)
-                        except Exception as exc:
-                            logger.debug(
-                                "[orch] {} candidate EV select failed: {}", symbol, exc,
-                            )
-
-                    proposal = TradeProposal(
-                        pair=symbol,
-                        direction=want_dir,
-                        scan_score=float(conviction),
-                        de_conviction=de_conviction if de_conviction > 0 else None,
-                        de_margin=None,
-                        tf_alignment=h4_alignment,
-                        ranker_ev=ranker_ev,
-                        ranker_coherence=ranker_coherence,
-                        ranker_confidence=ranker_confidence,
-                        candidate_count=candidate_count,
-                    )
-                    verdict = ctx.orchestrator.evaluate(proposal)
-                    # Emit ORCHESTRATOR_PROPOSAL so the dashboard's orchestrator
-                    # panel is fed by the event-driven system (not just the
-                    # legacy TradingLoop).  Covers both applied and vetoed cases.
-                    try:
-                        store = get_event_store()
-                        if store is not None:
-                            payload = verdict.to_dict() if hasattr(verdict, "to_dict") else {}
-                            payload["applied"] = not bool(getattr(verdict, "vetoed", False))
-                            if hasattr(proposal, "to_dict"):
-                                payload["proposal"] = proposal.to_dict()
-                            store.emit(
-                                event_type=DE.ORCHESTRATOR_PROPOSAL,
-                                severity="INFO",
-                                symbol=symbol,
-                                source_module="brain.orchestrator",
-                                payload=payload,
-                            )
-                    except Exception as exc:
-                        logger.debug("[orchestrator] proposal persist failed: {}", exc)
-                    if verdict.vetoed:
-                        logger.warning(
-                            "EVENT-DRIVEN ENTRY VETOED | {} — Orchestrator: {}",
-                            symbol, verdict.veto_reason,
-                        )
-                        return
-                    orch_mult = verdict.size_multiplier
-                    if orch_mult < 1.0:
-                        logger.info(
-                            "[ORCH] {} size×{:.2f} — {}",
-                            symbol, orch_mult, verdict.summary()[:120],
-                        )
-                except Exception as exc:
-                    logger.debug("[orchestrator] Orchestrator eval failed: {}", exc)
 
             # ── Adaptive optimizer: losing-pattern block + size adjust ──
             # Applies learned pair/session/regime edge to the live entry: a
@@ -10228,6 +9708,26 @@ class EventDrivenSystem:
         ctx = self._ctx
         if ctx is None:
             return
+
+        # ── Evolving campaigns: record the closed leg / campaign end ────
+        # Observational (default OFF via ``campaign.enabled``). Ties the realised
+        # outcome back to the continuing idea so the post-mortem reads a full
+        # campaign narrative. Best-effort — never affects close accounting.
+        registry = getattr(ctx, "campaign_registry", None)
+        if registry is not None and getattr(registry, "enabled", False):
+            try:
+                won_flag = (pnl_dollars or 0.0) > 0.0 or (
+                    (pnl_dollars or 0.0) == 0.0 and (pnl_pips or 0.0) > 0.0
+                )
+                registry.observe_close(
+                    symbol, direction,
+                    exit_cause=str(exit_reason or ""),
+                    pnl=float(pnl_dollars or 0.0),
+                    won=won_flag,
+                    ticket=str(ticket or ""),
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[campaign] close feed failed for {}: {}", symbol, exc)
 
         # ── Phase 6: feed per-TF structure agreement into the adaptive
         # evidence-weight provider so the probabilistic-bias weights learn
