@@ -8,6 +8,15 @@ established with an ``initialize`` handshake (the server returns an
 ``Mcp-Session-Id`` header that subsequent requests echo back), then tools are
 invoked with ``tools/call``.
 
+The server advertises a small set of generic "meta" tools via ``tools/list``
+rather than each connected app's action directly. So an app-action is not called
+by its own name — it is dispatched through an executor meta-tool
+(``COMPOSIO_MULTI_EXECUTE_TOOL``) with the target slug + arguments. This adapter
+discovers the advertised tools once per session and routes accordingly: a
+directly-advertised tool is called by name; anything else is wrapped through the
+executor. When discovery returns nothing (or a server that still exposes actions
+directly), it falls back to a direct call so behaviour never regresses.
+
 :class:`McpActionAdapter` speaks that protocol but exposes the SAME
 ``execute(capability, params) -> ActionResult`` interface as
 :class:`~action.composio.ComposioAdapter`, so it is a drop-in for the
@@ -117,6 +126,10 @@ class McpActionAdapter:
         timeout_seconds: float = 30.0,
         protocol_version: str = "2025-06-18",
         transport: Optional[McpTransport] = None,
+        router_tool: str = "COMPOSIO_MULTI_EXECUTE_TOOL",
+        router_tools_key: str = "tool_calls",
+        router_slug_key: str = "tool_slug",
+        router_args_key: str = "arguments",
     ) -> None:
         self._api_key = str(api_key or "")
         self._url = str(url or "https://connect.composio.dev/mcp")
@@ -125,9 +138,22 @@ class McpActionAdapter:
         self._timeout = float(timeout_seconds or 30.0)
         self._protocol_version = str(protocol_version or "2025-06-18")
         self._transport: McpTransport = transport or _urllib_mcp_transport
+        # Composio's hosted MCP server no longer exposes each connected app's
+        # action as a directly-callable tool. It advertises a small set of
+        # generic "meta" tools; an app-action is run by calling the executor
+        # meta-tool (COMPOSIO_MULTI_EXECUTE_TOOL) and passing the target slug +
+        # arguments. These knobs describe that wrapper so it can be adjusted
+        # from config without a code change if Composio revises the shape.
+        self._router_tool = str(router_tool or "COMPOSIO_MULTI_EXECUTE_TOOL")
+        self._router_tools_key = str(router_tools_key or "tool_calls")
+        self._router_slug_key = str(router_slug_key or "tool_slug")
+        self._router_args_key = str(router_args_key or "arguments")
         self._session_id = ""
         self._initialized = False
         self._id = 0
+        # Cached set of tool names the server actually advertises (via
+        # tools/list). ``None`` = not yet fetched. Reset whenever the session is.
+        self._available_tools: Optional[set] = None
 
     @property
     def usable(self) -> bool:
@@ -185,15 +211,80 @@ class McpActionAdapter:
         self._initialized = True
         return True
 
+    def _discover_tools(self) -> set:
+        """Fetch and cache the tool names the server advertises (tools/list).
+
+        Cached for the life of the session; returns an empty set on any failure
+        (so callers fall back to a direct call — never a hard error).
+        """
+        if self._available_tools is not None:
+            return self._available_tools
+        names: set = set()
+        try:
+            status, _hdrs, msgs = self._post({
+                "jsonrpc": "2.0", "id": self._next_id(),
+                "method": "tools/list", "params": {},
+            })
+            if 200 <= status < 300:
+                resp = None
+                for m in msgs:
+                    if isinstance(m, dict) and ("result" in m or "error" in m):
+                        resp = m
+                result = (resp or {}).get("result") if isinstance(resp, dict) else None
+                for t in (result or {}).get("tools", []) or []:
+                    n = t.get("name") if isinstance(t, dict) else None
+                    if n:
+                        names.add(str(n))
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[mcp] tools/list discovery ignored a fault: {}", exc)
+        self._available_tools = names
+        return names
+
+    def list_tools(self) -> list:
+        """Public: the tool names the server currently advertises (sorted)."""
+        if not self._ensure_session():
+            return []
+        return sorted(self._discover_tools())
+
+    def _router_call_params(self, capability: str, params: dict) -> dict:
+        """Build tools/call params that run ``capability`` via the executor
+        meta-tool — the current Composio MCP convention where app-actions are
+        not directly callable and must be dispatched through a generic
+        executor with the target slug + arguments."""
+        return {
+            "name": self._router_tool,
+            "arguments": {
+                self._router_tools_key: [
+                    {
+                        self._router_slug_key: capability,
+                        self._router_args_key: dict(params or {}),
+                    }
+                ]
+            },
+        }
+
     def execute(self, capability: str, params: dict) -> ActionResult:
         if not self._api_key:
             return ActionResult(ok=False, detail="mcp: no api key")
         try:
             if not self._ensure_session():
                 return ActionResult(ok=False, detail="mcp: initialize failed")
+            available = self._discover_tools()
+            # Prefer a direct call when the server actually advertises the tool
+            # (covers the generic meta-tools and any directly-exposed action).
+            # Otherwise, when the executor meta-tool is available, route the
+            # app-action through it — the current Composio MCP convention. When
+            # discovery returned nothing, fall back to a direct call so servers
+            # that DO expose actions directly (and offline tests) still work.
+            if capability in available:
+                call_params = {"name": capability, "arguments": dict(params or {})}
+            elif available and self._router_tool in available:
+                call_params = self._router_call_params(capability, params)
+            else:
+                call_params = {"name": capability, "arguments": dict(params or {})}
             call = {
                 "jsonrpc": "2.0", "id": self._next_id(), "method": "tools/call",
-                "params": {"name": capability, "arguments": dict(params or {})},
+                "params": call_params,
             }
             status, _hdrs, msgs = self._post(call)
             if status < 200 or status >= 300:
@@ -202,6 +293,7 @@ class McpActionAdapter:
                 if status in (400, 401, 403, 404):
                     self._initialized = False
                     self._session_id = ""
+                    self._available_tools = None
                 return ActionResult(ok=False, detail=f"HTTP {status}")
             return self._parse(capability, msgs)
         except Exception as exc:  # noqa: BLE001

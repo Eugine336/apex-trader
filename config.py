@@ -3854,6 +3854,15 @@ class ComposioConfig:
     transport: str = "rest"
     mcp_url: str = "https://connect.composio.dev/mcp"
     mcp_auth_header: str = "x-consumer-api-key"
+    # Composio's MCP server exposes generic "meta" tools rather than each app's
+    # action directly; an app-action is dispatched through an executor meta-tool
+    # with the target slug + arguments. These describe that wrapper so it can be
+    # retuned from .env if Composio revises the shape (defaults match the
+    # current COMPOSIO_MULTI_EXECUTE_TOOL convention).
+    mcp_router_tool: str = "COMPOSIO_MULTI_EXECUTE_TOOL"
+    mcp_router_tools_key: str = "tool_calls"
+    mcp_router_slug_key: str = "tool_slug"
+    mcp_router_args_key: str = "arguments"
     dry_run: bool = True
     require_source: bool = True
     auto_max_risk: str = "low"
@@ -3892,6 +3901,22 @@ class ComposioConfig:
         ).strip()
         self.mcp_auth_header = (
             os.getenv("COMPOSIO_MCP_AUTH_HEADER", self.mcp_auth_header) or "x-consumer-api-key"
+        ).strip()
+        self.mcp_router_tool = (
+            os.getenv("COMPOSIO_MCP_ROUTER_TOOL", self.mcp_router_tool)
+            or "COMPOSIO_MULTI_EXECUTE_TOOL"
+        ).strip()
+        self.mcp_router_tools_key = (
+            os.getenv("COMPOSIO_MCP_ROUTER_TOOLS_KEY", self.mcp_router_tools_key)
+            or "tool_calls"
+        ).strip()
+        self.mcp_router_slug_key = (
+            os.getenv("COMPOSIO_MCP_ROUTER_SLUG_KEY", self.mcp_router_slug_key)
+            or "tool_slug"
+        ).strip()
+        self.mcp_router_args_key = (
+            os.getenv("COMPOSIO_MCP_ROUTER_ARGS_KEY", self.mcp_router_args_key)
+            or "arguments"
         ).strip()
         self.auto_max_risk = (
             os.getenv("COMPOSIO_AUTO_MAX_RISK", self.auto_max_risk) or "low"

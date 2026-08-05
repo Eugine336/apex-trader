@@ -41,22 +41,95 @@ def _init_response():
             json.dumps({"jsonrpc": "2.0", "id": "{id}", "result": {"protocolVersion": "2025-06-18"}}))
 
 
+def _tools_list_response(names):
+    tools = [{"name": n} for n in names]
+    return (200, {"content-type": "application/json"},
+            json.dumps({"jsonrpc": "2.0", "id": "{id}", "result": {"tools": tools}}))
+
+
 def test_initialize_handshake_captures_session_and_sends_initialized():
     tr = _FakeMcp({
         "initialize": _init_response(),
+        # Advertise the tool directly so it is called by name (no routing).
+        "tools/list": _tools_list_response(["COMPOSIO_SEARCH_SEARCH"]),
         "tools/call": (200, {"content-type": "application/json"},
                        _result_json(structured={"items": [{"title": "t"}]})),
     })
     a = McpActionAdapter("ck_key", transport=tr)
     res = a.execute("COMPOSIO_SEARCH_SEARCH", {"query": "gold"})
     methods = [c["msg"]["method"] for c in tr.calls]
-    assert methods == ["initialize", "notifications/initialized", "tools/call"]
+    assert methods == ["initialize", "notifications/initialized", "tools/list", "tools/call"]
     # session id echoed back on the tools/call request
     call = next(c for c in tr.calls if c["msg"]["method"] == "tools/call")
     assert call["headers"]["mcp-session-id"] == "sess-123"
     assert call["headers"]["x-consumer-api-key"] == "ck_key"
     assert res.ok is True
     assert res.data.get("items") == [{"title": "t"}]
+
+
+def test_app_action_is_routed_through_executor_meta_tool():
+    """When the server only advertises the generic meta-tools, an app-action
+    must be dispatched through COMPOSIO_MULTI_EXECUTE_TOOL — not called by name."""
+    tr = _FakeMcp({
+        "initialize": _init_response(),
+        "tools/list": _tools_list_response([
+            "COMPOSIO_MULTI_EXECUTE_TOOL", "COMPOSIO_SEARCH_TOOLS",
+        ]),
+        "tools/call": (200, {"content-type": "application/json"},
+                       _result_json(structured={"ok": True})),
+    })
+    a = McpActionAdapter("k", transport=tr)
+    res = a.execute("SLACK_SEND_MESSAGE", {"message": "hi"})
+    call = next(c for c in tr.calls if c["msg"]["method"] == "tools/call")
+    params = call["msg"]["params"]
+    assert params["name"] == "COMPOSIO_MULTI_EXECUTE_TOOL"
+    assert params["arguments"] == {
+        "tool_calls": [{"tool_slug": "SLACK_SEND_MESSAGE", "arguments": {"message": "hi"}}]
+    }
+    assert res.ok is True
+
+
+def test_router_shape_is_configurable():
+    tr = _FakeMcp({
+        "initialize": _init_response(),
+        "tools/list": _tools_list_response(["RUN_TOOL"]),
+        "tools/call": (200, {"content-type": "application/json"}, _result_json(structured={})),
+    })
+    a = McpActionAdapter(
+        "k", transport=tr, router_tool="RUN_TOOL",
+        router_tools_key="tools", router_slug_key="slug", router_args_key="input",
+    )
+    a.execute("GITHUB_CREATE_AN_ISSUE", {"title": "x"})
+    call = next(c for c in tr.calls if c["msg"]["method"] == "tools/call")
+    params = call["msg"]["params"]
+    assert params["name"] == "RUN_TOOL"
+    assert params["arguments"] == {
+        "tools": [{"slug": "GITHUB_CREATE_AN_ISSUE", "input": {"title": "x"}}]
+    }
+
+
+def test_directly_advertised_tool_is_called_by_name():
+    tr = _FakeMcp({
+        "initialize": _init_response(),
+        "tools/list": _tools_list_response([
+            "COMPOSIO_MULTI_EXECUTE_TOOL", "COMPOSIO_SEARCH_TOOLS",
+        ]),
+        "tools/call": (200, {"content-type": "application/json"}, _result_json(structured={})),
+    })
+    a = McpActionAdapter("k", transport=tr)
+    # A meta-tool the server DOES advertise is invoked directly, never wrapped.
+    a.execute("COMPOSIO_SEARCH_TOOLS", {"q": "slack"})
+    call = next(c for c in tr.calls if c["msg"]["method"] == "tools/call")
+    assert call["msg"]["params"] == {"name": "COMPOSIO_SEARCH_TOOLS", "arguments": {"q": "slack"}}
+
+
+def test_list_tools_returns_advertised_names():
+    tr = _FakeMcp({
+        "initialize": _init_response(),
+        "tools/list": _tools_list_response(["B_TOOL", "A_TOOL"]),
+    })
+    a = McpActionAdapter("k", transport=tr)
+    assert a.list_tools() == ["A_TOOL", "B_TOOL"]
 
 
 def test_tools_call_arguments_and_name_shape():
