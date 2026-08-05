@@ -267,6 +267,21 @@ class CognitionLoop:
                 ms = self._consolidator.build(symbol, now=now)
                 output = self._brain.reason(ms, now=now)
                 made += 1
+                # Visibility (Part XII): surface the one reasoner's decision each
+                # cycle at INFO so the Brain's live reasoning is observable in the
+                # logs — not just when it originates a trade.
+                try:
+                    _dec = output.decision
+                    _dtype = getattr(getattr(_dec, "decision_type", None), "value", None) \
+                        or str(getattr(_dec, "decision_type", "?"))
+                    logger.info(
+                        "[cognition] %s -> %s (dir=%s conf=%.2f) reasoner=%s",
+                        symbol, _dtype, getattr(output, "direction", "?"),
+                        float(getattr(_dec, "confidence", 0.0) or 0.0),
+                        "live" if getattr(self._brain, "available", False) else "unavailable",
+                    )
+                except Exception:  # noqa: BLE001 — logging must never break the cycle
+                    pass
                 if self._action_bridge is not None:
                     self._action_bridge.on_decision(output)
                 if self._memory is not None:
