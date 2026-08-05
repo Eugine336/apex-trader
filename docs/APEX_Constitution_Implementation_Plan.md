@@ -331,24 +331,45 @@ validation. Default-off — behaviour-neutral until `LLM_CONSULT_MULTI=true`.
 
 ---
 
-## 8. Phase K — Legacy decider removal + god-file decomposition (Part XI)
+## 8. Phase K — Legacy decider removal + god-file decomposition (Part XI) — 🟡 IN PROGRESS
 
 **Goal:** physically remove the now-dead legacy *decision* code; decompose the
 orchestrator.
 
 **Preconditions:** Phases E–G live-validated on the demo (Brain covers entry +
-management + origination over full evidence).
+management + origination over full evidence). ⚠️ **Legacy-decider physical
+removal remains gated on this** — deleting the market-judging path before live
+validation would violate the constitution's "no legacy deletion until
+superseded **and** validated" rule (Part XV) and cannot be verified in the
+offline build sandbox. So Phase K proceeds as **safe, behaviour-preserving
+decomposition first**, with the deletion pass deferred until the demo confirms
+the Brain-driven path.
 
 **Tasks**
 - Delete/retire the legacy *decision* authority: consensus argmax direction,
   `thesis_engine` entry/exit authority, `orchestrator` sizing verdict, Gates
   1–7 market judgment. Keep only feasibility/mechanics + evidence adapters.
-- Decompose `event_driven_bootstrap.py` (10.8k lines): extract `PositionEvaluator`,
-  the entry pipeline, and lifecycle loops into named, unit-tested modules with
-  characterization tests written first.
+  ⏳ **Deferred** — gated on live validation (see Preconditions). The Brain gate
+  is already authoritative by default (Steps C/D), so the legacy decider is
+  *runtime-superseded*; physical removal awaits the demo sign-off.
+- Decompose `event_driven_bootstrap.py` (11k lines): extract cohesive clusters
+  into named, unit-tested modules with characterization tests written first.
+  - ✅ **`execution/broker_fields.py`** — the broker-truth field readers
+    (`_broker_pnl` / `_broker_entry_price` / `_broker_tp` /
+    `_broker_pip_value_from_spec`) lifted out (a documented "single source of
+    truth" cluster, pure, shared by the sizing/scale-in/heat paths). Re-imported
+    into the bootstrap so every call site — and the existing
+    `from event_driven_bootstrap import _broker_pip_value_from_spec` path —
+    resolves identically. Behaviour unchanged; 17 characterization tests pin it.
+  - ⏳ Next slices (each its own behaviour-preserving PR): the structure/micro
+    helpers (`_struct_*`, `_micro_confirmation_from_event`, `_compute_m1_micro`),
+    then the tick-source threads, `FlushLoop`/`TickEvalLoop`, `PositionEvaluator`,
+    and the entry pipeline — characterization tests first each time.
 
 **Acceptance:** no competing decision code remains (grep audit); god-file split;
 characterization tests green; behaviour unchanged for the Brain-driven path.
+🟡 Decomposition underway (broker_fields extracted + tested); deletion pass and
+full split pending live validation.
 
 ---
 
