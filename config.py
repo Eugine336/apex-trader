@@ -3938,6 +3938,12 @@ class CognitionConfig:
     enabled: bool = True
     shadow_mode: bool = False
     gate_mode: str = "authoritative"   # off | shadow | veto | authoritative (Brain = sole decider)
+    # Single Reasoner cutover (Constitution I.4 / III.2): when True the legacy
+    # market-decision authority (consensus/zone-thesis entry emitters) is SEVERED
+    # at runtime — the AI Cognitive Brain, via its origination path, is the sole
+    # authority that may open trades. Deterministic safety/feasibility mechanics
+    # (Part X) and position-closing/de-risking are unaffected. env COGNITION_SINGLE_PATH.
+    single_path: bool = True
     max_decision_age_seconds: float = 300.0
     per_module_evidence: bool = True   # Phase E: emit one Evidence per contributing module/domain
     min_confidence_to_act: float = 0.55
@@ -3986,6 +3992,7 @@ class CognitionConfig:
         self.gate_mode = (
             os.getenv("COGNITION_GATE_MODE", self.gate_mode) or "authoritative"
         ).strip().lower()
+        self.single_path = _llm_env_bool("COGNITION_SINGLE_PATH", self.single_path)
         self.emit_operator_notifications = _llm_env_bool(
             "COGNITION_EMIT_OPERATOR_NOTIFICATIONS", self.emit_operator_notifications
         )

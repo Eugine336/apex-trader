@@ -6437,6 +6437,23 @@ class EventDrivenSystem:
             )
             return not authoritative
 
+    def _single_reasoner_path_active(self) -> bool:
+        """True when the legacy market-decision authority is severed (single path).
+
+        Constitution I.4 / III.2 — when ``CognitionConfig.single_path`` is on, the
+        AI Cognitive Brain is the SOLE authority that may open trades (via its
+        origination path). Legacy entry emitters (consensus / zone-thesis) are
+        demoted to Evidence and their entries are refused at ``_on_entry_decision``.
+        Fail-safe: any config fault reports False (legacy path retained) so a
+        lookup bug can never silently halt trading — the change is only ever an
+        explicit, configured severance.
+        """
+        try:
+            cog = getattr(self._config, "cognition", None)
+            return bool(getattr(cog, "single_path", False)) if cog is not None else False
+        except Exception:  # noqa: BLE001 — never break the entry path on a config read
+            return False
+
     def _build_consensus_candidate_item(
         self, symbol: str, candidate: Any, cfg: Any,
     ) -> Optional[tuple]:
@@ -7376,6 +7393,25 @@ class EventDrivenSystem:
             "EVENT-DRIVEN ENTRY | {} {} @ {:.5f} SL={:.5f} TP={:.5f} score={}",
             symbol, direction, entry_price, sl, tp1, conviction,
         )
+
+        # ── Single Reasoner cutover (Constitution I.4 / III.2) ───────────
+        # When single-path is active the legacy market-decision authority
+        # (consensus / zone-thesis entry emitters that produced this decision)
+        # is SEVERED: only the AI Cognitive Brain may open trades, via its
+        # origination path (loop → origination sink → aggregator → RiskGate →
+        # broker; source="ai_brain", which never routes through here). Every
+        # decision reaching this legacy funnel is therefore demoted to Evidence
+        # and MUST NOT open a position. Fail-safe and one-way: this only
+        # SUPPRESSES a legacy entry — it can never cause a trade, and it leaves
+        # position-closing / de-risking / safety mechanics completely untouched.
+        from cognition.single_path import legacy_entry_suppressed
+        if legacy_entry_suppressed(source, self._single_reasoner_path_active()):
+            logger.info(
+                "ENTRY_SUPPRESSED_SINGLE_PATH | source={} symbol={} direction={} — "
+                "legacy entry authority severed; only the AI Brain may originate entries",
+                source, symbol, direction,
+            )
+            return
 
         try:
             ctx = self._ctx
