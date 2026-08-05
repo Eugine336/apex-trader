@@ -46,6 +46,10 @@ __all__ = [
     "OperationsAuthor",
     "InfluenceLedger",
     "CalibrationTracker",
+    "CognitionObservability",
+    "ReplayHarness",
+    "ValidationReport",
+    "readiness_verdict",
 ]
 
 
@@ -82,4 +86,10 @@ def __getattr__(name: str):
     if name in ("InfluenceLedger", "CalibrationTracker"):
         from cognition import influence as _inf
         return getattr(_inf, name)
+    if name in ("CognitionObservability",):
+        from cognition import observability as _obs
+        return getattr(_obs, name)
+    if name in ("ReplayHarness", "ValidationReport", "readiness_verdict"):
+        from cognition import validation as _val
+        return getattr(_val, name)
     raise AttributeError(f"module 'cognition' has no attribute {name!r}")

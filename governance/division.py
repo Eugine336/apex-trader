@@ -145,6 +145,7 @@ class GovernanceDivision:
         influence_ledger: Optional[object] = None,
         brain_calibration: Optional[object] = None,
         reasoning_orchestrator: Optional[object] = None,
+        cognition_observability: Optional[object] = None,
     ) -> None:
         self._module_governor = module_governor
         self._tuner_agent = tuner_agent
@@ -221,6 +222,8 @@ class GovernanceDivision:
         # Reasoning Orchestrator (Part XVII) — multi-engine consultative reasoning.
         # Observational — read in get_status only; advisory, never authority.
         self._reasoning_orchestrator = reasoning_orchestrator
+        # Cognition observability (Phase L, Part XII) — read-only derived metrics.
+        self._cognition_observability = cognition_observability
 
     # ── Wiring (injected after construction) ──────────────────────────────
 
@@ -246,6 +249,7 @@ class GovernanceDivision:
         influence_ledger: Optional[object] = None,
         brain_calibration: Optional[object] = None,
         reasoning_orchestrator: Optional[object] = None,
+        cognition_observability: Optional[object] = None,
     ) -> None:
         """Inject the enforcement-arm references after construction.
 
@@ -289,6 +293,8 @@ class GovernanceDivision:
             self._brain_calibration = brain_calibration
         if reasoning_orchestrator is not None:
             self._reasoning_orchestrator = reasoning_orchestrator
+        if cognition_observability is not None:
+            self._cognition_observability = cognition_observability
 
     # ── Learning recommendation authorisation (the ⑦→⑧ boundary) ──────────
 
@@ -859,7 +865,8 @@ class GovernanceDivision:
                 or self._campaign_memory is not None or self._action_planner is not None
                 or self._operations_author is not None or self._influence_ledger is not None
                 or self._brain_calibration is not None
-                or self._reasoning_orchestrator is not None):
+                or self._reasoning_orchestrator is not None
+                or self._cognition_observability is not None):
             cognition = {}
             if self._cognitive_brain is not None:
                 try:
@@ -911,6 +918,11 @@ class GovernanceDivision:
                     cognition["reasoning_orchestrator"] = self._reasoning_orchestrator.get_status()
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[governance] reasoning-orchestrator status failed: {}", exc)
+            if self._cognition_observability is not None:
+                try:
+                    cognition["observability"] = self._cognition_observability.get_status()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[governance] cognition-observability status failed: {}", exc)
         return {
             "enforce_toxic_pairs": self._enforce_toxic,
             "has_module_governor": self._module_governor is not None,
