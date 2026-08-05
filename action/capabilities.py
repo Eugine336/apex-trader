@@ -183,7 +183,8 @@ def default_registry() -> CapabilityRegistry:
         name=CAP_OPERATOR_NOTIFY, category=CapabilityCategory.NOTIFICATION,
         risk_tier=RiskTier.NEGLIGIBLE,
         providers=(ProviderBinding("slack", "SLACK_SEND_MESSAGE"),
-                   ProviderBinding("telegram", "TELEGRAM_SEND_MESSAGE")),
+                   ProviderBinding("telegram", "TELEGRAM_SEND_MESSAGE"),
+                   ProviderBinding("gmail", "GMAIL_SEND_EMAIL")),
         required_params=("message",),
         description="Notify the operator (Article 10 — operational coordination).",
     ))
@@ -228,7 +229,14 @@ def default_registry() -> CapabilityRegistry:
     reg.register(Capability(
         name=CAP_KNOWLEDGE_RETRIEVE, category=CapabilityCategory.KNOWLEDGE_RETRIEVAL,
         risk_tier=RiskTier.NEGLIGIBLE,
-        providers=(ProviderBinding("composio_search", "COMPOSIO_SEARCH_SEARCH"),),
+        # Web search is the reliable, universal default (works for any symbol);
+        # connected market-data providers are selectable alternates the operator
+        # can prefer via ``provider_preferences`` once their tool argument schema
+        # is confirmed (Alpha Vantage news/sentiment, CoinMarketCal event
+        # calendar). Every answer becomes advisory Evidence (Article 4/8).
+        providers=(ProviderBinding("composio_search", "COMPOSIO_SEARCH_SEARCH"),
+                   ProviderBinding("alphavantage", "ALPHAVANTAGE_NEWS_SENTIMENT"),
+                   ProviderBinding("coinmarketcal", "COINMARKETCAL_GET_EVENTS")),
         required_params=("query",), reversible=True,
         description="Retrieve external knowledge → becomes Evidence (Article 4/8).",
     ))
@@ -236,8 +244,10 @@ def default_registry() -> CapabilityRegistry:
         name=CAP_ADVISOR_CONSULT, category=CapabilityCategory.KNOWLEDGE_RETRIEVAL,
         risk_tier=RiskTier.NEGLIGIBLE,
         # An AI advisor reached THROUGH Composio. Its answer is advisory Evidence
-        # (Article 8) — never a vote, never a second Brain. Provider-swappable.
-        providers=(ProviderBinding("composio_search", "COMPOSIO_SEARCH_SEARCH"),),
+        # (Article 8) — never a vote, never a second Brain. Provider-swappable:
+        # web search by default, OpenRouter (LLM gateway) as a selectable advisor.
+        providers=(ProviderBinding("composio_search", "COMPOSIO_SEARCH_SEARCH"),
+                   ProviderBinding("openrouter", "OPENROUTER_CHAT_COMPLETION")),
         required_params=("query",), reversible=True,
         description="Consult an AI advisor → advisory Evidence (Article 8).",
     ))

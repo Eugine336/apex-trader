@@ -1213,6 +1213,23 @@ class SystemContext:
                             getattr(comp_cfg, "advisor_enabled", False)
                             if comp_cfg is not None else False
                         ),
+                        available_providers=(
+                            comp_cfg.available_providers_list()
+                            if comp_cfg is not None else None
+                        ),
+                        knowledge_provider=(
+                            comp_cfg.provider_preferences_map().get("knowledge.retrieve", "")
+                            if comp_cfg is not None else ""
+                        ),
+                        advisor_provider=(
+                            comp_cfg.provider_preferences_map().get("advisor.consult", "")
+                            if comp_cfg is not None else ""
+                        ),
+                        arg_overrides=(
+                            comp_cfg.knowledge_arg_overrides_map()
+                            if comp_cfg is not None
+                            and hasattr(comp_cfg, "knowledge_arg_overrides_map") else None
+                        ),
                     )
                     logger.info(
                         "[SystemContext] Knowledge source ready — enabled={} advisor={}",
