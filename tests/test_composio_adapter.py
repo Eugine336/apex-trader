@@ -72,3 +72,24 @@ def test_build_adapter_threads_api_version():
     a = build_adapter(cfg, transport=tr)
     a.execute("COMPOSIO_SEARCH_SEARCH", {"query": "q"})
     assert tr.calls[-1]["url"].endswith("/api/v3/tools/execute/COMPOSIO_SEARCH_SEARCH")
+
+
+def test_build_adapter_selects_mcp_transport():
+    from types import SimpleNamespace
+    from action.mcp_client import McpActionAdapter
+    cfg = SimpleNamespace(enabled=True, dry_run=False, api_key="ck_key",
+                          transport="mcp", mcp_url="https://connect.composio.dev/mcp",
+                          mcp_auth_header="x-consumer-api-key", entity_id="default",
+                          timeout_seconds=30.0)
+    a = build_adapter(cfg)
+    assert isinstance(a, McpActionAdapter)
+    assert a.usable is True
+
+
+def test_build_adapter_defaults_to_rest():
+    from types import SimpleNamespace
+    cfg = SimpleNamespace(enabled=True, dry_run=False, api_key="k",
+                          base_url="https://backend.composio.dev", entity_id="default",
+                          timeout_seconds=20.0, api_version="v3", transport="rest")
+    a = build_adapter(cfg)
+    assert a.name == "composio"
