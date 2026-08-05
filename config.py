@@ -940,6 +940,13 @@ class RiskConfig:
     # as the real risk stays within this cap. Trades whose min-lot risk would
     # exceed this (e.g. 0.01 lot of Gold on a $5 account) are still rejected.
     max_risk_pct_per_trade: float = 5.0
+    # Opportunity-harvesting opt-in (Constitution Part V). When True, an entry
+    # whose UNAVOIDABLE broker-minimum lot would risk more than the per-trade
+    # ceiling is taken at the minimum lot instead of being rejected — so a small
+    # account can still participate in the opportunities the Brain authorises.
+    # The broker's own margin/min-lot floor stays the real hard limit. Default
+    # OFF (conservative). env RISK_ALLOW_MIN_LOT_OVER_RISK.
+    allow_min_lot_over_risk: bool = False
     backtest_starting_balance_usd: float = 10_000.0
     tp3_ladder_enabled: bool = True
     tp3_r_multiple: float = 5.0
@@ -1241,6 +1248,10 @@ class RiskConfig:
                         "({!r}) — keeping default {}s",
                         _env_tick_age, self.max_tick_age_seconds,
                     )
+
+        self.allow_min_lot_over_risk = _llm_env_bool(
+            "RISK_ALLOW_MIN_LOT_OVER_RISK", self.allow_min_lot_over_risk
+        )
 
         def _check_finite_positive(name: str, val: float) -> None:
             if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
@@ -3584,6 +3595,552 @@ class ThesisConfig:
 
 
 @dataclass
+class CampaignConfig:
+    """Evolving market campaigns (not isolated trades).
+
+    A campaign is the *lifetime of a directional market thesis on a symbol* —
+    the continuing idea that a scatter of individual orders (open, scale-in,
+    partial, re-entry, reversal) are all legs of. :class:`brain.campaign.
+    CampaignRegistry` tracks that idea from birth (evidence supports a thesis)
+    to end (the thesis is invalidated, decays away, or flips), sitting beside
+    the :class:`brain.thesis_engine.ThesisEngine` that reports the live read.
+
+    Introduced OBSERVATIONALLY: with ``enabled`` False the registry is still
+    constructed and surfaced via Governance ``get_status`` but is only fed the
+    campaign narrative — it alters no execution decision. This mirrors how the
+    ThesisEngine (Gap 1a) was introduced before later sessions promoted it.
+    """
+
+    # Master switch. Live on the demo build: the registry records the campaign
+    # narrative and runs the autonomous post-mortem. It remains OBSERVATIONAL —
+    # it never drives an execution decision (every feed is fail-safe and only
+    # reads thesis output / close outcomes), so enabling it is safe. A later
+    # session promotes it into a driver of scaling / re-entry / reversal.
+    enabled: bool = True
+    # Seconds without a fresh actionable thesis read before a campaign fades to
+    # DORMANT (a pullback or quiet patch — not yet dead). Mirrors the thesis
+    # 15-minute decay half-life so the two layers age in step.
+    dormant_after_seconds: float = 900.0
+    # Seconds without fresh evidence before the campaign is declared INVALIDATED
+    # (the absence of confirming evidence is itself disconfirming). Clamped up to
+    # ``dormant_after_seconds`` if misconfigured below it.
+    invalidate_after_seconds: float = 3600.0
+    # Bounded terminal-campaign history kept for post-mortem / dashboard reads.
+    history_limit: int = 500
+    # ── Autonomous post-mortem ────────────────────────────────────────────
+    # On termination every campaign is graded on REASONING QUALITY, not profit
+    # alone: winning on thin evidence is a process failure, losing on strong
+    # persistent evidence still validates the process. Produces a verdict and a
+    # suggested confidence delta the learning layer can later consume.
+    postmortem_enabled: bool = True
+    # Evidence-support threshold (0..1) separating a well-reasoned campaign from
+    # a thinly-supported one when classifying the win/loss × reasoning verdict.
+    sound_evidence_threshold: float = 0.5
+    # Refresh count at which a campaign's evidence persistence is considered
+    # "fully earned" (saturates the persistence half of the support score).
+    evidence_full_refreshes: int = 5
+
+    def __post_init__(self) -> None:
+        if float(self.dormant_after_seconds) <= 0:
+            raise ValueError(
+                "CampaignConfig.dormant_after_seconds must be > 0, got "
+                f"{self.dormant_after_seconds!r}"
+            )
+        if float(self.invalidate_after_seconds) <= 0:
+            raise ValueError(
+                "CampaignConfig.invalidate_after_seconds must be > 0, got "
+                f"{self.invalidate_after_seconds!r}"
+            )
+        if int(self.history_limit) <= 0:
+            raise ValueError(
+                "CampaignConfig.history_limit must be > 0, got "
+                f"{self.history_limit!r}"
+            )
+        if not (0.0 <= float(self.sound_evidence_threshold) <= 1.0):
+            raise ValueError(
+                "CampaignConfig.sound_evidence_threshold must be in [0, 1], got "
+                f"{self.sound_evidence_threshold!r}"
+            )
+        if int(self.evidence_full_refreshes) < 1:
+            raise ValueError(
+                "CampaignConfig.evidence_full_refreshes must be >= 1, got "
+                f"{self.evidence_full_refreshes!r}"
+            )
+
+
+def _llm_env_bool(name: str, default: bool) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return bool(default)
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+@dataclass
+class LLMConfig:
+    """LLM reasoning subsystem — provider-agnostic, configured from the env.
+
+    No provider is hardcoded. Set these environment variables and the subsystem
+    uses them, self-hosted or commercial API alike:
+
+      LLM_PROVIDER   openai | anthropic | gemini | ollama | <any custom name>
+      LLM_MODEL      model id, e.g. gpt-4o-mini, claude-3-5-sonnet, llama3.1
+      LLM_API_KEY    API key (blank for a keyless self-hosted endpoint)
+      LLM_BASE_URL   endpoint override — required for self-hosted / custom vendors
+                     (an unknown provider WITH a base_url is treated as an
+                     OpenAI-compatible endpoint)
+      LLM_ENABLED    force on/off; defaults ON when a provider is set and a key
+                     or a base_url is present
+      LLM_DRIVE_DECISIONS  when true the opinion is fed into the vote panel;
+                     default false (record observationally only)
+      LLM_TIMEOUT_SECONDS / LLM_MAX_TOKENS / LLM_TEMPERATURE /
+      LLM_MIN_INTERVAL_SECONDS   optional numeric overrides
+
+    The key is read from the env into ``api_key`` and is NEVER logged. The
+    subsystem is fail-safe — an absent or mis-set provider is a silent no-op.
+    """
+
+    enabled: bool = False
+    provider: str = ""
+    model: str = ""
+    api_key: str = ""          # resolved from env; never logged
+    base_url: str = ""
+    drive_decisions: bool = False
+    timeout_seconds: float = 20.0
+    max_tokens: int = 512
+    temperature: float = 0.2
+    min_interval_seconds: float = 30.0
+    worker_interval_seconds: float = 60.0
+    max_symbols_per_cycle: int = 8
+    # Part XVI Art 9 — Model Manager. The Brain never depends on one model:
+    # ``extra_models`` lists additional candidate models the manager may select
+    # (each a dict: provider/model, optional api_key/base_url/priority/cost —
+    # omitted key/base_url inherit the primary, the "one gateway, many models"
+    # case). ``model_policy`` is "priority" (operator order) or "performance"
+    # (observed success-rate/latency). Env: LLM_EXTRA_MODELS (JSON array),
+    # LLM_MODEL_POLICY.
+    extra_models: list = field(default_factory=list)
+    model_policy: str = "priority"
+    # Part XVII — multi-model consultative reasoning. When ``consult_multi`` is
+    # on, the Reasoning Orchestrator consults up to ``consult_max_engines``
+    # engines (the primary + extra_models) and injects each opinion as advisory
+    # Evidence (never a vote). Default OFF (shadow). Env: LLM_CONSULT_MULTI,
+    # LLM_CONSULT_MAX_ENGINES.
+    consult_multi: bool = False
+    consult_max_engines: int = 3
+
+    def __post_init__(self) -> None:
+        # The environment is the single source of truth — no vendor is baked in.
+        self.provider = (os.getenv("LLM_PROVIDER", self.provider) or "").strip()
+        self.model = (os.getenv("LLM_MODEL", self.model) or "").strip()
+        self.base_url = (os.getenv("LLM_BASE_URL", self.base_url) or "").strip()
+        key = os.getenv("LLM_API_KEY")
+        if key is not None:
+            self.api_key = key.strip()
+        for env_name, attr, cast in (
+            ("LLM_TIMEOUT_SECONDS", "timeout_seconds", float),
+            ("LLM_MAX_TOKENS", "max_tokens", int),
+            ("LLM_TEMPERATURE", "temperature", float),
+            ("LLM_MIN_INTERVAL_SECONDS", "min_interval_seconds", float),
+            ("LLM_WORKER_INTERVAL_SECONDS", "worker_interval_seconds", float),
+            ("LLM_MAX_SYMBOLS_PER_CYCLE", "max_symbols_per_cycle", int),
+        ):
+            raw = os.getenv(env_name)
+            if raw is not None:
+                try:
+                    setattr(self, attr, cast(raw))
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "[config] bad {} value '{}' — keeping default",
+                        env_name, raw,
+                    )
+        self.drive_decisions = _llm_env_bool("LLM_DRIVE_DECISIONS", self.drive_decisions)
+        # Enable rule: explicit LLM_ENABLED wins; otherwise auto-on when a
+        # provider is configured with either a key or a base_url to reach it.
+        has_creds = bool(self.api_key) or bool(self.base_url)
+        default_enabled = bool(self.provider) and has_creds
+        self.enabled = _llm_env_bool("LLM_ENABLED", default_enabled)
+
+        if float(self.timeout_seconds) <= 0:
+            raise ValueError(
+                f"LLMConfig.timeout_seconds must be > 0, got {self.timeout_seconds!r}"
+            )
+        if int(self.max_tokens) < 1:
+            raise ValueError(
+                f"LLMConfig.max_tokens must be >= 1, got {self.max_tokens!r}"
+            )
+        if not (0.0 <= float(self.temperature) <= 2.0):
+            raise ValueError(
+                f"LLMConfig.temperature must be in [0, 2], got {self.temperature!r}"
+            )
+        if float(self.min_interval_seconds) < 0:
+            raise ValueError(
+                "LLMConfig.min_interval_seconds must be >= 0, got "
+                f"{self.min_interval_seconds!r}"
+            )
+        if float(self.worker_interval_seconds) < 1:
+            raise ValueError(
+                "LLMConfig.worker_interval_seconds must be >= 1, got "
+                f"{self.worker_interval_seconds!r}"
+            )
+        if int(self.max_symbols_per_cycle) < 1:
+            raise ValueError(
+                "LLMConfig.max_symbols_per_cycle must be >= 1, got "
+                f"{self.max_symbols_per_cycle!r}"
+            )
+        # Part XVI Art 9 — Model Manager candidates + policy.
+        self.model_policy = (
+            os.getenv("LLM_MODEL_POLICY", self.model_policy) or "priority"
+        ).strip().lower()
+        if self.model_policy not in ("priority", "performance"):
+            raise ValueError(
+                "LLMConfig.model_policy must be priority|performance, got "
+                f"{self.model_policy!r}"
+            )
+        raw_models = os.getenv("LLM_EXTRA_MODELS")
+        if raw_models is not None:
+            try:
+                import json as _json
+                parsed = _json.loads(raw_models)
+                self.extra_models = [m for m in parsed if isinstance(m, dict)] \
+                    if isinstance(parsed, list) else []
+            except (TypeError, ValueError):
+                logger.warning("[config] bad LLM_EXTRA_MODELS JSON — ignoring")
+                self.extra_models = []
+        if not isinstance(self.extra_models, list):
+            self.extra_models = []
+        self.consult_multi = _llm_env_bool("LLM_CONSULT_MULTI", self.consult_multi)
+        raw_max = os.getenv("LLM_CONSULT_MAX_ENGINES")
+        if raw_max is not None:
+            try:
+                self.consult_max_engines = int(raw_max)
+            except (TypeError, ValueError):
+                logger.warning("[config] bad LLM_CONSULT_MAX_ENGINES '{}' — keeping default", raw_max)
+        if int(self.consult_max_engines) < 1:
+            raise ValueError(
+                f"LLMConfig.consult_max_engines must be >= 1, got {self.consult_max_engines!r}"
+            )
+
+
+@dataclass
+class ComposioConfig:
+    """Autonomous Action Layer (Composio) — env-driven, default OFF + dry-run.
+
+    Configured entirely from the environment (no hardcoded secret):
+
+      COMPOSIO_API_KEY    your Composio key (blank ⇒ layer stays mock/off)
+      COMPOSIO_BASE_URL   API base (default https://backend.composio.dev)
+      COMPOSIO_ENTITY_ID  entity/user the actions run as (default "default")
+      COMPOSIO_ENABLED    force on/off (defaults ON when a key is present)
+      COMPOSIO_DRY_RUN    when true (default) actions run through a MOCK adapter —
+                          NO real external calls — even while enabled; set false
+                          to actually execute
+      COMPOSIO_AUTO_MAX_RISK  highest risk tier auto-authorised (default "low";
+                          capped at "medium" — high/destructive always need
+                          explicit approval)
+      COMPOSIO_MIN_CONFIDENCE / COMPOSIO_MEDIUM_CONFIDENCE_THRESHOLD / COMPOSIO_TIMEOUT_SECONDS
+
+    The key is read from the env into ``api_key`` and is NEVER logged. The layer
+    is fail-safe: an absent/mis-set config is a silent no-op, and even fully
+    enabled it does nothing real until ``dry_run`` is turned off.
+    """
+
+    enabled: bool = False
+    api_key: str = ""                 # resolved from env; never logged
+    base_url: str = "https://backend.composio.dev"
+    entity_id: str = "default"
+    api_version: str = "v3"           # Composio REST API version (v3 current)
+    dry_run: bool = True
+    require_source: bool = True
+    auto_max_risk: str = "low"
+    min_confidence: float = 0.2
+    medium_confidence_threshold: float = 0.7
+    timeout_seconds: float = 20.0
+    # Part IX Article 11 — Action Planner provider selection. ``available_providers``
+    # is a CSV allow-list of providers the planner may choose (blank ⇒ any
+    # candidate); ``provider_preferences`` is CSV "capability=provider" hints.
+    available_providers: str = ""
+    provider_preferences: str = ""
+    # Part IX v3.0 — the READ half (Operational Intelligence Layer). When
+    # ``knowledge_enabled`` the cognition consolidator pulls external market
+    # context / research (and, when ``advisor_enabled``, AI advisors) through
+    # Composio as advisory Evidence. Periodic per symbol (cost-aware); default
+    # OFF so it changes nothing until explicitly turned on.
+    knowledge_enabled: bool = False
+    knowledge_interval_seconds: float = 300.0
+    knowledge_max_items: int = 5
+    advisor_enabled: bool = False
+
+    def __post_init__(self) -> None:
+        self.api_key = (os.getenv("COMPOSIO_API_KEY", self.api_key) or "").strip()
+        base = (os.getenv("COMPOSIO_BASE_URL", self.base_url) or "").strip()
+        self.base_url = base or "https://backend.composio.dev"
+        entity = (os.getenv("COMPOSIO_ENTITY_ID", self.entity_id) or "").strip()
+        self.entity_id = entity or "default"
+        self.api_version = (
+            os.getenv("COMPOSIO_API_VERSION", self.api_version) or "v3"
+        ).strip().lower() or "v3"
+        self.auto_max_risk = (
+            os.getenv("COMPOSIO_AUTO_MAX_RISK", self.auto_max_risk) or "low"
+        ).strip().lower()
+        for env_name, attr, cast in (
+            ("COMPOSIO_MIN_CONFIDENCE", "min_confidence", float),
+            ("COMPOSIO_MEDIUM_CONFIDENCE_THRESHOLD", "medium_confidence_threshold", float),
+            ("COMPOSIO_TIMEOUT_SECONDS", "timeout_seconds", float),
+            ("COMPOSIO_KNOWLEDGE_INTERVAL_SECONDS", "knowledge_interval_seconds", float),
+            ("COMPOSIO_KNOWLEDGE_MAX_ITEMS", "knowledge_max_items", int),
+        ):
+            raw = os.getenv(env_name)
+            if raw is not None:
+                try:
+                    setattr(self, attr, cast(raw))
+                except (TypeError, ValueError):
+                    logger.warning(
+                        "[config] bad {} value '{}' — keeping default", env_name, raw
+                    )
+        self.dry_run = _llm_env_bool("COMPOSIO_DRY_RUN", self.dry_run)
+        self.require_source = _llm_env_bool("COMPOSIO_REQUIRE_SOURCE", self.require_source)
+        self.knowledge_enabled = _llm_env_bool(
+            "COMPOSIO_KNOWLEDGE_ENABLED", self.knowledge_enabled
+        )
+        self.advisor_enabled = _llm_env_bool(
+            "COMPOSIO_ADVISOR_ENABLED", self.advisor_enabled
+        )
+        # Auto-on when a key is present; explicit COMPOSIO_ENABLED overrides.
+        self.enabled = _llm_env_bool("COMPOSIO_ENABLED", bool(self.api_key))
+        self.available_providers = (
+            os.getenv("COMPOSIO_AVAILABLE_PROVIDERS", self.available_providers) or ""
+        ).strip()
+        self.provider_preferences = (
+            os.getenv("COMPOSIO_PROVIDER_PREFERENCES", self.provider_preferences) or ""
+        ).strip()
+
+        if self.auto_max_risk not in (
+            "negligible", "low", "medium", "high", "destructive"
+        ):
+            raise ValueError(
+                "ComposioConfig.auto_max_risk must be one of negligible/low/"
+                f"medium/high/destructive, got {self.auto_max_risk!r}"
+            )
+        if not (0.0 <= float(self.min_confidence) <= 1.0):
+            raise ValueError(
+                f"ComposioConfig.min_confidence must be in [0, 1], got {self.min_confidence!r}"
+            )
+        if not (0.0 <= float(self.medium_confidence_threshold) <= 1.0):
+            raise ValueError(
+                "ComposioConfig.medium_confidence_threshold must be in [0, 1], got "
+                f"{self.medium_confidence_threshold!r}"
+            )
+        if float(self.timeout_seconds) <= 0:
+            raise ValueError(
+                f"ComposioConfig.timeout_seconds must be > 0, got {self.timeout_seconds!r}"
+            )
+
+    def available_providers_list(self) -> list:
+        """Parse ``available_providers`` CSV into a list (blank ⇒ empty)."""
+        return [p.strip().lower() for p in str(self.available_providers or "").split(",") if p.strip()]
+
+    def provider_preferences_map(self) -> dict:
+        """Parse ``provider_preferences`` CSV ("cap=provider,…") into a dict."""
+        out: dict = {}
+        for pair in str(self.provider_preferences or "").split(","):
+            if "=" in pair:
+                k, v = pair.split("=", 1)
+                k, v = k.strip(), v.strip().lower()
+                if k and v:
+                    out[k] = v
+        return out
+
+
+@dataclass
+class CognitionConfig:
+    """The AI Cognitive Brain loop (Single Reasoner) — Constitution Parts I/II/IV.
+
+    Runs the one Brain over consolidated Evidence on a background loop and
+    records its DecisionPackages. ``shadow_mode`` (default True) keeps the Brain
+    observational — it produces and surfaces decisions without driving execution
+    — so the legacy path stays authoritative until the cutover is validated
+    (Parts XIII/XV: shadow → paper → controlled rollout). Env overrides:
+    COGNITION_ENABLED, COGNITION_SHADOW_MODE, COGNITION_LOOP_INTERVAL_SECONDS,
+    COGNITION_ORIGINATION_MODE (off|shadow|live; default shadow),
+    COGNITION_MEMORY_ENABLED (default true),
+    COGNITION_OPERATIONS_ENABLED (default false),
+    COGNITION_INFLUENCE_ENABLED (default false — shadow learning).
+    """
+
+    enabled: bool = True
+    shadow_mode: bool = False
+    gate_mode: str = "authoritative"   # off | shadow | veto | authoritative (Brain = sole decider)
+    # Single Reasoner cutover (Constitution I.4 / III.2): when True the legacy
+    # market-decision authority (consensus/zone-thesis entry emitters) is SEVERED
+    # at runtime — the AI Cognitive Brain, via its origination path, is the sole
+    # authority that may open trades. Deterministic safety/feasibility mechanics
+    # (Part X) and position-closing/de-risking are unaffected. env COGNITION_SINGLE_PATH.
+    single_path: bool = True
+    max_decision_age_seconds: float = 300.0
+    per_module_evidence: bool = True   # Phase E: emit one Evidence per contributing module/domain
+    min_confidence_to_act: float = 0.55
+    max_uncertainty_to_act: float = 0.6
+    loop_interval_seconds: float = 30.0
+    max_symbols_per_cycle: int = 12
+    emit_operator_notifications: bool = True
+    # Event-driven "breathing" (Part XII): when enabled, a meaningful shift in a
+    # symbol's forming-bar read wakes the Brain to reason on THAT symbol at once,
+    # instead of waiting for the next fixed interval. The periodic cycle stays a
+    # backstop. A per-symbol floor bounds LLM cost; a confidence delta filters
+    # noise. env COGNITION_EVENT_DRIVEN / _EVENT_MIN_INTERVAL_SECONDS / _EVENT_CONFIDENCE_DELTA.
+    event_driven: bool = False
+    event_min_interval_seconds: float = 8.0
+    event_confidence_delta: float = 0.15
+    # Phase F — Brain-driven management thresholds.
+    allow_scale_in: bool = False
+    manage_reverse_confidence: float = 0.7
+    manage_exit_floor: float = 0.3
+    # Phase G — Brain-originated entries from its CampaignSpecification.
+    # "off"    — never originate (management/observation only).
+    # "shadow" — record intended orders, submit nothing (default; safe).
+    # "live"   — submit originated entries via the wired executor sink.
+    origination_mode: str = "shadow"
+    origination_risk_fraction: float = 0.01   # fraction of balance risked per originated entry
+    origination_max_exposure: float = 1.0     # cap on the campaign's desired exposure (0..1)
+    # Part X — when the Brain originates an entry without an explicit protective
+    # stop, execution derives one deterministically: a stop ``origination_stop_fraction``
+    # of price away (0.4% default, instrument-agnostic) with a take-profit at the
+    # nearest structural level >= ``origination_min_rr`` × risk ahead, else
+    # ``origination_reward_multiple`` × risk. Guarantees every entry is protected.
+    origination_stop_fraction: float = 0.004
+    origination_reward_multiple: float = 2.0
+    origination_min_rr: float = 1.0
+    # Phase H — persistent institutional memory (Part VII). When enabled, the
+    # loop snapshots the market state at campaign open and the registry persists
+    # terminal outcomes, so the Brain can consult analogous history when
+    # reasoning. Observational — memory never drives execution.
+    memory_enabled: bool = True
+    memory_max_analogues: int = 5             # analogues surfaced to the Brain per symbol
+    # Phase I — operational intelligence (Part IX Article 9). When enabled, the
+    # loop authors operational objectives (issue on recurring loss, notify on a
+    # validated win, periodic report) and submits them through the Action Planner
+    # → governed Composio. Default OFF; ecosystem-only, never broker orders.
+    operations_enabled: bool = False
+    operations_report_period_seconds: float = 86_400.0
+    operations_loss_streak: int = 3
+    operations_cooldown_seconds: float = 3_600.0
+    # Phase J — adaptive influence over evidence sources + Brain calibration
+    # (Part VIII). The influence ledger always learns from realised outcomes;
+    # ``influence_enabled`` (default False = shadow) controls whether the learned
+    # weights are APPLIED to live consolidation. Weights move only past
+    # ``influence_min_samples`` (statistical-significance floor) and stay bounded.
+    influence_enabled: bool = False
+    influence_min_samples: int = 20
+    influence_min_weight: float = 0.5
+    influence_max_weight: float = 1.5
+
+    def __post_init__(self) -> None:
+        self.enabled = _llm_env_bool("COGNITION_ENABLED", self.enabled)
+        self.shadow_mode = _llm_env_bool("COGNITION_SHADOW_MODE", self.shadow_mode)
+        self.gate_mode = (
+            os.getenv("COGNITION_GATE_MODE", self.gate_mode) or "authoritative"
+        ).strip().lower()
+        self.single_path = _llm_env_bool("COGNITION_SINGLE_PATH", self.single_path)
+        self.emit_operator_notifications = _llm_env_bool(
+            "COGNITION_EMIT_OPERATOR_NOTIFICATIONS", self.emit_operator_notifications
+        )
+        self.per_module_evidence = _llm_env_bool(
+            "COGNITION_PER_MODULE_EVIDENCE", self.per_module_evidence
+        )
+        self.allow_scale_in = _llm_env_bool("COGNITION_ALLOW_SCALE_IN", self.allow_scale_in)
+        self.memory_enabled = _llm_env_bool("COGNITION_MEMORY_ENABLED", self.memory_enabled)
+        self.operations_enabled = _llm_env_bool(
+            "COGNITION_OPERATIONS_ENABLED", self.operations_enabled
+        )
+        self.influence_enabled = _llm_env_bool(
+            "COGNITION_INFLUENCE_ENABLED", self.influence_enabled
+        )
+        self.origination_mode = (
+            os.getenv("COGNITION_ORIGINATION_MODE", self.origination_mode) or "shadow"
+        ).strip().lower()
+        self.event_driven = _llm_env_bool("COGNITION_EVENT_DRIVEN", self.event_driven)
+        for env_name, attr in (
+            ("COGNITION_LOOP_INTERVAL_SECONDS", "loop_interval_seconds"),
+            ("COGNITION_MAX_DECISION_AGE_SECONDS", "max_decision_age_seconds"),
+            ("COGNITION_ORIGINATION_RISK_FRACTION", "origination_risk_fraction"),
+            ("COGNITION_ORIGINATION_MAX_EXPOSURE", "origination_max_exposure"),
+            ("COGNITION_EVENT_MIN_INTERVAL_SECONDS", "event_min_interval_seconds"),
+            ("COGNITION_EVENT_CONFIDENCE_DELTA", "event_confidence_delta"),
+            ("COGNITION_ORIGINATION_STOP_FRACTION", "origination_stop_fraction"),
+            ("COGNITION_ORIGINATION_REWARD_MULTIPLE", "origination_reward_multiple"),
+            ("COGNITION_ORIGINATION_MIN_RR", "origination_min_rr"),
+        ):
+            raw = os.getenv(env_name)
+            if raw is not None:
+                try:
+                    setattr(self, attr, float(raw))
+                except (TypeError, ValueError):
+                    logger.warning("[config] bad {} '{}' — keeping default", env_name, raw)
+        if self.gate_mode not in ("off", "shadow", "veto", "authoritative"):
+            raise ValueError(
+                "CognitionConfig.gate_mode must be off|shadow|veto|authoritative, got "
+                f"{self.gate_mode!r}"
+            )
+        if float(self.max_decision_age_seconds) < 0:
+            raise ValueError(
+                f"CognitionConfig.max_decision_age_seconds must be >= 0, got {self.max_decision_age_seconds!r}"
+            )
+        for name in ("manage_reverse_confidence", "manage_exit_floor"):
+            v = getattr(self, name)
+            if not (0.0 <= float(v) <= 1.0):
+                raise ValueError(f"CognitionConfig.{name} must be in [0, 1], got {v!r}")
+        if not (0.0 <= float(self.min_confidence_to_act) <= 1.0):
+            raise ValueError(
+                f"CognitionConfig.min_confidence_to_act must be in [0, 1], got {self.min_confidence_to_act!r}"
+            )
+        if not (0.0 <= float(self.max_uncertainty_to_act) <= 1.0):
+            raise ValueError(
+                f"CognitionConfig.max_uncertainty_to_act must be in [0, 1], got {self.max_uncertainty_to_act!r}"
+            )
+        if float(self.loop_interval_seconds) < 1.0:
+            raise ValueError(
+                f"CognitionConfig.loop_interval_seconds must be >= 1, got {self.loop_interval_seconds!r}"
+            )
+        if int(self.max_symbols_per_cycle) < 1:
+            raise ValueError(
+                f"CognitionConfig.max_symbols_per_cycle must be >= 1, got {self.max_symbols_per_cycle!r}"
+            )
+        if self.origination_mode not in ("off", "shadow", "live"):
+            raise ValueError(
+                "CognitionConfig.origination_mode must be off|shadow|live, got "
+                f"{self.origination_mode!r}"
+            )
+        if not (0.0 <= float(self.origination_risk_fraction) <= 1.0):
+            raise ValueError(
+                f"CognitionConfig.origination_risk_fraction must be in [0, 1], got {self.origination_risk_fraction!r}"
+            )
+        if not (0.0 <= float(self.origination_max_exposure) <= 1.0):
+            raise ValueError(
+                f"CognitionConfig.origination_max_exposure must be in [0, 1], got {self.origination_max_exposure!r}"
+            )
+        if int(self.memory_max_analogues) < 1:
+            raise ValueError(
+                f"CognitionConfig.memory_max_analogues must be >= 1, got {self.memory_max_analogues!r}"
+            )
+        if int(self.operations_loss_streak) < 1:
+            raise ValueError(
+                f"CognitionConfig.operations_loss_streak must be >= 1, got {self.operations_loss_streak!r}"
+            )
+        if int(self.influence_min_samples) < 1:
+            raise ValueError(
+                f"CognitionConfig.influence_min_samples must be >= 1, got {self.influence_min_samples!r}"
+            )
+        if not (0.0 <= float(self.influence_min_weight) <= 1.0):
+            raise ValueError(
+                f"CognitionConfig.influence_min_weight must be in [0, 1], got {self.influence_min_weight!r}"
+            )
+        if float(self.influence_max_weight) < 1.0:
+            raise ValueError(
+                f"CognitionConfig.influence_max_weight must be >= 1, got {self.influence_max_weight!r}"
+            )
+
+
+@dataclass
 class AdaptiveTunerConfig:
     """Phase 6 — closes the continuous-learning loop end to end.
 
@@ -3796,6 +4353,10 @@ class AppConfig:
         default_factory=DevelopingAnalysisConfig
     )
     thesis: ThesisConfig = field(default_factory=ThesisConfig)
+    campaign: CampaignConfig = field(default_factory=CampaignConfig)
+    llm: LLMConfig = field(default_factory=LLMConfig)
+    composio: ComposioConfig = field(default_factory=ComposioConfig)
+    cognition: CognitionConfig = field(default_factory=CognitionConfig)
     conviction_normalization: ConvictionNormalizationConfig = field(
         default_factory=ConvictionNormalizationConfig
     )
