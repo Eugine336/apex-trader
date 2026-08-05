@@ -387,6 +387,9 @@ class SystemContext:
                     micro_account_threshold_usd=risk_cfg.micro_account_threshold_usd,
                     deriv_min_stake_usd=risk_cfg.deriv_min_stake_usd,
                     max_risk_pct_per_trade=risk_cfg.max_risk_pct_per_trade,
+                    allow_min_lot_over_risk=getattr(
+                        risk_cfg, "allow_min_lot_over_risk", False
+                    ),
                 )
             ctx.portfolio = PortfolioDivision(
                 position_sizer=sizer,
