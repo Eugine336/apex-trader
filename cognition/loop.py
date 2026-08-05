@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time as _time
 from typing import Any, Callable, Optional
 
 from cognition.campaign_translator import translate as _translate
@@ -253,6 +254,10 @@ class CognitionLoop:
         memory: Optional[Any] = None,
         operations_author: Optional[Any] = None,
         operations_sink: Optional[Callable[[Any], None]] = None,
+        event_driven: bool = False,
+        event_min_interval_seconds: float = 8.0,
+        event_confidence_delta: float = 0.15,
+        clock: Optional[Callable[[], float]] = None,
         name: str = "cognition-loop",
     ) -> None:
         self._brain = brain
@@ -276,6 +281,18 @@ class CognitionLoop:
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
+        # Event-driven "breathing" (Part XII): wake the Brain the instant the
+        # market meaningfully shifts, instead of only on the fixed interval. The
+        # periodic cycle remains a backstop. Off by default (pure interval).
+        self.event_driven = bool(event_driven)
+        self.event_min_interval_seconds = max(0.0, float(event_min_interval_seconds))
+        self.event_confidence_delta = max(0.0, float(event_confidence_delta))
+        self._clock = clock or _time.monotonic
+        self._wake = threading.Event()
+        self._pending: set = set()
+        self._pending_lock = threading.Lock()
+        self._event_last_bias: dict = {}
+        self._event_last_reason_at: dict = {}
         self._cycles = 0
         self._decisions = 0
         self._managed = 0
@@ -283,6 +300,8 @@ class CognitionLoop:
         self._orig_submitted = 0
         self._memory_opens = 0
         self._ops_submitted = 0
+        self._event_reasons = 0
+        self._event_throttled = 0
         self._open_keys: set = set()
 
     def set_origination_sink(self, sink: Optional[Callable[[Any], None]]) -> None:
@@ -326,39 +345,116 @@ class CognitionLoop:
         self._open_keys = self._current_open_keys()
         made = 0
         for symbol in symbols[: self.max_symbols_per_cycle]:
-            try:
-                ms = self._consolidator.build(symbol, now=now)
-                output = self._brain.reason(ms, now=now)
-                made += 1
-                # Visibility (Part XII): surface the one reasoner's decision each
-                # cycle at INFO so the Brain's live reasoning is observable in the
-                # logs — not just when it originates a trade.
-                try:
-                    _dec = output.decision
-                    _dtype = getattr(getattr(_dec, "decision_type", None), "value", None) \
-                        or str(getattr(_dec, "decision_type", "?"))
-                    logger.info(
-                        "[cognition] %s -> %s (dir=%s conf=%.2f) reasoner=%s",
-                        symbol, _dtype, getattr(output, "direction", "?"),
-                        float(getattr(_dec, "confidence", 0.0) or 0.0),
-                        "live" if getattr(self._brain, "available", False) else "unavailable",
-                    )
-                except Exception:  # noqa: BLE001 — logging must never break the cycle
-                    pass
-                if self._action_bridge is not None:
-                    self._action_bridge.on_decision(output)
-                if self._memory is not None:
-                    self._record_open_memory(output, ms, now=now)
-                if self.origination_mode != "off":
-                    self._maybe_originate(output, now=now)
-            except Exception as exc:  # noqa: BLE001 — one symbol must not stop the loop
-                logger.debug("[cognition-loop] reason(%s) fault: %s", symbol, exc)
-                continue
+            made += self._reason_over_symbol(symbol, now=now)
         self._cycles += 1
         self._decisions += made
         self._manage_open_positions(now=now)
         self._maybe_author_operations(now=now)
         return made
+
+    def _reason_over_symbol(self, symbol: str, *, now: Optional[float] = None) -> int:
+        """Consolidate + reason over one symbol. Returns 1 on a decision, else 0.
+
+        The shared per-symbol body used by both the periodic cycle and the
+        event-driven path. Fail-safe: one symbol's fault never propagates.
+        """
+        try:
+            ms = self._consolidator.build(symbol, now=now)
+            output = self._brain.reason(ms, now=now)
+            # Visibility (Part XII): surface the one reasoner's decision at INFO
+            # so the Brain's live reasoning is observable in the logs — not just
+            # when it originates a trade.
+            try:
+                _dec = output.decision
+                _dtype = getattr(getattr(_dec, "decision_type", None), "value", None) \
+                    or str(getattr(_dec, "decision_type", "?"))
+                logger.info(
+                    "[cognition] %s -> %s (dir=%s conf=%.2f) reasoner=%s",
+                    symbol, _dtype, getattr(output, "direction", "?"),
+                    float(getattr(_dec, "confidence", 0.0) or 0.0),
+                    "live" if getattr(self._brain, "available", False) else "unavailable",
+                )
+            except Exception:  # noqa: BLE001 — logging must never break the cycle
+                pass
+            if self._action_bridge is not None:
+                self._action_bridge.on_decision(output)
+            if self._memory is not None:
+                self._record_open_memory(output, ms, now=now)
+            if self.origination_mode != "off":
+                self._maybe_originate(output, now=now)
+            return 1
+        except Exception as exc:  # noqa: BLE001 — one symbol must not stop the loop
+            logger.debug("[cognition-loop] reason(%s) fault: %s", symbol, exc)
+            return 0
+
+    def reason_symbol_now(self, symbol: str, *, now: Optional[float] = None) -> int:
+        """Reason over a single symbol immediately (event-driven wake).
+
+        Refreshes the open-book view first so origination suppression is correct,
+        then reasons over the one symbol. Runs on the loop thread (never the
+        caller's), keeping any LLM latency off the market-data path. Fail-safe.
+        """
+        try:
+            self._open_keys = self._current_open_keys()
+        except Exception:  # noqa: BLE001
+            pass
+        made = self._reason_over_symbol(symbol, now=now)
+        self._decisions += made
+        self._event_reasons += made
+        return made
+
+    def maybe_reason_on_change(
+        self, symbol: str, direction: Any, confidence: Any, *, now: Optional[float] = None,
+    ) -> bool:
+        """Queue an immediate Brain reason when a symbol's read meaningfully shifts.
+
+        Triggers on a direction flip or a confidence move ≥
+        ``event_confidence_delta`` versus the last seen read, subject to a
+        per-symbol floor (``event_min_interval_seconds``) so a fast-updating feed
+        cannot spam the reasoner. The actual reasoning runs on the loop thread
+        (this only enqueues + wakes it), so the caller's thread never blocks on an
+        LLM call. No-op unless ``event_driven``. Fail-safe. Returns True when a
+        reason was queued.
+        """
+        if not self.event_driven:
+            return False
+        try:
+            sym = str(symbol or "")
+            if not sym:
+                return False
+            d = str(direction or "").upper()
+            try:
+                c = float(confidence)
+            except (TypeError, ValueError):
+                c = 0.0
+            prev = self._event_last_bias.get(sym)
+            self._event_last_bias[sym] = (d, c)
+            if prev is None:
+                triggered = d in ("LONG", "SHORT")
+            else:
+                pd, pc = prev
+                triggered = (d != pd) or (abs(c - pc) >= self.event_confidence_delta)
+            if not triggered:
+                return False
+            t = self._clock() if now is None else float(now)
+            last = self._event_last_reason_at.get(sym, 0.0)
+            if self.event_min_interval_seconds > 0.0 and (t - last) < self.event_min_interval_seconds:
+                self._event_throttled += 1
+                return False
+            self._event_last_reason_at[sym] = t
+            with self._pending_lock:
+                self._pending.add(sym)
+            self._wake.set()
+            return True
+        except Exception as exc:  # noqa: BLE001 — a trigger must never break the caller
+            logger.debug("[cognition-loop] maybe_reason_on_change(%s) fault: %s", symbol, exc)
+            return False
+
+    def _drain_pending(self) -> list:
+        with self._pending_lock:
+            pend = list(self._pending)[: self.max_symbols_per_cycle]
+            self._pending.clear()
+        return pend
 
     def _maybe_author_operations(self, *, now: Optional[float] = None) -> None:
         """Drain the operations author and submit objectives via the sink. Fail-safe.
@@ -530,27 +626,53 @@ class CognitionLoop:
         return managed
 
     def _loop(self) -> None:
-        while not self._stop.wait(self.interval_seconds):
-            try:
-                self.run_once()
-            except Exception as exc:  # noqa: BLE001 — the loop must never die
-                logger.debug("[cognition-loop] cycle fault: %s", exc)
+        # Pure-interval loop when event-driven is off — behaviourally unchanged.
+        if not self.event_driven:
+            while not self._stop.wait(self.interval_seconds):
+                try:
+                    self.run_once()
+                except Exception as exc:  # noqa: BLE001 — the loop must never die
+                    logger.debug("[cognition-loop] cycle fault: %s", exc)
+            return
+        # Event-driven loop: wake early on a nudge to reason the changed symbols,
+        # and still run the full periodic cycle as a backstop every interval.
+        poll = min(self.interval_seconds, 5.0)
+        last_cycle = self._clock()
+        while not self._stop.is_set():
+            self._wake.wait(timeout=poll)
+            if self._stop.is_set():
+                break
+            self._wake.clear()
+            for sym in self._drain_pending():
+                try:
+                    self.reason_symbol_now(sym)
+                except Exception as exc:  # noqa: BLE001 — the loop must never die
+                    logger.debug("[cognition-loop] event reason(%s) fault: %s", sym, exc)
+            nowm = self._clock()
+            if (nowm - last_cycle) >= self.interval_seconds:
+                try:
+                    self.run_once()
+                except Exception as exc:  # noqa: BLE001 — the loop must never die
+                    logger.debug("[cognition-loop] cycle fault: %s", exc)
+                last_cycle = nowm
 
     def start(self) -> None:
         if self._running:
             return
         self._running = True
         self._stop.clear()
+        self._wake.clear()
         self._thread = threading.Thread(target=self._loop, daemon=True, name=self._name)
         self._thread.start()
         logger.info(
-            "[cognition-loop] started (interval=%.0fs, shadow=%s)",
-            self.interval_seconds, self.shadow_mode,
+            "[cognition-loop] started (interval=%.0fs, shadow=%s, event_driven=%s)",
+            self.interval_seconds, self.shadow_mode, self.event_driven,
         )
 
     def stop(self) -> None:
         self._running = False
         self._stop.set()
+        self._wake.set()
         if self._thread is not None:
             self._thread.join(timeout=2.0)
             self._thread = None
@@ -572,6 +694,9 @@ class CognitionLoop:
             "operations_enabled": (self._operations_author is not None
                                    and getattr(self._operations_author, "enabled", False)),
             "ops_submitted": self._ops_submitted,
+            "event_driven": self.event_driven,
+            "event_reasons": self._event_reasons,
+            "event_throttled": self._event_throttled,
         }
 
 
