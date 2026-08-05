@@ -614,3 +614,55 @@ def test_management_live_without_sink_degrades_to_shadow():
     loop.run_once()  # no sink wired
     st = loop.get_status()
     assert st["manage_intended"] == 1 and st["manage_submitted"] == 0
+
+
+# ── Part XVIII Art 13 — event-driven (not clock-gated) management ─────────────
+
+def test_event_reason_manages_symbol_immediately():
+    """A symbol re-reasoned on an event wake must manage its open campaign
+    right then — not wait for the periodic cycle (Part XVIII Art 13)."""
+    calls = []
+    loop = CognitionLoop(
+        _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: ["XAUUSD"],
+        interval_seconds=30.0, event_driven=True, event_min_interval_seconds=8.0,
+        position_source=lambda: [_mgmt_pos("XAUUSD")], management_mode="live",
+        clock=_ManualClock(),
+    )
+    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.reason_symbol_now("XAUUSD")
+    st = loop.get_status()
+    assert st["manage_submitted"] == 1
+    assert len(calls) == 1 and calls[0].kind == "close"
+
+
+def test_event_management_respects_per_symbol_floor():
+    """Back-to-back events within the floor must not re-manage the same
+    campaign; once the floor clears, management resumes."""
+    calls = []
+    clk = _ManualClock()
+    loop = CognitionLoop(
+        _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: ["XAUUSD"],
+        interval_seconds=30.0, event_driven=True, event_min_interval_seconds=8.0,
+        position_source=lambda: [_mgmt_pos("XAUUSD")], management_mode="live",
+        clock=clk,
+    )
+    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.reason_symbol_now("XAUUSD")
+    loop.reason_symbol_now("XAUUSD")  # within the 8s floor → throttled
+    assert len(calls) == 1
+    clk.t += 10.0                      # clear the floor
+    loop.reason_symbol_now("XAUUSD")
+    assert len(calls) == 2
+
+
+def test_periodic_backstop_manages_unreasoned_symbol():
+    """A campaign whose symbol is NOT in this cycle's reasoning slice is still
+    managed by the periodic backstop (Art 16 — every campaign, every cycle)."""
+    calls = []
+    loop = CognitionLoop(
+        _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: ["OTHER"],
+        position_source=lambda: [_mgmt_pos("XAUUSD")], management_mode="live",
+    )
+    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.run_once()
+    assert len(calls) == 1 and calls[0].kind == "close"
