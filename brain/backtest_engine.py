@@ -230,69 +230,16 @@ def _world_model_to_scan_view(wm) -> "_ScanView":
     )
 
 
-def _struct_trend_conf(struct_by_tf: dict, tf: str) -> tuple[str, float]:
-    """Read ``(trend, confidence)`` for a timeframe from a WorldModel's
-    ``structure_by_tf()`` mapping of ``StructureAnalysis`` objects.
-
-    Mirrors ``event_driven_bootstrap._struct_trend_conf`` so the backtest reads
-    the WorldModel structure layer exactly as the live plane does.
-    """
-    sa = struct_by_tf.get(tf)
-    if sa is None:
-        return "UNKNOWN", 0.0
-    trend = sa.trend.value if hasattr(sa.trend, "value") else str(sa.trend)
-    return trend, float(getattr(sa, "confidence", 0.0) or 0.0)
-
-
-def _struct_event(struct_by_tf: dict, tf: str) -> str:
-    """Read the last structural event (BOS/CHOCH) for a timeframe from a
-    WorldModel's ``structure_by_tf()`` mapping of ``StructureAnalysis``.
-
-    Mirrors ``event_driven_bootstrap._struct_event``.
-    """
-    sa = struct_by_tf.get(tf)
-    if sa is None:
-        return "NONE"
-    ev = getattr(sa, "last_event", None)
-    if ev is None:
-        return "NONE"
-    return ev.value if hasattr(ev, "value") else str(ev)
-
-
-def _struct_swings(struct_by_tf: dict, tf: str) -> tuple[Optional[float], Optional[float]]:
-    """Read ``(swing_high, swing_low)`` for a timeframe from a WorldModel's
-    ``structure_by_tf()`` mapping.
-
-    Mirrors ``event_driven_bootstrap._struct_swings`` so the backtest feeds the
-    DecisionEngine's structure-based protective stop the same swing levels the
-    live management plane does. Returns ``(None, None)`` when absent.
-    """
-    sa = struct_by_tf.get(tf)
-    if sa is None:
-        return None, None
-    return getattr(sa, "swing_high", None), getattr(sa, "swing_low", None)
-
-
-def _micro_confirmation_from_event(
-    m1_event: str, direction: str, m1_pattern: str = "",
-) -> tuple[str, str]:
-    """Derive ``(micro_confirmation, entry_mode)`` from M1 evidence.
-
-    Mirrors ``event_driven_bootstrap._micro_confirmation_from_event`` so the
-    backtest entry plane reaches the MARKET fast-path on the same M1 BOS/CHoCH
-    confirmation the live plane uses, and — when no event confirms — on the same
-    aligned M1 candle pattern (engulfing / pin bar). Returns ``("", "PENDING")``
-    otherwise.
-    """
-    ev = str(m1_event or "").upper()
-    is_long = direction.upper() in ("BUY", "LONG")
-    aligned = ("BULLISH" in ev) if is_long else ("BEARISH" in ev)
-    if ("BOS" in ev or "CHOCH" in ev) and aligned:
-        return "choch_bos", "MARKET"
-    pat = str(m1_pattern or "").strip().lower()
-    if pat in ("engulfing", "pin_bar"):
-        return pat, "MARKET"
-    return "", "PENDING"
+# Phase K (Part XI): these structure / M1 micro readers were byte-mirrored
+# copies of event_driven_bootstrap's. Both planes now share the single source
+# in brain.structure_context, so the backtest reads the WorldModel structure
+# layer exactly as the live plane does.
+from brain.structure_context import (  # noqa: E402
+    _micro_confirmation_from_event,
+    _struct_event,
+    _struct_swings,
+    _struct_trend_conf,
+)
 
 
 def _oq_eq_from_wm(wm, direction: str) -> tuple[Optional[float], Optional[float]]:
