@@ -203,6 +203,7 @@ class LLMReasoner:
             if not reply:
                 with self._lock:
                     self._faults += 1
+                logger.info("[llm] {} — no reply from model (fail-safe: no opinion)", sym)
                 return None
             opinion = self._parse(sym, reply)
             with self._lock:
@@ -213,6 +214,14 @@ class LLMReasoner:
                         self._recent = self._recent[-self._recent_limit:]
                 else:
                     self._faults += 1
+            if opinion is not None:
+                logger.info(
+                    "[llm] {} opinion dir={} conf={} — {}",
+                    sym,
+                    getattr(opinion, "direction", "?"),
+                    round(float(getattr(opinion, "confidence", 0.0) or 0.0), 3),
+                    str(getattr(opinion, "rationale", "") or "")[:160],
+                )
             return opinion
         except Exception as exc:  # noqa: BLE001 — reasoning must never break a cycle
             logger.debug("[llm] reason({}) ignored a fault: {}", symbol, exc)

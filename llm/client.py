@@ -163,7 +163,7 @@ class LLMClient:
         try:
             status, text = self._transport(url, headers, body, self.timeout_seconds)
         except Exception as exc:  # noqa: BLE001
-            logger.debug("[llm] transport error ({}): {}", self.provider, exc)
+            logger.warning("[llm] transport error ({}): {}", self.provider, exc)
             return None
         if status < 200 or status >= 300:
             # Log status + a short, key-free snippet only.
