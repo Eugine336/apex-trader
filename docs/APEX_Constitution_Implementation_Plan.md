@@ -20,6 +20,15 @@
 >   orders directly, bypassing `_on_entry_decision`) is now fully disabled while
 >   single-path is active — `_enabled()` returns False, so it stages nothing and
 >   `on_zone_update` reaps any resting orders.
+>   **Third entry route closed (legacy pipeline no longer RUNS):** when
+>   single-path is active, `EventDrivenSystem` no longer subscribes the legacy
+>   `EntryOrchestrator` to the `tick` / `candle_close:M1` / `world_model_update`
+>   events, so the entire legacy entry-decision pipeline (zone-touch → M1 confirm
+>   → gates → emit) is **inert** — the `[tick-entry]`/`[m1-confirm]`/`[entry-orch]`/
+>   `[entry-gate]` activity stops. Shared analysis (WorldModel / developing /
+>   scanner) that feeds the Brain's Evidence, plus management / execution / safety,
+>   are untouched. Runtime is now genuinely one entry path (the Brain). Physical
+>   deletion of the now-dormant legacy pipeline files is the demo-gated follow-up.
 > - **Stage 2a (first legacy decider deleted) — done:** `brain/thesis_engine.py`
 >   is **physically removed** (with its 5 unit tests). Its two constructors
 >   (`core/system_context.py`, `brain/backtest_engine.py`) are gone; every live

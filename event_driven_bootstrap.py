@@ -2780,9 +2780,22 @@ class EventDrivenSystem:
         )
 
         # ── Event wiring ─────────────────────────────────────────────
-        self._event_bus.subscribe("tick", self._entry_orchestrator.on_tick)
+        # Single Reasoner cutover (Constitution I.4 / III.2): when single-path is
+        # active the legacy entry-decision pipeline (EntryOrchestrator → zone
+        # touch → M1 confirm → gates → emit) must not RUN at all — the one AI
+        # Cognitive Brain is the sole entry authority and originates via the
+        # cognition loop. So we simply do NOT subscribe the orchestrator to the
+        # tick / M1-close / world-model events. The analysis feeds (WorldModel,
+        # developing analysis, scanner) that populate the Brain's Evidence, and
+        # the management / execution / safety wiring below, are untouched — so the
+        # Brain still gets full evidence and open positions are still managed and
+        # protected. Fail-safe: a config fault reports legacy-on (no silent halt).
+        _legacy_entry_on = not self._single_reasoner_path_active()
+        if _legacy_entry_on:
+            self._event_bus.subscribe("tick", self._entry_orchestrator.on_tick)
         # Phase 2 Feature B: feed ticks to the zone-order stager so it can stage
         # pending LIMIT orders as price approaches an active zone boundary.
+        # (Self-gated under single-path: its _enabled() returns False.)
         if self._zone_stager is not None:
             self._event_bus.subscribe("tick", self._zone_stager.on_tick)
         if self._mgmt_scheduler is not None:
@@ -2795,12 +2808,13 @@ class EventDrivenSystem:
                     getattr(tick, "symbol", ""),
                 ),
             )
-        self._event_bus.subscribe(
-            "candle_close:M1",
-            lambda ev: self._entry_pool.submit(
-                self._entry_orchestrator.on_m1_close, ev.symbol,
-            ),
-        )
+        if _legacy_entry_on:
+            self._event_bus.subscribe(
+                "candle_close:M1",
+                lambda ev: self._entry_pool.submit(
+                    self._entry_orchestrator.on_m1_close, ev.symbol,
+                ),
+            )
         # Feed the fast-then-slow flip sequence tracker (flip Check 7): M1 closes
         # arm the fast confirmation, M5 closes provide the slow confirmation and
         # advance the tracker's M5-bar clock. Both dispatched off the entry pool
@@ -2817,9 +2831,10 @@ class EventDrivenSystem:
                 self._feed_flip_sequence_m5, ev.symbol,
             ),
         )
-        self._event_bus.subscribe(
-            "world_model_update", self._entry_orchestrator.on_world_model_update,
-        )
+        if _legacy_entry_on:
+            self._event_bus.subscribe(
+                "world_model_update", self._entry_orchestrator.on_world_model_update,
+            )
         self._event_bus.subscribe(
             "world_model_update", self._on_world_model_update,
         )
