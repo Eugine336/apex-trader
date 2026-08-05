@@ -4034,6 +4034,10 @@ class CognitionConfig:
     origination_stop_fraction: float = 0.004
     origination_reward_multiple: float = 2.0
     origination_min_rr: float = 1.0
+    # Optional hard cap on the lot size the Brain may originate/scale (0 = no
+    # cap; the broker vol_max still applies). Lets an operator bound absolute
+    # size regardless of conviction on a small account.
+    origination_max_lots: float = 0.0
     # Phase H — persistent institutional memory (Part VII). When enabled, the
     # loop snapshots the market state at campaign open and the registry persists
     # terminal outcomes, so the Brain can consult analogous history when
@@ -4096,6 +4100,7 @@ class CognitionConfig:
             ("COGNITION_ORIGINATION_STOP_FRACTION", "origination_stop_fraction"),
             ("COGNITION_ORIGINATION_REWARD_MULTIPLE", "origination_reward_multiple"),
             ("COGNITION_ORIGINATION_MIN_RR", "origination_min_rr"),
+            ("COGNITION_ORIGINATION_MAX_LOTS", "origination_max_lots"),
         ):
             raw = os.getenv(env_name)
             if raw is not None:

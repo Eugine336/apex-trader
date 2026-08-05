@@ -3238,12 +3238,23 @@ class EventDrivenSystem:
                         symbol, direction,
                     )
                     return
+                # The Brain 'chooses' a concrete, broker-valid lot (never 0 →
+                # broker) — conviction-scaled risk snapped to the instrument's
+                # volume ladder. Decline cleanly if none can be formed.
+                confidence = float(getattr(origination, "confidence", 0.0) or 0.0)
+                lots = self._origination_lot_size(symbol, direction, sl, confidence)
+                if lots <= 0:
+                    logger.info(
+                        "[origination-sink] {} {} skipped — no broker-valid lot "
+                        "(risk below broker minimum; enable opportunity-harvest to take min lot)",
+                        symbol, direction,
+                    )
+                    return
                 stake = getattr(origination, "stake_usd", None)
-                lots = float(getattr(origination, "lots", 0.0) or 0.0)
-                idem_key = generate_idempotency_key(symbol, direction, stake or lots)
+                idem_key = generate_idempotency_key(symbol, direction, lots)
                 comment = build_order_comment(
                     "APEX", idem_key,
-                    score=round(float(getattr(origination, "confidence", 0.0) or 0.0), 4),
+                    score=round(confidence, 4),
                 )
                 self._aggregator.submit([Intent.open(
                     symbol=symbol,
@@ -3251,15 +3262,15 @@ class EventDrivenSystem:
                     lots=lots,
                     sl=float(sl),
                     tp=float(tp),
-                    stake_usd=None if stake is None else float(stake),
+                    stake_usd=None,
                     comment=comment,
                     idempotency_key=idem_key,
                     source="ai_brain",
                     reason=str(getattr(origination, "reason", "") or "brain_origination")[:200],
                 )])
                 logger.info(
-                    "[origination-sink] submitted {} {} (stake={}) from campaign {}",
-                    symbol, direction, stake,
+                    "[origination-sink] submitted {} {} ({:.2f} lots) from campaign {}",
+                    symbol, direction, lots,
                     getattr(origination, "campaign_id", ""),
                 )
             except Exception as exc:  # noqa: BLE001 — sink must never break the loop
@@ -3315,6 +3326,66 @@ class EventDrivenSystem:
         except Exception as exc:  # noqa: BLE001 — never break the sink
             logger.debug("[origination-sink] level derivation failed for {}: {}", symbol, exc)
             return (None, None)
+
+    def _origination_lot_size(self, symbol, direction, sl, confidence, entry_price=None):
+        """Deterministic, broker-valid lot the Brain 'chooses' for an entry.
+
+        Like a human trader who names an exact lot aware of the broker minimum:
+        converts a conviction-scaled risk budget into lots via the instrument's
+        tick value, snaps to the broker's volume step/min/max, and applies the
+        optional operator cap. Returns ``0.0`` (caller skips) when no broker-valid
+        lot can be formed and the opportunity-harvest opt-in is off. Fail-safe —
+        never returns a sub-minimum or zero-through-to-broker value.
+        """
+        try:
+            from cognition.campaign_translator import compute_lot_size
+
+            is_long = str(direction or "").upper() == "LONG"
+            entry = entry_price
+            if entry is None:
+                tick = self._tick_store.get_latest(symbol) if self._tick_store is not None else None
+                if tick is not None:
+                    entry = float(getattr(tick, "ask", 0.0) if is_long
+                                  else getattr(tick, "bid", 0.0)) or float(getattr(tick, "mid", 0.0) or 0.0)
+            entry = float(entry or 0.0)
+            if entry <= 0 or sl is None:
+                return 0.0
+            spec = {}
+            try:
+                spec = self._pm.get_symbol_spec(symbol) or {} if self._pm is not None else {}
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[origination-sink] symbol spec failed for {}: {}", symbol, exc)
+                spec = {}
+            vol_min = float(spec.get("volume_min") or 0.01)
+            vol_step = float(spec.get("volume_step") or 0.01)
+            vol_max = float(spec.get("volume_max") or 1e9)
+            tick_value = float(spec.get("trade_tick_value") or 0.0)
+            tick_size = float(spec.get("trade_tick_size") or 0.0)
+            try:
+                balance = float(self._pm.get_platform_balance(symbol) or 0.0) if self._pm is not None else 0.0
+            except Exception:  # noqa: BLE001
+                balance = 0.0
+            cog = getattr(self._config, "cognition", None)
+            risk_frac = float(getattr(cog, "origination_risk_fraction", 0.01) if cog is not None else 0.01)
+            max_lots = float(getattr(cog, "origination_max_lots", 0.0) if cog is not None else 0.0)
+            # Conviction scaling — higher confidence ⇒ larger size within a
+            # bounded 0.5×–1.5× band, so the Brain varies lot size with the read.
+            conf = max(0.0, min(1.0, float(confidence or 0.0)))
+            risk_usd = balance * risk_frac * (0.5 + conf)
+            risk_cfg = getattr(self._config, "risk", None)
+            floor_to_min = bool(
+                getattr(risk_cfg, "allow_min_lot_over_risk", False)
+                if risk_cfg is not None else False
+            )
+            return compute_lot_size(
+                risk_usd=risk_usd, stop_distance=abs(entry - float(sl)),
+                tick_value=tick_value, tick_size=tick_size,
+                vol_min=vol_min, vol_step=vol_step, vol_max=vol_max,
+                max_lots=max_lots, floor_to_min=floor_to_min,
+            )
+        except Exception as exc:  # noqa: BLE001 — sizing must never break the sink
+            logger.debug("[origination-sink] lot sizing failed for {}: {}", symbol, exc)
+            return 0.0
 
     def _make_management_sink(self):
         """Build the LIVE management sink: Brain manage() verdict → MT5 op.
@@ -3392,14 +3463,20 @@ class EventDrivenSystem:
                     if sl is None or tp is None:
                         logger.info("[mgmt-sink] {} scale_in skipped — no protective stop", symbol)
                         return
-                    idem = generate_idempotency_key(symbol, held, 0.0)
+                    conf = float(getattr(action, "confidence", 0.0) or 0.0)
+                    add_lots = self._origination_lot_size(symbol, held, sl, conf)
+                    if add_lots <= 0:
+                        logger.info("[mgmt-sink] {} scale_in skipped — no broker-valid lot", symbol)
+                        return
+                    idem = generate_idempotency_key(symbol, held, add_lots)
                     intents.append(Intent.open(
-                        symbol=symbol, direction=held, lots=0.0, sl=float(sl), tp=float(tp),
-                        source="ai_brain", reason="brain_scale_in",
+                        symbol=symbol, direction=held, lots=add_lots, sl=float(sl), tp=float(tp),
+                        source="ai_brain", reason="brain_scale_in", stake_usd=None,
                         comment=build_order_comment("APEX", idem), idempotency_key=idem,
                     ))
                     self._aggregator.submit(intents)
-                    logger.info("[mgmt-sink] submitted scale_in {} {}", symbol, held)
+                    logger.info("[mgmt-sink] submitted scale_in {} {} ({:.2f} lots)",
+                                symbol, held, add_lots)
                     return
 
                 pos = _open_position_for(symbol, held)
@@ -3442,16 +3519,19 @@ class EventDrivenSystem:
                         reason="brain_reverse_close", direction=held,
                     ))
                     sl, tp = self._derive_origination_levels(symbol, target)
-                    if sl is not None and tp is not None:
-                        idem = generate_idempotency_key(symbol, target, 0.0)
+                    conf = float(getattr(action, "confidence", 0.0) or 0.0)
+                    new_lots = (self._origination_lot_size(symbol, target, sl, conf)
+                                if sl is not None else 0.0)
+                    if sl is not None and tp is not None and new_lots > 0:
+                        idem = generate_idempotency_key(symbol, target, new_lots)
                         intents.append(Intent.open(
-                            symbol=symbol, direction=target, lots=0.0,
+                            symbol=symbol, direction=target, lots=new_lots,
                             sl=float(sl), tp=float(tp), source="ai_brain",
-                            reason="brain_reverse_open",
+                            reason="brain_reverse_open", stake_usd=None,
                             comment=build_order_comment("APEX", idem), idempotency_key=idem,
                         ))
                     else:
-                        logger.info("[mgmt-sink] {} reverse — closing only (no re-entry stop)",
+                        logger.info("[mgmt-sink] {} reverse — closing only (no re-entry lot/stop)",
                                     symbol)
                 else:
                     return

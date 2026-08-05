@@ -2,6 +2,7 @@
 
 from cognition.campaign_translator import (
     OriginationIntent,
+    compute_lot_size,
     derive_protective_levels,
     translate,
 )
@@ -111,3 +112,47 @@ def test_derive_rejects_invalid_inputs():
     assert derive_protective_levels("LONG", 0.0) == (None, None)
     assert derive_protective_levels("LONG", 2000.0, stop_fraction=0.0) == (None, None)
     assert derive_protective_levels("LONG", "x") == (None, None)  # never raises
+
+
+# ── compute_lot_size (broker-valid, conviction-scaled sizing) ─────────────────
+
+def test_lot_size_risk_based():
+    # risk $80, stop 8.0, tick_value 1 per 0.01 → loss/lot 800 → 0.1 lot
+    lots = compute_lot_size(risk_usd=80, stop_distance=8.0, tick_value=1.0,
+                            tick_size=0.01, vol_min=0.01, vol_step=0.01)
+    assert abs(lots - 0.1) < 1e-9
+
+
+def test_lot_size_rounds_down_to_step():
+    # 0.137 → floor to 0.01 step → 0.13
+    lots = compute_lot_size(risk_usd=109.6, stop_distance=8.0, tick_value=1.0,
+                            tick_size=0.01, vol_min=0.01, vol_step=0.01)
+    assert lots == 0.13
+
+
+def test_lot_size_floors_to_min_when_harvesting():
+    # sub-min risk lot on a 0.5-min instrument (Brent) → floored to 0.5
+    lots = compute_lot_size(risk_usd=2, stop_distance=1.0, tick_value=1.0,
+                            tick_size=0.01, vol_min=0.5, vol_step=0.5)
+    assert lots == 0.5
+
+
+def test_lot_size_declines_when_harvest_off():
+    lots = compute_lot_size(risk_usd=2, stop_distance=1.0, tick_value=1.0,
+                            tick_size=0.01, vol_min=0.5, vol_step=0.5, floor_to_min=False)
+    assert lots == 0.0   # never send an under-min order
+
+
+def test_lot_size_respects_cap():
+    lots = compute_lot_size(risk_usd=800, stop_distance=8.0, tick_value=1.0,
+                            tick_size=0.01, vol_min=0.01, vol_step=0.01, max_lots=0.05)
+    assert lots == 0.05
+
+
+def test_lot_size_never_zero_to_broker_and_fault_safe():
+    # unusable inputs but harvesting on → valid min lot, never 0-through-to-broker
+    assert compute_lot_size(risk_usd=0, stop_distance=0, tick_value=0, tick_size=0,
+                            vol_min=0.01, vol_step=0.01) == 0.01
+    # unusable + harvest off → 0 (caller skips, does not send)
+    assert compute_lot_size(risk_usd=0, stop_distance=0, tick_value=0, tick_size=0,
+                            vol_min=0.01, vol_step=0.01, floor_to_min=False) == 0.0
