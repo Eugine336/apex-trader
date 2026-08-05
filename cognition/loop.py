@@ -37,6 +37,7 @@ from cognition.management_translator import translate_management as _translate_m
 from cognition.evidence_adapters import (
     evidence_from_analogues,
     evidence_from_developing_bias,
+    evidence_from_portfolio,
     evidence_from_reasoning,
     evidence_from_thesis_status,
     evidence_from_votes,
@@ -81,6 +82,7 @@ class EvidenceConsolidator:
         self._influence_enabled = bool(influence_enabled)
         self._reasoning = reasoning
         self._knowledge = knowledge
+        self._portfolio_source: Optional[Callable[[], Any]] = None
 
     def set_vote_source(self, vote_source: Optional[Callable[[str], Any]]) -> None:
         """Wire (or clear) the live WorldModel vote-panel source.
@@ -99,6 +101,17 @@ class EvidenceConsolidator:
         the Brain also sees the fresher between-close read. Fail-safe callable.
         """
         self._developing_source = developing_source
+
+    def set_portfolio_source(self, portfolio_source: Optional[Callable[[], Any]]) -> None:
+        """Wire (or clear) the live portfolio-assessment source (Part XVIII Art 11).
+
+        A zero-arg callable returning the campaign registry's
+        ``portfolio_assessment()`` dict. The consolidator turns the correlated
+        clusters / concentration relevant to each symbol into portfolio-context
+        Evidence so the Brain reasons every symbol against the whole book.
+        Fail-safe callable — never invoked eagerly.
+        """
+        self._portfolio_source = portfolio_source
 
     def build(
         self,
@@ -134,7 +147,15 @@ class EvidenceConsolidator:
                         ms.add(e)
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[consolidator] developing source fault (%s): %s", symbol, exc)
-            # Part XVII — consult multiple reasoning engines; each opinion becomes
+            # Part XVIII Art 11 — portfolio intelligence: surface how this
+            # symbol's exposure stacks against the live book (correlated
+            # clusters, concentration) as risk-context Evidence (never a vote).
+            if self._portfolio_source is not None:
+                try:
+                    for e in evidence_from_portfolio(ms.symbol, self._portfolio_source()):
+                        ms.add(e)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[consolidator] portfolio source fault (%s): %s", symbol, exc)
             # advisory Evidence (never a vote). The Brain synthesises them.
             if self._reasoning is not None:
                 try:
@@ -260,6 +281,7 @@ class CognitionLoop:
         event_min_interval_seconds: float = 8.0,
         event_confidence_delta: float = 0.15,
         clock: Optional[Callable[[], float]] = None,
+        campaign_registry: Optional[Any] = None,
         name: str = "cognition-loop",
     ) -> None:
         self._brain = brain
@@ -317,6 +339,20 @@ class CognitionLoop:
         # from re-managing the same campaign on every micro-event, while the
         # periodic cycle still acts as a backstop.
         self._last_manage_at: dict = {}
+        # Part XVIII Art 1/8/12 — the Brain owns the campaign lifecycle. The loop
+        # drives this registry: births/refreshes campaigns as it originates and
+        # manages, feeds portfolio context back as Evidence (Art 11), and re-arms
+        # reasoning the instant a campaign closes so the Brain immediately asks
+        # "does the opportunity still exist?" (Art 8 scalp re-entry).
+        self._campaigns = campaign_registry
+        self._known_open: set = set()
+        if self._campaigns is not None:
+            try:
+                self._consolidator.set_portfolio_source(
+                    self._campaigns.portfolio_assessment
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[cognition-loop] portfolio source wiring fault: %s", exc)
         self._open_keys: set = set()
 
     def set_origination_sink(self, sink: Optional[Callable[[Any], None]]) -> None:
@@ -353,6 +389,16 @@ class CognitionLoop:
             self._consolidator.set_developing_source(developing_source)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition-loop] set_developing_source ignored a fault: %s", exc)
+
+    def set_portfolio_source(self, portfolio_source: Optional[Callable[[], Any]]) -> None:
+        """Wire the portfolio-assessment source onto the consolidator (Art 11).
+
+        Normally self-wired from the injected campaign registry; exposed so the
+        owner can override. Fail-safe — a wiring fault never breaks startup."""
+        try:
+            self._consolidator.set_portfolio_source(portfolio_source)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[cognition-loop] set_portfolio_source ignored a fault: %s", exc)
 
     @property
     def running(self) -> bool:
@@ -624,6 +670,10 @@ class CognitionLoop:
                     "[cognition-loop] originated LIVE %s %s (stake=%s)",
                     symbol, direction, intent.stake_usd,
                 )
+                # Part XVIII Art 1 — a trade begins a campaign. Birth (or revive)
+                # the campaign for this symbol/direction and record the opening
+                # leg so the Brain manages it as one campaign spanning positions.
+                self._campaign_open(symbol, direction, campaign, decision)
             else:
                 self._orig_intended += 1
                 logger.info(
@@ -652,7 +702,84 @@ class CognitionLoop:
         managed = 0
         for pos in positions:
             managed += self._manage_one(pos, now=now)
+        # Part XVIII Art 8 — the campaign is the unit: the instant a campaign's
+        # position leaves the live book (closed), immediately re-arm reasoning so
+        # the Brain asks "does the opportunity still exist? trade again?" rather
+        # than waiting for the next interval. Uses the full-book snapshot this
+        # backstop already holds.
+        try:
+            current = {
+                str(getattr(p, "symbol", "") or "")
+                for p in positions if getattr(p, "symbol", "")
+            }
+            disappeared = self._known_open - current
+            self._known_open = current
+            if disappeared and self.event_driven:
+                with self._pending_lock:
+                    self._pending |= disappeared
+                self._wake.set()
+                for sym in disappeared:
+                    logger.info(
+                        "[cognition-loop] campaign closed %s — re-arming "
+                        "reasoning (Art 8 opportunity re-check)", sym,
+                    )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[cognition-loop] campaign re-arm fault: %s", exc)
         return managed
+
+    def _campaign_open(self, symbol: str, direction: str, campaign: Any,
+                       decision: Any) -> None:
+        """Birth/refresh the registry campaign for a Brain-originated entry.
+
+        Part XVIII Art 1 — a trade begins a campaign. Best-effort; a registry
+        fault never blocks origination."""
+        reg = self._campaigns
+        if reg is None:
+            return
+        try:
+            conf = float(
+                getattr(campaign, "confidence", 0.0)
+                or getattr(decision, "confidence", 0.0) or 0.0
+            )
+            ev = float(getattr(campaign, "expected_value", 0.0) or 0.0)
+            exposure = float(getattr(campaign, "desired_exposure", 0.0) or 0.0)
+            reg.observe_thesis(symbol, direction, True, ev_over_flat=ev, confidence=conf)
+            reg.record_leg(symbol, direction, "open", size=exposure)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[cognition-loop] campaign open fault (%s): %s", symbol, exc)
+
+    def _campaign_record(self, pos: Any, output: Any, *, now: Optional[float] = None) -> None:
+        """Fold a Brain management verdict into live campaign health.
+
+        Part XVIII Art 12 — continuous health. Also records a scale-in leg when
+        the verdict adds exposure (Art 1). Best-effort; never breaks management."""
+        reg = self._campaigns
+        if reg is None:
+            return
+        try:
+            symbol = str(getattr(pos, "symbol", "") or "")
+            direction = str(getattr(pos, "direction", "") or "")
+            if not symbol or not direction:
+                return
+            decision = getattr(output, "decision", None)
+            dtype = getattr(getattr(decision, "decision_type", None), "value", None) \
+                or str(getattr(decision, "decision_type", "") or "")
+            objective = str(dtype or "hold").strip().lower()
+            conf = float(getattr(decision, "confidence", 0.0) or 0.0)
+            unc = float(getattr(decision, "uncertainty", 0.0) or 0.0)
+            profit_r = getattr(pos, "profit_r", None)
+            ev = float(profit_r) if profit_r is not None else 0.0
+            reg.record_management(
+                symbol, direction, objective,
+                confidence=conf, ev_over_flat=ev, uncertainty=unc, now=now,
+            )
+            if objective == "scale_in":
+                reg.record_leg(
+                    symbol, direction, "scale_in",
+                    size=float(getattr(pos, "size", 0.0) or 0.0), now=now,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[cognition-loop] campaign record fault: %s", exc)
 
     def _manage_symbol(self, symbol: str, *, now: Optional[float] = None) -> int:
         """Immediately manage every open campaign on ``symbol`` (event-driven).
@@ -696,6 +823,8 @@ class CognitionLoop:
             if symbol:
                 self._last_manage_at[symbol] = t
             self._managed += 1
+            # Part XVIII Art 12 — fold this verdict into live campaign health.
+            self._campaign_record(pos, output, now=now)
             if self.management_mode != "off":
                 self._realise_management(output, pos)
             return 1
@@ -806,6 +935,11 @@ class CognitionLoop:
             "management_sink_wired": self._management_sink is not None,
             "manage_intended": self._manage_intended,
             "manage_submitted": self._manage_submitted,
+            "campaign_registry_wired": self._campaigns is not None,
+            "live_campaigns": (
+                len(self._campaigns.live_campaigns())
+                if self._campaigns is not None else 0
+            ),
         }
 
 
