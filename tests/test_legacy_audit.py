@@ -25,18 +25,20 @@ _KNOWN = {s.module for s in KNOWN_LEGACY_SURFACES}
 
 def test_audit_detects_known_legacy_emitters():
     audit = audit_competing_decision_code()
-    present = set(audit.known_present)
-    # Cutover progress: thesis_engine deleted (2a) and the god-file CLOSE/HOLD
-    # exit verdict retired (both now 'removed'). directional_consensus is the
-    # last tracked emitter — its evidence-polarity vote_from_* extractors feed
-    # live analysis, so its removal is the demo-gated coupled-core step.
-    assert "brain/directional_consensus.py" in present
-    assert "brain/thesis_engine.py" in audit.removed
-    assert "event_driven_bootstrap.py" in audit.removed
-    hit_modules = {f.module for f in audit.findings}
-    assert "brain/directional_consensus.py" in hit_modules
-    assert "event_driven_bootstrap.py" not in hit_modules  # verdicts gone
-    assert "brain/thesis_engine.py" not in hit_modules  # gone
+    # Cutover complete: all three tracked emitters are cleared.
+    #  - thesis_engine (2a) + orchestrator (2b): physically deleted.
+    #  - event_driven_bootstrap (2c): CLOSE/HOLD exit verdict retired.
+    #  - directional_consensus: vote-Evidence relocated to the sanctioned
+    #    brain/vote_evidence.py; no VoteResult construction / verdict remains.
+    assert set(audit.removed) == _KNOWN
+    assert audit.known_present == []
+    assert {f.module for f in audit.findings} == set()
+
+
+def test_audit_is_clean_after_cutover():
+    audit = audit_competing_decision_code()
+    assert audit.clean is True, f"still present: {audit.known_present}, unexpected: {audit.unexpected}"
+    assert audit.regression_free is True
 
 
 def test_no_unexpected_competing_decision_code():
@@ -48,12 +50,10 @@ def test_no_unexpected_competing_decision_code():
     assert audit.regression_free is True
 
 
-def test_not_yet_clean_before_cutover():
-    # Legacy deciders are runtime-superseded (Brain gate authoritative) but not
-    # yet physically removed, so the audit is not clean. When the validated
-    # cutover deletes them this flips True — the Part XIV gate.
+def test_audit_scans_the_tree():
+    # The live cutover is complete (clean is asserted above); this just pins that
+    # the audit actually walked the repo rather than trivially returning empty.
     audit = audit_competing_decision_code()
-    assert audit.clean is False
     assert audit.scanned_files > 0
 
 

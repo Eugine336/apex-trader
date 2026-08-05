@@ -31,22 +31,33 @@
 > - **Stage 2c (god-file exit verdict retired) — done:** the candidate-scoped
 >   thesis exit (`event_driven_bootstrap._check_candidate_thesis`) emitted
 >   `CLOSE/HOLD` market-judgment verdicts; it is neutralised to `return None`
->   (the Brain owns exit judgment; mechanical stops own safety). The audit now
->   reports **1 present / 2 removed** (`event_driven_bootstrap` cleared).
+>   (the Brain owns exit judgment; mechanical stops own safety).
+> - **Stage 2d (consensus vote-Evidence separated) — done → `clean=True`:** the
+>   vote-Evidence production (the `Vote`/`VoteResult` types + all `vote_from_*`
+>   extractors) is relocated from `brain/directional_consensus.py` into a new,
+>   dedicated Evidence module **`brain/vote_evidence.py`** (directional-lean votes
+>   are Constitution III.4 *Evidence*, not III.2 decisions — so that module is a
+>   sanctioned Evidence producer in `cognition/legacy_audit`). `directional_consensus`
+>   now holds only the consensus `decide`/`form_thesis`/`decide_opportunities`
+>   helpers (which construct **no** `VoteResult` and emit **no** lifecycle verdict)
+>   and re-exports the vote machinery so every existing importer resolves unchanged.
+>   Those helpers are runtime-severed from trading by single-path (the Brain is the
+>   sole decider); they feed analysis/candidate-display only.
+>
+> **`cognition.legacy_audit` now reports `clean=True`** (0 present / 3 removed /
+> 0 unexpected) — the Constitution Part XIV "no competing decision code remains"
+> gate is met: no module outside the sanctioned Brain/Evidence layer emits a
+> buy/sell/hold/close/reverse verdict.
 >
 > Deterministic safety/feasibility (Part X) and position closing/de-risking are
-> retained untouched. **Remaining — the ONE emitter left is
-> `brain/directional_consensus.py`.** Its `decide`/`form_thesis` consensus
-> *decisions* are already runtime-severed (single-path), but its `vote_from_*`
-> extractors construct evidence-polarity `VoteResult`s (Constitution III.4
-> Evidence, not a III.2 decision) that still feed **live non-Brain analysis**
-> (`brain/decision_core`, `brain/developing_analysis`, the adaptive subsystem,
-> `scanner/candle_close_handler`). Reaching `clean=True` therefore requires the
-> coupled-core migration: move the vote-Evidence production into a sanctioned
-> Evidence module, physically delete the consensus decision functions, and rewire
-> those live consumers. This changes live control flow and MUST be validated on
-> the demo (Part XV) — a valid `LLM_API_KEY` is required for the Brain to reason;
-> with no reasoning the single path fail-safes to NO entries.
+> retained untouched. **Validation note (Part XV):** the Stage 1/2 changes alter
+> live control flow and were verified offline only (`py_compile`, import/re-export
+> resolution, audit + unit tests). They MUST be smoke-tested on the demo with a
+> valid `LLM_API_KEY` before they are trusted (with no reasoning the single path
+> fail-safes to NO entries). The one remaining *structural* item is the optional
+> physical decomposition of the two coupled cores (`PositionEvaluator`,
+> `EventDrivenSystem`) — a maintainability refactor, not a competing-decision
+> concern (the audit is already clean).
 
 ---
 

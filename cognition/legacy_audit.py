@@ -56,6 +56,15 @@ SANCTIONED_PREFIXES = (
     "dashboard/",
 )
 
+# Sanctioned Evidence producers (Constitution III.4). These modules construct
+# directional-lean ``VoteResult`` objects (LONG/SHORT/NEUTRAL + confidence +
+# evidence), which are *Evidence* — NOT the III.2 lifecycle decisions
+# (buy/sell/hold/close/reverse) this audit forbids. They emit no verdict and
+# make no trade; they feed the Brain / analysis as observations only.
+SANCTIONED_EVIDENCE_FILES = frozenset({
+    "brain/vote_evidence.py",
+})
+
 # Directories never worth scanning.
 _SKIP_DIRS = {
     ".git",
@@ -91,8 +100,11 @@ KNOWN_LEGACY_SURFACES = (
         module="brain/directional_consensus.py",
         authority="directional vote (VoteResult LONG/SHORT via consensus argmax)",
         article="III.2 (module emits direction) / I.4 (single authority)",
-        note="demoted to evidence via cognition/evidence_adapters.evidence_from_votes; "
-        "physical removal is the validated cutover",
+        note="RESOLVED — the vote-Evidence production (types + vote_from_* extractors) "
+        "moved to the sanctioned Evidence module brain/vote_evidence.py (III.4); the "
+        "remaining consensus decide/form_thesis are runtime-severed from trading by the "
+        "single-path cutover (the Brain is sole decider). No VoteResult construction or "
+        "lifecycle verdict remains here → reports as 'removed'.",
     ),
     LegacySurface(
         module="brain/thesis_engine.py",
@@ -195,7 +207,9 @@ def _rel(path: str, root: str) -> str:
 
 
 def _is_sanctioned(rel_path: str) -> bool:
-    return any(rel_path.startswith(p) for p in SANCTIONED_PREFIXES)
+    return rel_path in SANCTIONED_EVIDENCE_FILES or any(
+        rel_path.startswith(p) for p in SANCTIONED_PREFIXES
+    )
 
 
 def _iter_py_files(root: str):
