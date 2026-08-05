@@ -26,15 +26,16 @@ _KNOWN = {s.module for s in KNOWN_LEGACY_SURFACES}
 def test_audit_detects_known_legacy_emitters():
     audit = audit_competing_decision_code()
     present = set(audit.known_present)
-    # brain/thesis_engine.py has been physically deleted (Single Reasoner
-    # cutover, Stage 2) — the audit now reports it as *removed*, not present.
-    # The remaining documented emitters are still present until their cutover.
+    # Cutover progress: thesis_engine deleted (2a) and the god-file CLOSE/HOLD
+    # exit verdict retired (both now 'removed'). directional_consensus is the
+    # last tracked emitter — its evidence-polarity vote_from_* extractors feed
+    # live analysis, so its removal is the demo-gated coupled-core step.
     assert "brain/directional_consensus.py" in present
-    assert "event_driven_bootstrap.py" in present
     assert "brain/thesis_engine.py" in audit.removed
+    assert "event_driven_bootstrap.py" in audit.removed
     hit_modules = {f.module for f in audit.findings}
     assert "brain/directional_consensus.py" in hit_modules
-    assert "event_driven_bootstrap.py" in hit_modules
+    assert "event_driven_bootstrap.py" not in hit_modules  # verdicts gone
     assert "brain/thesis_engine.py" not in hit_modules  # gone
 
 
