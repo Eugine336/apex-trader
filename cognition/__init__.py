@@ -50,6 +50,8 @@ __all__ = [
     "ReplayHarness",
     "ValidationReport",
     "readiness_verdict",
+    "audit_competing_decision_code",
+    "CompetingDecisionAudit",
 ]
 
 
@@ -92,4 +94,8 @@ def __getattr__(name: str):
     if name in ("ReplayHarness", "ValidationReport", "readiness_verdict"):
         from cognition import validation as _val
         return getattr(_val, name)
+    if name in ("audit_competing_decision_code", "CompetingDecisionAudit",
+                "KNOWN_LEGACY_SURFACES", "LegacySurface", "DecisionFinding"):
+        from cognition import legacy_audit as _la
+        return getattr(_la, name)
     raise AttributeError(f"module 'cognition' has no attribute {name!r}")

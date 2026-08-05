@@ -402,6 +402,16 @@ for the Brain-driven path (✅); "no competing decision code remains" grep audit
 physical decomposition of the coupled cores + legacy deletion — ⏳ deferred to the
 validated cutover (Phase L → then the deletion pass).
 
+**Cutover instrumentation (shipped, non-destructive):** the mandated grep audit
+is now a concrete, tested artifact — `cognition/legacy_audit.py`
+(`audit_competing_decision_code()`). It inventories the documented competing-
+decision surfaces still present (today: `brain/directional_consensus.py` votes,
+`brain/thesis_engine.py` HOLD/exit verdicts, `event_driven_bootstrap.py`
+management verdicts), guards against any *new* market-deciding code appearing
+outside `cognition/` (`unexpected` ⇒ CI fail), and reports `clean == True` only
+once every surface is gone — i.e. the machine-checkable Part XIV
+"no competing decision code remains" gate that the deletion pass drives to green.
+
 ---
 
 ## 9. Phase L — Observability, validation & controlled rollout (Parts XII, XIII) — ✅ DONE
