@@ -3848,6 +3848,7 @@ class ComposioConfig:
     api_key: str = ""                 # resolved from env; never logged
     base_url: str = "https://backend.composio.dev"
     entity_id: str = "default"
+    api_version: str = "v3"           # Composio REST API version (v3 current)
     dry_run: bool = True
     require_source: bool = True
     auto_max_risk: str = "low"
@@ -3875,6 +3876,9 @@ class ComposioConfig:
         self.base_url = base or "https://backend.composio.dev"
         entity = (os.getenv("COMPOSIO_ENTITY_ID", self.entity_id) or "").strip()
         self.entity_id = entity or "default"
+        self.api_version = (
+            os.getenv("COMPOSIO_API_VERSION", self.api_version) or "v3"
+        ).strip().lower() or "v3"
         self.auto_max_risk = (
             os.getenv("COMPOSIO_AUTO_MAX_RISK", self.auto_max_risk) or "low"
         ).strip().lower()
