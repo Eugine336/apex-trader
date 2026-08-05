@@ -16,10 +16,11 @@ the adapter, not touching the cognitive loop.
   secret-safe: any error becomes a failed :class:`ActionResult`, and the API key
   is never logged.
 
-NOTE: the exact Composio request/response shape must be confirmed against the
-live API + your key (it could not be reached from the build sandbox). The
+NOTE: the adapter targets Composio's current **v3** REST API by default
+(``POST /api/v3/tools/execute/{tool_slug}``); the retired v2 shape is kept as an
+explicit fallback via ``api_version="v2"`` (env ``COMPOSIO_API_VERSION``). The
 network call is isolated to the ``transport`` and the request builder, so
-aligning it later is a one-place change with the tests still valid.
+aligning the shape later is a one-place change with the tests still valid.
 """
 
 from __future__ import annotations
@@ -113,24 +114,39 @@ class ComposioAdapter:
         base_url: str = "https://backend.composio.dev",
         entity_id: str = "default",
         timeout_seconds: float = 20.0,
+        api_version: str = "v3",
         transport: Optional[Transport] = None,
     ) -> None:
         self._api_key = str(api_key or "")
         self._base_url = str(base_url or "https://backend.composio.dev").rstrip("/")
         self._entity_id = str(entity_id or "default")
         self._timeout = float(timeout_seconds or 20.0)
+        self._api_version = str(api_version or "v3").strip().lower().lstrip("v") or "3"
         self._transport: Transport = transport or _urllib_transport
 
     @property
     def usable(self) -> bool:
         return bool(self._api_key)
 
-    def execute(self, capability: str, params: dict) -> ActionResult:
-        # Composio maps a capability name to an "action" and executes it for an
-        # entity. Shape must be verified against the live API (see module note).
-        url = f"{self._base_url}/api/v2/actions/{capability}/execute"
+    def _build_request(self, capability: str, params: dict) -> "tuple[str, dict, dict]":
+        """Return ``(url, headers, payload)`` for the configured API version.
+
+        v3 (current) executes a tool by slug: ``POST /api/v3/tools/execute/{slug}``
+        with ``{"user_id", "arguments"}``. The retired v2 shape
+        (``/api/v2/actions/{action}/execute`` with ``{"entityId", "input"}``) is
+        kept only as an explicit fallback for older deployments.
+        """
         headers = {"content-type": "application/json", "x-api-key": self._api_key}
-        payload = {"entityId": self._entity_id, "input": dict(params or {})}
+        args = dict(params or {})
+        if self._api_version == "2":
+            url = f"{self._base_url}/api/v2/actions/{capability}/execute"
+            return url, headers, {"entityId": self._entity_id, "input": args}
+        # Default: v3.
+        url = f"{self._base_url}/api/v3/tools/execute/{capability}"
+        return url, headers, {"user_id": self._entity_id, "arguments": args}
+
+    def execute(self, capability: str, params: dict) -> ActionResult:
+        url, headers, payload = self._build_request(capability, params)
         try:
             body = json.dumps(payload).encode("utf-8")
         except Exception as exc:  # noqa: BLE001
@@ -153,16 +169,18 @@ class ComposioAdapter:
             return ActionResult(ok=False, detail=f"bad JSON: {exc}")
         if not isinstance(data, dict):
             return ActionResult(ok=True, external_ref="", detail="ok")
-        # Composio commonly wraps the tool result and a success flag; be liberal.
-        ok = bool(data.get("successful", data.get("success", True)))
+        # Composio v3 wraps the tool result under "data" with a "successful" flag
+        # and an "error" string on failure; be liberal about older shapes too.
+        err = data.get("error")
+        ok = bool(data.get("successful", data.get("success", True))) and not err
         ref = ""
         if data.get("id") is not None:
             ref = str(data.get("id"))
         elif isinstance(data.get("data"), dict) and data["data"].get("id") is not None:
             ref = str(data["data"]["id"])
         # Preserve the tool's returned payload so READ capabilities can become
-        # Evidence. Composio usually nests the tool output under "data" (or
-        # "response_data"); fall back to the whole object when it doesn't.
+        # Evidence. Composio nests the tool output under "data" (v3) or
+        # "response_data"; fall back to the whole object when it doesn't.
         payload: dict = {}
         for key in ("data", "response_data", "result", "output"):
             val = data.get(key)
@@ -173,11 +191,10 @@ class ComposioAdapter:
             k in data for k in ("items", "answer", "results", "content")
         ):
             payload = data
-        return ActionResult(
-            ok=ok, external_ref=ref,
-            detail="composio ok" if ok else "composio reported failure",
-            data=payload,
+        detail = "composio ok" if ok else (
+            f"composio error: {str(err)[:120]}" if err else "composio reported failure"
         )
+        return ActionResult(ok=ok, external_ref=ref, detail=detail, data=payload)
 
 
 def build_adapter(config: Any, transport: Optional[Transport] = None) -> Any:
@@ -197,6 +214,7 @@ def build_adapter(config: Any, transport: Optional[Transport] = None) -> Any:
         base_url=str(getattr(config, "base_url", "") or "https://backend.composio.dev"),
         entity_id=str(getattr(config, "entity_id", "default") or "default"),
         timeout_seconds=float(getattr(config, "timeout_seconds", 20.0) or 20.0),
+        api_version=str(getattr(config, "api_version", "v3") or "v3"),
         transport=transport,
     )
 
