@@ -993,45 +993,16 @@ class SystemContext:
             except Exception as exc:
                 logger.warning("[SystemContext] GateAttributor init failed: {}", exc)
 
-            # ── ThesisEngine (persistent competing Long/Short/Flat theses) ──
-            # Keeps all three market hypotheses alive simultaneously, each with
-            # its own EV / confidence / uncertainty, and chooses the dominant
-            # one on relative expected value (Flat = do-nothing baseline) rather
-            # than collapsing the vote panel to a single winner. Fed every
-            # WorldModel update and used as an additional entry quality gate
-            # (Gap 1b) when ``thesis.gate_enabled`` is set.
-            try:
-                from brain.thesis_engine import ThesisEngine as _ThesisEngine
-
-                thesis_cfg = getattr(config, "thesis", None)
-                ctx.thesis_engine = _ThesisEngine(
-                    min_ev_threshold=float(
-                        getattr(thesis_cfg, "opportunity_cost_threshold", 0.1)
-                        if thesis_cfg is not None else 0.1
-                    ),
-                    decay_rate=float(
-                        getattr(thesis_cfg, "decay_rate", 0.95)
-                        if thesis_cfg is not None else 0.95
-                    ),
-                    flat_ev=float(
-                        getattr(thesis_cfg, "flat_ev", 0.0)
-                        if thesis_cfg is not None else 0.0
-                    ),
-                    decay_enabled=bool(
-                        getattr(thesis_cfg, "thesis_decay_enabled", True)
-                        if thesis_cfg is not None else True
-                    ),
-                    decay_half_life=float(
-                        getattr(thesis_cfg, "thesis_decay_half_life", 900.0)
-                        if thesis_cfg is not None else 900.0
-                    ),
-                    decay_floor=float(
-                        getattr(thesis_cfg, "thesis_decay_floor", 0.01)
-                        if thesis_cfg is not None else 0.01
-                    ),
-                )
-            except Exception as exc:
-                logger.warning("[SystemContext] ThesisEngine init failed: {}", exc)
+            # ── ThesisEngine — RETIRED (Single Reasoner cutover, Part III.2) ──
+            # The legacy competing-thesis decider (`brain/thesis_engine.py`) was
+            # a market-decision authority (`should_act` entry gate,
+            # `evaluate_open_position` exit/flip). It is deleted: the one AI
+            # Cognitive Brain now owns entry/exit judgment, and the thesis reads
+            # it used to consume flow to the Brain as Evidence via
+            # `cognition/evidence_adapters`. `ctx.thesis_engine` stays None; every
+            # consumer is None-guarded and degrades to the Brain + mechanical
+            # stops (no legacy thesis gate, no legacy evidence-exit).
+            ctx.thesis_engine = None
 
             # ── Reversal Manager (Session 29) ─────────────────────────────
             # Anti-ping-pong gate: when a thesis_flip fires, decide whether to

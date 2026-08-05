@@ -849,30 +849,10 @@ class BacktestEngine:
             logger.warning("[backtest] ComplianceDivision unavailable: {}", exc)
             self.compliance = None
 
-        # ── ThesisEngine (stateful competing Long/Short/Flat theses) ──
+        # ── ThesisEngine — RETIRED (Single Reasoner cutover, Part III.2) ──
+        # The legacy competing-thesis decider is deleted; the backtest thesis
+        # feed/gate are None-guarded and no-op. `self.thesis_engine` stays None.
         self.thesis_engine = None
-        try:
-            from brain.thesis_engine import ThesisEngine
-            tcfg = getattr(self.config, "thesis", None)
-            self.thesis_engine = ThesisEngine(
-                min_ev_threshold=float(
-                    getattr(tcfg, "opportunity_cost_threshold", 0.1) if tcfg is not None else 0.1
-                ),
-                decay_rate=float(getattr(tcfg, "decay_rate", 0.95) if tcfg is not None else 0.95),
-                flat_ev=float(getattr(tcfg, "flat_ev", 0.0) if tcfg is not None else 0.0),
-                decay_enabled=bool(
-                    getattr(tcfg, "thesis_decay_enabled", True) if tcfg is not None else True
-                ),
-                decay_half_life=float(
-                    getattr(tcfg, "thesis_decay_half_life", 900.0) if tcfg is not None else 900.0
-                ),
-                decay_floor=float(
-                    getattr(tcfg, "thesis_decay_floor", 0.01) if tcfg is not None else 0.01
-                ),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[backtest] ThesisEngine unavailable: {}", exc)
-            self.thesis_engine = None
 
         # ── Orchestrator round table (graded size / physics veto) ────
         self.bt_orchestrator = None
