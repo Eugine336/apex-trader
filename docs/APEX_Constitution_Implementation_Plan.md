@@ -15,6 +15,11 @@
 >   `source != "ai_brain"` via `cognition/single_path.legacy_entry_suppressed`),
 >   and `.env` sets `COGNITION_ORIGINATION_MODE=live` so the AI Brain is the SOLE
 >   entry authority (loop → origination sink → aggregator → RiskGate → broker).
+>   **Second entry route closed:** the legacy pending-order path
+>   (`entry/zone_order_staging.ZoneOrderStager`, which staged BUY/SELL_LIMIT
+>   orders directly, bypassing `_on_entry_decision`) is now fully disabled while
+>   single-path is active — `_enabled()` returns False, so it stages nothing and
+>   `on_zone_update` reaps any resting orders.
 > - **Stage 2a (first legacy decider deleted) — done:** `brain/thesis_engine.py`
 >   is **physically removed** (with its 5 unit tests). Its two constructors
 >   (`core/system_context.py`, `brain/backtest_engine.py`) are gone; every live
