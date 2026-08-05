@@ -136,12 +136,20 @@ def test_preferred_provider_selects_connected_app_action():
         a, reg, enabled=True, interval_seconds=0.0,
         available_providers=["composio_search", "alphavantage"],
         knowledge_provider="alphavantage",
-        arg_overrides={"ALPHAVANTAGE_NEWS_SENTIMENT": {"tickers": "{ticker}"}},
+        arg_overrides={"ALPHA_VANTAGE_NEWS_SENTIMENT": {"tickers": "{av_ticker}"}},
     )
     ks.evidence_for("EURUSD")
     call = a.calls[0]
-    assert call["capability"] == "ALPHAVANTAGE_NEWS_SENTIMENT"
-    assert call["params"] == {"tickers": "EUR"}
+    assert call["capability"] == "ALPHA_VANTAGE_NEWS_SENTIMENT"
+    assert call["params"] == {"tickers": "FOREX:EUR"}
+
+
+def test_av_ticker_mapping():
+    from cognition.knowledge_source import _av_ticker
+    assert _av_ticker("EURUSD") == "FOREX:EUR"
+    assert _av_ticker("BTCUSD") == "CRYPTO:BTC"
+    assert _av_ticker("XAUUSD") == "FOREX:XAU"
+    assert _av_ticker("US500") == "US500"
 
 
 def test_unavailable_provider_falls_back_to_web_search():

@@ -235,7 +235,7 @@ def default_registry() -> CapabilityRegistry:
         # is confirmed (Alpha Vantage news/sentiment, CoinMarketCal event
         # calendar). Every answer becomes advisory Evidence (Article 4/8).
         providers=(ProviderBinding("composio_search", "COMPOSIO_SEARCH_SEARCH"),
-                   ProviderBinding("alphavantage", "ALPHAVANTAGE_NEWS_SENTIMENT"),
+                   ProviderBinding("alphavantage", "ALPHA_VANTAGE_NEWS_SENTIMENT"),
                    ProviderBinding("coinmarketcal", "COINMARKETCAL_GET_EVENTS")),
         required_params=("query",), reversible=True,
         description="Retrieve external knowledge → becomes Evidence (Article 4/8).",

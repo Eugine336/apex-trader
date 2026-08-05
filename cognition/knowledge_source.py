@@ -74,6 +74,25 @@ def symbol_query(symbol: str) -> str:
     return f"latest market news, macro drivers and sentiment for {subject}"
 
 
+def _av_ticker(symbol: str) -> str:
+    """Map a broker symbol to an Alpha Vantage NEWS_SENTIMENT ticker token.
+
+    Alpha Vantage expects ``FOREX:EUR`` / ``CRYPTO:BTC`` / a stock symbol — not a
+    raw pair. FX majors → ``FOREX:<base>``; crypto → ``CRYPTO:<base>``; metals →
+    ``FOREX:<metal>``; anything else falls back to the raw symbol.
+    """
+    s = str(symbol or "").upper().strip()
+    if len(s) == 6 and s.isalpha():
+        base, quote = s[:3], s[3:]
+        if base in ("BTC", "ETH", "XRP", "LTC", "BCH", "SOL", "DOGE", "ADA"):
+            return f"CRYPTO:{base}"
+        if base in ("XAU", "XAG", "XBR", "XTI"):
+            return f"FOREX:{base}"
+        if base in _FX_NAMES and quote in _FX_NAMES:
+            return f"FOREX:{base}"
+    return s
+
+
 def build_tool_args(
     action: str, symbol: str, query: str, overrides: Optional[dict] = None,
 ) -> dict:
@@ -83,18 +102,22 @@ def build_tool_args(
     used for anything not explicitly mapped, so retrieval always works. An
     ``overrides`` map (action-slug → template dict) lets the operator supply the
     exact argument schema for a connected app's tool without a code change; the
-    tokens ``{query}``, ``{symbol}`` and ``{ticker}`` are substituted. Pure.
+    tokens ``{query}``, ``{symbol}``, ``{ticker}`` and ``{av_ticker}`` (Alpha
+    Vantage ``FOREX:``/``CRYPTO:`` form) are substituted. Pure.
     """
     act = str(action or "").upper()
     sym = str(symbol or "").upper()
     ticker = sym[:3] if (len(sym) == 6 and sym.isalpha()) else sym
+    av_ticker = _av_ticker(sym)
     if overrides:
         tmpl = overrides.get(action) or overrides.get(act)
         if isinstance(tmpl, dict):
             def _sub(v: Any) -> Any:
                 if isinstance(v, str):
-                    return v.replace("{query}", query).replace(
-                        "{symbol}", sym).replace("{ticker}", ticker)
+                    return (v.replace("{query}", query)
+                            .replace("{symbol}", sym)
+                            .replace("{av_ticker}", av_ticker)
+                            .replace("{ticker}", ticker))
                 return v
             return {k: _sub(v) for k, v in tmpl.items()}
     return {"query": query}
