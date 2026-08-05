@@ -209,6 +209,18 @@ def build_adapter(config: Any, transport: Optional[Transport] = None) -> Any:
     api_key = str(getattr(config, "api_key", "") or "") if config is not None else ""
     if not enabled or dry_run or not api_key:
         return MockActionAdapter()
+    transport_mode = str(
+        getattr(config, "transport", "rest") or "rest"
+    ).strip().lower() if config is not None else "rest"
+    if transport_mode == "mcp":
+        from action.mcp_client import McpActionAdapter  # lazy — keeps import light
+        return McpActionAdapter(
+            api_key,
+            url=str(getattr(config, "mcp_url", "") or "https://connect.composio.dev/mcp"),
+            auth_header=str(getattr(config, "mcp_auth_header", "") or "x-consumer-api-key"),
+            entity_id=str(getattr(config, "entity_id", "default") or "default"),
+            timeout_seconds=float(getattr(config, "timeout_seconds", 30.0) or 30.0),
+        )
     return ComposioAdapter(
         api_key,
         base_url=str(getattr(config, "base_url", "") or "https://backend.composio.dev"),

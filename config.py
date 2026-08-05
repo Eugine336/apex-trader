@@ -3849,6 +3849,11 @@ class ComposioConfig:
     base_url: str = "https://backend.composio.dev"
     entity_id: str = "default"
     api_version: str = "v3"           # Composio REST API version (v3 current)
+    # Transport: "rest" (backend.composio.dev REST) or "mcp" (Model Context
+    # Protocol server at connect.composio.dev/mcp, JSON-RPC, x-consumer-api-key).
+    transport: str = "rest"
+    mcp_url: str = "https://connect.composio.dev/mcp"
+    mcp_auth_header: str = "x-consumer-api-key"
     dry_run: bool = True
     require_source: bool = True
     auto_max_risk: str = "low"
@@ -3879,6 +3884,15 @@ class ComposioConfig:
         self.api_version = (
             os.getenv("COMPOSIO_API_VERSION", self.api_version) or "v3"
         ).strip().lower() or "v3"
+        self.transport = (
+            os.getenv("COMPOSIO_TRANSPORT", self.transport) or "rest"
+        ).strip().lower() or "rest"
+        self.mcp_url = (
+            os.getenv("COMPOSIO_MCP_URL", self.mcp_url) or "https://connect.composio.dev/mcp"
+        ).strip()
+        self.mcp_auth_header = (
+            os.getenv("COMPOSIO_MCP_AUTH_HEADER", self.mcp_auth_header) or "x-consumer-api-key"
+        ).strip()
         self.auto_max_risk = (
             os.getenv("COMPOSIO_AUTO_MAX_RISK", self.auto_max_risk) or "low"
         ).strip().lower()
@@ -3933,6 +3947,10 @@ class ComposioConfig:
         if float(self.timeout_seconds) <= 0:
             raise ValueError(
                 f"ComposioConfig.timeout_seconds must be > 0, got {self.timeout_seconds!r}"
+            )
+        if self.transport not in ("rest", "mcp"):
+            raise ValueError(
+                f"ComposioConfig.transport must be rest|mcp, got {self.transport!r}"
             )
 
     def available_providers_list(self) -> list:
