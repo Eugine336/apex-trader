@@ -940,6 +940,13 @@ class RiskConfig:
     # as the real risk stays within this cap. Trades whose min-lot risk would
     # exceed this (e.g. 0.01 lot of Gold on a $5 account) are still rejected.
     max_risk_pct_per_trade: float = 5.0
+    # Opportunity-harvesting opt-in (Constitution Part V). When True, an entry
+    # whose UNAVOIDABLE broker-minimum lot would risk more than the per-trade
+    # ceiling is taken at the minimum lot instead of being rejected — so a small
+    # account can still participate in the opportunities the Brain authorises.
+    # The broker's own margin/min-lot floor stays the real hard limit. Default
+    # OFF (conservative). env RISK_ALLOW_MIN_LOT_OVER_RISK.
+    allow_min_lot_over_risk: bool = False
     backtest_starting_balance_usd: float = 10_000.0
     tp3_ladder_enabled: bool = True
     tp3_r_multiple: float = 5.0
@@ -1241,6 +1248,10 @@ class RiskConfig:
                         "({!r}) — keeping default {}s",
                         _env_tick_age, self.max_tick_age_seconds,
                     )
+
+        self.allow_min_lot_over_risk = _llm_env_bool(
+            "RISK_ALLOW_MIN_LOT_OVER_RISK", self.allow_min_lot_over_risk
+        )
 
         def _check_finite_positive(name: str, val: float) -> None:
             if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
