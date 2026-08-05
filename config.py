@@ -4002,6 +4002,12 @@ class CognitionConfig:
     origination_mode: str = "shadow"
     origination_risk_fraction: float = 0.01   # fraction of balance risked per originated entry
     origination_max_exposure: float = 1.0     # cap on the campaign's desired exposure (0..1)
+    # Part VI — how the Brain's management verdicts (EXIT/REVERSE/SCALE_OUT/
+    # PROTECT_PROFIT/TIGHTEN_RISK/SCALE_IN) reach the broker.
+    #   "off"    — never manage (observation only).
+    #   "shadow" — record the intended management action, submit nothing (default).
+    #   "live"   — realise it on MT5 via the wired management sink.
+    management_mode: str = "shadow"
     # Part X — when the Brain originates an entry without an explicit protective
     # stop, execution derives one deterministically: a stop ``origination_stop_fraction``
     # of price away (0.4% default, instrument-agnostic) with a take-profit at the
@@ -4058,6 +4064,9 @@ class CognitionConfig:
         self.origination_mode = (
             os.getenv("COGNITION_ORIGINATION_MODE", self.origination_mode) or "shadow"
         ).strip().lower()
+        self.management_mode = (
+            os.getenv("COGNITION_MANAGEMENT_MODE", self.management_mode) or "shadow"
+        ).strip().lower()
         self.event_driven = _llm_env_bool("COGNITION_EVENT_DRIVEN", self.event_driven)
         for env_name, attr in (
             ("COGNITION_LOOP_INTERVAL_SECONDS", "loop_interval_seconds"),
@@ -4109,6 +4118,11 @@ class CognitionConfig:
             raise ValueError(
                 "CognitionConfig.origination_mode must be off|shadow|live, got "
                 f"{self.origination_mode!r}"
+            )
+        if self.management_mode not in ("off", "shadow", "live"):
+            raise ValueError(
+                "CognitionConfig.management_mode must be off|shadow|live, got "
+                f"{self.management_mode!r}"
             )
         if not (0.0 <= float(self.origination_risk_fraction) <= 1.0):
             raise ValueError(

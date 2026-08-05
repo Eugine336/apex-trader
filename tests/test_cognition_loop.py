@@ -526,3 +526,91 @@ def test_event_trigger_is_fault_safe():
     loop = _event_loop()
     # non-numeric confidence must not raise
     assert loop.maybe_reason_on_change("XAUUSD", "LONG", None) is True
+
+
+# ── Brain management → sink (Part VI) ─────────────────────────────────────────
+
+class _ManageBrain:
+    """Brain stub whose manage() emits a fixed management decision."""
+
+    available = True
+
+    def __init__(self, decision_type):
+        self._dt = decision_type
+        self.managed = 0
+
+    def reason(self, market_state, now=None):
+        return SimpleNamespace(
+            decision=SimpleNamespace(symbol=market_state.symbol, authorises_action=False),
+            direction="LONG")
+
+    def manage(self, position, market_state, now=None):
+        self.managed += 1
+        dec = SimpleNamespace(decision_type=self._dt, symbol=position.symbol,
+                              confidence=0.8, thesis="mgmt", decision_id="d1")
+        return SimpleNamespace(decision=dec, direction=position.direction)
+
+
+def _mgmt_pos(symbol="XAUUSD", direction="LONG"):
+    return SimpleNamespace(symbol=symbol, direction=direction)
+
+
+def test_management_shadow_records_but_does_not_call_sink():
+    calls = []
+    loop = CognitionLoop(
+        _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: [],
+        position_source=lambda: [_mgmt_pos()], management_mode="shadow",
+    )
+    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.run_once()
+    st = loop.get_status()
+    assert st["manage_intended"] == 1
+    assert st["manage_submitted"] == 0
+    assert calls == []   # shadow never calls the sink
+
+
+def test_management_live_calls_sink():
+    calls = []
+    loop = CognitionLoop(
+        _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: [],
+        position_source=lambda: [_mgmt_pos()], management_mode="live",
+    )
+    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.run_once()
+    st = loop.get_status()
+    assert st["manage_submitted"] == 1
+    assert len(calls) == 1 and calls[0].kind == "close"
+
+
+def test_management_hold_is_noop():
+    calls = []
+    loop = CognitionLoop(
+        _ManageBrain(DecisionType.HOLD), _StubConsolidator(), lambda: [],
+        position_source=lambda: [_mgmt_pos()], management_mode="live",
+    )
+    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.run_once()
+    assert loop.get_status()["manage_intended"] == 0
+    assert calls == []
+
+
+def test_management_off_skips_entirely():
+    calls = []
+    loop = CognitionLoop(
+        _ManageBrain(DecisionType.EXIT), _StubConsolidator(), lambda: [],
+        position_source=lambda: [_mgmt_pos()], management_mode="off",
+    )
+    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.run_once()
+    assert loop.get_status()["manage_intended"] == 0
+    assert calls == []
+
+
+def test_management_live_without_sink_degrades_to_shadow():
+    loop = CognitionLoop(
+        _ManageBrain(DecisionType.REVERSE), _StubConsolidator(), lambda: [],
+        position_source=lambda: [_mgmt_pos()], management_mode="live",
+    )
+    loop.run_once()  # no sink wired
+    st = loop.get_status()
+    assert st["manage_intended"] == 1 and st["manage_submitted"] == 0

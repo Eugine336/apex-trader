@@ -1509,6 +1509,10 @@ class SystemContext:
                     operations_author=_ops_author,
                     operations_sink=(ctx.action_planner.submit
                                      if ctx.action_planner is not None else None),
+                    management_mode=str(
+                        getattr(cog_cfg, "management_mode", "shadow")
+                        if cog_cfg is not None else "shadow"
+                    ),
                     event_driven=bool(
                         getattr(cog_cfg, "event_driven", False)
                         if cog_cfg is not None else False
