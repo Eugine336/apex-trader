@@ -224,7 +224,7 @@ def build_adapter(config: Any, transport: Optional[Transport] = None) -> Any:
                 getattr(config, "mcp_router_tool", "") or "COMPOSIO_MULTI_EXECUTE_TOOL"
             ),
             router_tools_key=str(
-                getattr(config, "mcp_router_tools_key", "") or "tool_calls"
+                getattr(config, "mcp_router_tools_key", "") or "tools"
             ),
             router_slug_key=str(
                 getattr(config, "mcp_router_slug_key", "") or "tool_slug"

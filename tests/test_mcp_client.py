@@ -83,8 +83,9 @@ def test_app_action_is_routed_through_executor_meta_tool():
     call = next(c for c in tr.calls if c["msg"]["method"] == "tools/call")
     params = call["msg"]["params"]
     assert params["name"] == "COMPOSIO_MULTI_EXECUTE_TOOL"
+    # Confirmed live shape: top-level "tools" array of {tool_slug, arguments}.
     assert params["arguments"] == {
-        "tool_calls": [{"tool_slug": "SLACK_SEND_MESSAGE", "arguments": {"message": "hi"}}]
+        "tools": [{"tool_slug": "SLACK_SEND_MESSAGE", "arguments": {"message": "hi"}}]
     }
     assert res.ok is True
 
