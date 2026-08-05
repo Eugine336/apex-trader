@@ -12,6 +12,7 @@ Pure standard library, fully offline-testable.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
@@ -174,4 +175,66 @@ def translate(
         return None
 
 
-__all__ = ["OriginationIntent", "translate", "derive_protective_levels"]
+def compute_lot_size(
+    *,
+    risk_usd: float,
+    stop_distance: float,
+    tick_value: float,
+    tick_size: float,
+    vol_min: float,
+    vol_step: float,
+    vol_max: float = 1e9,
+    max_lots: float = 0.0,
+    floor_to_min: bool = True,
+) -> float:
+    """Deterministic, broker-valid lot size for a Brain-originated entry.
+
+    The Brain decides *how much conviction* to put on a trade; this converts
+    that into the actual lot a human would type — sized by risk and snapped to
+    the broker's volume ladder so the order is always valid:
+
+    * ``lots = risk_usd / loss_per_lot`` where ``loss_per_lot`` = the money lost
+      on 1.0 lot if price travels ``stop_distance`` (from tick value/size).
+    * Rounded **down** to ``vol_step`` (never round risk up), then bounded by
+      ``vol_max`` and an optional ``max_lots`` cap.
+    * If the risk-correct size is below the broker minimum: return ``vol_min``
+      when ``floor_to_min`` (the opportunity-harvest opt-in), else ``0.0`` so the
+      caller declines rather than sending an under-min order.
+
+    Returns ``0.0`` (skip) on unusable inputs unless ``floor_to_min`` lets a
+    valid ``vol_min`` stand. Never raises.
+    """
+    try:
+        vmin = max(0.0, float(vol_min))
+        vstep = max(0.0, float(vol_step))
+        vmax = float(vol_max) if vol_max and vol_max > 0 else 1e9
+        base = 0.0
+        try:
+            sd = float(stop_distance)
+            tv = float(tick_value)
+            ts = float(tick_size)
+            ru = float(risk_usd)
+            if sd > 0 and tv > 0 and ts > 0 and ru > 0:
+                loss_per_lot = (sd / ts) * tv
+                if loss_per_lot > 0:
+                    base = ru / loss_per_lot
+        except (TypeError, ValueError):
+            base = 0.0
+        # Snap DOWN to the broker volume step.
+        if vstep > 0 and base > 0:
+            base = math.floor(base / vstep + 1e-9) * vstep
+        # Apply caps before the min-floor so a cap can never sit below min.
+        if max_lots and max_lots > 0:
+            base = min(base, float(max_lots))
+        base = min(base, vmax)
+        # Below the broker minimum: floor to min (harvest) or decline.
+        if base < vmin or base <= 0:
+            if floor_to_min and vmin > 0 and vmin <= vmax:
+                return round(vmin, 2)
+            return 0.0
+        return round(base, 2)
+    except Exception:  # noqa: BLE001 — sizing must never raise
+        return 0.0
+
+
+__all__ = ["OriginationIntent", "translate", "derive_protective_levels", "compute_lot_size"]
