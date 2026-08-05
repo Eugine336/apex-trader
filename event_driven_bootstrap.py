@@ -8102,111 +8102,11 @@ class EventDrivenSystem:
                 except Exception as exc:
                     logger.debug("[atr-levels] EntryEngine ATR calc failed: {}", exc)
 
-            # ── Orchestrator round table — graded sizing ─────────────
+            # ── Orchestrator round table — RETIRED (Single Reasoner cutover) ──
+            # The legacy graded-sizing / physics-veto decider is deleted; sizing
+            # stays neutral here (the Brain owns market judgment, and the
+            # deterministic risk stack still validates feasibility downstream).
             orch_mult = 1.0
-            if ctx is not None and ctx.orchestrator is not None:
-                try:
-                    from brain.orchestrator import TradeProposal
-                    wm = self._wm_store.get(symbol)
-                    structure = wm.structure_by_tf() if wm is not None else {}
-                    h4_sa = structure.get("H4")
-                    h4_alignment = (
-                        float(getattr(h4_sa, "confidence", 0.0) or 0.0)
-                        if h4_sa is not None else None
-                    )
-
-                    want_dir = "LONG" if direction.upper() in ("BUY", "LONG") else "SHORT"
-
-                    # Select the ranked opportunity matching the entry direction
-                    # (highest EV) so the orchestrator's ranker_ev sizing
-                    # dimension is fed by the calibrated candidate EV instead of
-                    # staying neutral.  Gated by ``orchestrator.use_ranker_ev``
-                    # (default off) so sizing is unchanged until the operator
-                    # opts in; best-effort selection leaves the fields None
-                    # (neutral) on any miss.
-                    ranker_ev = None
-                    ranker_coherence = None
-                    ranker_confidence = None
-                    candidate_count = 0
-                    _use_ranker_ev = False
-                    try:
-                        _orch_cfg = getattr(self._config, "orchestrator", None)
-                        _use_ranker_ev = bool(
-                            getattr(_orch_cfg, "use_ranker_ev", False)
-                        )
-                    except Exception:
-                        _use_ranker_ev = False
-                    if _use_ranker_ev:
-                        try:
-                            cands = (
-                                wm.candidates_list()
-                                if wm is not None and hasattr(wm, "candidates_list")
-                                else list(getattr(wm, "candidates", ()) or [])
-                            )
-                            matching = [
-                                c for c in cands
-                                if str(getattr(c, "direction", "")).upper() == want_dir
-                            ]
-                            candidate_count = len(cands)
-                            if matching:
-                                best = max(
-                                    matching,
-                                    key=lambda c: float(getattr(c, "expected_value", 0.0) or 0.0),
-                                )
-                                ranker_ev = float(getattr(best, "expected_value", 0.0) or 0.0)
-                                ranker_coherence = float(getattr(best, "coherence", 0.0) or 0.0)
-                                ranker_confidence = float(getattr(best, "confidence", 0.0) or 0.0)
-                        except Exception as exc:
-                            logger.debug(
-                                "[orch] {} candidate EV select failed: {}", symbol, exc,
-                            )
-
-                    proposal = TradeProposal(
-                        pair=symbol,
-                        direction=want_dir,
-                        scan_score=float(conviction),
-                        de_conviction=de_conviction if de_conviction > 0 else None,
-                        de_margin=None,
-                        tf_alignment=h4_alignment,
-                        ranker_ev=ranker_ev,
-                        ranker_coherence=ranker_coherence,
-                        ranker_confidence=ranker_confidence,
-                        candidate_count=candidate_count,
-                    )
-                    verdict = ctx.orchestrator.evaluate(proposal)
-                    # Emit ORCHESTRATOR_PROPOSAL so the dashboard's orchestrator
-                    # panel is fed by the event-driven system (not just the
-                    # legacy TradingLoop).  Covers both applied and vetoed cases.
-                    try:
-                        store = get_event_store()
-                        if store is not None:
-                            payload = verdict.to_dict() if hasattr(verdict, "to_dict") else {}
-                            payload["applied"] = not bool(getattr(verdict, "vetoed", False))
-                            if hasattr(proposal, "to_dict"):
-                                payload["proposal"] = proposal.to_dict()
-                            store.emit(
-                                event_type=DE.ORCHESTRATOR_PROPOSAL,
-                                severity="INFO",
-                                symbol=symbol,
-                                source_module="brain.orchestrator",
-                                payload=payload,
-                            )
-                    except Exception as exc:
-                        logger.debug("[orchestrator] proposal persist failed: {}", exc)
-                    if verdict.vetoed:
-                        logger.warning(
-                            "EVENT-DRIVEN ENTRY VETOED | {} — Orchestrator: {}",
-                            symbol, verdict.veto_reason,
-                        )
-                        return
-                    orch_mult = verdict.size_multiplier
-                    if orch_mult < 1.0:
-                        logger.info(
-                            "[ORCH] {} size×{:.2f} — {}",
-                            symbol, orch_mult, verdict.summary()[:120],
-                        )
-                except Exception as exc:
-                    logger.debug("[orchestrator] Orchestrator eval failed: {}", exc)
 
             # ── Adaptive optimizer: losing-pattern block + size adjust ──
             # Applies learned pair/session/regime edge to the live entry: a

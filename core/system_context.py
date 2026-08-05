@@ -34,7 +34,6 @@ if TYPE_CHECKING:
     from brain.drawdown_guard import DrawdownGuard
     from brain.execution_monitor import ExecutionMonitor
     from brain.opportunity_density import OpportunityDensityTracker
-    from brain.orchestrator import Orchestrator
     from brain.outcome_feedback import OutcomeFeedback
     from brain.regime_detector import SystemVolatilityMonitor
     from brain.session_engine import NewsGuard, SessionEngine
@@ -165,7 +164,7 @@ class SystemContext:
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
     opportunity_executor: Optional[OpportunityExecutor] = None
-    orchestrator: Optional[Orchestrator] = None
+    orchestrator: Optional[Any] = None  # RETIRED legacy decider — always None
     system_volatility_monitor: Optional[SystemVolatilityMonitor] = None
     opportunity_density_tracker: Optional[OpportunityDensityTracker] = None
     entry_engine: Optional[EntryEngine] = None
@@ -542,13 +541,12 @@ class SystemContext:
         except Exception as exc:
             logger.warning("[SystemContext] OpportunityExecutor init failed: {}", exc)
 
-        # ── Orchestrator ────────────────────────────────────────────
-        try:
-            from brain.orchestrator import Orchestrator as _Orchestrator
-            orch_cfg = getattr(config, "orchestrator", None)
-            ctx.orchestrator = _Orchestrator(config=orch_cfg)
-        except Exception as exc:
-            logger.warning("[SystemContext] Orchestrator init failed: {}", exc)
+        # ── Orchestrator — RETIRED (Single Reasoner cutover, Part III.2) ──
+        # The legacy graded-sizing / physics-veto round table was a market
+        # decision authority; it is deleted. ctx.orchestrator stays None and
+        # every consumer (grade_candidate / evaluate) is None-guarded, so sizing
+        # degrades to neutral (×1.0) with no veto.
+        ctx.orchestrator = None
 
         # ── SystemVolatilityMonitor ─────────────────────────────────
         try:
