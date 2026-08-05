@@ -48,9 +48,13 @@ fresh :meth:`update` resets the decay clock. :meth:`challenge` /
 below the action threshold, expiring below the floor, or a decay-induced change
 of the dominant side — as edge-triggered log lines.
 
-This session wires the engine **observationally** (it runs in parallel with the
-existing consensus pipeline and is surfaced via Governance ``get_status``); it
-does not yet drive entries. Later sessions consume its output.
+This engine was originally wired **observationally** — running in parallel with
+the existing consensus pipeline and surfaced via Governance ``get_status``
+without driving entries. Later sessions promoted it into an active participant in
+the decision path: its competing theses now back a live entry-quality gate
+(Gap 1b) and, via :meth:`evaluate_open_position`, drive evidence-based exits and
+thesis-flip reversals for open positions. It still never places orders itself —
+it emits a thesis read that the decision and management paths consume.
 
 Design principles (mirror the Governance department leaf modules):
 
