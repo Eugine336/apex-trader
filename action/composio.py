@@ -220,6 +220,18 @@ def build_adapter(config: Any, transport: Optional[Transport] = None) -> Any:
             auth_header=str(getattr(config, "mcp_auth_header", "") or "x-consumer-api-key"),
             entity_id=str(getattr(config, "entity_id", "default") or "default"),
             timeout_seconds=float(getattr(config, "timeout_seconds", 30.0) or 30.0),
+            router_tool=str(
+                getattr(config, "mcp_router_tool", "") or "COMPOSIO_MULTI_EXECUTE_TOOL"
+            ),
+            router_tools_key=str(
+                getattr(config, "mcp_router_tools_key", "") or "tool_calls"
+            ),
+            router_slug_key=str(
+                getattr(config, "mcp_router_slug_key", "") or "tool_slug"
+            ),
+            router_args_key=str(
+                getattr(config, "mcp_router_args_key", "") or "arguments"
+            ),
         )
     return ComposioAdapter(
         api_key,

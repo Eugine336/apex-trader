@@ -127,6 +127,29 @@ def main() -> int:
         print("  connected/authorised for this entity_id yet on the Composio side.")
     print()
 
+    # --- Step 2b: executor meta-tool schema --------------------------------
+    # Composio's MCP server exposes generic meta-tools; app-actions are run by
+    # dispatching through the executor meta-tool with the target slug +
+    # arguments. Print that tool's inputSchema so the exact wrapper keys can be
+    # confirmed (and, if they differ from the defaults, set via
+    # COMPOSIO_MCP_ROUTER_TOOLS_KEY / _SLUG_KEY / _ARGS_KEY in .env).
+    router_tool = os.getenv("COMPOSIO_MCP_ROUTER_TOOL", "COMPOSIO_MULTI_EXECUTE_TOOL").strip()
+    names = [str(t.get("name")) for t in tools]
+    print(f"=== Step 2b: executor meta-tool schema ({router_tool}) ===")
+    if router_tool in names:
+        rt = next(t for t in tools if str(t.get("name")) == router_tool)
+        schema = rt.get("inputSchema") or rt.get("input_schema") or {}
+        print(f"[OK] {router_tool} is advertised. App-actions will be routed through it.")
+        print("  inputSchema:")
+        print("    " + json.dumps(schema, indent=2)[:1500].replace("\n", "\n    "))
+        print("  -> If the top-level property is not 'tool_calls', or items don't use")
+        print("     'tool_slug'/'arguments', set COMPOSIO_MCP_ROUTER_TOOLS_KEY /")
+        print("     COMPOSIO_MCP_ROUTER_SLUG_KEY / COMPOSIO_MCP_ROUTER_ARGS_KEY in .env.")
+    else:
+        print(f"  [note] {router_tool} is not advertised — the adapter will call tools by")
+        print("  name directly. Adjust COMPOSIO_MCP_ROUTER_TOOL if the executor differs.")
+    print()
+
     # --- Step 3 (optional): a real tool call ---------------------------
     if ns.capability:
         print(f"=== Step 3: tools/call ({ns.capability}) ===")
