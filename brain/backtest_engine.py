@@ -854,16 +854,11 @@ class BacktestEngine:
         # feed/gate are None-guarded and no-op. `self.thesis_engine` stays None.
         self.thesis_engine = None
 
-        # ── Orchestrator round table (graded size / physics veto) ────
+        # ── Orchestrator — RETIRED (Single Reasoner cutover, Part III.2) ──
+        # The legacy graded-sizing / physics-veto round table is deleted;
+        # backtest sizing stays neutral (mirrors the live path where
+        # ctx.orchestrator is None). `self.bt_orchestrator` stays None.
         self.bt_orchestrator = None
-        try:
-            from brain.orchestrator import Orchestrator
-            self.bt_orchestrator = Orchestrator(
-                config=getattr(self.config, "orchestrator", None),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[backtest] Orchestrator unavailable: {}", exc)
-            self.bt_orchestrator = None
 
         # ── AdaptiveOptimizer (ml_adapter) ───────────────────────────
         # Learned pair/regime/session edge + losing-pattern / AVOID vetoes,
@@ -3070,72 +3065,9 @@ class BacktestEngine:
         engine = getattr(self, "bt_orchestrator", None)
         if engine is None:
             return 1.0, False
-        try:
-            from brain.orchestrator import TradeProposal
-
-            want_dir = "LONG" if str(direction).upper() in ("BUY", "LONG") else "SHORT"
-            structure = wm.structure_by_tf() if wm is not None else {}
-            h4_sa = structure.get("H4")
-            h4_alignment = (
-                float(getattr(h4_sa, "confidence", 0.0) or 0.0)
-                if h4_sa is not None else None
-            )
-
-            # Ranker-EV dimension is gated by ``orchestrator.use_ranker_ev``
-            # (default off), mirroring live so sizing is unchanged until opted in.
-            ranker_ev = ranker_coherence = ranker_confidence = None
-            candidate_count = 0
-            try:
-                _orch_cfg = getattr(self.config, "orchestrator", None)
-                _use_ranker_ev = bool(getattr(_orch_cfg, "use_ranker_ev", False))
-            except Exception:  # noqa: BLE001
-                _use_ranker_ev = False
-            if _use_ranker_ev and wm is not None:
-                try:
-                    cands = (
-                        wm.candidates_list()
-                        if hasattr(wm, "candidates_list")
-                        else list(getattr(wm, "candidates", ()) or [])
-                    )
-                    candidate_count = len(cands)
-                    matching = [
-                        c for c in cands
-                        if str(getattr(c, "direction", "")).upper() == want_dir
-                    ]
-                    if matching:
-                        best = max(
-                            matching,
-                            key=lambda c: float(getattr(c, "expected_value", 0.0) or 0.0),
-                        )
-                        ranker_ev = float(getattr(best, "expected_value", 0.0) or 0.0)
-                        ranker_coherence = float(getattr(best, "coherence", 0.0) or 0.0)
-                        ranker_confidence = float(getattr(best, "confidence", 0.0) or 0.0)
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("[backtest] orch candidate EV select failed: {}", exc)
-
-            proposal = TradeProposal(
-                pair=pair,
-                direction=want_dir,
-                scan_score=float(scan_score),
-                de_conviction=de_conviction if de_conviction > 0 else None,
-                de_margin=None,
-                tf_alignment=h4_alignment,
-                ranker_ev=ranker_ev,
-                ranker_coherence=ranker_coherence,
-                ranker_confidence=ranker_confidence,
-                candidate_count=candidate_count,
-            )
-            verdict = engine.evaluate(proposal)
-            if getattr(verdict, "vetoed", False):
-                logger.debug(
-                    "[backtest] {} {} orchestrator veto: {}",
-                    pair, want_dir, getattr(verdict, "veto_reason", ""),
-                )
-                return 0.0, True
-            return float(getattr(verdict, "size_multiplier", 1.0) or 1.0), False
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[backtest] orchestrator eval failed for {}: {}", pair, exc)
-            return 1.0, False
+        # Orchestrator retired (Single Reasoner cutover) — bt_orchestrator is
+        # always None above, so the graded round-table path is gone; neutral.
+        return 1.0, False
 
     def _adaptive_size_mult(
         self, pair: str, wm, now: Optional[datetime], zone_type: str,

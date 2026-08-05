@@ -21,18 +21,25 @@
 >   consumer already read it via `getattr(ctx,"thesis_engine",None)` and now
 >   degrades cleanly to the Brain + mechanical stops. `cognition.legacy_audit`
 >   now reports **2 present / 1 removed** (was 3 present).
+> - **Stage 2b (legacy sizing decider deleted) — done:** `brain/orchestrator.py`
+>   (the graded-sizing / physics-veto round table + candidate grading) is
+>   **physically removed** (with its 5 unit tests). Constructors dropped
+>   (`system_context`, `backtest_engine`); `ctx.orchestrator` stays `None` and all
+>   consumers were already `None`-guarded → neutral sizing (×1.0), no veto. The
+>   one pure helper (`gate_quality_multiplier`) is inlined in `trigger/entry_engine`.
+>   (Not an audit-tracked verdict/vote emitter, so the audit count is unchanged.)
 >
 > Deterministic safety/feasibility (Part X) and position closing/de-risking are
 > retained untouched. **Remaining (the validated tail, demo-gated per Part XV):**
 > (1) move exit/reverse *execution* authority from the legacy managers to the
 > Brain's `manage()`; (2) relocate the shared `Vote`/`VoteResult` types, rewire
 > `decision_core`/scanner/consensus consumers to Evidence, then delete
-> `brain/directional_consensus.py` (+ retire `brain/orchestrator.py`); (3) remove
-> the god-file `CLOSE/HOLD` management verdicts and decompose the two coupled
-> cores (`PositionEvaluator`, `EventDrivenSystem`) — driving `legacy_audit` to
-> `clean=True`. These change live control flow and MUST be validated on the demo
-> (a valid `LLM_API_KEY` is required for the Brain to reason — with no reasoning
-> the single path fail-safes to NO entries).
+> `brain/directional_consensus.py`; (3) remove the god-file `CLOSE/HOLD`
+> management verdicts and decompose the two coupled cores (`PositionEvaluator`,
+> `EventDrivenSystem`) — driving `legacy_audit` to `clean=True`. These change live
+> control flow and MUST be validated on the demo (a valid `LLM_API_KEY` is
+> required for the Brain to reason — with no reasoning the single path fail-safes
+> to NO entries).
 
 ---
 
