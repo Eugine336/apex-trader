@@ -163,6 +163,7 @@ CAP_DOCS_UPDATE = "docs.update"
 CAP_REPORT_PUBLISH = "report.publish"
 CAP_RESEARCH_RECORD = "research.record"
 CAP_KNOWLEDGE_RETRIEVE = "knowledge.retrieve"
+CAP_ADVISOR_CONSULT = "advisor.consult"
 
 
 def default_registry() -> CapabilityRegistry:
@@ -231,6 +232,15 @@ def default_registry() -> CapabilityRegistry:
         required_params=("query",), reversible=True,
         description="Retrieve external knowledge → becomes Evidence (Article 4/8).",
     ))
+    reg.register(Capability(
+        name=CAP_ADVISOR_CONSULT, category=CapabilityCategory.KNOWLEDGE_RETRIEVAL,
+        risk_tier=RiskTier.NEGLIGIBLE,
+        # An AI advisor reached THROUGH Composio. Its answer is advisory Evidence
+        # (Article 8) — never a vote, never a second Brain. Provider-swappable.
+        providers=(ProviderBinding("composio_search", "COMPOSIO_SEARCH_SEARCH"),),
+        required_params=("query",), reversible=True,
+        description="Consult an AI advisor → advisory Evidence (Article 8).",
+    ))
     return reg
 
 
@@ -247,4 +257,5 @@ __all__ = [
     "CAP_REPORT_PUBLISH",
     "CAP_RESEARCH_RECORD",
     "CAP_KNOWLEDGE_RETRIEVE",
+    "CAP_ADVISOR_CONSULT",
 ]

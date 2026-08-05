@@ -159,6 +159,11 @@ class ActionResult:
     external_ref: str = ""       # id/url the external system returned
     detail: str = ""
     verified: bool = False       # did Observation confirm the intended effect?
+    # Part IX Art 3/4/8 — the payload a READ capability returns (search hits,
+    # research passages, an advisor's answer). Empty for pure side-effect
+    # actions (notify/ticket); carried so knowledge retrievals can become
+    # Evidence for the Brain rather than being discarded on success.
+    data: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -166,6 +171,7 @@ class ActionResult:
             "external_ref": self.external_ref,
             "detail": self.detail,
             "verified": self.verified,
+            "data": dict(self.data or {}),
         }
 
 

@@ -104,6 +104,34 @@ def test_loop_set_developing_source_delegates_to_consolidator():
     assert consolidator._developing_source is fn
 
 
+class _StubKnowledge:
+    def __init__(self):
+        self.calls = 0
+
+    def evidence_for(self, symbol, *, now=None):
+        from cognition.contracts import Evidence, EvidenceDomain
+        self.calls += 1
+        return [Evidence(source_module="composio.knowledge",
+                         domain=EvidenceDomain.MACRO, symbol=symbol,
+                         observation="external context", confidence=0.4)]
+
+
+def test_consolidator_surfaces_knowledge_evidence():
+    ks = _StubKnowledge()
+    cons = EvidenceConsolidator(ctx=None, knowledge=ks)
+    fresh = cons.build("XAUUSD").fresh_evidence()
+    assert ks.calls == 1
+    assert any(e.source_module == "composio.knowledge" for e in fresh)
+
+
+def test_consolidator_knowledge_is_fault_safe():
+    class _Boom:
+        def evidence_for(self, symbol, *, now=None):
+            raise RuntimeError("composio down")
+    cons = EvidenceConsolidator(ctx=None, knowledge=_Boom())
+    assert cons.build("XAUUSD").consolidation()["evidence_fresh"] == 0  # must not raise
+
+
 # ── CognitionLoop ─────────────────────────────────────────────────────────────
 
 class _StubBrain:
