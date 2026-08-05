@@ -25,12 +25,17 @@ _KNOWN = {s.module for s in KNOWN_LEGACY_SURFACES}
 
 def test_audit_detects_known_legacy_emitters():
     audit = audit_competing_decision_code()
-    # Every documented legacy surface is currently present and detected.
-    assert _KNOWN.issubset(set(audit.known_present)), (
-        f"missing known legacy surfaces: {_KNOWN - set(audit.known_present)}"
-    )
+    present = set(audit.known_present)
+    # brain/thesis_engine.py has been physically deleted (Single Reasoner
+    # cutover, Stage 2) — the audit now reports it as *removed*, not present.
+    # The remaining documented emitters are still present until their cutover.
+    assert "brain/directional_consensus.py" in present
+    assert "event_driven_bootstrap.py" in present
+    assert "brain/thesis_engine.py" in audit.removed
     hit_modules = {f.module for f in audit.findings}
-    assert _KNOWN.issubset(hit_modules)
+    assert "brain/directional_consensus.py" in hit_modules
+    assert "event_driven_bootstrap.py" in hit_modules
+    assert "brain/thesis_engine.py" not in hit_modules  # gone
 
 
 def test_no_unexpected_competing_decision_code():

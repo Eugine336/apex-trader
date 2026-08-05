@@ -98,8 +98,9 @@ KNOWN_LEGACY_SURFACES = (
         module="brain/thesis_engine.py",
         authority="thesis HOLD / exit verdicts",
         article="III.2 / VI.5 (management judgment)",
-        note="reads flow to the Brain as structure/thesis Evidence; the Brain gate "
-        "authorises exits (Phase F) — legacy verdict removed at cutover",
+        note="RETIRED — physically deleted in the Single Reasoner cutover; the "
+        "Brain owns entry/exit judgment and the thesis reads flow in as Evidence. "
+        "Kept in the registry so the audit reports it as 'removed' (cutover progress)",
     ),
     LegacySurface(
         module="event_driven_bootstrap.py",

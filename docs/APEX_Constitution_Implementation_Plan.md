@@ -7,23 +7,32 @@
 >
 > Legend: ✅ = 1:1 in code · 🟡 = partial · ❌ = not started.
 >
-> **Progress:** Phases A–L are all shipped and merged. **Single-path cutover —
-> Stage 1 (entry authority) is now live in code:** `CognitionConfig.single_path`
-> (default on, env `COGNITION_SINGLE_PATH`) severs the legacy entry emitters at
-> the live funnel (`event_driven_bootstrap._on_entry_decision` refuses any entry
-> whose `source != "ai_brain"` via `cognition/single_path.legacy_entry_suppressed`),
-> and `.env` sets `COGNITION_ORIGINATION_MODE=live` so the AI Brain is the SOLE
-> entry authority (loop → origination sink → aggregator → RiskGate → broker).
+> **Progress:** Phases A–L are all shipped and merged. **Single-path cutover in
+> progress:**
+> - **Stage 1 (entry authority) — done:** `CognitionConfig.single_path` (default
+>   on, env `COGNITION_SINGLE_PATH`) severs the legacy entry emitters at the live
+>   funnel (`event_driven_bootstrap._on_entry_decision` refuses any entry whose
+>   `source != "ai_brain"` via `cognition/single_path.legacy_entry_suppressed`),
+>   and `.env` sets `COGNITION_ORIGINATION_MODE=live` so the AI Brain is the SOLE
+>   entry authority (loop → origination sink → aggregator → RiskGate → broker).
+> - **Stage 2a (first legacy decider deleted) — done:** `brain/thesis_engine.py`
+>   is **physically removed** (with its 5 unit tests). Its two constructors
+>   (`core/system_context.py`, `brain/backtest_engine.py`) are gone; every live
+>   consumer already read it via `getattr(ctx,"thesis_engine",None)` and now
+>   degrades cleanly to the Brain + mechanical stops. `cognition.legacy_audit`
+>   now reports **2 present / 1 removed** (was 3 present).
+>
 > Deterministic safety/feasibility (Part X) and position closing/de-risking are
 > retained untouched. **Remaining (the validated tail, demo-gated per Part XV):**
 > (1) move exit/reverse *execution* authority from the legacy managers to the
-> Brain's `manage()`; (2) physically delete the now-severed legacy decision
-> modules (`brain/directional_consensus.py`, `brain/thesis_engine.py` decision
-> paths) once their importers are rewired to Evidence, driving
-> `cognition.legacy_audit` to `clean=True`; (3) decompose the two coupled cores
-> (`PositionEvaluator`, `EventDrivenSystem`). These change live control flow and
-> MUST be validated on the demo (a valid `LLM_API_KEY` is required for the Brain
-> to reason — with no reasoning the single path fail-safes to NO entries).
+> Brain's `manage()`; (2) relocate the shared `Vote`/`VoteResult` types, rewire
+> `decision_core`/scanner/consensus consumers to Evidence, then delete
+> `brain/directional_consensus.py` (+ retire `brain/orchestrator.py`); (3) remove
+> the god-file `CLOSE/HOLD` management verdicts and decompose the two coupled
+> cores (`PositionEvaluator`, `EventDrivenSystem`) — driving `legacy_audit` to
+> `clean=True`. These change live control flow and MUST be validated on the demo
+> (a valid `LLM_API_KEY` is required for the Brain to reason — with no reasoning
+> the single path fail-safes to NO entries).
 
 ---
 
