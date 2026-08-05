@@ -3305,6 +3305,35 @@ class EventDrivenSystem:
             logger.debug("[cognition] developing bias fetch failed for {}: {}", symbol, exc)
             return {}
 
+    def _nudge_cognition_on_developing(self, symbol: str) -> None:
+        """Wake the Brain on a meaningful forming-bar shift (event-driven cadence).
+
+        Reads the developing bias and hands its direction+confidence to the
+        cognition loop, which decides — under its own flip/delta trigger and
+        per-symbol floor — whether to reason immediately. The loop reasons on its
+        OWN thread, so this never blocks the developing-publish path on an LLM
+        call. Fully best-effort: any fault is swallowed.
+        """
+        try:
+            ctx = self._ctx
+            loop = getattr(ctx, "cognition_loop", None) if ctx is not None else None
+            if loop is None:
+                return
+            nudge = getattr(loop, "maybe_reason_on_change", None)
+            if not callable(nudge):
+                return
+            bias = self._cognition_developing_bias(symbol)
+            if not bias:
+                return
+            direction = str(bias.get("direction", "") or "")
+            try:
+                confidence = float(bias.get("confidence", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                confidence = 0.0
+            nudge(symbol, direction, confidence)
+        except Exception as exc:  # noqa: BLE001 — never disturb the developing loop
+            logger.debug("[cognition] developing nudge failed for {}: {}", symbol, exc)
+
     # ── Lifecycle ────────────────────────────────────────────────────
 
     def start(self) -> None:
@@ -6311,6 +6340,12 @@ class EventDrivenSystem:
             sym = str(symbol or "")
             if not sym:
                 return
+            # Event-driven "breathing": the forming-bar read just refreshed —
+            # give the AI Brain a chance to reason on THIS symbol immediately if
+            # its bias meaningfully shifted, rather than waiting for the next
+            # fixed cognition cycle. Best-effort; runs before the (now-dormant)
+            # legacy thesis path so it fires on every developing publish.
+            self._nudge_cognition_on_developing(sym)
             ctx = self._ctx
             engine = getattr(ctx, "thesis_engine", None) if ctx is not None else None
             if engine is None:

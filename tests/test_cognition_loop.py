@@ -440,3 +440,89 @@ def test_loop_operations_inert_when_author_disabled():
     loop.run_once()
     assert submitted == []
     assert loop.get_status()["ops_submitted"] == 0
+
+
+# ── Event-driven "breathing" (Part XII) ───────────────────────────────────────
+
+class _ManualClock:
+    def __init__(self, t=1000.0):
+        self.t = float(t)
+
+    def __call__(self):
+        return self.t
+
+
+def _event_loop(clock=None):
+    return CognitionLoop(
+        _StubBrain(), _StubConsolidator(), lambda: ["XAUUSD"],
+        interval_seconds=30.0, event_driven=True,
+        event_min_interval_seconds=8.0, event_confidence_delta=0.15,
+        clock=clock or _ManualClock(),
+    )
+
+
+def test_event_driven_off_is_noop():
+    loop = CognitionLoop(_StubBrain(), _StubConsolidator(), lambda: ["X"],
+                         event_driven=False)
+    assert loop.maybe_reason_on_change("X", "LONG", 0.9) is False
+    assert loop._drain_pending() == []
+
+
+def test_event_first_directional_read_triggers():
+    loop = _event_loop()
+    assert loop.maybe_reason_on_change("XAUUSD", "LONG", 0.6) is True
+    assert "XAUUSD" in loop._drain_pending()
+
+
+def test_event_no_trigger_when_unchanged_and_small_delta():
+    clk = _ManualClock()
+    loop = _event_loop(clk)
+    assert loop.maybe_reason_on_change("XAUUSD", "LONG", 0.60) is True
+    clk.t += 100.0  # clear the floor
+    # same direction, sub-delta confidence move ⇒ no trigger
+    assert loop.maybe_reason_on_change("XAUUSD", "LONG", 0.70) is False
+
+
+def test_event_triggers_on_direction_flip():
+    clk = _ManualClock()
+    loop = _event_loop(clk)
+    assert loop.maybe_reason_on_change("XAUUSD", "LONG", 0.6) is True
+    clk.t += 100.0
+    assert loop.maybe_reason_on_change("XAUUSD", "SHORT", 0.6) is True
+
+
+def test_event_triggers_on_confidence_jump():
+    clk = _ManualClock()
+    loop = _event_loop(clk)
+    assert loop.maybe_reason_on_change("XAUUSD", "LONG", 0.50) is True
+    clk.t += 100.0
+    assert loop.maybe_reason_on_change("XAUUSD", "LONG", 0.70) is True  # +0.20 >= 0.15
+
+
+def test_event_per_symbol_floor_throttles():
+    clk = _ManualClock()
+    loop = _event_loop(clk)
+    assert loop.maybe_reason_on_change("XAUUSD", "LONG", 0.6) is True
+    # within the 8s floor a fresh flip is throttled, not queued
+    clk.t += 3.0
+    assert loop.maybe_reason_on_change("XAUUSD", "SHORT", 0.6) is False
+    assert loop.get_status()["event_throttled"] == 1
+    # once the floor elapses it fires again
+    clk.t += 6.0
+    assert loop.maybe_reason_on_change("XAUUSD", "LONG", 0.6) is True
+
+
+def test_reason_symbol_now_reasons_once():
+    brain = _StubBrain()
+    loop = CognitionLoop(brain, _StubConsolidator(), lambda: ["XAUUSD"],
+                         event_driven=True)
+    made = loop.reason_symbol_now("XAUUSD")
+    assert made == 1
+    assert brain.calls == ["XAUUSD"]
+    assert loop.get_status()["event_reasons"] == 1
+
+
+def test_event_trigger_is_fault_safe():
+    loop = _event_loop()
+    # non-numeric confidence must not raise
+    assert loop.maybe_reason_on_change("XAUUSD", "LONG", None) is True

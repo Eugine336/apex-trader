@@ -3968,6 +3968,14 @@ class CognitionConfig:
     loop_interval_seconds: float = 30.0
     max_symbols_per_cycle: int = 12
     emit_operator_notifications: bool = True
+    # Event-driven "breathing" (Part XII): when enabled, a meaningful shift in a
+    # symbol's forming-bar read wakes the Brain to reason on THAT symbol at once,
+    # instead of waiting for the next fixed interval. The periodic cycle stays a
+    # backstop. A per-symbol floor bounds LLM cost; a confidence delta filters
+    # noise. env COGNITION_EVENT_DRIVEN / _EVENT_MIN_INTERVAL_SECONDS / _EVENT_CONFIDENCE_DELTA.
+    event_driven: bool = False
+    event_min_interval_seconds: float = 8.0
+    event_confidence_delta: float = 0.15
     # Phase F — Brain-driven management thresholds.
     allow_scale_in: bool = False
     manage_reverse_confidence: float = 0.7
@@ -4027,11 +4035,14 @@ class CognitionConfig:
         self.origination_mode = (
             os.getenv("COGNITION_ORIGINATION_MODE", self.origination_mode) or "shadow"
         ).strip().lower()
+        self.event_driven = _llm_env_bool("COGNITION_EVENT_DRIVEN", self.event_driven)
         for env_name, attr in (
             ("COGNITION_LOOP_INTERVAL_SECONDS", "loop_interval_seconds"),
             ("COGNITION_MAX_DECISION_AGE_SECONDS", "max_decision_age_seconds"),
             ("COGNITION_ORIGINATION_RISK_FRACTION", "origination_risk_fraction"),
             ("COGNITION_ORIGINATION_MAX_EXPOSURE", "origination_max_exposure"),
+            ("COGNITION_EVENT_MIN_INTERVAL_SECONDS", "event_min_interval_seconds"),
+            ("COGNITION_EVENT_CONFIDENCE_DELTA", "event_confidence_delta"),
         ):
             raw = os.getenv(env_name)
             if raw is not None:

@@ -1506,6 +1506,18 @@ class SystemContext:
                     operations_author=_ops_author,
                     operations_sink=(ctx.action_planner.submit
                                      if ctx.action_planner is not None else None),
+                    event_driven=bool(
+                        getattr(cog_cfg, "event_driven", False)
+                        if cog_cfg is not None else False
+                    ),
+                    event_min_interval_seconds=float(
+                        getattr(cog_cfg, "event_min_interval_seconds", 8.0)
+                        if cog_cfg is not None else 8.0
+                    ),
+                    event_confidence_delta=float(
+                        getattr(cog_cfg, "event_confidence_delta", 0.15)
+                        if cog_cfg is not None else 0.15
+                    ),
                 )
                 from cognition.gate import CognitionGate as _CognitionGate
                 ctx.cognition_gate = _CognitionGate(
