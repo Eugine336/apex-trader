@@ -367,13 +367,35 @@ the Brain-driven path.
     lifted out and re-imported (preserves the existing
     `from event_driven_bootstrap import _struct_swings` / `_micro_confirmation_from_event`
     test import paths). Behaviour unchanged; 12 characterization tests pin it.
-    Follow-up: `brain/backtest_engine.py` keeps byte-mirrored copies of four of
-    these ("Mirrors `event_driven_bootstrap._struct_*`") — de-duplicate it onto
-    this shared module in a later slice (deferred: the backtest path needs the
-    full numeric stack to verify offline).
-  - ⏳ Next slices (each its own behaviour-preserving PR): the tick-source
-    threads, `FlushLoop`/`TickEvalLoop`, `PositionEvaluator`, and the entry
-    pipeline — characterization tests first each time.
+    ✅ `brain/backtest_engine.py` de-duplicated onto this shared module (its four
+    byte-mirrored copies removed) — one source of truth for both planes.
+  - ✅ **`tick/tick_sources.py`** — the `MT5TickPoller` + `DerivTickAdapter`
+    tick-source daemons lifted out and re-imported. Behaviour unchanged;
+    characterization tests actually run the poll loops with stubs.
+  - ✅ **`execution/lifecycle_loops.py`** — the `FlushLoop` (aggregator drain →
+    executor) and `TickEvalLoop` (per-cycle position evaluation) lifted out and
+    re-imported. Behaviour unchanged; characterization tests cover start/stop,
+    flush cadence, `_build_position_map`, and the eval/profile path.
+  - ✅ **`scanner/cycle_selection.py`** — the pure within-cycle candidate
+    selector `select_cycle_candidates` lifted out and re-imported.
+  - The god-file is down from 11,062 → ~10,300 lines; all existing import paths
+    (`from event_driven_bootstrap import MT5TickPoller / DerivTickAdapter /
+    FlushLoop / TickEvalLoop / select_cycle_candidates / _struct_* / _broker_*`)
+    are preserved by the re-import shims, so every existing test still resolves.
+  - ⏳ **Remaining — the two coupled cores (`PositionEvaluator` ~2.1k lines and
+    `EventDrivenSystem` ~8k lines) and the legacy-decider physical deletion — are
+    the validated-cutover work.** Lifting these wholesale would only *move* the
+    god-file, not decompose it; true decomposition breaks their internals, which
+    changes control flow and MUST be exercised against the demo. Combined with
+    the deletion pass (both gated on the Phase E–G live validation the plan and
+    Part XV require), this is the work **Phase L unblocks** by making the demo
+    validation measurable. It is intentionally not attempted blind offline.
+
+**Acceptance:** god-file split into named, tested modules for every cleanly
+separable cluster (✅); characterization tests green (✅); behaviour unchanged
+for the Brain-driven path (✅); "no competing decision code remains" grep audit +
+physical decomposition of the coupled cores + legacy deletion — ⏳ deferred to the
+validated cutover (Phase L → then the deletion pass).
 
 **Acceptance:** no competing decision code remains (grep audit); god-file split;
 characterization tests green; behaviour unchanged for the Brain-driven path.
