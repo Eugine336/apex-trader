@@ -50,6 +50,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Test live Composio MCP connectivity")
     parser.add_argument("--capability", default="", help="Tool slug to call, e.g. SLACK_SEND_MESSAGE")
     parser.add_argument("--args", default="{}", help="JSON arguments for --capability")
+    parser.add_argument("--args-file", default="", help="Path to a JSON file with the "
+                        "arguments for --capability (bulletproof on any shell — "
+                        "avoids PowerShell quote-stripping)")
     parser.add_argument("--env-file", default=str(Path(__file__).resolve().parent.parent / ".env"))
     ns = parser.parse_args()
 
@@ -153,10 +156,14 @@ def main() -> int:
     # --- Step 3 (optional): a real tool call ---------------------------
     if ns.capability:
         print(f"=== Step 3: tools/call ({ns.capability}) ===")
-        try:
-            args = json.loads(ns.args)
-        except json.JSONDecodeError as exc:
-            print(f"[FAIL] --args is not valid JSON: {exc}")
+        args, err = _load_args(ns.args, ns.args_file)
+        if err:
+            print(f"[FAIL] {err}")
+            print("  Hint (Windows PowerShell strips embedded double quotes when")
+            print("  calling native programs). Use ONE of these instead:")
+            print("    • a file:  --args-file args.json   (most reliable)")
+            print("    • escape:  --args '{\\\"tickers\\\":\\\"FOREX:EUR\\\"}'")
+            print("    • pwsh 7:  --args '{\"tickers\":\"FOREX:EUR\"}'")
             return 1
         result = adapter.execute(ns.capability, args)
         print(f"ok={result.ok} detail={result.detail!r}")
@@ -165,6 +172,36 @@ def main() -> int:
 
     print("(pass --capability NAME --args '{...}' to also test a live tool call)")
     return 0
+
+
+def _load_args(raw: str, args_file: str) -> "tuple[dict, str]":
+    """Parse tool arguments leniently. Returns (args, error_message).
+
+    Prefers a file (immune to shell quoting), then strict JSON, then a lenient
+    Python-literal parse (tolerates the single quotes PowerShell often leaves)."""
+    if args_file:
+        try:
+            with open(args_file, "r", encoding="utf-8") as fh:
+                data = json.load(fh)
+            return (data if isinstance(data, dict) else {}), ""
+        except Exception as exc:  # noqa: BLE001
+            return {}, f"--args-file could not be read/parsed: {exc}"
+    text = (raw or "").strip()
+    if not text or text == "{}":
+        return {}, ""
+    try:
+        data = json.loads(text)
+        return (data if isinstance(data, dict) else {}), ""
+    except json.JSONDecodeError:
+        pass
+    try:
+        import ast
+        data = ast.literal_eval(text)
+        if isinstance(data, dict):
+            return data, ""
+        return {}, "--args parsed but is not a JSON object"
+    except Exception:  # noqa: BLE001
+        return {}, "--args is not valid JSON (the shell likely stripped the quotes)"
 
 
 if __name__ == "__main__":
