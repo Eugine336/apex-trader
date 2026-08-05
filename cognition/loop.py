@@ -33,6 +33,7 @@ from typing import Any, Callable, Optional
 
 from cognition.campaign_translator import translate as _translate
 from cognition.contracts import DecisionType, MarketState
+from cognition.management_translator import translate_management as _translate_management
 from cognition.evidence_adapters import (
     evidence_from_analogues,
     evidence_from_developing_bias,
@@ -254,6 +255,7 @@ class CognitionLoop:
         memory: Optional[Any] = None,
         operations_author: Optional[Any] = None,
         operations_sink: Optional[Callable[[Any], None]] = None,
+        management_mode: str = "shadow",
         event_driven: bool = False,
         event_min_interval_seconds: float = 8.0,
         event_confidence_delta: float = 0.15,
@@ -278,6 +280,12 @@ class CognitionLoop:
         self._operations_sink = operations_sink
         self._origination_sink: Optional[Callable[[Any], None]] = None
         self._name = str(name or "cognition-loop")
+        # Management realisation (Part VI): the mode mirrors origination —
+        # ``off`` never manages, ``shadow`` records the intended action, ``live``
+        # hands it to the wired sink for execution. Default shadow (safe).
+        m2 = str(management_mode or "shadow").strip().lower()
+        self.management_mode = m2 if m2 in ("off", "shadow", "live") else "shadow"
+        self._management_sink: Optional[Callable[[Any, Any], None]] = None
         self._running = False
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
@@ -302,12 +310,22 @@ class CognitionLoop:
         self._ops_submitted = 0
         self._event_reasons = 0
         self._event_throttled = 0
+        self._manage_intended = 0
+        self._manage_submitted = 0
         self._open_keys: set = set()
 
     def set_origination_sink(self, sink: Optional[Callable[[Any], None]]) -> None:
         """Wire the live order-submission sink (set by the system that owns the
         executor). When unset, ``live`` origination degrades to shadow-record."""
         self._origination_sink = sink
+
+    def set_management_sink(self, sink: Optional[Callable[[Any, Any], None]]) -> None:
+        """Wire the live management-execution sink.
+
+        Called with ``(ManagementAction, PositionView)``; the owner resolves the
+        broker position and submits the close/partial/modify/reverse/scale-in.
+        When unset, ``live`` management degrades to shadow-record. Fail-safe."""
+        self._management_sink = sink
 
     def set_vote_source(self, vote_source: Optional[Callable[[str], Any]]) -> None:
         """Wire the live WorldModel vote-panel source onto the consolidator.
@@ -617,13 +635,42 @@ class CognitionLoop:
             try:
                 symbol = getattr(pos, "symbol", "") or ""
                 ms = self._consolidator.build(symbol, now=now)
-                self._brain.manage(pos, ms, now=now)
+                output = self._brain.manage(pos, ms, now=now)
                 managed += 1
+                if self.management_mode != "off":
+                    self._realise_management(output, pos)
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[cognition-loop] manage fault: %s", exc)
                 continue
         self._managed += managed
         return managed
+
+    def _realise_management(self, output: Any, position: Any) -> None:
+        """Turn a Brain management verdict into a shadow record or a live action.
+
+        ``shadow`` logs the intended action (observational, executes nothing);
+        ``live`` hands it to the wired sink (degrading to shadow-record when no
+        sink is set). Fail-safe — never breaks the management cycle."""
+        try:
+            action = _translate_management(output, position)
+            if action is None:
+                return  # HOLD / observe — nothing to do
+            self._manage_intended += 1
+            if self.management_mode == "live" and self._management_sink is not None:
+                self._management_sink(action, position)
+                self._manage_submitted += 1
+                logger.info(
+                    "[cognition-loop] MANAGE-LIVE %s %s (dir=%s conf=%.2f)",
+                    action.symbol, action.kind, action.direction, action.confidence,
+                )
+            else:
+                logger.info(
+                    "[cognition-loop] MANAGE-SHADOW %s %s (dir=%s conf=%.2f) — %s",
+                    action.symbol, action.kind, action.direction, action.confidence,
+                    action.reason[:80],
+                )
+        except Exception as exc:  # noqa: BLE001 — management must never break the loop
+            logger.debug("[cognition-loop] realise management fault: %s", exc)
 
     def _loop(self) -> None:
         # Pure-interval loop when event-driven is off — behaviourally unchanged.
@@ -697,6 +744,10 @@ class CognitionLoop:
             "event_driven": self.event_driven,
             "event_reasons": self._event_reasons,
             "event_throttled": self._event_throttled,
+            "management_mode": self.management_mode,
+            "management_sink_wired": self._management_sink is not None,
+            "manage_intended": self._manage_intended,
+            "manage_submitted": self._manage_submitted,
         }
 
 

@@ -3316,6 +3316,154 @@ class EventDrivenSystem:
             logger.debug("[origination-sink] level derivation failed for {}: {}", symbol, exc)
             return (None, None)
 
+    def _make_management_sink(self):
+        """Build the LIVE management sink: Brain manage() verdict → MT5 op.
+
+        The returned callable accepts ``(ManagementAction, PositionView)`` and
+        submits the corresponding :class:`~execution.intents.Intent`(s) onto the
+        SAME aggregator → RiskGate → executor → MT5 plane the mechanical manager
+        uses. Resolves the live broker position (ticket, lots, price, stop) from
+        the platform manager. Fail-safe: a missing position or any fault is
+        logged and dropped (never raises into the cognition loop).
+
+        Stop moves are one-directional-safe: a tighten/protect only ever moves
+        the stop to REDUCE risk, never widens it.
+        """
+        def _open_position_for(symbol: str, direction: str):
+            try:
+                positions = self._pm.get_all_open_positions() if self._pm is not None else []
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[mgmt-sink] positions fetch failed for {}: {}", symbol, exc)
+                return None
+            want = str(direction or "").upper()
+            for p in positions or []:
+                if str(getattr(p, "symbol", "") or "") != symbol:
+                    continue
+                if want and str(getattr(p, "direction", "") or "").upper() != want:
+                    continue
+                return p
+            return None
+
+        def _protective_sl(pos, kind: str):
+            # Compute a strictly-safer stop for tighten/protect; None if no safe move.
+            try:
+                is_long = str(getattr(pos, "direction", "") or "").upper() == "LONG"
+                cur_sl = float(getattr(pos, "sl", 0.0) or 0.0)
+                entry = float(getattr(pos, "open_price", 0.0) or 0.0)
+                price = float(getattr(pos, "current_price", 0.0) or 0.0)
+                if price <= 0:
+                    return None
+                cog = getattr(self._config, "cognition", None)
+                frac = float(getattr(cog, "origination_stop_fraction", 0.004)
+                             if cog is not None else 0.004)
+                if kind == "protect_sl":
+                    # Lock in at least breakeven (only when actually in profit).
+                    if is_long and price > entry > 0:
+                        cand = entry
+                    elif (not is_long) and 0 < price < entry:
+                        cand = entry
+                    else:
+                        return None
+                else:  # tighten_sl — halve the distance from price
+                    dist = price * frac * 0.5
+                    cand = price - dist if is_long else price + dist
+                cand = round(cand, 6)
+                # Never widen risk: only move the stop toward price.
+                if is_long and (cur_sl <= 0 or cand > cur_sl) and cand < price:
+                    return cand
+                if (not is_long) and (cur_sl <= 0 or cand < cur_sl) and cand > price:
+                    return cand
+                return None
+            except Exception:  # noqa: BLE001
+                return None
+
+        def _sink(action: Any, position: Any) -> None:
+            try:
+                symbol = str(getattr(action, "symbol", "") or "")
+                kind = str(getattr(action, "kind", "") or "")
+                held = str(getattr(action, "direction", "") or "").upper()
+                reason = str(getattr(action, "reason", "") or "brain_management")[:200]
+                if not symbol or not kind:
+                    return
+                intents: list = []
+
+                if kind == "scale_in":
+                    sl, tp = self._derive_origination_levels(symbol, held)
+                    if sl is None or tp is None:
+                        logger.info("[mgmt-sink] {} scale_in skipped — no protective stop", symbol)
+                        return
+                    idem = generate_idempotency_key(symbol, held, 0.0)
+                    intents.append(Intent.open(
+                        symbol=symbol, direction=held, lots=0.0, sl=float(sl), tp=float(tp),
+                        source="ai_brain", reason="brain_scale_in",
+                        comment=build_order_comment("APEX", idem), idempotency_key=idem,
+                    ))
+                    self._aggregator.submit(intents)
+                    logger.info("[mgmt-sink] submitted scale_in {} {}", symbol, held)
+                    return
+
+                pos = _open_position_for(symbol, held)
+                if pos is None:
+                    logger.info("[mgmt-sink] {} {} skipped — no matching open position",
+                                symbol, kind)
+                    return
+                ticket = str(getattr(pos, "order_id", "") or "")
+                if not ticket:
+                    return
+
+                if kind == "close":
+                    intents.append(Intent.close(
+                        symbol=symbol, ticket=ticket, source="ai_brain",
+                        reason=reason, direction=held,
+                    ))
+                elif kind == "partial_close":
+                    frac = float(getattr(action, "fraction", 0.0) or 0.0)
+                    if not (0.0 < frac < 1.0):
+                        return
+                    intents.append(Intent.partial_close(
+                        symbol=symbol, ticket=ticket, fraction=frac,
+                        source="ai_brain", reason=reason,
+                    ))
+                elif kind in ("tighten_sl", "protect_sl"):
+                    new_sl = _protective_sl(pos, kind)
+                    if new_sl is None:
+                        logger.info("[mgmt-sink] {} {} — no safer stop available", symbol, kind)
+                        return
+                    intents.append(Intent.modify_sl(
+                        symbol=symbol, ticket=ticket, new_sl=float(new_sl),
+                        source="ai_brain", reason=reason,
+                    ))
+                elif kind == "reverse":
+                    target = str(getattr(action, "target_direction", "") or "").upper()
+                    if target not in ("LONG", "SHORT"):
+                        return
+                    intents.append(Intent.close(
+                        symbol=symbol, ticket=ticket, source="ai_brain",
+                        reason="brain_reverse_close", direction=held,
+                    ))
+                    sl, tp = self._derive_origination_levels(symbol, target)
+                    if sl is not None and tp is not None:
+                        idem = generate_idempotency_key(symbol, target, 0.0)
+                        intents.append(Intent.open(
+                            symbol=symbol, direction=target, lots=0.0,
+                            sl=float(sl), tp=float(tp), source="ai_brain",
+                            reason="brain_reverse_open",
+                            comment=build_order_comment("APEX", idem), idempotency_key=idem,
+                        ))
+                    else:
+                        logger.info("[mgmt-sink] {} reverse — closing only (no re-entry stop)",
+                                    symbol)
+                else:
+                    return
+
+                if intents:
+                    self._aggregator.submit(intents)
+                    logger.info("[mgmt-sink] submitted {} {} (ticket={})", symbol, kind, ticket)
+            except Exception as exc:  # noqa: BLE001 — sink must never break the loop
+                logger.warning("[mgmt-sink] submit failed: {}", exc)
+
+        return _sink
+
     def _cognition_vote_panel(self, symbol: str) -> list:
         """Live per-module vote panel for one symbol, for the cognition loop.
 
@@ -3640,6 +3788,11 @@ class EventDrivenSystem:
                 # leave the sink unset, so the loop only records intended orders.
                 if str(getattr(_cog_loop, "origination_mode", "shadow")) == "live":
                     _cog_loop.set_origination_sink(self._make_origination_sink())
+                # Part VI — when management is LIVE, wire the sink so the Brain's
+                # EXIT/REVERSE/SCALE/PROTECT/TIGHTEN verdicts reach MT5 through the
+                # same governed execution plane. Shadow/off record only.
+                if str(getattr(_cog_loop, "management_mode", "shadow")) == "live":
+                    _cog_loop.set_management_sink(self._make_management_sink())
                 _cog_loop.start()
         except Exception as exc:
             logger.warning("[event-driven] cognition loop start failed: {}", exc)
