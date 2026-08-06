@@ -1839,3 +1839,134 @@ task, remains independent of any single provider, and alone accepts full
 responsibility for every decision taken throughout the complete lifecycle of
 every opportunity. No AI provider shall ever become Apex; all AI providers
 collectively strengthen Apex; the Cognitive Brain alone is Apex.
+
+# Part XXI --- The Institutional AI Ecosystem Constitution
+
+> Version: 1.0
+
+## Purpose
+
+Defines the complete Artificial Intelligence ecosystem of Apex: every AI
+provider, reasoning engine, local model, remote model, consultation, provider
+evaluation, model activation and every future AI integration. This Constitution
+is permanent; individual AI providers are temporary.
+
+**Fundamental principle.** Apex shall never become dependent upon one Artificial
+Intelligence. No provider, model, API or vendor owns Apex. The Cognitive Brain
+owns intelligence; everything else exists to strengthen it. The objective is not
+an AI-powered trading bot but an institutional cognitive organisation capable of
+continuously improving through the collective intelligence of multiple reasoning
+engines.
+
+The complete ecosystem pipeline:
+
+```
+Market → Evidence Engine → Institutional Memory → AI Cognitive Brain
+      → Reasoning Orchestrator → { Internal Models (Llama/Qwen/Local AI)
+                                   | External Models (OpenAI/Claude/Gemini) }
+      → Provider Manager → Capability Registry → Provider Health Monitor
+      → Provider Evaluation Engine → Unified Advisory Intelligence
+      → AI Cognitive Brain → Campaign Intelligence → Execution Architecture
+      → Learning & Memory
+```
+
+**Article 1 — The Cognitive Brain.** There exists only one Brain, the Apex
+Cognitive Brain. It owns understanding, reasoning, expected value, campaign
+creation and management, opportunity harvesting, capital allocation, learning,
+institutional memory and final authority. Nothing else owns decisions.
+
+**Article 2 — The Reasoning Orchestrator.** The Brain never communicates directly
+with AI providers. Every reasoning request enters the Reasoning Orchestrator,
+which determines complexity, urgency, required confidence, latency, cost,
+privacy and required expertise before any advisor is selected.
+
+**Article 3 — The Advisory Council.** Every AI provider (OpenAI, Claude, Gemini,
+DeepSeek, Llama, Qwen, Mistral and future engines) becomes part of Apex's
+Advisory Council. They advise; they never decide.
+
+**Article 4 — Provider Manager.** The Provider Manager maintains every reasoning
+provider — authentication, configuration, health, availability, latency, rate
+limits, cost, failover and lifecycle. No provider communicates directly with the
+Brain.
+
+**Article 5 — Provider states.** Every provider exists in one of three
+constitutional states: **AVAILABLE** (configured, authenticated, healthy, ready);
+**CONFIGURED** (integrated, architecture complete, awaiting credentials, able to
+activate immediately); **UNAVAILABLE** (offline, disabled, failed, temporarily
+excluded). Changing provider state shall never require architectural
+modification.
+
+**Article 6 — Capability abstraction.** The Brain never requests a named vendor
+(OpenAI, Claude, Gemini); it requests a capability — strategic reasoning,
+counterargument generation, risk analysis, engineering analysis, long-context
+reasoning, rapid inference, code reasoning, pattern explanation, macro reasoning.
+The Provider Manager selects the implementation.
+
+**Article 7 — Provider selection.** Every reasoning request evaluates capability,
+historical usefulness, latency, reliability, current availability, cost, privacy,
+context length, provider health and reasoning quality. Selection is dynamic,
+never static.
+
+**Article 8 — Multi-model consultation.** Simple reasoning may consult one
+advisor; complex reasoning may consult several; critical reasoning may consult
+every available advisor. Consultation depth adapts automatically.
+
+**Article 9 — Provider evaluation framework.** Every advisor is continuously
+evaluated on reasoning quality, market understanding, counterargument quality,
+hypothesis diversity, expected-value contribution, decision usefulness, campaign
+contribution, historical usefulness, latency, reliability, cost efficiency,
+failure frequency, hallucination frequency, constitutional compliance and
+explainability. No advisor possesses permanent authority; authority is earned
+continuously.
+
+**Article 10 — Provider scorecard.** Every provider maintains a continuously
+evolving score across domains — strategic, scalping, swing, risk, portfolio,
+engineering, learning, research and operational reasoning. The Brain
+continuously learns which advisors excel within each domain.
+
+**Article 11 — Consultation records.** Every consultation records the reasoning
+request, market state, campaign, providers consulted, responses, confidence,
+counterarguments, the final Brain decision, the outcome and the decision quality.
+These records become institutional memory.
+
+**Article 12 — Self-improvement.** The Brain continuously asks which advisors
+helped, which harmed, which were unnecessary and whether future consultations
+should change. Advisor utilisation evolves continuously.
+
+**Article 13 — Local intelligence.** Local reasoning engines exist for privacy,
+offline operation, low latency, cost efficiency and business continuity. Local
+reasoning remains permanently available.
+
+**Article 14 — Remote intelligence.** Remote reasoning engines provide advanced
+reasoning, massive context, specialised intelligence, research and alternative
+viewpoints. They extend capability; they never replace cognition.
+
+**Article 15 — Failover.** Provider failure shall never stop Apex. If OpenAI,
+Claude or Gemini fails, reasoning continues; if all remote providers fail, local
+reasoning continues and campaign intelligence remains operational.
+
+**Article 16 — Future providers.** Future AI models require only a provider
+adapter, capability mapping, configuration and validation — never a redesign of
+the Cognitive Brain. The architecture remains permanent; providers remain
+replaceable.
+
+**Article 17 — Financial activation.** Every provider should be architecturally
+integrated from the beginning; activation requires only API credentials,
+permissions, configuration and budget. Financial growth enables providers;
+financial growth never redesigns architecture.
+
+**Article 18 — Constitutional law.** The Apex AI ecosystem shall operate as an
+institutional council of specialist intelligences. The Cognitive Brain remains
+the sole executive intelligence; the Reasoning Orchestrator coordinates
+consultation; the Provider Manager manages provider lifecycle; the Capability
+Registry abstracts provider implementation; the Provider Evaluation Framework
+continuously measures the value of every advisor. The Brain learns which advisors
+contribute the highest-quality reasoning for each cognitive domain. Every
+provider remains replaceable, measurable, optional and subordinate to the
+Cognitive Brain. The Cognitive Brain alone synthesises market evidence,
+institutional memory, portfolio intelligence, campaign intelligence and advisory
+reasoning into one unified market understanding. No provider shall ever become
+Apex; every provider shall exist only to make Apex more intelligent than it was
+during the previous reasoning cycle. This ecosystem shall evolve continuously
+without architectural redesign, allowing Apex to improve indefinitely while
+remaining independent of every individual AI vendor, model and technology.
