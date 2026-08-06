@@ -43,14 +43,24 @@ Transport = Callable[[str, dict, bytes, float], "tuple[int, str]"]
 # OpenAI-compatible endpoint *iff* a base_url is supplied (covers vLLM, LM
 # Studio, Together, Groq, OpenRouter, and any future self-hosted server).
 _OPENAI_ALIASES = frozenset({
-    "openai", "openai_compatible", "openai-compatible", "azure_openai",
+    "openai", "openai_compatible", "openai-compatible",
     "vllm", "lmstudio", "lm_studio", "together", "groq", "openrouter",
     "agentrouter", "agent_router", "agent-router",
     "deepseek", "mistral", "self_hosted", "self-hosted", "local",
 })
 _ANTHROPIC_ALIASES = frozenset({"anthropic", "claude"})
-_GEMINI_ALIASES = frozenset({"gemini", "google", "google_gemini", "vertex"})
+_GEMINI_ALIASES = frozenset({"gemini", "google", "google_gemini"})
 _OLLAMA_ALIASES = frozenset({"ollama"})
+_AZURE_ALIASES = frozenset({"azure_openai", "azure"})
+
+# Recognised-but-not-yet-implemented providers. These need an auth model the
+# rest of this client cannot produce from a flat api_key string (Vertex AI
+# authenticates via OAuth2 / service-account tokens, not a static key/URL
+# pair), so they are refused explicitly rather than silently mis-shaped onto
+# a similar-looking vendor (Part XVI: never guess a vendor's request shape).
+_UNSUPPORTED_PROVIDERS = frozenset({"vertex"})
+
+_DEFAULT_AZURE_API_VERSION = "2024-06-01"
 
 # Providers that carry a sensible built-in default endpoint, so ``base_url`` is
 # optional. EVERY other provider — gateways (AgentRouter, OpenRouter), Azure,
@@ -74,12 +84,18 @@ def _shape_for(provider: str, base_url: str) -> Optional[str]:
     p = (provider or "").strip().lower()
     if not p:
         return None
+    if p in _UNSUPPORTED_PROVIDERS:
+        # Recognised, but this client cannot build a correct request for it
+        # yet — fail closed rather than reuse a lookalike vendor's shape.
+        return None
     if p in _ANTHROPIC_ALIASES:
         return "anthropic"
     if p in _GEMINI_ALIASES:
         return "gemini"
     if p in _OLLAMA_ALIASES:
         return "ollama"
+    if p in _AZURE_ALIASES:
+        return "azure_openai"
     if p in _OPENAI_ALIASES:
         return "openai"
     # Unknown vendor: usable only as an OpenAI-compatible endpoint when the
@@ -117,6 +133,10 @@ class LLMClient:
     model: str
     api_key: str = ""
     base_url: str = ""
+    # Azure OpenAI only: the REST api-version query param (e.g. "2024-06-01").
+    # Ignored by every other shape. Falls back to _DEFAULT_AZURE_API_VERSION
+    # when the azure_openai shape is used and this is left blank.
+    api_version: str = ""
     timeout_seconds: float = 20.0
     max_tokens: int = 512
     temperature: float = 0.2
@@ -217,6 +237,28 @@ class LLMClient:
                 "model": self.model,
                 "stream": False,
                 "options": {"temperature": float(self.temperature)},
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+            }
+            return url, headers, payload
+        if shape == "azure_openai":
+            # Azure OpenAI: auth via `api-key` header (not Bearer), and the
+            # model is selected by *deployment name* in the URL path, not a
+            # `model` field in the payload. `base_url` must be the resource
+            # endpoint, e.g. https://<resource>.openai.azure.com — `model`
+            # here is treated as the deployment name (the common convention
+            # of naming a deployment after the model it serves).
+            version = self.api_version or _DEFAULT_AZURE_API_VERSION
+            url = f"{base}/openai/deployments/{self.model}/chat/completions?api-version={version}"
+            headers = {
+                "content-type": "application/json",
+                "api-key": self.api_key,
+            }
+            payload = {
+                "temperature": float(self.temperature),
+                "max_tokens": int(self.max_tokens),
                 "messages": [
                     {"role": "system", "content": system},
                     {"role": "user", "content": user},
