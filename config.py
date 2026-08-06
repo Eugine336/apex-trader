@@ -3715,11 +3715,12 @@ class LLMConfig:
     # ``extra_models`` lists additional candidate models the manager may select
     # (each a dict: provider/model, optional api_key/base_url/priority/cost —
     # omitted key/base_url inherit the primary, the "one gateway, many models"
-    # case). ``model_policy`` is "priority" (operator order) or "performance"
-    # (observed success-rate/latency). Env: LLM_EXTRA_MODELS (JSON array),
-    # LLM_MODEL_POLICY.
+    # case). ``model_policy`` is "performance" (observed success-rate/latency —
+    # the default: no model is permanently privileged, each earns selection by
+    # measured usefulness, Part XX Art 3 / Part XXIII Art 11-13) or "priority"
+    # (fixed operator order). Env: LLM_EXTRA_MODELS (JSON array), LLM_MODEL_POLICY.
     extra_models: list = field(default_factory=list)
-    model_policy: str = "priority"
+    model_policy: str = "performance"
     # Part XVII — multi-model consultative reasoning. When ``consult_multi`` is
     # on, the Reasoning Orchestrator consults up to ``consult_max_engines``
     # engines (the primary + extra_models) and injects each opinion as advisory
@@ -3789,7 +3790,7 @@ class LLMConfig:
             )
         # Part XVI Art 9 — Model Manager candidates + policy.
         self.model_policy = (
-            os.getenv("LLM_MODEL_POLICY", self.model_policy) or "priority"
+            os.getenv("LLM_MODEL_POLICY", self.model_policy) or "performance"
         ).strip().lower()
         if self.model_policy not in ("priority", "performance"):
             raise ValueError(
