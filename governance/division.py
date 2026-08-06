@@ -145,6 +145,7 @@ class GovernanceDivision:
         influence_ledger: Optional[object] = None,
         brain_calibration: Optional[object] = None,
         reasoning_orchestrator: Optional[object] = None,
+        provider_registry: Optional[object] = None,
         cognition_observability: Optional[object] = None,
     ) -> None:
         self._module_governor = module_governor
@@ -222,6 +223,9 @@ class GovernanceDivision:
         # Reasoning Orchestrator (Part XVII) — multi-engine consultative reasoning.
         # Observational — read in get_status only; advisory, never authority.
         self._reasoning_orchestrator = reasoning_orchestrator
+        # Provider Registry / Manager (Part XXI) — catalogue of every provider
+        # and its constitutional state. Observational — read in get_status only.
+        self._provider_registry = provider_registry
         # Cognition observability (Phase L, Part XII) — read-only derived metrics.
         self._cognition_observability = cognition_observability
 
@@ -249,6 +253,7 @@ class GovernanceDivision:
         influence_ledger: Optional[object] = None,
         brain_calibration: Optional[object] = None,
         reasoning_orchestrator: Optional[object] = None,
+        provider_registry: Optional[object] = None,
         cognition_observability: Optional[object] = None,
     ) -> None:
         """Inject the enforcement-arm references after construction.
@@ -293,6 +298,8 @@ class GovernanceDivision:
             self._brain_calibration = brain_calibration
         if reasoning_orchestrator is not None:
             self._reasoning_orchestrator = reasoning_orchestrator
+        if provider_registry is not None:
+            self._provider_registry = provider_registry
         if cognition_observability is not None:
             self._cognition_observability = cognition_observability
 
@@ -918,6 +925,11 @@ class GovernanceDivision:
                     cognition["reasoning_orchestrator"] = self._reasoning_orchestrator.get_status()
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[governance] reasoning-orchestrator status failed: {}", exc)
+            if self._provider_registry is not None:
+                try:
+                    cognition["provider_registry"] = self._provider_registry.get_status()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[governance] provider-registry status failed: {}", exc)
             if self._cognition_observability is not None:
                 try:
                     cognition["observability"] = self._cognition_observability.get_status()

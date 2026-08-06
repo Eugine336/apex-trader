@@ -136,6 +136,11 @@ class SystemContext:
     # reasoning engines; each opinion becomes advisory Evidence (never a vote).
     # Default-off (consult_multi); the Brain remains the sole decision-maker.
     reasoning_orchestrator: Optional[Any] = None
+    # Provider Registry / Manager (Part XXI) — the catalogue of every reasoning
+    # provider and its constitutional state (AVAILABLE/CONFIGURED/UNAVAILABLE).
+    # Observability only: it maintains provider identity + readiness, never
+    # reasons or decides. Surfaced via Governance.
+    provider_registry: Optional[Any] = None
     # The AI Cognitive Brain (Single Reasoner) + its background cognition loop.
     # Consumes consolidated Evidence, emits DecisionPackages/CampaignSpecs. Runs
     # in shadow by default (observational); surfaced via Governance.
@@ -1346,6 +1351,22 @@ class SystemContext:
                     logger.warning("[SystemContext] ReasoningOrchestrator init failed: {}", exc)
                     _reasoning_orch = None
                 ctx.reasoning_orchestrator = _reasoning_orch
+                # Part XXI — Provider Registry / Manager. The catalogue of every
+                # reasoning provider and its constitutional state. Built whenever
+                # an LLM config exists (independent of consult_multi) so it also
+                # surfaces CONFIGURED providers awaiting only credentials — the
+                # "ready to activate" picture (Art 5 / 16 / 17). Observability
+                # only; fail-safe (empty registry on any fault).
+                try:
+                    _llm_cfg = getattr(config, "llm", None)
+                    if _llm_cfg is not None:
+                        from llm.provider_registry import (
+                            build_provider_registry as _build_provider_registry,
+                        )
+                        ctx.provider_registry = _build_provider_registry(_llm_cfg)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[SystemContext] ProviderRegistry init failed: {}", exc)
+                    ctx.provider_registry = None
                 # Phase I (Part IX Art 9) — operational-intelligence author.
                 # Turns terminated-campaign outcomes into operational objectives
                 # (issue on recurring loss, notify on a validated win, periodic
@@ -1697,6 +1718,7 @@ class SystemContext:
                 influence_ledger=ctx.influence_ledger,
                 brain_calibration=ctx.brain_calibration,
                 reasoning_orchestrator=ctx.reasoning_orchestrator,
+                provider_registry=ctx.provider_registry,
                 cognition_observability=ctx.cognition_observability,
             )
             # Install Governance as the authoriser on the Learning→Governance
