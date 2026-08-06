@@ -2106,3 +2106,73 @@ intelligence of the Brain, strengthen opportunity harvesting, improve campaign
 management, enhance institutional learning and maximise long-term positive
 expected value. This Constitution is permanent. No provider shall ever become
 Apex; only the Cognitive Brain is Apex.
+
+# Part XXIV --- Universal Advisory Council Constitution
+
+> Version: 1.0
+
+## Purpose
+
+Defines how every Artificial Intelligence integrated into Apex participates in
+the Cognitive Ecosystem.
+
+**Fundamental principle.** Every integrated Artificial Intelligence shall be
+capable of becoming an advisor. No advisor becomes the Brain; no advisor
+possesses executive authority. The Cognitive Brain remains the sole
+constitutional intelligence and owns every market decision; the advisors
+strengthen the Brain.
+
+**Article 1 — The Universal Advisory Council.** Every integrated AI provider
+becomes a permanent member of Apex's Universal Advisory Council — OpenAI,
+Anthropic Claude, Google Gemini, xAI Grok, Cohere, Groq, OpenRouter, Together
+AI, Fireworks AI, DeepInfra, Cerebras, Hugging Face, NVIDIA NIM, every local
+reasoning engine (Llama, Qwen, DeepSeek, Mistral, Gemma, Phi) and every future
+provider. Every member is architecturally equal; no provider receives permanent
+preference.
+
+**Article 2 — Advisor availability.** Every configured provider shall be capable
+of participating in reasoning, existing in one of three operational states:
+**AVAILABLE** (ready for consultation), **CONFIGURED** (integrated, awaiting
+credentials or activation) and **UNAVAILABLE** (temporarily offline). Moving
+between states requires only configuration; the Cognitive Brain remains
+unchanged.
+
+**Article 3 — Consultation.** The Brain determines whether consultation is
+required: a simple situation may need no external advisor, a moderately complex
+one several, and a highly uncertain or strategically important one many or all
+available advisors. Consultation depth adapts dynamically.
+
+**Article 4 — Specialisation.** Every advisor has different strengths (strategic
+reasoning, counterargument generation, risk analysis, portfolio reasoning,
+pattern recognition, code and engineering reasoning, research, long-context
+reasoning, rapid inference, multimodal reasoning). The Brain continuously learns
+them; provider selection shall always be capability-driven, never brand-driven.
+
+**Article 5 — Provider evaluation.** Every advisor is continuously evaluated on
+reasoning quality, market understanding, campaign contribution, opportunity
+qualification, counterargument quality, portfolio contribution, historical
+usefulness, latency, reliability, availability, cost efficiency, explainability,
+hallucination frequency and constitutional compliance. Influence evolves with
+measured performance.
+
+**Article 6 — Dynamic advisory weighting.** No advisor possesses fixed authority;
+influence is earned continuously. Providers that consistently improve reasoning
+gain influence; those that reduce reasoning quality lose it. The Brain
+continuously recalibrates advisor weighting from empirical evidence.
+
+**Article 7 — Executive authority.** Regardless of how many advisors participate,
+only the Apex Cognitive Brain may construct the final market thesis, determine
+expected value, authorise/manage/terminate campaigns, allocate capital, scale
+positions and learn from outcomes. Advisors provide intelligence; the Brain
+makes decisions.
+
+**Final constitutional law.** Apex shall operate as a permanent institutional
+council of specialist intelligences. Every configured AI provider shall be
+capable of acting as an advisor; every available provider shall be eligible for
+consultation; every consultation shall be selected dynamically according to
+capability, historical performance, latency, availability, cost and market
+context. No provider shall ever become indispensable; no provider shall ever
+become Apex. The Universal Advisory Council exists solely to strengthen the
+reasoning of the Apex Cognitive Brain, which alone remains the permanent
+executive intelligence responsible for every decision throughout the complete
+market opportunity lifecycle.
