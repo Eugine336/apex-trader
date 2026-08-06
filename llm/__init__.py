@@ -25,6 +25,12 @@ from llm.reasoning_orchestrator import (
     build_reasoning_orchestrator,
 )
 from llm.reasoner import FLAT, LONG, SHORT, LLMOpinion, LLMReasoner
+from llm.provider_registry import (
+    ProviderRegistry,
+    ProviderSpec,
+    ProviderState,
+    build_provider_registry,
+)
 from llm.worker import EvidenceSource, LLMReasoningWorker
 
 __all__ = [
@@ -40,6 +46,10 @@ __all__ = [
     "ReasoningConsultation",
     "EngineOpinion",
     "build_reasoning_orchestrator",
+    "ProviderRegistry",
+    "ProviderSpec",
+    "ProviderState",
+    "build_provider_registry",
     "LLMReasoner",
     "LLMOpinion",
     "LLMReasoningWorker",
