@@ -3711,6 +3711,100 @@ class EventDrivenSystem:
             logger.debug("[cognition] developing bias fetch failed for {}: {}", symbol, exc)
             return {}
 
+    def _cognition_price_snapshot(self, symbol: str) -> list:
+        """Reconstruct the live chart for one symbol as Evidence (Part XIX Art 2).
+
+        Reads recent multi-timeframe OHLC (cache-backed), the live tick and the
+        open position, and builds a compact price snapshot so the Brain observes
+        the actual market — price action, spread, micro-moves — like a trader on
+        the chart, not only derived module verdicts. Fail-safe: ``[]`` on any
+        fault (the Brain simply reasons without the chart that cycle).
+        """
+        try:
+            from cognition.market_snapshot import (
+                build_price_snapshot, snapshot_to_evidence,
+            )
+            if self._pm is None:
+                return []
+            tfs = ["H1", "M15", "M5", "M1"]
+            try:
+                data = self._pm.fetch_market_data(
+                    symbol, tfs, count=12, include_forming=True,
+                ) or {}
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[cognition] price fetch failed for {}: {}", symbol, exc)
+                return []
+            candles_by_tf: dict = {}
+            for tf, df in data.items():
+                rows = self._ohlc_rows(df, max_bars=8)
+                if rows:
+                    candles_by_tf[tf] = rows
+            if not candles_by_tf:
+                return []
+            tick = None
+            try:
+                tick = self._tick_store.get_latest(symbol) if self._tick_store is not None else None
+            except Exception:  # noqa: BLE001
+                tick = None
+            position = self._cognition_live_position(symbol)
+            snap = build_price_snapshot(
+                symbol, candles_by_tf, tick=tick, position=position,
+            )
+            return snapshot_to_evidence(symbol, snap)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[cognition] price snapshot failed for {}: {}", symbol, exc)
+            return []
+
+    @staticmethod
+    def _ohlc_rows(df: Any, max_bars: int = 8) -> list:
+        """Extract the last ``max_bars`` (open,high,low,close) rows from an OHLCV
+        DataFrame as plain tuples (no pandas leaks to the pure builder)."""
+        try:
+            if df is None or len(df) == 0:
+                return []
+            tail = df.tail(max_bars)
+            cols = {c.lower(): c for c in tail.columns}
+            oc = cols.get("open"); hc = cols.get("high")
+            lc = cols.get("low"); cc = cols.get("close")
+            if not (oc and hc and lc and cc):
+                return []
+            out = []
+            for _, r in tail.iterrows():
+                out.append((float(r[oc]), float(r[hc]), float(r[lc]), float(r[cc])))
+            return out
+        except Exception:  # noqa: BLE001
+            return []
+
+    def _cognition_live_position(self, symbol: str) -> Any:
+        """A lightweight view of the open position on ``symbol`` for the snapshot
+        (direction/profit_r/hold/size), or None. Fail-safe."""
+        try:
+            from types import SimpleNamespace
+            from cognition.position_adapter import (
+                canonical_side, broker_profit_r, hold_seconds_from,
+            )
+            if self._pm is None:
+                return None
+            positions = self._pm.get_all_open_positions() or []
+            for p in positions:
+                if str(getattr(p, "symbol", "") or "") != symbol:
+                    continue
+                side = canonical_side(getattr(p, "direction", ""))
+                if side not in ("LONG", "SHORT"):
+                    continue
+                return SimpleNamespace(
+                    direction=side,
+                    profit_r=broker_profit_r(
+                        side, getattr(p, "open_price", 0.0),
+                        getattr(p, "current_price", 0.0), getattr(p, "sl", 0.0),
+                    ),
+                    hold_seconds=hold_seconds_from(getattr(p, "open_time", None)),
+                    size=float(getattr(p, "lots", 0.0) or 0.0),
+                )
+            return None
+        except Exception:  # noqa: BLE001
+            return None
+
     def _nudge_cognition_on_developing(self, symbol: str) -> None:
         """Wake the Brain on a meaningful forming-bar shift (event-driven cadence).
 
@@ -3986,6 +4080,13 @@ class EventDrivenSystem:
                     _cog_loop.set_developing_source(self._cognition_developing_bias)
                 except Exception as exc:
                     logger.debug("[event-driven] developing-source wiring failed: {}", exc)
+                # Part XIX Art 2 — let the Brain observe the actual chart: recent
+                # multi-timeframe OHLC + live price/spread + the open position,
+                # reconstructed as one compact price-action Evidence per symbol.
+                try:
+                    _cog_loop.set_price_source(self._cognition_price_snapshot)
+                except Exception as exc:
+                    logger.debug("[event-driven] price-source wiring failed: {}", exc)
                 # Phase G — when origination is LIVE, wire the executor sink so the
                 # Brain's originated entries reach the SAME execution plane as
                 # every other entry (aggregator → RiskGate → broker). Shadow/off

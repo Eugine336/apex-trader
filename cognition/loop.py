@@ -84,6 +84,7 @@ class EvidenceConsolidator:
         self._reasoning = reasoning
         self._knowledge = knowledge
         self._portfolio_source: Optional[Callable[[], Any]] = None
+        self._price_source: Optional[Callable[[str], Any]] = None
 
     def set_vote_source(self, vote_source: Optional[Callable[[str], Any]]) -> None:
         """Wire (or clear) the live WorldModel vote-panel source.
@@ -114,6 +115,16 @@ class EvidenceConsolidator:
         """
         self._portfolio_source = portfolio_source
 
+    def set_price_source(self, price_source: Optional[Callable[[str], Any]]) -> None:
+        """Wire (or clear) the live price-snapshot source (Part XIX Art 2).
+
+        A ``symbol -> list[Evidence]`` callable that reconstructs the actual
+        market picture — recent multi-timeframe OHLC, live price/spread and the
+        open position — so the Brain observes the chart like a trader, not only
+        pre-digested module verdicts. Fail-safe callable; never invoked eagerly.
+        """
+        self._price_source = price_source
+
     def build(
         self,
         symbol: str,
@@ -126,6 +137,16 @@ class EvidenceConsolidator:
             if injected:
                 for e in injected:
                     ms.add(e)
+            # Part XIX Art 2 — observe reality first: reconstruct the live chart
+            # (multi-timeframe OHLC + price/spread + open position) so the Brain
+            # sees the actual market, not only derived module verdicts. Added
+            # first so the price picture leads the evidence the reasoner reads.
+            if self._price_source is not None:
+                try:
+                    for e in self._price_source(ms.symbol) or []:
+                        ms.add(e)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[consolidator] price source fault (%s): %s", symbol, exc)
             ctx = self._ctx
             engine = getattr(ctx, "thesis_engine", None) if ctx is not None else None
             if engine is not None:
@@ -415,6 +436,16 @@ class CognitionLoop:
             self._consolidator.set_portfolio_source(portfolio_source)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition-loop] set_portfolio_source ignored a fault: %s", exc)
+
+    def set_price_source(self, price_source: Optional[Callable[[str], Any]]) -> None:
+        """Wire the live price-snapshot source onto the consolidator (Part XIX Art 2).
+
+        Lets the Brain observe the actual multi-timeframe chart + live price +
+        open position. Fail-safe — a wiring fault never breaks startup."""
+        try:
+            self._consolidator.set_price_source(price_source)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[cognition-loop] set_price_source ignored a fault: %s", exc)
 
     @property
     def running(self) -> bool:

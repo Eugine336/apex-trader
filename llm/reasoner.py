@@ -246,7 +246,10 @@ class LLMReasoner:
         """Serialise the structured evidence into a compact JSON user prompt."""
         payload = {"symbol": symbol, "evidence": evidence or {}}
         try:
-            return json.dumps(payload, default=str)[:8000]
+            # Larger cap so the reconstructed multi-timeframe price snapshot
+            # (Part XIX Art 2 — the chart) reaches the model alongside the
+            # analytical reads rather than being truncated away.
+            return json.dumps(payload, default=str)[:16000]
         except Exception:  # noqa: BLE001
             return json.dumps({"symbol": symbol})
 
