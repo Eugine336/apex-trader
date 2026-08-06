@@ -1593,3 +1593,134 @@ entries — is the primary determinant of Apex's long-term performance.
 
 **Rule:** One Brain, continuous reasoning, every campaign, birth to death — no
 other subsystem manages market opportunities in parallel.
+
+----------------------------------------------------------------------
+
+# Part XIX --- Opportunity Qualification & Cognitive Decision Constitution
+
+> Version: 1.0
+
+## Purpose
+
+Governs the complete cognitive cycle before, during and after every market
+decision — the constitutional law that determines whether Apex is permitted to
+participate at all. This is not a trading strategy. Any subsystem that behaves
+differently is architecturally incorrect regardless of technical performance.
+
+**Fundamental principle.** The market produces infinite movement. Movement is
+not opportunity; opportunity is not profitability; profitability is not win rate
+— profitability is positive long-term expected value after all costs, uncertainty
+and risk. Apex's responsibility is not to detect movement but to continuously
+separate meaningful opportunity from market noise.
+
+**Article 1 — The market is presumed noise.** Every tick, candle, breakout,
+pullback and momentum burst is initially noise. No market event becomes an
+opportunity until sufficient evidence proves otherwise. The burden of proof
+belongs to reality, never to the AI.
+
+**Article 2 — Observation.** The Brain continuously observes price, liquidity,
+volume, order flow, structure, momentum, volatility, spread, execution quality,
+correlation, macro events, portfolio state, institutional behaviour and
+historical analogues. Every observation becomes structured evidence; nothing
+becomes a decision at this stage.
+
+**Article 3 — Evidence.** Every analytical subsystem contributes evidence only —
+never buy/sell/close/reverse/increase/reduce. Signals do not exist; only evidence
+exists, carrying confidence, reliability, recency, context, uncertainty, source
+quality and historical performance.
+
+**Article 4 — Multiple hypotheses.** The Brain never constructs only one
+explanation. For every market state it generates multiple competing hypotheses
+(continuation, pullback, liquidity sweep, reversal, compression, expansion,
+accumulation, distribution, false breakout, exhaustion) and actively searches for
+evidence that destroys each one.
+
+**Article 5 — Multi-horizon reasoning.** The market exists across many horizons
+simultaneously (30s → weekly); reasoning does too. Each horizon keeps its own
+thesis, probability, uncertainty, expected value, opportunity score and holding
+estimate. The Brain does not force agreement between horizons — it discovers
+where opportunity currently exists.
+
+**Article 6 — Opportunity discovery.** The Brain never asks "should I buy/sell?"
+It asks whether an exploitable opportunity has emerged, where it is, how long it
+may last, how uncertain it is, how much value remains, and what evidence supports
+or rejects it — before qualification begins.
+
+**Article 7 — Opportunity qualification.** Every opportunity must survive
+qualification on expected gross profit, execution costs (spread, commission,
+slippage, latency), risk, duration, success/failure probability, remaining
+upside/downside, liquidity quality, portfolio interaction, confidence,
+contradictory evidence, institutional context and adaptive uncertainty. **Only
+opportunities with positive expected NET value may proceed.**
+
+**Article 8 — Meta-reasoning.** The Brain reasons about its own reasoning: why it
+currently believes a thesis, how reliable that reasoning has been historically,
+whether it is reacting to noise or over-fitting, what evidence would change its
+mind, whether it would still trade if costs doubled, whether waiting improves
+decision quality, and whether it has become too aggressive or too conservative.
+It critiques itself before it critiques the market.
+
+**Article 9 — Consultative intelligence.** The Brain may consult additional
+reasoning engines (OpenAI, Claude, Gemini, DeepSeek, Llama, future engines). Each
+is an advisor, never a decision-maker; every opinion becomes evidence and is
+challenged. The Brain alone owns the final decision.
+
+**Article 10 — Campaign creation.** When qualification succeeds a campaign is
+created representing the opportunity (not the trade). The opportunity determines
+campaign size (one trade or a hundred) — never predefined rules.
+
+**Article 11 — Execution.** Execution is merely the physical expression of
+reasoning. It owns no intelligence, strategy or market understanding; it performs
+the objective the Brain produced.
+
+**Article 12 — Continuous management.** Execution begins continuous reasoning:
+has opportunity strengthened or weakened, should exposure change, should another
+trade harvest it, should the campaign terminate. Management never stops while the
+campaign exists.
+
+**Article 13 — Opportunity harvesting.** The objective is opportunity harvesting,
+not position management. Opportunity remaining → harvest again; EV rising →
+harvest more aggressively; EV falling → more conservatively; opportunity gone →
+terminate immediately. The campaign exists only while positive EV exists.
+
+**Article 14 — Adaptive trading frequency.** The Brain never targets a trade
+count. Frequency emerges from qualified opportunities — zero, one, ten or a
+hundred. Both overtrading and undertrading are prohibited.
+
+**Article 15 — Self-regulation.** The Brain audits itself and automatically
+increases selectivity when it detects excessive reversals, declining expectancy,
+repeated false positives, high uncertainty, poor execution quality, overtrading
+or noise-chasing — until statistical quality improves.
+
+**Article 16 — Portfolio intelligence.** The Brain reasons across all active
+campaigns — capital allocation, correlation, concentration, risk interaction,
+opportunity ranking, capital efficiency, higher-value alternatives. Every
+campaign competes for capital; capital belongs to the highest expected value.
+
+**Article 17 — Termination.** Campaigns terminate immediately when expected value
+disappears, the opportunity ends, risk dominates reward, contradictory evidence
+overwhelms support, execution quality deteriorates, or capital is better deployed
+elsewhere. Termination requires only reasoning, never emotion.
+
+**Article 18 — Learning.** Every completed campaign enters institutional learning
+— original thesis, evidence, alternative hypotheses, advisors consulted,
+confidence, uncertainty, execution/management quality, outcome, counterfactuals,
+opportunity and decision quality. The objective is learning whether the
+*reasoning* was correct, not merely whether the trade won.
+
+**Article 19 — Institutional memory.** Nothing is forgotten. Every opportunity,
+campaign, hypothesis, consultation, execution, management action, audit and
+lesson becomes institutional knowledge; future reasoning is built upon it.
+
+**Final constitutional law.** The Brain shall continuously observe reality,
+transform observations into evidence, construct and challenge competing
+hypotheses, qualify opportunities through expected NET value, consult specialist
+engines when beneficial, reason about its own reasoning, create campaigns only
+when opportunities justify action, manage every campaign until opportunity
+disappears, allocate capital to the highest-value opportunities, learn from every
+outcome, preserve all knowledge, and repeat indefinitely. Apex shall never trade
+every movement; it shall understand the market better than one cycle ago.
+
+**Rule:** Presume noise; qualify on positive expected net value; the Brain owns
+the decision — this cognitive cycle is the constitutional heartbeat and no
+subsystem may bypass, weaken or compromise it.
