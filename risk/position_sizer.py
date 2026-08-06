@@ -46,6 +46,7 @@ class PositionSizer:
         deriv_min_stake_usd: float = 0.35,
         max_risk_pct_per_trade: float = 5.0,
         engine_cap: float = 0.025,
+        allow_min_lot_over_risk: bool = False,
     ):
         self.micro_account_threshold_usd = micro_account_threshold_usd
         self.deriv_min_stake_usd = deriv_min_stake_usd
@@ -54,6 +55,13 @@ class PositionSizer:
         # = 2.5%). Sizing clamps to this so the sizer can never risk more than the
         # engine believes it approved.
         self._engine_cap = engine_cap
+        # Opportunity-harvesting opt-in (Constitution Part V): when True, an entry
+        # whose UNAVOIDABLE broker-minimum lot risks more than the per-trade
+        # ceiling is still taken at the minimum lot rather than rejected — so a
+        # genuinely small account can participate in the opportunities the Brain
+        # authorises. The broker's own margin/lot floors (Part IX Art 3) remain
+        # the true hard limit. Default OFF (unchanged, conservative behaviour).
+        self.allow_min_lot_over_risk = bool(allow_min_lot_over_risk)
 
     def _sanitize_risk_pct(self, risk_pct: float, label: str = "") -> float:
         """Validate that ``risk_pct`` is a fraction (0-1), not a percentage.
@@ -333,6 +341,20 @@ class PositionSizer:
                 f"min-lot max_loss ${max_loss:.2f})"
             )
             return lots, "lots"
+
+        # Opportunity-harvesting opt-in: the ceiling is exceeded only because the
+        # broker minimum lot is unavoidable. When the operator has opted in, take
+        # the opportunity at the minimum lot rather than rejecting it — the
+        # broker's margin/lot floor remains the real limit. Logged loudly so the
+        # elevated risk is never silent.
+        if self.allow_min_lot_over_risk:
+            logger.warning(
+                f"[PositionSizer] {label} opportunity-harvest: taking min lot {lots} "
+                f"at {actual_risk_pct:.1f}% risk (${max_loss:.2f}) — ABOVE the "
+                f"{ceiling_pct:.1f}% ceiling for a ${account_balance:.2f} account "
+                f"(allow_min_lot_over_risk opt-in)"
+            )
+            return lots, "lots_min_lot_over_risk_opt_in"
 
         skip_mode = (
             "lots_skip_micro"
