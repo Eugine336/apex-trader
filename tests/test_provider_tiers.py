@@ -24,6 +24,9 @@ def test_tier_for_known_providers():
     assert tier_for("openrouter") is ProviderTier.TIER_2
     assert tier_for("ollama") is ProviderTier.TIER_3
     assert tier_for("vllm") is ProviderTier.TIER_3
+    assert tier_for("nvidia") is ProviderTier.TIER_2               # NVIDIA NIM hosted
+    assert tier_for("nvidia_nim") is ProviderTier.TIER_2
+    assert tier_for("nvidia_nim_self_hosted") is ProviderTier.TIER_3  # NIM local
     assert tier_for("some-new-vendor") is ProviderTier.UNKNOWN
     assert tier_for("") is ProviderTier.UNKNOWN
 
