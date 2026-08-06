@@ -670,3 +670,107 @@ class TestSerialization:
         assert execution_order[1].startswith("end_")
         assert execution_order[2].startswith("start_")
         assert execution_order[3].startswith("end_")
+
+
+# ── Per-instrument circuit isolation ─────────────────────────────────
+
+class TestPerInstrumentIsolation:
+    """A failing MODIFY_SL storm on ONE instrument must not open a breaker
+    that blocks CLOSE/MODIFY on any OTHER instrument, nor the CLOSE of the
+    SAME instrument.
+
+    Regression for the production incident where a repeated
+    ``MODIFY_SL <ticket> (NZDUSD) — Invalid stops`` loop tripped a shared
+    per-platform MT5 manage breaker, which then blocked emergency
+    heat-monitor closes on every other open ticket for the cooldown window.
+    Each open position must be handled independently.
+    """
+
+    @staticmethod
+    def _multi_positions() -> dict[str, dict]:
+        return {
+            "111": {
+                "symbol": "NZDUSD", "direction": "BUY", "sl": 0.61000,
+                "platform": "mt5", "lots": 0.01, "remaining_lots": 0.01,
+            },
+            "222": {
+                "symbol": "EURUSD", "direction": "BUY", "sl": 1.08000,
+                "platform": "mt5", "lots": 0.01, "remaining_lots": 0.01,
+            },
+        }
+
+    def test_modify_storm_does_not_block_other_instruments(self):
+        broker = FakeBroker()
+        broker.modify_return = False  # every MODIFY_SL rejected ("invalid stops")
+        cfg = _fast_cfg(
+            max_retries=0,
+            circuit_failure_threshold=3,
+            circuit_cooldown_s=10.0,
+        )
+        executor = ActionExecutor(broker, cfg)
+        positions = self._multi_positions()
+
+        # Storm the NZDUSD modify path until ITS breaker opens.
+        nz_modify = Intent.modify_sl(
+            symbol="NZDUSD", ticket="111", new_sl=0.61000,
+            source="test", reason="test",
+        )
+        for _ in range(3):
+            executor.execute(nz_modify, positions)
+        blocked = executor.execute(nz_modify, positions)
+        assert "circuit open" in (blocked.error or "").lower(), (
+            "NZDUSD modify storm never opened its own breaker"
+        )
+
+        # A CLOSE on a DIFFERENT instrument must still go through.
+        eur_close = Intent.close(
+            symbol="EURUSD", ticket="222", source="test", reason="test",
+        )
+        r = executor.execute(eur_close, positions)
+        assert r.success, (
+            "EURUSD close was blocked by the NZDUSD modify breaker — "
+            "management breakers are not isolated per instrument"
+        )
+
+        # A CLOSE on the SAME instrument must also still go through: within a
+        # symbol, CLOSE is isolated from MODIFY so a stuck stop-move never
+        # starves the risk-reducing exit.
+        nz_close = Intent.close(
+            symbol="NZDUSD", ticket="111", source="test", reason="test",
+        )
+        r2 = executor.execute(nz_close, positions)
+        assert r2.success, (
+            "NZDUSD close was blocked by the NZDUSD modify breaker — CLOSE is "
+            "not isolated from MODIFY within a symbol"
+        )
+
+    def test_modify_storm_does_not_block_other_instrument_modify(self):
+        """The other instrument's MODIFY path must also stay available."""
+        broker = FakeBroker()
+        broker.modify_return = False
+        cfg = _fast_cfg(
+            max_retries=0,
+            circuit_failure_threshold=3,
+            circuit_cooldown_s=10.0,
+        )
+        executor = ActionExecutor(broker, cfg)
+        positions = self._multi_positions()
+
+        nz_modify = Intent.modify_sl(
+            symbol="NZDUSD", ticket="111", new_sl=0.61000,
+            source="test", reason="test",
+        )
+        for _ in range(4):
+            executor.execute(nz_modify, positions)
+
+        # EURUSD modify uses a different per-symbol breaker; broker now accepts.
+        broker.modify_return = True
+        eur_modify = Intent.modify_sl(
+            symbol="EURUSD", ticket="222", new_sl=1.08050,
+            source="test", reason="test",
+        )
+        r = executor.execute(eur_modify, positions)
+        assert r.success, (
+            "EURUSD modify was blocked by the NZDUSD modify breaker — "
+            "per-instrument isolation failed"
+        )
