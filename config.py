@@ -3728,6 +3728,12 @@ class LLMConfig:
     # LLM_CONSULT_MAX_ENGINES.
     consult_multi: bool = False
     consult_max_engines: int = 3
+    # Part XXIV — council consultation mode. "panel" consults EVERY available
+    # advisor in parallel (a full panel; a dead advisor just leaves the panel,
+    # the rest still advise — never a failover chain). "adaptive" scales the
+    # number of advisors to the difficulty of the read (1 / several / all).
+    # Env: LLM_CONSULT_MODE.
+    consult_mode: str = "adaptive"
 
     def __post_init__(self) -> None:
         # The environment is the single source of truth — no vendor is baked in.
@@ -3819,6 +3825,13 @@ class LLMConfig:
         if int(self.consult_max_engines) < 1:
             raise ValueError(
                 f"LLMConfig.consult_max_engines must be >= 1, got {self.consult_max_engines!r}"
+            )
+        self.consult_mode = (
+            os.getenv("LLM_CONSULT_MODE", self.consult_mode) or "adaptive"
+        ).strip().lower()
+        if self.consult_mode not in ("adaptive", "panel"):
+            raise ValueError(
+                f"LLMConfig.consult_mode must be adaptive|panel, got {self.consult_mode!r}"
             )
 
 

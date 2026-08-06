@@ -164,9 +164,15 @@ class ReasoningOrchestrator:
         *,
         max_engines: int = 3,
         reliability_provider: Optional[Callable[[str], float]] = None,
+        panel: bool = False,
     ) -> None:
         self._engines = [e for e in (engines or []) if isinstance(e, ReasoningEngine)]
         self.max_engines = max(1, int(max_engines))
+        # Part XXIV — panel mode: when true, the council consults EVERY available
+        # advisor in parallel (a full panel), not a capped subset. A dead advisor
+        # simply yields no opinion and leaves the panel; the rest still advise —
+        # never a failover chain.
+        self.panel = bool(panel)
         # Optional externally-measured usefulness (e.g. Phase J influence ledger
         # weight for source_module "reasoning_engine.<name>") — Article 11.
         self._reliability_provider = reliability_provider
@@ -196,7 +202,12 @@ class ReasoningOrchestrator:
         matching = [e for e in avail if e.has_capability(capability)] if capability else avail
         pool = matching or avail
         pool = sorted(pool, key=lambda e: (-self._measured_usefulness(e), e.ewma_latency_ms))
-        cap = self.max_engines if max_engines is None else max(1, int(max_engines))
+        if max_engines is None:
+            cap = self.max_engines
+        elif int(max_engines) <= 0:
+            cap = len(pool)          # panel: EVERY available advisor advises
+        else:
+            cap = max(1, int(max_engines))
         return pool[:cap]
 
     def consult(
@@ -231,6 +242,7 @@ class ReasoningOrchestrator:
             "engine_count": len(self._engines),
             "available_engines": sum(1 for e in self._engines if e.available),
             "max_engines": self.max_engines,
+            "panel": self.panel,
             "consultations": consultations,
             "engines": [e.to_dict() for e in self._engines],
         }
@@ -325,10 +337,12 @@ def build_reasoning_orchestrator(
 
     if not engines:
         return None
+    panel = str(getattr(config, "consult_mode", "adaptive") or "adaptive").strip().lower() == "panel"
     return ReasoningOrchestrator(
         engines,
         max_engines=int(getattr(config, "consult_max_engines", 3) or 3),
         reliability_provider=reliability_provider,
+        panel=panel,
     )
 
 
