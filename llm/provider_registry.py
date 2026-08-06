@@ -36,6 +36,8 @@ from typing import Any, Optional
 
 from loguru import logger
 
+from llm.provider_tiers import ProviderTier, resolve_tier, tier_label
+
 
 class ProviderState(str, Enum):
     """The three constitutional provider states (Part XXI, Article 5)."""
@@ -76,6 +78,7 @@ class ProviderSpec:
     explicitly_disabled: bool = False
     is_primary: bool = False
     state_override: str = ""
+    tier: ProviderTier = ProviderTier.UNKNOWN
 
     @property
     def state(self) -> ProviderState:
@@ -103,6 +106,8 @@ class ProviderSpec:
             "model": self.model,
             "capabilities": list(self.capabilities),
             "state": self.state.value,
+            "tier": int(self.tier),
+            "tier_label": tier_label(self.tier),
             "authenticated": bool(self.authenticated),   # boolean only — never the key
             "reachable": bool(self.reachable),
             "is_primary": bool(self.is_primary),
@@ -150,6 +155,9 @@ class ProviderRegistry:
     def unavailable(self) -> list:
         return self.by_state(ProviderState.UNAVAILABLE)
 
+    def by_tier(self, tier: ProviderTier) -> list:
+        return [s for s in self._specs if s.tier is tier]
+
     def get(self, name: str) -> Optional[ProviderSpec]:
         key = str(name or "")
         for s in self._specs:
@@ -160,12 +168,15 @@ class ProviderRegistry:
     def get_status(self) -> dict:
         """A secret-safe status of the whole provider catalogue."""
         counts = {st.value: 0 for st in ProviderState}
+        tiers: dict = {}
         for s in self._specs:
             counts[s.state.value] += 1
+            tiers[tier_label(s.tier)] = tiers.get(tier_label(s.tier), 0) + 1
         return {
             "subsystem_enabled": self.subsystem_enabled,
             "total": len(self._specs),
             "counts": counts,
+            "tiers": tiers,
             "providers": [s.to_dict() for s in self._specs],
         }
 
@@ -190,6 +201,7 @@ def _usable_shape(provider: str, model: str, api_key: str, base_url: str) -> boo
 def _spec_from(
     name: str, provider: str, model: str, api_key: str, base_url: str,
     capabilities: Any, *, is_primary: bool, disabled: bool, state_override: str,
+    tier_override: Any = None,
 ) -> Optional[ProviderSpec]:
     provider = str(provider or "").strip()
     model = str(model or "").strip()
@@ -207,6 +219,7 @@ def _spec_from(
         explicitly_disabled=bool(disabled),
         is_primary=bool(is_primary),
         state_override=str(state_override or ""),
+        tier=resolve_tier(provider, tier_override),
     )
 
 
@@ -261,6 +274,7 @@ def build_provider_registry(config: Any) -> ProviderRegistry:
                     spec.get("capabilities", []),
                     is_primary=False, disabled=disabled,
                     state_override=str(spec.get("state", "") or ""),
+                    tier_override=spec.get("tier"),
                 ))
 
         return ProviderRegistry(specs, subsystem_enabled=subsystem_enabled)

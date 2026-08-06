@@ -31,6 +31,12 @@ from llm.provider_registry import (
     ProviderState,
     build_provider_registry,
 )
+from llm.provider_tiers import (
+    ProviderTier,
+    resolve_tier,
+    tier_for,
+    tier_label,
+)
 from llm.worker import EvidenceSource, LLMReasoningWorker
 
 __all__ = [
@@ -50,6 +56,10 @@ __all__ = [
     "ProviderSpec",
     "ProviderState",
     "build_provider_registry",
+    "ProviderTier",
+    "resolve_tier",
+    "tier_for",
+    "tier_label",
     "LLMReasoner",
     "LLMOpinion",
     "LLMReasoningWorker",
