@@ -146,6 +146,7 @@ class GovernanceDivision:
         brain_calibration: Optional[object] = None,
         reasoning_orchestrator: Optional[object] = None,
         provider_registry: Optional[object] = None,
+        consultation_ledger: Optional[object] = None,
         cognition_observability: Optional[object] = None,
     ) -> None:
         self._module_governor = module_governor
@@ -226,6 +227,9 @@ class GovernanceDivision:
         # Provider Registry / Manager (Part XXI) — catalogue of every provider
         # and its constitutional state. Observational — read in get_status only.
         self._provider_registry = provider_registry
+        # Consultation Ledger (Part XXI Art 9/10/11) — council consultation
+        # records + per-advisor scorecards. Observational — read in get_status.
+        self._consultation_ledger = consultation_ledger
         # Cognition observability (Phase L, Part XII) — read-only derived metrics.
         self._cognition_observability = cognition_observability
 
@@ -254,6 +258,7 @@ class GovernanceDivision:
         brain_calibration: Optional[object] = None,
         reasoning_orchestrator: Optional[object] = None,
         provider_registry: Optional[object] = None,
+        consultation_ledger: Optional[object] = None,
         cognition_observability: Optional[object] = None,
     ) -> None:
         """Inject the enforcement-arm references after construction.
@@ -300,6 +305,8 @@ class GovernanceDivision:
             self._reasoning_orchestrator = reasoning_orchestrator
         if provider_registry is not None:
             self._provider_registry = provider_registry
+        if consultation_ledger is not None:
+            self._consultation_ledger = consultation_ledger
         if cognition_observability is not None:
             self._cognition_observability = cognition_observability
 
@@ -930,6 +937,11 @@ class GovernanceDivision:
                     cognition["provider_registry"] = self._provider_registry.get_status()
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[governance] provider-registry status failed: {}", exc)
+            if self._consultation_ledger is not None:
+                try:
+                    cognition["consultation_ledger"] = self._consultation_ledger.get_status()
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[governance] consultation-ledger status failed: {}", exc)
             if self._cognition_observability is not None:
                 try:
                     cognition["observability"] = self._cognition_observability.get_status()

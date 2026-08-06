@@ -141,6 +141,10 @@ class SystemContext:
     # Observability only: it maintains provider identity + readiness, never
     # reasons or decides. Surfaced via Governance.
     provider_registry: Optional[Any] = None
+    # Consultation Ledger (Part XXI Art 9/10/11) — records every Advisory-Council
+    # consultation and grades each advisor (records + per-domain scorecards).
+    # Observability/learning only; never authority. Surfaced via Governance.
+    consultation_ledger: Optional[Any] = None
     # The AI Cognitive Brain (Single Reasoner) + its background cognition loop.
     # Consumes consolidated Evidence, emits DecisionPackages/CampaignSpecs. Runs
     # in shadow by default (observational); surfaced via Governance.
@@ -1367,6 +1371,20 @@ class SystemContext:
                 except Exception as exc:  # noqa: BLE001
                     logger.warning("[SystemContext] ProviderRegistry init failed: {}", exc)
                     ctx.provider_registry = None
+                # Part XXI Art 9/10/11 — Consultation Ledger. Records every
+                # council consultation and grades each advisor (records + per-
+                # domain scorecards). Built only when the multi-engine
+                # orchestrator exists (there is nothing to record otherwise).
+                # In-memory by default; observability/learning only, fail-safe.
+                try:
+                    if _reasoning_orch is not None:
+                        from cognition.consultation_ledger import (
+                            build_consultation_ledger as _build_consult_ledger,
+                        )
+                        ctx.consultation_ledger = _build_consult_ledger(enabled=True)
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[SystemContext] ConsultationLedger init failed: {}", exc)
+                    ctx.consultation_ledger = None
                 # Phase I (Part IX Art 9) — operational-intelligence author.
                 # Turns terminated-campaign outcomes into operational objectives
                 # (issue on recurring loss, notify on a validated win, periodic
@@ -1462,6 +1480,12 @@ class SystemContext:
                     reasoning=_reasoning_orch,
                     knowledge=ctx.knowledge_source,
                 )
+                # Part XXI — record + grade every council consultation.
+                if ctx.consultation_ledger is not None:
+                    try:
+                        _consolidator.set_consultation_ledger(ctx.consultation_ledger)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug("[SystemContext] consultation-ledger wiring failed: {}", exc)
                 _bridge = _BrainActionBridge(
                     ctx.action_orchestrator,
                     notify_enabled=bool(
@@ -1719,6 +1743,7 @@ class SystemContext:
                 brain_calibration=ctx.brain_calibration,
                 reasoning_orchestrator=ctx.reasoning_orchestrator,
                 provider_registry=ctx.provider_registry,
+                consultation_ledger=ctx.consultation_ledger,
                 cognition_observability=ctx.cognition_observability,
             )
             # Install Governance as the authoriser on the Learning→Governance
