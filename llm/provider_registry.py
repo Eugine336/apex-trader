@@ -37,6 +37,9 @@ from typing import Any, Optional
 from loguru import logger
 
 from llm.provider_tiers import ProviderTier, resolve_tier, tier_label
+from llm.provider_credentials import (
+    requires_api_key, resolve_api_key, resolve_base_url,
+)
 
 
 class ProviderState(str, Enum):
@@ -79,6 +82,7 @@ class ProviderSpec:
     is_primary: bool = False
     state_override: str = ""
     tier: ProviderTier = ProviderTier.UNKNOWN
+    requires_key: bool = True
 
     @property
     def state(self) -> ProviderState:
@@ -87,11 +91,12 @@ class ProviderSpec:
             return forced
         if self.explicitly_disabled:
             return ProviderState.UNAVAILABLE
-        # AVAILABLE requires a runnable shape AND a way to authenticate/reach it.
-        if self.usable_shape and (self.authenticated or self.reachable):
+        # AVAILABLE requires a runnable shape AND credential-readiness: a key
+        # when the provider needs one, or nothing for a keyless local runtime.
+        if self.usable_shape and (self.authenticated or not self.requires_key):
             return ProviderState.AVAILABLE
         # Integrated but awaiting credentials / base_url / correct config — it
-        # can activate with no architectural change (Art 5 / 16 / 17).
+        # can activate with no architectural change (Art 5 / 15 / 16).
         return ProviderState.CONFIGURED
 
     @property
@@ -220,6 +225,7 @@ def _spec_from(
         is_primary=bool(is_primary),
         state_override=str(state_override or ""),
         tier=resolve_tier(provider, tier_override),
+        requires_key=requires_api_key(provider),
     )
 
 
@@ -265,12 +271,16 @@ def build_provider_registry(config: Any) -> ProviderRegistry:
                 )
                 # ``enabled: false`` or ``disabled: true`` excludes a provider.
                 disabled = (spec.get("enabled") is False) or bool(spec.get("disabled"))
+                prov = spec.get("provider", primary_provider)
+                # Resolve credentials the same way the builders do so the
+                # catalogue's state reflects reality: a blank entry that resolves
+                # its <PROVIDER>_API_KEY reads AVAILABLE, otherwise CONFIGURED.
+                key = resolve_api_key(prov, spec.get("api_key", ""),
+                                      primary_provider=primary_provider, primary_key=primary_key)
+                base = resolve_base_url(prov, spec.get("base_url", ""),
+                                       primary_provider=primary_provider, primary_base=primary_base)
                 _add(_spec_from(
-                    name,
-                    spec.get("provider", primary_provider),
-                    spec.get("model", ""),
-                    spec.get("api_key", primary_key),
-                    spec.get("base_url", primary_base),
+                    name, prov, spec.get("model", ""), key, base,
                     spec.get("capabilities", []),
                     is_primary=False, disabled=disabled,
                     state_override=str(spec.get("state", "") or ""),

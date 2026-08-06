@@ -213,10 +213,14 @@ def build_model_manager(config: Any, transport: Optional[Any] = None) -> Optiona
     candidate can be built — a safe no-op, exactly like ``build_client``.
     """
     from llm.client import LLMClient  # local import keeps this module lightweight
+    from llm.provider_credentials import (
+        has_credentials, resolve_api_key, resolve_base_url,
+    )
 
     candidates: list = []
     primary_key = str(getattr(config, "api_key", "") or "")
     primary_base = str(getattr(config, "base_url", "") or "")
+    primary_provider = str(getattr(config, "provider", "") or "")
 
     def _mk(provider, model, api_key, base_url, timeout, max_tokens, temperature):
         if not provider or not model:
@@ -234,16 +238,26 @@ def build_model_manager(config: Any, transport: Optional[Any] = None) -> Optiona
 
     primary = _mk(getattr(config, "provider", ""), getattr(config, "model", ""),
                   primary_key, primary_base, to, mt, tmp)
-    if primary is not None:
+    if primary is not None and has_credentials(primary_provider, primary_key):
         candidates.append(_Candidate(
             client=primary, priority=0,
-            tier=int(resolve_tier(getattr(config, "provider", ""))),
+            tier=int(resolve_tier(primary_provider)),
         ))
 
     for i, spec in enumerate(_coerce_specs(config), start=1):
+        prov = spec.get("provider", primary_provider)
+        # Per-provider credential resolution (Part XXIII Art 15): a blank entry
+        # resolves its own <PROVIDER>_API_KEY; the primary key/base are inherited
+        # only for the SAME provider (never cross-vendor). A credential-requiring
+        # provider with no key is skipped — inert, never selected or called.
+        key = resolve_api_key(prov, spec.get("api_key", ""),
+                              primary_provider=primary_provider, primary_key=primary_key)
+        base = resolve_base_url(prov, spec.get("base_url", ""),
+                               primary_provider=primary_provider, primary_base=primary_base)
+        if not has_credentials(prov, key):
+            continue
         client = _mk(
-            spec.get("provider", ""), spec.get("model", ""),
-            spec.get("api_key", primary_key), spec.get("base_url", primary_base),
+            prov, spec.get("model", ""), key, base,
             spec.get("timeout_seconds", to), spec.get("max_tokens", mt),
             spec.get("temperature", tmp),
         )
@@ -252,7 +266,7 @@ def build_model_manager(config: Any, transport: Optional[Any] = None) -> Optiona
                 client=client,
                 priority=int(spec.get("priority", i)),
                 cost=float(spec.get("cost", 0.0) or 0.0),
-                tier=int(resolve_tier(spec.get("provider", ""), spec.get("tier"))),
+                tier=int(resolve_tier(prov, spec.get("tier"))),
             ))
 
     usable = [c for c in candidates if c.usable]

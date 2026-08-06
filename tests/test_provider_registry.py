@@ -92,15 +92,20 @@ def test_build_primary_available_and_flagged():
 
 def test_build_extra_models_inherit_key_and_classify():
     reg = build_provider_registry(_cfg(extra_models=[
-        {"provider": "anthropic", "model": "claude-3-5-sonnet"},   # inherits key → AVAILABLE
-        {"provider": "openrouter", "model": "z"},                  # needs base_url → CONFIGURED
-        {"provider": "openai", "model": "gpt-x", "enabled": False},  # excluded → UNAVAILABLE
+        # Different vendor, no key, no <PROVIDER>_API_KEY env ⇒ CONFIGURED
+        # (a blank entry never inherits the primary's key — the footgun fix).
+        {"provider": "anthropic", "model": "claude-3-5-sonnet"},
+        {"provider": "openrouter", "model": "z"},                  # needs key ⇒ CONFIGURED
+        {"provider": "openai", "model": "gpt-x", "enabled": False},  # excluded ⇒ UNAVAILABLE
+        # Same vendor as the primary ⇒ inherits the primary key ⇒ AVAILABLE.
+        {"provider": "openai", "model": "gpt-4o"},
     ]))
-    assert len(reg) == 4  # primary + 3
+    assert len(reg) == 5  # primary + 4
     states = {s.model: s.state for s in reg.specs}
-    assert states["claude-3-5-sonnet"] is ProviderState.AVAILABLE
+    assert states["claude-3-5-sonnet"] is ProviderState.CONFIGURED
     assert states["z"] is ProviderState.CONFIGURED
     assert states["gpt-x"] is ProviderState.UNAVAILABLE
+    assert states["gpt-4o"] is ProviderState.AVAILABLE   # same-vendor key inherit
 
 
 def test_build_configured_when_primary_has_no_credentials():
@@ -133,15 +138,15 @@ def test_duplicate_names_deduped():
 
 def test_get_status_counts_and_grouping():
     reg = build_provider_registry(_cfg(extra_models=[
-        {"provider": "anthropic", "model": "claude"},
-        {"provider": "openrouter", "model": "z"},
+        {"provider": "anthropic", "model": "claude"},   # no key ⇒ CONFIGURED
+        {"provider": "openrouter", "model": "z"},        # no key ⇒ CONFIGURED
     ]))
     st = reg.get_status()
     assert st["total"] == 3
     assert st["subsystem_enabled"] is True
-    assert st["counts"]["available"] == 2      # openai primary + anthropic
-    assert st["counts"]["configured"] == 1     # openrouter (no base_url)
-    assert len(reg.available) == 2 and len(reg.configured) == 1
+    assert st["counts"]["available"] == 1      # only the openai primary (has key)
+    assert st["counts"]["configured"] == 2     # anthropic + openrouter await keys
+    assert len(reg.available) == 1 and len(reg.configured) == 2
     assert reg.get("z").model == "z"
 
 
