@@ -30,12 +30,15 @@ Design principles:
 from __future__ import annotations
 
 import json
+import re
 import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
 from loguru import logger
+
+from llm.json_repair import repair_json
 
 LONG = "LONG"
 SHORT = "SHORT"
@@ -84,34 +87,79 @@ def _norm_dir(d: Any) -> str:
     return s if s in (LONG, SHORT, FLAT) else FLAT
 
 
-def _extract_json_object(text: str) -> Optional[dict]:
-    """Best-effort: pull the first balanced ``{...}`` object out of a reply.
+_DIR_MAP = {
+    "LONG": LONG, "BUY": LONG, "BULLISH": LONG, "UP": LONG,
+    "SHORT": SHORT, "SELL": SHORT, "BEARISH": SHORT, "DOWN": SHORT,
+    "FLAT": FLAT, "HOLD": FLAT, "NEUTRAL": FLAT, "NONE": FLAT, "WAIT": FLAT,
+}
+_DIR_RE = re.compile(r"""(?i)["']?\bdirection\b["']?\s*[:=]\s*["']?([A-Za-z]+)""")
+_CONF_RE = re.compile(r"""(?i)["']?\bconfidence\b["']?\s*[:=]\s*([0-9]*\.?[0-9]+)""")
+_RATIONALE_RE = re.compile(r"""(?i)["']?\brationale\b["']?\s*[:=]\s*["']([^"']*)""")
+_TOKEN_RE = re.compile(r"\b(LONG|SHORT|FLAT)\b")
 
-    Tolerates models that wrap JSON in prose or ```` ```json ```` fences.
+
+def _map_dir(s: Any) -> str:
+    return _DIR_MAP.get(str(s or "").strip().upper(), FLAT)
+
+
+def _regex_opinion_fields(reply: str) -> Optional[dict]:
+    """Last-resort extraction of the opinion fields from unparseable text.
+
+    Pulls ``direction`` / ``confidence`` / ``rationale`` out of a reply that no
+    JSON layer could recover (e.g. truncated before the value, or prose). Only
+    commits to a direction it can defend: an explicit ``direction:`` field, or —
+    failing that — a single unambiguous LONG/SHORT/FLAT token. A directional
+    read with no recoverable confidence defaults to 0.0 (weak/observe) rather
+    than inventing conviction. Returns ``None`` when no direction is present.
     """
-    if not text:
-        return None
+    text = str(reply or "")
+    m = _DIR_RE.search(text)
+    if m:
+        direction = _map_dir(m.group(1))
+    else:
+        tokens = set(_TOKEN_RE.findall(text))
+        if len(tokens) != 1:
+            return None
+        direction = _map_dir(next(iter(tokens)))
+    cm = _CONF_RE.search(text)
+    rm = _RATIONALE_RE.search(text)
+    return {
+        "direction": direction,
+        "confidence": cm.group(1) if cm else 0.0,
+        "rationale": rm.group(1) if rm else "",
+    }
+
+
+def _extract_opinion_fields(reply: str) -> Optional[dict]:
+    """Recover the opinion object from a model reply, robustly (Part XXIII).
+
+    Layered so a fenced/prose-wrapped/truncated reply still yields the Brain's
+    decision instead of being discarded: (1) lenient JSON recovery
+    (:func:`llm.json_repair.repair_json` — fence strip, strict, balanced scan,
+    structural repair of a missing brace / open string / trailing comma); then
+    (2) regex field extraction as a final fallback. Never raises.
+    """
     try:
-        return json.loads(text)
-    except Exception:  # noqa: BLE001 — fall through to brace scan
-        pass
-    start = text.find("{")
-    while start != -1:
-        depth = 0
-        for i in range(start, len(text)):
-            c = text[i]
-            if c == "{":
-                depth += 1
-            elif c == "}":
-                depth -= 1
-                if depth == 0:
-                    chunk = text[start:i + 1]
-                    try:
-                        return json.loads(chunk)
-                    except Exception:  # noqa: BLE001
-                        break  # malformed — try the next '{'
-        start = text.find("{", start + 1)
-    return None
+        obj = repair_json(reply)
+        if isinstance(obj, dict) and "direction" in obj:
+            return obj
+        if isinstance(obj, list):
+            for x in obj:
+                if isinstance(x, dict) and "direction" in x:
+                    return x
+        return _regex_opinion_fields(reply)
+    except Exception:  # noqa: BLE001 — recovery must never raise
+        return None
+
+
+def _reply_was_strict_json(reply: str) -> bool:
+    """True when the raw reply is already valid JSON with a direction (no repair
+    needed) — used only for observability (recovered-vs-clean counting)."""
+    try:
+        raw = json.loads(str(reply or ""))
+        return isinstance(raw, dict) and "direction" in raw
+    except Exception:  # noqa: BLE001
+        return False
 
 
 @dataclass
@@ -178,6 +226,7 @@ class LLMReasoner:
         self._recent: list[LLMOpinion] = []
         self._calls = 0
         self._faults = 0
+        self._recovered = 0   # opinions recovered from non-strict/truncated JSON
         self._lock = threading.Lock()
 
     @property
@@ -266,16 +315,21 @@ class LLMReasoner:
             return json.dumps({"symbol": symbol})
 
     def _parse(self, symbol: str, reply: str) -> Optional[LLMOpinion]:
-        obj = _extract_json_object(reply)
-        if not isinstance(obj, dict):
+        fields = _extract_opinion_fields(reply)
+        if not isinstance(fields, dict) or "direction" not in fields:
             return None
-        ch = obj.get("competing_hypotheses") or []
-        mi = obj.get("missing_information") or []
+        # Observability: note when the Brain's opinion had to be *recovered* from
+        # a fenced / truncated / prose reply rather than clean JSON (Part XXIII).
+        if not _reply_was_strict_json(reply):
+            with self._lock:
+                self._recovered += 1
+        ch = fields.get("competing_hypotheses") or []
+        mi = fields.get("missing_information") or []
         return LLMOpinion(
             symbol=symbol,
-            direction=_norm_dir(obj.get("direction")),
-            confidence=_clamp01(obj.get("confidence")),
-            rationale=str(obj.get("rationale", ""))[:500],
+            direction=_norm_dir(fields.get("direction")),
+            confidence=_clamp01(fields.get("confidence")),
+            rationale=str(fields.get("rationale", ""))[:500],
             competing_hypotheses=[str(x)[:200] for x in ch][:5]
             if isinstance(ch, list) else [],
             missing_information=[str(x)[:200] for x in mi][:5]
@@ -306,6 +360,7 @@ class LLMReasoner:
             with self._lock:
                 recent = [o.to_dict() for o in self._recent[-10:]]
                 calls, faults = self._calls, self._faults
+                recovered = self._recovered
             client_desc = None
             if self._client is not None and hasattr(self._client, "describe"):
                 try:
@@ -319,6 +374,7 @@ class LLMReasoner:
                 "min_interval_seconds": self.min_interval_seconds,
                 "calls": calls,
                 "faults": faults,
+                "recovered": recovered,
                 "client": client_desc,
                 "recent_opinions": recent,
             }
