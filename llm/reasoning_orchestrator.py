@@ -265,7 +265,8 @@ def build_reasoning_orchestrator(
     interval = float(getattr(config, "min_interval_seconds", 30.0) or 30.0)
     drive = bool(getattr(config, "drive_decisions", False))
 
-    def _engine(provider, model, api_key, base_url, caps, name):
+    def _engine(provider, model, api_key, base_url, caps, name,
+                timeout=None, max_tokens=None, temperature=None):
         if not provider or not model:
             return None
         # Per-provider credentials (Part XXIII Art 15): resolve <PROVIDER>_API_KEY
@@ -284,7 +285,10 @@ def build_reasoning_orchestrator(
         client = LLMClient(
             provider=str(provider), model=str(model),
             api_key=str(key or ""), base_url=str(base or ""),
-            timeout_seconds=to, max_tokens=mt, temperature=tmp, transport=transport,
+            timeout_seconds=float(timeout if timeout is not None else to),
+            max_tokens=int(max_tokens if max_tokens is not None else mt),
+            temperature=float(temperature if temperature is not None else tmp),
+            transport=transport,
         )
         if not client.usable:
             return None
@@ -315,6 +319,8 @@ def build_reasoning_orchestrator(
                 spec.get("provider", primary_provider), spec.get("model", ""),
                 spec.get("api_key", ""), spec.get("base_url", ""),
                 spec.get("capabilities", []), name,
+                timeout=spec.get("timeout_seconds"), max_tokens=spec.get("max_tokens"),
+                temperature=spec.get("temperature"),
             ))
 
     if not engines:

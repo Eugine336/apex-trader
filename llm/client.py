@@ -179,6 +179,11 @@ class LLMClient:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[llm] request build failed ({}): {}", self.provider, exc)
             return None
+        # Python's default urllib User-Agent ("Python-urllib/3.x") is a known
+        # bot-fingerprint that some vendors' Cloudflare front doors reject
+        # outright (e.g. Groq: HTTP 403, "error code: 1010") even with a
+        # perfectly valid key/payload. A normal-looking UA avoids that.
+        headers.setdefault("user-agent", "apex-trader-llm-client/1.0")
         body = json.dumps(payload).encode("utf-8")
         try:
             status, text = self._transport(url, headers, body, self.timeout_seconds)
