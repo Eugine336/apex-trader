@@ -50,7 +50,8 @@ def _short_zone(top=1.0860, bottom=1.0855, inv=1.08625) -> EntryZone:
     )
 
 
-def _make_stager(zones, *, config=None, gate=True, lots=0.5, place_success=True):
+def _make_stager(zones, *, config=None, gate=True, lots=0.5, place_success=True,
+                 single_path=None):
     active = list(zones)
     calls = {"placed": [], "cancelled": []}
 
@@ -77,6 +78,7 @@ def _make_stager(zones, *, config=None, gate=True, lots=0.5, place_success=True)
         ),
         gate_check=(lambda *a, **k: gate),
         profile_lookup=lambda s: None,
+        single_path_active=single_path,
     )
     return stager, calls, active
 
@@ -92,6 +94,27 @@ class TestZoneStagingConfig:
         from brain.instrument_profile import get_profile
         assert get_profile("XAUUSD").pre_staging_enabled is True
         assert get_profile("EURUSD").pre_staging_enabled is False
+
+
+class TestZoneStagingSinglePath:
+    """Single Reasoner cutover: the legacy pending-order stager must be OFF when
+    ``single_path_active()`` is True — only the AI Cognitive Brain may open trades."""
+
+    def test_single_path_active_disables_all_staging(self):
+        stager, calls, _ = _make_stager([_long_zone()], single_path=lambda: True)
+        stager.on_tick(FakeTick("EURUSD", 1.08425, 1.08445, _ts()))
+        assert calls["placed"] == []          # no legacy order placed
+        assert stager.stats["staged"] == 0
+
+    def test_single_path_inactive_stages_normally(self):
+        stager, calls, _ = _make_stager([_long_zone()], single_path=lambda: False)
+        stager.on_tick(FakeTick("EURUSD", 1.08425, 1.08445, _ts()))
+        assert len(calls["placed"]) == 1
+
+    def test_single_path_none_preserves_legacy_behaviour(self):
+        stager, calls, _ = _make_stager([_long_zone()], single_path=None)
+        stager.on_tick(FakeTick("EURUSD", 1.08425, 1.08445, _ts()))
+        assert len(calls["placed"]) == 1
 
 
 class TestZoneStagingPlacement:
