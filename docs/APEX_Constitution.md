@@ -1724,3 +1724,118 @@ every movement; it shall understand the market better than one cycle ago.
 **Rule:** Presume noise; qualify on positive expected net value; the Brain owns
 the decision — this cognitive cycle is the constitutional heartbeat and no
 subsystem may bypass, weaken or compromise it.
+
+# Part XX --- Multi-AI Cognitive Intelligence Constitution
+
+> Version: 1.0
+
+## Purpose
+
+Governs the integration of every Artificial Intelligence model within Apex — the
+relationship between the Cognitive Brain, external reasoning engines, local
+models, future models and every AI capability Apex will ever use. This is not an
+implementation guide; it is constitutional law. Any AI integration that behaves
+differently from this Part is architecturally incorrect.
+
+**Fundamental principle.** Apex shall never depend upon a single Artificial
+Intelligence. No single model is perfect; none possesses complete market
+understanding. Every model has strengths and weaknesses. Institutional trading
+firms consult multiple experts; Apex shall do the same.
+
+**Article 1 — The Cognitive Brain.** The Apex Cognitive Brain is the permanent
+intelligence of Apex. It owns reasoning, decision making, campaign management,
+opportunity harvesting, learning, institutional memory, capital allocation,
+governance and risk ownership. The Brain never delegates ownership — only
+consultation.
+
+**Article 2 — External AI models.** Every external AI model (OpenAI, Claude,
+Gemini, Llama, DeepSeek, Qwen, Mistral, and future reasoning engines) exists as a
+specialist advisor. These models never become the Brain; they advise the Brain.
+
+**Article 3 — No model is privileged.** No model shall be permanently preferred
+and no provider permanently trusted. Every model earns influence continuously
+through evidence quality, historical accuracy, reasoning quality, domain
+expertise, consistency and reliability. The Brain continuously evaluates every
+advisor.
+
+**Article 4 — Specialisation.** Different models possess different strengths —
+macro reasoning, statistical reasoning, pattern recognition, counterarguments,
+code generation, risk analysis, rapid inference. The Brain selects advisors
+according to the reasoning task, not according to brand.
+
+**Article 5 — Advisory Council.** The collection of AI models forms the Apex
+Advisory Council, which exists to challenge thinking, not replace it. The Council
+debates; the Brain concludes.
+
+**Article 6 — Consultation.** The Brain may consult one advisor, several, or every
+available advisor. The choice depends entirely upon opportunity complexity,
+market uncertainty, required confidence, available computation and time
+constraints. Consultation is adaptive, never fixed.
+
+**Article 7 — Evidence.** Every advisor produces reasoning, probabilities,
+counterarguments, alternative hypotheses, risk and opportunity observations,
+confidence and uncertainty. Nothing an advisor produces becomes a decision;
+everything becomes evidence.
+
+**Article 8 — Disagreement.** Disagreement is desirable; perfect agreement may
+indicate shallow reasoning. The Brain actively seeks disagreement because
+contradictory reasoning expands understanding. Consensus is earned, never
+assumed.
+
+**Article 9 — Self-criticism.** The Brain shall continuously ask advisors why it
+is wrong, what it has overlooked, what contradicts its thesis, why a campaign
+should terminate and why it should avoid a trade. The purpose of consultation is
+criticism, not validation.
+
+**Article 10 — Dynamic provider management.** Providers shall never be hardcoded.
+The AI ecosystem evolves continuously — models emerge and disappear; pricing,
+performance and availability change. The Brain discovers available providers
+dynamically; every provider is modular and replaceable; no architectural
+dependency shall exist on any single vendor.
+
+**Article 11 — Local and remote intelligence.** The Brain reasons using both
+remote and local AI. Local reasoning protects continuity; remote reasoning
+expands capability. Neither replaces the other; both cooperate.
+
+**Article 12 — Cost awareness.** Reasoning is a resource. The Brain continuously
+optimises latency, cost, quality, availability and reliability. Simple reasoning
+may use inexpensive models; complex reasoning may justify premium models. The
+objective is maximum intelligence per unit of computation.
+
+**Article 13 — Failover.** If a provider becomes unavailable, exhausts credits or
+produces unreliable analysis, reasoning shall continue. No campaign shall fail
+because one AI provider failed.
+
+**Article 14 — Continuous evaluation.** The Brain continuously evaluates advisors
+on prediction quality, reasoning quality, counterargument quality, hallucination
+frequency, decision contribution, latency, cost efficiency and historical
+usefulness. Influence is earned continuously.
+
+**Article 15 — Learning.** The Brain records which advisor was consulted, why, the
+advisor's recommendation, the final decision, the outcome, the decision quality
+and the advisor's contribution — so future consultations improve continuously.
+
+**Article 16 — Composio.** Composio is neither the Brain nor an advisor; it is the
+intelligence infrastructure providing secure access to AI providers,
+applications, services, knowledge sources and operational tools. Composio expands
+what the Brain can access; it never owns reasoning.
+
+**Article 17 — The final authority.** Regardless of how many advisors, models or
+providers participate, there shall always exist one final authority: the Apex
+Cognitive Brain. The Brain alone integrates market evidence, advisor reasoning,
+institutional memory, portfolio state, campaign intelligence, risk and expected
+value. Only the Brain may authorise campaign creation, execution, scaling,
+management, termination, capital allocation and learning. No external AI may
+directly control trading behaviour.
+
+**Final constitutional law.** Apex shall operate as an institutional cognitive
+organisation rather than a single Artificial Intelligence. The Cognitive Brain
+remains the permanent executive intelligence; every external AI model functions
+as a specialist advisor that contributes evidence, challenges existing beliefs
+and improves understanding. The Brain synthesises all available intelligence into
+a unified market understanding, continuously evaluates the quality of every
+advisor, dynamically selects the most appropriate reasoning engines for each
+task, remains independent of any single provider, and alone accepts full
+responsibility for every decision taken throughout the complete lifecycle of
+every opportunity. No AI provider shall ever become Apex; all AI providers
+collectively strengthen Apex; the Cognitive Brain alone is Apex.
