@@ -162,7 +162,7 @@ class ModelManager:
             try:
                 reply = cand.client.complete(system, user)
             except Exception as exc:  # noqa: BLE001 — a model fault is a failover, not a crash
-                logger.debug("[model-manager] %s raised: %s", cand.model, exc)
+                logger.debug("[model-manager] {} raised: {}", cand.model, exc)
                 reply = None
             latency_ms = (time.time() - t0) * 1000.0
             ok = bool(reply)
@@ -181,12 +181,12 @@ class ModelManager:
                     # answered and how many ahead of it were down, so the operator
                     # can see who is still standing in the failsafe chain.
                     logger.info(
-                        "[model-manager] reasoning answered by %s (Tier %s) after %d unavailable ahead of it",
+                        "[model-manager] reasoning answered by {} (Tier {}) after {} unavailable ahead of it",
                         cand.model, cand.tier, idx,
                     )
                 return reply
             else:
-                logger.info("[model-manager] %s unavailable — trying next in the chain", cand.model)
+                logger.info("[model-manager] {} unavailable — trying next in the chain", cand.model)
         return None
 
     def describe(self) -> dict:
