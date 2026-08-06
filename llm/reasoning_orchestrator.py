@@ -268,9 +268,22 @@ def build_reasoning_orchestrator(
     def _engine(provider, model, api_key, base_url, caps, name):
         if not provider or not model:
             return None
+        # Per-provider credentials (Part XXIII Art 15): resolve <PROVIDER>_API_KEY
+        # and inherit the primary key/base only for the same provider. A
+        # credential-requiring provider with no key is skipped — a blank roster
+        # entry is inert (never an advisor, never a failing call).
+        from llm.provider_credentials import (
+            has_credentials, resolve_api_key, resolve_base_url,
+        )
+        key = resolve_api_key(provider, api_key,
+                              primary_provider=primary_provider, primary_key=primary_key)
+        base = resolve_base_url(provider, base_url,
+                               primary_provider=primary_provider, primary_base=primary_base)
+        if not has_credentials(provider, key):
+            return None
         client = LLMClient(
             provider=str(provider), model=str(model),
-            api_key=str(api_key or ""), base_url=str(base_url or ""),
+            api_key=str(key or ""), base_url=str(base or ""),
             timeout_seconds=to, max_tokens=mt, temperature=tmp, transport=transport,
         )
         if not client.usable:
@@ -300,7 +313,7 @@ def build_reasoning_orchestrator(
             name = str(spec.get("name") or spec.get("model") or spec.get("provider") or "engine")
             _add(_engine(
                 spec.get("provider", primary_provider), spec.get("model", ""),
-                spec.get("api_key", primary_key), spec.get("base_url", primary_base),
+                spec.get("api_key", ""), spec.get("base_url", ""),
                 spec.get("capabilities", []), name,
             ))
 
