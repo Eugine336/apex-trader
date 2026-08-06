@@ -4074,6 +4074,19 @@ class CognitionConfig:
     reallocation_max_per_component: int = 2
     reallocation_concentration_limit: float = 0.6
     reallocation_trim_fraction: float = 0.5
+    # Part XIX Art 1/7/8 — opportunity qualification. The market is presumed
+    # noise: a Brain-originated entry (and a scale-in) only proceeds if its
+    # expected NET value after real round-trip cost (spread + commission +
+    # slippage) is positive. ``cost_multiple`` expresses Art 8's "would I still
+    # take this if costs doubled?" (2.0 = must survive double cost). Stops the
+    # churn where dozens of tiny entries lose to spread/commission. Default on.
+    opportunity_qualification_enabled: bool = True
+    opportunity_cost_multiple: float = 2.0
+    opportunity_min_net_ev: float = 0.0
+    # Round-trip commission per 1.0 lot in account currency, used by the net-EV
+    # gate. 0.0 ⇒ self-calibrate from realised closed-deal commissions (falls
+    # back to spread+slippage only until enough closes are observed).
+    commission_per_lot_round_trip: float = 0.0
     # Phase G — Brain-originated entries from its CampaignSpecification.
     # "off"    — never originate (management/observation only).
     # "shadow" — record intended orders, submit nothing (default; safe).
@@ -4162,6 +4175,9 @@ class CognitionConfig:
             ("COGNITION_ORIGINATION_REWARD_MULTIPLE", "origination_reward_multiple"),
             ("COGNITION_ORIGINATION_MIN_RR", "origination_min_rr"),
             ("COGNITION_ORIGINATION_MAX_LOTS", "origination_max_lots"),
+            ("COGNITION_OPPORTUNITY_COST_MULTIPLE", "opportunity_cost_multiple"),
+            ("COGNITION_OPPORTUNITY_MIN_NET_EV", "opportunity_min_net_ev"),
+            ("COGNITION_COMMISSION_PER_LOT_ROUND_TRIP", "commission_per_lot_round_trip"),
         ):
             raw = os.getenv(env_name)
             if raw is not None:
@@ -4169,6 +4185,10 @@ class CognitionConfig:
                     setattr(self, attr, float(raw))
                 except (TypeError, ValueError):
                     logger.warning("[config] bad {} '{}' — keeping default", env_name, raw)
+        self.opportunity_qualification_enabled = _llm_env_bool(
+            "COGNITION_OPPORTUNITY_QUALIFICATION_ENABLED",
+            self.opportunity_qualification_enabled,
+        )
         if self.gate_mode not in ("off", "shadow", "veto", "authoritative"):
             raise ValueError(
                 "CognitionConfig.gate_mode must be off|shadow|veto|authoritative, got "

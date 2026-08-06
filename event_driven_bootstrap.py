@@ -3257,6 +3257,12 @@ class EventDrivenSystem:
                         symbol, direction,
                     )
                     return
+                # Part XIX Art 1/7 — the market is presumed noise: only proceed
+                # if expected NET value after real round-trip cost is positive.
+                if not self._opportunity_qualifies(
+                    symbol, direction, sl, tp, lots, confidence,
+                ):
+                    return
                 stake = getattr(origination, "stake_usd", None)
                 idem_key = generate_idempotency_key(symbol, direction, lots)
                 comment = build_order_comment(
@@ -3394,6 +3400,95 @@ class EventDrivenSystem:
             logger.debug("[origination-sink] lot sizing failed for {}: {}", symbol, exc)
             return 0.0
 
+    def _money_per_price(self, symbol: str, lots: float) -> float:
+        """Account currency per 1.0 unit of price move for ``lots`` (0 if unknown)."""
+        try:
+            spec = self._pm.get_symbol_spec(symbol) or {} if self._pm is not None else {}
+            tv = float(spec.get("trade_tick_value") or 0.0)
+            ts = float(spec.get("trade_tick_size") or 0.0)
+            if tv <= 0.0 or ts <= 0.0:
+                return 0.0
+            return (tv / ts) * float(lots or 0.0)
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    def _estimate_round_trip_cost(self, symbol: str, lots: float) -> float:
+        """Estimate round-trip cost in account currency (Part XIX Art 7).
+
+        cost = spread + commission + slippage. Spread/slippage are converted from
+        price via money-per-price; commission is per-lot (self-calibrated from
+        realised closed deals, else the configured fallback). Returns 0.0 when it
+        cannot be estimated (the caller then fail-opens rather than block trading).
+        """
+        try:
+            lots = float(lots or 0.0)
+            mpp = self._money_per_price(symbol, lots)
+            if mpp <= 0.0 or lots <= 0.0:
+                return 0.0
+            pip = self._safe_pip_size(symbol)
+            spread_pips = 0.0
+            try:
+                spread_pips = float(self._get_spread_pips(symbol) or 0.0)
+            except Exception:  # noqa: BLE001
+                spread_pips = 0.0
+            cog = getattr(self._config, "cognition", None)
+            slippage_pips = 1.0  # conservative default entry+exit slippage buffer
+            spread_ccy = max(0.0, spread_pips) * pip * mpp
+            slippage_ccy = slippage_pips * pip * mpp
+            comm_per_lot = float(
+                getattr(self, "_commission_per_lot_est", 0.0) or 0.0
+            )
+            if comm_per_lot <= 0.0 and cog is not None:
+                comm_per_lot = float(getattr(cog, "commission_per_lot_round_trip", 0.0) or 0.0)
+            commission_ccy = max(0.0, comm_per_lot) * lots
+            return spread_ccy + slippage_ccy + commission_ccy
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    def _opportunity_qualifies(
+        self, symbol: str, direction: str, sl, tp, lots: float, confidence: float,
+    ) -> bool:
+        """Gate an entry/scale on positive expected NET value (Part XIX Art 1/7/8).
+
+        Fail-open: when the cost or money conversion cannot be estimated (missing
+        broker spec / spread), the gate does NOT block — presume-noise applies to
+        market evidence, not to infrastructure gaps. Gated off via config.
+        """
+        try:
+            cog = getattr(self._config, "cognition", None)
+            if cog is not None and not bool(
+                getattr(cog, "opportunity_qualification_enabled", True)
+            ):
+                return True
+            tick = self._tick_store.get_latest(symbol) if self._tick_store is not None else None
+            is_long = str(direction or "").upper() == "LONG"
+            entry = 0.0
+            if tick is not None:
+                entry = float(
+                    (getattr(tick, "ask", 0.0) if is_long else getattr(tick, "bid", 0.0))
+                    or getattr(tick, "mid", 0.0) or 0.0
+                )
+            mpp = self._money_per_price(symbol, lots)
+            cost = self._estimate_round_trip_cost(symbol, lots)
+            if entry <= 0.0 or mpp <= 0.0 or cost <= 0.0:
+                return True  # cannot qualify → fail-open (don't halt trading)
+            from cognition.opportunity import qualify_net_ev
+            q = qualify_net_ev(
+                entry=entry, sl=float(sl), tp=float(tp), confidence=confidence,
+                money_per_price=mpp, cost_ccy=cost,
+                min_edge_ccy=float(getattr(cog, "opportunity_min_net_ev", 0.0) if cog else 0.0),
+                cost_multiple=float(getattr(cog, "opportunity_cost_multiple", 2.0) if cog else 2.0),
+            )
+            if not q.qualified:
+                logger.info(
+                    "[opportunity] {} {} REJECTED — {} (Part XIX Art 7)",
+                    symbol, direction, q.reason,
+                )
+            return q.qualified
+        except Exception as exc:  # noqa: BLE001 — qualification must never break the sink
+            logger.debug("[opportunity] qualify fault for {}: {}", symbol, exc)
+            return True
+
     def _make_management_sink(self):
         """Build the LIVE management sink: Brain manage() verdict → MT5 op.
 
@@ -3493,6 +3588,9 @@ class EventDrivenSystem:
                     add_lots = self._origination_lot_size(symbol, held, sl, conf)
                     if add_lots <= 0:
                         logger.info("[mgmt-sink] {} scale_in skipped — no broker-valid lot", symbol)
+                        return
+                    # Part XIX Art 7 — a scale must also clear positive net EV.
+                    if not self._opportunity_qualifies(symbol, held, sl, tp, add_lots, conf):
                         return
                     idem = generate_idempotency_key(symbol, held, add_lots)
                     intents.append(Intent.open(
@@ -5465,6 +5563,29 @@ class EventDrivenSystem:
             broker_commission = float(getattr(deal_info, "commission", 0.0) or 0.0)
             broker_swap = float(getattr(deal_info, "swap", 0.0) or 0.0)
             broker_fee = float(getattr(deal_info, "fee", 0.0) or 0.0)
+            # Part XIX Art 7 — self-calibrate the round-trip commission-per-lot
+            # from realised deals so the net-EV opportunity gate uses the broker's
+            # true cost. EMA over |commission+fee| / lots. Best-effort.
+            try:
+                _lots = 0.0
+                for _src in (
+                    getattr(deal_info, "lots_closed", None),
+                    getattr(resp, "lots_closed", None),
+                    (self._known_open.get(ticket, {}) or {}).get("lots") if ticket else None,
+                    (self._entry_context.get(ticket, {}) or {}).get("lots") if ticket else None,
+                ):
+                    if _src:
+                        _lots = float(_src)
+                        break
+                _cost = abs(broker_commission) + abs(broker_fee)
+                if _lots > 0.0 and _cost > 0.0:
+                    # get_deal_close_info sums commission across ALL deals of the
+                    # position (entry + exit), so this is already round-trip.
+                    rt = _cost / _lots
+                    prev = float(getattr(self, "_commission_per_lot_est", 0.0) or 0.0)
+                    self._commission_per_lot_est = rt if prev <= 0.0 else (0.8 * prev + 0.2 * rt)
+            except Exception:  # noqa: BLE001
+                pass
             di_close = getattr(deal_info, "close_price", None)
             if di_close:
                 close_price = float(di_close)
