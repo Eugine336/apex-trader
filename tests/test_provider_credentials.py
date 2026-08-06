@@ -16,14 +16,17 @@ from llm.model_manager import build_model_manager
 def test_requires_api_key():
     assert requires_api_key("openai") is True
     assert requires_api_key("groq") is True
-    assert requires_api_key("ollama") is False        # local runtime
+    assert requires_api_key("nvidia") is True             # NVIDIA NIM hosted needs a key
+    assert requires_api_key("ollama") is False            # local runtime
     assert requires_api_key("vllm") is False
+    assert requires_api_key("nvidia_nim_self_hosted") is False  # local NIM, keyless
 
 
 def test_key_env_names():
     assert key_env_names("openai") == ("OPENAI_API_KEY",)
     assert "OPENROUTER_API_KEY" in key_env_names("openrouter")
     assert "GEMINI_API_KEY" in key_env_names("gemini")
+    assert "NVIDIA_API_KEY" in key_env_names("nvidia")     # NIM resolves NVIDIA_API_KEY
     # Unknown provider → generic <PROVIDER>_API_KEY form.
     assert key_env_names("acme-labs") == ("ACME_LABS_API_KEY",)
 

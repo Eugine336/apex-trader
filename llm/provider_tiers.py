@@ -53,11 +53,14 @@ _TIER_2 = frozenset({
     "fireworks", "fireworks_ai", "fireworksai", "deepinfra", "cerebras",
     "huggingface", "hugging_face", "hf", "anyscale", "replicate",
     "agentrouter", "agent_router", "agent-router", "deepseek", "mistral",
+    "nvidia", "nim", "nvidia_nim", "nvidia-nim",
 })
 _TIER_3 = frozenset({
     "ollama", "local", "self_hosted", "self-hosted", "vllm", "lmstudio",
     "lm_studio", "llamacpp", "llama_cpp", "llamafile", "gpt4all",
     "koboldcpp", "textgen", "text_generation_webui",
+    # NVIDIA NIM run on the operator's own hardware (keyless, local).
+    "nim_local", "nim_self_hosted", "nvidia_nim_local", "nvidia_nim_self_hosted",
     # locally-run model families used directly as a provider name
     "llama", "qwen", "gemma", "phi",
 })

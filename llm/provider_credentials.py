@@ -34,6 +34,8 @@ _KEYLESS_PROVIDERS = frozenset({
     "ollama", "vllm", "lmstudio", "lm_studio", "local", "self_hosted",
     "self-hosted", "llamacpp", "llama_cpp", "llamafile", "gpt4all",
     "koboldcpp", "textgen", "text_generation_webui",
+    # NVIDIA NIM served locally authenticates by locality, not an API key.
+    "nim_local", "nim_self_hosted", "nvidia_nim_local", "nvidia_nim_self_hosted",
 })
 
 # Explicit env-var names per provider (first non-empty wins). Anything not listed
@@ -71,6 +73,10 @@ _KEY_ENV: dict = {
     "mistral": ("MISTRAL_API_KEY",),
     "anyscale": ("ANYSCALE_API_KEY",),
     "replicate": ("REPLICATE_API_TOKEN", "REPLICATE_API_KEY"),
+    "nvidia": ("NVIDIA_API_KEY", "NIM_API_KEY"),
+    "nim": ("NVIDIA_API_KEY", "NIM_API_KEY"),
+    "nvidia_nim": ("NVIDIA_API_KEY", "NIM_API_KEY"),
+    "nvidia-nim": ("NVIDIA_API_KEY", "NIM_API_KEY"),
 }
 
 
