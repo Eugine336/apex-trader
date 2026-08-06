@@ -2,7 +2,14 @@
 
 from types import SimpleNamespace
 
-from cognition.market_snapshot import build_price_snapshot, snapshot_to_evidence
+from cognition.market_snapshot import (
+    build_microstructure,
+    build_price_snapshot,
+    pullback_read,
+    session_context,
+    snapshot_to_evidence,
+    summarize_depth,
+)
 
 
 def _uptrend(n=8, start=100.0, step=0.5):
@@ -86,3 +93,116 @@ def test_fault_safe_on_garbage():
     snap = build_price_snapshot("X", {"M5": ["garbage", None, 5]})
     # unparseable rows are skipped; no timeframe survives
     assert snap["timeframes"].get("M5") is None
+
+
+def _ticks(mids, *, start_epoch=1_000_000.0, step=1.0, spread=0.2):
+    return [
+        SimpleNamespace(
+            bid=m - spread / 2.0, ask=m + spread / 2.0, mid=m,
+            spread=spread, epoch=start_epoch + i * step,
+        )
+        for i, m in enumerate(mids)
+    ]
+
+
+def test_microstructure_rising_tape():
+    micro = build_microstructure(_ticks([100.0, 100.2, 100.5, 100.9]))
+    assert micro["ticks"] == 4
+    assert micro["up_ticks"] == 3 and micro["down_ticks"] == 0
+    assert micro["momentum"] == 1.0            # all up
+    assert micro["drift"] > 0                   # net positive drift
+    assert micro["velocity_tps"] is not None    # timestamps present
+    assert micro["spread_widening"] is False
+
+
+def test_microstructure_spread_widening_flag():
+    ticks = _ticks([100.0, 100.0], spread=0.2)
+    ticks[-1] = SimpleNamespace(bid=99.0, ask=101.0, mid=100.0, spread=2.0, epoch=1_000_001.0)
+    micro = build_microstructure(ticks)
+    assert micro["spread_widening"] is True
+
+
+def test_microstructure_needs_two_ticks():
+    assert build_microstructure([]) == {}
+    assert build_microstructure(_ticks([100.0])) == {}
+
+
+def test_summarize_depth_imbalance_and_top():
+    levels = [
+        {"price": 100.0, "volume": 5.0, "side": "bid"},
+        {"price": 99.9, "volume": 3.0, "side": "bid"},
+        {"price": 100.2, "volume": 2.0, "side": "ask"},
+    ]
+    book = summarize_depth(levels)
+    assert book["top_bid"] == 100.0 and book["top_ask"] == 100.2
+    assert book["bid_vol"] == 8.0 and book["ask_vol"] == 2.0
+    assert book["imbalance"] > 0.0             # bid-heavy ⇒ buy pressure
+    assert summarize_depth([]) is None
+    assert summarize_depth(None) is None
+
+
+def test_session_context_windows():
+    # 13:00 UTC ⇒ London/NY overlap, high liquidity
+    overlap = session_context(13 * 3600)
+    assert overlap["session"] == "london_ny_overlap"
+    assert overlap["high_liquidity"] is True
+    # 03:00 UTC ⇒ Asian, not high liquidity
+    asian = session_context(3 * 3600)
+    assert asian["session"] == "asian" and asian["high_liquidity"] is False
+    assert session_context(0) == {}
+
+
+def test_pullback_read_dip_in_uptrend():
+    tfs = {
+        "H4": {"trend": "up", "change_pct": 1.0},
+        "M1": {"trend": "down", "change_pct": -0.1},
+    }
+    read = pullback_read(tfs)
+    assert read["read"] == "pullback_in_uptrend"
+    assert read["with_trend_dir"] == "LONG"
+    assert read["context_tf"] == "H4" and read["micro_tf"] == "M1"
+
+
+def test_pullback_read_bounce_in_downtrend():
+    tfs = {
+        "H1": {"trend": "down", "change_pct": -0.8},
+        "M5": {"trend": "up", "change_pct": 0.2},
+    }
+    read = pullback_read(tfs)
+    assert read["read"] == "bounce_in_downtrend"
+    assert read["with_trend_dir"] == "SHORT"
+
+
+def test_pullback_read_needs_two_known_tfs():
+    assert pullback_read({"M5": {"trend": "up"}}) == {}
+    assert pullback_read({}) == {}
+
+
+def test_build_snapshot_wires_microstructure_depth_session_pullback():
+    snap = build_price_snapshot(
+        "XAUUSD",
+        {"H4": _uptrend(start=80.0), "M1": _downtrend(start=104.0, step=0.05)},
+        tick=SimpleNamespace(bid=104.0, ask=104.3, mid=104.15),
+        ticks=_ticks([104.0, 104.1, 104.05, 104.2]),
+        depth=[
+            {"price": 104.0, "volume": 5.0, "side": "bid"},
+            {"price": 104.3, "volume": 2.0, "side": "ask"},
+        ],
+        now_epoch=13 * 3600,
+        max_bars=6,
+    )
+    assert snap["microstructure"] and snap["microstructure"]["ticks"] == 4
+    assert snap["depth"] and snap["depth"]["imbalance"] > 0.0
+    assert snap["session"]["session"] == "london_ny_overlap"
+    assert snap["pullback"]["read"] == "pullback_in_uptrend"
+    ev = snapshot_to_evidence("XAUUSD", snap)
+    assert ev and "pullback_in_uptrend" in ev[0].observation
+    assert ev[0].measurements.get("microstructure")
+
+
+def test_optional_blocks_absent_when_inputs_missing():
+    snap = build_price_snapshot("EURUSD", {"M5": _uptrend()})
+    assert snap["microstructure"] is None
+    assert snap["depth"] is None
+    assert snap["session"] is None
+
