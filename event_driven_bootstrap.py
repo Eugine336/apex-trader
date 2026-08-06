@@ -3714,41 +3714,53 @@ class EventDrivenSystem:
     def _cognition_price_snapshot(self, symbol: str) -> list:
         """Reconstruct the live chart for one symbol as Evidence (Part XIX Art 2).
 
-        Reads recent multi-timeframe OHLC (cache-backed), the live tick and the
-        open position, and builds a compact price snapshot so the Brain observes
-        the actual market — price action, spread, micro-moves — like a trader on
-        the chart, not only derived module verdicts. Fail-safe: ``[]`` on any
-        fault (the Brain simply reasons without the chart that cycle).
+        Reads recent multi-timeframe OHLC (D1→M1, cache-backed), the live tick,
+        the recent tick tape (microstructure), the order book (depth, when the
+        feed publishes it) and the open position, then builds a compact snapshot
+        so the Brain observes the actual market — price action, spread, micro-
+        moves, pullbacks, session — like a trader on the chart, not only derived
+        module verdicts. Fail-safe: ``[]`` on any fault (the Brain simply
+        reasons without the chart that cycle).
         """
         try:
+            import time as _time
             from cognition.market_snapshot import (
                 build_price_snapshot, snapshot_to_evidence,
             )
             if self._pm is None:
                 return []
-            tfs = ["H1", "M15", "M5", "M1"]
+            tfs = ["D1", "H4", "H1", "M15", "M5", "M1"]
             try:
                 data = self._pm.fetch_market_data(
-                    symbol, tfs, count=12, include_forming=True,
+                    symbol, tfs, count=16, include_forming=True,
                 ) or {}
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[cognition] price fetch failed for {}: {}", symbol, exc)
                 return []
             candles_by_tf: dict = {}
             for tf, df in data.items():
-                rows = self._ohlc_rows(df, max_bars=8)
+                rows = self._ohlc_rows(df, max_bars=6)
                 if rows:
                     candles_by_tf[tf] = rows
             if not candles_by_tf:
                 return []
             tick = None
+            recent_ticks: list = []
             try:
-                tick = self._tick_store.get_latest(symbol) if self._tick_store is not None else None
+                if self._tick_store is not None:
+                    tick = self._tick_store.get_latest(symbol)
+                    recent_ticks = self._tick_store.get_recent(symbol, count=40) or []
             except Exception:  # noqa: BLE001
-                tick = None
+                tick = tick
+            try:
+                depth = self._pm.get_market_depth(symbol)
+            except Exception:  # noqa: BLE001
+                depth = []
             position = self._cognition_live_position(symbol)
             snap = build_price_snapshot(
                 symbol, candles_by_tf, tick=tick, position=position,
+                ticks=recent_ticks, depth=depth, now_epoch=_time.time(),
+                max_bars=6,
             )
             return snapshot_to_evidence(symbol, snap)
         except Exception as exc:  # noqa: BLE001
