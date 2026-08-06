@@ -230,9 +230,35 @@ class ReasoningOrchestrator:
                     result.opinions.append(op)
             with self._lock:
                 self._consultations += 1
+            # Part XXIV — surface the live panel: who advised (with their vote)
+            # and who was asked but did not reply (an advisor that "left the
+            # panel" this cycle). One concise INFO line so the operator can see,
+            # at a glance, which AIs are still in it when one fails.
+            if result.consulted:
+                self._log_panel(result)
         except Exception as exc:  # noqa: BLE001 — consultation must never raise
             logger.debug("[reasoning-orch] consult({}) fault: {}", symbol, exc)
         return result
+
+    @staticmethod
+    def _log_panel(result: "ReasoningConsultation") -> None:
+        try:
+            replied = {str(getattr(o, "engine", "") or "") for o in result.opinions}
+            asked = list(result.consulted)
+            absent = [n for n in asked if n not in replied]
+            advising = ", ".join(
+                f"{getattr(o, 'engine', '?')} {getattr(o, 'direction', '?')}"
+                f"({float(getattr(o, 'confidence', 0.0) or 0.0):.2f})"
+                for o in result.opinions
+            )
+            logger.info(
+                "[council] {} — {}/{} advising: {}{}",
+                result.symbol, len(result.opinions), len(asked),
+                advising or "(none replied)",
+                (" | absent: " + ", ".join(absent)) if absent else "",
+            )
+        except Exception:  # noqa: BLE001 — logging must never break consultation
+            pass
 
     def get_status(self) -> dict:
         with self._lock:
@@ -338,6 +364,11 @@ def build_reasoning_orchestrator(
     if not engines:
         return None
     panel = str(getattr(config, "consult_mode", "adaptive") or "adaptive").strip().lower() == "panel"
+    logger.info(
+        "[council] assembled {} advisor(s) [{}]: {}",
+        len(engines), "panel" if panel else "adaptive",
+        ", ".join(f"{e.name}{'' if e.available else ' (configured)'}" for e in engines),
+    )
     return ReasoningOrchestrator(
         engines,
         max_engines=int(getattr(config, "consult_max_engines", 3) or 3),

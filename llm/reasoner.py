@@ -293,8 +293,9 @@ class LLMReasoner:
                     self._faults += 1
             if opinion is not None:
                 logger.info(
-                    "[llm] {} opinion dir={} conf={} — {}",
+                    "[llm] {} [{}] opinion dir={} conf={} — {}",
                     sym,
+                    str(getattr(opinion, "model", "") or getattr(self._client, "model", "") or "?"),
                     getattr(opinion, "direction", "?"),
                     round(float(getattr(opinion, "confidence", 0.0) or 0.0), 3),
                     str(getattr(opinion, "rationale", "") or "")[:160],

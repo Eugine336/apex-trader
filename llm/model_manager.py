@@ -176,7 +176,17 @@ class ModelManager:
                 else:
                     self._failovers += 1 if idx < len(ordered) - 1 else 0
             if ok:
+                if idx > 0:
+                    # Part XXIII/XXIV — reasoning failed over: name the model that
+                    # answered and how many ahead of it were down, so the operator
+                    # can see who is still standing in the failsafe chain.
+                    logger.info(
+                        "[model-manager] reasoning answered by %s (Tier %s) after %d unavailable ahead of it",
+                        cand.model, cand.tier, idx,
+                    )
                 return reply
+            else:
+                logger.info("[model-manager] %s unavailable — trying next in the chain", cand.model)
         return None
 
     def describe(self) -> dict:
