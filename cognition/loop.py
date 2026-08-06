@@ -228,18 +228,21 @@ class EvidenceConsolidator:
                             "consolidation": cons,
                             "evidence": [e.to_dict() for e in ms.fresh_evidence(now)[:64]],
                         }
-                        # Part XXI Art 8 — consultation depth adapts to the
-                        # difficulty of the read: a clear picture needs one
-                        # advisor, an uncertain/conflicted one warrants several,
-                        # and a critical one consults every available advisor.
+                        # Part XXIV panel mode — every available advisor advises
+                        # in parallel (depth 0 = uncapped). Otherwise Part XXI
+                        # Art 8 adaptive depth scales advisors to the difficulty
+                        # of the read: a clear picture needs one advisor, an
+                        # uncertain/conflicted one several, a critical one all.
                         need = max(_f(cons.get("aggregate_uncertainty", 1.0)),
                                    _f(cons.get("conflict_ratio", 0.0)))
-                        if need < 0.34:
-                            depth: Optional[int] = 1
+                        if getattr(self._reasoning, "panel", False):
+                            depth: Optional[int] = 0      # full panel — all advisors
+                        elif need < 0.34:
+                            depth = 1
                         elif need < 0.67:
                             depth = 2
                         else:
-                            depth = None  # let the orchestrator use its full cap
+                            depth = 0                      # critical ⇒ consult all
                         consult = self._consult(ms.symbol, payload, now, depth)
                         for e in evidence_from_reasoning(ms.symbol, consult):
                             ms.add(e)
