@@ -27,6 +27,8 @@ from typing import Any, Optional
 
 from loguru import logger
 
+from llm.provider_tiers import ProviderTier, resolve_tier, tier_label
+
 # Selection policies.
 POLICY_PRIORITY = "priority"          # lowest priority number first (operator order)
 POLICY_PERFORMANCE = "performance"    # best observed success-rate / latency first
@@ -40,6 +42,10 @@ class _Candidate:
     client: Any
     priority: int = 100               # lower = preferred (operator intent)
     cost: float = 0.0                 # relative cost hint (lower preferred on ties)
+    # Part XXIII Art 5/6/7/14 — provider tier (1 frontier, 2 hosted, 3 local,
+    # 4 unknown). Leads failover order so Tier 1 is tried before Tier 2 before
+    # Tier 3; within a tier the configured policy governs.
+    tier: int = int(ProviderTier.UNKNOWN)
     successes: int = 0
     failures: int = 0
     ewma_latency_ms: float = 0.0
@@ -79,6 +85,9 @@ class _Candidate:
             "model": self.model,
             "provider": str(getattr(self.client, "provider", "") or ""),
             "priority": self.priority,
+            "tier": int(self.tier),
+            "tier_label": tier_label(ProviderTier(self.tier))
+            if self.tier in (1, 2, 3, 4) else "unknown",
             "cost": round(self.cost, 4),
             "usable": self.usable,
             "successes": self.successes,
@@ -125,15 +134,22 @@ class ModelManager:
         return str(getattr(c.client, "provider", "") or "") if c is not None else ""
 
     def _ordered(self) -> list:
-        """Usable candidates in policy order (best first). Deterministic."""
+        """Usable candidates in failover order (best first). Deterministic.
+
+        Part XXIII Art 14 — tier leads the order (Tier 1 before Tier 2 before
+        Tier 3 before unknown), so a Tier-1 failure fails over to Tier 2, then
+        Tier 3, then local. WITHIN a tier the configured policy governs. When
+        every candidate shares a tier (the common single-tier / single-provider
+        case) the tier key is constant and ordering reduces exactly to the prior
+        policy behaviour."""
         usable = [c for c in self._candidates if c.usable]
         if self.policy == POLICY_PERFORMANCE:
-            # Best success-rate, then lowest latency, then priority, then cost.
-            usable.sort(key=lambda c: (-c.success_rate, c.ewma_latency_ms,
+            # Tier, then best success-rate, then lowest latency, priority, cost.
+            usable.sort(key=lambda c: (c.tier, -c.success_rate, c.ewma_latency_ms,
                                        c.priority, c.cost))
         else:  # POLICY_PRIORITY
-            # Operator priority, then fewer failures, then cost.
-            usable.sort(key=lambda c: (c.priority, c.failures, c.cost))
+            # Tier, then operator priority, then fewer failures, then cost.
+            usable.sort(key=lambda c: (c.tier, c.priority, c.failures, c.cost))
         return usable
 
     def complete(self, system: str, user: str) -> Optional[str]:
@@ -219,7 +235,10 @@ def build_model_manager(config: Any, transport: Optional[Any] = None) -> Optiona
     primary = _mk(getattr(config, "provider", ""), getattr(config, "model", ""),
                   primary_key, primary_base, to, mt, tmp)
     if primary is not None:
-        candidates.append(_Candidate(client=primary, priority=0))
+        candidates.append(_Candidate(
+            client=primary, priority=0,
+            tier=int(resolve_tier(getattr(config, "provider", ""))),
+        ))
 
     for i, spec in enumerate(_coerce_specs(config), start=1):
         client = _mk(
@@ -233,6 +252,7 @@ def build_model_manager(config: Any, transport: Optional[Any] = None) -> Optiona
                 client=client,
                 priority=int(spec.get("priority", i)),
                 cost=float(spec.get("cost", 0.0) or 0.0),
+                tier=int(resolve_tier(spec.get("provider", ""), spec.get("tier"))),
             ))
 
     usable = [c for c in candidates if c.usable]
