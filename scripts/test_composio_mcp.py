@@ -168,10 +168,38 @@ def main() -> int:
         result = adapter.execute(ns.capability, args)
         print(f"ok={result.ok} detail={result.detail!r}")
         print(f"data={json.dumps(result.data, indent=2)[:2000]}")
+        # Composio returns a suggested slug when the requested one is unknown
+        # (e.g. ALPHAVANTAGE_NEWS_SENTIMENT → ALPHA_VANTAGE_NEWS_SENTIMENT). Auto-
+        # retry once with the suggestion so the correct slug + arg schema surface
+        # in a single run.
+        if not result.ok:
+            suggested = _suggested_slug(result.data)
+            if suggested and suggested != ns.capability:
+                print(f"\n=== Step 3b: retry with suggested slug ({suggested}) ===")
+                retry = adapter.execute(suggested, args)
+                print(f"ok={retry.ok} detail={retry.detail!r}")
+                print(f"data={json.dumps(retry.data, indent=2)[:2000]}")
+                if retry.ok:
+                    print(f"\n[OK] correct slug is '{suggested}' — update the "
+                          "capability binding / COMPOSIO_KNOWLEDGE_ARG_OVERRIDES.")
+                return 0 if retry.ok else 1
         return 0 if result.ok else 1
 
     print("(pass --capability NAME --args '{...}' to also test a live tool call)")
     return 0
+
+
+def _suggested_slug(data: object) -> str:
+    """Extract Composio's suggested tool slug from a failed executor result."""
+    try:
+        results = ((data or {}).get("data") or {}).get("results") or []
+        for r in results:
+            sug = (r or {}).get("suggestions") or []
+            if sug:
+                return str(sug[0])
+    except Exception:  # noqa: BLE001
+        pass
+    return ""
 
 
 def _load_args(raw: str, args_file: str) -> "tuple[dict, str]":
