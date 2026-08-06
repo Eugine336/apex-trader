@@ -48,6 +48,17 @@ logger = logging.getLogger("apex.cognition.loop")
 
 SymbolsProvider = Callable[[], "list[str]"]
 
+# Part XXI Art 6 — the Brain requests a capability, not a vendor. The cognition
+# read is strategic market reasoning; the orchestrator maps it to providers.
+_REASONING_CAPABILITY = "strategic_reasoning"
+
+
+def _f(v: Any, default: float = 0.0) -> float:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return default
+
 
 class EvidenceConsolidator:
     """Builds a consolidated :class:`MarketState` from live subsystem readings.
@@ -85,6 +96,9 @@ class EvidenceConsolidator:
         self._knowledge = knowledge
         self._portfolio_source: Optional[Callable[[], Any]] = None
         self._price_source: Optional[Callable[[str], Any]] = None
+        # Part XXI Art 9/10/11 — records each council consultation + grades each
+        # advisor. Observability/learning only; never authority. Fail-safe.
+        self._consult_ledger: Optional[Any] = None
 
     def set_vote_source(self, vote_source: Optional[Callable[[str], Any]]) -> None:
         """Wire (or clear) the live WorldModel vote-panel source.
@@ -124,6 +138,33 @@ class EvidenceConsolidator:
         pre-digested module verdicts. Fail-safe callable; never invoked eagerly.
         """
         self._price_source = price_source
+
+    def set_consultation_ledger(self, ledger: Optional[Any]) -> None:
+        """Wire (or clear) the Advisory-Council consultation ledger (Part XXI).
+
+        The bootstrap supplies this so every reasoning-orchestrator consultation
+        is recorded and each advisor is graded (records + scorecards, Art 9/10/
+        11). Observability/learning only — it never influences selection or the
+        Brain's decision. Fail-safe; never invoked eagerly.
+        """
+        self._consult_ledger = ledger
+
+    def _consult(self, symbol: str, payload: dict, now: Optional[float],
+                 max_engines: Optional[int]) -> Any:
+        """Consult the reasoning subsystem with capability + adaptive depth.
+
+        Prefers the Reasoning Orchestrator's rich signature (capability +
+        ``max_engines``); falls back to the basic ``consult(symbol, payload,
+        now=)`` for any duck-typed reasoner that doesn't accept them. Fail-safe
+        at the call site (the caller wraps this in try/except)."""
+        reasoning = self._reasoning
+        try:
+            return reasoning.consult(
+                symbol, payload, now=now,
+                capability=_REASONING_CAPABILITY, max_engines=max_engines,
+            )
+        except TypeError:
+            return reasoning.consult(symbol, payload, now=now)
 
     def build(
         self,
@@ -182,13 +223,31 @@ class EvidenceConsolidator:
             if self._reasoning is not None:
                 try:
                     if getattr(self._reasoning, "available", False):
+                        cons = ms.consolidation(now)
                         payload = {
-                            "consolidation": ms.consolidation(now),
+                            "consolidation": cons,
                             "evidence": [e.to_dict() for e in ms.fresh_evidence(now)[:64]],
                         }
-                        consult = self._reasoning.consult(ms.symbol, payload, now=now)
+                        # Part XXI Art 8 — consultation depth adapts to the
+                        # difficulty of the read: a clear picture needs one
+                        # advisor, an uncertain/conflicted one warrants several,
+                        # and a critical one consults every available advisor.
+                        need = max(_f(cons.get("aggregate_uncertainty", 1.0)),
+                                   _f(cons.get("conflict_ratio", 0.0)))
+                        if need < 0.34:
+                            depth: Optional[int] = 1
+                        elif need < 0.67:
+                            depth = 2
+                        else:
+                            depth = None  # let the orchestrator use its full cap
+                        consult = self._consult(ms.symbol, payload, now, depth)
                         for e in evidence_from_reasoning(ms.symbol, consult):
                             ms.add(e)
+                        if self._consult_ledger is not None and consult is not None:
+                            self._consult_ledger.record(
+                                consult, uncertainty=need,
+                                capability=_REASONING_CAPABILITY, now=now,
+                            )
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[consolidator] reasoning consult fault (%s): %s", symbol, exc)
             # Part IX v3.0 — the Operational Intelligence Layer: external market
@@ -446,6 +505,17 @@ class CognitionLoop:
             self._consolidator.set_price_source(price_source)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition-loop] set_price_source ignored a fault: %s", exc)
+
+    def set_consultation_ledger(self, ledger: Optional[Any]) -> None:
+        """Wire the Advisory-Council consultation ledger onto the consolidator.
+
+        Delegates to :meth:`EvidenceConsolidator.set_consultation_ledger` so
+        every reasoning-orchestrator consultation is recorded and each advisor
+        graded (Part XXI Art 9/10/11). Fail-safe — never breaks startup."""
+        try:
+            self._consolidator.set_consultation_ledger(ledger)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[cognition-loop] set_consultation_ledger ignored a fault: %s", exc)
 
     @property
     def running(self) -> bool:
