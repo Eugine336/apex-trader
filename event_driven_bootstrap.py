@@ -5861,10 +5861,22 @@ class EventDrivenSystem:
                             "[manage] {} {} rollback persist failed — rolled-back "
                             "state not durable: {}", itype.name, ticket, exc,
                         )
-                    logger.warning(
-                        "[manage] {} {} failed — rolled back optimistic state ({})",
-                        itype.name, ticket, getattr(result, "error", ""),
-                    )
+                    # A circuit-open failure is transient and self-healing: the
+                    # executor already announced the trip once (and will announce
+                    # recovery), so keep this per-cycle rollback line at DEBUG to
+                    # avoid flooding while the breaker cools down. A real broker
+                    # failure still warns.
+                    if "circuit open" in err:
+                        logger.debug(
+                            "[manage] {} {} deferred — circuit open, rolled back "
+                            "optimistic state ({})",
+                            itype.name, ticket, getattr(result, "error", ""),
+                        )
+                    else:
+                        logger.warning(
+                            "[manage] {} {} failed — rolled back optimistic state ({})",
+                            itype.name, ticket, getattr(result, "error", ""),
+                        )
 
             # The SL modify attempt has now concluded (success, rolled-back
             # failure, or expected market-closed skip): clear the pending guard
