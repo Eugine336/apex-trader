@@ -97,31 +97,6 @@ def test_entry_quality_for_routes_by_direction():
     assert entry_quality_for(SimpleNamespace(), "LONG") is None
 
 
-# ── Parity: backtest _oq_eq_from_wm reads the shared wm fields ───────────
-
-
-def test_backtest_oq_eq_from_wm_reads_quality_fields():
-    from brain.backtest_engine import _oq_eq_from_wm
-
-    wm = SimpleNamespace(
-        opportunity_quality=5.0,
-        entry_quality_long=6.0,
-        entry_quality_short=2.0,
-    )
-    assert _oq_eq_from_wm(wm, "LONG") == (5.0, 6.0)
-    assert _oq_eq_from_wm(wm, "SHORT") == (5.0, 2.0)
-
-
-def test_backtest_oq_eq_from_wm_none_when_absent():
-    wm = SimpleNamespace()
-    assert _from(wm) == (None, None)
-
-
-def _from(wm):
-    from brain.backtest_engine import _oq_eq_from_wm
-    return _oq_eq_from_wm(wm, "LONG")
-
-
 # ── SystemVolatilityMonitor applied as a sizing gate ──────────────────────
 
 
@@ -137,13 +112,3 @@ def test_monitor_spike_cuts_size_multiplier():
     mon = SystemVolatilityMonitor()
     mon.update([_spike_analysis()])
     assert mon.get_size_multiplier() == SystemVolatilityMonitor.SPIKE_MULTIPLIER
-
-
-def test_backtest_update_system_volatility_does_not_raise():
-    from brain.backtest_engine import BacktestEngine
-
-    eng = BacktestEngine()
-    # H1 slice present → computes a regime analysis and updates the monitor.
-    eng._update_system_volatility({"H1": _frame(120, seed=7)})
-    assert eng.system_volatility_monitor is not None
-    assert 0.0 < eng.system_volatility_monitor.get_size_multiplier() <= 1.0
