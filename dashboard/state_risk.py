@@ -1,0 +1,153 @@
+"""APEX TRADER — Dashboard Risk Status Mixin."""
+
+from datetime import datetime, timezone
+from typing import Any
+
+from dashboard.state_helpers import HelpersMixin, safe_float, pct_to_fraction
+
+
+class RiskMixin(HelpersMixin):
+    """get_risk_status()."""
+
+    def get_risk_status(self) -> dict:
+        if self.is_live:
+            ed = getattr(self, "_event_driven_system", None)
+            if ed is not None:
+                return self._ed_risk_status()
+
+        return {
+            "mode": "NORMAL",
+            "risk_mode": "NORMAL",
+            "current_risk_pct": 2.0,
+            "daily_pnl_pct": 0.0,
+            "weekly_pnl_pct": 0.0,
+            "daily_loss_pct": 0.0,
+            "max_daily_loss_pct": 5.0,
+            "score_threshold": 85,
+            "consecutive_losses": 0,
+            "consecutive_wins": 0,
+            "open_trade_count": 0,
+            "max_open_trades": 6,
+            "exposure_pct": 0.0,
+            "account_balance": 10000.0,
+        }
+
+    def _ed_risk_status(self) -> dict:
+        """Risk status when running in event-driven mode."""
+        ctx = getattr(self, "_system_context", None)
+        balance = self._get_balance()
+        open_count = 0
+        try:
+            positions = self._platform_manager.get_all_open_positions()
+            open_count = len(positions) if positions else 0
+        except Exception:
+            pass
+
+        max_open = 6
+        max_daily = 5.0
+        try:
+            cfg = getattr(self._event_driven_system, "_config", None)
+            if cfg is not None:
+                max_open = int(getattr(cfg.risk, "max_open_trades", 6))
+                max_daily = float(getattr(cfg.risk, "max_daily_drawdown_pct", 5.0))
+        except Exception:
+            pass
+
+        dd_mode = "NORMAL"
+        daily_pnl_pct = 0.0
+        weekly_pnl_pct = 0.0
+        risk_pct = 2.0
+        score_threshold = 85
+        consecutive_losses = 0
+        consecutive_wins = 0
+
+        if ctx is not None and ctx.drawdown_guard is not None:
+            try:
+                dd = ctx.drawdown_guard.get_status(datetime.now(timezone.utc))
+                dd_mode = str(getattr(dd, "mode", "NORMAL"))
+                risk_raw = safe_float(getattr(dd, "current_risk_pct", 2.0), 2.0)
+                risk_pct = risk_raw * 100 if risk_raw <= 1 else risk_raw
+                daily_pnl_pct = pct_to_fraction(getattr(dd, "daily_pnl_pct", 0.0)) * 100
+                weekly_pnl_pct = pct_to_fraction(getattr(dd, "weekly_pnl_pct", 0.0)) * 100
+                score_threshold = int(getattr(dd, "current_score_threshold", 85))
+                consecutive_losses = int(getattr(dd, "consecutive_losses", 0))
+                consecutive_wins = int(getattr(dd, "consecutive_wins", 0))
+            except Exception:
+                pass
+
+        exposure_pct = ((open_count / max_open) * risk_pct) if max_open > 0 else 0.0
+        result: dict[str, Any] = {
+            "mode": dd_mode,
+            "risk_mode": dd_mode,
+            "current_risk_pct": round(risk_pct, 2),
+            "daily_pnl_pct": round(daily_pnl_pct, 2),
+            "weekly_pnl_pct": round(weekly_pnl_pct, 2),
+            "daily_loss_pct": round(abs(min(daily_pnl_pct / 100, 0.0)) * 100, 2),
+            "max_daily_loss_pct": round(max_daily, 2),
+            "score_threshold": score_threshold,
+            "consecutive_losses": consecutive_losses,
+            "consecutive_wins": consecutive_wins,
+            "open_trade_count": open_count,
+            "max_open_trades": max_open,
+            "exposure_pct": round(exposure_pct, 2),
+            "account_balance": round(balance, 2),
+        }
+
+        if ctx is not None and ctx.execution_monitor is not None:
+            try:
+                stats = ctx.execution_monitor.get_stats()
+                result["execution_quality"] = stats.execution_quality
+                result["avg_slippage_pips"] = stats.avg_slippage_pips
+                result["avg_latency_ms"] = stats.avg_latency_ms
+                result["spread_is_wide"] = stats.spread_is_wide
+                result["requote_count"] = stats.requote_count
+            except Exception:
+                pass
+
+        if ctx is not None and ctx.risk_reporter is not None and ctx.risk_engine is not None:
+            try:
+                _dash_risk = ctx.risk_engine.drawdown_guard.risk_map.get(
+                    ctx.risk_engine.drawdown_guard.mode, 0.005
+                )
+                open_trades = [
+                    {"pair": getattr(p, "symbol", ""), "direction": getattr(p, "direction", ""), "risk_pct": _dash_risk}
+                    for p in (positions or [])
+                ]
+                report = ctx.risk_reporter.generate_report(
+                    risk_engine=ctx.risk_engine,
+                    pnl_tracker=ctx.risk_engine.pnl_tracker,
+                    spread_monitor=ctx.risk_engine.spread_monitor,
+                    open_trades=open_trades,
+                    account_balance=balance,
+                )
+                result["health"] = report.health
+                result["warnings"] = report.warnings
+                result["spread_alerts"] = report.spread_alerts
+                result["currency_exposures"] = report.currency_exposures
+                result["total_exposure_pct"] = report.total_exposure_pct
+                result["win_rate_today"] = report.win_rate_today
+                result["profit_factor"] = report.profit_factor
+                result["max_drawdown_today"] = report.max_drawdown_today
+            except Exception:
+                pass
+
+        if ctx is not None and ctx.account_risk is not None:
+            try:
+                result["account_silos"] = ctx.account_risk.snapshot()
+            except Exception:
+                pass
+
+        if ctx is not None and ctx.gate_tuner is not None:
+            try:
+                result["gate_offsets"] = ctx.gate_tuner.all_offsets()
+            except Exception:
+                pass
+
+        rl = getattr(ctx, "rl_bridge", None) if ctx is not None else None
+        if rl is not None and hasattr(rl, "status"):
+            try:
+                result["rl"] = rl.status()
+            except Exception:
+                pass
+
+        return result

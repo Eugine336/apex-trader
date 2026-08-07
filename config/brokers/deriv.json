@@ -1,0 +1,56 @@
+{
+  "name": "deriv",
+  "_auto_discovered": true,
+  "_note": "Auto-generated on startup.",
+  "rules": {
+    "forex": {
+      "pattern": "frx{symbol}",
+      "description": "Deriv forex pairs use frx prefix"
+    }
+  },
+  "overrides": {
+    "V10_1S": "1HZ10V",
+    "V25_1S": "1HZ25V",
+    "V50_1S": "1HZ50V",
+    "V75_1S": "1HZ75V",
+    "V100_1S": "1HZ100V",
+    "BOOM300": "BOOM300N",
+    "BOOM500": "BOOM500",
+    "BOOM1000": "BOOM1000",
+    "CRASH300": "CRASH300N",
+    "CRASH500": "CRASH500",
+    "CRASH1000": "CRASH1000",
+    "STPIDX": "stpRNG",
+    "RNGBULL": "RDBULL",
+    "RNGBEAR": "RDBEAR",
+    "JD10": "JD10",
+    "JD25": "JD25",
+    "JD50": "JD50",
+    "JD75": "JD75",
+    "JD100": "JD100",
+    "XAUUSD": "frxXAUUSD",
+    "XAGUSD": "frxXAGUSD"
+  },
+  "_multipliers_note": "Per-symbol fallback multiplier sets. The connector PREFERS runtime values discovered via the contracts_for API (cached in-memory, broker truth) and self-corrects from Deriv's error.details on any rejection; these entries are only the static fallback used before discovery completes (better than the bare built-in [100,200,300,400,500] and avoids the loud discovery-gap warning). Each entry: {\"default\": <int>, \"accepted\": [<sorted ints>]}, default must be in accepted, all <= 1000. Unknown symbols (no entry) fall through to the conservative built-in fallback.",
+  "multipliers": {
+    "1HZ10V": {"default": 100, "accepted": [40, 100, 200, 300, 400]},
+    "1HZ25V": {"default": 100, "accepted": [40, 100, 200, 300, 400]},
+    "1HZ50V": {"default": 100, "accepted": [40, 100, 200, 300, 400]},
+    "1HZ75V": {"default": 100, "accepted": [40, 100, 200, 300, 400]},
+    "1HZ100V": {"default": 100, "accepted": [40, 100, 200, 300, 400]},
+    "BOOM300N": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "BOOM500": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "BOOM1000": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "CRASH300N": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "CRASH500": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "CRASH1000": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "stpRNG": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "RDBULL": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "RDBEAR": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "JD10": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "JD25": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "JD50": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "JD75": {"default": 100, "accepted": [100, 200, 300, 400, 500]},
+    "JD100": {"default": 100, "accepted": [100, 200, 300, 400, 500]}
+  }
+}

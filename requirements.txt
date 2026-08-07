@@ -1,0 +1,53 @@
+# Core
+numpy==1.26.4
+pandas==2.2.2
+python-dotenv==1.0.1
+
+# Trading & Market Data
+MetaTrader5>=5.0.47
+websockets==12.0
+aiohttp==3.9.5
+requests==2.32.3
+
+# Technical Analysis
+ta==0.11.0
+scipy==1.13.1
+
+# Machine Learning
+scikit-learn==1.5.0
+joblib==1.4.2
+
+# Deep Learning (RL subsystem)
+torch>=2.0.0
+
+# Database
+SQLAlchemy==2.0.30
+aiosqlite==0.20.0
+
+# Scheduling & Async
+apscheduler==3.10.4
+asyncio-throttle==1.0.2
+
+# Dashboard
+fastapi==0.111.0
+uvicorn==0.30.1
+
+# Multi-tenant API (auth + broker credential vault)
+python-jose[cryptography]==3.3.0
+bcrypt>=4.0.0
+cryptography==42.0.8
+python-multipart==0.0.9
+email-validator==2.1.1
+
+# Logging & Monitoring
+loguru==0.7.2
+ddtrace==2.19.1
+rich==13.7.1
+
+# News / Economic Calendar
+feedparser==6.0.11
+
+# Testing
+pytest==8.2.2
+pytest-asyncio==0.23.7
+httpx==0.27.0

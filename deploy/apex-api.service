@@ -1,0 +1,21 @@
+[Unit]
+Description=APEX Trader Multi-Tenant API
+After=network.target
+
+[Service]
+Type=simple
+User=apex
+Group=apex
+WorkingDirectory=/opt/apex-trader
+Environment=APEX_API_HOST=127.0.0.1
+Environment=APEX_API_PORT=8080
+Environment=APEX_API_DATA_DIR=/opt/apex-trader/api_data
+Environment=APEX_API_CORS_ORIGINS=https://apex-trader.live,https://www.apex-trader.live
+ExecStart=/opt/apex-trader/venv/bin/python -m api.run
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

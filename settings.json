@@ -1,0 +1,17 @@
+{
+  "python.analysis.typeCheckingMode": "basic",
+  "python.analysis.extraPaths": [
+    ".",
+    "./brain",
+    "./scanner",
+    "./trigger",
+    "./management",
+    "./platforms",
+    "./risk"
+  ],
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportMissingImports": "none",
+    "reportMissingModuleSource": "none",
+    "reportMissingDefaultExcludes": "none"
+  }
+}

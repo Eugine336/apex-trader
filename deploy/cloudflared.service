@@ -1,0 +1,16 @@
+[Unit]
+Description=Cloudflare Tunnel for apex-trader.live
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=apex
+ExecStart=/usr/local/bin/cloudflared tunnel --config /opt/apex-trader/deploy/cloudflared-config.yml run apex-trader
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target
