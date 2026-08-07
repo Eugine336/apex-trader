@@ -85,6 +85,7 @@ def main() -> int:
     candidates = [
         ("gemini (primary)", env("LLM_PROVIDER") or "gemini", env("LLM_MODEL") or "gemini-1.5-flash",
          env("LLM_API_KEY"), env("LLM_BASE_URL")),
+        ("bluesminds", "bluesminds", "gpt-5-mini", env("BLUESMINDS_API_KEY"), "https://api.bluesminds.com/v1"),
         ("groq", "groq", "llama-3.3-70b-versatile", env("GROQ_API_KEY"), "https://api.groq.com/openai/v1"),
         ("openrouter", "openrouter", "meta-llama/llama-3.1-70b-instruct",
          env("OPENROUTER_API_KEY"), "https://openrouter.ai/api/v1"),
