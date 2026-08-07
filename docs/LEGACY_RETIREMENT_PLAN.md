@@ -69,6 +69,13 @@ Each step is its own PR, grep + syntax verified, keeping the live system intact:
 5. **Retire `brain/directional_consensus.py`** decision functions (`form_thesis`,
    `decide`, `decide_opportunities`) and their now-dead callers in `adaptive/`,
    `brain/decision_core.py`, `event_driven_bootstrap.py`.
+   **✓ PARTIAL** — the bootstrap's legacy **Consensus Division entry trigger**
+   (`_evaluate_consensus_entry`) and its two `form_thesis` candidate builders
+   (618 lines) are excised and replaced with an inert single-path no-op; bootstrap
+   no longer references the consensus engine. Also deleted orphaned
+   `entry/tick_entry_detector.py`. Remaining callers: `adaptive/counterfactual.py`
+   (`decide`), `brain/decision_core.py`, `brain/backtest_engine.py` (`form_thesis`)
+   — all offline/analysis paths pending the backtest bite + validation suite.
 6. **Retire `decision/`, `rl/`, and legacy `backtest/` directional paths** that
    exist only to serve the removed decision funnel.
 7. **Remove `Vote.direction`** (and the `signed` property / `VoteResult` /
