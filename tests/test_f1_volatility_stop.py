@@ -240,35 +240,6 @@ class TestDeterminism:
         assert s1 == s2
 
 
-class TestBacktestATRComparison:
-    """Verify compare_atr_stop=False leaves result unchanged."""
-
-    def test_comparison_none_when_disabled(self) -> None:
-        from brain.backtest_engine import BacktestResult
-        result = BacktestResult(
-            total_trades=0, wins=0, losses=0, win_rate=0.0,
-            profit_factor=0.0, sharpe_ratio=0.0, max_drawdown=0.0,
-            max_consecutive_losses=0, expectancy=0.0, avg_hold_time=0.0,
-            best_pair=None, worst_pair=None, best_session=None,
-            equity_curve=[],
-        )
-        assert result.atr_comparison is None
-
-    def test_atr_comparison_result_fields(self) -> None:
-        from brain.backtest_engine import ATRComparisonResult
-        cmp = ATRComparisonResult(
-            total_compared=10, total_skipped=2,
-            structure_wins=5, structure_losses=3, structure_breakevens=2,
-            structure_win_rate=50.0, structure_mean_r=0.3, structure_expectancy=0.3,
-            atr_wins=6, atr_losses=2, atr_breakevens=2,
-            atr_win_rate=60.0, atr_mean_r=0.5, atr_expectancy=0.5,
-            expectancy_delta=0.2,
-            structure_loss_rate=0.3, atr_loss_rate=0.2,
-        )
-        assert cmp.total_compared == 10
-        assert cmp.expectancy_delta == 0.2
-
-
 class TestATRCounterfactualTPEquality:
     """Verify the ATR counterfactual trade keeps the same TP prices as
     the structure trade — only stop_loss and risk differ."""

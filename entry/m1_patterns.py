@@ -1,10 +1,8 @@
 """APEX TRADER — M1 candle micro-pattern detection.
 
-Detects the fast price-action confirmation patterns the DecisionEngine's
-MARKET fast-path looks for (engulfing / pin bar) on the most recent CLOSED
-M1 candles.  Shared by the live (``event_driven_bootstrap``) and backtest
-(``brain.backtest_engine``) micro-context builders so both planes derive the
-same ``micro_confirmation`` from identical candle geometry.
+Detects the fast price-action confirmation patterns the live MARKET fast-path
+looks for (engulfing / pin bar) on the most recent CLOSED M1 candles, deriving
+``micro_confirmation`` from candle geometry.
 
 Pure over candle data — no broker, no engine, no threads.  Returns ``""`` on
 any missing/short/degenerate data so a thin feed never raises or changes

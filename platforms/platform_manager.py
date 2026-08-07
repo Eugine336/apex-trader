@@ -710,6 +710,27 @@ class PlatformManager:
                     logger.warning("Deriv positions fetch error: {}", exc)
         return positions
 
+    def get_market_depth(self, symbol: str) -> list[dict]:
+        """Best-effort Level-2 order book for ``symbol`` (empty when unsupported).
+
+        Routes to the owning connector and normalizes to a list of
+        ``{price, volume, side}`` levels. Fail-safe: any routing/feed fault or a
+        broker without DOM yields ``[]`` so the caller's snapshot degrades
+        gracefully rather than raising.
+        """
+        try:
+            connector = self.get_connector(symbol)
+        except Exception:  # noqa: BLE001 — no platform / not connected
+            return []
+        if connector is None:
+            return []
+        try:
+            depth = connector.get_market_depth(symbol)
+            return list(depth) if depth else []
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("Market depth fetch failed — {}: {}", symbol, exc)
+            return []
+
     def get_open_positions_snapshot(self) -> BrokerPositionsSnapshot:
         """Fetch broker positions with per-platform confirmation tracking.
 

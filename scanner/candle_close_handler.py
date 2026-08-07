@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import hashlib
 import threading
-import time as _time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from datetime import datetime, timezone
@@ -35,15 +34,11 @@ from brain.session_vwap import session_open_minutes_from_df
 from brain.structure_engine import StructureEngine
 from brain.volume_analyzer import VolumeAnalyzer
 from brain.world_model import WorldModel, WorldModelStore, build_world_model
-from brain.currency_strength import CurrencyStrengthMeter, CURRENCY_PAIRS
 from entry.models import EntryConfig
 from entry.zone_watcher import extract_entry_zones
 from brain.decision_core import (
     TF_MODULE_MAP,
-    compute_bias,
     run_tf_modules,
-    blend_concepts,
-    build_consensus,
 )
 from tick.event_bus import EventBus
 from tick.models import CandleClose
@@ -101,57 +96,9 @@ class CandleCloseHandler:
         self._fetcher = candle_fetcher
         self._candle_count = candle_count
         self._entry_config = entry_config or EntryConfig()
-        # Learned, bounded multipliers (default-neutral when None).  They make
-        # the analysis combination data-driven: ``edge_weight`` scales zone
-        # conviction by realized edge; ``concept_weight`` scales each non-ICT
-        # concept's contribution to the bias blend.
+        # Learned, bounded multiplier (default-neutral when None): ``edge_weight``
+        # scales each entry zone's conviction by its realized edge.
         self._edge_weight = edge_weight
-        self._concept_weight = concept_weight
-        # Adaptive vote-panel hooks (default-neutral when None): the
-        # VoteCalibrator scales each module's static consensus weight by its
-        # learned accuracy multiplier, and the ModuleGovernor excludes
-        # SHADOWED/DISABLED modules from the panel.  Both are no-ops unless the
-        # operator turns their feature flag on.
-        self._vote_calibrator = vote_calibrator
-        self._module_governor = module_governor
-        # Opportunity-ranker win-rate source (default-neutral when None): feeds
-        # the ranker a calibrated per-pair win probability so candidate EV is
-        # learned, not the hardcoded prior.
-        self._win_rate_provider = win_rate_provider
-        # Consensus tuning (operator-tunable, unbiased by default): the
-        # per-module vote weights and the concept direction-flip threshold are
-        # sourced from ``ConsensusConfig`` so structure no longer carries a
-        # hardcoded advantage. Falls back to defaults (all weights 1.0) when the
-        # config is not supplied.
-        from config import ConsensusConfig as _ConsensusConfig
-        self._consensus_config = consensus_config or _ConsensusConfig()
-        # Opportunity-ranker tuning (operator-tunable): clustering/EV/horizon
-        # behaviour for the ranked candidates. Threaded into build_consensus so
-        # the config actually drives the live path (previously the ranker used
-        # its own function defaults because the config was never passed through).
-        from config import OpportunityRankerConfig as _OpportunityRankerConfig
-        self._ranker_config = ranker_config or _OpportunityRankerConfig()
-        # Dynamic consensus weights (optional, default-on): scales each module's
-        # static consensus weight by the current regime / volatility / recency
-        # before the vote is cast, so the panel self-balances by market state.
-        # Constructed once from the consensus base weights + DynamicWeightConfig;
-        # behaviour-neutral when the config's master switch is off, and any fault
-        # in construction leaves it None (build_consensus then uses static
-        # weights). The provider itself never raises into the consensus path.
-        self._dynamic_weight_provider = None
-        try:
-            from brain.dynamic_weights import DynamicWeightProvider
-            from config import DynamicWeightConfig as _DynamicWeightConfig
-            dw_cfg = dynamic_weight_config or _DynamicWeightConfig()
-            self._dynamic_weight_provider = DynamicWeightProvider(
-                self._consensus_config.weights, dw_cfg,
-            )
-        except Exception as exc:  # noqa: BLE001 — optional, never block startup
-            logger.warning(
-                "[cc-handler] DynamicWeightProvider init failed: {} — "
-                "consensus will use static weights", exc,
-            )
-            self._dynamic_weight_provider = None
         # CalibrationEngine feed (default-neutral when None): on each candle
         # close the handler hands the SAME candles/spread it already fetched to
         # the single-writer CalibrationEngine so per-symbol stats stay live.
@@ -163,11 +110,6 @@ class CandleCloseHandler:
         # measures the realised reaction ~30 min later, feeding the
         # CalibrationEngine's learned news sensitivity.
         self._news_impact_tracker = news_impact_tracker
-        # Developing (forming-bar) analysis store (Phase 2, optional). When
-        # provided, compute_bias reads developing structure from it to adjust
-        # confirmed bias CONFIDENCE (never direction). None = confirmed-only
-        # behaviour, unchanged.
-        self._developing_store = developing_store
         # Global compression / market-state detector (default-neutral when
         # None). Fed the SAME candles this handler already fetches on each
         # tracked (M5/M15) close so its BBW-percentile classification stays
@@ -185,8 +127,7 @@ class CandleCloseHandler:
         # worker pool, so two timeframes of the same symbol can merge+publish
         # concurrently; without this a stale read drops one timeframe's
         # contribution (lost update).  Separate from ``self._lock`` (which
-        # guards counters/bar-hashes and is re-taken inside ``_build_consensus``)
-        # to avoid self-deadlock.
+        # guards counters/bar-hashes) to avoid self-deadlock.
         self._publish_lock = threading.RLock()
         self._last_bar_hash: dict[tuple[str, str], str] = {}
         self._events_received: int = 0
@@ -197,9 +138,6 @@ class CandleCloseHandler:
         self._structure = StructureEngine()
         self._liquidity = LiquidityMapper()
         self._volume = VolumeAnalyzer()
-        self._strength_meter = CurrencyStrengthMeter()
-        self._strength_cache: Optional[Any] = None
-        self._strength_cache_ts: float = 0.0
 
         self._bus.subscribe("candle_close", self._on_candle_close)
 
@@ -485,24 +423,11 @@ class CandleCloseHandler:
         if "regime" in results:
             regime[tf] = results["regime"]
 
-        # Synthesize the directional bias from the merged HTF structure, then
-        # blend in the non-ICT concepts (weighted by their learned edge) so the
-        # bias is a data-driven combination, not pure ICT structure.
-        #
-        # When a developing-analysis store is wired (Phase 2), pass the live
-        # (forming-bar) structure so compute_bias can adjust confidence — the
-        # confirmed DIRECTION is unchanged; only confidence moves ±15%.
-        dev_struct = None
-        if self._developing_store is not None:
-            try:
-                dev_wm = self._developing_store.get(symbol)
-                if dev_wm is not None:
-                    dev_struct = dict(dev_wm.structure)
-            except Exception:
-                dev_struct = None  # best-effort — developing store optional
-        bias = compute_bias(struct, developing_struct_by_tf=dev_struct, symbol=symbol)
-        bias = self._blend_concepts(bias, concepts, regime)
-
+        # Constitutional cutover (Part XXV): the live WorldModel carries only
+        # non-directional FACTS (structure geometry, FVG/OB/liquidity/volume/
+        # concepts/regime).  A synthesized directional ``bias`` no longer rides
+        # on the world model — the Cognitive Brain is the sole authority that
+        # reads the raw state and forms direction.
         wm = build_world_model(
             symbol=symbol,
             version=self._store.next_version(),
@@ -514,7 +439,6 @@ class CandleCloseHandler:
             volume=vol,
             wyckoff=wyck,
             inducement=ind,
-            bias=bias,
             concepts=concepts,
             regime=regime,
         )
@@ -548,17 +472,6 @@ class CandleCloseHandler:
         if zones:
             wm = replace(wm, entry_zones=tuple(zones))
 
-        # Synthesize per-module directional votes + ranked opportunity
-        # candidates so the dashboard's module-votes and ranker panels read
-        # them straight off the WorldModel.  Best-effort and read-only — a
-        # failure here must never block the publish or the trading path.
-        try:
-            votes, candidates = self._build_consensus(symbol, wm, current_price)
-            if votes or candidates:
-                wm = replace(wm, votes=tuple(votes), candidates=tuple(candidates))
-        except Exception as exc:
-            logger.debug("[cc-handler] {} consensus build failed: {}", symbol, exc)
-
         # Attach the shared setup-quality layer (real OQ/EQ + regime analysis)
         # so the live WorldModel carries the same quality signals the backtest
         # plane computes via ``analyze_window`` — single shared implementation.
@@ -572,70 +485,6 @@ class CandleCloseHandler:
         logger.debug(
             "[cc-handler] published WorldModel for {} (tf={}, v={}, zones={})",
             symbol, tf, wm.version, len(wm.entry_zones),
-        )
-
-    def _build_consensus(
-        self, symbol: str, wm: WorldModel, current_price: float,
-    ) -> tuple[list, list]:
-        """Derive per-module directional votes + ranked opportunities.
-
-        Reuses the same vote extractors and opportunity ranker the legacy
-        scanner used, sourced from the WorldModel's already-computed
-        analysis plus optional raw-series voters (momentum, VWAP, currency
-        strength, liquidity sweep).  Every auxiliary fetch is best-effort.
-        """
-        m5_df = None
-        h1_df = None
-        session_open_minutes = 0
-        try:
-            m5_df = self._fetcher(symbol, "M5", self._candle_count)
-        except Exception as exc:
-            logger.debug("[cc-handler] {} M5 fetch for consensus failed: {}", symbol, exc)
-        try:
-            h1_df = self._fetcher(symbol, "H1", self._candle_count)
-        except Exception as exc:
-            logger.debug("[cc-handler] {} H1 fetch for consensus failed: {}", symbol, exc)
-
-        if m5_df is not None and len(m5_df) > 1:
-            try:
-                if "time" in m5_df.columns:
-                    t0 = pd.to_datetime(m5_df["time"].iloc[0], utc=True, errors="coerce")
-                    t1 = pd.to_datetime(m5_df["time"].iloc[-1], utc=True, errors="coerce")
-                    if pd.notna(t0) and pd.notna(t1):
-                        session_open_minutes = max(
-                            0, int((t1 - t0).total_seconds() / 60.0),
-                        )
-                if session_open_minutes <= 0:
-                    session_open_minutes = max(0, int((len(m5_df) - 1) * 5))
-            except Exception as exc:
-                logger.debug("[cc-handler] {} session-minutes derive failed: {}", symbol, exc)
-                session_open_minutes = 0
-
-        cs_analysis = None
-        try:
-            prof = get_profile(symbol)
-            if getattr(prof, "currency_strength_enabled", False):
-                cs_analysis = self._currency_strength_analysis()
-        except Exception as exc:
-            logger.debug("[cc-handler] {} currency-strength prep failed: {}", symbol, exc)
-
-        return build_consensus(
-            symbol,
-            wm,
-            current_price,
-            m5_df=m5_df,
-            h1_df=h1_df,
-            liquidity_mapper=self._liquidity,
-            session_open_minutes=session_open_minutes,
-            currency_strength_analysis=cs_analysis,
-            currency_pairs=CURRENCY_PAIRS,
-            vote_calibrator=self._vote_calibrator,
-            module_governor=self._module_governor,
-            win_rate_provider=self._win_rate_provider,
-            weights=self._consensus_config.weights,
-            ranker_config=self._ranker_config,
-            dynamic_weight_provider=self._dynamic_weight_provider,
-            is_confirmed=True,
         )
 
     def _attach_quality(
@@ -670,55 +519,6 @@ class CandleCloseHandler:
             entry_quality_long=ql["entry_quality_long"],
             entry_quality_short=ql["entry_quality_short"],
             regime_analysis=ql["regime_analysis"],
-        )
-
-    def _currency_strength_analysis(self) -> Optional[Any]:
-        """Best-effort cached currency-strength analysis for consensus voting."""
-        try:
-            now = _time.monotonic()
-            with self._lock:
-                if (
-                    self._strength_cache is not None
-                    and (now - self._strength_cache_ts) < 300.0
-                ):
-                    return self._strength_cache
-            price_data: dict[str, pd.DataFrame] = {}
-            for pair in CURRENCY_PAIRS:
-                try:
-                    df = self._fetcher(pair, "M5", self._candle_count)
-                    if df is not None and len(df) >= 30:
-                        price_data[pair] = df
-                except Exception as exc:
-                    logger.debug("[cc-handler] currency-strength fetch {} failed: {}", pair, exc)
-            if not price_data:
-                return None
-            analysis = self._strength_meter.calculate(price_data)
-            with self._lock:
-                self._strength_cache = analysis
-                self._strength_cache_ts = now
-            return analysis
-        except Exception as exc:
-            logger.debug("[cc-handler] currency-strength analysis failed: {}", exc)
-            return None
-
-    def _blend_concepts(
-        self,
-        bias: dict[str, Any],
-        concepts_by_tf: dict[str, list],
-        regime_by_tf: dict[str, str],
-    ) -> dict[str, Any]:
-        """Blend non-ICT concept signals into the structural bias.
-
-        Each directional concept votes (LONG/SHORT) weighted by its strength
-        and learned per-concept edge.  The net vote nudges the bias ``score``
-        within a bounded range and is recorded for observability — it never
-        flips the structural ``direction`` or ``tradeable`` decision, so the
-        ICT plane stays authoritative and the blend is default-neutral when
-        concepts are neutral or unproven.
-        """
-        return blend_concepts(
-            bias, concepts_by_tf, regime_by_tf, self._concept_weight,
-            concept_flip_threshold=self._consensus_config.concept_flip_threshold,
         )
 
     # ------------------------------------------------------------------
