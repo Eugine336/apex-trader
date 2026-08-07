@@ -230,69 +230,16 @@ def _world_model_to_scan_view(wm) -> "_ScanView":
     )
 
 
-def _struct_trend_conf(struct_by_tf: dict, tf: str) -> tuple[str, float]:
-    """Read ``(trend, confidence)`` for a timeframe from a WorldModel's
-    ``structure_by_tf()`` mapping of ``StructureAnalysis`` objects.
-
-    Mirrors ``event_driven_bootstrap._struct_trend_conf`` so the backtest reads
-    the WorldModel structure layer exactly as the live plane does.
-    """
-    sa = struct_by_tf.get(tf)
-    if sa is None:
-        return "UNKNOWN", 0.0
-    trend = sa.trend.value if hasattr(sa.trend, "value") else str(sa.trend)
-    return trend, float(getattr(sa, "confidence", 0.0) or 0.0)
-
-
-def _struct_event(struct_by_tf: dict, tf: str) -> str:
-    """Read the last structural event (BOS/CHOCH) for a timeframe from a
-    WorldModel's ``structure_by_tf()`` mapping of ``StructureAnalysis``.
-
-    Mirrors ``event_driven_bootstrap._struct_event``.
-    """
-    sa = struct_by_tf.get(tf)
-    if sa is None:
-        return "NONE"
-    ev = getattr(sa, "last_event", None)
-    if ev is None:
-        return "NONE"
-    return ev.value if hasattr(ev, "value") else str(ev)
-
-
-def _struct_swings(struct_by_tf: dict, tf: str) -> tuple[Optional[float], Optional[float]]:
-    """Read ``(swing_high, swing_low)`` for a timeframe from a WorldModel's
-    ``structure_by_tf()`` mapping.
-
-    Mirrors ``event_driven_bootstrap._struct_swings`` so the backtest feeds the
-    DecisionEngine's structure-based protective stop the same swing levels the
-    live management plane does. Returns ``(None, None)`` when absent.
-    """
-    sa = struct_by_tf.get(tf)
-    if sa is None:
-        return None, None
-    return getattr(sa, "swing_high", None), getattr(sa, "swing_low", None)
-
-
-def _micro_confirmation_from_event(
-    m1_event: str, direction: str, m1_pattern: str = "",
-) -> tuple[str, str]:
-    """Derive ``(micro_confirmation, entry_mode)`` from M1 evidence.
-
-    Mirrors ``event_driven_bootstrap._micro_confirmation_from_event`` so the
-    backtest entry plane reaches the MARKET fast-path on the same M1 BOS/CHoCH
-    confirmation the live plane uses, and — when no event confirms — on the same
-    aligned M1 candle pattern (engulfing / pin bar). Returns ``("", "PENDING")``
-    otherwise.
-    """
-    ev = str(m1_event or "").upper()
-    is_long = direction.upper() in ("BUY", "LONG")
-    aligned = ("BULLISH" in ev) if is_long else ("BEARISH" in ev)
-    if ("BOS" in ev or "CHOCH" in ev) and aligned:
-        return "choch_bos", "MARKET"
-    pat = str(m1_pattern or "").strip().lower()
-    if pat in ("engulfing", "pin_bar"):
-        return pat, "MARKET"
-    return "", "PENDING"
+# Phase K (Part XI): these structure / M1 micro readers were byte-mirrored
+# copies of event_driven_bootstrap's. Both planes now share the single source
+# in brain.structure_context, so the backtest reads the WorldModel structure
+# layer exactly as the live plane does.
+from brain.structure_context import (  # noqa: E402
+    _micro_confirmation_from_event,
+    _struct_event,
+    _struct_swings,
+    _struct_trend_conf,
+)
 
 
 def _oq_eq_from_wm(wm, direction: str) -> tuple[Optional[float], Optional[float]]:
@@ -902,41 +849,16 @@ class BacktestEngine:
             logger.warning("[backtest] ComplianceDivision unavailable: {}", exc)
             self.compliance = None
 
-        # ── ThesisEngine (stateful competing Long/Short/Flat theses) ──
+        # ── ThesisEngine — RETIRED (Single Reasoner cutover, Part III.2) ──
+        # The legacy competing-thesis decider is deleted; the backtest thesis
+        # feed/gate are None-guarded and no-op. `self.thesis_engine` stays None.
         self.thesis_engine = None
-        try:
-            from brain.thesis_engine import ThesisEngine
-            tcfg = getattr(self.config, "thesis", None)
-            self.thesis_engine = ThesisEngine(
-                min_ev_threshold=float(
-                    getattr(tcfg, "opportunity_cost_threshold", 0.1) if tcfg is not None else 0.1
-                ),
-                decay_rate=float(getattr(tcfg, "decay_rate", 0.95) if tcfg is not None else 0.95),
-                flat_ev=float(getattr(tcfg, "flat_ev", 0.0) if tcfg is not None else 0.0),
-                decay_enabled=bool(
-                    getattr(tcfg, "thesis_decay_enabled", True) if tcfg is not None else True
-                ),
-                decay_half_life=float(
-                    getattr(tcfg, "thesis_decay_half_life", 900.0) if tcfg is not None else 900.0
-                ),
-                decay_floor=float(
-                    getattr(tcfg, "thesis_decay_floor", 0.01) if tcfg is not None else 0.01
-                ),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[backtest] ThesisEngine unavailable: {}", exc)
-            self.thesis_engine = None
 
-        # ── Orchestrator round table (graded size / physics veto) ────
+        # ── Orchestrator — RETIRED (Single Reasoner cutover, Part III.2) ──
+        # The legacy graded-sizing / physics-veto round table is deleted;
+        # backtest sizing stays neutral (mirrors the live path where
+        # ctx.orchestrator is None). `self.bt_orchestrator` stays None.
         self.bt_orchestrator = None
-        try:
-            from brain.orchestrator import Orchestrator
-            self.bt_orchestrator = Orchestrator(
-                config=getattr(self.config, "orchestrator", None),
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[backtest] Orchestrator unavailable: {}", exc)
-            self.bt_orchestrator = None
 
         # ── AdaptiveOptimizer (ml_adapter) ───────────────────────────
         # Learned pair/regime/session edge + losing-pattern / AVOID vetoes,
@@ -3143,72 +3065,9 @@ class BacktestEngine:
         engine = getattr(self, "bt_orchestrator", None)
         if engine is None:
             return 1.0, False
-        try:
-            from brain.orchestrator import TradeProposal
-
-            want_dir = "LONG" if str(direction).upper() in ("BUY", "LONG") else "SHORT"
-            structure = wm.structure_by_tf() if wm is not None else {}
-            h4_sa = structure.get("H4")
-            h4_alignment = (
-                float(getattr(h4_sa, "confidence", 0.0) or 0.0)
-                if h4_sa is not None else None
-            )
-
-            # Ranker-EV dimension is gated by ``orchestrator.use_ranker_ev``
-            # (default off), mirroring live so sizing is unchanged until opted in.
-            ranker_ev = ranker_coherence = ranker_confidence = None
-            candidate_count = 0
-            try:
-                _orch_cfg = getattr(self.config, "orchestrator", None)
-                _use_ranker_ev = bool(getattr(_orch_cfg, "use_ranker_ev", False))
-            except Exception:  # noqa: BLE001
-                _use_ranker_ev = False
-            if _use_ranker_ev and wm is not None:
-                try:
-                    cands = (
-                        wm.candidates_list()
-                        if hasattr(wm, "candidates_list")
-                        else list(getattr(wm, "candidates", ()) or [])
-                    )
-                    candidate_count = len(cands)
-                    matching = [
-                        c for c in cands
-                        if str(getattr(c, "direction", "")).upper() == want_dir
-                    ]
-                    if matching:
-                        best = max(
-                            matching,
-                            key=lambda c: float(getattr(c, "expected_value", 0.0) or 0.0),
-                        )
-                        ranker_ev = float(getattr(best, "expected_value", 0.0) or 0.0)
-                        ranker_coherence = float(getattr(best, "coherence", 0.0) or 0.0)
-                        ranker_confidence = float(getattr(best, "confidence", 0.0) or 0.0)
-                except Exception as exc:  # noqa: BLE001
-                    logger.debug("[backtest] orch candidate EV select failed: {}", exc)
-
-            proposal = TradeProposal(
-                pair=pair,
-                direction=want_dir,
-                scan_score=float(scan_score),
-                de_conviction=de_conviction if de_conviction > 0 else None,
-                de_margin=None,
-                tf_alignment=h4_alignment,
-                ranker_ev=ranker_ev,
-                ranker_coherence=ranker_coherence,
-                ranker_confidence=ranker_confidence,
-                candidate_count=candidate_count,
-            )
-            verdict = engine.evaluate(proposal)
-            if getattr(verdict, "vetoed", False):
-                logger.debug(
-                    "[backtest] {} {} orchestrator veto: {}",
-                    pair, want_dir, getattr(verdict, "veto_reason", ""),
-                )
-                return 0.0, True
-            return float(getattr(verdict, "size_multiplier", 1.0) or 1.0), False
-        except Exception as exc:  # noqa: BLE001
-            logger.debug("[backtest] orchestrator eval failed for {}: {}", pair, exc)
-            return 1.0, False
+        # Orchestrator retired (Single Reasoner cutover) — bt_orchestrator is
+        # always None above, so the graded round-table path is gone; neutral.
+        return 1.0, False
 
     def _adaptive_size_mult(
         self, pair: str, wm, now: Optional[datetime], zone_type: str,
@@ -3983,7 +3842,7 @@ class BacktestEngine:
             current_score = 0
             opposing_score = 0
         hist = trade.setdefault("score_history", [])
-        hist.append(current_score)
+        hist.append(current_score if current_score > 0 else int(getattr(setup, "score", 0) or 0))
 
         # Live OQ/EQ decay — recompute on this cycle's WorldModel candidates and
         # diff against the entry baseline (positive decay = deterioration).
@@ -4005,32 +3864,6 @@ class BacktestEngine:
                 session_tradeable = bool(getattr(ss, "is_tradeable", True))
         except Exception:
             session_tradeable = True
-
-        # Live directional consensus panel from this bar's WorldModel — the same
-        # unbiased module votes the entry used, so management revalidates the
-        # thesis against the panel instead of a structure-only re-derivation.
-        consensus_votes = wm.votes_list() if hasattr(wm, "votes_list") else []
-
-        # Current setup score from the live WorldModel zones (matching direction)
-        # appended to the rolling history that feeds the conviction-collapse term.
-        want_dir = norm_dir.replace("BUY", "LONG").replace("SELL", "SHORT")
-        current_score = 0
-        try:
-            for z in wm.entry_zones_list():
-                if str(getattr(z, "direction", "") or "").upper() == want_dir:
-                    current_score = max(current_score, int(getattr(z, "conviction", 0) or 0))
-        except Exception:
-            current_score = 0
-        hist = trade.setdefault("score_history", [])
-        hist.append(current_score if current_score > 0 else int(getattr(setup, "score", 0) or 0))
-
-        # Live OQ/EQ + decay (entry_* − live_*) — same derivation as the live
-        # management path; None when no matching candidate this bar.
-        live_oq, live_eq = _oq_eq_from_wm(wm, norm_dir)
-        entry_oq = trade.get("entry_oq")
-        entry_eq = trade.get("entry_eq")
-        oq_decay = (entry_oq - live_oq) if (entry_oq is not None and live_oq is not None) else None
-        eq_decay = (entry_eq - live_eq) if (entry_eq is not None and live_eq is not None) else None
 
         # Session from the candle timestamp (replaces the live SessionEngine
         # status feed). No news calendar in backtest → news is always clear.

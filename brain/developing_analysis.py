@@ -12,8 +12,9 @@ hour stale on H1, four hours on H4, a day on D1.  Professional traders maintain
 a live, evolving read of the developing higher-timeframe candle.  This loop
 gives the system that live read **without** corrupting the confirmed,
 non-repainting structure: developing analysis is published to a **separate**
-:class:`~brain.world_model.WorldModelStore`, and the confirmed path only ever
-reads it to nudge bias *confidence* (never direction).
+:class:`~brain.world_model.WorldModelStore` carrying only non-directional
+forming-bar facts (structure/FVG/OB/liquidity/volume geometry) for the
+Cognitive Brain to interpret — no synthesized directional bias.
 
 Design guarantees
 -----------------
@@ -38,7 +39,7 @@ from typing import TYPE_CHECKING, Any, Optional
 
 from loguru import logger
 
-from brain.decision_core import TF_MODULE_MAP, compute_bias, run_tf_modules
+from brain.decision_core import TF_MODULE_MAP, run_tf_modules
 from brain.liquidity_mapper import LiquidityMapper
 from brain.structure_engine import StructureEngine
 from brain.volume_analyzer import VolumeAnalyzer
@@ -210,7 +211,8 @@ class DevelopingAnalysisLoop:
         """Merge one TF's developing results into the developing WorldModel.
 
         Simpler than the confirmed handler: no entry zones, no consensus votes,
-        no quality layer — developing analysis only feeds bias confidence.
+        no quality layer, no directional bias — developing analysis publishes
+        only non-directional forming-bar facts.
         """
         with self._publish_lock:
             existing = self._developing_store.get(symbol)
@@ -244,18 +246,11 @@ class DevelopingAnalysisLoop:
             if "regime" in results:
                 regime[tf] = results["regime"]
 
-            # Developing bias from developing structure only (no confirmed
-            # blend here — the blend happens in the confirmed path's
-            # compute_bias, which reads this store).
-            #
-            # The developing analysis publishes whatever direction the
-            # forming-bar structure actually shows. It contributes only as
-            # discounted evidence (×0.70) in the confirmed path's
-            # ``compute_bias`` — which has its own
-            # ``conflict_score >= 0.75 → CONFLICTED`` veto — so there is no
-            # need to blank a developing direction that contradicts confirmed.
-            bias = compute_bias(struct, symbol=symbol)
-
+            # Constitutional cutover (Part XXV): the developing WorldModel
+            # carries only non-directional FACTS (forming-bar structure
+            # geometry, FVG/OB/liquidity/volume/concepts/regime). No synthesized
+            # directional bias is published — the Cognitive Brain is the sole
+            # authority that reads the raw developing state and forms direction.
             wm = build_world_model(
                 symbol=symbol,
                 version=self._developing_store.next_version(),
@@ -267,7 +262,6 @@ class DevelopingAnalysisLoop:
                 volume=vol,
                 wyckoff=wyck,
                 inducement=ind,
-                bias=bias,
                 concepts=concepts,
                 regime=regime,
             )
