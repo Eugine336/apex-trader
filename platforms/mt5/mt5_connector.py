@@ -1048,24 +1048,44 @@ class MT5Connector(BaseConnector):
         clamped_sl = sl
         clamped_tp = tp
         if min_distance > 0:
-            if sl is not None and abs(price - sl) < min_distance:
-                clamped_sl = round(
+            # A stop must sit at least ``min_distance`` on the correct side of
+            # price: SL BELOW price for a BUY / ABOVE for a SELL (TP mirrors it).
+            # The old check only caught a stop that was too CLOSE (small
+            # |price-sl|); a stop on the WRONG side — already passed by price,
+            # e.g. a breakeven/trail move on a position that has since gone
+            # underwater — has a LARGE |price-sl| and slipped through unclamped,
+            # so the broker rejected the whole send as "Invalid stops" and the
+            # protective move never landed. Test the legal band directly so both
+            # the too-close and wrong-side cases are pulled to the nearest legal
+            # stop on the correct side.
+            if sl is not None and sl > 0:
+                legal_sl = round(
                     (price - min_distance) if is_buy else (price + min_distance),
                     digits,
                 )
-                logger.warning(
-                    "SL too close on modify for {} (min {:.5f}, got {:.5f}) — clamped to {:.5f}",
-                    broker_symbol, min_distance, abs(price - sl), clamped_sl,
-                )
-            if tp is not None and abs(tp - price) > 0 and abs(tp - price) < min_distance:
-                clamped_tp = round(
+                sl_invalid = (sl > legal_sl) if is_buy else (sl < legal_sl)
+                if sl_invalid:
+                    clamped_sl = legal_sl
+                    logger.warning(
+                        "SL invalid on modify for {} (need {} {:.5f}, got {:.5f}) "
+                        "— clamped to {:.5f}",
+                        broker_symbol, "<=" if is_buy else ">=",
+                        legal_sl, sl, clamped_sl,
+                    )
+            if tp is not None and tp > 0:
+                legal_tp = round(
                     (price + min_distance) if is_buy else (price - min_distance),
                     digits,
                 )
-                logger.warning(
-                    "TP too close on modify for {} (min {:.5f}, got {:.5f}) — clamped to {:.5f}",
-                    broker_symbol, min_distance, abs(tp - price), clamped_tp,
-                )
+                tp_invalid = (tp < legal_tp) if is_buy else (tp > legal_tp)
+                if tp_invalid:
+                    clamped_tp = legal_tp
+                    logger.warning(
+                        "TP invalid on modify for {} (need {} {:.5f}, got {:.5f}) "
+                        "— clamped to {:.5f}",
+                        broker_symbol, ">=" if is_buy else "<=",
+                        legal_tp, tp, clamped_tp,
+                    )
         return clamped_sl, clamped_tp, min_distance
 
     def modify_order(
@@ -1114,6 +1134,34 @@ class MT5Connector(BaseConnector):
                     final_sl, position.sl, position.symbol,
                 )
                 final_sl = position.sl
+
+        # No-op guard: after clamping + the loosen-guard the target may equal the
+        # levels already on the position (e.g. the requested trail could not be
+        # tightened any further legally). Re-sending identical levels makes the
+        # broker reject with "No changes"/"Invalid stops", which the executor
+        # would count as a failure — retrying every cycle until the circuit
+        # breaker trips and floods the log. Treat "already where it should be" as
+        # success and skip the round-trip: the position stays protected at the
+        # tightest legal stop and no false failure is recorded.
+        digits = 5
+        try:
+            _c = self._get_symbol_constraints(position.symbol)
+            if _c:
+                digits = int(_c.get("digits", 5) or 5)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[mt5] modify digits lookup failed for {}: {}", position.symbol, exc)
+        eps = 0.5 * (10 ** -digits)
+        cur_sl = float(position.sl or 0.0)
+        cur_tp = float(position.tp or 0.0)
+        sl_changed = abs(float(final_sl) - cur_sl) > eps
+        tp_changed = abs(float(final_tp) - cur_tp) > eps
+        if not sl_changed and not tp_changed:
+            logger.debug(
+                "MT5 modify — no effective change for {} (SL/TP already at the "
+                "tightest legal target); skipping broker round-trip",
+                order_id,
+            )
+            return True
 
         request = {
             "action": mt5.TRADE_ACTION_SLTP,
@@ -1295,6 +1343,55 @@ class MT5Connector(BaseConnector):
         except Exception as exc:
             logger.warning("[mt5] Deal close info fetch failed for ticket: {}", exc)
             return None
+
+    # ── Market depth (Level-2 / DOM) ─────────────────────────────────────
+
+    def get_market_depth(self, symbol: str) -> list[dict]:
+        """Return the Level-2 order book for ``symbol`` as normalized levels.
+
+        Subscribes to the book, reads one snapshot, then releases. Each level
+        is ``{"price", "volume", "side"}`` where ``side`` is ``"bid"`` (BUY
+        entries resting under price) or ``"ask"`` (SELL entries above). Depth is
+        frequently unavailable on demo/retail feeds — this returns ``[]`` in
+        that case rather than raising, so the Brain's snapshot simply reads an
+        empty book until a real depth-of-market feed is connected.
+        """
+        try:
+            self._require_connection()
+        except Exception:  # noqa: BLE001 — treat as no depth available
+            return []
+        mapped = self.symbol_map(symbol)
+        try:
+            if not mt5.market_book_add(mapped):
+                return []
+            try:
+                book = mt5.market_book_get(mapped)
+            finally:
+                mt5.market_book_release(mapped)
+            if not book:
+                return []
+            out: list[dict] = []
+            for item in book:
+                price = float(getattr(item, "price", 0.0) or 0.0)
+                if price <= 0:
+                    continue
+                volume = float(
+                    getattr(item, "volume_real", 0.0)
+                    or getattr(item, "volume", 0.0) or 0.0,
+                )
+                # MT5 BOOK_TYPE: 1/3 = SELL (ask), 2/4 = BUY (bid).
+                btype = getattr(item, "type", None)
+                if btype in (2, 4):
+                    side = "bid"
+                elif btype in (1, 3):
+                    side = "ask"
+                else:
+                    continue
+                out.append({"price": price, "volume": volume, "side": side})
+            return out
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[mt5] market depth unavailable for {}: {}", symbol, exc)
+            return []
 
     # ── Symbol / timeframe mapping ───────────────────────────────────────
 
