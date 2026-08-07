@@ -15,6 +15,7 @@ from cognition.legacy_audit import (
     KNOWN_LEGACY_SURFACES,
     CompetingDecisionAudit,
     audit_competing_decision_code,
+    audit_nondirectional_cognition,
     scan_file,
 )
 
@@ -124,3 +125,41 @@ def test_clean_when_no_competing_code():
 
 def test_report_is_dataclass_instance():
     assert isinstance(audit_competing_decision_code(), CompetingDecisionAudit)
+
+
+# ── Part XXV gate — non-directional cognition ────────────────────────────────
+
+def test_nondirectional_audit_live_tree_is_clean():
+    # The real cognition Evidence sources must never hand the Brain a directional
+    # reading (non-zero polarity, a direction helper, or a LONG/SHORT/FLAT token).
+    report = audit_nondirectional_cognition()
+    assert report.scanned_files == 2
+    assert report.clean is True, f"directional leaks: {report.findings}"
+
+
+def test_nondirectional_audit_flags_trade_direction_literal():
+    # A precomputed trade-direction verdict handed to the Brain is a regression,
+    # even when polarity is 0 — the collapse itself is forbidden pre-reasoning.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, "cognition/market_snapshot.py",
+               'def read():\n    with_trend_dir = "LONG"\n    return with_trend_dir\n')
+        report = audit_nondirectional_cognition(root=root)
+        assert report.clean is False
+        assert any(m == "cognition/market_snapshot.py" for (m, _ln, _txt) in report.findings)
+
+
+def test_nondirectional_audit_flags_nonzero_polarity():
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, "cognition/evidence_adapters.py",
+               "def ev():\n    return dict(polarity=0.5)\n")
+        report = audit_nondirectional_cognition(root=root)
+        assert report.clean is False
+
+
+def test_nondirectional_audit_allows_raw_trends():
+    # Raw up/down/flat price trends are reality, not a trade verdict — allowed.
+    with tempfile.TemporaryDirectory() as root:
+        _write(root, "cognition/market_snapshot.py",
+               'def t():\n    return {"trend": "up", "polarity": 0.0}\n')
+        report = audit_nondirectional_cognition(root=root)
+        assert report.clean is True

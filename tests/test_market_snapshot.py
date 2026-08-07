@@ -68,7 +68,7 @@ def test_empty_candles_yields_no_evidence():
     assert snapshot_to_evidence("XAUUSD", snap) == []
 
 
-def test_snapshot_to_evidence_carries_chart_and_lean():
+def test_snapshot_to_evidence_carries_chart_non_directional():
     snap = build_price_snapshot(
         "XAUUSD", {"M5": _uptrend(), "M15": _uptrend(start=90.0), "H1": _uptrend(start=80.0)},
         tick=SimpleNamespace(bid=104.0, ask=104.2, mid=104.1),
@@ -78,15 +78,19 @@ def test_snapshot_to_evidence_carries_chart_and_lean():
     e = ev[0]
     assert e.source_module == "market.price_action"
     assert e.domain.value == "multi_timeframe"
-    assert e.polarity > 0.0            # all-up ⇒ modest bullish lean
+    assert e.polarity == 0.0           # Part XXV — the chart is reality, not a lean
+    assert e.confidence > 0.4          # aligned timeframes ⇒ a clearer picture
     assert e.measurements.get("timeframes")   # the actual chart rides along
     assert "chart XAUUSD" in e.observation
 
 
-def test_downtrend_gives_negative_lean():
+def test_downtrend_is_also_non_directional():
     snap = build_price_snapshot("EURUSD", {"M5": _downtrend(), "M15": _downtrend()})
     ev = snapshot_to_evidence("EURUSD", snap)
-    assert ev and ev[0].polarity < 0.0
+    # Part XXV — a fully-aligned downtrend carries no directional lean either;
+    # only the raw per-timeframe trend (reality) rides in measurements.
+    assert ev and ev[0].polarity == 0.0
+    assert ev[0].measurements["timeframes"]["M5"]["trend"] == "down"
 
 
 def test_fault_safe_on_garbage():
@@ -159,7 +163,8 @@ def test_pullback_read_dip_in_uptrend():
     }
     read = pullback_read(tfs)
     assert read["read"] == "pullback_in_uptrend"
-    assert read["with_trend_dir"] == "LONG"
+    assert read["context_trend"] == "up"          # raw structural reality
+    assert "with_trend_dir" not in read           # Part XXV — no trade direction
     assert read["context_tf"] == "H4" and read["micro_tf"] == "M1"
 
 
@@ -170,7 +175,8 @@ def test_pullback_read_bounce_in_downtrend():
     }
     read = pullback_read(tfs)
     assert read["read"] == "bounce_in_downtrend"
-    assert read["with_trend_dir"] == "SHORT"
+    assert read["context_trend"] == "down"
+    assert "with_trend_dir" not in read
 
 
 def test_pullback_read_needs_two_known_tfs():

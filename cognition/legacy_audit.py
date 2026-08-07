@@ -288,14 +288,28 @@ def audit_competing_decision_code(root: Optional[str] = None) -> CompetingDecisi
 # ── Part XXV gate — non-directional cognition ─────────────────────────────────
 # The Evidence producers that feed the Brain must never emit a directional
 # reading. A regression is a non-zero ``polarity=`` assignment, a ``_sign`` /
-# ``_sentiment_polarity`` lean, or a ``directional_lean`` measurement in a
-# cognition Evidence source.
+# ``_sentiment_polarity`` lean, a ``directional_lean`` measurement, or a
+# precomputed trade-direction literal (a quoted ``"LONG"`` / ``"SHORT"`` /
+# ``"FLAT"`` token) in a cognition Evidence source. The last one catches the
+# subtle leak where a module hands the Brain a collapsed direction (e.g. a
+# ``with_trend_dir`` / ``dominant`` verdict) instead of raw reality — forbidden
+# pre-reasoning (raw ``up`` / ``down`` / ``flat`` price trends stay legal).
 _NONDIRECTIONAL_COGNITION_SOURCES = (
     "cognition/evidence_adapters.py",
     "cognition/market_snapshot.py",
 )
 _DIRECTIONAL_POLARITY = re.compile(r"polarity\s*=\s*(?!0\.0\b)[^,\n)]+")
 _DIRECTIONAL_HELPERS = re.compile(r"\b(?:_sign|_sentiment_polarity)\s*\(|directional_lean")
+# A quoted trade-direction token used as a value — a precomputed direction the
+# Brain must never be handed. Only the LONG/SHORT/FLAT *trade* verdict is
+# forbidden here; raw up/down/flat price trends are reality and stay legal.
+_DIRECTIONAL_TOKEN = re.compile(r"""['"](?:LONG|SHORT|FLAT)['"]""")
+
+_NONDIRECTIONAL_DETECTORS = (
+    _DIRECTIONAL_POLARITY,
+    _DIRECTIONAL_HELPERS,
+    _DIRECTIONAL_TOKEN,
+)
 
 
 @dataclass
@@ -314,8 +328,10 @@ def audit_nondirectional_cognition(root: Optional[str] = None) -> NonDirectional
     """Fail if any cognition Evidence producer reintroduces a directional reading.
 
     Scans the sources that build the Evidence the Brain reasons over for a
-    non-zero ``polarity=`` assignment or a direction-deriving helper/measurement.
-    Comments are ignored. Pure and fail-safe (empty findings on any read fault).
+    non-zero ``polarity=`` assignment, a direction-deriving helper/measurement,
+    or a precomputed trade-direction literal (``"LONG"`` / ``"SHORT"`` /
+    ``"FLAT"``). Comments are ignored. Pure and fail-safe (empty findings on any
+    read fault).
     """
     base = root or _repo_root()
     findings: list = []
@@ -329,7 +345,7 @@ def audit_nondirectional_cognition(root: Optional[str] = None) -> NonDirectional
             with open(path, "r", encoding="utf-8", errors="replace") as fh:
                 for i, line in enumerate(fh, start=1):
                     code = line.split("#", 1)[0]
-                    if _DIRECTIONAL_POLARITY.search(code) or _DIRECTIONAL_HELPERS.search(code):
+                    if any(rx.search(code) for rx in _NONDIRECTIONAL_DETECTORS):
                         findings.append((rel, i, line.strip()[:160]))
         except Exception:  # noqa: BLE001 — an audit read fault must never raise
             continue

@@ -25,10 +25,6 @@ from typing import Any
 
 from cognition.contracts import Evidence, EvidenceDomain
 
-LONG = "LONG"
-SHORT = "SHORT"
-FLAT = "FLAT"
-
 # Ordered (substring, domain) — most specific first. A module name is classified
 # by the first substring it contains. Unmatched names fall back to OTHER.
 _DOMAIN_RULES: tuple[tuple[tuple[str, ...], EvidenceDomain], ...] = (
@@ -79,8 +75,15 @@ def evidence_from_thesis_status(status: dict, symbol: str) -> "list[Evidence]":
     """Convert one symbol's ThesisEngine status into structured Evidence.
 
     Emits an aggregate multi-timeframe read plus one domain-classified Evidence
-    per supporting/opposing module of the dominant thesis. Fail-safe: returns
-    what it can and never raises.
+    per contributing analytical module, with no directional reading. Fail-safe:
+    returns what it can and never raises.
+
+    Part XXV — the Brain must never receive a collapsed LONG/SHORT/FLAT verdict.
+    This adapter therefore never inspects the thesis's ``dominant`` direction and
+    never splits modules into supporting vs opposing around it (both are a
+    pre-reasoning directional collapse). It surfaces the panel's overall
+    conviction *magnitude* and every contributing module once, as equal
+    instrument readings; the Brain alone forms direction from them.
     """
     out: list[Evidence] = []
     try:
@@ -88,15 +91,14 @@ def evidence_from_thesis_status(status: dict, symbol: str) -> "list[Evidence]":
         entry = theses.get(symbol)
         if not isinstance(entry, dict):
             return out
-        eff = entry.get("effective") or {}
-        dominant = str(eff.get("dominant", "FLAT") or "FLAT").upper()
 
-        if dominant == LONG:
-            agg_conf = _clamp01((entry.get("long") or {}).get("confidence", 0.0))
-        elif dominant == SHORT:
-            agg_conf = _clamp01((entry.get("short") or {}).get("confidence", 0.0))
-        else:
-            agg_conf = _clamp01((entry.get("flat") or {}).get("confidence", 0.0))
+        # Direction-agnostic overall conviction: the strongest side's confidence
+        # is a magnitude of how convicted the panel is, never a chosen direction.
+        side_confs = [
+            _clamp01((entry.get(side) or {}).get("confidence", 0.0))
+            for side in ("long", "short", "flat")
+        ]
+        agg_conf = max(side_confs) if side_confs else 0.0
 
         out.append(Evidence(
             source_module="brain.thesis_engine",
@@ -106,28 +108,26 @@ def evidence_from_thesis_status(status: dict, symbol: str) -> "list[Evidence]":
             relevance_horizon_seconds=900.0,
         ))
 
-        # Per-module evidence — each contributing module is an instrument reading,
-        # with no directional lean (Part XXV). The former supporting/opposing
-        # split around a "dominant" direction is itself a collapse and is gone.
-        if dominant in (LONG, SHORT):
-            dom = entry.get("long" if dominant == LONG else "short") or {}
-            opp = entry.get("short" if dominant == LONG else "long") or {}
-            sup_conf = _clamp01(dom.get("confidence", 0.0))
-            opp_conf = _clamp01(opp.get("confidence", 0.0)) or 0.4
-            for m in (dom.get("supporting_modules") or []):
-                out.append(Evidence(
-                    source_module=str(m), domain=classify_domain(m), symbol=symbol,
-                    observation=f"{m} instrument reading",
-                    confidence=sup_conf, uncertainty=1.0 - sup_conf,
-                    polarity=0.0, relevance_horizon_seconds=900.0,
-                ))
-            for m in (dom.get("opposing_modules") or []):
-                out.append(Evidence(
-                    source_module=str(m), domain=classify_domain(m), symbol=symbol,
-                    observation=f"{m} instrument reading",
-                    confidence=opp_conf, uncertainty=1.0 - opp_conf,
-                    polarity=0.0, relevance_horizon_seconds=900.0,
-                ))
+        # Every contributing module (across every side) is an equal, non-
+        # directional instrument reading. Each module's confidence is the
+        # strongest reading it carries on any side — never a supporting/opposing
+        # bucket chosen by a dominant direction. Deduped, first-seen order.
+        module_conf: "dict[str, float]" = {}
+        for side in ("long", "short", "flat"):
+            bucket = entry.get(side) or {}
+            side_conf = _clamp01(bucket.get("confidence", 0.0))
+            for key in ("supporting_modules", "opposing_modules"):
+                for m in (bucket.get(key) or []):
+                    name = str(m)
+                    if name:
+                        module_conf[name] = max(module_conf.get(name, 0.0), side_conf)
+        for name, conf in module_conf.items():
+            out.append(Evidence(
+                source_module=name, domain=classify_domain(name), symbol=symbol,
+                observation=f"{name} instrument reading",
+                confidence=conf, uncertainty=1.0 - conf,
+                polarity=0.0, relevance_horizon_seconds=900.0,
+            ))
     except Exception:  # noqa: BLE001 — consolidation must never raise
         return out
     return out
