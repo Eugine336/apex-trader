@@ -52,7 +52,8 @@ def test_thesis_status_aggregate_only_without_modules():
     ev = evidence_from_thesis_status(_status("LONG"), "EURUSD")
     assert len(ev) == 1
     assert ev[0].source_module == "brain.thesis_engine"
-    assert ev[0].polarity > 0
+    assert ev[0].polarity == 0.0  # Part XXV — no directional reading
+    assert "LONG" not in ev[0].observation and "lean" not in ev[0].observation
 
 
 def test_thesis_status_emits_per_module_evidence_with_domains():
@@ -67,18 +68,20 @@ def test_thesis_status_emits_per_module_evidence_with_domains():
     assert EvidenceDomain.STRUCTURE in domains
     assert EvidenceDomain.LIQUIDITY in domains
     assert EvidenceDomain.MOMENTUM in domains
-    # supporting modules lean with the dominant (LONG ⇒ positive); opposing against.
+    # Part XXV — every module is a non-directional instrument reading; neither
+    # supporting nor opposing modules carry a lean, and none names a direction.
     sup = next(e for e in ev if e.source_module == "structure_engine")
     opp = next(e for e in ev if e.source_module == "volume_analyzer")
-    assert sup.polarity > 0
-    assert opp.polarity < 0
+    assert sup.polarity == 0.0
+    assert opp.polarity == 0.0
+    assert "LONG" not in sup.observation and "SHORT" not in opp.observation
 
 
 def test_thesis_status_short_dominant_supporting_is_negative():
     ev = evidence_from_thesis_status(
         _status("SHORT", supporting=["order_block"], short_conf=0.7), "EURUSD")
     sup = next(e for e in ev if e.source_module == "order_block")
-    assert sup.polarity < 0
+    assert sup.polarity == 0.0
     assert sup.domain == EvidenceDomain.ORDER_FLOW
 
 
@@ -103,8 +106,9 @@ def test_evidence_from_votes():
     assert len(ev) == 2
     long_e = next(e for e in ev if e.source_module == "structure_engine")
     short_e = next(e for e in ev if e.source_module == "volume_analyzer")
-    assert long_e.polarity > 0 and long_e.domain == EvidenceDomain.STRUCTURE
-    assert short_e.polarity < 0 and short_e.domain == EvidenceDomain.VOLUME
+    assert long_e.polarity == 0.0 and long_e.domain == EvidenceDomain.STRUCTURE
+    assert short_e.polarity == 0.0 and short_e.domain == EvidenceDomain.VOLUME
+    assert "votes" not in long_e.observation and "LONG" not in long_e.observation
 
 
 def test_evidence_from_votes_empty_and_fault_safe():
@@ -161,19 +165,19 @@ def test_developing_bias_long_is_attenuated_multi_tf():
     e = ev[0]
     assert e.domain == EvidenceDomain.MULTI_TIMEFRAME
     assert e.source_module == "world_model.developing"
-    # Directionally attenuated (×0.7) so it never dominates the confirmed panel.
-    assert 0.0 < e.polarity < 0.8
-    assert abs(e.polarity - 0.8 * 0.7) < 1e-6
+    # Part XXV — the developing read is non-directional: no lean, only magnitude.
+    assert e.polarity == 0.0
     assert e.measurements["developing"] is True
     assert e.measurements["tradeable"] is True
+    assert "long_probability" not in e.measurements  # directional keys dropped
     assert e.relevance_horizon_seconds == 120.0
     assert "developing-candle instrument reading" in e.observation
     assert "votes" not in e.observation and "LONG" not in e.observation
 
 
-def test_developing_bias_short_is_negative():
+def test_developing_bias_short_is_non_directional():
     ev = evidence_from_developing_bias("XAUUSD", {"direction": "SHORT", "confidence": 0.6})
-    assert ev[0].polarity < 0
+    assert ev[0].polarity == 0.0
 
 
 def test_developing_bias_falls_back_to_probability():
@@ -201,7 +205,9 @@ def test_knowledge_research_items_are_macro_context():
     assert all(e.domain == EvidenceDomain.MACRO for e in ev)
     bull = next(e for e in ev if "Gold rallies" in e.observation)
     bear = next(e for e in ev if "DXY firm" in e.observation)
-    assert bull.polarity > 0 and bear.polarity < 0
+    # Part XXV — news is external context, not a directional reading: the Brain
+    # reads the headline text and infers direction itself. No sentiment lean.
+    assert bull.polarity == 0.0 and bear.polarity == 0.0
     assert bull.measurements["external"] is True
 
 
@@ -235,16 +241,17 @@ def test_evidence_from_analogues_won_long_leans_long():
     ev = evidence_from_analogues("EURUSD", analogues)
     assert len(ev) == 1
     assert ev[0].domain == EvidenceDomain.HISTORICAL_ANALOGUE
-    assert ev[0].polarity > 0
+    assert ev[0].polarity == 0.0  # Part XXV — win/loss stats, no directional lean
     assert ev[0].measurements["wins"] == 2
 
 
-def test_evidence_from_analogues_lost_long_leans_short():
+def test_evidence_from_analogues_lost_long_is_non_directional():
     analogues = [
         {"direction": "LONG", "similarity": 0.9, "outcome_won": False, "reasoning_quality": 0.8},
     ]
     ev = evidence_from_analogues("EURUSD", analogues)
-    assert ev[0].polarity < 0          # that LONG setup previously failed → bearish lean
+    assert ev[0].polarity == 0.0
+    assert ev[0].measurements["losses"] == 1
 
 
 def test_evidence_from_analogues_empty_and_fault_safe():
@@ -275,9 +282,10 @@ def test_evidence_from_reasoning_one_per_engine_not_a_vote():
     srcs = {e.source_module for e in ev}
     assert srcs == {"reasoning_engine.openai", "reasoning_engine.claude",
                     "reasoning_engine.deepseek"}
-    longs = [e for e in ev if e.polarity > 0]
-    shorts = [e for e in ev if e.polarity < 0]
-    assert len(longs) == 2 and len(shorts) == 1     # opinions preserved, not voted
+    # Part XXV — each engine is its own evidence and none carries a directional
+    # lean; the Brain synthesises their rationales, it does not count votes.
+    assert all(e.polarity == 0.0 for e in ev)
+    assert all("LONG" not in e.observation and "SHORT" not in e.observation for e in ev)
 
 
 def test_evidence_from_reasoning_classify_domain():

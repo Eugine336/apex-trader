@@ -441,7 +441,7 @@ def snapshot_to_evidence(symbol: str, snapshot: dict) -> "list[Evidence]":
             observation=observation,
             confidence=round(0.4 + 0.5 * agree, 4),  # more agreement ⇒ clearer picture
             uncertainty=round(1.0 - agree, 4),
-            polarity=round(lean * 0.4, 4),
+            polarity=0.0,  # Part XXV — the chart is raw market reality, not a lean
             measurements=snap,
             relevance_horizon_seconds=90.0,
         ))

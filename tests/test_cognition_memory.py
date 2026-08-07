@@ -28,18 +28,19 @@ def test_fingerprint_empty_state_is_neutral():
     fp = fingerprint_from_market_state(_ms())
     assert fp["domains"] == {}
     assert fp["polarity"] == 0.0
-    assert fp["direction"] == "FLAT"
+    assert "direction" not in fp  # Part XXV — no directional field
 
 
-def test_fingerprint_directional():
+def test_fingerprint_domains_and_confidence():
     fp = fingerprint_from_market_state(_ms(
         "EURUSD",
-        _ev(EvidenceDomain.MOMENTUM, 0.8),
-        _ev(EvidenceDomain.STRUCTURE, 0.6),
+        _ev(EvidenceDomain.MOMENTUM, 0.8, confidence=0.8),
+        _ev(EvidenceDomain.STRUCTURE, 0.6, confidence=0.6),
     ))
-    assert fp["direction"] == "LONG"
-    assert fp["polarity"] > 0
+    # Part XXV — non-directional: domains carry confidence magnitude, no lean.
+    assert fp["polarity"] == 0.0
     assert set(fp["domains"]) == {"momentum", "structure"}
+    assert fp["domains"]["momentum"] == 0.8 and fp["domains"]["structure"] == 0.6
 
 
 def test_fingerprint_similarity_identical_is_one():
@@ -48,10 +49,12 @@ def test_fingerprint_similarity_identical_is_one():
     assert fingerprint_similarity(fp, fp) == 1.0
 
 
-def test_fingerprint_similarity_opposite_is_zero():
+def test_fingerprint_similarity_same_domains_is_high():
+    # Two states active in the same domain are analogous situations — the former
+    # directional "opposite" distinction is gone (Part XXV).
     a = fingerprint_from_market_state(_ms("EURUSD", _ev(EvidenceDomain.MOMENTUM, 0.8)))
     b = fingerprint_from_market_state(_ms("EURUSD", _ev(EvidenceDomain.MOMENTUM, -0.8)))
-    assert fingerprint_similarity(a, b) == 0.0
+    assert fingerprint_similarity(a, b) == 1.0
 
 
 def test_fingerprint_similarity_disjoint_is_zero():

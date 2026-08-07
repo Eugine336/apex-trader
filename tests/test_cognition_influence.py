@@ -68,27 +68,29 @@ def test_consolidation_unweighted_by_default():
     ms.add(_ev("b", -0.8))
     c = ms.consolidation()
     assert c["influence_weighted"] is False
-    assert c["conflict_ratio"] == 1.0         # one bull, one bear, equal weight
+    # Part XXV — evidence is non-directional, so there is no directional conflict.
+    assert c["conflict_ratio"] == 0.0
 
 
-def test_consolidation_weighted_reduces_downweighted_source_conflict():
+def test_consolidation_weighting_shifts_weighted_mean():
     ms = MarketState(symbol="EURUSD")
-    ms.add(_ev("trusted", 0.8))
-    ms.add(_ev("noisy", -0.8))
-    # Downweight the bearish 'noisy' source heavily → conflict should drop.
+    ms.add(_ev("trusted", 0.0, conf=0.9))
+    ms.add(_ev("noisy", 0.0, conf=0.3))
+    unweighted = ms.consolidation()["mean_confidence"]
+    # Trust the high-confidence source far more → weighted mean rises toward it.
     ms.influence_weights = {"trusted": 1.5, "noisy": 0.1}
     c = ms.consolidation()
     assert c["influence_weighted"] is True
-    assert c["conflict_ratio"] < 1.0          # the opposing side is discounted
+    assert c["mean_confidence"] > unweighted
 
 
 def test_consolidation_weighted_matches_unweighted_when_all_one():
     ms = MarketState(symbol="EURUSD")
-    ms.add(_ev("a", 0.8))
-    ms.add(_ev("b", -0.8))
-    base = ms.consolidation()["conflict_ratio"]
+    ms.add(_ev("a", 0.0, conf=0.8))
+    ms.add(_ev("b", 0.0, conf=0.4))
+    base = ms.consolidation()["mean_confidence"]
     ms.influence_weights = {"a": 1.0, "b": 1.0}
-    assert ms.consolidation()["conflict_ratio"] == base
+    assert ms.consolidation()["mean_confidence"] == base
 
 
 # ── CalibrationTracker ─────────────────────────────────────────────────────────

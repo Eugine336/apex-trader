@@ -182,6 +182,36 @@ class Evidence:
         }
 
 
+# Part XXV — the Brain must never receive a directional reading from any module.
+# These measurement keys encode a precomputed direction/lean/probability and are
+# stripped from every Evidence as it enters a MarketState (see MarketState.add).
+_DIRECTIONAL_MEASUREMENT_KEYS = frozenset({
+    "directional_lean", "lean", "direction", "bias", "sentiment",
+    "long_probability", "short_probability", "long_ev", "short_ev", "flat_ev",
+    "dominant", "score", "signed_score", "vote", "signal",
+})
+
+
+def scrub_directional(ev: "Evidence") -> "Evidence":
+    """Force an Evidence to be non-directional (Part XXV Art 2/3, in place).
+
+    Sets ``polarity`` to 0 (no directional lean) and removes any measurement key
+    that encodes a precomputed direction/probability. The Brain forms direction
+    itself from raw measurements + the price picture; nothing upstream may hand
+    it a directional reading. Fail-safe — never raises.
+    """
+    try:
+        ev.polarity = 0.0
+        m = getattr(ev, "measurements", None)
+        if isinstance(m, dict) and m:
+            for k in list(m.keys()):
+                if str(k).strip().lower() in _DIRECTIONAL_MEASUREMENT_KEYS:
+                    m.pop(k, None)
+    except Exception:  # noqa: BLE001 — sanitising must never break consolidation
+        pass
+    return ev
+
+
 @dataclass
 class MarketState:
     """Unified consolidated evidence snapshot the Brain reasons over (Part IV, Art 2)."""
@@ -204,7 +234,11 @@ class MarketState:
 
     def add(self, ev: Evidence) -> None:
         if isinstance(ev, Evidence):
-            self.evidence.append(ev)
+            # Part XXV — enforce the non-directional contract at the single choke
+            # point every adapter and injected evidence passes through, so no
+            # directional reading can reach the Brain (or the advisors, which
+            # read this evidence mid-consolidation) from anywhere upstream.
+            self.evidence.append(scrub_directional(ev))
 
     def fresh_evidence(self, now: Optional[float] = None) -> list[Evidence]:
         return [e for e in self.evidence if e.is_fresh(now)]
@@ -222,9 +256,6 @@ class MarketState:
         weights = self.influence_weights
         if not weights:
             # Unweighted (default) — every source counts equally.
-            pos = sum(1 for e in fresh if e.polarity > 0.05)
-            neg = sum(1 for e in fresh if e.polarity < -0.05)
-            conflict = min(1.0, (2.0 * min(pos, neg)) / n) if n else 0.0
             mean_conf = sum(e.confidence for e in fresh) / n if n else 0.0
             mean_unc = sum(e.uncertainty for e in fresh) / n if n else 1.0
         else:
@@ -235,14 +266,17 @@ class MarketState:
                 except Exception:  # noqa: BLE001
                     return 1.0
             wsum = sum(_w(e) for e in fresh)
-            pos = sum(_w(e) for e in fresh if e.polarity > 0.05)
-            neg = sum(_w(e) for e in fresh if e.polarity < -0.05)
-            conflict = min(1.0, (2.0 * min(pos, neg)) / wsum) if wsum else 0.0
             mean_conf = (sum(_w(e) * e.confidence for e in fresh) / wsum) if wsum else 0.0
             mean_unc = (sum(_w(e) * e.uncertainty for e in fresh) / wsum) if wsum else 1.0
+        # Part XXV — evidence carries no directional reading, so there is no
+        # directional "conflict" to measure before the Brain has reasoned.
+        # Uncertainty derives from the sources' own doubt, their confidence, and
+        # how little of the market picture is present (missing evidence ⇒ doubt).
+        conflict = 0.0
+        coverage_gap = 1.0 - min(1.0, len(domains) / 6.0)
         # No evidence ⇒ maximal uncertainty (Part IV, Article 2).
         aggregate_uncertainty = 1.0 if n == 0 else _clamp01(
-            0.5 * mean_unc + 0.5 * conflict + 0.25 * (1.0 - mean_conf)
+            0.5 * mean_unc + 0.3 * (1.0 - mean_conf) + 0.2 * coverage_gap
         )
         return {
             "symbol": self.symbol,

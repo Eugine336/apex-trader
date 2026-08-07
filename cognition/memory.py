@@ -69,13 +69,16 @@ def _clampf(v: Any, lo: float, hi: float, default: float = 0.0) -> float:
 
 
 def fingerprint_from_market_state(market_state: Any, *, now: Optional[float] = None) -> dict:
-    """Represent a MarketState as a per-domain evidential-polarity vector.
+    """Represent a MarketState as a per-domain evidential *confidence* vector.
 
-    Returns ``{"domains": {domain: mean_polarity}, "polarity": net, "confidence":
-    mean, "direction": LONG|SHORT|FLAT}``. Only *fresh* evidence contributes.
-    Pure and fail-safe — an empty / unreadable state yields a neutral print.
+    Part XXV — the fingerprint carries no directional reading. It captures which
+    evidence domains were active and how strongly (mean confidence per domain),
+    so similar market *situations* still match without any LONG/SHORT lean.
+    Returns ``{"domains": {domain: mean_confidence}, "confidence": mean,
+    "polarity": 0.0}``. Only *fresh* evidence contributes. Pure and fail-safe —
+    an empty / unreadable state yields a neutral print.
     """
-    dom_pol: dict[str, list] = {}
+    dom_conf: dict[str, list] = {}
     confs: list = []
     try:
         fresh = market_state.fresh_evidence(now) if market_state is not None else []
@@ -84,15 +87,15 @@ def fingerprint_from_market_state(market_state: Any, *, now: Optional[float] = N
     for e in fresh or []:
         try:
             dom = getattr(getattr(e, "domain", None), "value", None) or str(getattr(e, "domain", "other"))
-            dom_pol.setdefault(str(dom), []).append(_clampf(getattr(e, "polarity", 0.0), -1.0, 1.0))
-            confs.append(_clampf(getattr(e, "confidence", 0.0), 0.0, 1.0))
+            c = _clampf(getattr(e, "confidence", 0.0), 0.0, 1.0)
+            dom_conf.setdefault(str(dom), []).append(c)
+            confs.append(c)
         except Exception:  # noqa: BLE001
             continue
-    domains = {d: round(sum(v) / len(v), 4) for d, v in dom_pol.items() if v}
-    net = round(sum(domains.values()) / len(domains), 4) if domains else 0.0
+    domains = {d: round(sum(v) / len(v), 4) for d, v in dom_conf.items() if v}
     mean_conf = round(sum(confs) / len(confs), 4) if confs else 0.0
-    direction = LONG if net > 0.05 else (SHORT if net < -0.05 else FLAT)
-    return {"domains": domains, "polarity": net, "confidence": mean_conf, "direction": direction}
+    # ``polarity`` retained at 0.0 for schema stability; it is never directional.
+    return {"domains": domains, "confidence": mean_conf, "polarity": 0.0}
 
 
 def fingerprint_similarity(a: dict, b: dict) -> float:

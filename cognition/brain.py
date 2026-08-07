@@ -332,17 +332,15 @@ class CognitiveBrain:
 
     @staticmethod
     def _split_evidence(market_state: MarketState, direction: str) -> "tuple[list[str], list[str]]":
-        want = 1.0 if direction == LONG else (-1.0 if direction == SHORT else 0.0)
-        supporting: list[str] = []
-        contradicting: list[str] = []
-        for e in market_state.fresh_evidence():
-            if want == 0.0:
-                continue
-            if e.polarity * want > 0.05:
-                supporting.append(e.evidence_id)
-            elif e.polarity * want < -0.05:
-                contradicting.append(e.evidence_id)
-        return supporting, contradicting
+        # Part XXV — evidence carries no directional reading, so supporting vs
+        # contradicting can no longer be inferred from a polarity sign. Record
+        # every fresh evidence id as provenance for what the Brain considered;
+        # the qualitative supporting/contradicting split is the Brain's own
+        # (opinion.supporting_evidence / contradicting_evidence), surfaced in the
+        # decision's questions_answered.
+        considered = [e.evidence_id for e in market_state.fresh_evidence()
+                      if getattr(e, "evidence_id", "")]
+        return considered, []
 
     def _observe(self, symbol: str, reason_txt: str, consolidation: dict) -> BrainOutput:
         decision = DecisionPackage(

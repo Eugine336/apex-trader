@@ -56,7 +56,7 @@ def test_empty_market_state_is_maximally_uncertain():
     assert c["aggregate_uncertainty"] == 1.0
 
 
-def test_market_state_filters_stale_and_reports_conflict():
+def test_market_state_filters_stale_and_is_non_directional():
     ms = MarketState(symbol="EURUSD")
     ms.add(Evidence(source_module="a", polarity=0.8, confidence=0.9,
                     timestamp_epoch=1000.0, relevance_horizon_seconds=100.0))
@@ -67,7 +67,10 @@ def test_market_state_filters_stale_and_reports_conflict():
     c = ms.consolidation(now=1050.0)
     assert c["evidence_total"] == 3
     assert c["evidence_fresh"] == 2                 # stale one filtered
-    assert c["conflict_ratio"] == pytest.approx(1.0)  # one bull, one bear
+    # Part XXV — evidence entering the state is scrubbed non-directional, so
+    # there is no directional "conflict" to report before the Brain reasons.
+    assert all(e.polarity == 0.0 for e in ms.evidence)
+    assert c["conflict_ratio"] == 0.0
 
 
 # ── DecisionPackage (Part II, Article 7 + Article 3 required questions) ────────
