@@ -146,21 +146,51 @@ class CognitiveBrain:
         rationale = str(getattr(opinion, "rationale", "") or "")
         competing = list(getattr(opinion, "competing_hypotheses", []) or [])
         missing = list(getattr(opinion, "missing_information", []) or [])
+        # Part XXV — the richer cognitive state, present when the reasoner returns it.
+        primary_hyp = str(getattr(opinion, "primary_hypothesis", "") or "")
+        alternatives = list(getattr(opinion, "alternative_hypotheses", []) or []) or competing
+        wcm = list(getattr(opinion, "what_would_change_my_mind", []) or [])
+        regime = str(getattr(opinion, "regime", "") or "")
+        key_uncertainty = str(getattr(opinion, "key_uncertainty", "") or "")
+        invalidation_txt = str(getattr(opinion, "invalidation", "") or "")
+        opportunity_txt = str(getattr(opinion, "opportunity", "") or "")
+        opp_horizon = str(getattr(opinion, "opportunity_horizon", "") or "")
+        efe = str(getattr(opinion, "expected_favorable_excursion", "") or "")
+        eae = str(getattr(opinion, "expected_adverse_excursion", "") or "")
+        ev_txt = str(getattr(opinion, "expected_value", "") or "")
+        exec_q = str(getattr(opinion, "execution_quality", "") or "")
+        risk_txt = str(getattr(opinion, "risk", "") or "")
         uncertainty = _clamp01(consolidation.get("aggregate_uncertainty", 1.0))
 
         supporting, contradicting = self._split_evidence(market_state, direction)
         questions = {
-            "what_is_happening": rationale,
-            "why_is_it_happening": rationale,
+            "what_is_happening": primary_hyp or rationale,
+            "why_is_it_happening": primary_hyp or rationale,
             "evidence_supports": f"{len(supporting)} evidence items lean {direction}",
-            "evidence_contradicts": f"{len(contradicting)} evidence items oppose",
-            "information_missing": "; ".join(missing) if missing else "none reported",
-            "what_would_change_my_mind": "; ".join(competing) if competing else "opposing evidence dominates",
-            "expected_value": "positive" if direction in (LONG, SHORT) and confidence >= self.min_confidence_to_act else "not established",
-            "downside": "bounded by invalidation conditions",
-            "opportunity": direction if direction in (LONG, SHORT) else "none",
+            "evidence_contradicts": "; ".join(alternatives) if alternatives
+            else f"{len(contradicting)} evidence items oppose",
+            "information_missing": "; ".join(missing) if missing
+            else (key_uncertainty or "none reported"),
+            "what_would_change_my_mind": "; ".join(wcm) if wcm
+            else ("; ".join(competing) if competing else "opposing evidence dominates"),
+            "expected_value": ev_txt or ("positive" if direction in (LONG, SHORT)
+            and confidence >= self.min_confidence_to_act else "not established"),
+            "downside": eae or "bounded by invalidation conditions",
+            "opportunity": opportunity_txt or (direction if direction in (LONG, SHORT) else "none"),
             "should_i_do_nothing": "considered",
         }
+        # Surface the remaining Part XXV context on the decision record for the
+        # dashboard/governance (extra keys are harmless to consumers).
+        for _k, _v in (("regime", regime), ("opportunity_horizon", opp_horizon),
+                       ("expected_favorable_excursion", efe),
+                       ("execution_quality", exec_q), ("risk", risk_txt)):
+            if _v:
+                questions[_k] = _v
+        # Prefer the Brain's explicit invalidation / change-my-mind for the
+        # campaign's invalidation conditions; fall back to competing hypotheses.
+        invalidation_conditions = (
+            ([invalidation_txt] if invalidation_txt else []) + wcm + competing
+        )
 
         # Constitutional gate: only OPEN a campaign when the Brain can answer
         # with sufficient confidence AND uncertainty is acceptable AND there is a
@@ -184,7 +214,7 @@ class CognitiveBrain:
                 supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
                 confidence=confidence, uncertainty=uncertainty,
                 expected_value=0.0, campaign_recommendation="observe",
-                risk_rationale=reason_txt, invalidation_conditions=competing,
+                risk_rationale=reason_txt, invalidation_conditions=invalidation_conditions or competing,
                 questions_answered=questions, do_nothing_considered=True,
                 reasoner=self.reasoner_name,
             )
@@ -198,7 +228,7 @@ class CognitiveBrain:
             expected_value=confidence,  # normalised EV proxy until a calibrated EV model lands
             campaign_recommendation=f"open {direction}",
             risk_rationale="expected value positive on synthesised evidence",
-            invalidation_conditions=competing or [f"{direction} thesis contradicted by dominant opposing evidence"],
+            invalidation_conditions=invalidation_conditions or [f"{direction} thesis contradicted by dominant opposing evidence"],
             questions_answered=questions, do_nothing_considered=True,
             reasoner=self.reasoner_name,
         )

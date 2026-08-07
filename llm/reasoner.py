@@ -45,42 +45,58 @@ SHORT = "SHORT"
 FLAT = "FLAT"
 
 _SYSTEM_PROMPT = (
-    "You are the reasoning subsystem of an autonomous trading intelligence. "
-    "You are given STRUCTURED EVIDENCE about one instrument: competing "
-    "Long/Short/Flat theses with their expected value and confidence, a summary "
-    "of module votes, market regime and structure. You may also receive a live "
-    "market picture reconstructed like a trader's screen — multi-timeframe OHLC "
-    "candles, current price and spread, the tick tape (velocity, drift, up/down "
-    "balance, momentum, spread behaviour), order-book depth when available, the "
-    "session, and a pullback read (higher-timeframe trend vs the current lower-"
-    "timeframe move). Reason over the evidence — do not invent data you were not "
-    "given. Weigh the evidence, consider competing explanations, and state what "
-    "would change your mind.\n\n"
-    "You are free to exploit the price action you can now see: a pullback within "
-    "an uptrend, a bounce within a downtrend, or a short-lived micro-move can be "
-    "a valid entry — in either direction — when the read is coherent across the "
-    "chart, tape and book. But every action must clear its own cost: only act "
-    "when the expected move is worth more than the round-trip spread and "
-    "commission. When the edge does not clear costs, or the picture is noise, "
-    "answer FLAT. Do not manufacture trades to be busy.\n\n"
-    "Judge LONG and SHORT symmetrically. The higher-timeframe trend is CONTEXT, "
-    "never a default direction — do not anchor to it. A pullback in an uptrend is "
-    "a buy ONLY if the higher timeframe is intact AND the lower timeframe shows "
-    "the pullback stabilising or reclaiming (up ticks returning, drift turning "
-    "positive, higher low); NEVER buy a market that is still actively falling "
-    "(down ticks, negative drift, fresh lower lows) merely because a higher "
-    "timeframe is up — that is catching a falling knife. Apply the exact mirror "
-    "for shorts. When the freshest lower-timeframe evidence (the tape and the "
-    "last candles) conflicts with a stale higher-timeframe lean, trust the fresh "
-    "evidence or stay FLAT. For every LONG you consider, state the SHORT case in "
-    "competing_hypotheses (and vice-versa); if you cannot, you have not looked. "
-    "Prefer FLAT over trading with the crowd's assumed trend.\n\n"
-    "Respond with STRICT JSON only, no prose, no markdown fences, exactly:\n"
-    "{\"direction\": \"LONG|SHORT|FLAT\", \"confidence\": 0.0-1.0, "
-    "\"rationale\": \"one or two sentences\", "
-    "\"competing_hypotheses\": [\"...\"], \"missing_information\": [\"...\"]}\n"
-    "FLAT means the evidence does not support acting. Confidence is your "
-    "calibrated probability that the stated direction is correct."
+    "You are the Cognitive Brain of an autonomous trading intelligence. You "
+    "receive a STRUCTURED REPRESENTATION OF MARKET REALITY for one instrument — "
+    "NOT a set of votes to arbitrate. It may include a reconstructed multi-"
+    "timeframe price picture (OHLC candles, current price and spread), the tick "
+    "tape (velocity, drift, up/down balance, momentum, spread behaviour), order-"
+    "book depth when available, the session, a higher-vs-lower-timeframe pullback "
+    "read, and per-instrument analytical READINGS expressed as measurements (each "
+    "a signed, bounded 'measured lean' plus secondary values). Those readings are "
+    "instrument outputs, like a thermometer's temperature — NEVER decisions or "
+    "votes to count. Do not invent data you were not given.\n\n"
+    "Observe reality first, then interpret what is actually happening. Form a "
+    "PRIMARY hypothesis and at least one ALTERNATIVE, then actively challenge your "
+    "primary: why might I be wrong? what evidence contradicts it? am I anchoring "
+    "to one timeframe? am I confusing movement with opportunity? has the move "
+    "already happened? State the key uncertainty and what information is missing. "
+    "You may discover an opportunity nobody pre-programmed — it can run against "
+    "the higher-timeframe trend, be very short-lived, or not exist at all.\n\n"
+    "MOVEMENT IS NOT OPPORTUNITY. An opportunity is executable positive expected "
+    "value after the round-trip spread, commission, slippage and latency. Only act "
+    "when the expected favourable move clears those costs and beats the expected "
+    "adverse excursion; when the edge does not clear costs, or the picture is "
+    "noise, do nothing. Judge LONG and SHORT symmetrically: the higher-timeframe "
+    "trend is CONTEXT, never a default — never buy a market still actively falling "
+    "(down ticks, negative drift, fresh lower lows) nor sell one still actively "
+    "rising merely because a higher timeframe leans that way (no falling knives; "
+    "apply the mirror for shorts). When the freshest lower-timeframe evidence "
+    "conflicts with a stale higher-timeframe lean, trust the fresh evidence or do "
+    "nothing.\n\n"
+    "Direction is the CONSEQUENCE of your reasoning, not its container. Reason "
+    "first; only then collapse to an execution instruction. Respond with STRICT "
+    "JSON only, no prose, no markdown fences, exactly these keys:\n"
+    "{\"regime\": \"trending|ranging|transitional|volatile|uncertain\", "
+    "\"primary_hypothesis\": \"what is happening and why\", "
+    "\"alternative_hypotheses\": [\"competing explanation(s)\"], "
+    "\"supporting_evidence\": [\"...\"], \"contradicting_evidence\": [\"...\"], "
+    "\"key_uncertainty\": \"the main thing you are unsure of\", "
+    "\"missing_information\": [\"...\"], "
+    "\"opportunity\": \"the exploitable opportunity, or 'none'\", "
+    "\"opportunity_horizon\": \"seconds|minutes|hours|days|none\", "
+    "\"expected_favorable_excursion\": \"how far it can go your way\", "
+    "\"expected_adverse_excursion\": \"how far it can go against you first\", "
+    "\"expected_value\": \"net of costs: positive|negative|unclear\", "
+    "\"execution_quality\": \"spread/liquidity/slippage read\", "
+    "\"risk\": \"the risk if wrong\", "
+    "\"what_would_change_my_mind\": [\"...\"], "
+    "\"invalidation\": \"the level/condition that voids the thesis\", "
+    "\"direction\": \"LONG|SHORT|FLAT\", \"confidence\": 0.0-1.0, "
+    "\"rationale\": \"one or two sentences tying it together\"}\n"
+    "FLAT means the evidence does not support acting. 'confidence' is your "
+    "calibrated probability that the stated direction is correct; it is NOT a "
+    "substitute for the reasoning above. You may answer FLAT with an opportunity "
+    "of 'none' and that is a valid, complete cognitive outcome."
 )
 
 
@@ -176,14 +192,40 @@ def _reply_was_strict_json(reply: str) -> bool:
 
 @dataclass
 class LLMOpinion:
-    """The structured opinion the model returns — emitted as evidence."""
+    """The structured cognitive state the Brain returns — emitted as evidence.
+
+    Per Part XXV the state is richer than a direction+confidence: it carries the
+    Brain's regime read, a primary hypothesis and alternatives, the supporting
+    and contradicting evidence it weighed, its key uncertainty, the opportunity
+    and its horizon, expected favourable/adverse excursion and net expected
+    value, the execution read, the risk, and what would change its mind.
+    ``direction``/``confidence`` are the *consequence* of that reasoning — the
+    execution instruction — never a substitute for it. Every rich field defaults
+    empty so a legacy minimal reply still parses.
+    """
 
     symbol: str
-    direction: str                 # LONG | SHORT | FLAT
+    direction: str                 # LONG | SHORT | FLAT (execution consequence)
     confidence: float              # 0..1
     rationale: str = ""
     competing_hypotheses: list[str] = field(default_factory=list)
     missing_information: list[str] = field(default_factory=list)
+    # Part XXV — non-collapsed cognitive state.
+    regime: str = ""
+    primary_hypothesis: str = ""
+    alternative_hypotheses: list[str] = field(default_factory=list)
+    supporting_evidence: list[str] = field(default_factory=list)
+    contradicting_evidence: list[str] = field(default_factory=list)
+    key_uncertainty: str = ""
+    invalidation: str = ""
+    opportunity: str = ""
+    opportunity_horizon: str = ""
+    expected_value: str = ""
+    expected_favorable_excursion: str = ""
+    expected_adverse_excursion: str = ""
+    execution_quality: str = ""
+    risk: str = ""
+    what_would_change_my_mind: list[str] = field(default_factory=list)
     at_iso: str = ""
     model: str = ""
 
@@ -195,6 +237,21 @@ class LLMOpinion:
             "rationale": self.rationale,
             "competing_hypotheses": list(self.competing_hypotheses),
             "missing_information": list(self.missing_information),
+            "regime": self.regime,
+            "primary_hypothesis": self.primary_hypothesis,
+            "alternative_hypotheses": list(self.alternative_hypotheses),
+            "supporting_evidence": list(self.supporting_evidence),
+            "contradicting_evidence": list(self.contradicting_evidence),
+            "key_uncertainty": self.key_uncertainty,
+            "invalidation": self.invalidation,
+            "opportunity": self.opportunity,
+            "opportunity_horizon": self.opportunity_horizon,
+            "expected_value": self.expected_value,
+            "expected_favorable_excursion": self.expected_favorable_excursion,
+            "expected_adverse_excursion": self.expected_adverse_excursion,
+            "execution_quality": self.execution_quality,
+            "risk": self.risk,
+            "what_would_change_my_mind": list(self.what_would_change_my_mind),
             "at": self.at_iso,
             "model": self.model,
         }
@@ -293,12 +350,15 @@ class LLMReasoner:
                     self._faults += 1
             if opinion is not None:
                 logger.info(
-                    "[llm] {} [{}] opinion dir={} conf={} — {}",
+                    "[llm] {} [{}] dir={} conf={} | regime={} opp={} ({}) — {}",
                     sym,
                     str(getattr(opinion, "model", "") or getattr(self._client, "model", "") or "?"),
                     getattr(opinion, "direction", "?"),
                     round(float(getattr(opinion, "confidence", 0.0) or 0.0), 3),
-                    str(getattr(opinion, "rationale", "") or "")[:160],
+                    str(getattr(opinion, "regime", "") or "?"),
+                    str(getattr(opinion, "opportunity", "") or "n/a")[:60],
+                    str(getattr(opinion, "opportunity_horizon", "") or "?"),
+                    str(getattr(opinion, "rationale", "") or "")[:140],
                 )
             else:
                 # 2xx reply that did not parse into a directional opinion — the
@@ -338,15 +398,45 @@ class LLMReasoner:
                 self._recovered += 1
         ch = fields.get("competing_hypotheses") or []
         mi = fields.get("missing_information") or []
+        alt = fields.get("alternative_hypotheses") or []
+        wcm = fields.get("what_would_change_my_mind") or []
+        sup = fields.get("supporting_evidence") or []
+        con = fields.get("contradicting_evidence") or []
+
+        def _list(x, cap_items=5, cap_chars=200):
+            return [str(i)[:cap_chars] for i in x][:cap_items] if isinstance(x, list) else []
+
+        def _txt(key, cap=300):
+            return str(fields.get(key, "") or "")[:cap]
+
+        # Backward-compat: a legacy reply carries only competing_hypotheses /
+        # missing_information — keep populating them, and cross-fill the Part XXV
+        # fields so neither representation is empty when only one was returned.
+        alt_l = _list(alt)
+        ch_l = _list(ch) or alt_l
+        wcm_l = _list(wcm)
         return LLMOpinion(
             symbol=symbol,
             direction=_norm_dir(fields.get("direction")),
             confidence=_clamp01(fields.get("confidence")),
             rationale=str(fields.get("rationale", ""))[:500],
-            competing_hypotheses=[str(x)[:200] for x in ch][:5]
-            if isinstance(ch, list) else [],
-            missing_information=[str(x)[:200] for x in mi][:5]
-            if isinstance(mi, list) else [],
+            competing_hypotheses=ch_l,
+            missing_information=_list(mi),
+            regime=_txt("regime", 48),
+            primary_hypothesis=_txt("primary_hypothesis"),
+            alternative_hypotheses=alt_l or ch_l,
+            supporting_evidence=_list(sup),
+            contradicting_evidence=_list(con),
+            key_uncertainty=_txt("key_uncertainty"),
+            invalidation=_txt("invalidation"),
+            opportunity=_txt("opportunity"),
+            opportunity_horizon=_txt("opportunity_horizon", 48),
+            expected_value=_txt("expected_value", 120),
+            expected_favorable_excursion=_txt("expected_favorable_excursion", 120),
+            expected_adverse_excursion=_txt("expected_adverse_excursion", 120),
+            execution_quality=_txt("execution_quality", 160),
+            risk=_txt("risk"),
+            what_would_change_my_mind=wcm_l,
             at_iso=time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
             model=str(getattr(self._client, "model", "") or ""),
         )
