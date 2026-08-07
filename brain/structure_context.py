@@ -14,12 +14,6 @@ Pure standard library at import time (the ``_compute_m1_micro`` reader imports
 its ``brain``/``entry`` collaborators lazily, inside the function, so this module
 stays lightweight to import and is fully fail-safe: a missing/short feed returns
 the safe defaults and never raises).
-
-NOTE: ``brain/backtest_engine.py`` currently keeps its own byte-mirrored copies
-of the four pure readers (its docstrings say "Mirrors
-``event_driven_bootstrap._struct_*``"). De-duplicating it onto this module is a
-natural follow-up slice — deferred here to keep this change offline-verifiable
-(the backtest path needs the full numeric stack).
 """
 
 from __future__ import annotations
