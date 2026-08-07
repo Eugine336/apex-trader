@@ -171,48 +171,61 @@ class ActionExecutor:
         self._last_partial_close: dict[str, float] = {}
         self._partial_close_lock = Lock()
         self._partial_close_dedup_s = 5.0
-        # Separate breakers per operation class AND per platform so a failing
-        # CLOSE/manage path on one broker (e.g. a closed FX market on MT5 over
-        # the weekend) cannot trip the breaker that gates manage operations on
-        # a different broker (24/7 Deriv synthetics), nor the breaker that
-        # gates new OPEN entries.  OPEN is a single breaker because the target
-        # platform is only resolved by symbol routing inside PlatformManager
-        # (not known at intent time).  Manage breakers are keyed by platform;
-        # the "" key is the fallback when a position's platform is unknown.
+        # Separate breakers per operation class AND per instrument so a failing
+        # CLOSE/manage path on one symbol (e.g. an "Invalid stops" MODIFY_SL
+        # loop, or a closed market) cannot trip a breaker that gates manage
+        # operations on any other symbol, nor the breaker that gates new OPEN
+        # entries. OPEN is a single breaker because the target platform is only
+        # resolved by symbol routing inside PlatformManager (not known at intent
+        # time). Management breakers are created lazily per (symbol, op-class).
         self._circuit_open = CircuitBreaker(
             name="action_executor.open",
             failure_threshold=self._cfg.circuit_failure_threshold,
             cooldown_seconds=self._cfg.circuit_cooldown_s,
         )
-        self._circuit_manage: dict[str, CircuitBreaker] = {
-            platform: CircuitBreaker(
-                name=f"action_executor.manage.{platform or 'unknown'}",
-                failure_threshold=self._cfg.circuit_failure_threshold,
-                cooldown_seconds=self._cfg.circuit_cooldown_s,
-            )
-            for platform in ("mt5", "deriv", "")
-        }
+        # Management breakers are created lazily PER (symbol, operation-class) so
+        # each instrument is fully isolated — a failing MODIFY_SL storm on one
+        # symbol can never open a breaker that blocks CLOSE/MODIFY on another
+        # symbol. CLOSE (the de-risking exit) is further isolated from MODIFY/
+        # PARTIAL so a stuck stop-move can never starve a risk-reducing close.
+        self._circuit_manage: dict[str, CircuitBreaker] = {}
+        self._breaker_lock = Lock()
+
+    def _manage_breaker(self, key: str) -> CircuitBreaker:
+        """Lazily create/return the per-(symbol, op-class) management breaker."""
+        with self._breaker_lock:
+            br = self._circuit_manage.get(key)
+            if br is None:
+                br = CircuitBreaker(
+                    name=f"action_executor.manage.{key or 'unknown'}",
+                    failure_threshold=self._cfg.circuit_failure_threshold,
+                    cooldown_seconds=self._cfg.circuit_cooldown_s,
+                )
+                self._circuit_manage[key] = br
+            return br
 
     def _breaker_for(
         self, intent: Intent, open_positions: dict[str, dict],
     ) -> CircuitBreaker:
         """Return the breaker that governs this intent's operation class.
 
-        OPEN (new entries) is isolated from the management/exit path
-        (CLOSE, PARTIAL_CLOSE, MODIFY_*) so failures on one cannot starve
-        the other.  Manage operations are further isolated per platform so a
-        broker outage / closed market on MT5 cannot block manage operations on
-        Deriv (and vice versa).
+        OPEN (new entries) is isolated from the management/exit path. Management
+        breakers are keyed PER INSTRUMENT so one symbol's broker rejections
+        (e.g. an "Invalid stops" MODIFY_SL loop) cannot starve management of any
+        other symbol — each open position is handled independently. Within a
+        symbol, CLOSE is isolated from MODIFY/PARTIAL so a stuck stop-move never
+        blocks the risk-reducing exit.
         """
         if intent.intent_type == IntentType.OPEN:
             return self._circuit_open
-        platform = str(
-            (open_positions.get(intent.position_ticket, {}) or {}).get(
-                "platform", ""
+        symbol = str(getattr(intent, "symbol", "") or "")
+        if not symbol:
+            symbol = str(
+                (open_positions.get(intent.position_ticket, {}) or {}).get("symbol", "")
+                or ""
             )
-            or ""
-        )
-        return self._circuit_manage.get(platform, self._circuit_manage[""])
+        op = "close" if intent.intent_type == IntentType.CLOSE else "modify"
+        return self._manage_breaker(f"{symbol}:{op}" if symbol else op)
 
     # ── Public API ───────────────────────────────────────────────────
 

@@ -5,7 +5,7 @@ Replays the REAL TradeManager bar-by-bar over forward price to determine
 counterfactual outcomes for rejected/skipped setups.
 
 Design constraints (binding):
-  - Uses the production TradeManager.update() — NOT backtest_engine.py
+  - Uses the production TradeManager.update() — the real management path
   - NO look-ahead: never feeds a bar at or before entry timestamp
   - bar_time seam ensures time-based management logic is faithful
   - Resolution granularity (M1/M5) is stamped on every outcome, never hidden
