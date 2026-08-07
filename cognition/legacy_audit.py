@@ -334,3 +334,55 @@ def audit_nondirectional_cognition(root: Optional[str] = None) -> NonDirectional
         except Exception:  # noqa: BLE001 — an audit read fault must never raise
             continue
     return NonDirectionalAudit(findings=findings, scanned_files=scanned)
+
+
+# ── Legacy directional-stack retirement inventory ─────────────────────────────
+# Enumerates the remaining legacy directional-DECISION surfaces so the physical
+# retirement track (docs/LEGACY_RETIREMENT_PLAN.md) is measurable: every
+# retirement increment must lower ``surface_count`` and ``cognition/`` must
+# never appear. This complements audit_nondirectional_cognition() (which guards
+# the cognition boundary) by tracking the upstream legacy code still to remove.
+_INV_CONSENSUS = re.compile(r"\bdirectional_consensus\b|\bform_thesis\s*\(|\bdecide_opportunities\s*\(")
+_INV_VOTERESULT = re.compile(r"\bVoteResult\s*\(")
+_INV_ENTRY_PIPELINE = re.compile(r"\b(?:EntryOrchestrator|ZoneOrderStager|FlipSequenceTracker)\s*\(")
+_INV_DETECTORS = (_INV_CONSENSUS, _INV_VOTERESULT, _INV_ENTRY_PIPELINE)
+
+
+@dataclass
+class LegacyDirectionalInventory:
+    """Remaining legacy directional-decision surfaces (retirement backlog)."""
+
+    modules: list  # sorted list of relative module paths
+
+    @property
+    def surface_count(self) -> int:
+        return len(self.modules)
+
+    @property
+    def cognition_clean(self) -> bool:
+        """True when no cognition module appears — the Brain layer is retired."""
+        return not any(m.startswith("cognition/") for m in self.modules)
+
+
+def legacy_directional_inventory(root: Optional[str] = None) -> LegacyDirectionalInventory:
+    """List non-test modules that still carry a legacy directional-decision
+    surface (consensus ``form_thesis``/``decide_opportunities``, a ``VoteResult``
+    construction, or legacy entry-pipeline wiring). Pure and fail-safe."""
+    base = root or _repo_root()
+    hits: set = set()
+    for path in _iter_py_files(base):
+        rel = _rel(path, base)
+        if rel.startswith("tests/") or "/tests/" in rel \
+                or os.path.basename(rel).startswith("test_") \
+                or rel == "cognition/legacy_audit.py":
+            continue
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                for line in fh:
+                    code = line.split("#", 1)[0]
+                    if any(rx.search(code) for rx in _INV_DETECTORS):
+                        hits.add(rel)
+                        break
+        except Exception:  # noqa: BLE001 — an audit read fault must never raise
+            continue
+    return LegacyDirectionalInventory(modules=sorted(hits))
