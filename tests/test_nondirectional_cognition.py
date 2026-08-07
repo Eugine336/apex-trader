@@ -166,3 +166,20 @@ def test_audit_nondirectional_cognition_is_clean():
     audit = audit_nondirectional_cognition()
     assert audit.scanned_files >= 2
     assert audit.clean, f"directional reading reintroduced: {audit.findings}"
+
+
+# ── Legacy directional-stack retirement inventory (tracked gate) ──────────────
+
+from cognition.legacy_audit import legacy_directional_inventory  # noqa: E402
+
+
+def test_legacy_directional_inventory_excludes_cognition():
+    inv = legacy_directional_inventory()
+    # The retirement backlog exists (legacy surfaces still to remove)...
+    assert inv.surface_count >= 1
+    # ...but the Brain layer is already clean and must never regress into it.
+    assert inv.cognition_clean
+    assert not any(m.startswith("cognition/") for m in inv.modules)
+    # The inventory tracks source surfaces, never test files.
+    assert not any("/tests/" in m or m.startswith("tests/")
+                   or m.rsplit("/", 1)[-1].startswith("test_") for m in inv.modules)

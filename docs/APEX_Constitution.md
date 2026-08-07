@@ -2391,6 +2391,17 @@ is updated as each item lands. Ratification does not assert full compliance.
   Brain, so it is deferred to the legacy-retirement track, not done destructively
   here. The audit gate above guarantees no directional reading can re-enter
   cognition regardless.
+- **Legacy-retirement track (opened).** The physical removal of the legacy
+  directional-decision stack is governed by `docs/LEGACY_RETIREMENT_PLAN.md` — an
+  ordered, dependency-safe demolition sequence (extract shared types → slim the
+  `entry` package → sever bootstrap wiring → delete decision-only leaves → retire
+  `directional_consensus`/`decision`/`rl`/legacy `backtest` → remove
+  `Vote.direction` last). Progress is measured by
+  `legacy_audit.legacy_directional_inventory()` (`surface_count` must fall each
+  increment; `cognition/` must never appear). Naive bulk deletion is forbidden:
+  the dead decision code shares modules and types with the live evidence /
+  scanner / world-model layer, and the live stack cannot execute in the
+  validation sandbox, so every increment is grep + `py_compile` verified.
 
 ## Remediation roadmap (✓ = landed)
 
