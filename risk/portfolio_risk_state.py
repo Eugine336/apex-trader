@@ -545,6 +545,18 @@ class PortfolioRiskStateMachine:
         self.reduction_persist_seconds = reduction_persist_seconds
         self.heat_emergency_pct = heat_emergency_pct
 
+        # Retain the UNSCALED base thresholds + reference so the ladder can be
+        # re-scaled later once the live broker balance is known. At startup the
+        # balance is frequently still 0/None (broker connecting), so the base
+        # ~$10k thresholds get installed and a single min-lot trade on a micro
+        # account instantly trips DEFENSIVE/EMERGENCY. ``recalibrate_for_equity``
+        # self-heals that once equity is available. See its docstring.
+        self._base_defensive = base_defensive
+        self._base_recovery = base_recovery
+        self._base_reduction = base_reduction
+        self._base_emergency = base_emergency
+        self._reference_balance = reference_balance
+
         self._state = PortfolioRiskState.NORMAL
         self._recovery_eligible_since: Optional[float] = None
         self._defensive_entered_at: Optional[float] = None
@@ -552,6 +564,67 @@ class PortfolioRiskStateMachine:
     @property
     def state(self) -> PortfolioRiskState:
         return self._state
+
+    def recalibrate_for_equity(self, account_equity: Optional[float]) -> bool:
+        """Re-scale the heat ladder to the live account equity.
+
+        The constructor sqrt-scales thresholds for micro accounts, but at
+        startup the broker balance is often not yet known (0/None), so the
+        base ~$10k thresholds are installed and a single min-lot trade on a
+        small account trips DEFENSIVE/EMERGENCY — force-closing every position
+        seconds after entry before the Brain can manage it. Calling this each
+        cycle with the live equity self-heals the calibration once the balance
+        is known.
+
+        Scales from the retained UNSCALED base thresholds (so it is fully
+        idempotent — repeated calls with the same equity never drift), clamps
+        each threshold to its ceiling, and only applies when the result is a
+        meaningful change AND preserves the ordering invariant. Never makes a
+        large account (equity >= reference) less protected than its base
+        configuration. Fully self-contained; returns True if thresholds moved.
+        """
+        try:
+            eq = float(account_equity) if account_equity is not None else 0.0
+        except (TypeError, ValueError):
+            return False
+        if eq <= 0.0:
+            return False
+
+        ref = self._reference_balance
+        scale = 1.0 if eq >= ref else max(1.0, math.sqrt(ref / eq))
+        new_def = min(self._base_defensive * scale, 15.0)
+        new_rec = min(self._base_recovery * scale, 12.0)
+        new_red = min(self._base_reduction * scale, 25.0)
+        new_eme = min(self._base_emergency * scale, 40.0)
+
+        # Reject any scaling that would violate the ordering invariant (a
+        # pathological clamp collapse) — keep the current, valid ladder.
+        if not (new_rec < new_def < new_red < new_eme):
+            return False
+
+        # Skip no-op churn (and its log line) when nothing moved materially.
+        if (
+            abs(new_def - self.heat_defensive_pct) < 1e-6
+            and abs(new_rec - self.heat_recovery_pct) < 1e-6
+            and abs(new_red - self.heat_reduction_pct) < 1e-6
+            and abs(new_eme - self.heat_emergency_pct) < 1e-6
+        ):
+            return False
+
+        old_def = self.heat_defensive_pct
+        old_eme = self.heat_emergency_pct
+        self.heat_defensive_pct = new_def
+        self.heat_recovery_pct = new_rec
+        self.heat_reduction_pct = new_red
+        self.heat_emergency_pct = new_eme
+        logger.info(
+            "[PortfolioRisk] Recalibrated heat ladder to live equity=${:.2f} "
+            "(reference=${:.2f}, scale={:.2f}x): defensive {:.2f}%→{:.2f}%, "
+            "emergency {:.2f}%→{:.2f}% (recovery {:.2f}%, reduction {:.2f}%)",
+            eq, ref, scale, old_def, new_def, old_eme, new_eme,
+            new_rec, new_red,
+        )
+        return True
 
     def evaluate(self, snapshot: PortfolioRiskSnapshot) -> StateTransition:
         """
