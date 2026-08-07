@@ -87,3 +87,82 @@ def test_directional_key_set_is_declared():
     for k in ("directional_lean", "direction", "bias", "long_probability",
               "short_probability", "long_ev", "short_ev", "dominant", "score"):
         assert k in _DIRECTIONAL_MEASUREMENT_KEYS
+
+
+# ── Part XXV Art 11 — management-cognition parity ─────────────────────────────
+
+from cognition.brain import CognitiveBrain  # noqa: E402
+from cognition.contracts import DecisionType  # noqa: E402
+from llm.reasoner import LLMOpinion  # noqa: E402
+
+
+class _Reasoner:
+    def __init__(self, opinion):
+        self._op = opinion
+
+    @property
+    def available(self):
+        return True
+
+    def reason(self, symbol, evidence, now=None):
+        return self._op
+
+
+class _Pos:
+    def __init__(self, direction, profit_r=0.0, symbol="XAUUSD"):
+        self.direction = direction
+        self.profit_r = profit_r
+        self.symbol = symbol
+
+
+def _state():
+    ms = MarketState(symbol="XAUUSD")
+    ms.add(Evidence(source_module="s", domain=EvidenceDomain.STRUCTURE, symbol="XAUUSD",
+                    confidence=0.9, uncertainty=0.1))
+    return ms
+
+
+def _op(direction, confidence, **rich):
+    return LLMOpinion(symbol="XAUUSD", direction=direction, confidence=confidence, **rich)
+
+
+def test_manage_holds_when_thesis_intact_and_records_rich_state():
+    brain = CognitiveBrain(reasoner=_Reasoner(_op(
+        "LONG", 0.8, primary_hypothesis="pullback absorbed", regime="transitional",
+        opportunity="continuation long", opportunity_horizon="minutes",
+        expected_value="positive", invalidation="close below swept low")))
+    out = brain.manage(_Pos("LONG"), _state())
+    assert out.decision.decision_type in (DecisionType.HOLD, DecisionType.SCALE_IN)
+    # Article 11 — the rich cognitive state is recorded on the management record.
+    q = out.decision.questions_answered
+    assert q["what_is_happening"] == "pullback absorbed"
+    assert q.get("regime") == "transitional"
+    assert "close below swept low" in out.decision.invalidation_conditions
+
+
+def test_manage_exits_when_opportunity_gone_even_if_direction_aligns():
+    # Direction still LONG (aligned) and confident, but the Brain says the
+    # opportunity is gone — management must exit on the thesis, not the label.
+    brain = CognitiveBrain(reasoner=_Reasoner(_op(
+        "LONG", 0.9, opportunity="none", expected_value="negative")))
+    out = brain.manage(_Pos("LONG", profit_r=1.0), _state())
+    assert out.decision.decision_type == DecisionType.EXIT
+
+
+def test_manage_minimal_opinion_preserves_prior_behaviour():
+    # An empty-field (legacy) opinion must NOT trigger the opportunity/EV exit;
+    # an aligned confident read still holds.
+    brain = CognitiveBrain(reasoner=_Reasoner(_op("LONG", 0.8)))
+    out = brain.manage(_Pos("LONG"), _state())
+    assert out.decision.decision_type in (DecisionType.HOLD, DecisionType.SCALE_IN)
+
+
+# ── Part XXV Art 14 — audit gate ──────────────────────────────────────────────
+
+from cognition.legacy_audit import audit_nondirectional_cognition  # noqa: E402
+
+
+def test_audit_nondirectional_cognition_is_clean():
+    audit = audit_nondirectional_cognition()
+    assert audit.scanned_files >= 2
+    assert audit.clean, f"directional reading reintroduced: {audit.findings}"

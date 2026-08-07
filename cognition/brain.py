@@ -272,13 +272,26 @@ class CognitiveBrain:
             rationale = str(getattr(opinion, "rationale", "") or "")
             aligned = odir == want and want in (LONG, SHORT)
             opposite = odir in (LONG, SHORT) and odir != want and want in (LONG, SHORT)
+            # Part XXV Art 11 — management re-reasons over the SAME non-collapsed
+            # cognitive state: the opportunity's persistence and expected value
+            # govern the exit, not only whether the direction label still matches.
+            # Empty fields (a minimal/legacy opinion) never force an exit — these
+            # overrides fire only on an EXPLICIT signal, so behaviour is preserved.
+            opportunity = str(getattr(opinion, "opportunity", "") or "").strip().lower()
+            ev_txt = str(getattr(opinion, "expected_value", "") or "").strip().lower()
+            opportunity_gone = opportunity in ("none", "no", "n/a", "gone", "expired")
+            ev_negative = ev_txt.startswith("negative")
+            thesis_deteriorated = opportunity_gone or ev_negative
 
-            if aligned and conf >= self.min_confidence_to_act and uncertainty <= self.max_uncertainty_to_act:
+            if aligned and conf >= self.min_confidence_to_act \
+                    and uncertainty <= self.max_uncertainty_to_act and not thesis_deteriorated:
                 if self.allow_scale_in and conf >= self.reverse_confidence \
                         and (getattr(position, "profit_r", None) or 0.0) > 0:
                     action, why = DecisionType.SCALE_IN, "thesis strengthening + in profit — add"
                 else:
                     action, why = DecisionType.HOLD, "thesis intact — hold"
+            elif aligned and thesis_deteriorated:
+                action, why = DecisionType.EXIT, "opportunity gone / EV no longer positive — exit"
             elif aligned and conf >= self.exit_floor:
                 action, why = DecisionType.TIGHTEN_RISK, "supporting thesis weakening — tighten risk"
             elif opposite and conf >= self.reverse_confidence:
@@ -288,7 +301,7 @@ class CognitiveBrain:
             else:
                 action, why = DecisionType.EXIT, "evidence no longer supports the position — exit"
             return self._record_management(self._manage_pkg(
-                symbol, want, action, conf, uncertainty, rationale or why))
+                symbol, want, action, conf, uncertainty, rationale or why, opinion=opinion))
         except Exception as exc:  # noqa: BLE001 — management reasoning must never break a cycle
             logger.debug("[brain] manage(%s) ignored a fault: %s", symbol, exc)
             with self._lock:
@@ -297,13 +310,47 @@ class CognitiveBrain:
                 symbol, want, DecisionType.HOLD, 0.0, 1.0, f"manage fault: {exc}"))
 
     def _manage_pkg(self, symbol: str, held_dir: str, action: "DecisionType",
-                    confidence: float, uncertainty: float, reason: str) -> BrainOutput:
+                    confidence: float, uncertainty: float, reason: str,
+                    *, opinion: Any = None) -> BrainOutput:
+        # Part XXV Art 11 — carry the SAME rich cognitive state onto the
+        # management record as an entry decision, so an open position is
+        # governed by re-reasoned hypotheses / invalidation / opportunity, not a
+        # bare direction label. Falls back to the flat record for a minimal
+        # opinion (or none), preserving prior behaviour.
+        invalidation_conditions: list = []
+        if opinion is not None:
+            wcm = list(getattr(opinion, "what_would_change_my_mind", []) or [])
+            inv = str(getattr(opinion, "invalidation", "") or "")
+            invalidation_conditions = ([inv] if inv else []) + wcm
+            primary = str(getattr(opinion, "primary_hypothesis", "") or reason)
+            questions = {
+                "what_is_happening": primary,
+                "why_is_it_happening": primary,
+                "evidence_supports": "; ".join(list(getattr(opinion, "supporting_evidence", []) or [])) or reason,
+                "evidence_contradicts": "; ".join(list(getattr(opinion, "contradicting_evidence", []) or [])) or reason,
+                "information_missing": "; ".join(list(getattr(opinion, "missing_information", []) or []))
+                or (str(getattr(opinion, "key_uncertainty", "") or "") or "none reported"),
+                "what_would_change_my_mind": "; ".join(wcm) if wcm else reason,
+                "expected_value": str(getattr(opinion, "expected_value", "") or reason),
+                "downside": str(getattr(opinion, "expected_adverse_excursion", "") or "bounded by invalidation"),
+                "opportunity": str(getattr(opinion, "opportunity", "") or held_dir),
+                "should_i_do_nothing": "considered",
+            }
+            for _k, _v in (("regime", str(getattr(opinion, "regime", "") or "")),
+                           ("opportunity_horizon", str(getattr(opinion, "opportunity_horizon", "") or "")),
+                           ("execution_quality", str(getattr(opinion, "execution_quality", "") or "")),
+                           ("risk", str(getattr(opinion, "risk", "") or ""))):
+                if _v:
+                    questions[_k] = _v
+        else:
+            questions = {q: ("considered" if q == "should_i_do_nothing" else reason)
+                         for q in REQUIRED_QUESTIONS}
         decision = DecisionPackage(
             symbol=symbol, decision_type=action, thesis=reason,
             confidence=confidence, uncertainty=uncertainty,
             campaign_recommendation=action.value, risk_rationale=reason,
-            questions_answered={q: ("considered" if q == "should_i_do_nothing" else reason)
-                                for q in REQUIRED_QUESTIONS},
+            invalidation_conditions=invalidation_conditions,
+            questions_answered=questions,
             do_nothing_considered=True, reasoner=self.reasoner_name,
         )
         out_dir = _opp(held_dir) if action == DecisionType.REVERSE else held_dir

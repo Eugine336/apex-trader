@@ -2363,9 +2363,34 @@ is updated as each item lands. Ratification does not assert full compliance.
   (Part XVIII/XIX); advisors already reason independently over shared state
   (Part XXIV). Movement-vs-opportunity net-EV qualification exists (Part XIX
   Art 7) and must be strengthened, not removed.
-- **OPEN (items 4–6).** Advisor-independence review (Article 9), management-
-  cognition parity (Article 11), and a live-code audit gate that fails on any
-  reintroduced directional-vote collapse (Article 14).
+- **RESOLVED (item 4) — advisor independence.** Advisors receive the identical
+  consolidated, non-directional evidence the Brain reasons over
+  (`loop.py` build → `ReasoningOrchestrator.consult` fans the same `evidence`
+  dict to each engine), and each engine's returned direction is re-neutralised
+  to `polarity = 0` REASONING evidence by `evidence_from_reasoning`. Advisors are
+  synthesised as arguments, never counted (Article 9).
+- **RESOLVED (item 5) — management-cognition parity.** `cognition/brain.py::
+  manage()` re-reasons over the same non-collapsed state and now exits on an
+  explicit thesis-deterioration signal (opportunity gone / expected value
+  negative) rather than only a direction flip, and records the full cognitive
+  state (regime, hypotheses, invalidation, opportunity, EV) on the management
+  `DecisionPackage` — parity with entry cognition (Article 11). Empty-field
+  opinions preserve prior behaviour.
+- **RESOLVED (item 6) — audit gate.** `cognition/legacy_audit.py::
+  audit_nondirectional_cognition()` fails if any cognition Evidence producer
+  reintroduces a directional reading (a non-zero `polarity=`, a `_sign` /
+  `_sentiment_polarity` lean, or a `directional_lean` measurement) (Article 14).
+- **Upstream `Vote.direction` (retained by design, severed from cognition).** The
+  legacy `brain/vote_evidence.py::Vote.direction` field still exists and the
+  WorldModel still computes it, but it is read by ~209 sites in the *legacy*
+  layer only (backtest, execution safety, adaptive, rl, entry, decision) — all
+  severed from the Brain under single-path — and by **zero** code in
+  `cognition/`. The cognition vote adapter (`evidence_from_votes`) never reads
+  it and emits `polarity = 0`. Physically deleting the field is a demolition of
+  the dormant legacy stack (209 consumers + ~119 tests) with no benefit to the
+  Brain, so it is deferred to the legacy-retirement track, not done destructively
+  here. The audit gate above guarantees no directional reading can re-enter
+  cognition regardless.
 
 ## Remediation roadmap (✓ = landed)
 
@@ -2376,12 +2401,13 @@ is updated as each item lands. Ratification does not assert full compliance.
    parsing; rich state flows into the `DecisionPackage`/`CampaignSpec`.
 3. ✓ **Reframe the prompt** to raw-state interpretation and opportunity
    discovery (Articles 1/5/6/8).
-4. **Advisor independence review** — confirm advisors receive the same rich
-   state and are synthesised as arguments, not counted (Article 9).
-5. **Management cognition parity** — ensure open positions are re-reasoned with
-   the same non-collapsed state (Article 11).
-6. **Live-code audit gate** — extend the competing-decision-code audit to fail
-   on any reintroduced directional-vote collapse (Article 14).
+4. ✓ **Advisor independence review** — advisors receive the same non-directional
+   consolidated state and are synthesised as arguments, not counted (Article 9).
+5. ✓ **Management cognition parity** — `manage()` re-reasons over the
+   non-collapsed state, exits on thesis-deterioration (opportunity gone / EV
+   negative), and records the full cognitive state (Article 11).
+6. ✓ **Live-code audit gate** — `audit_nondirectional_cognition()` fails on any
+   reintroduced directional reading in a cognition Evidence source (Article 14).
 
 ## Final law
 
