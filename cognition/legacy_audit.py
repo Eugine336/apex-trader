@@ -344,7 +344,10 @@ def audit_nondirectional_cognition(root: Optional[str] = None) -> NonDirectional
 # the cognition boundary) by tracking the upstream legacy code still to remove.
 _INV_CONSENSUS = re.compile(r"\bdirectional_consensus\b|\bform_thesis\s*\(|\bdecide_opportunities\s*\(")
 _INV_VOTERESULT = re.compile(r"\bVoteResult\s*\(")
-_INV_ENTRY_PIPELINE = re.compile(r"\b(?:EntryOrchestrator|ZoneOrderStager|FlipSequenceTracker)\s*\(")
+# Legacy entry-DECISION pipeline *constructors* only. FlipSequenceTracker is a
+# momentum-sequence tracker that feeds evidence, not a decision pipeline, so it
+# is intentionally excluded — its presence is not a directional-decision surface.
+_INV_ENTRY_PIPELINE = re.compile(r"\b(?:EntryOrchestrator|ZoneOrderStager)\s*\(")
 _INV_DETECTORS = (_INV_CONSENSUS, _INV_VOTERESULT, _INV_ENTRY_PIPELINE)
 
 
