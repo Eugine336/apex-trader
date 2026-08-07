@@ -25,7 +25,7 @@ from typing import Callable, Optional
 
 from loguru import logger
 
-from brain.directional_consensus import Vote
+from brain.vote_evidence import Vote
 
 # ── Horizon labels — INFORMATIONAL ONLY ───────────────────────────────────
 # Opportunistic-trading rewire: the system no longer decides "this is a scalp"
