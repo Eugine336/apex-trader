@@ -1089,6 +1089,20 @@ class PositionEvaluator:
             )
             return None
 
+    def _single_reasoner_path_active(self) -> bool:
+        """True when the Single Reasoner path is active (Constitution I.4 / III.2).
+
+        Under the single path the AI Cognitive Brain is the SOLE market decider
+        and every legacy directional decider (consensus/DecisionEngine entry &
+        management) is suppressed. Sourced from ``config.llm.single_path`` (env
+        ``COGNITION_SINGLE_PATH``). Fail-safe to True so a config fault can never
+        silently re-enable a competing legacy decider.
+        """
+        try:
+            return bool(self._config.llm.single_path)
+        except Exception:  # noqa: BLE001 — never let a config read re-arm legacy
+            return True
+
     def _run_decision_engine_management(
         self, pos, price: float, now: datetime, now_mono: float,
         mgmt, order_id: str, snap: PositionSnapshot,
