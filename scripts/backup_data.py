@@ -312,6 +312,42 @@ def _repo_object_size_mb(work_tree: str) -> float | None:
     return (total_kib / 1024.0) if found else None
 
 
+def _recover_stranded_compaction(
+    work_tree: str, branch: str, temp_branch: str
+) -> None:
+    """Undo a compaction that was interrupted while on the orphan temp branch.
+
+    A previous ``compact_repo_history`` run can be killed after
+    ``checkout --orphan _compact_temp`` (and possibly after the real branch was
+    deleted) but before the temp branch is promoted back into place. That leaves
+    HEAD stranded on ``_compact_temp`` — git then refuses to delete the branch
+    HEAD points at, so the next orphan checkout aborts with "a branch named
+    '_compact_temp' already exists", and any push of the real branch fails with
+    "src refspec <branch> does not match any" because the real ref is gone.
+
+    Best-effort recovery: if HEAD is on the temp branch, return to the real
+    branch (restoring it from the temp branch when it was already deleted), then
+    drop the stale temp branch. Never raises.
+    """
+    ok, cur = _run_git(["rev-parse", "--abbrev-ref", "HEAD"], work_tree)
+    on_temp = ok and cur.strip() == temp_branch
+    if not on_temp:
+        # Not stranded — just clear any leftover (non-current) temp branch.
+        _run_git(["branch", "-D", temp_branch], work_tree)
+        return
+    real_ok, _ = _run_git(
+        ["rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], work_tree
+    )
+    if real_ok:
+        # Real branch still exists — switch back to it and drop the orphan.
+        _run_git(["checkout", "-f", branch], work_tree)
+        _run_git(["branch", "-D", temp_branch], work_tree)
+    else:
+        # Real branch was already deleted mid-compaction; the temp branch holds
+        # the compacted tree — promote it into the real branch name in place.
+        _run_git(["branch", "-m", branch], work_tree)
+
+
 def compact_repo_history(
     data_dir: Path | str,
     *,
@@ -339,6 +375,11 @@ def compact_repo_history(
     ok, _ = _run_git(["rev-parse", "--is-inside-work-tree"], work_tree)
     if not ok:
         return "not a git repo"
+
+    # Heal a repo left stranded on the orphan temp branch by an interrupted
+    # prior run before doing anything else — otherwise the size check may
+    # short-circuit and leave the tree unable to push its real branch.
+    _recover_stranded_compaction(work_tree, branch, "_compact_temp")
 
     size_mb = _repo_object_size_mb(work_tree)
     if size_mb is None:
@@ -385,10 +426,18 @@ def compact_repo_history(
         _run_git(["branch", "-D", temp_branch], work_tree)
         return f"commit failed: {out.splitlines()[0] if out else 'unknown'}"
 
-    ok_del, _ = _run_git(["branch", "-D", branch], work_tree)
-    ok_rename, rn_out = _run_git(["branch", "-m", branch], work_tree)
-    if not ok_rename:
-        return f"branch rename failed: {rn_out.splitlines()[0] if rn_out else 'unknown'}"
+    # Promote the compacted commit onto the real branch WITHOUT deleting it
+    # first. Force-moving the ref keeps the real branch valid at every instant,
+    # so a crash here can never strand the tree on the orphan branch with no
+    # real ref (which would break the next push with "src refspec <branch> does
+    # not match any"). We then switch onto it and drop the orphan.
+    ok_move, mv_out = _run_git(["branch", "-f", branch, temp_branch], work_tree)
+    if not ok_move:
+        _run_git(["checkout", "-f", branch], work_tree)
+        _run_git(["branch", "-D", temp_branch], work_tree)
+        return f"branch update failed: {mv_out.splitlines()[0] if mv_out else 'unknown'}"
+    _run_git(["checkout", "-f", branch], work_tree)
+    _run_git(["branch", "-D", temp_branch], work_tree)
 
     _run_git(["gc", "--aggressive", "--prune=now"], work_tree)
     new_size_mb = _repo_object_size_mb(work_tree)

@@ -245,6 +245,14 @@ class BaseConnector(ABC):
         Returns None when unavailable (Deriv, unsupported)."""
         return None
 
+    def get_market_depth(self, symbol: str) -> list[dict]:
+        """Return Level-2 order-book depth as normalized levels, or ``[]``.
+
+        Each level is ``{"price": float, "volume": float, "side": "bid"|"ask"}``.
+        Most retail/demo feeds do not publish a book; the default is an empty
+        list. Override in a connector that exposes DOM (e.g. MT5)."""
+        return []
+
     # ── Concrete helpers (shared by all connectors) ──────────────────────
 
     def symbol_map(self, apex_symbol: str) -> str:
