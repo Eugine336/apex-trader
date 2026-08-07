@@ -28,7 +28,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Any, List
 
-from brain.directional_consensus import Vote
+from brain.vote_evidence import Vote
 
 
 def new_candidate_id() -> str:
