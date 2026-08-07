@@ -118,6 +118,9 @@ class RiskEngine:
             deriv_min_stake_usd=self.risk_cfg.deriv_min_stake_usd,
             max_risk_pct_per_trade=self.risk_cfg.max_risk_pct_per_trade,
             engine_cap=self._RISK_PCT_CAP,
+            allow_min_lot_over_risk=getattr(
+                self.risk_cfg, "allow_min_lot_over_risk", False
+            ),
         )
         self.pnl_tracker = PnLTracker(starting_balance=self.balance)
         self.spread_monitor = SpreadMonitor(

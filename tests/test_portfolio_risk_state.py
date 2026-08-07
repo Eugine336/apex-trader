@@ -501,3 +501,75 @@ class TestRankPositions:
         ranked = rank_positions_weakest_first(positions, 100.0)
         assert len(ranked) == 2
         assert all(r.is_insufficient_data for r in ranked)
+
+
+class TestRecalibrateForEquity:
+    """Regression for the production incident where the heat ladder was
+    constructed at startup with equity unknown (0/None), leaving the base
+    ~$10k thresholds in place.  On the live ~$208 micro account a single
+    0.01-lot trade produced ~8% heat, which tripped the 1.5%/4.0% base ladder
+    and force-closed every position seconds after entry."""
+
+    def _sm(self):
+        # Built WITHOUT account_equity — reproduces the startup race where the
+        # broker balance is not yet known, so the base thresholds are installed.
+        return PortfolioRiskStateMachine(
+            heat_defensive_pct=1.5,
+            heat_recovery_pct=1.0,
+            heat_reduction_pct=2.5,
+            heat_emergency_pct=4.0,
+            reference_balance=10000.0,
+        )
+
+    def test_micro_equity_scales_thresholds_up(self):
+        sm = self._sm()
+        assert sm.heat_defensive_pct == 1.5
+        assert sm.heat_emergency_pct == 4.0
+
+        changed = sm.recalibrate_for_equity(208.0)
+        assert changed is True
+        # sqrt(10000/208) ≈ 6.93x
+        assert sm.heat_defensive_pct > 8.0
+        assert sm.heat_emergency_pct > 20.0
+        # Ordering invariant preserved after scaling.
+        assert (
+            sm.heat_recovery_pct
+            < sm.heat_defensive_pct
+            < sm.heat_reduction_pct
+            < sm.heat_emergency_pct
+        )
+
+    def test_scaled_ladder_no_longer_force_closes_micro_trade(self):
+        sm = self._sm()
+        sm.recalibrate_for_equity(208.0)
+        # ~8% heat from one min-lot gold trade must NOT trip DEFENSIVE now.
+        snap = PortfolioRiskSnapshot(
+            live_heat_pct=8.07,
+            position_risks=[],
+            correlation_safe=True,
+            max_currency_exposure=0.0,
+        )
+        sm.evaluate(snap)
+        assert sm.state == PortfolioRiskState.NORMAL
+
+    def test_idempotent_same_equity(self):
+        sm = self._sm()
+        assert sm.recalibrate_for_equity(208.0) is True
+        # A repeated call with the same equity must be a no-op (no drift).
+        assert sm.recalibrate_for_equity(208.0) is False
+        d1 = sm.heat_defensive_pct
+        sm.recalibrate_for_equity(208.0)
+        assert sm.heat_defensive_pct == d1
+
+    def test_large_equity_keeps_base_thresholds(self):
+        sm = self._sm()
+        # Equity at/above the reference must never relax below base config.
+        assert sm.recalibrate_for_equity(50000.0) is False
+        assert sm.heat_defensive_pct == 1.5
+        assert sm.heat_emergency_pct == 4.0
+
+    def test_invalid_equity_is_noop(self):
+        sm = self._sm()
+        for bad in (0.0, -5.0, None):
+            assert sm.recalibrate_for_equity(bad) is False
+        assert sm.heat_defensive_pct == 1.5
