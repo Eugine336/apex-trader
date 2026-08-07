@@ -44,13 +44,18 @@ def _load_dotenv(path: Path) -> None:
 
 
 def _verbose_transport(verbose: bool):
-    """Wraps the default transport to optionally print raw bodies on failure."""
+    """Wraps the default transport to optionally print raw bodies — including a
+    200 response that still fails to parse (logged only at debug level
+    upstream, so invisible without this)."""
     def transport(url: str, headers: dict, body: bytes, timeout: float):
         req = urllib.request.Request(url, data=body, headers=headers, method="POST")
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
+                status = int(getattr(resp, "status", 200) or 200)
                 text = resp.read().decode("utf-8", "replace")
-                return int(getattr(resp, "status", 200) or 200), text
+                if verbose:
+                    print(f"    [http {status}] {text[:800]}")
+                return status, text
         except urllib.error.HTTPError as exc:
             detail = ""
             try:
