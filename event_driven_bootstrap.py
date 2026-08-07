@@ -3810,6 +3810,26 @@ class EventDrivenSystem:
         except Exception:  # noqa: BLE001
             return None
 
+    def _on_developing_update(self, symbol: str) -> None:
+        """Developing-store publish hook — wake the Brain on a sub-candle shift.
+
+        Registered via ``WorldModelStore.set_on_publish`` so a forming-bar
+        probability shift re-engages cognition the instant it publishes, rather
+        than waiting on the next candle-close EventBus tick. The continuous
+        thesis re-evaluation this once drove was retired with the ThesisEngine;
+        the live continuous-cognition equivalent is the event-driven Brain nudge,
+        which this delegates to. Fully guarded (the nudge no-ops when the
+        cognition loop or a developing bias is absent) and never raises — a
+        consumer fault must never break the developing-publish path.
+        """
+        try:
+            self._nudge_cognition_on_developing(symbol)
+        except Exception as exc:  # noqa: BLE001 — never disturb the publish path
+            logger.debug(
+                "[event-driven] developing update hook failed for {}: {}",
+                symbol, exc,
+            )
+
     def _nudge_cognition_on_developing(self, symbol: str) -> None:
         """Wake the Brain on a meaningful forming-bar shift (event-driven cadence).
 
