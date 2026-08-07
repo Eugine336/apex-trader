@@ -43,6 +43,11 @@ Each step is its own PR, grep + syntax verified, keeping the live system intact:
    not the directional package.
 2. **Slim `entry/__init__.py`** to stop eagerly importing decision-only modules;
    update the (gated) bootstrap imports to point at explicit submodules.
+   **✓ DONE** — `entry/__init__.py` now re-exports only the shared, non-directional
+   data models (`EntryConfig`/`EntryZone`/`GateResult`/`PendingEntry`); the one
+   package-level consumer (`event_driven_bootstrap.py`) now imports
+   `EntryOrchestrator`/`ZoneOrderStager` from explicit submodules. Verified:
+   importing `entry.models` loads **no** decision module; inventory 14 → 13.
 3. **Sever bootstrap wiring** — remove construction/subscription of
    `EntryOrchestrator`, `ZoneOrderStager`, `FlipSequenceTracker` and the
    `on_m1_close`/`on_world_model_update` legacy entry handlers.
