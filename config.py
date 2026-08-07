@@ -3706,7 +3706,7 @@ class LLMConfig:
     base_url: str = ""
     drive_decisions: bool = False
     timeout_seconds: float = 20.0
-    max_tokens: int = 512
+    max_tokens: int = 1024
     temperature: float = 0.2
     min_interval_seconds: float = 30.0
     worker_interval_seconds: float = 60.0

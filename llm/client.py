@@ -166,7 +166,7 @@ class LLMClient:
     # when the azure_openai shape is used and this is left blank.
     api_version: str = ""
     timeout_seconds: float = 20.0
-    max_tokens: int = 512
+    max_tokens: int = 1024
     temperature: float = 0.2
     transport: Optional[Transport] = None
 
