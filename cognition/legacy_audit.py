@@ -283,3 +283,54 @@ def audit_competing_decision_code(root: Optional[str] = None) -> CompetingDecisi
         unexpected=unexpected,
         scanned_files=scanned,
     )
+
+
+# ── Part XXV gate — non-directional cognition ─────────────────────────────────
+# The Evidence producers that feed the Brain must never emit a directional
+# reading. A regression is a non-zero ``polarity=`` assignment, a ``_sign`` /
+# ``_sentiment_polarity`` lean, or a ``directional_lean`` measurement in a
+# cognition Evidence source.
+_NONDIRECTIONAL_COGNITION_SOURCES = (
+    "cognition/evidence_adapters.py",
+    "cognition/market_snapshot.py",
+)
+_DIRECTIONAL_POLARITY = re.compile(r"polarity\s*=\s*(?!0\.0\b)[^,\n)]+")
+_DIRECTIONAL_HELPERS = re.compile(r"\b(?:_sign|_sentiment_polarity)\s*\(|directional_lean")
+
+
+@dataclass
+class NonDirectionalAudit:
+    """Result of the Part XXV non-directional-cognition gate."""
+
+    findings: list  # list of (module, lineno, text)
+    scanned_files: int
+
+    @property
+    def clean(self) -> bool:
+        return not self.findings
+
+
+def audit_nondirectional_cognition(root: Optional[str] = None) -> NonDirectionalAudit:
+    """Fail if any cognition Evidence producer reintroduces a directional reading.
+
+    Scans the sources that build the Evidence the Brain reasons over for a
+    non-zero ``polarity=`` assignment or a direction-deriving helper/measurement.
+    Comments are ignored. Pure and fail-safe (empty findings on any read fault).
+    """
+    base = root or _repo_root()
+    findings: list = []
+    scanned = 0
+    for rel in _NONDIRECTIONAL_COGNITION_SOURCES:
+        path = os.path.join(base, rel)
+        if not os.path.isfile(path):
+            continue
+        scanned += 1
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as fh:
+                for i, line in enumerate(fh, start=1):
+                    code = line.split("#", 1)[0]
+                    if _DIRECTIONAL_POLARITY.search(code) or _DIRECTIONAL_HELPERS.search(code):
+                        findings.append((rel, i, line.strip()[:160]))
+        except Exception:  # noqa: BLE001 — an audit read fault must never raise
+            continue
+    return NonDirectionalAudit(findings=findings, scanned_files=scanned)
