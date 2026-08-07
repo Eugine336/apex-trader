@@ -2176,3 +2176,218 @@ become Apex. The Universal Advisory Council exists solely to strengthen the
 reasoning of the Apex Cognitive Brain, which alone remains the permanent
 executive intelligence responsible for every decision throughout the complete
 market opportunity lifecycle.
+
+# Part XXV --- Raw-Market Reasoning, Opportunity Discovery & Non-Collapsed Cognition Constitution
+
+> Version: 1.0
+
+## Purpose
+
+Governs *how information reaches the Cognitive Brain and how the Brain's
+cognitive state is represented*. Apex must not be a collection of indicators
+voting LONG/SHORT/FLAT with a language model bolted on to arbitrate the votes.
+Apex must observe market reality, understand it, generate competing
+explanations, challenge them, estimate uncertainty and expected value, discover
+exploitable opportunities, act only when justified, manage continuously, and
+learn. Direction is a **consequence** of cognition, never its container.
+
+**Fundamental principle.** The Brain shall receive the broadest available
+*structured representation of market reality* and shall form its own hypotheses.
+No subsystem may collapse observations into a directional vote before the Brain
+has reasoned. `LONG`, `SHORT` and `FLAT` are execution consequences, not the
+cognitive state of Apex.
+
+**Article 1 — Observe → Understand → Interpret → Hypothesise → Challenge →
+Estimate uncertainty → Discover opportunity → Estimate expected value → Assess
+execution → Act → Manage → Re-evaluate → Exit/Continue/Reduce/Add/Re-enter →
+Post-trade → Memory → Learning.** This is the mandatory cognitive pipeline. The
+forbidden pipeline is `raw data → indicators → LONG/SHORT votes → aggregation →
+LLM → LONG/SHORT/FLAT`.
+
+**Article 2 — Evidence is not a vote.** Analytical modules (structure,
+liquidity, momentum, volatility, volume, order flow, VWAP, FVGs, order blocks,
+currency strength, correlation, higher/lower-timeframe behaviour, session,
+execution quality) are *measurement instruments*. They may report observations
+and measurements; they must never emit LONG/SHORT/NEUTRAL, and their outputs
+must never be summed into a directional consensus. A thermometer reports
+`38.4°C`, not `BUY`. Forbidden: `structure → LONG`; `5 LONG / 3 SHORT → LONG`.
+Required: `structure: D1 higher-highs=true, M5 displacement=weak`;
+`momentum: value=+0.37, acceleration=declining, divergence=present`.
+
+**Article 3 — No precomputed directional consensus as primary cognition.** The
+Brain must never be asked, as its primary method of market reasoning, to choose
+between precomputed LONG/SHORT opinions. Any hidden transformation that
+reintroduces directional voting anywhere in the pipeline is unconstitutional.
+
+**Article 4 — Non-collapsed cognitive state.** A state such as
+`{"direction":"LONG","confidence":0.55}` is too impoverished: a single
+undefined confidence number conflates probability of price movement, thesis
+confidence, opportunity confidence, entry-timing confidence, execution
+confidence and hold confidence — different quantities. The Brain's internal
+representation shall be richer than the final order instruction and shall
+preserve, where meaningful: current regime/condition; a primary hypothesis;
+alternative and third hypotheses; supporting and contradicting evidence; key
+uncertainty; missing information; invalidation; the opportunity and its horizon;
+expected favourable and adverse excursion; expected value; execution quality;
+risk; portfolio interaction; what-would-change-my-mind; and only then a
+recommended action.
+
+**Article 5 — Discovery of unprogrammed opportunity.** Apex must be able to
+recognise a valid opportunity no single analytical module predicted, including
+opportunities against the higher-timeframe direction (a positive-EV short inside
+a bullish market; a positive-EV long during a bearish lower-timeframe pullback
+that is really a liquidity sweep being absorbed). Engineers must not predefine
+every combination; the Brain is permitted to discover causal combinations.
+
+**Article 6 — Self-criticism.** The Brain must challenge its primary explanation:
+Why might I be wrong? What contradicts this? What alternative fits? What am I
+missing? Am I anchoring to a timeframe? Am I confusing movement with
+opportunity? Do costs destroy the edge? Has the opportunity already gone? What
+would change my mind?
+
+**Article 7 — Full market state.** Where technically and economically practical,
+the Brain shall retain access to ticks, bid/ask, spread, tick and real volume,
+candles across timeframes, depth/order-book where available, tick history,
+volatility, price path, structure/liquidity/momentum/order-flow measurements,
+correlation, session, regime, scheduled events, positions, account state,
+available risk, execution conditions, historical and prior-campaign state and
+institutional memory. More data is not more intelligence — but information about
+timing, magnitude, relationships, uncertainty, contradiction and context must
+survive to the Brain rather than being compressed to a direction beforehand.
+
+**Article 8 — Movement is not opportunity.** `OPPORTUNITY = executable positive
+expected value after risk, costs, latency, liquidity and uncertainty.` Strong
+directional evidence with poor execution economics is NO TRADE; no clear
+direction with a positive-EV, executable, well-defined event is a valid trade.
+Opportunity horizon is set by the market (microseconds to weeks), never by a
+predefined trading style. A theoretical opportunity Apex cannot observe and
+execute in time is not an Apex opportunity.
+
+**Article 9 — Advisors reason, they do not vote.** Every advisor receives the
+same rich market state and reasons independently (thesis, counterargument,
+alternative hypothesis). The Brain synthesises their *arguments*; it must never
+merely count advisor votes. Disagreement is useful. An advisor reduced to an
+indicator vote is unconstitutional.
+
+**Article 10 — Valid cognitive outcomes.** The Brain may say: "I don't know";
+"two explanations remain plausible"; "evidence is insufficient"; "the obvious
+trend read is wrong"; "the higher timeframe is irrelevant to this opportunity";
+"this is noise"; "short despite a bullish HTF"; "long despite bearish LTF"; "an
+opportunity exists but costs make it unprofitable"; "no trade despite strong
+directional evidence"; "keep observing." Uncertainty is acceptable; false
+certainty is not. There shall be no automatic "FLAT because evidence conflicts,"
+no automatic "LONG because trend is bullish," no automatic "SHORT because the
+lower timeframe is bearish."
+
+**Article 11 — Management uses the same cognition.** An open position is never
+`LONG +0.55`; it is continuously re-reasoned (thesis validity, new/contradictory
+evidence, market state, liquidity, volatility, execution, unrealised P&L,
+exposure, opportunity cost, alternatives) → hold/reduce/protect/add/exit. A
+position must not merely wait for TP or SL, and its direction must never become
+confirmation bias. The Brain must be able to change its mind, exit before TP/SL
+on thesis deterioration, and hold through thesis-consistent adverse movement.
+
+**Article 12 — Execution is a deterministic consequence.** BUY/SELL/CLOSE/
+REDUCE/ADD/HOLD are emitted only *after* cognition and remain a deterministic
+control plane separate from reasoning. No execution decision may precede
+cognitive assessment.
+
+**Article 13 — No forced strategy or horizon.** Trend, scalping, swing,
+mean-reversion, breakout, reversal, momentum, liquidity, order-block, FVG and
+VWAP are observations or hypotheses, never cognitive prisons. No predefined
+strategy may own the market; no predefined trade count or holding time may be
+assumed. Every new entry earns its own justification; a prior profit never
+authorises the next trade and a prior loss never mandates a hold.
+
+**Article 14 — Live-code verification.** Compliance is judged against the live
+codebase, not READMEs, diagrams, comments, module names or claimed function.
+Auditors trace market data → normalisation → evidence → cognitive input →
+AI/advisors → thesis → opportunity → risk → execution → management → exit →
+post-trade → memory → learning, and must find and remove any hidden
+transformation that collapses information into direction.
+
+## Absolute non-negotiables
+
+No indicator voting. No precomputed directional consensus as primary cognition.
+No premature LONG/SHORT/FLAT compression. No forced strategy. No forced time
+horizon. No automatic FLAT-on-conflict. No automatic LONG-because-trend. No
+automatic SHORT-because-LTF. No assumption all opportunities look alike. No
+automatic re-entry after a profitable trade. No automatic holding after a losing
+trade. No single undefined confidence number as a substitute for reasoning. No
+advisor reduced to an indicator vote. No execution decision before cognition. No
+claim of compliance without live-code verification. No compromise on the
+cognitive architecture.
+
+## Current conformance — live-code audit (Version 1.0, honest baseline)
+
+This Part is ratified as binding law with the live implementation in **partial
+violation**. The gaps below are verified against live code and are the
+authoritative remediation backlog; each will be closed in its own focused change
+and this section updated as each lands. Ratification does not assert compliance.
+
+- **VIOLATION — evidence is voted before cognition.**
+  `cognition/evidence_adapters.py::evidence_from_votes` renders each module as
+  `observation="{module} votes {LONG|SHORT|FLAT}"` with
+  `polarity=_sign(direction)*confidence`. Modules are directional voters and the
+  vote reaches the Brain as a signed directional signal (Article 2 / Article 3).
+- **VIOLATION — precomputed thesis handed to the Brain to arbitrate.**
+  `evidence_from_thesis_status` emits `"{module} supports {dominant}"` /
+  `"{module} opposes {dominant}"` around a precomputed dominant LONG/SHORT
+  thesis (Article 3).
+- **VIOLATION — direction-collapsed evidence polarity.**
+  `_sign()` reduces every read to `+1/-1/0`; the developing-candle and analogue
+  adapters likewise carry `polarity=_sign(direction)*conf` (Article 2).
+- **VIOLATION — arbitration framing in the reasoner prompt.**
+  `llm/reasoner.py::_SYSTEM_PROMPT` tells the Brain it is "given ... competing
+  Long/Short/Flat theses ... a summary of module votes," framing cognition as
+  arbitration of precomputed opinions (Article 3). *Partial credit:* the same
+  prompt already supplies a rich multi-timeframe price/tape/book picture and
+  demands symmetric LONG/SHORT treatment, competing hypotheses and
+  what-would-change-my-mind (Articles 5/6/7 partially met).
+- **VIOLATION — impoverished cognitive state.**
+  `llm/reasoner.py::LLMOpinion` is `{direction, confidence, rationale,
+  competing_hypotheses, missing_information}`; direction/confidence are the
+  container and the single confidence number is semantically undefined
+  (Article 4). *Partial credit:* competing hypotheses and missing information
+  are already first-class.
+- **CONFORMS (already correct, must be preserved).** Non-directional risk-,
+  advisor- and knowledge-context adapters are emitted as context "never a vote";
+  the Brain is the sole decider; execution is a separate deterministic plane
+  (Part XVIII/XIX); advisors already reason independently over shared state
+  (Part XXIV). Movement-vs-opportunity net-EV qualification exists (Part XIX
+  Art 7) and must be strengthened, not removed.
+
+## Remediation roadmap (each item = one focused change)
+
+1. **De-collapse evidence.** Replace the `"{module} votes {DIR}"` /
+   `supports/opposes` observations with measurement-only observations (raw
+   values, states, magnitudes) and stop signing polarity by direction; carry
+   magnitude/uncertainty instead. Keep every adapter fail-safe and offline-
+   testable.
+2. **Enrich the cognitive state.** Extend `LLMOpinion` and `_SYSTEM_PROMPT` to
+   the Article 4 schema (regime, primary/alternative/third hypotheses,
+   supporting/contradicting evidence, invalidation, opportunity + horizon,
+   expected favourable/adverse excursion, expected value, execution quality,
+   risk, what-would-change-my-mind), deriving direction/confidence as the final
+   consequence. Preserve backward-compatible parsing.
+3. **Reframe the prompt** away from arbitration toward raw-state interpretation
+   and opportunity discovery (Articles 1/5/6/8).
+4. **Advisor independence review** — confirm advisors receive the same rich
+   state and are synthesised as arguments, not counted (Article 9).
+5. **Management cognition parity** — ensure open positions are re-reasoned with
+   the same non-collapsed state (Article 11).
+6. **Live-code audit gate** — extend the competing-decision-code audit to fail
+   on any reintroduced directional-vote collapse (Article 14).
+
+## Final law
+
+Every subsystem, module, model, prompt, data transformation, adapter, strategy
+component, risk mechanism, execution component, management component, learning
+mechanism, optimisation, integration, refactor and line of code must answer:
+does this preserve Apex's ability to independently understand the market,
+discover opportunities that were not explicitly programmed, challenge its own
+reasoning, and exploit genuinely positive-EV opportunities? If it destroys
+information, forces predefined directional thinking, converts observations into
+votes, prevents novel hypotheses, prevents independent advisor reasoning, or
+causes premature LONG/SHORT/FLAT compression — reject or redesign it. No
+compromise.
