@@ -224,10 +224,38 @@ class ReasoningOrchestrator:
         try:
             selected = self.select(capability=capability, max_engines=max_engines)
             result.consulted = [e.name for e in selected]
-            for engine in selected:
-                op = engine.consult(symbol, evidence, now=now)
-                if op is not None:
-                    result.opinions.append(op)
+            # Part XXIV — fan out to EVERY selected advisor CONCURRENTLY. Each
+            # consult is a blocking provider round-trip (or, for a local model,
+            # a CPU-bound generation wait), so consulting serially made a full
+            # panel cost the SUM of every advisor's latency/timeout — minutes —
+            # and forced slow local models to share one tiny timeout. Threads let
+            # a slow advisor (e.g. an 8B model on CPU) run to completion in
+            # parallel with the rest; the panel now takes ~the slowest advisor,
+            # not the sum. consult() is fully fail-safe and each engine owns its
+            # own health/state lock, so one thread's fault never touches another.
+            if len(selected) <= 1:
+                for engine in selected:
+                    op = engine.consult(symbol, evidence, now=now)
+                    if op is not None:
+                        result.opinions.append(op)
+            else:
+                import concurrent.futures as _futures
+
+                with _futures.ThreadPoolExecutor(
+                    max_workers=len(selected),
+                    thread_name_prefix="council",
+                ) as pool:
+                    pending = [
+                        pool.submit(engine.consult, symbol, evidence, now=now)
+                        for engine in selected
+                    ]
+                    for fut in _futures.as_completed(pending):
+                        try:
+                            op = fut.result()
+                        except Exception:  # noqa: BLE001 — per-advisor isolation
+                            op = None
+                        if op is not None:
+                            result.opinions.append(op)
             with self._lock:
                 self._consultations += 1
             # Part XXIV — surface the live panel: who advised (with their vote)
