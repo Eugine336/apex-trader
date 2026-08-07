@@ -1,40 +1,25 @@
 """APEX TRADER — Entry Plane (Phase 7).
 
-Tick-triggered entry with M1 confirmation and multi-gate validation.
-
-Replaces the scanner-timer-driven entry path with an event-driven model:
-
-    WorldModel (candle-close)
-        → ZoneWatcher   (extracts active entry zones per symbol)
-        → TickEntryDetector (detects zone touch on live ticks)
-        → M1CandleConfirmer (waits for M1 close confirmation)
-        → EntryGate     (runs all pre-entry validation checks)
-        → EntryOrchestrator (submits OPEN intent to execution plane)
+Legacy-retirement Step 2 (Part XXV, docs/LEGACY_RETIREMENT_PLAN.md): this
+package no longer eagerly imports the legacy entry-DECISION modules
+(orchestrator, gate, order staging, tick/flip detectors). Only the shared,
+non-directional data models are re-exported here, so live evidence code that
+needs a type (``EntryConfig`` / ``EntryZone``) does not transitively load the
+decision pipeline. Import a decision module explicitly from its submodule, e.g.
+``from entry.entry_orchestrator import EntryOrchestrator`` — those modules are
+scheduled for deletion as the retirement track proceeds.
 """
 
 from entry.models import (
-    EntryZone,
     EntryConfig,
+    EntryZone,
     GateResult,
     PendingEntry,
 )
-from entry.zone_watcher import ZoneWatcher
-from entry.tick_entry_detector import TickEntryDetector
-from entry.m1_confirmation import M1CandleConfirmer
-from entry.entry_gate import EntryGate
-from entry.entry_orchestrator import EntryOrchestrator
-from entry.zone_order_staging import ZoneOrderStager, StagedOrder
 
 __all__ = [
-    "EntryZone",
     "EntryConfig",
+    "EntryZone",
     "GateResult",
     "PendingEntry",
-    "ZoneWatcher",
-    "TickEntryDetector",
-    "M1CandleConfirmer",
-    "EntryGate",
-    "EntryOrchestrator",
-    "ZoneOrderStager",
-    "StagedOrder",
 ]

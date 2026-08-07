@@ -24,8 +24,30 @@ from brain.order_block import OrderBlockDetector, OrderBlock, OBStatus
 from brain.liquidity_mapper import LiquidityMapper
 from brain.drawdown_guard import DrawdownGuard
 from brain.session_engine import NewsGuard, SessionEngine
-from brain.orchestrator import gate_quality_multiplier as _gate_quality_multiplier
 from trigger.entry_patterns import EntryPatternDetector
+
+
+def _gate_quality_multiplier(measures: list, floor: float = 0.15) -> float:
+    """Bounded quality multiplier for the softened conviction gate (inlined).
+
+    Formerly ``brain.orchestrator.gate_quality_multiplier`` — kept inline so the
+    entry engine carries no dependency on the retired legacy orchestrator. For
+    each ``(value, threshold)`` a shortfall contributes ``value / threshold``
+    (<1.0); the product is bounded to ``[floor, 1.0]``.
+    """
+    mult = 1.0
+    for value, threshold in measures:
+        try:
+            threshold = float(threshold)
+            value = float(value)
+        except (TypeError, ValueError):
+            continue
+        if threshold <= 0:
+            continue
+        ratio = value / threshold
+        if ratio < 1.0:
+            mult *= max(0.0, ratio)
+    return max(floor, min(1.0, mult))
 
 
 @dataclass
