@@ -71,6 +71,7 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Live-test every configured LLM provider")
     parser.add_argument("--only", default="", help="Comma-separated subset of provider names to test")
     parser.add_argument("--verbose", action="store_true", help="Print raw response body on failure")
+    parser.add_argument("--timeout", type=float, default=20.0, help="Per-request timeout in seconds (default 20)")
     parser.add_argument("--env-file", default=str(Path(__file__).resolve().parent.parent / ".env"))
     ns = parser.parse_args()
     only = {s.strip().lower() for s in ns.only.split(",") if s.strip()} if ns.only else None
@@ -119,7 +120,7 @@ def main() -> int:
         tested_any = True
         client = LLMClient(
             provider=provider, model=model, api_key=api_key, base_url=base_url,
-            timeout_seconds=20.0, max_tokens=32, transport=transport,
+            timeout_seconds=ns.timeout, max_tokens=32, transport=transport,
         )
         if not client.usable:
             print(f"[FAIL] {label:20s} — client reports not usable "
