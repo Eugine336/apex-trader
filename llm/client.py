@@ -27,6 +27,7 @@ Design principles (mirror the trading leaf modules):
 from __future__ import annotations
 
 import json
+import ssl
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -108,11 +109,38 @@ def _requires_base_url(provider: str) -> bool:
     return (provider or "").strip().lower() not in _NO_BASE_REQUIRED
 
 
+_SSL_CONTEXT: "Optional[ssl.SSLContext]" = None
+
+
+def _https_context() -> "Optional[ssl.SSLContext]":
+    """A cached TLS context that trusts the up-to-date ``certifi`` CA bundle.
+
+    Windows Python ships a CA store that cannot verify some providers' cert
+    chains (Cohere, DeepInfra → ``CERTIFICATE_VERIFY_FAILED``). Preferring
+    ``certifi``'s bundle fixes that without disabling verification. Falls back
+    to the stdlib default context when ``certifi`` is not installed, and never
+    raises — a context build fault degrades to the interpreter default.
+    """
+    global _SSL_CONTEXT
+    if _SSL_CONTEXT is not None:
+        return _SSL_CONTEXT
+    try:
+        import certifi
+        _SSL_CONTEXT = ssl.create_default_context(cafile=certifi.where())
+    except Exception:  # noqa: BLE001 — certifi missing / any build fault
+        try:
+            _SSL_CONTEXT = ssl.create_default_context()
+        except Exception:  # noqa: BLE001
+            return None
+    return _SSL_CONTEXT
+
+
 def _urllib_transport(url: str, headers: dict, body: bytes, timeout: float) -> "tuple[int, str]":
     """Default transport — a single stdlib POST. Isolated for test injection."""
     req = urllib.request.Request(url, data=body, headers=headers, method="POST")
+    ctx = _https_context() if str(url).lower().startswith("https") else None
     try:
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
+        with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             return int(getattr(resp, "status", 200) or 200), resp.read().decode("utf-8", "replace")
     except urllib.error.HTTPError as exc:  # non-2xx
         detail = ""
