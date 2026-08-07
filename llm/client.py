@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import ssl
+import threading
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -174,6 +175,16 @@ class LLMClient:
         self._shape = _shape_for(self.provider, self.base_url)
         self._requires_base_url = _requires_base_url(self.provider)
         self._transport: Transport = self.transport or _urllib_transport
+        # Edge-triggered availability logging. A rate-limited / quota-exhausted /
+        # offline advisor is retried every cycle for every symbol, so logging its
+        # failure each time floods the log. Track the last outcome so a failure is
+        # announced only on the DOWN transition (or when the failure class
+        # changes), stays silent while it keeps failing the same way, and a
+        # recovery is announced once when it rejoins.
+        self._log_lock = threading.Lock()
+        self._last_outcome_ok: Optional[bool] = None  # None=unknown, True=ok, False=failing
+        self._last_fail_key: str = ""
+        self._suppressed_failures: int = 0
 
     @property
     def usable(self) -> bool:
@@ -193,6 +204,43 @@ class LLMClient:
         if self.base_url:
             return self.base_url.rstrip("/")
         return _DEFAULT_BASE_URLS.get(self._shape or "", "").rstrip("/")
+
+    def _note_failure(self, signature: str, message: str) -> None:
+        """Log a provider failure only on the DOWN transition (edge-triggered).
+
+        The first failure (or a change in failure class, e.g. HTTP 429 → 500) is
+        logged at WARNING with the reason; while the provider keeps failing the
+        same way it is logged at DEBUG only, so a persistently rate-limited /
+        offline advisor cannot flood the log every cycle. The suppressed-repeat
+        count is carried so recovery can report how long it was silent.
+        """
+        with self._log_lock:
+            if self._last_outcome_ok is False and signature == self._last_fail_key:
+                self._suppressed_failures += 1
+                logger.debug(
+                    "[llm] {} still unavailable ({}) — silently retried x{}",
+                    self.provider, signature, self._suppressed_failures,
+                )
+                return
+            self._last_outcome_ok = False
+            self._last_fail_key = signature
+            self._suppressed_failures = 0
+        logger.warning("[llm] {} unavailable — {}", self.provider, message)
+
+    def _note_success(self) -> None:
+        """Log a one-line recovery only on the UP transition (edge-triggered)."""
+        with self._log_lock:
+            was_failing = self._last_outcome_ok is False
+            suppressed = self._suppressed_failures
+            self._last_outcome_ok = True
+            self._last_fail_key = ""
+            self._suppressed_failures = 0
+        if was_failing:
+            logger.info(
+                "[llm] {} recovered — rejoined the council{}",
+                self.provider,
+                f" (silent through {suppressed} repeat failure(s))" if suppressed else "",
+            )
 
     def complete(self, system: str, user: str) -> Optional[str]:
         """Return the model's text reply for a system+user prompt, or None.
@@ -216,17 +264,22 @@ class LLMClient:
         try:
             status, text = self._transport(url, headers, body, self.timeout_seconds)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[llm] transport error ({}): {}", self.provider, exc)
+            self._note_failure(
+                f"transport:{type(exc).__name__}", f"transport error: {exc}"
+            )
             return None
         if status < 200 or status >= 300:
-            # Log status + a short, key-free snippet only.
-            logger.warning("[llm] {} HTTP {} — {}", self.provider, status, (text or "")[:160])
+            # Edge-triggered: log status + a short, key-free snippet once.
+            self._note_failure(f"http:{status}", f"HTTP {status} — {(text or '')[:160]}")
             return None
         try:
-            return self._parse_reply(text)
+            reply = self._parse_reply(text)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[llm] reply parse failed ({}): {}", self.provider, exc)
-            return None
+            reply = None
+        if reply:
+            self._note_success()
+        return reply
 
     # ── Per-provider request shaping ──────────────────────────────────────
 

@@ -186,7 +186,11 @@ class ModelManager:
                     )
                 return reply
             else:
-                logger.info("[model-manager] {} unavailable — trying next in the chain", cand.model)
+                # The client logs each provider's down transition once; keep the
+                # per-attempt failover step at DEBUG so a persistently unavailable
+                # candidate does not flood the log every cycle. The success line
+                # above still reports how many were skipped ahead of the winner.
+                logger.debug("[model-manager] {} unavailable — trying next in the chain", cand.model)
         return None
 
     def describe(self) -> dict:
