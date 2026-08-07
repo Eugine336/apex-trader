@@ -1296,6 +1296,55 @@ class MT5Connector(BaseConnector):
             logger.warning("[mt5] Deal close info fetch failed for ticket: {}", exc)
             return None
 
+    # ── Market depth (Level-2 / DOM) ─────────────────────────────────────
+
+    def get_market_depth(self, symbol: str) -> list[dict]:
+        """Return the Level-2 order book for ``symbol`` as normalized levels.
+
+        Subscribes to the book, reads one snapshot, then releases. Each level
+        is ``{"price", "volume", "side"}`` where ``side`` is ``"bid"`` (BUY
+        entries resting under price) or ``"ask"`` (SELL entries above). Depth is
+        frequently unavailable on demo/retail feeds — this returns ``[]`` in
+        that case rather than raising, so the Brain's snapshot simply reads an
+        empty book until a real depth-of-market feed is connected.
+        """
+        try:
+            self._require_connection()
+        except Exception:  # noqa: BLE001 — treat as no depth available
+            return []
+        mapped = self.symbol_map(symbol)
+        try:
+            if not mt5.market_book_add(mapped):
+                return []
+            try:
+                book = mt5.market_book_get(mapped)
+            finally:
+                mt5.market_book_release(mapped)
+            if not book:
+                return []
+            out: list[dict] = []
+            for item in book:
+                price = float(getattr(item, "price", 0.0) or 0.0)
+                if price <= 0:
+                    continue
+                volume = float(
+                    getattr(item, "volume_real", 0.0)
+                    or getattr(item, "volume", 0.0) or 0.0,
+                )
+                # MT5 BOOK_TYPE: 1/3 = SELL (ask), 2/4 = BUY (bid).
+                btype = getattr(item, "type", None)
+                if btype in (2, 4):
+                    side = "bid"
+                elif btype in (1, 3):
+                    side = "ask"
+                else:
+                    continue
+                out.append({"price": price, "volume": volume, "side": side})
+            return out
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[mt5] market depth unavailable for {}: {}", symbol, exc)
+            return []
+
     # ── Symbol / timeframe mapping ───────────────────────────────────────
 
     def symbol_map(self, apex_symbol: str) -> str:
