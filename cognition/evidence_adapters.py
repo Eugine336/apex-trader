@@ -6,12 +6,14 @@ structured :class:`~cognition.contracts.Evidence` — read-only, fail-safe, and
 carrying no buy/sell instruction (Part III Art 2). Only the Brain synthesises
 evidence into a decision.
 
-The richest already-available source is the vote panel the legacy consensus
-computes each cycle: every contributing analytical module (structure, liquidity,
-momentum, volatility, volume, order flow, correlation, session, …) appears as a
-supporting/opposing module on the ThesisEngine's per-symbol theses. We convert
-each into a domain-classified Evidence with provenance, so the Brain sees the
-full picture without re-running analysis or needing candle data in the loop.
+Per Part XXV, analytical modules are measurement instruments, never voters: each
+contributing module (structure, liquidity, momentum, volatility, volume, order
+flow, correlation, session, …) is surfaced as a domain-classified Evidence that
+reports an *instrument reading* — a signed, bounded "measured lean" plus its
+secondary measurements — with provenance. The observation text carries no
+LONG/SHORT/FLAT decision and no "vote"; the Brain alone interprets the readings
+together. This bridges the WorldModel's per-module panel onto the Brain's
+MarketState without re-running analysis or needing candle data in the loop.
 
 Pure standard library.
 """
@@ -109,7 +111,7 @@ def evidence_from_thesis_status(status: dict, symbol: str) -> "list[Evidence]":
         out.append(Evidence(
             source_module="brain.thesis_engine",
             domain=EvidenceDomain.MULTI_TIMEFRAME, symbol=symbol,
-            observation=f"dominant competing thesis {dominant}",
+            observation=f"multi-timeframe instrument reading — measured lean {agg_pol:+.2f}",
             confidence=agg_conf, uncertainty=1.0 - agg_conf, polarity=agg_pol,
             measurements={"long_ev": long_ev, "short_ev": short_ev,
                           "flat_ev": flat_ev, "dominant": dominant},
@@ -124,25 +126,28 @@ def evidence_from_thesis_status(status: dict, symbol: str) -> "list[Evidence]":
             sup_conf = _clamp01(dom.get("confidence", 0.0))
             opp_conf = _clamp01(opp.get("confidence", 0.0)) or 0.4
             for m in (dom.get("supporting_modules") or []):
+                lean = sign * sup_conf
                 out.append(Evidence(
                     source_module=str(m), domain=classify_domain(m), symbol=symbol,
-                    observation=f"{m} supports {dominant}",
+                    observation=f"{m} instrument reading — measured lean {lean:+.2f}",
                     confidence=sup_conf, uncertainty=1.0 - sup_conf,
-                    polarity=sign * sup_conf, relevance_horizon_seconds=900.0,
+                    polarity=lean, relevance_horizon_seconds=900.0,
                 ))
             for m in (dom.get("opposing_modules") or []):
+                lean = -sign * opp_conf
                 out.append(Evidence(
                     source_module=str(m), domain=classify_domain(m), symbol=symbol,
-                    observation=f"{m} opposes {dominant}",
+                    observation=f"{m} instrument reading — measured lean {lean:+.2f}",
                     confidence=opp_conf, uncertainty=1.0 - opp_conf,
-                    polarity=-sign * opp_conf, relevance_horizon_seconds=900.0,
+                    polarity=lean, relevance_horizon_seconds=900.0,
                 ))
     except Exception:  # noqa: BLE001 — consolidation must never raise
         return out
     return out
 
 
-def _vote_measurements(vote: Any, weight: Any, timeframe: str) -> dict:
+def _vote_measurements(vote: Any, weight: Any, timeframe: str,
+                       lean: Optional[float] = None) -> dict:
     """Flatten a vote's rich per-module ``evidence`` dict into JSON-safe
     measurements.
 
@@ -151,9 +156,13 @@ def _vote_measurements(vote: Any, weight: Any, timeframe: str) -> dict:
     type, …). ``Vote.evidence`` preserves it; this surfaces it to the Brain as
     structured measurements so the reasoner sees the full per-module picture
     instead of a single collapsed lean. Only scalar values are carried (numbers,
-    bools, short strings) so the LLM payload stays clean and serialisable.
+    bools, short strings) so the LLM payload stays clean and serialisable. The
+    signed ``directional_lean`` (Part XXV — a measurement, not a vote) is seeded
+    into the base so it always survives the size cap.
     """
     out: dict = {"weight": _clamp01(weight, 1.0)}
+    if lean is not None:
+        out["directional_lean"] = round(float(lean), 4)
     if timeframe:
         out["timeframe"] = timeframe
     try:
@@ -193,15 +202,18 @@ def evidence_from_votes(symbol: str, votes: Any) -> "list[Evidence]":
             conf = _clamp01(getattr(v, "confidence", 0.0))
             weight = getattr(v, "weight", 1.0)
             timeframe = str(getattr(v, "timeframe", "") or "")
-            observation = f"{module} votes {str(direction or '').upper() or 'FLAT'}"
+            lean = _sign(direction) * conf
+            observation = f"{module} instrument reading"
             if timeframe:
                 observation += f" on {timeframe}"
+            observation += f" — measured lean {lean:+.2f} (reading strength {conf:.2f})"
+            meas = _vote_measurements(v, weight, timeframe, lean=lean)
             out.append(Evidence(
                 source_module=module, domain=classify_domain(module), symbol=symbol,
                 observation=observation,
                 confidence=conf, uncertainty=1.0 - conf,
-                polarity=_sign(direction) * conf,
-                measurements=_vote_measurements(v, weight, timeframe),
+                polarity=lean,
+                measurements=meas,
                 relevance_horizon_seconds=900.0,
             ))
     except Exception:  # noqa: BLE001
@@ -246,8 +258,8 @@ def evidence_from_developing_bias(symbol: str, bias: Any) -> "list[Evidence]":
         polarity = _sign(direction) * conf * 0.7
         conflict = _clamp01(b.get("conflict_score", 0.0))
         observation = (
-            f"developing-candle bias {direction or 'FLAT'} "
-            f"(conf {conf:.2f}, conflict {conflict:.2f})"
+            f"developing-candle instrument reading — measured lean {polarity:+.2f} "
+            f"(reading strength {conf:.2f}, conflict {conflict:.2f})"
         )
         out.append(Evidence(
             source_module="world_model.developing",

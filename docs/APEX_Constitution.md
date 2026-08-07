@@ -2320,58 +2320,53 @@ cognitive architecture.
 
 ## Current conformance — live-code audit (Version 1.0, honest baseline)
 
-This Part is ratified as binding law with the live implementation in **partial
-violation**. The gaps below are verified against live code and are the
-authoritative remediation backlog; each will be closed in its own focused change
-and this section updated as each lands. Ratification does not assert compliance.
+This Part is ratified as binding law. Roadmap items 1–3 (evidence de-collapse,
+enriched cognitive state, prompt reframe) are **implemented and offline-verified**;
+items 4–6 remain open. This section is the authoritative remediation backlog and
+is updated as each item lands. Ratification does not assert full compliance.
 
-- **VIOLATION — evidence is voted before cognition.**
-  `cognition/evidence_adapters.py::evidence_from_votes` renders each module as
-  `observation="{module} votes {LONG|SHORT|FLAT}"` with
-  `polarity=_sign(direction)*confidence`. Modules are directional voters and the
-  vote reaches the Brain as a signed directional signal (Article 2 / Article 3).
-- **VIOLATION — precomputed thesis handed to the Brain to arbitrate.**
-  `evidence_from_thesis_status` emits `"{module} supports {dominant}"` /
-  `"{module} opposes {dominant}"` around a precomputed dominant LONG/SHORT
-  thesis (Article 3).
-- **VIOLATION — direction-collapsed evidence polarity.**
-  `_sign()` reduces every read to `+1/-1/0`; the developing-candle and analogue
-  adapters likewise carry `polarity=_sign(direction)*conf` (Article 2).
-- **VIOLATION — arbitration framing in the reasoner prompt.**
-  `llm/reasoner.py::_SYSTEM_PROMPT` tells the Brain it is "given ... competing
-  Long/Short/Flat theses ... a summary of module votes," framing cognition as
-  arbitration of precomputed opinions (Article 3). *Partial credit:* the same
-  prompt already supplies a rich multi-timeframe price/tape/book picture and
-  demands symmetric LONG/SHORT treatment, competing hypotheses and
-  what-would-change-my-mind (Articles 5/6/7 partially met).
-- **VIOLATION — impoverished cognitive state.**
-  `llm/reasoner.py::LLMOpinion` is `{direction, confidence, rationale,
-  competing_hypotheses, missing_information}`; direction/confidence are the
-  container and the single confidence number is semantically undefined
-  (Article 4). *Partial credit:* competing hypotheses and missing information
-  are already first-class.
+- **RESOLVED (item 1) — evidence de-collapse.**
+  `cognition/evidence_adapters.py` no longer emits `"{module} votes {DIR}"` or
+  `"{module} supports/opposes {dominant}"`. Each module is surfaced as an
+  *instrument reading* — a neutral observation carrying a signed, bounded
+  "measured lean" and its secondary measurements (`evidence_from_votes`,
+  `evidence_from_thesis_status`, `evidence_from_developing_bias`). The numeric
+  `polarity`/`_sign` value is retained but re-scoped: it feeds only the
+  conflict/uncertainty summary and post-hoc supporting/contradicting grouping —
+  never a headline vote (Articles 2/3).
+- **RESOLVED (item 3) — arbitration framing removed from the reasoner prompt.**
+  `llm/reasoner.py::_SYSTEM_PROMPT` now frames the input as "a STRUCTURED
+  REPRESENTATION OF MARKET REALITY — NOT a set of votes to arbitrate," demands
+  observe→interpret→hypothesise→self-criticise→discover-opportunity, enforces
+  movement≠opportunity and symmetric LONG/SHORT, and states direction is the
+  consequence of reasoning (Articles 1/2/3/5/6/8).
+- **RESOLVED (item 2) — non-collapsed cognitive state.**
+  `llm/reasoner.py::LLMOpinion` now carries regime, primary/alternative
+  hypotheses, supporting/contradicting evidence, key uncertainty, invalidation,
+  opportunity + horizon, expected favourable/adverse excursion, expected value,
+  execution quality, risk and what-would-change-my-mind. `direction`/
+  `confidence` are derived as the execution consequence; parsing is
+  backward-compatible (a legacy minimal reply still works). `cognition/brain.py`
+  carries the rich state into the `DecisionPackage`/`CampaignSpec` (Article 4).
 - **CONFORMS (already correct, must be preserved).** Non-directional risk-,
   advisor- and knowledge-context adapters are emitted as context "never a vote";
   the Brain is the sole decider; execution is a separate deterministic plane
   (Part XVIII/XIX); advisors already reason independently over shared state
   (Part XXIV). Movement-vs-opportunity net-EV qualification exists (Part XIX
   Art 7) and must be strengthened, not removed.
+- **OPEN (items 4–6).** Advisor-independence review (Article 9), management-
+  cognition parity (Article 11), and a live-code audit gate that fails on any
+  reintroduced directional-vote collapse (Article 14).
 
-## Remediation roadmap (each item = one focused change)
+## Remediation roadmap (✓ = landed)
 
-1. **De-collapse evidence.** Replace the `"{module} votes {DIR}"` /
-   `supports/opposes` observations with measurement-only observations (raw
-   values, states, magnitudes) and stop signing polarity by direction; carry
-   magnitude/uncertainty instead. Keep every adapter fail-safe and offline-
-   testable.
-2. **Enrich the cognitive state.** Extend `LLMOpinion` and `_SYSTEM_PROMPT` to
-   the Article 4 schema (regime, primary/alternative/third hypotheses,
-   supporting/contradicting evidence, invalidation, opportunity + horizon,
-   expected favourable/adverse excursion, expected value, execution quality,
-   risk, what-would-change-my-mind), deriving direction/confidence as the final
-   consequence. Preserve backward-compatible parsing.
-3. **Reframe the prompt** away from arbitration toward raw-state interpretation
-   and opportunity discovery (Articles 1/5/6/8).
+1. ✓ **De-collapse evidence.** Instrument-reading observations (signed measured
+   lean + measurements); polarity re-scoped to conflict/uncertainty only.
+2. ✓ **Enrich the cognitive state.** `LLMOpinion` + `_SYSTEM_PROMPT` carry the
+   Article 4 schema; direction/confidence derived last; backward-compatible
+   parsing; rich state flows into the `DecisionPackage`/`CampaignSpec`.
+3. ✓ **Reframe the prompt** to raw-state interpretation and opportunity
+   discovery (Articles 1/5/6/8).
 4. **Advisor independence review** — confirm advisors receive the same rich
    state and are synthesised as arguments, not counted (Article 9).
 5. **Management cognition parity** — ensure open positions are re-reasoned with
