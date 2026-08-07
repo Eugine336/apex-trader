@@ -51,11 +51,21 @@ Each step is its own PR, grep + syntax verified, keeping the live system intact:
 3. **Sever bootstrap wiring** — remove construction/subscription of
    `EntryOrchestrator`, `ZoneOrderStager`, `FlipSequenceTracker` and the
    `on_m1_close`/`on_world_model_update` legacy entry handlers.
+   **✓ DONE (orchestrator + stager)** — `EntryOrchestrator`/`ZoneOrderStager`
+   construction replaced by an inert `_RetiredEntryPipeline` null-object; all
+   ~15 dormant bootstrap call sites resolve to no-ops (grep-verified
+   dangling-free). `FlipSequenceTracker` is kept (it feeds live evidence, not
+   decisions).
 4. **Delete decision-only `entry/` leaves** — `entry_orchestrator.py`,
    `entry_gate.py`, `zone_order_staging.py`, `tick_entry_detector.py`,
    `tick_delta_analyzer.py`, `flip_confirmer.py`, `flip_sequence_tracker.py`,
    `m1_confirmation.py` (keep `models.py`, `zone_watcher.py`, `m1_patterns.py`
    only for their live evidence use, de-directionalised).
+   **✓ PARTIAL** — deleted `entry/entry_orchestrator.py` +
+   `entry/zone_order_staging.py` and their 7 coupled tests. Remaining leaves
+   (`entry_gate.py`, `flip_confirmer.py` — still used by `brain/backtest_engine.py`;
+   `tick_entry_detector.py`, `tick_delta_analyzer.py`, `m1_confirmation.py`) are
+   now unimported by the live path and will be deleted with the backtest bite.
 5. **Retire `brain/directional_consensus.py`** decision functions (`form_thesis`,
    `decide`, `decide_opportunities`) and their now-dead callers in `adaptive/`,
    `brain/decision_core.py`, `event_driven_bootstrap.py`.

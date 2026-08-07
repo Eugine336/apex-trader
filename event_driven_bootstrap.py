@@ -51,8 +51,6 @@ from execution.position_snapshot import PositionSnapshot, build_position_snapsho
 from execution.management_state import ManagementStateStore
 from execution.management_scheduler import ManagementScheduler
 from entry import EntryConfig
-from entry.entry_orchestrator import EntryOrchestrator
-from entry.zone_order_staging import ZoneOrderStager
 from entry.flip_sequence_tracker import FlipSequenceTracker
 from platform_context import build_context_for_symbol
 from platforms.platform_manager import PlatformManager
@@ -2200,6 +2198,46 @@ from execution.lifecycle_loops import FlushLoop, TickEvalLoop  # noqa: E402
 from scanner.cycle_selection import select_cycle_candidates  # noqa: E402
 
 
+class _RetiredEntryPipeline:
+    """Inert stand-in for the retired legacy entry-decision pipeline.
+
+    Under single-path the Cognitive Brain is the sole entry authority; the
+    legacy ``EntryOrchestrator`` / ``ZoneOrderStager`` decision modules are
+    retired (Cognitive Reasoning Constitution — no precomputed directional
+    decision path). This null-object keeps the now-dormant call sites in the
+    bootstrap resolvable so nothing dangles, and performs no action: it emits no
+    entries, exposes empty zones, and fails all legacy gates closed.
+    """
+
+    class _ZoneWatcher:
+        def get_active_zones(self, *a, **k):
+            return []
+
+        def all_symbols_with_zones(self, *a, **k):
+            return []
+
+        def register_update_callback(self, *a, **k):
+            return None
+
+    def __init__(self) -> None:
+        self.zone_watcher = _RetiredEntryPipeline._ZoneWatcher()
+        self.stats = {}
+
+    def _derive_targets(self, *a, **k):
+        return (None, None)
+
+    def evaluate_zone_gates(self, *a, **k):
+        return False
+
+    def evaluate_stopout_flip(self, *a, **k):
+        return None
+
+    def __getattr__(self, _name):
+        # Any other legacy hook (on_tick / on_m1_close / on_world_model_update …)
+        # resolves to a no-op so dormant subscriptions never raise.
+        return lambda *a, **k: None
+
+
 class EventDrivenSystem:
     """Wires and manages the entire event-driven trading system.
 
@@ -2603,71 +2641,11 @@ class EventDrivenSystem:
             pip_size_lookup=self._safe_pip_size,
         )
 
-        self._entry_orchestrator = EntryOrchestrator(
-            world_model_store=self._wm_store,
-            config=EntryConfig(),
-            pip_size_lookup=self._safe_pip_size,
-            on_entry_decision=self._submit_entry,
-            is_instrument_known=lambda s: s in INSTRUMENT_REGISTRY,
-            is_market_open=self._check_market_open,
-            is_session_active=self._check_session_active,
-            is_news_clear=self._check_news_clear,
-            get_spread_pips=self._get_spread_pips,
-            get_m1_dataframe=self._get_m1_dataframe,
-            # Live sub-candle momentum for the A1 direction-flip confirmation —
-            # the flip rides real-time ticks + M5 trend, not a 60s-stale M1 close.
-            get_tick_momentum=self._evaluator._compute_tick_momentum,
-            on_gate_trace=self._on_gate_trace,
-            # Wire the shadow-fed GateTuner into the LIVE entry gate so its
-            # learned (bounded) score-bar offset actually modifies live entry
-            # decisions — previously the offset only reached the legacy
-            # backtest engine and the live EntryGate ignored it.
-            gate_tuner=(ctx.gate_tuner if ctx is not None else None),
-            # PairLearner drives cold-start score relaxation in the event-driven
-            # path. Without this the entry bar stays at the hardest factory
-            # default (85) for every symbol indefinitely because the learning
-            # layer never accumulates enough trades to self-calibrate.
-            pair_learner=(
-                getattr(ctx.ml_adapter, "pair_learner", None)
-                if ctx is not None and ctx.ml_adapter is not None
-                else None
-            ),
-            # Global market-state read (compression detector). ACTIVE (Phase 2
-            # Feature C): the orchestrator boosts conviction on COMPRESSING /
-            # EXPANDING and applies the Asian-compression caution gate.
-            get_market_state=(
-                self._compression_detector.get_market_state
-                if self._compression_detector is not None else None
-            ),
-            get_compression_score=(
-                self._compression_detector.get_compression_score
-                if self._compression_detector is not None else None
-            ),
-            # Global session classifier read. ACTIVE (Phase 2 Feature C): used
-            # for the Asian-compression caution gate; session-aware sizing is
-            # applied in _on_entry_decision.
-            session_context=self._session_context,
-            # USD-strength reader for the DXY correlation filter (Phase 2
-            # Feature D). Penalises (never blocks) a USD-symbol trade whose
-            # direction opposes the USD move.
-            get_currency_strength=self._dxy_currency_strength,
-            # Hardened flip confirmation magnitude sources: the M5 ATR (pips)
-            # from the CalibrationEngine's per-symbol InstrumentStats, and the
-            # signed net tick move (pips) from the live tick store. Together
-            # they gate the FlipConfirmer's ATR-normalised check so a flip must
-            # ride a move of real size. Both guarded → 0.0 (graceful skip) when
-            # calibration/ticks are unavailable.
-            get_atr_pips=self._calibrated_atr_pips,
-            get_tick_move_pips=self._evaluator._compute_tick_move_pips,
-            # Tick-rule order-flow delta (flip Check 6): the FlipConfirmer reads
-            # recent stored ticks straight from the TickStore (already populated
-            # on every tick event — no new collection needed). OFF by default
-            # per InstrumentProfile until validated live.
-            get_recent_ticks=lambda sym, n: self._tick_store.get_recent(sym, n),
-            # Fast-then-slow sequencing (flip Check 7): the shared tracker fed
-            # by the M1/M5 candle-close handlers below.
-            sequence_tracker=self._flip_sequence_tracker,
-        )
+        # Legacy entry-decision pipeline RETIRED (Cognitive Reasoning
+        # Constitution): the Cognitive Brain is the sole entry authority under
+        # single-path. The former EntryOrchestrator is replaced by an inert
+        # null-object so dormant bootstrap call sites resolve to no-ops.
+        self._entry_orchestrator = _RetiredEntryPipeline()
 
         # ── Zone order stager (Phase 2 Feature B) ────────────────────
         # Pre-stages pending LIMIT orders at zone boundaries as price approaches
@@ -2676,26 +2654,11 @@ class EventDrivenSystem:
         # EntryConfig; a profile (Gold) opts in via pre_staging_enabled. Fed by
         # the tick bus and ZoneWatcher update callbacks (registered here).
         # Best-effort — a construction fault degrades to no pre-staging.
+        # Zone order stager RETIRED with the legacy entry pipeline (Cognitive
+        # Reasoning Constitution). It only ever staged legacy-decision orders and
+        # self-gated off under single-path; left permanently disabled.
         self._zone_stager = None
         self._stage_sizer = PositionSizer()
-        try:
-            self._zone_stager = ZoneOrderStager(
-                config=EntryConfig(),
-                get_active_zones=self._entry_orchestrator.zone_watcher.get_active_zones,
-                place_pending_order=self._stage_place_pending,
-                cancel_pending_order=self._stage_cancel_pending,
-                pip_size_lookup=self._safe_pip_size,
-                size_lookup=self._stage_size,
-                derive_targets=self._entry_orchestrator._derive_targets,
-                gate_check=self._staging_gate_allows,
-                single_path_active=self._single_reasoner_path_active,
-            )
-            self._entry_orchestrator.zone_watcher.register_update_callback(
-                self._zone_stager.on_zone_update,
-            )
-        except Exception as exc:
-            logger.warning("[event-driven] ZoneOrderStager init failed: {}", exc)
-            self._zone_stager = None
 
         # ── News calendar pre-planner (Phase 3 Feature A) ────────────
         # For scheduled HIGH-impact events (CPI/NFP/FOMC) it stages an OCO pair
@@ -4520,7 +4483,7 @@ class EventDrivenSystem:
         return self._tick_store
 
     @property
-    def entry_orchestrator(self) -> EntryOrchestrator:
+    def entry_orchestrator(self) -> Any:
         return self._entry_orchestrator
 
     @property
