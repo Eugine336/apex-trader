@@ -337,7 +337,11 @@ class LLMReasoner:
             if not reply:
                 with self._lock:
                     self._faults += 1
-                logger.info("[llm] {} — no reply from model (fail-safe: no opinion)", sym)
+                # No reply this cycle (throttle/quota/offline). The client logs
+                # the reason once on its down transition and the council panel
+                # summarises who is absent, so keep this per-symbol line at DEBUG
+                # to avoid flooding when an advisor is persistently unavailable.
+                logger.debug("[llm] {} — no reply from model (fail-safe: no opinion)", sym)
                 return None
             opinion = self._parse(sym, reply)
             with self._lock:
