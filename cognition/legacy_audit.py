@@ -295,7 +295,18 @@ _NONDIRECTIONAL_COGNITION_SOURCES = (
     "cognition/market_snapshot.py",
 )
 _DIRECTIONAL_POLARITY = re.compile(r"polarity\s*=\s*(?!0\.0\b)[^,\n)]+")
-_DIRECTIONAL_HELPERS = re.compile(r"\b(?:_sign|_sentiment_polarity)\s*\(|directional_lean")
+# Directional helpers / tokens that must never appear in a cognition Evidence
+# source: a sign/sentiment/trend-lean helper (a signed directional reading), the
+# ``directional_lean`` measurement, the ``with_trend_dir`` collapse, or a
+# ``*_dir`` / ``*_direction`` measurement KEY being set (a nested precomputed
+# direction). A quoted key is only flagged when it is assigned (colon-anchored),
+# so reads such as ``.get("direction")`` are not false positives.
+_DIRECTIONAL_HELPERS = re.compile(
+    r"\b(?:_sign|_sentiment_polarity|_net_trend_lean|_trend_lean)\s*\("
+    r"|directional_lean"
+    r"|with_trend_dir"
+    r"|['\"][a-z0-9_]*_(?:dir|direction)['\"]\s*:"
+)
 
 
 @dataclass

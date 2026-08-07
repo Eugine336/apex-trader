@@ -2761,7 +2761,9 @@ class EventDrivenSystem:
         # developing analysis, scanner) that populate the Brain's Evidence, and
         # the management / execution / safety wiring below, are untouched — so the
         # Brain still gets full evidence and open positions are still managed and
-        # protected. Fail-safe: a config fault reports legacy-on (no silent halt).
+        # protected. Fail-safe: a config fault reports single-path ACTIVE (legacy
+        # entry authority stays severed — the constitutional default is never
+        # silently re-opened; the Brain remains the sole entry authority).
         _legacy_entry_on = not self._single_reasoner_path_active()
         if _legacy_entry_on:
             self._event_bus.subscribe("tick", self._entry_orchestrator.on_tick)
@@ -7352,6 +7354,24 @@ class EventDrivenSystem:
         except Exception as exc:
             logger.debug("[displacer] {} displacement attempt failed: {}", symbol, exc)
             return False
+
+    def _single_reasoner_path_active(self) -> bool:
+        """True when the Single Reasoner path is active (Constitution I.4 / III.2).
+
+        Under single-path the AI Cognitive Brain is the sole authority that may
+        open trades; the legacy entry-decision pipeline (consensus / zone-thesis
+        emitters) is severed at runtime. Reads ``config.cognition.single_path``
+        (env ``COGNITION_SINGLE_PATH``; default True). Fail-safe to ACTIVE: if the
+        config is absent or a read faults, the constitutional default holds
+        (Brain-only) so no legacy decider can silently regain entry authority.
+        """
+        try:
+            cog = getattr(self._config, "cognition", None)
+            if cog is None:
+                return True
+            return bool(getattr(cog, "single_path", True))
+        except Exception:  # noqa: BLE001 — never let enforcement fault re-open legacy authority
+            return True
 
     def _on_entry_decision(
         self, decision: dict[str, Any], allocation: Any = None,

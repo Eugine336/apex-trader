@@ -256,13 +256,15 @@ def pullback_read(tfs_out: dict) -> dict:
 
     Compares the highest-ranked timeframe (context / dominant trend) with the
     lowest-ranked one (the current micro move) so a counter-move *within* a
-    trend is explicit: a dip in an uptrend is a ``pullback_in_uptrend`` (the
-    with-trend edge is LONG), a bounce in a downtrend is ``bounce_in_downtrend``
-    (with-trend edge SHORT). Aligned moves read as ``impulse_up/down``; a flat
-    context reads ``range``. Returns ``{}`` with fewer than two timeframes.
+    trend is explicit: a dip in an uptrend is a ``pullback_in_uptrend``, a bounce
+    in a downtrend is ``bounce_in_downtrend``. Aligned moves read as
+    ``impulse_up/down``; a flat context reads ``range``. Returns ``{}`` with
+    fewer than two timeframes.
 
-    Structural context only — the Brain still decides whether the pullback is
-    worth acting on after costs.
+    Part XXV — this is a *structural* reading of price geometry only: it reports
+    the context/micro trends and the resulting shape, and never collapses them
+    into a LONG/SHORT trade direction. The Brain alone forms direction and
+    decides whether the pullback is worth acting on after costs.
     """
     try:
         ranked = sorted(
@@ -275,10 +277,6 @@ def pullback_read(tfs_out: dict) -> dict:
         context_lbl, context_v = ranked[-1]
         context_trend = str(context_v.get("trend", "flat"))
         micro_trend = str(micro_v.get("trend", "flat"))
-        with_trend = (
-            "LONG" if context_trend == "up"
-            else "SHORT" if context_trend == "down" else "FLAT"
-        )
         if context_trend == "flat":
             read = "range"
         elif context_trend == "up":
@@ -290,7 +288,7 @@ def pullback_read(tfs_out: dict) -> dict:
         return {
             "context_tf": context_lbl, "context_trend": context_trend,
             "micro_tf": micro_lbl, "micro_trend": micro_trend,
-            "read": read, "with_trend_dir": with_trend,
+            "read": read,
         }
     except Exception:  # noqa: BLE001
         return {}
@@ -379,24 +377,32 @@ def build_price_snapshot(
             "session": session or None, "pullback": pullback or None}
 
 
-def _net_trend_lean(tfs_out: dict) -> float:
-    """Bounded directional lean (−1..+1) from multi-timeframe trend agreement."""
+def _trend_agreement(tfs_out: dict) -> float:
+    """Bounded [0, 1] measure of how ALIGNED the timeframes' trends are.
+
+    Part XXV — the cognition layer measures, it never leans. This reports the
+    *magnitude* of multi-timeframe agreement (how much of the panel shares its
+    dominant non-flat trend) with NO direction attached: up and down reads
+    cancel, so a fully mixed or flat panel reads 0.0 and a unanimous panel reads
+    1.0, regardless of which way it points. The Brain alone forms direction from
+    the raw per-timeframe reads.
+    """
     if not tfs_out:
         return 0.0
-    score = 0
-    for v in tfs_out.values():
-        t = v.get("trend")
-        score += 1 if t == "up" else (-1 if t == "down" else 0)
-    return max(-1.0, min(1.0, score / float(len(tfs_out))))
+    up = sum(1 for v in tfs_out.values() if v.get("trend") == "up")
+    down = sum(1 for v in tfs_out.values() if v.get("trend") == "down")
+    return max(0.0, min(1.0, abs(up - down) / float(len(tfs_out))))
 
 
 def snapshot_to_evidence(symbol: str, snapshot: dict) -> "list[Evidence]":
     """Turn a price snapshot into one multi-timeframe Evidence (the chart).
 
-    Polarity is a *modest* multi-timeframe trend lean (price context, not a
-    signal — the Brain still decides); the full snapshot rides in
-    ``measurements`` so the reasoner sees the actual candles. Fail-safe: ``[]``
-    on empty/any fault.
+    Part XXV — the chart is raw market reality, never a lean: ``polarity`` is
+    always 0 and no directional token is emitted. Confidence rises with how
+    ALIGNED the timeframes are (a clearer picture), a magnitude that carries no
+    direction; the full snapshot rides in ``measurements`` so the reasoner sees
+    the actual candles and forms direction itself. Fail-safe: ``[]`` on
+    empty/any fault.
     """
     out: list[Evidence] = []
     try:
@@ -404,8 +410,7 @@ def snapshot_to_evidence(symbol: str, snapshot: dict) -> "list[Evidence]":
         tfs = snap.get("timeframes") or {}
         if not tfs:
             return out
-        lean = _net_trend_lean(tfs)
-        agree = abs(lean)
+        agree = _trend_agreement(tfs)
         parts = []
         for tf, v in tfs.items():
             parts.append(f"{tf} {v.get('trend')} {v.get('change_pct')}%")

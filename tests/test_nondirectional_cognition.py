@@ -69,6 +69,39 @@ def test_no_directional_reading_reaches_brain_across_all_sources():
     assert all(e.measurements.get("value") == 0.37 for e in ms.evidence)
 
 
+def test_nested_directional_keys_stripped_but_own_position_preserved():
+    # The live leak this guards: a precomputed direction nested inside a
+    # structured measurement (price-snapshot pullback, per-module vote evidence)
+    # must be stripped at ANY depth, while the Brain's OWN held position stays
+    # intact so management re-reasons over what it holds (Part XXV Art 11).
+    e = Evidence(
+        source_module="market.price_action", domain=EvidenceDomain.MULTI_TIMEFRAME,
+        symbol="XAUUSD", confidence=0.7, uncertainty=0.3, polarity=0.6,
+        measurements={
+            "timeframes": {"M5": {"trend": "up", "change_pct": 0.4}},
+            "pullback": {"read": "pullback_in_uptrend",
+                         "with_trend_dir": "LONG", "context_trend": "up"},
+            "votes": [{"rsi_dir": "SHORT", "rsi": 71.5},
+                      {"expected_direction": "LONG", "sweep_kind": "REVERSAL"}],
+            "position": {"direction": "LONG", "profit_r": 0.8},
+        },
+    )
+    ms = MarketState(symbol="XAUUSD")
+    ms.add(e)
+    m = ms.evidence[0].measurements
+    assert ms.evidence[0].polarity == 0.0
+    # nested precomputed directions are gone at every depth …
+    assert "with_trend_dir" not in m["pullback"]
+    assert m["pullback"]["read"] == "pullback_in_uptrend"   # structural read kept
+    assert m["pullback"]["context_trend"] == "up"           # raw trend kept
+    assert "rsi_dir" not in m["votes"][0] and m["votes"][0]["rsi"] == 71.5
+    assert "expected_direction" not in m["votes"][1]
+    assert m["votes"][1]["sweep_kind"] == "REVERSAL"
+    # … but the Brain's OWN held position is preserved for management
+    assert m["position"]["direction"] == "LONG"
+    assert m["position"]["profit_r"] == 0.8
+
+
 def test_consolidation_has_no_directional_conflict():
     ms = MarketState(symbol="XAUUSD")
     ms.add(Evidence(source_module="a", domain=EvidenceDomain.STRUCTURE, symbol="XAUUSD",

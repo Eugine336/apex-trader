@@ -189,24 +189,65 @@ _DIRECTIONAL_MEASUREMENT_KEYS = frozenset({
     "directional_lean", "lean", "direction", "bias", "sentiment",
     "long_probability", "short_probability", "long_ev", "short_ev", "flat_ev",
     "dominant", "score", "signed_score", "vote", "signal",
+    # Precomputed direction tokens some evidence producers emit (price snapshot
+    # pullback, per-module vote evidence): the Brain forms direction itself, so
+    # these are stripped too. The ``_dir`` / ``_direction`` suffix rule in
+    # ``_is_directional_key`` additionally catches any ``*_dir`` / ``*_direction``
+    # key (rsi_dir, macd_dir, expected_direction, sweep_direction, …).
+    "with_trend_dir", "with_trend", "expected_direction",
 })
+
+# Keys whose subtree is the Brain's OWN state (its held position) rather than a
+# market opinion. Preserved verbatim so management re-reasons over what it
+# actually holds (Part VI Art 5 / Part XXV Art 11); everything else is scrubbed.
+_STATE_EXEMPT_KEYS = frozenset({"position"})
+
+
+def _is_directional_key(key: Any) -> bool:
+    """True when a measurement key encodes a precomputed direction (Part XXV)."""
+    k = str(key).strip().lower()
+    return (
+        k in _DIRECTIONAL_MEASUREMENT_KEYS
+        or k.endswith("_dir")
+        or k.endswith("_direction")
+    )
+
+
+def _strip_directional_inplace(obj: Any) -> None:
+    """Recursively remove directional keys from a nested measurements payload.
+
+    Recurses through dicts and lists so a directional reading nested inside a
+    structured measurement (e.g. a price snapshot's ``pullback.with_trend_dir``)
+    cannot slip past the choke point. The Brain's own ``position`` state subtree
+    is left intact (Part XXV Art 11). Never raises.
+    """
+    if isinstance(obj, dict):
+        for k in list(obj.keys()):
+            if _is_directional_key(k):
+                obj.pop(k, None)
+                continue
+            if str(k).strip().lower() in _STATE_EXEMPT_KEYS:
+                continue  # Brain's own state — not a market opinion; keep as-is
+            _strip_directional_inplace(obj[k])
+    elif isinstance(obj, list):
+        for item in obj:
+            _strip_directional_inplace(item)
 
 
 def scrub_directional(ev: "Evidence") -> "Evidence":
     """Force an Evidence to be non-directional (Part XXV Art 2/3, in place).
 
-    Sets ``polarity`` to 0 (no directional lean) and removes any measurement key
-    that encodes a precomputed direction/probability. The Brain forms direction
-    itself from raw measurements + the price picture; nothing upstream may hand
-    it a directional reading. Fail-safe — never raises.
+    Sets ``polarity`` to 0 (no directional lean) and recursively removes any
+    measurement key that encodes a precomputed direction/probability, at any
+    nesting depth. The Brain forms direction itself from raw measurements + the
+    price picture; nothing upstream may hand it a directional reading. Fail-safe
+    — never raises.
     """
     try:
         ev.polarity = 0.0
         m = getattr(ev, "measurements", None)
         if isinstance(m, dict) and m:
-            for k in list(m.keys()):
-                if str(k).strip().lower() in _DIRECTIONAL_MEASUREMENT_KEYS:
-                    m.pop(k, None)
+            _strip_directional_inplace(m)
     except Exception:  # noqa: BLE001 — sanitising must never break consolidation
         pass
     return ev
