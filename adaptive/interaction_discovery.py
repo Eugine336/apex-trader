@@ -61,7 +61,7 @@ from typing import Optional
 from loguru import logger
 
 from adaptive.counterfactual import TradeAttribution, replay_consensus
-from brain.directional_consensus import Vote
+from brain.vote_evidence import Vote
 
 # ── Relationship classes ────────────────────────────────────────────────
 SYNERGY = "SYNERGY"
