@@ -190,6 +190,12 @@ class ActionExecutor:
         # PARTIAL so a stuck stop-move can never starve a risk-reducing close.
         self._circuit_manage: dict[str, CircuitBreaker] = {}
         self._breaker_lock = Lock()
+        # Edge-triggered circuit logging: names of breakers whose current OPEN
+        # episode has already been announced, so a blocked management loop that
+        # retries every ~100ms logs the trip once (WARNING) and then stays quiet
+        # until the breaker recovers, instead of flooding the log every cycle.
+        self._circuit_announced: set[str] = set()
+        self._circuit_log_lock = Lock()
 
     def _manage_breaker(self, key: str) -> CircuitBreaker:
         """Lazily create/return the per-(symbol, op-class) management breaker."""
@@ -285,17 +291,31 @@ class ActionExecutor:
                 gate_reason=gate.reason,
             )
 
-        if not self._breaker_for(intent, open_positions).can_execute():
+        breaker = self._breaker_for(intent, open_positions)
+        if not breaker.can_execute():
             self._inc("intents_circuit_open")
-            status = self._breaker_for(intent, open_positions).get_status()
+            status = breaker.get_status()
             reason = (
                 f"Circuit open — {status.failure_count} failures, "
                 f"cooldown {status.cooldown_remaining_seconds:.0f}s remaining"
             )
-            logger.warning(
-                "EXECUTOR CIRCUIT OPEN | {} {} | {}",
-                intent.intent_type.name, intent.position_ticket, reason,
-            )
+            # Edge-triggered: announce the trip once, then stay quiet at DEBUG
+            # while the breaker keeps rejecting (the manage loop re-issues the
+            # same intent every ~100ms). The recovery is logged in
+            # _execute_with_retry when the breaker next closes.
+            with self._circuit_log_lock:
+                first = breaker.name not in self._circuit_announced
+                self._circuit_announced.add(breaker.name)
+            if first:
+                logger.warning(
+                    "EXECUTOR CIRCUIT OPEN | {} {} | {}",
+                    intent.intent_type.name, intent.position_ticket, reason,
+                )
+            else:
+                logger.debug(
+                    "EXECUTOR CIRCUIT OPEN | {} {} | {}",
+                    intent.intent_type.name, intent.position_ticket, reason,
+                )
             return ExecutionResult(
                 intent=intent, success=False, error=reason,
             )
@@ -360,6 +380,18 @@ class ActionExecutor:
 
                 if result.success:
                     circuit.record_success()
+                    # Announce recovery once, matching the edge-triggered OPEN
+                    # log, so the operator sees the breaker rejoin after it had
+                    # tripped — then clear the announce flag for the next episode.
+                    with self._circuit_log_lock:
+                        recovered = circuit.name in self._circuit_announced
+                        self._circuit_announced.discard(circuit.name)
+                    if recovered:
+                        logger.info(
+                            "EXECUTOR CIRCUIT RECOVERED | {} {} | breaker {} closed",
+                            intent.intent_type.name, intent.position_ticket,
+                            circuit.name,
+                        )
                     self._inc("intents_executed")
                     self._add_latency(elapsed_ms)
                     logger.info(
