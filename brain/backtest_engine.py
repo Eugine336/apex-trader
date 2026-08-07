@@ -3842,7 +3842,7 @@ class BacktestEngine:
             current_score = 0
             opposing_score = 0
         hist = trade.setdefault("score_history", [])
-        hist.append(current_score)
+        hist.append(current_score if current_score > 0 else int(getattr(setup, "score", 0) or 0))
 
         # Live OQ/EQ decay — recompute on this cycle's WorldModel candidates and
         # diff against the entry baseline (positive decay = deterioration).
@@ -3864,32 +3864,6 @@ class BacktestEngine:
                 session_tradeable = bool(getattr(ss, "is_tradeable", True))
         except Exception:
             session_tradeable = True
-
-        # Live directional consensus panel from this bar's WorldModel — the same
-        # unbiased module votes the entry used, so management revalidates the
-        # thesis against the panel instead of a structure-only re-derivation.
-        consensus_votes = wm.votes_list() if hasattr(wm, "votes_list") else []
-
-        # Current setup score from the live WorldModel zones (matching direction)
-        # appended to the rolling history that feeds the conviction-collapse term.
-        want_dir = norm_dir.replace("BUY", "LONG").replace("SELL", "SHORT")
-        current_score = 0
-        try:
-            for z in wm.entry_zones_list():
-                if str(getattr(z, "direction", "") or "").upper() == want_dir:
-                    current_score = max(current_score, int(getattr(z, "conviction", 0) or 0))
-        except Exception:
-            current_score = 0
-        hist = trade.setdefault("score_history", [])
-        hist.append(current_score if current_score > 0 else int(getattr(setup, "score", 0) or 0))
-
-        # Live OQ/EQ + decay (entry_* − live_*) — same derivation as the live
-        # management path; None when no matching candidate this bar.
-        live_oq, live_eq = _oq_eq_from_wm(wm, norm_dir)
-        entry_oq = trade.get("entry_oq")
-        entry_eq = trade.get("entry_eq")
-        oq_decay = (entry_oq - live_oq) if (entry_oq is not None and live_oq is not None) else None
-        eq_decay = (entry_eq - live_eq) if (entry_eq is not None and live_eq is not None) else None
 
         # Session from the candle timestamp (replaces the live SessionEngine
         # status feed). No news calendar in backtest → news is always clear.
