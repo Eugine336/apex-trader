@@ -125,7 +125,7 @@ def main() -> int:
         tested_any = True
         client = LLMClient(
             provider=provider, model=model, api_key=api_key, base_url=base_url,
-            timeout_seconds=ns.timeout, max_tokens=32, transport=transport,
+            timeout_seconds=ns.timeout, max_tokens=300, transport=transport,
         )
         if not client.usable:
             print(f"[FAIL] {label:20s} — client reports not usable "
