@@ -2326,14 +2326,23 @@ items 4–6 remain open. This section is the authoritative remediation backlog a
 is updated as each item lands. Ratification does not assert full compliance.
 
 - **RESOLVED (item 1) — evidence de-collapse.**
-  `cognition/evidence_adapters.py` no longer emits `"{module} votes {DIR}"` or
-  `"{module} supports/opposes {dominant}"`. Each module is surfaced as an
-  *instrument reading* — a neutral observation carrying a signed, bounded
-  "measured lean" and its secondary measurements (`evidence_from_votes`,
-  `evidence_from_thesis_status`, `evidence_from_developing_bias`). The numeric
-  `polarity`/`_sign` value is retained but re-scoped: it feeds only the
-  conflict/uncertainty summary and post-hoc supporting/contradicting grouping —
-  never a headline vote (Articles 2/3).
+- **RESOLVED (item 1) — evidence fully de-collapsed; direction severed from the
+  Brain's input entirely.** No cognition source returns any directional reading.
+  Every adapter in `cognition/evidence_adapters.py` (`evidence_from_votes`,
+  `evidence_from_thesis_status`, `evidence_from_developing_bias`,
+  `evidence_from_knowledge`, `evidence_from_analogues`, `evidence_from_reasoning`)
+  and the price snapshot (`cognition/market_snapshot.py`) emit `polarity = 0`
+  with no lean, vote, probability or LONG/SHORT/FLAT token in the observation,
+  and no directional measurement key. Enforcement is guaranteed at the single
+  choke point every adapter and injected evidence passes through:
+  `MarketState.add()` runs `contracts.scrub_directional()`, which zeroes
+  `polarity` and strips directional measurement keys — so nothing directional
+  can reach the Brain or the advisors regardless of upstream. `consolidation()`
+  no longer manufactures a directional "conflict"; `brain._split_evidence` and
+  the campaign influence-provenance path in `loop.py` were rewired off polarity;
+  and the institutional-memory fingerprint (`cognition/memory.py`) is now a
+  per-domain *confidence* vector (no polarity, no `direction`) so situations
+  still match without a lean (Articles 2/3).
 - **RESOLVED (item 3) — arbitration framing removed from the reasoner prompt.**
   `llm/reasoner.py::_SYSTEM_PROMPT` now frames the input as "a STRUCTURED
   REPRESENTATION OF MARKET REALITY — NOT a set of votes to arbitrate," demands

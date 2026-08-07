@@ -722,13 +722,15 @@ class CognitionLoop:
             from cognition.memory import fingerprint_from_market_state  # local, fail-safe
             fp = fingerprint_from_market_state(market_state, now=now)
             spec = campaign.to_dict() if hasattr(campaign, "to_dict") else {}
-            # Part VIII — record which evidence sources leaned the campaign's way,
-            # so the influence ledger can credit/debit them once the outcome lands.
+            # Part VIII/XXV — record which evidence sources informed the campaign
+            # (provenance) so the influence ledger can credit/debit them once the
+            # outcome lands. Evidence no longer carries a directional lean, so we
+            # record every fresh contributing source, not "those that leaned our
+            # way" (which would require a pre-cognition direction).
             try:
-                want = 1.0 if direction == "LONG" else -1.0
                 sources = sorted({
                     e.source_module for e in market_state.fresh_evidence(now)
-                    if e.source_module and (e.polarity * want) > 0.05
+                    if e.source_module
                 })
                 if sources:
                     spec = dict(spec)

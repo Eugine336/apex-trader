@@ -26,11 +26,11 @@ def test_consolidator_reads_thesis_status():
     ms = EvidenceConsolidator(ctx=ctx).build("EURUSD")
     fresh = ms.fresh_evidence()
     assert len(fresh) == 1
-    assert fresh[0].polarity > 0            # LONG dominant ⇒ positive lean
+    assert fresh[0].polarity == 0.0        # Part XXV — non-directional reading
     assert fresh[0].source_module == "brain.thesis_engine"
 
 
-def test_consolidator_short_is_negative_polarity():
+def test_consolidator_short_is_non_directional():
     thesis = SimpleNamespace(get_status=lambda: {
         "theses": {"EURUSD": {
             "short": {"confidence": 0.7},
@@ -38,7 +38,7 @@ def test_consolidator_short_is_negative_polarity():
         }}
     })
     ms = EvidenceConsolidator(ctx=SimpleNamespace(thesis_engine=thesis)).build("EURUSD")
-    assert ms.fresh_evidence()[0].polarity < 0
+    assert ms.fresh_evidence()[0].polarity == 0.0
 
 
 def test_consolidator_set_vote_source_surfaces_live_votes():
@@ -52,7 +52,7 @@ def test_consolidator_set_vote_source_surfaces_live_votes():
     ms = cons.build("XAUUSD")
     fresh = ms.fresh_evidence()
     assert len(fresh) == 1
-    assert fresh[0].source_module == "structure" and fresh[0].polarity > 0
+    assert fresh[0].source_module == "structure" and fresh[0].polarity == 0.0
     assert fresh[0].measurements.get("bos") is True
 
 
@@ -84,7 +84,7 @@ def test_consolidator_set_developing_source_surfaces_bias():
     fresh = cons.build("XAUUSD").fresh_evidence()
     assert len(fresh) == 1
     assert fresh[0].source_module == "world_model.developing"
-    assert fresh[0].polarity > 0
+    assert fresh[0].polarity == 0.0
     assert fresh[0].measurements.get("developing") is True
 
 
@@ -353,7 +353,7 @@ def test_origination_flat_decision_never_originates():
 
 # ── Institutional memory (Phase H — Part VII) ─────────────────────────────────
 
-from cognition.contracts import Evidence, EvidenceDomain
+from cognition.contracts import EvidenceDomain
 from cognition.memory import CampaignMemoryStore
 
 
@@ -404,7 +404,8 @@ def test_consolidator_injects_analogue_evidence_from_memory():
         polarity=0.7, confidence=0.8)])
     analogue = [e for e in ms.evidence if e.domain == EvidenceDomain.HISTORICAL_ANALOGUE]
     assert len(analogue) == 1
-    assert analogue[0].polarity > 0     # a won LONG analogue leans long
+    assert analogue[0].polarity == 0.0     # Part XXV — win/loss stats, no lean
+    assert analogue[0].measurements["wins"] == 1
     store.close()
 
 

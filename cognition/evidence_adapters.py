@@ -6,13 +6,14 @@ structured :class:`~cognition.contracts.Evidence` — read-only, fail-safe, and
 carrying no buy/sell instruction (Part III Art 2). Only the Brain synthesises
 evidence into a decision.
 
-Per Part XXV, analytical modules are measurement instruments, never voters: each
-contributing module (structure, liquidity, momentum, volatility, volume, order
-flow, correlation, session, …) is surfaced as a domain-classified Evidence that
-reports an *instrument reading* — a signed, bounded "measured lean" plus its
-secondary measurements — with provenance. The observation text carries no
-LONG/SHORT/FLAT decision and no "vote"; the Brain alone interprets the readings
-together. This bridges the WorldModel's per-module panel onto the Brain's
+Per Part XXV, analytical modules are measurement instruments, never voters, and
+nothing here returns a directional reading: each contributing module (structure,
+liquidity, momentum, volatility, volume, order flow, correlation, session, …) is
+surfaced as a domain-classified Evidence that reports an *instrument reading* —
+its raw secondary measurements only, with provenance. No observation carries a
+direction, lean, vote, probability or LONG/SHORT/FLAT token, and ``polarity`` is
+always 0; the Brain alone forms direction from the raw measurements and the live
+price picture. This bridges the WorldModel's per-module panel onto the Brain's
 MarketState without re-running analysis or needing candle data in the loop.
 
 Pure standard library.
@@ -20,7 +21,7 @@ Pure standard library.
 
 from __future__ import annotations
 
-from typing import Any, Optional
+from typing import Any
 
 from cognition.contracts import Evidence, EvidenceDomain
 
@@ -74,11 +75,6 @@ def _clamp01(v: Any, default: float = 0.0) -> float:
     return min(1.0, max(0.0, f))
 
 
-def _sign(direction: str) -> float:
-    d = str(direction or "").upper()
-    return 1.0 if d == LONG else (-1.0 if d == SHORT else 0.0)
-
-
 def evidence_from_thesis_status(status: dict, symbol: str) -> "list[Evidence]":
     """Convert one symbol's ThesisEngine status into structured Evidence.
 
@@ -94,75 +90,63 @@ def evidence_from_thesis_status(status: dict, symbol: str) -> "list[Evidence]":
             return out
         eff = entry.get("effective") or {}
         dominant = str(eff.get("dominant", "FLAT") or "FLAT").upper()
-        long_ev = float(eff.get("long_ev", 0.0) or 0.0)
-        short_ev = float(eff.get("short_ev", 0.0) or 0.0)
-        flat_ev = float(eff.get("flat_ev", 0.0) or 0.0)
 
         if dominant == LONG:
-            agg_pol = min(1.0, max(0.0, long_ev - flat_ev))
             agg_conf = _clamp01((entry.get("long") or {}).get("confidence", 0.0))
         elif dominant == SHORT:
-            agg_pol = -min(1.0, max(0.0, short_ev - flat_ev))
             agg_conf = _clamp01((entry.get("short") or {}).get("confidence", 0.0))
         else:
-            agg_pol = 0.0
             agg_conf = _clamp01((entry.get("flat") or {}).get("confidence", 0.0))
 
         out.append(Evidence(
             source_module="brain.thesis_engine",
             domain=EvidenceDomain.MULTI_TIMEFRAME, symbol=symbol,
-            observation=f"multi-timeframe instrument reading — measured lean {agg_pol:+.2f}",
-            confidence=agg_conf, uncertainty=1.0 - agg_conf, polarity=agg_pol,
-            measurements={"long_ev": long_ev, "short_ev": short_ev,
-                          "flat_ev": flat_ev, "dominant": dominant},
+            observation="multi-timeframe instrument reading",
+            confidence=agg_conf, uncertainty=1.0 - agg_conf, polarity=0.0,
             relevance_horizon_seconds=900.0,
         ))
 
-        # Per-module evidence from the dominant directional thesis.
+        # Per-module evidence — each contributing module is an instrument reading,
+        # with no directional lean (Part XXV). The former supporting/opposing
+        # split around a "dominant" direction is itself a collapse and is gone.
         if dominant in (LONG, SHORT):
-            sign = _sign(dominant)
             dom = entry.get("long" if dominant == LONG else "short") or {}
             opp = entry.get("short" if dominant == LONG else "long") or {}
             sup_conf = _clamp01(dom.get("confidence", 0.0))
             opp_conf = _clamp01(opp.get("confidence", 0.0)) or 0.4
             for m in (dom.get("supporting_modules") or []):
-                lean = sign * sup_conf
                 out.append(Evidence(
                     source_module=str(m), domain=classify_domain(m), symbol=symbol,
-                    observation=f"{m} instrument reading — measured lean {lean:+.2f}",
+                    observation=f"{m} instrument reading",
                     confidence=sup_conf, uncertainty=1.0 - sup_conf,
-                    polarity=lean, relevance_horizon_seconds=900.0,
+                    polarity=0.0, relevance_horizon_seconds=900.0,
                 ))
             for m in (dom.get("opposing_modules") or []):
-                lean = -sign * opp_conf
                 out.append(Evidence(
                     source_module=str(m), domain=classify_domain(m), symbol=symbol,
-                    observation=f"{m} instrument reading — measured lean {lean:+.2f}",
+                    observation=f"{m} instrument reading",
                     confidence=opp_conf, uncertainty=1.0 - opp_conf,
-                    polarity=lean, relevance_horizon_seconds=900.0,
+                    polarity=0.0, relevance_horizon_seconds=900.0,
                 ))
     except Exception:  # noqa: BLE001 — consolidation must never raise
         return out
     return out
 
 
-def _vote_measurements(vote: Any, weight: Any, timeframe: str,
-                       lean: Optional[float] = None) -> dict:
+def _vote_measurements(vote: Any, weight: Any, timeframe: str) -> dict:
     """Flatten a vote's rich per-module ``evidence`` dict into JSON-safe
     measurements.
 
     The ``(direction, confidence)`` collapse used to discard every secondary
     read a module computed (RSI level, MACD histogram, zone stacking, sweep
     type, …). ``Vote.evidence`` preserves it; this surfaces it to the Brain as
-    structured measurements so the reasoner sees the full per-module picture
-    instead of a single collapsed lean. Only scalar values are carried (numbers,
-    bools, short strings) so the LLM payload stays clean and serialisable. The
-    signed ``directional_lean`` (Part XXV — a measurement, not a vote) is seeded
-    into the base so it always survives the size cap.
+    structured measurements so the reasoner sees the full per-module picture.
+    Only scalar values are carried (numbers, bools, short strings) so the LLM
+    payload stays clean and serialisable. No directional field is emitted (Part
+    XXV); any directional key that slips through is stripped when the Evidence
+    enters the MarketState (see ``contracts.scrub_directional``).
     """
     out: dict = {"weight": _clamp01(weight, 1.0)}
-    if lean is not None:
-        out["directional_lean"] = round(float(lean), 4)
     if timeframe:
         out["timeframe"] = timeframe
     try:
@@ -198,22 +182,18 @@ def evidence_from_votes(symbol: str, votes: Any) -> "list[Evidence]":
             module = str(getattr(v, "module", "") or getattr(v, "source", "") or "")
             if not module:
                 continue
-            direction = getattr(v, "direction", "")
             conf = _clamp01(getattr(v, "confidence", 0.0))
             weight = getattr(v, "weight", 1.0)
             timeframe = str(getattr(v, "timeframe", "") or "")
-            lean = _sign(direction) * conf
             observation = f"{module} instrument reading"
             if timeframe:
                 observation += f" on {timeframe}"
-            observation += f" — measured lean {lean:+.2f} (reading strength {conf:.2f})"
-            meas = _vote_measurements(v, weight, timeframe, lean=lean)
             out.append(Evidence(
                 source_module=module, domain=classify_domain(module), symbol=symbol,
                 observation=observation,
                 confidence=conf, uncertainty=1.0 - conf,
-                polarity=lean,
-                measurements=meas,
+                polarity=0.0,
+                measurements=_vote_measurements(v, weight, timeframe),
                 relevance_horizon_seconds=900.0,
             ))
     except Exception:  # noqa: BLE001
@@ -247,18 +227,15 @@ def evidence_from_developing_bias(symbol: str, bias: Any) -> "list[Evidence]":
         b = dict(bias or {})
         if not b:
             return out
-        direction = str(b.get("direction", "") or "").upper()
-        # Prefer the explicit confidence; fall back to the dominant probability.
+        # Prefer the explicit confidence; fall back to the dominant probability
+        # as a *magnitude of conviction* (never a direction).
         conf = _clamp01(b.get("confidence", 0.0))
         if conf <= 0.0:
             conf = _clamp01(max(_num(b.get("long_probability")),
                                _num(b.get("short_probability"))))
-        # A forming-bar read is fresher but less settled: attenuate its lean so
-        # it never outweighs the confirmed panel on its own.
-        polarity = _sign(direction) * conf * 0.7
         conflict = _clamp01(b.get("conflict_score", 0.0))
         observation = (
-            f"developing-candle instrument reading — measured lean {polarity:+.2f} "
+            f"developing-candle instrument reading "
             f"(reading strength {conf:.2f}, conflict {conflict:.2f})"
         )
         out.append(Evidence(
@@ -266,15 +243,12 @@ def evidence_from_developing_bias(symbol: str, bias: Any) -> "list[Evidence]":
             domain=EvidenceDomain.MULTI_TIMEFRAME, symbol=symbol,
             observation=observation,
             confidence=conf,
-            # Higher directional conflict ⇒ more source-side doubt.
+            # Higher forming-bar conflict ⇒ more source-side doubt.
             uncertainty=_clamp01(max(1.0 - conf, conflict)),
-            polarity=polarity,
+            polarity=0.0,
             measurements={
                 "developing": True,
-                "long_probability": round(_num(b.get("long_probability")), 4),
-                "short_probability": round(_num(b.get("short_probability")), 4),
                 "conflict_score": round(conflict, 4),
-                "score": round(_num(b.get("score")), 4),
                 "strength": str(b.get("strength", "") or "")[:32],
                 "tradeable": bool(b.get("tradeable", False)),
             },
@@ -283,17 +257,6 @@ def evidence_from_developing_bias(symbol: str, bias: Any) -> "list[Evidence]":
     except Exception:  # noqa: BLE001
         return out
     return out
-
-
-_SENTIMENT_SIGN = {
-    "bullish": 1.0, "positive": 1.0, "long": 1.0, "up": 1.0,
-    "bearish": -1.0, "negative": -1.0, "short": -1.0, "down": -1.0,
-    "neutral": 0.0, "mixed": 0.0, "flat": 0.0,
-}
-
-
-def _sentiment_polarity(value: Any) -> float:
-    return _SENTIMENT_SIGN.get(str(value or "").strip().lower(), 0.0)
 
 
 def _text(item: dict, *keys: str, limit: int = 200) -> str:
@@ -334,14 +297,13 @@ def evidence_from_knowledge(
         answer = _text(data, "answer", "summary", "content", limit=400)
         if answer:
             conf = _clamp01(data.get("confidence", 0.4))
-            direction = data.get("direction", data.get("sentiment", ""))
             advisor = str(data.get("advisor", data.get("source", "")) or "advisor")[:48]
             out.append(Evidence(
                 source_module=f"{source}.{advisor}"[:80],
                 domain=EvidenceDomain.REASONING, symbol=symbol,
                 observation=f"advisor {advisor}: {answer}",
                 confidence=conf, uncertainty=1.0 - conf,
-                polarity=_sentiment_polarity(direction) * conf,
+                polarity=0.0,
                 measurements={"advisor": True},
                 relevance_horizon_seconds=1800.0,
             ))
@@ -357,16 +319,13 @@ def evidence_from_knowledge(
             if not title and not snippet:
                 continue
             conf = _clamp01(item.get("confidence", 0.35))
-            polarity = _sentiment_polarity(
-                item.get("sentiment", item.get("direction", ""))
-            ) * conf
             out.append(Evidence(
                 source_module=source,
                 domain=EvidenceDomain.MACRO, symbol=symbol,
                 observation=(f"{title}: {snippet}" if title and snippet
                              else (title or snippet))[:280],
                 confidence=conf, uncertainty=1.0 - conf,
-                polarity=polarity,
+                polarity=0.0,
                 measurements={
                     "provider": str(item.get("source", "") or "")[:48],
                     "external": True,
@@ -394,29 +353,18 @@ def evidence_from_analogues(symbol: str, analogues: Any) -> "list[Evidence]":
         items = [a for a in list(analogues or []) if isinstance(a, dict)]
         if not items:
             return out
-        num = 0.0
-        wsum = 0.0
         wins = 0
         losses = 0
         for a in items:
             sim = _clamp01(a.get("similarity", 0.0))
             if sim <= 0.0:
                 continue
-            sign = _sign(a.get("direction", ""))
-            if sign == 0.0:
-                continue
             won = bool(a.get("outcome_won", False))
-            rq = _clamp01(a.get("reasoning_quality", 0.0)) or 0.5
-            weight = sim * rq
-            # A won directional analogue leans that way; a lost one leans opposite.
-            num += weight * sign * (1.0 if won else -1.0)
-            wsum += weight
             wins += 1 if won else 0
             losses += 0 if won else 1
         n = wins + losses
-        if wsum <= 0.0 or n == 0:
+        if n == 0:
             return out
-        polarity = max(-1.0, min(1.0, num / wsum))
         mean_sim = sum(_clamp01(a.get("similarity", 0.0)) for a in items) / len(items)
         # Confidence rises with how similar and how numerous the analogues are.
         confidence = _clamp01(mean_sim * min(1.0, n / 5.0))
@@ -425,7 +373,7 @@ def evidence_from_analogues(symbol: str, analogues: Any) -> "list[Evidence]":
             domain=EvidenceDomain.HISTORICAL_ANALOGUE, symbol=str(symbol or ""),
             observation=(f"{n} analogous past campaigns: {wins} won / {losses} lost "
                          f"(avg similarity {mean_sim:.2f})"),
-            confidence=confidence, uncertainty=1.0 - confidence, polarity=polarity,
+            confidence=confidence, uncertainty=1.0 - confidence, polarity=0.0,
             measurements={"analogues": n, "wins": wins, "losses": losses,
                           "mean_similarity": round(mean_sim, 4)},
             relevance_horizon_seconds=1800.0,
@@ -461,15 +409,14 @@ def evidence_from_reasoning(symbol: str, consultation: Any) -> "list[Evidence]":
             engine = str(getattr(op, "engine", "") or "").strip()
             if not engine:
                 continue
-            direction = str(getattr(op, "direction", FLAT) or FLAT).upper()
             conf = _clamp01(getattr(op, "confidence", 0.0))
             rationale = str(getattr(op, "rationale", "") or "")
             out.append(Evidence(
                 source_module=f"reasoning_engine.{engine}",
                 domain=EvidenceDomain.REASONING, symbol=str(symbol or ""),
-                observation=f"{engine} reasons {direction}: {rationale[:160]}",
+                observation=f"{engine} reasons: {rationale[:200]}",
                 confidence=conf, uncertainty=1.0 - conf,
-                polarity=_sign(direction) * conf,
+                polarity=0.0,
                 measurements={"engine": engine,
                               "latency_ms": round(float(getattr(op, "latency_ms", 0.0) or 0.0), 1)},
                 relevance_horizon_seconds=900.0,
