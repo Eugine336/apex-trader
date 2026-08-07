@@ -59,7 +59,7 @@ from typing import Optional
 from loguru import logger
 
 from adaptive.module_governor import ModuleMode
-from brain.directional_consensus import Vote
+from brain.vote_evidence import Vote
 
 # A condition is (module, direction) with direction in LONG / SHORT / ABSENT —
 # identical to the SignalDiscoveryEngine's condition vocabulary.
