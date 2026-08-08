@@ -1295,6 +1295,14 @@ class SystemContext:
                         getattr(cog_cfg, "manage_exit_floor", 0.3)
                         if cog_cfg is not None else 0.3
                     ),
+                    # Part IX Art 1/7 — payoff geometry for the Brain's expected
+                    # value (EV in R). Reuses the same reward multiple the
+                    # origination sink targets so the strategic EV and the
+                    # execution-cost-adjusted EV share one reward-to-risk basis.
+                    reward_r_default=float(
+                        getattr(cog_cfg, "origination_reward_multiple", 2.0)
+                        if cog_cfg is not None else 2.0
+                    ),
                 )
                 # Part VII — institutional memory (Phase H). Best-effort: a
                 # store fault leaves memory None (observational, fail-open).
