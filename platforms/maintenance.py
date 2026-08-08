@@ -31,6 +31,7 @@ class DailyMaintenance:
         vacuum_size_threshold_mb: float = 50.0,
         compact_repo_size_mb: float = 500.0,
         max_rss_mb: float = 2048.0,
+        data_repo_url: Optional[str] = None,
     ):
         self._data_dir = Path(data_dir)
         self._log_dir = Path(log_dir)
@@ -41,6 +42,10 @@ class DailyMaintenance:
         self._sync_orphan_branch = sync_orphan_branch
         self._sync_exclude_patterns = sync_exclude_patterns
         self._sync_interval_hours = sync_interval_hours
+        # Expected data-repo clone URL. All git sync/compaction verify the data
+        # dir's origin normalizes to this identity before doing anything
+        # destructive, so maintenance can never operate on the source repo.
+        self._data_repo_url = data_repo_url
         # Reclaim disk freed by DELETE/prune: VACUUM a DB only once it grows past
         # this size (VACUUM is heavy — never run it on small files).
         self._vacuum_size_threshold_mb = vacuum_size_threshold_mb
@@ -242,6 +247,7 @@ class DailyMaintenance:
                 self._data_dir,
                 max_repo_size_mb=self._compact_repo_size_mb,
                 branch=self._sync_branch,
+                data_repo_url=self._data_repo_url,
             )
             logger.info("[maintenance] repo-compaction — {}", result)
             return result
@@ -292,7 +298,20 @@ class DailyMaintenance:
                 self._max_rss_mb,
             )
             try:
-                self._data_dir.mkdir(parents=True, exist_ok=True)
+                # Only create the data dir if it is safe to do so — never
+                # materialize a plain ``data/`` inside the source checkout (that
+                # is the footgun that let git walk up into the source repo).
+                from runtime_paths import data_dir_is_safe
+
+                if not self._data_dir.exists():
+                    safe, reason = data_dir_is_safe(self._data_dir)
+                    if not safe:
+                        logger.warning(
+                            "[maintenance] skipping restart-marker dir create — {}",
+                            reason,
+                        )
+                        return out
+                    self._data_dir.mkdir(parents=True, exist_ok=True)
                 marker = self._data_dir / ".restart_requested"
                 ts = datetime.now(timezone.utc).isoformat()
                 marker.write_text(
@@ -379,6 +398,8 @@ class DailyMaintenance:
                 commit_message=message,
                 exclude_patterns=self._sync_exclude_patterns,
                 branch=self._sync_branch,
+                data_dir=self._data_dir,
+                data_repo_url=self._data_repo_url,
             )
             logger.info("[maintenance] data-repo sync — {}", result)
             return result

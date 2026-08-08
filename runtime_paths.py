@@ -39,6 +39,7 @@ served out of it, and they must NOT be conflated in multi-tenant mode:
 from __future__ import annotations
 
 import os
+import subprocess
 from pathlib import Path
 
 # Repository root — this file lives at ``<repo>/runtime_paths.py`` (top-level,
@@ -124,9 +125,81 @@ def user_id() -> str | None:
     return uid or None
 
 
+class DataJunctionError(RuntimeError):
+    """Raised when the data directory would be an unsafe plain directory nested
+    inside the source git work tree (no junction / no dedicated data repo)."""
+
+
+def _dir_inside_git_worktree(path: Path) -> bool:
+    """True if *path* (or its nearest existing ancestor) lies inside a git work
+    tree — i.e. creating a plain directory here would nest it in an enclosing
+    repository (the source checkout).
+
+    Deliberately does NOT set ``GIT_CEILING_DIRECTORIES``: the whole point is to
+    detect an enclosing repo reachable by parent-directory discovery.
+    """
+    probe = path
+    while not probe.exists():
+        parent = probe.parent
+        if parent == probe:
+            return False
+        probe = parent
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(probe), "rev-parse", "--is-inside-work-tree"],
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, OSError):
+        return False
+    return out.returncode == 0 and out.stdout.strip() == "true"
+
+
+def data_dir_is_safe(path: Path | None = None) -> tuple[bool, str]:
+    """Return ``(ok, reason)`` — whether *path* is safe to use as the data dir.
+
+    Safe when the data dir is:
+
+    * a symlink/junction (points at the separate data repo), OR
+    * its own git repository (has a ``.git``), OR
+    * a standalone directory not nested inside any git work tree (e.g. an
+      isolated multi-tenant ``APEX_DATA_DIR`` outside the source checkout).
+
+    UNSAFE when it is (or would be) a plain directory nested inside an enclosing
+    git work tree: that is the source checkout, and data git operations would
+    walk up into it. This is the topology guard the production incident lacked.
+    """
+    d = path if path is not None else data_dir()
+    if d.is_symlink():
+        return True, "symlink/junction"
+    if (d / ".git").exists():
+        return True, "dedicated git repo"
+    if _dir_inside_git_worktree(d):
+        return False, (
+            f"{d} is a plain directory inside a git work tree with no data "
+            "junction or its own .git — refusing to use it as the data dir "
+            "(would let git operations reach the source repo)"
+        )
+    return True, "standalone directory"
+
+
 def ensure_data_dir() -> Path:
-    """Return :func:`data_dir`, creating it if absent."""
+    """Return :func:`data_dir`, creating it if absent — but only if it is safe.
+
+    Refuses to materialize a plain ``data/`` *inside* the source git checkout
+    when no junction/dedicated-repo exists. That is exactly the footgun behind
+    the production incident: a plain ``data/`` under the source repo let
+    ``git -C data/ …`` walk up to the source ``.git`` and force-push over its
+    history. The operator must instead provision the junction/dedicated data
+    repo (see ``docs/DATA_JUNCTION.md`` and ``deploy/setup-vps.sh``).
+
+    Raises :class:`DataJunctionError` when the resolved data dir would be an
+    unsafe plain directory nested in the source work tree.
+    """
     d = data_dir()
+    safe, reason = data_dir_is_safe(d)
+    if not safe:
+        raise DataJunctionError(reason)
     d.mkdir(parents=True, exist_ok=True)
     return d
 

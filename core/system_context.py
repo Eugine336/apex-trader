@@ -1836,10 +1836,43 @@ class SystemContext:
         try:
             from platforms.maintenance import DailyMaintenance as _DailyMaint
             db_cfg = getattr(config, "data_backup", None)
+            data_repo_url = (
+                str(getattr(db_cfg, "data_repo_url", "") or "") or None
+                if db_cfg else None
+            )
+            auto_sync = bool(
+                getattr(db_cfg, "auto_sync_data_repo", True) if db_cfg else True
+            )
+            # Refuse to enable auto-sync unless the data dir is a valid dedicated
+            # data repo (own .git, origin → the data repo, never the source). An
+            # invalid topology disables sync entirely rather than risk the source
+            # engine repo.
+            if auto_sync:
+                try:
+                    from runtime_paths import data_dir as _data_dir
+                    from scripts.git_identity import data_repo_ready
+
+                    ready, reason = data_repo_ready(
+                        _data_dir(), data_repo_url=data_repo_url
+                    )
+                    if not ready:
+                        logger.critical(
+                            "[SystemContext] auto-sync DISABLED — data repo "
+                            "identity invalid: {}",
+                            reason,
+                        )
+                        auto_sync = False
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[SystemContext] data-repo identity check failed, "
+                        "disabling auto-sync: {}", exc,
+                    )
+                    auto_sync = False
             ctx.daily_maintenance = _DailyMaint(
-                auto_sync_data_repo=bool(
-                    getattr(db_cfg, "auto_sync_data_repo", True) if db_cfg else True
+                data_dir=str(
+                    getattr(db_cfg, "data_dir", "data") if db_cfg else "data"
                 ),
+                auto_sync_data_repo=auto_sync,
                 sync_branch=str(
                     getattr(db_cfg, "sync_branch", "main") if db_cfg else "main"
                 ),
@@ -1863,6 +1896,7 @@ class SystemContext:
                 max_rss_mb=float(
                     getattr(db_cfg, "max_rss_mb", 2048.0) if db_cfg else 2048.0
                 ),
+                data_repo_url=data_repo_url,
             )
         except Exception as exc:
             logger.warning("[SystemContext] DailyMaintenance init failed: {}", exc)

@@ -14,10 +14,19 @@ from __future__ import annotations
 import argparse
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
 from loguru import logger
+
+# Ensure the repo root is importable whether this runs as ``scripts.restore_data``
+# or as a bare ``python scripts/restore_data.py`` invocation.
+_REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
+
+from runtime_paths import data_dir_is_safe  # noqa: E402
 
 _DATA_DIR = Path("data")
 _BRANCH = "data-backup"
@@ -58,6 +67,12 @@ def run_restore(*, force: bool = False) -> str:
         if not src.is_dir():
             return "backup branch has no data/ directory"
 
+        # Never materialize a plain ``data/`` inside the source checkout — the
+        # operator must provision the junction/dedicated data repo first.
+        safe, reason = data_dir_is_safe(_DATA_DIR)
+        if not safe:
+            logger.critical("[restore] REFUSING to restore — {}", reason)
+            return f"refused: {reason}"
         _DATA_DIR.mkdir(parents=True, exist_ok=True)
 
         copied = skipped = 0
