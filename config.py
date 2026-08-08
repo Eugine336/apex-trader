@@ -4039,13 +4039,14 @@ class ComposioConfig:
 class CognitionConfig:
     """The AI Cognitive Brain loop (Single Reasoner) — Constitution Parts I/II/IV.
 
-    Runs the one Brain over consolidated Evidence on a background loop and
-    records its DecisionPackages. ``shadow_mode`` (default True) keeps the Brain
-    observational — it produces and surfaces decisions without driving execution
-    — so the legacy path stays authoritative until the cutover is validated
-    (Parts XIII/XV: shadow → paper → controlled rollout). Env overrides:
+    Runs the one Brain over consolidated Evidence on a background loop and, by
+    default, DRIVES execution: it originates and manages live trades from its
+    DecisionPackages with no external gate veto (origination_mode="live",
+    management_mode="live", gate_mode="off"). The Brain's own EV / confidence /
+    uncertainty qualification and the deterministic risk + feasibility layer
+    (Parts IX/X) still constrain every order. Env overrides:
     COGNITION_ENABLED, COGNITION_SHADOW_MODE, COGNITION_LOOP_INTERVAL_SECONDS,
-    COGNITION_ORIGINATION_MODE (off|shadow|live; default shadow),
+    COGNITION_ORIGINATION_MODE (off|shadow|live; default live),
     COGNITION_MEMORY_ENABLED (default true),
     COGNITION_OPERATIONS_ENABLED (default false),
     COGNITION_INFLUENCE_ENABLED (default false — shadow learning).
@@ -4053,7 +4054,9 @@ class CognitionConfig:
 
     enabled: bool = True
     shadow_mode: bool = False
-    gate_mode: str = "authoritative"   # off | shadow | veto | authoritative (Brain = sole decider)
+    # "off" = the Brain acts un-gated: its DecisionPackages drive execution
+    # directly with no CognitionGate/ManagementGate veto layer in front.
+    gate_mode: str = "off"   # off | shadow | veto | authoritative (Brain = sole decider)
     # Single Reasoner cutover (Constitution I.4 / III.2): when True the legacy
     # market-decision authority (consensus/zone-thesis entry emitters) is SEVERED
     # at runtime — the AI Cognitive Brain, via its origination path, is the sole
@@ -4072,7 +4075,7 @@ class CognitionConfig:
     # instead of waiting for the next fixed interval. The periodic cycle stays a
     # backstop. A per-symbol floor bounds LLM cost; a confidence delta filters
     # noise. env COGNITION_EVENT_DRIVEN / _EVENT_MIN_INTERVAL_SECONDS / _EVENT_CONFIDENCE_DELTA.
-    event_driven: bool = False
+    event_driven: bool = True
     event_min_interval_seconds: float = 8.0
     event_confidence_delta: float = 0.15
     # Phase F — Brain-driven management thresholds.
@@ -4109,17 +4112,17 @@ class CognitionConfig:
     commission_per_lot_round_trip: float = 0.0
     # Phase G — Brain-originated entries from its CampaignSpecification.
     # "off"    — never originate (management/observation only).
-    # "shadow" — record intended orders, submit nothing (default; safe).
-    # "live"   — submit originated entries via the wired executor sink.
-    origination_mode: str = "shadow"
+    # "shadow" — record intended orders, submit nothing.
+    # "live"   — submit originated entries via the wired executor sink (default).
+    origination_mode: str = "live"
     origination_risk_fraction: float = 0.01   # fraction of balance risked per originated entry
     origination_max_exposure: float = 1.0     # cap on the campaign's desired exposure (0..1)
     # Part VI — how the Brain's management verdicts (EXIT/REVERSE/SCALE_OUT/
     # PROTECT_PROFIT/TIGHTEN_RISK/SCALE_IN) reach the broker.
     #   "off"    — never manage (observation only).
-    #   "shadow" — record the intended management action, submit nothing (default).
-    #   "live"   — realise it on MT5 via the wired management sink.
-    management_mode: str = "shadow"
+    #   "shadow" — record the intended management action, submit nothing.
+    #   "live"   — realise it on MT5 via the wired management sink (default).
+    management_mode: str = "live"
     # Part X — when the Brain originates an entry without an explicit protective
     # stop, execution derives one deterministically: a stop ``origination_stop_fraction``
     # of price away (0.4% default, instrument-agnostic) with a take-profit at the
@@ -4160,7 +4163,7 @@ class CognitionConfig:
         self.enabled = _llm_env_bool("COGNITION_ENABLED", self.enabled)
         self.shadow_mode = _llm_env_bool("COGNITION_SHADOW_MODE", self.shadow_mode)
         self.gate_mode = (
-            os.getenv("COGNITION_GATE_MODE", self.gate_mode) or "authoritative"
+            os.getenv("COGNITION_GATE_MODE", self.gate_mode) or "off"
         ).strip().lower()
         self.single_path = _llm_env_bool("COGNITION_SINGLE_PATH", self.single_path)
         self.emit_operator_notifications = _llm_env_bool(
@@ -4178,10 +4181,10 @@ class CognitionConfig:
             "COGNITION_INFLUENCE_ENABLED", self.influence_enabled
         )
         self.origination_mode = (
-            os.getenv("COGNITION_ORIGINATION_MODE", self.origination_mode) or "shadow"
+            os.getenv("COGNITION_ORIGINATION_MODE", self.origination_mode) or "live"
         ).strip().lower()
         self.management_mode = (
-            os.getenv("COGNITION_MANAGEMENT_MODE", self.management_mode) or "shadow"
+            os.getenv("COGNITION_MANAGEMENT_MODE", self.management_mode) or "live"
         ).strip().lower()
         self.event_driven = _llm_env_bool("COGNITION_EVENT_DRIVEN", self.event_driven)
         for env_name, attr in (
