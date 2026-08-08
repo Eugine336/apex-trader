@@ -365,6 +365,18 @@ def sync_data_repo(
     if not push:
         return "committed (push skipped)"
 
+    # Final identity assertion immediately before the push — the single most
+    # dangerous operation. Even though the tree was verified up front, re-check
+    # right here so the wrong repository can never be reached at push time.
+    refusal = _verify_data_repo_or_refuse(
+        work_tree,
+        operation="data-sync",
+        data_repo_url=data_repo_url,
+        require_remote=True,
+    )
+    if refusal is not None:
+        return refusal
+
     ok, push_out = _run_git(["push", remote, branch], work_tree)
     if not ok:
         logger.warning("[data-sync] push failed: {}", push_out)

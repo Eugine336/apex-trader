@@ -132,24 +132,24 @@ def main() -> None:
                 getattr(db_cfg, "data_repo_url", None) if db_cfg else None
             )
 
-            # Log the resolved source/data repo topology at boot so an operator
-            # can immediately see whether the data junction is wired correctly.
+            # Print an unambiguous repository-topology banner at boot. If the
+            # data dir is not a correctly-provisioned dedicated data repo (or
+            # resolves into the source repo), the banner is CRITICAL and states
+            # that auto-sync is disabled and no git mutation is permitted.
             try:
                 from runtime_paths import data_dir as _data_dir
                 from runtime_paths import repo_root
-                from scripts.git_identity import describe_repo_topology
+                from scripts.git_identity import render_topology_banner
 
-                topo = describe_repo_topology(repo_root(), _data_dir())
-                logger.info(
-                    "[clean-start] repo topology — SOURCE_REPO_ROOT={} "
-                    "SOURCE_REMOTE={} DATA_REPO_ROOT={} DATA_REMOTE={}",
-                    topo["SOURCE_REPO_ROOT"],
-                    topo["SOURCE_REMOTE"],
-                    topo["DATA_REPO_ROOT"],
-                    topo["DATA_REMOTE"],
+                topo_ok, banner = render_topology_banner(
+                    repo_root(), _data_dir(), data_repo_url=data_repo_url
                 )
+                for _line in banner.splitlines():
+                    (logger.info if topo_ok else logger.critical)(
+                        "[clean-start] {}", _line
+                    )
             except Exception as exc:  # noqa: BLE001
-                logger.debug("[clean-start] topology log skipped: {}", exc)
+                logger.debug("[clean-start] topology banner skipped: {}", exc)
 
             pull_res = sync_clean_state_from_remote(
                 branch=branch, data_repo_url=data_repo_url
