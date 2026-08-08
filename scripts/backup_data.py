@@ -215,6 +215,32 @@ def run_backup(
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
+def _is_dedicated_data_repo(work_tree: str) -> bool:
+    """True only if *work_tree* is the root of its own git repository.
+
+    ``sync_data_repo``/``compact_repo_history`` are designed for ``data/``
+    being a separate junction/clone with its own ``.git`` — every commit and
+    the squash-compaction only ever touch that dedicated repo. If ``data/``
+    is instead just a plain subdirectory of a larger repo (no ``.git`` of its
+    own), git still discovers a repo by walking up to the parent, and
+    ``rev-parse --show-toplevel`` from inside ``data/`` returns that parent's
+    root rather than ``data/`` itself. Operating in place in that case means
+    every "sync" commits onto the *shared* branch and every "compaction"
+    squashes the *entire source repository's* real history — not just data
+    history — into a single orphan commit, then force-pushes over it. This
+    check is what tells the two functions below to refuse rather than do
+    that silently.
+    """
+    ok, out = _run_git(["rev-parse", "--show-toplevel"], work_tree)
+    if not ok:
+        return False
+    try:
+        toplevel = Path(out.strip()).resolve()
+        return toplevel == Path(work_tree).resolve()
+    except Exception:
+        return False
+
+
 def sync_data_repo(
     *,
     commit_message: str,
@@ -251,6 +277,17 @@ def sync_data_repo(
     ok, _ = _run_git(["rev-parse", "--is-inside-work-tree"], work_tree)
     if not ok:
         return "data dir is not a git repo"
+
+    if not _is_dedicated_data_repo(work_tree):
+        logger.critical(
+            "[data-sync] REFUSING to sync — {} is not its own git repository "
+            "(git resolved it into the enclosing source repo). Committing here "
+            "would land raw data files on the source repo's '{}' branch. Set "
+            "data_dir up as a genuinely separate repo/junction (its own "
+            "'git init' + 'git remote add origin ...') to enable auto-sync.",
+            work_tree, branch,
+        )
+        return "refused: data dir is not a dedicated git repo (would corrupt source repo)"
 
     # Flush WAL journals into the main .db files so the committed databases
     # are self-contained — git excludes the -wal/-shm sidecars.
@@ -375,6 +412,17 @@ def compact_repo_history(
     ok, _ = _run_git(["rev-parse", "--is-inside-work-tree"], work_tree)
     if not ok:
         return "not a git repo"
+
+    if not _is_dedicated_data_repo(work_tree):
+        logger.critical(
+            "[repo-compact] REFUSING to compact — {} is not its own git "
+            "repository (git resolved it into the enclosing source repo). "
+            "Squashing here would destroy the source repo's real commit "
+            "history on '{}', not just data history. Set data_dir up as a "
+            "genuinely separate repo/junction to enable compaction.",
+            work_tree, branch,
+        )
+        return "refused: data dir is not a dedicated git repo (would destroy source history)"
 
     # Heal a repo left stranded on the orphan temp branch by an interrupted
     # prior run before doing anything else — otherwise the size check may
