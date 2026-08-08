@@ -23,6 +23,7 @@ importable and testable.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import threading
 import time
@@ -92,6 +93,7 @@ class CognitiveBrain:
         exit_floor: float = 0.3,
         reward_r_default: float = 2.0,
         min_expected_value: Optional[float] = None,
+        manage_min_interval_seconds: Optional[float] = None,
     ) -> None:
         self._reasoner = reasoner
         self.min_confidence_to_act = min(1.0, max(0.0, float(min_confidence_to_act)))
@@ -110,6 +112,17 @@ class CognitiveBrain:
         self.min_expected_value = (
             None if min_expected_value is None else float(min_expected_value)
         )
+        # Management re-reasons an OPEN position on a tighter, INDEPENDENT cadence
+        # than origination (Q40 — reasoned management, not a static algo). None ⇒
+        # use the reasoner's global interval (unchanged). Applied only on the
+        # management path via a distinct throttle bucket, so origination + the
+        # advisory council keep their global rate (no extra provider cost across
+        # the scanned universe).
+        self.manage_min_interval_seconds = (
+            None if manage_min_interval_seconds is None
+            else max(0.0, float(manage_min_interval_seconds))
+        )
+        self._reason_supports_override = self._detect_override_support(reasoner)
         self._decisions = 0
         self._campaigns_opened = 0
         self._observed = 0
@@ -136,6 +149,35 @@ class CognitiveBrain:
             return bool(fn(symbol))
         except Exception:  # noqa: BLE001 — a health probe must never break reasoning
             return False
+
+    @staticmethod
+    def _detect_override_support(reasoner: Optional[Any]) -> bool:
+        """True when ``reasoner.reason`` accepts the ``min_interval`` /
+        ``throttle_key`` overrides (so management can run its own faster cadence).
+        Fail-safe: a duck-typed stub without them is treated as unsupported."""
+        fn = getattr(reasoner, "reason", None)
+        if not callable(fn):
+            return False
+        try:
+            params = inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            return False
+        if "min_interval" in params and "throttle_key" in params:
+            return True
+        return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+    def _manage_reason(self, symbol: str, payload: dict, now: Optional[float]) -> Any:
+        """Reasoner call for the MANAGEMENT path — a tighter, independent throttle
+        bucket so an open position is re-reasoned faster than origination without
+        raising the global (origination + council) rate. Falls back to the plain
+        call for a reasoner that does not support the override."""
+        if self._reason_supports_override and self.manage_min_interval_seconds is not None:
+            return self._reasoner.reason(
+                symbol, payload, now=now,
+                min_interval=self.manage_min_interval_seconds,
+                throttle_key=f"{symbol}\x00manage",
+            )
+        return self._reasoner.reason(symbol, payload, now=now)
 
     # ── Reasoning ─────────────────────────────────────────────────────────
 
@@ -342,8 +384,8 @@ class CognitiveBrain:
                 return self._record_management(self._manage_pkg(
                     symbol, want, DecisionType.HOLD, 0.0, uncertainty,
                     "reasoner unavailable — hold (no change)"))
-            opinion = self._reasoner.reason(
-                symbol, self._evidence_payload(market_state, consolidation), now=now)
+            opinion = self._manage_reason(
+                symbol, self._evidence_payload(market_state, consolidation), now)
             if opinion is None:
                 return self._record_management(self._manage_pkg(
                     symbol, want, DecisionType.HOLD, 0.0, uncertainty, "no opinion — hold"))
