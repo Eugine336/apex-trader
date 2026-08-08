@@ -128,7 +128,32 @@ def main() -> None:
             )
 
             branch = getattr(db_cfg, "sync_branch", "main") if db_cfg else "main"
-            pull_res = sync_clean_state_from_remote(branch=branch)
+            data_repo_url = (
+                getattr(db_cfg, "data_repo_url", None) if db_cfg else None
+            )
+
+            # Log the resolved source/data repo topology at boot so an operator
+            # can immediately see whether the data junction is wired correctly.
+            try:
+                from runtime_paths import data_dir as _data_dir
+                from runtime_paths import repo_root
+                from scripts.git_identity import describe_repo_topology
+
+                topo = describe_repo_topology(repo_root(), _data_dir())
+                logger.info(
+                    "[clean-start] repo topology — SOURCE_REPO_ROOT={} "
+                    "SOURCE_REMOTE={} DATA_REPO_ROOT={} DATA_REMOTE={}",
+                    topo["SOURCE_REPO_ROOT"],
+                    topo["SOURCE_REMOTE"],
+                    topo["DATA_REPO_ROOT"],
+                    topo["DATA_REMOTE"],
+                )
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[clean-start] topology log skipped: {}", exc)
+
+            pull_res = sync_clean_state_from_remote(
+                branch=branch, data_repo_url=data_repo_url
+            )
             # The data-junction reset above restores whatever apex_events.db is
             # committed in the data repo. The event store is operational,
             # machine-local state — a corrupt committed copy would be restored

@@ -6,7 +6,6 @@ and pre-entry validation in one lethal package.
 
 from trigger.entry_engine import EntryEngine, EntrySignal, EntryRejection
 from trigger.entry_patterns import EntryPatternDetector, PatternMatch
-from trigger.entry_validator import EntryValidator, ValidationResult
 
 __all__ = [
     "EntryEngine",
@@ -14,6 +13,4 @@ __all__ = [
     "EntryRejection",
     "EntryPatternDetector",
     "PatternMatch",
-    "EntryValidator",
-    "ValidationResult",
 ]

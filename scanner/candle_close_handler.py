@@ -21,21 +21,17 @@ from __future__ import annotations
 import hashlib
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 
 import pandas as pd
 from loguru import logger
 
-from brain.instrument_profile import get_profile
 from brain.liquidity_mapper import LiquidityMapper
-from brain.session_vwap import session_open_minutes_from_df
 from brain.structure_engine import StructureEngine
 from brain.volume_analyzer import VolumeAnalyzer
-from brain.world_model import WorldModel, WorldModelStore, build_world_model
+from brain.world_model import WorldModelStore, build_world_model
 from entry.models import EntryConfig
-from entry.zone_watcher import extract_entry_zones
 from brain.decision_core import (
     TF_MODULE_MAP,
     run_tf_modules,
@@ -443,82 +439,11 @@ class CandleCloseHandler:
             regime=regime,
         )
 
-        # Synthesize the actionable entry layer so the WorldModel is the
-        # single source of truth for the entry plane — consumers read
-        # ``wm.entry_zones`` instead of re-deriving zones.  The learned
-        # ``edge_weight`` scales each zone's conviction by realized edge.
-        # When VWAP-as-zone is enabled (profile first, else EntryConfig), fetch
-        # the M5 series so session VWAP ± σ bands can also become zones — a
-        # best-effort fetch that simply yields no VWAP zones on a miss.
-        prof = get_profile(symbol)
-        vwap_m5_df = None
-        vwap_session_minutes = 0
-        if getattr(prof, "vwap_zone_enabled", False) or getattr(
-            self._entry_config, "vwap_zone_enabled", False
-        ):
-            try:
-                vwap_m5_df = self._fetcher(symbol, "M5", self._candle_count)
-                vwap_session_minutes = session_open_minutes_from_df(vwap_m5_df)
-            except Exception as exc:
-                logger.debug(
-                    "[cc-handler] {} M5 fetch for VWAP zones failed: {}", symbol, exc
-                )
-        zones = extract_entry_zones(
-            wm, self._entry_config, self._edge_weight,
-            m5_df=vwap_m5_df,
-            session_open_minutes=vwap_session_minutes,
-            profile=prof,
-        )
-        if zones:
-            wm = replace(wm, entry_zones=tuple(zones))
-
-        # Attach the shared setup-quality layer (real OQ/EQ + regime analysis)
-        # so the live WorldModel carries the same quality signals the backtest
-        # plane computes via ``analyze_window`` — single shared implementation.
-        try:
-            wm = self._attach_quality(symbol, wm, current_price)
-        except Exception as exc:
-            logger.debug("[cc-handler] {} quality layer failed: {}", symbol, exc)
-
         self._store.publish(wm)
         self._bus.publish("world_model_update", symbol)
         logger.debug(
-            "[cc-handler] published WorldModel for {} (tf={}, v={}, zones={})",
-            symbol, tf, wm.version, len(wm.entry_zones),
-        )
-
-    def _attach_quality(
-        self, symbol: str, wm: WorldModel, current_price: float,
-    ) -> WorldModel:
-        """Synthesize the shared setup-quality layer onto the WorldModel.
-
-        Fetches M5/H1 candles (best-effort) and delegates to the single shared
-        ``brain.quality_layer.compute_quality_layer`` — the SAME implementation
-        the backtest plane uses via ``analyze_window`` — so live and backtest
-        carry identical Opportunity/Entry Quality scores and regime analysis.
-        """
-        m5_df = None
-        h1_df = None
-        try:
-            m5_df = self._fetcher(symbol, "M5", self._candle_count)
-        except Exception as exc:
-            logger.debug("[cc-handler] {} M5 fetch for quality failed: {}", symbol, exc)
-        try:
-            h1_df = self._fetcher(symbol, "H1", self._candle_count)
-        except Exception as exc:
-            logger.debug("[cc-handler] {} H1 fetch for quality failed: {}", symbol, exc)
-
-        from brain.quality_layer import compute_quality_layer
-
-        ql = compute_quality_layer(
-            symbol, wm, m5_df=m5_df, h1_df=h1_df, current_price=current_price,
-        )
-        return replace(
-            wm,
-            opportunity_quality=ql["opportunity_quality"],
-            entry_quality_long=ql["entry_quality_long"],
-            entry_quality_short=ql["entry_quality_short"],
-            regime_analysis=ql["regime_analysis"],
+            "[cc-handler] published WorldModel for {} (tf={}, v={})",
+            symbol, tf, wm.version,
         )
 
     # ------------------------------------------------------------------

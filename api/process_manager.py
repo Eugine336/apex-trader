@@ -153,6 +153,7 @@ class ProcessManager:
 
         junction = self._repo_root / "data"
         branch = str(getattr(self._config, "data_sync_branch", "main") or "main")
+        data_repo_url = getattr(self._config, "data_repo_url", None)
         stamp = time.strftime("%Y-%m-%d %H:%M", time.gmtime())
         try:
             return sync_instances_to_data_repo(
@@ -160,6 +161,7 @@ class ProcessManager:
                 junction_dir=junction,
                 commit_message=f"auto-sync(instances): {stamp}",
                 branch=branch,
+                data_repo_url=data_repo_url,
             )
         except Exception as exc:  # noqa: BLE001
             return f"error: {exc}"

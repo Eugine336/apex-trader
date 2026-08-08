@@ -26,7 +26,6 @@ class VolumeAnalysis:
     divergence_type: str
     climax_detected: bool
     poc_level: Optional[float]
-    confirmation_bias: str
 
 
 class VolumeAnalyzer:
@@ -72,7 +71,6 @@ class VolumeAnalyzer:
                 divergence_type=VolumeDivergence.NONE.value,
                 climax_detected=False,
                 poc_level=None,
-                confirmation_bias="NEUTRAL",
             )
 
         volume_col = self._resolve_volume_column(df)
@@ -86,7 +84,6 @@ class VolumeAnalyzer:
                 divergence_type=VolumeDivergence.NONE.value,
                 climax_detected=False,
                 poc_level=float(df["close"].iloc[-1]),
-                confirmation_bias="NEUTRAL",
             )
 
         # Structural view: closed bars only. Fall back to the live frame when
@@ -116,9 +113,6 @@ class VolumeAnalyzer:
         divergence = self._detect_divergence(struct_df, struct_volumes)
         climax = self._detect_climax(struct_df, struct_ratio)
         poc_level = self._estimate_point_of_control(struct_df, struct_volumes)
-        confirmation_bias = self._resolve_confirmation_bias(
-            struct_df, divergence, has_spike, climax
-        )
 
         return VolumeAnalysis(
             volume_ratio=round(volume_ratio, 4),
@@ -126,7 +120,6 @@ class VolumeAnalyzer:
             divergence_type=divergence.value,
             climax_detected=climax,
             poc_level=round(poc_level, 6) if poc_level is not None else None,
-            confirmation_bias=confirmation_bias,
         )
 
     def _resolve_volume_column(self, df: pd.DataFrame) -> Optional[str]:
@@ -194,24 +187,3 @@ class VolumeAnalyzer:
         poc_idx = int(np.argmax(hist))
         return float((edges[poc_idx] + edges[poc_idx + 1]) / 2)
 
-    def _resolve_confirmation_bias(
-        self,
-        df: pd.DataFrame,
-        divergence: VolumeDivergence,
-        has_spike: bool,
-        climax: bool,
-    ) -> str:
-        if divergence == VolumeDivergence.BULLISH:
-            return "BULLISH"
-        if divergence == VolumeDivergence.BEARISH:
-            return "BEARISH"
-
-        if has_spike and not climax:
-            return (
-                "BULLISH" if df["close"].iloc[-1] >= df["open"].iloc[-1] else "BEARISH"
-            )
-
-        if climax:
-            return "REVERSAL_WARNING"
-
-        return "NEUTRAL"

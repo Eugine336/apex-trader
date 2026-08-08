@@ -20,9 +20,20 @@ sync (see `platforms/maintenance.py`, `platforms/clean_start.py`).
 > The junction is created on the host, outside this repo. It is **not** checked
 > in — a fresh clone has no `data/` directory until the operator creates the
 > junction (e.g. `mklink /J data ..\apex-trader-data` on Windows, or
-> `ln -s ../apex-trader-data data` on POSIX). The engine still boots without it:
-> stores create their schema on first write, so a plain `data/` directory is a
-> valid fallback.
+> `ln -s ../apex-trader-data data` on POSIX). `deploy/setup-vps.sh` does this
+> automatically: it clones `apex-trader-data` to `/opt/apex-trader-data` and
+> symlinks `/opt/apex-trader/data → ../apex-trader-data`.
+
+> **A plain `data/` directory inside the source checkout is NOT a valid data
+> repo.** All data git operations (auto-sync, history compaction, clean-start
+> reset) verify — via `scripts/git_identity.py` — that `data/` is its own
+> dedicated repo whose `origin` normalizes to `Eugine336/apex-trader-data`, and
+> set `GIT_CEILING_DIRECTORIES` so git can never walk up into the source repo.
+> If `data/` is a plain directory nested in the source checkout, those
+> operations **refuse** rather than risk destroying the source repo's history,
+> and `runtime_paths.ensure_data_dir()` raises `DataJunctionError` rather than
+> silently create it. The engine's own stores still create their schema on first
+> write, but git-backed data maintenance is disabled until the junction exists.
 
 ## Two kinds of data — do not conflate them
 

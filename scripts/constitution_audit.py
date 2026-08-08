@@ -62,11 +62,16 @@ CHECKS: list[Check] = [
         clause="§XXX (a capability that is not reachable from the live path is not implemented) / §XXIX complete-cycle",
         pr="PR-A1",
         summary="Retired zone-touch / DecisionEngine ENTRY pipeline still present in source.",
+        # Only the retired entry DECIDERS are asserted gone. entry/models.py
+        # (EntryConfig / EntryZone data + config) and entry/flip_sequence_tracker.py
+        # (+ entry/m1_confirmation.py) are retained SHARED, NON-DECIDER utilities
+        # used by live analysis, so they are intentionally not listed here.
         exists=[
             "entry/zone_watcher.py",
             "entry/entry_gate.py",
-            "entry/models.py",
-            "entry/flip_sequence_tracker.py",
+            "entry/entry_orchestrator.py",
+            "entry/flip_confirmer.py",
+            "entry/tick_delta_analyzer.py",
             "trigger/entry_validator.py",
         ],
         patterns=[
@@ -120,8 +125,9 @@ CHECKS: list[Check] = [
         pr="PR-E1",
         summary="Cognition is woken by a precomputed directional 'bias' rather than a raw market change.",
         patterns=[
-            _p("event_driven_bootstrap.py", r"def\s+_nudge_cognition_on_developing\b"),
             _p("event_driven_bootstrap.py", r'bias\.get\(\s*["\']direction["\']'),
+            _p("event_driven_bootstrap.py", r"maybe_reason_on_change\([^)]*,\s*direction"),
+            _p("cognition/loop.py", r"def maybe_reason_on_change\(self, symbol: str, direction"),
         ],
     ),
     Check(
