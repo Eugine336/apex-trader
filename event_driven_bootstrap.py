@@ -96,6 +96,19 @@ from execution.broker_fields import (  # noqa: E402
 _SCALE_IN_RISK_FRACTION = 0.5
 _DEFAULT_PARTIAL_CLOSE_RATIO = 0.5
 
+# A tick older than this strongly implies the session is CLOSED (weekend /
+# holiday), not merely quiet. Used by the market-open gate as the session
+# signal ``trade_mode`` cannot give (a broker leaves trade_mode "full" through a
+# weekend). Deliberately far larger than the trading staleness limit (~120s) so
+# a quiet-but-OPEN market is never mis-flagged closed. Env override:
+# APEX_MARKET_CLOSED_TICK_AGE_SECONDS.
+try:
+    _MARKET_CLOSED_TICK_AGE_SECONDS = float(
+        os.getenv("APEX_MARKET_CLOSED_TICK_AGE_SECONDS", "900") or "900"
+    )
+except (TypeError, ValueError):
+    _MARKET_CLOSED_TICK_AGE_SECONDS = 900.0
+
 # How long (seconds, monotonic) a worker-path SL move stays "pending broker
 # confirmation" after it is optimistically applied. While pending, the synthetic
 # stop-hit check is suppressed so a broker-rejected SL cannot trigger a phantom
@@ -6039,6 +6052,21 @@ class EventDrivenSystem:
         system with a MagicMock config, which would otherwise inject mocks).
         """
         cfg = WorkerConfig()
+        # Constitution Part VI/X — when the AI Cognitive Brain is the LIVE position
+        # manager, hand every DISCRETIONARY exit (TP / breakeven / trailing /
+        # stall / invalidation / conviction / HTF / dynamic-SL / opportunity-cost)
+        # to the Brain and leave the worker only the always-on catastrophic safety
+        # floor (hard SL + weekend / session / spread + absolute-profit backstop).
+        # The broker-side protective stop attached at entry stays the hard capital
+        # floor. Guarded so a MagicMock config (tests) never flips it: only an
+        # exact "live" management_mode with cognition enabled qualifies.
+        cog_cfg = getattr(self._config, "cognition", None)
+        if cog_cfg is not None:
+            mgmt_mode = str(
+                getattr(cog_cfg, "management_mode", "shadow") or "shadow"
+            ).strip().lower()
+            if mgmt_mode == "live" and bool(getattr(cog_cfg, "enabled", False)) is True:
+                cfg.discretionary_exits_enabled = False
         risk_cfg = getattr(self._config, "risk", None)
         if risk_cfg is None:
             return cfg
@@ -6057,13 +6085,21 @@ class EventDrivenSystem:
         return cfg
 
     def _check_market_open(self, symbol: str) -> bool:
-        """Broker-truth market-open gate for the EntryOrchestrator.
+        """Broker-truth market-open gate (origination + Compliance).
 
-        24/7 instruments (Deriv synthetics) are always open.  For everything
-        else we consult the broker's symbol ``trade_mode`` (MT5): CLOSEONLY (3)
-        or DISABLED (0) means the market is closed and new entries are blocked.
-        When the broker spec is unavailable (tests / dev) we pass through — the
-        SessionEngine gate still applies.
+        Two independent CLOSED signals, either of which blocks:
+
+        * **Permission** — the broker's ``trade_mode`` (MT5): DISABLED (0) or
+          CLOSEONLY (3) means new positions are refused.
+        * **Session** — tick freshness. ``trade_mode`` stays "full" straight
+          through a weekend/holiday, so it never detects a session close; a tick
+          far older than a normal gap (weekend = hours/days) reveals it. Reuses
+          the connector's own staleness math via ``has_fresh_tick``.
+
+        24/7 instruments (Deriv synthetics) are always open. Fail-OPEN on any
+        unknown (no connector/spec/probe, or a fault) so a quiet-but-open market
+        — or a feed without these signals — is never wrongly blocked; the
+        SessionEngine gate still applies downstream.
         """
         try:
             if is_always_open(symbol):
@@ -6074,21 +6110,33 @@ class EventDrivenSystem:
             connector = self._pm.get_connector(symbol)
         except Exception:
             return True
+        # (1) Permission flag — explicit broker disable / close-only.
         spec_fn = getattr(connector, "get_symbol_spec", None)
-        if not callable(spec_fn):
-            return True
-        try:
-            spec = spec_fn(symbol)
-        except Exception as exc:
-            logger.debug("[market-open] symbol spec lookup failed for {}: {}", symbol, exc)
-            return True
-        mode = spec.get("trade_mode") if isinstance(spec, dict) else None
-        if mode is None:
-            return True
-        # 0 = DISABLED, 3 = CLOSEONLY — market not open for new positions.
-        if mode in (0, 3):
-            logger.info("[market-open] {} closed — broker trade_mode={}", symbol, mode)
-            return False
+        if callable(spec_fn):
+            try:
+                spec = spec_fn(symbol)
+                mode = spec.get("trade_mode") if isinstance(spec, dict) else None
+            except Exception as exc:
+                logger.debug("[market-open] symbol spec lookup failed for {}: {}", symbol, exc)
+                mode = None
+            if mode in (0, 3):
+                logger.info("[market-open] {} closed — broker trade_mode={}", symbol, mode)
+                return False
+        # (2) Session signal — no fresh tick ⇒ the session is closed (weekend /
+        # holiday). Non-raising; None ⇒ unknown ⇒ fail-open.
+        fresh_fn = getattr(connector, "has_fresh_tick", None)
+        if callable(fresh_fn):
+            try:
+                fresh = fresh_fn(symbol, _MARKET_CLOSED_TICK_AGE_SECONDS)
+            except Exception as exc:  # noqa: BLE001
+                logger.debug("[market-open] tick-freshness check failed for {}: {}", symbol, exc)
+                fresh = None
+            if fresh is False:
+                logger.info(
+                    "[market-open] {} closed — no fresh tick within {:.0f}s (session closed)",
+                    symbol, _MARKET_CLOSED_TICK_AGE_SECONDS,
+                )
+                return False
         return True
 
     def _is_broker_available(self, symbol: str) -> bool:

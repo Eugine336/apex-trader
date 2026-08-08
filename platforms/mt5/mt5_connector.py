@@ -354,6 +354,38 @@ class MT5Connector(BaseConnector):
     def get_tick(self, symbol: str) -> TickData:
         return self.get_price(symbol)
 
+    def has_fresh_tick(
+        self, symbol: str, max_age_seconds: Optional[float] = None,
+    ) -> Optional[bool]:
+        """Non-raising session-liveness probe (reuses ``get_price``'s staleness math).
+
+        Returns ``True`` when the latest tick for ``symbol`` is within
+        ``max_age_seconds`` (a live session), ``False`` when it is older (⇒ the
+        session is closed/halted — e.g. a weekend or holiday), or ``None`` when
+        it cannot be determined (not connected, symbol unmapped, no tick, bad
+        timestamp). Callers treat ``None`` as "unknown" and fail OPEN.
+
+        This is the session-open signal ``trade_mode`` cannot provide: a broker
+        leaves ``trade_mode`` at "full" straight through a weekend, so only the
+        absence of fresh ticks reveals the closed session. Defaults to the
+        connector's own ``_max_tick_age_seconds`` when no age is supplied.
+        """
+        limit = (self._max_tick_age_seconds if max_age_seconds is None
+                 else max(0.0, float(max_age_seconds)))
+        try:
+            mapped = self.symbol_map(symbol)
+            if not mapped:
+                return None
+            tick = mt5.symbol_info_tick(mapped)
+            if tick is None or getattr(tick, "time", 0) <= 0:
+                return None
+            tick_time = datetime.fromtimestamp(tick.time, tz=timezone.utc)
+            age = (datetime.now(timezone.utc) - tick_time).total_seconds()
+            return age <= limit
+        except Exception as exc:  # noqa: BLE001 — a liveness probe must never raise
+            logger.debug("[mt5] has_fresh_tick({}) failed: {}", symbol, exc)
+            return None
+
     def get_ohlcv(
         self, symbol: str, timeframe: str, count: int = 200,
         *, include_forming: bool = True,
