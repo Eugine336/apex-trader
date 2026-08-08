@@ -672,6 +672,45 @@ class TestMultipleIntents:
         assert "dynamic_sl_tighten" in sources
 
 
+class TestDiscretionaryExitsToggle:
+    """Constitution Part VI/X — when the Brain is the live manager, the worker
+    DEFERS discretionary exits to it but still enforces the catastrophic safety
+    floor (hard stop-loss). ``discretionary_exits_enabled=False`` models that."""
+
+    def test_discretionary_on_by_default_takes_tp(self):
+        intents = PositionWorker(WorkerConfig()).evaluate(
+            _snap(tp2=1.12, current_price=1.121), NOW)
+        assert any(i.source == "tp2_target" for i in intents)
+
+    def test_discretionary_off_defers_tp2(self):
+        cfg = WorkerConfig(discretionary_exits_enabled=False)
+        intents = PositionWorker(cfg).evaluate(
+            _snap(tp2=1.12, current_price=1.121), NOW)
+        assert not any(i.source == "tp2_target" for i in intents)
+
+    def test_discretionary_off_defers_tp1_partial(self):
+        cfg = WorkerConfig(discretionary_exits_enabled=False)
+        intents = PositionWorker(cfg).evaluate(
+            _snap(tp1=1.11, current_price=1.111, partial_closed=False), NOW)
+        assert not any(i.source in ("tp1_partial", "tp1_deriv_be") for i in intents)
+
+    def test_discretionary_off_defers_breakeven(self):
+        cfg = WorkerConfig(discretionary_exits_enabled=False)
+        snap = _snap(partial_closed=True, at_breakeven=False,
+                     pnl_pips=15.0, current_price=1.10150)
+        intents = PositionWorker(cfg).evaluate(snap, NOW)
+        assert not any(i.source == "breakeven" for i in intents)
+
+    def test_safety_floor_stop_loss_always_fires(self):
+        # Even with discretionary exits deferred to the Brain, a hard SL breach
+        # still produces a protective CLOSE — the catastrophic capital floor.
+        cfg = WorkerConfig(discretionary_exits_enabled=False)
+        snap = _snap(direction="BUY", sl=1.09900, current_price=1.09800)
+        intents = PositionWorker(cfg).evaluate(snap, NOW)
+        assert any(i.intent_type == IntentType.CLOSE and "SL hit" in i.reason
+                   for i in intents)
+
+
 class TestThreadSafety:
     def test_concurrent_workers(self):
         import concurrent.futures

@@ -292,6 +292,11 @@ class LLMReasoner:
         self.min_interval_seconds = max(0.0, float(min_interval_seconds))
         self._recent_limit = max(1, int(recent_limit))
         self._last_call: dict[str, float] = {}
+        # Per-symbol liveness of the last NON-throttled reason() attempt:
+        # True = produced an opinion, False = failed (provider down/timeout, or
+        # an unparsable reply). Lets the Brain tell an infrastructure failure
+        # (REASONER_UNAVAILABLE) apart from a genuine market observe (Q78/Q80).
+        self._last_reason_ok: dict[str, bool] = {}
         self._recent: list[LLMOpinion] = []
         self._calls = 0
         self._faults = 0
@@ -304,39 +309,62 @@ class LLMReasoner:
         return bool(self.enabled and self._client is not None
                     and getattr(self._client, "usable", False))
 
-    def _throttled(self, key: str, now: float) -> bool:
-        if self.min_interval_seconds <= 0:
+    def last_reason_degraded(self, symbol: str) -> bool:
+        """True when the last NON-throttled ``reason(symbol)`` FAILED to yield an
+        opinion — provider down/timeout, or an unparsable reply.
+
+        This is a *liveness* signal, distinct from the static :pyattr:`available`
+        config flag, so the Brain can tell an INFRASTRUCTURE failure
+        (REASONER_UNAVAILABLE) apart from a genuine market ``observe`` when
+        ``reason`` returns ``None`` (Part XVIII Art 5; Q78/Q80/Q81/Q106). A
+        throttled cycle leaves this state unchanged.
+        """
+        with self._lock:
+            return self._last_reason_ok.get(str(symbol or "")) is False
+
+    def _throttled(self, key: str, now: float, interval: Optional[float] = None) -> bool:
+        iv = self.min_interval_seconds if interval is None else max(0.0, float(interval))
+        if iv <= 0:
             return False
         last = self._last_call.get(key, 0.0)
-        return (now - last) < self.min_interval_seconds
+        return (now - last) < iv
 
     def reason(
         self, symbol: str, evidence: dict, *, now: Optional[float] = None,
+        min_interval: Optional[float] = None, throttle_key: Optional[str] = None,
     ) -> Optional[LLMOpinion]:
         """Ask the model to reason over ``evidence`` for ``symbol``.
 
         Returns a parsed :class:`LLMOpinion`, or ``None`` when unavailable,
         throttled, or on any fault. Blocking (provider round-trip) — call from a
         background/periodic path, never the hot loop. Fail-safe.
+
+        ``min_interval`` overrides the per-symbol throttle window for THIS call
+        and ``throttle_key`` overrides the throttle bucket, so a caller can run a
+        tighter cadence on an independent bucket (e.g. management re-reasoning an
+        open position faster than origination) without changing the global rate.
         """
         if not self.available:
             return None
         t = time.time() if now is None else float(now)
         sym = str(symbol or "")
+        key = str(throttle_key or sym)
+        iv = self.min_interval_seconds if min_interval is None else max(0.0, float(min_interval))
         try:
             with self._lock:
-                if self._throttled(sym, t):
+                if self._throttled(key, t, iv):
                     logger.debug(
                         "[llm] {} throttled ({}s min interval) — no fresh model call this cycle",
-                        sym, self.min_interval_seconds,
+                        sym, iv,
                     )
                     return None
-                self._last_call[sym] = t
+                self._last_call[key] = t
             user = self._build_user_prompt(sym, evidence)
             reply = self._client.complete(_SYSTEM_PROMPT, user)
             if not reply:
                 with self._lock:
                     self._faults += 1
+                    self._last_reason_ok[sym] = False
                 # No reply this cycle (throttle/quota/offline). The client logs
                 # the reason once on its down transition and the council panel
                 # summarises who is absent, so keep this per-symbol line at DEBUG
@@ -350,8 +378,10 @@ class LLMReasoner:
                     self._recent.append(opinion)
                     if len(self._recent) > self._recent_limit:
                         self._recent = self._recent[-self._recent_limit:]
+                    self._last_reason_ok[sym] = True
                 else:
                     self._faults += 1
+                    self._last_reason_ok[sym] = False
             if opinion is not None:
                 logger.info(
                     "[llm] {} [{}] dir={} conf={} | regime={} opp={} ({}) — {}",
@@ -377,6 +407,7 @@ class LLMReasoner:
             logger.debug("[llm] reason({}) ignored a fault: {}", symbol, exc)
             with self._lock:
                 self._faults += 1
+                self._last_reason_ok[str(symbol or "")] = False
             return None
 
     @staticmethod
