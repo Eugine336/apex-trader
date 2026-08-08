@@ -109,6 +109,10 @@ class DecisionType(Enum):
     REJECT_OPPORTUNITY = "reject_opportunity"
     OPEN_CAMPAIGN = "open_campaign"
     CONTINUE_OBSERVING = "continue_observing"
+    # Infrastructure state (Part XVIII, Art 5): the Brain has no usable reasoner
+    # (provider down / unavailable). This is explicitly NOT a market conclusion —
+    # it must never be read as a FLAT/observe view of the market.
+    REASONER_UNAVAILABLE = "reasoner_unavailable"
     # In-campaign management (Part VI, Article 5)
     HOLD = "hold"
     SCALE_IN = "scale_in"
