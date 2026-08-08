@@ -162,18 +162,20 @@ def test_confident_opinion_opens_campaign():
 # ── XFAIL targets (established by the redesign; strict ratchet) ──────────────
 
 @conformance(
-    "§IX Q13/Q17: expected value must be a computed EV, not the confidence scalar",
-    expect="xfail", reason="Phase C-2: replace expected_value=confidence with a real EV model",
+    "§IX Q13/Q17: expected value is a computed EV in R, not the confidence scalar",
 )
 def test_expected_value_is_not_a_confidence_proxy():
-    out = CognitiveBrain(reasoner=_Reasoner(_opinion("LONG", 0.8))).reason(_rich_state())
+    brain = CognitiveBrain(reasoner=_Reasoner(_opinion("LONG", 0.8)), reward_r_default=2.0)
+    out = brain.reason(_rich_state())
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
-    assert out.decision.expected_value != out.decision.confidence
+    ev = out.decision.expected_value
+    # EV_R = p_win*reward_r - (1-p_win)*risk_r = 0.8*2 - 0.2*1 = 1.4
+    assert abs(ev - 1.4) < 1e-9, f"expected 1.4, got {ev}"
+    assert ev != out.decision.confidence
 
 
 @conformance(
-    "§V Q14/§VI: the decision must preserve multiple competing hypotheses (not collapse to one)",
-    expect="xfail", reason="Phase C-1: add a structured hypotheses[] field to the decision",
+    "§V Q14/§VI: the decision preserves multiple competing hypotheses (no single-direction collapse)",
 )
 def test_decision_preserves_competing_hypotheses():
     op = _opinion(
@@ -182,8 +184,11 @@ def test_decision_preserves_competing_hypotheses():
         alternative_hypotheses=["bullish breakout", "bull trap into sweep"],
     )
     out = CognitiveBrain(reasoner=_Reasoner(op)).reason(_rich_state())
-    hyps = getattr(out.decision, "hypotheses", None)
+    hyps = out.decision.hypotheses
     assert hyps is not None and len(hyps) >= 2
+    primary = hyps[0]
+    assert primary.direction == "LONG"
+    assert abs(primary.probability - 0.8) < 1e-9
 
 
 @conformance(
