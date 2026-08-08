@@ -43,7 +43,7 @@ class InducementDetector:
     def analyze(self, df: pd.DataFrame) -> InducementAnalysis:
         if len(df) < 25:
             logger.warning("Not enough candles for inducement detection")
-            return InducementAnalysis(False, "NONE", None, "NONE", 0.0)
+            return InducementAnalysis(False, "NONE", None, 0.0)
 
         detections: list[InducementAnalysis] = []
         recent_high = float(df["high"].iloc[-22:-2].max())
@@ -73,7 +73,7 @@ class InducementDetector:
             detections.append(inducement)
 
         if not detections:
-            return InducementAnalysis(False, "NONE", None, "NONE", 0.0)
+            return InducementAnalysis(False, "NONE", None, 0.0)
 
         detections.sort(key=lambda x: x.confidence, reverse=True)
         return detections[0]

@@ -414,6 +414,10 @@ class CognitionLoop:
         self._event_last_reason_at: dict = {}
         self._cycles = 0
         self._decisions = 0
+        # Round-robin cursor so the periodic cycle rotates through the FULL
+        # symbol universe across successive cycles instead of only ever reasoning
+        # the first max_symbols_per_cycle symbols (which starves the rest).
+        self._cycle_offset = 0
         self._managed = 0
         self._orig_intended = 0
         self._orig_submitted = 0
@@ -546,13 +550,39 @@ class CognitionLoop:
             return 0
         self._open_keys = self._current_open_keys()
         made = 0
-        for symbol in symbols[: self.max_symbols_per_cycle]:
+        for symbol in self._select_cycle_batch(symbols):
             made += self._reason_over_symbol(symbol, now=now)
         self._cycles += 1
         self._decisions += made
         self._manage_open_positions(now=now)
         self._maybe_author_operations(now=now)
         return made
+
+    def _select_cycle_batch(self, symbols: list) -> list:
+        """Round-robin the periodic cycle across the FULL symbol universe.
+
+        The periodic backstop reasons at most ``max_symbols_per_cycle`` symbols
+        per cycle to bound LLM cost — but it must not always pick the SAME first
+        N, which starves every symbol past N (they would then only ever be
+        reasoned by an event-driven wake, and no wake fires on a weekend/quiet
+        feed). This advances a cursor each cycle so successive cycles cover the
+        whole list (wrapping around), giving every symbol periodic coverage.
+        Open-position management is separate (``_manage_open_positions``) and
+        always covers all live positions regardless of this batch.
+        """
+        n = len(symbols)
+        cap = self.max_symbols_per_cycle
+        if n == 0 or cap <= 0:
+            return []
+        if cap >= n:
+            self._cycle_offset = 0
+            return list(symbols)
+        off = self._cycle_offset % n
+        batch = symbols[off:off + cap]
+        if len(batch) < cap:  # wrap around the end of the list
+            batch = batch + symbols[: cap - len(batch)]
+        self._cycle_offset = (off + cap) % n
+        return batch
 
     def _reason_over_symbol(self, symbol: str, *, now: Optional[float] = None) -> int:
         """Consolidate + reason over one symbol. Returns 1 on a decision, else 0.

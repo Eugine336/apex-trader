@@ -322,6 +322,7 @@ class LLMClient:
             payload = {
                 "model": self.model,
                 "stream": False,
+                "keep_alive": 0,
                 "options": {"temperature": float(self.temperature)},
                 "messages": [
                     {"role": "system", "content": system},

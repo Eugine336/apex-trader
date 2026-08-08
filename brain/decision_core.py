@@ -230,7 +230,7 @@ def run_tf_modules(
                 det = InducementDetector(pip_size=pip_size)
                 results["inducement"] = det.analyze(closed_df)
             elif mod == "structure":
-                results["structure"] = structure.analyze(df, pip_size=pip_size)
+                results["structure"] = structure.analyze(df, pip_size=pip_size, context=f"{symbol}/{tf}")
         except Exception as exc:
             _warn_module_failure(f"tf-{tf}", mod, symbol, exc)
 

@@ -4,6 +4,8 @@ Reads market structure like a 100-year veteran.
 Detects: trend direction, swing highs/lows, BOS, CHOCH
 """
 
+import threading
+
 import pandas as pd
 from loguru import logger
 from dataclasses import dataclass
@@ -66,8 +68,15 @@ class StructureEngine:
         # different pip sizes (JPY/metals/indices/synthetics), so the geometry
         # must be passed per-call rather than baked once at construction.
         self.min_swing_size = min_swing_size_pips * pip_size
+        # Per-context throttle for the "not enough candles" notice. This engine is
+        # a shared singleton reused across instruments/timeframes, so a thin
+        # (symbol, timeframe) would otherwise re-warn on every candle close. Warn
+        # ONCE per context (naming symbol/timeframe + have/need), then DEBUG.
+        self._starved_lock = threading.Lock()
+        self._starved_contexts: set = set()
 
-    def analyze(self, df: pd.DataFrame, pip_size: Optional[float] = None) -> StructureAnalysis:
+    def analyze(self, df: pd.DataFrame, pip_size: Optional[float] = None,
+                context: str = "") -> StructureAnalysis:
         """
         Full structure analysis on a DataFrame.
         Expects columns: open, high, low, close, time
@@ -76,9 +85,13 @@ class StructureEngine:
         ``pip_size`` overrides the construction default for this call only so a
         shared engine can be reused thread-safely across instruments — it is
         never written back to ``self``.
+
+        ``context`` is an optional "SYMBOL/TF" label used only to attribute the
+        "not enough candles" notice to the starved instrument + timeframe.
         """
-        if len(df) < self.swing_lookback * 2 + 1:
-            logger.warning("Not enough candles for structure analysis")
+        need = self.swing_lookback * 2 + 1
+        if len(df) < need:
+            self._note_insufficient(context, len(df), need)
             return self._empty_analysis()
 
         df = df.copy().reset_index(drop=True)
@@ -346,6 +359,24 @@ class StructureEngine:
             score += 0.2  # Recent structure event adds confidence
 
         return min(score, 1.0)
+
+    def _note_insufficient(self, context: str, have: int, need: int) -> None:
+        """Log the candle shortfall — WARNING once per context, DEBUG thereafter.
+
+        Names the starved SYMBOL/TF plus how many candles arrived vs the minimum
+        the swing scan needs (``swing_lookback*2+1``), so a persistent gap is
+        attributable while a benign cold-start shortfall does not flood the logs.
+        """
+        label = context or "?"
+        with self._starved_lock:
+            first = label not in self._starved_contexts
+            if first:
+                self._starved_contexts.add(label)
+        msg = "Not enough candles for structure analysis: {} have={} need={}"
+        if first:
+            logger.warning(msg, label, have, need)
+        else:
+            logger.debug(msg, label, have, need)
 
     def _empty_analysis(self) -> StructureAnalysis:
         return StructureAnalysis(
