@@ -4223,6 +4223,15 @@ class CognitionConfig:
             "COGNITION_OPPORTUNITY_QUALIFICATION_ENABLED",
             self.opportunity_qualification_enabled,
         )
+        _msc = os.getenv("COGNITION_MAX_SYMBOLS_PER_CYCLE")
+        if _msc is not None:
+            try:
+                self.max_symbols_per_cycle = int(_msc)
+            except (TypeError, ValueError):
+                logger.warning(
+                    "[config] bad COGNITION_MAX_SYMBOLS_PER_CYCLE '{}' — keeping default",
+                    _msc,
+                )
         if self.gate_mode not in ("off", "shadow", "veto", "authoritative"):
             raise ValueError(
                 "CognitionConfig.gate_mode must be off|shadow|veto|authoritative, got "
