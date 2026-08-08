@@ -6647,35 +6647,6 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[rl] price/authority feed failed: {}", exc)
 
-        # ── Consensus Division: ACTIVE market-driven entry trigger ────
-        # The big flip — when enabled, a sufficiently convicted consensus
-        # thesis initiates an entry on its own, with no structural zone
-        # required. Best-effort and fully guarded so it can never disrupt the
-        # analysis/feed path above; a no-op unless the operator turns it on.
-        try:
-            sym = getattr(event, "symbol", "")
-            if sym:
-                # Offload to the dedicated entry pool (same as the zone path)
-                # instead of running inline. The consensus entry path makes
-                # blocking broker calls (grade → allocate → execute); running it
-                # on this event-bus thread stalls WorldModel publishing for ALL
-                # symbols for the duration of the broker round-trip.
-                self._entry_pool.submit(self._evaluate_consensus_entry, sym)
-        except Exception as exc:
-            logger.debug("[consensus-trigger] evaluation failed: {}", exc)
-
-    def _evaluate_consensus_entry(self, symbol: str) -> None:
-        """RETIRED — legacy Consensus Division entry trigger.
-
-        The Consensus Division was a competing directional-decision entry
-        path (weighted vote -> thesis -> entry via ``form_thesis``). Under
-        the Cognitive Reasoning Constitution the Cognitive Brain is the sole
-        entry authority, so this legacy trigger and its candidate builders
-        are retired. Kept as an inert no-op so the dormant event submission
-        at the world-model handler resolves harmlessly.
-        """
-        return
-
     def _derive_consensus_targets(
         self,
         symbol: str,
