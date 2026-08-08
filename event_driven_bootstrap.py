@@ -6039,6 +6039,21 @@ class EventDrivenSystem:
         system with a MagicMock config, which would otherwise inject mocks).
         """
         cfg = WorkerConfig()
+        # Constitution Part VI/X — when the AI Cognitive Brain is the LIVE position
+        # manager, hand every DISCRETIONARY exit (TP / breakeven / trailing /
+        # stall / invalidation / conviction / HTF / dynamic-SL / opportunity-cost)
+        # to the Brain and leave the worker only the always-on catastrophic safety
+        # floor (hard SL + weekend / session / spread + absolute-profit backstop).
+        # The broker-side protective stop attached at entry stays the hard capital
+        # floor. Guarded so a MagicMock config (tests) never flips it: only an
+        # exact "live" management_mode with cognition enabled qualifies.
+        cog_cfg = getattr(self._config, "cognition", None)
+        if cog_cfg is not None:
+            mgmt_mode = str(
+                getattr(cog_cfg, "management_mode", "shadow") or "shadow"
+            ).strip().lower()
+            if mgmt_mode == "live" and bool(getattr(cog_cfg, "enabled", False)) is True:
+                cfg.discretionary_exits_enabled = False
         risk_cfg = getattr(self._config, "risk", None)
         if risk_cfg is None:
             return cfg
