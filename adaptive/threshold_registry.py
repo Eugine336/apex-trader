@@ -109,15 +109,6 @@ GUARDRAILS: List[ThresholdEntry] = [
 # ── LEARNED — derived from the system's own graded track record ───────────────
 LEARNED: List[ThresholdEntry] = [
     ThresholdEntry(
-        "module_vote_weights",
-        TIER_LEARNED,
-        "adaptive.vote_calibrator.VoteCalibrator",
-        "1.0 (neutral, equal panel)",
-        "Each brain module's consensus vote weight, scaled by its graded "
-        "accuracy (mean-1.0, Bayesian-shrunk, floor/ceiling clamped). Wired into "
-        "brain.decision_core.build_consensus. ON by default.",
-    ),
-    ThresholdEntry(
         "opportunity_win_rate",
         TIER_LEARNED,
         "adaptive.win_rate_provider.AdaptiveWinRateProvider",

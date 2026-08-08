@@ -68,10 +68,7 @@ class LearningMixin:
         return getattr(self._loop(), "_emitter_feedback", None)
 
     def _vote_calibrator_obj(self) -> Any:
-        ctx = getattr(self, "_system_context", None)
-        if ctx is not None and getattr(ctx, "vote_calibrator", None) is not None:
-            return ctx.vote_calibrator
-        return getattr(self._loop(), "_vote_calibrator", None)
+        return None  # vote calibrator retired with the vote/consensus subsystem
 
     def _ml_obj(self) -> Any:
         ctx = getattr(self, "_system_context", None)
@@ -94,16 +91,10 @@ class LearningMixin:
         return getattr(self._loop(), "_tuner_agent", None)
 
     def _counterfactual_obj(self) -> Any:
-        ctx = getattr(self, "_system_context", None)
-        if ctx is not None and getattr(ctx, "counterfactual_engine", None) is not None:
-            return ctx.counterfactual_engine
-        return getattr(self._loop(), "_counterfactual", None)
+        return None  # counterfactual engine retired
 
     def _interaction_obj(self) -> Any:
-        ctx = getattr(self, "_system_context", None)
-        if ctx is not None and getattr(ctx, "interaction_analyzer", None) is not None:
-            return ctx.interaction_analyzer
-        return getattr(self._loop(), "_interaction_analyzer", None)
+        return None  # interaction analyzer retired
 
     def _param_evolution_obj(self) -> Any:
         ctx = getattr(self, "_system_context", None)
@@ -286,12 +277,6 @@ class LearningMixin:
 
         # Total modules tracked: union of published multipliers + last-pass inputs.
         names = set(multipliers) | set(sample_sizes)
-        try:
-            from adaptive.vote_calibrator import DEFAULT_VOTE_MODULES
-
-            names |= set(DEFAULT_VOTE_MODULES)
-        except Exception:  # noqa: BLE001
-            pass
 
         modules = []
         calibrated_n = 0

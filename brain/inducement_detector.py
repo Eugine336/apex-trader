@@ -16,7 +16,6 @@ class InducementAnalysis:
     inducement_detected: bool
     type: str
     trap_level: Optional[float]
-    expected_direction: str
     confidence: float
 
 
@@ -95,7 +94,6 @@ class InducementDetector:
                 inducement_detected=True,
                 type="STOP_HUNT_BUY_SIDE",
                 trap_level=recent_high,
-                expected_direction="SHORT",
                 confidence=0.82,
             )
 
@@ -108,7 +106,6 @@ class InducementDetector:
                 inducement_detected=True,
                 type="STOP_HUNT_SELL_SIDE",
                 trap_level=recent_low,
-                expected_direction="LONG",
                 confidence=0.82,
             )
         return None
@@ -136,7 +133,6 @@ class InducementDetector:
                 inducement_detected=True,
                 type="FAKE_BREAKOUT_UP",
                 trap_level=recent_high,
-                expected_direction="SHORT",
                 confidence=0.76,
             )
 
@@ -145,7 +141,6 @@ class InducementDetector:
                 inducement_detected=True,
                 type="FAKE_BREAKOUT_DOWN",
                 trap_level=recent_low,
-                expected_direction="LONG",
                 confidence=0.76,
             )
         return None
@@ -161,7 +156,6 @@ class InducementDetector:
                 inducement_detected=True,
                 type="TURTLE_SOUP_BEARISH",
                 trap_level=recent_high,
-                expected_direction="SHORT",
                 confidence=0.8,
             )
 
@@ -170,7 +164,6 @@ class InducementDetector:
                 inducement_detected=True,
                 type="TURTLE_SOUP_BULLISH",
                 trap_level=recent_low,
-                expected_direction="LONG",
                 confidence=0.8,
             )
         return None
@@ -191,7 +184,6 @@ class InducementDetector:
                 inducement_detected=True,
                 type="INDUCEMENT_DOWN_BEFORE_LONG",
                 trap_level=recent_low,
-                expected_direction="LONG",
                 confidence=0.74,
             )
 
@@ -200,7 +192,6 @@ class InducementDetector:
                 inducement_detected=True,
                 type="INDUCEMENT_UP_BEFORE_SHORT",
                 trap_level=recent_high,
-                expected_direction="SHORT",
                 confidence=0.74,
             )
         return None

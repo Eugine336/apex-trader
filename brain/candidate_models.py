@@ -8,11 +8,10 @@ through entry generation, portfolio selection, and candidate-scoped management,
 WITHOUT being net-summed into a single direction that discards every other idea.
 
 This module is the foundation (Session 1 of the multi-opportunity rewire). It is
-purely additive: nothing here mutates an existing flow. It reuses the ``Vote``
-objects the scanner already builds and the ``Opportunity`` clusters the
-:mod:`brain.opportunity_ranker` already scores — wrapping a scored opportunity in
-a :class:`Candidate` that carries a stable ``candidate_id`` so downstream layers
-(entry → portfolio → management → learning) can track one idea end-to-end.
+purely additive: nothing here mutates an existing flow. It wraps a scored
+opportunity cluster in a :class:`Candidate` that carries a stable ``candidate_id``
+so downstream layers (entry → portfolio → management → learning) can track one
+idea end-to-end.
 
 Naming note — these are deliberately distinct from existing types so there is no
 collision: ``decision.actions.EntryDecision`` is the decision engine's
@@ -27,8 +26,6 @@ from __future__ import annotations
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, List
-
-from brain.vote_evidence import Vote
 
 
 def new_candidate_id() -> str:
@@ -53,30 +50,16 @@ class Candidate:
     direction: str                                  # "LONG" or "SHORT"
     timeframe_class: str                            # "SCALP" / "SWING" (ranker horizon)
     score: float                                    # composite conviction (0.0 .. 1.0)
-    contributing_votes: List[Vote] = field(default_factory=list)
+    contributing_modules: List[str] = field(default_factory=list)
+    contributing_timeframes: List[str] = field(default_factory=list)
     regime_context: str = ""                        # regime at discovery (trending/ranging/…)
     ev_estimate: float = 0.0                        # expected value in R units
-    vote_count: int = 0                             # number of contributing votes
+    vote_count: int = 0                             # number of contributing modules
     candidate_id: str = field(default_factory=new_candidate_id)
 
     @property
-    def contributing_modules(self) -> List[str]:
-        """Module names that voted for this idea (e.g. ["structure", "wyckoff"])."""
-        return [v.module for v in self.contributing_votes]
-
-    @property
-    def contributing_timeframes(self) -> List[str]:
-        """Distinct real timeframes behind this idea (order-preserving, e.g. ["H4", "D1"])."""
-        tfs: List[str] = []
-        for v in self.contributing_votes:
-            tf = (getattr(v, "timeframe", "") or "").strip().upper()
-            if tf and tf not in tfs:
-                tfs.append(tf)
-        return tfs
-
-    @property
     def summary(self) -> str:
-        mods = ", ".join(self.contributing_modules) if self.contributing_votes else "none"
+        mods = ", ".join(self.contributing_modules) if self.contributing_modules else "none"
         return (
             f"{self.direction} {self.timeframe_class} "
             f"score={self.score:.2f} EV={self.ev_estimate:+.2f}R "
@@ -91,22 +74,33 @@ class Candidate:
         regime_context: str = "",
         candidate_id: str | None = None,
     ) -> "Candidate":
-        """Wrap a scored ``Opportunity`` (from the ranker) as a ``Candidate``.
+        """Wrap a scored opportunity-like object as a ``Candidate``.
 
         Reuses the opportunity's already-computed clustering, confidence and EV —
         this never re-scores. ``score`` maps to the opportunity's weighted-mean
         cluster confidence; ``ev_estimate`` to its expected value in R. Duck-typed
-        on purpose so any opportunity-like object (or a test stub) works.
+        on purpose so any opportunity-like object (or a test stub) works; module
+        and timeframe provenance are derived from its contributing votes when
+        present.
         """
         votes = list(getattr(opportunity, "votes", []) or [])
+        modules = [
+            str(getattr(v, "module", "")) for v in votes if getattr(v, "module", "")
+        ]
+        timeframes: List[str] = []
+        for v in votes:
+            tf = (getattr(v, "timeframe", "") or "").strip().upper()
+            if tf and tf not in timeframes:
+                timeframes.append(tf)
         return cls(
             direction=str(getattr(opportunity, "direction", "")),
             timeframe_class=str(getattr(opportunity, "timeframe_class", "")),
             score=float(getattr(opportunity, "confidence", 0.0) or 0.0),
-            contributing_votes=votes,
+            contributing_modules=modules,
+            contributing_timeframes=timeframes,
             regime_context=regime_context,
             ev_estimate=float(getattr(opportunity, "expected_value", 0.0) or 0.0),
-            vote_count=len(votes),
+            vote_count=len(modules),
             candidate_id=candidate_id or new_candidate_id(),
         )
 
@@ -123,7 +117,6 @@ class CandidateEntryDecision:
 
     symbol: str
     candidate: Candidate
-    thesis: Any = None              # the thesis object form_thesis() returns (Session 2)
     source: str = ""               # "zone" or "consensus"
     sl: float = 0.0                # stop-loss price
     tp: float = 0.0                # take-profit price
