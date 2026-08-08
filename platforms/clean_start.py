@@ -24,6 +24,12 @@ from pathlib import Path
 from config import SCHEMA_VERSION
 from loguru import logger
 
+from scripts.git_identity import (
+    SOURCE_REPO_IDENTITY,
+    git_ceiling_env,
+    normalize_repo_identity,
+)
+
 # Operational, machine-local event-store DB. It is recreated empty on first
 # write and must never be restored from a shared remote — see
 # ``discard_corrupt_event_store`` below for why this matters.
@@ -72,10 +78,29 @@ def _is_git_repo(data_dir: Path) -> bool:
             ["git", "-C", str(data_dir.resolve()), "rev-parse", "--is-inside-work-tree"],
             capture_output=True,
             text=True,
+            # Block parent-directory discovery: a plain ``data/`` inside the
+            # source checkout must NOT resolve to the enclosing source repo.
+            env=git_ceiling_env(data_dir.resolve()),
         )
         return out.returncode == 0 and out.stdout.strip() == "true"
     except (FileNotFoundError, OSError):
         return False
+
+
+def _resolve_remote_identity(data_dir: Path, remote: str) -> str | None:
+    """Return the normalized ``owner/repo`` of *data_dir*'s *remote*, else None."""
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(data_dir.resolve()), "remote", "get-url", remote],
+            capture_output=True,
+            text=True,
+            env=git_ceiling_env(data_dir.resolve()),
+        )
+    except (FileNotFoundError, OSError):
+        return None
+    if out.returncode != 0:
+        return None
+    return normalize_repo_identity(out.stdout.strip())
 
 
 def _read_local_schema_version(version_file: Path) -> str | None:
@@ -111,6 +136,7 @@ def _backup_local_state(d: Path, *, branch_name: str = "clean-start-backup") -> 
             ["git", "-C", str(d.resolve()), "branch", "-f", branch_name, "HEAD"],
             capture_output=True,
             text=True,
+            env=git_ceiling_env(d.resolve()),
         )
     except Exception as exc:
         logger.debug("[clean-start] local-state backup branch failed: {}", exc)
@@ -121,18 +147,51 @@ def sync_clean_state_from_remote(
     *,
     remote: str = "origin",
     branch: str = "main",
+    data_repo_url: str | None = None,
 ) -> str:
-    """Fetch + hard-reset the data junction to the remote state."""
+    """Fetch + hard-reset the data junction to the remote state.
+
+    Refuses unless *data_dir* is a dedicated data repo whose *remote* is NOT the
+    source engine repo (and matches *data_repo_url* when provided). Combined with
+    ``GIT_CEILING_DIRECTORIES`` on every git call, this makes the destructive
+    ``reset --hard`` structurally incapable of ever resetting the source repo.
+    """
     d = Path(data_dir)
     if not d.is_dir():
         return "no data directory"
     if not _is_git_repo(d):
         return "data dir is not a git repo"
+
+    # Identity guard before the destructive fetch/reset. ``_is_git_repo`` above
+    # already used the ceiling env, so reaching here means ``d`` has its own
+    # ``.git``; now confirm its remote is the data repo, never the source.
+    identity = _resolve_remote_identity(d, remote)
+    if identity == SOURCE_REPO_IDENTITY:
+        logger.critical(
+            "[clean-start] REFUSING data-repo reset — remote '{}' of {} resolves "
+            "to the SOURCE engine repo. A hard reset here would destroy local "
+            "source state. Provision the dedicated data repo/junction.",
+            remote,
+            d,
+        )
+        return f"refused: remote '{remote}' is the source repo"
+    expected = normalize_repo_identity(data_repo_url)
+    if expected is not None and identity is not None and identity != expected:
+        logger.critical(
+            "[clean-start] REFUSING data-repo reset — remote '{}' is '{}', "
+            "expected '{}'.",
+            remote,
+            identity,
+            expected,
+        )
+        return f"refused: remote '{remote}' is '{identity}', expected '{expected}'"
+
     try:
         fetch = subprocess.run(
             ["git", "-C", str(d.resolve()), "fetch", remote],
             capture_output=True,
             text=True,
+            env=git_ceiling_env(d.resolve()),
         )
         if fetch.returncode != 0:
             msg = (fetch.stderr or fetch.stdout or "unknown").strip().splitlines()
@@ -158,6 +217,7 @@ def sync_clean_state_from_remote(
                 ["git", "-C", str(d.resolve()), "reset", "--hard", f"{remote}/{target}"],
                 capture_output=True,
                 text=True,
+                env=git_ceiling_env(d.resolve()),
             )
             if reset.returncode == 0:
                 if idx == 0:
@@ -388,10 +448,13 @@ def run_startup_clean_start(
     branch: str = "main",
     schema_version: str = SCHEMA_VERSION,
     local_schema_version_file: str | Path | None = None,
+    data_repo_url: str | None = None,
 ) -> tuple[str, str, str]:
     """Convenience wrapper: sync remote state, discard a corrupt event-store DB
     restored by that sync, then run the schema-gated purge."""
-    pull_res = sync_clean_state_from_remote(data_dir=data_dir, branch=branch)
+    pull_res = sync_clean_state_from_remote(
+        data_dir=data_dir, branch=branch, data_repo_url=data_repo_url
+    )
     event_store_res = discard_corrupt_event_store(data_dir=data_dir)
     purge_res = purge_stale_learned_data(
         data_dir=data_dir,

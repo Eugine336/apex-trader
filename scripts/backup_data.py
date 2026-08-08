@@ -27,6 +27,21 @@ from pathlib import Path
 
 from loguru import logger
 
+try:
+    from scripts.git_identity import (
+        SOURCE_REPO_IDENTITY,
+        git_ceiling_env,
+        normalize_repo_identity,
+        verify_dedicated_data_repo,
+    )
+except ImportError:  # running as a bare script — scripts/ is on sys.path
+    from git_identity import (  # type: ignore[no-redef]
+        SOURCE_REPO_IDENTITY,
+        git_ceiling_env,
+        normalize_repo_identity,
+        verify_dedicated_data_repo,
+    )
+
 _DATA_DIR = Path("data")
 _BRANCH = "data-backup"
 _DEFAULT_MAX_FILE_SIZE_MB: float = 95.0
@@ -118,18 +133,32 @@ def _get_remote_url() -> str | None:
     # Resolve the remote from the data directory rather than the current
     # working directory. ``_DATA_DIR`` may be a junction/symlink pointing at a
     # separate data repository, which owns the correct ``origin`` remote.
+    #
+    # ``GIT_CEILING_DIRECTORIES`` stops git from walking up into an enclosing
+    # source checkout: if ``data/`` is a plain directory (no junction, no own
+    # ``.git``) this returns ``None`` rather than the SOURCE repo's remote, so
+    # the backup can never force-push onto the engine repo.
     data_dir = str(_DATA_DIR.resolve())
     try:
-        return (
+        url = (
             subprocess.check_output(
                 ["git", "-C", data_dir, "remote", "get-url", "origin"],
                 stderr=subprocess.DEVNULL,
+                env=git_ceiling_env(data_dir),
             )
             .decode()
             .strip()
         )
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except (subprocess.CalledProcessError, FileNotFoundError, OSError):
         return None
+    if normalize_repo_identity(url) == SOURCE_REPO_IDENTITY:
+        logger.critical(
+            "[data-backup] REFUSING backup — origin of {} resolves to the SOURCE "
+            "repo. Provision the dedicated data repo/junction before backing up.",
+            data_dir,
+        )
+        return None
+    return url
 
 
 def _run_git(args: list[str], cwd: str) -> tuple[bool, str]:
@@ -138,6 +167,9 @@ def _run_git(args: list[str], cwd: str) -> tuple[bool, str]:
             ["git"] + args,
             cwd=cwd,
             stderr=subprocess.STDOUT,
+            # Defense in depth: never let git discover a repo above ``cwd`` (the
+            # source checkout) via parent-directory walking.
+            env=git_ceiling_env(cwd),
         ).decode()
         return True, out
     except subprocess.CalledProcessError as exc:
@@ -215,30 +247,43 @@ def run_backup(
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 
-def _is_dedicated_data_repo(work_tree: str) -> bool:
-    """True only if *work_tree* is the root of its own git repository.
+def _verify_data_repo_or_refuse(
+    work_tree: str,
+    *,
+    operation: str,
+    data_repo_url: str | None,
+    require_remote: bool,
+) -> str | None:
+    """Return a refusal string if *work_tree* is not a safe dedicated data repo.
 
-    ``sync_data_repo``/``compact_repo_history`` are designed for ``data/``
-    being a separate junction/clone with its own ``.git`` — every commit and
-    the squash-compaction only ever touch that dedicated repo. If ``data/``
-    is instead just a plain subdirectory of a larger repo (no ``.git`` of its
-    own), git still discovers a repo by walking up to the parent, and
-    ``rev-parse --show-toplevel`` from inside ``data/`` returns that parent's
-    root rather than ``data/`` itself. Operating in place in that case means
-    every "sync" commits onto the *shared* branch and every "compaction"
-    squashes the *entire source repository's* real history — not just data
-    history — into a single orphan commit, then force-pushes over it. This
-    check is what tells the two functions below to refuse rather than do
-    that silently.
+    ``sync_data_repo``/``compact_repo_history`` are designed for ``data/`` being
+    a separate junction/clone with its own ``.git`` and an ``origin`` that points
+    at ``Eugine336/apex-trader-data`` — every commit and the squash-compaction
+    only ever touch that dedicated repo. If ``data/`` is instead a plain
+    subdirectory of the source repo (no ``.git`` of its own), git discovers the
+    enclosing source repo by walking up, and operating in place would commit raw
+    data onto — or squash and force-push over — the *source* engine repo's real
+    history. This guard (backed by :func:`git_identity.verify_dedicated_data_repo`)
+    refuses rather than do that. ``None`` means the work tree is safe to operate
+    on.
     """
-    ok, out = _run_git(["rev-parse", "--show-toplevel"], work_tree)
-    if not ok:
-        return False
-    try:
-        toplevel = Path(out.strip()).resolve()
-        return toplevel == Path(work_tree).resolve()
-    except Exception:
-        return False
+    ok, reason = verify_dedicated_data_repo(
+        work_tree,
+        expected_repo_url=data_repo_url,
+        require_remote=require_remote,
+    )
+    if ok:
+        return None
+    logger.critical(
+        "[{}] REFUSING to operate on {} — {}. This guard prevents data "
+        "maintenance from destroying the SOURCE engine repository. Provision the "
+        "dedicated data repo/junction (its own .git + origin → {}) to enable it.",
+        operation,
+        work_tree,
+        reason,
+        data_repo_url or "the data repo",
+    )
+    return f"refused: {reason}"
 
 
 def sync_data_repo(
@@ -249,6 +294,7 @@ def sync_data_repo(
     branch: str = "main",
     push: bool = True,
     data_dir: Path | str | None = None,
+    data_repo_url: str | None = None,
 ) -> str:
     """Commit + push a ``data/`` git work tree to its GitHub remote.
 
@@ -261,6 +307,9 @@ def sync_data_repo(
     *data_dir* selects which work tree to sync. It defaults to the module-level
     single-user junction (``data/``). The multi-tenant sync passes the shared
     data-repo junction here after mirroring per-user instance data into it.
+
+    *data_repo_url*, when supplied, is the expected data-repo clone URL; the
+    ``origin`` remote must normalize to its identity or the sync is refused.
 
     Non-fatal by contract — callers should treat any non-success string as a
     soft warning and keep running.
@@ -278,16 +327,18 @@ def sync_data_repo(
     if not ok:
         return "data dir is not a git repo"
 
-    if not _is_dedicated_data_repo(work_tree):
-        logger.critical(
-            "[data-sync] REFUSING to sync — {} is not its own git repository "
-            "(git resolved it into the enclosing source repo). Committing here "
-            "would land raw data files on the source repo's '{}' branch. Set "
-            "data_dir up as a genuinely separate repo/junction (its own "
-            "'git init' + 'git remote add origin ...') to enable auto-sync.",
-            work_tree, branch,
-        )
-        return "refused: data dir is not a dedicated git repo (would corrupt source repo)"
+    # A commit-only sync (push=False, no remote) is safe as long as the tree is
+    # its own dedicated repo, so only *require* a remote when we intend to push.
+    # A configured remote is always checked: an origin pointing at the source
+    # repo is refused even for commit-only.
+    refusal = _verify_data_repo_or_refuse(
+        work_tree,
+        operation="data-sync",
+        data_repo_url=data_repo_url,
+        require_remote=push,
+    )
+    if refusal is not None:
+        return refusal
 
     # Flush WAL journals into the main .db files so the committed databases
     # are self-contained — git excludes the -wal/-shm sidecars.
@@ -391,6 +442,7 @@ def compact_repo_history(
     max_repo_size_mb: float = 500.0,
     keep_commits: int = 10,
     branch: str = "main",
+    data_repo_url: str | None = None,
 ) -> str:
     """Squash the data-repo history into a single commit when it grows too big.
 
@@ -413,16 +465,18 @@ def compact_repo_history(
     if not ok:
         return "not a git repo"
 
-    if not _is_dedicated_data_repo(work_tree):
-        logger.critical(
-            "[repo-compact] REFUSING to compact — {} is not its own git "
-            "repository (git resolved it into the enclosing source repo). "
-            "Squashing here would destroy the source repo's real commit "
-            "history on '{}', not just data history. Set data_dir up as a "
-            "genuinely separate repo/junction to enable compaction.",
-            work_tree, branch,
-        )
-        return "refused: data dir is not a dedicated git repo (would destroy source history)"
+    # Structural guard up front: refuse before touching anything if the work
+    # tree is not its own repo, or a configured origin points at the source
+    # repo. A remote is not required here (small repos with no remote still hit
+    # the size/keep gates below and short-circuit before any history rewrite).
+    refusal = _verify_data_repo_or_refuse(
+        work_tree,
+        operation="repo-compact",
+        data_repo_url=data_repo_url,
+        require_remote=False,
+    )
+    if refusal is not None:
+        return refusal
 
     # Heal a repo left stranded on the orphan temp branch by an interrupted
     # prior run before doing anything else — otherwise the size check may
@@ -442,6 +496,18 @@ def compact_repo_history(
         commit_count = 0
     if commit_count <= keep_commits:
         return f"skipped ({commit_count} commits <= keep {keep_commits})"
+
+    # About to rewrite history and force-push. Re-verify the FULL identity now
+    # (remote required, must normalize to the expected data repo, never the
+    # source) immediately before the first destructive step.
+    refusal = _verify_data_repo_or_refuse(
+        work_tree,
+        operation="repo-compact",
+        data_repo_url=data_repo_url,
+        require_remote=True,
+    )
+    if refusal is not None:
+        return refusal
 
     temp_branch = "_compact_temp"
     # Drop any stale temp branch left by a previous interrupted run.
@@ -489,6 +555,18 @@ def compact_repo_history(
 
     _run_git(["gc", "--aggressive", "--prune=now"], work_tree)
     new_size_mb = _repo_object_size_mb(work_tree)
+
+    # Final identity re-check immediately before the force-push — the single
+    # most destructive remote action. Refusing here (rather than pushing) is the
+    # last guarantee that a squashed history can never overwrite the source repo.
+    refusal = _verify_data_repo_or_refuse(
+        work_tree,
+        operation="repo-compact",
+        data_repo_url=data_repo_url,
+        require_remote=True,
+    )
+    if refusal is not None:
+        return refusal
 
     ok, push_out = _run_git(["push", "--force", "origin", branch], work_tree)
     if not ok:
@@ -558,6 +636,7 @@ def sync_instances_to_data_repo(
     branch: str = "main",
     push: bool = True,
     max_file_size_mb: float = _DEFAULT_MAX_FILE_SIZE_MB,
+    data_repo_url: str | None = None,
 ) -> str:
     """Mirror every per-user instance's data into the shared data-repo junction
     (under ``instances/user_<id>/``), then commit + push the junction once.
@@ -588,6 +667,7 @@ def sync_instances_to_data_repo(
         branch=branch,
         push=push,
         data_dir=junction,
+        data_repo_url=data_repo_url,
     )
     return f"{result} (users={users}, files={copied}, skipped={skipped})"
 

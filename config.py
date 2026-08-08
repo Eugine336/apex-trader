@@ -1507,6 +1507,12 @@ class DataBackupConfig:
     # trading loop continues.
     auto_sync_data_repo: bool = True
     sync_branch: str = "main"
+    # Canonical clone URL of the DEDICATED data repository. Every data git
+    # operation (auto-sync, compaction, clean-start reset) verifies the data
+    # dir's ``origin`` normalizes to this identity before doing anything
+    # destructive, so maintenance can never operate on the source engine repo.
+    # See ``scripts/git_identity.py`` and ``deploy/setup-vps.sh``.
+    data_repo_url: str = "https://github.com/Eugine336/apex-trader-data.git"
     # Also refresh the ``data-backup`` orphan branch during daily maintenance so
     # ``scripts/restore_data.py`` restores the current (clean) state rather than
     # stale pre-migration data.

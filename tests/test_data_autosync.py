@@ -325,10 +325,16 @@ class TestCleanStart:
             d = Path(tmp)
             commands: list[list[str]] = []
 
-            def _fake_run(cmd, capture_output=True, text=True):
+            def _fake_run(cmd, capture_output=True, text=True, env=None):
                 commands.append(list(cmd))
                 if cmd[-2:] == ["rev-parse", "--is-inside-work-tree"]:
                     return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
+                if cmd[-3:] == ["remote", "get-url", "origin"]:
+                    return subprocess.CompletedProcess(
+                        cmd, 0,
+                        stdout="https://github.com/Eugine336/apex-trader-data.git\n",
+                        stderr="",
+                    )
                 if cmd[-2:] == ["fetch", "origin"]:
                     return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
                 if cmd[-3:] == ["reset", "--hard", "origin/main"]:
@@ -339,21 +345,29 @@ class TestCleanStart:
                 res = sync_clean_state_from_remote(str(d), branch="main")
 
             assert res == "reset to origin/main"
-            assert commands[1][-2:] == ["fetch", "origin"]
+            # Identity guard resolves the remote (command[1]) before fetching.
+            assert commands[1][-3:] == ["remote", "get-url", "origin"]
+            assert commands[2][-2:] == ["fetch", "origin"]
             # A local-state backup branch is force-updated between the fetch and
-            # the destructive reset, so the reset is the 4th git call.
-            assert "branch" in commands[2] and "clean-start-backup" in commands[2]
-            assert commands[3][-3:] == ["reset", "--hard", "origin/main"]
+            # the destructive reset.
+            assert "branch" in commands[3] and "clean-start-backup" in commands[3]
+            assert commands[4][-3:] == ["reset", "--hard", "origin/main"]
 
     def test_sync_falls_back_to_master_when_main_missing(self):
         with tempfile.TemporaryDirectory() as tmp:
             d = Path(tmp)
             commands: list[list[str]] = []
 
-            def _fake_run(cmd, capture_output=True, text=True):
+            def _fake_run(cmd, capture_output=True, text=True, env=None):
                 commands.append(list(cmd))
                 if cmd[-2:] == ["rev-parse", "--is-inside-work-tree"]:
                     return subprocess.CompletedProcess(cmd, 0, stdout="true\n", stderr="")
+                if cmd[-3:] == ["remote", "get-url", "origin"]:
+                    return subprocess.CompletedProcess(
+                        cmd, 0,
+                        stdout="git@github.com:Eugine336/apex-trader-data.git\n",
+                        stderr="",
+                    )
                 if cmd[-2:] == ["fetch", "origin"]:
                     return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
                 if cmd[-3:] == ["reset", "--hard", "origin/main"]:
@@ -366,10 +380,10 @@ class TestCleanStart:
                 res = sync_clean_state_from_remote(str(d), branch="main")
 
             assert res == "reset to origin/master (fallback)"
-            # Backup branch is the 3rd git call; the two reset attempts follow.
-            assert "branch" in commands[2] and "clean-start-backup" in commands[2]
-            assert commands[3][-3:] == ["reset", "--hard", "origin/main"]
-            assert commands[4][-3:] == ["reset", "--hard", "origin/master"]
+            # Backup branch is the 4th git call; the two reset attempts follow.
+            assert "branch" in commands[3] and "clean-start-backup" in commands[3]
+            assert commands[4][-3:] == ["reset", "--hard", "origin/main"]
+            assert commands[5][-3:] == ["reset", "--hard", "origin/master"]
 
     def test_pull_non_git_dir(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -382,6 +396,50 @@ class TestCleanStart:
             sync_clean_state_from_remote("/nope/missing/dir")
             == "no data directory"
         )
+
+    def test_refuses_reset_when_origin_is_source_repo(self):
+        # A dedicated data repo whose origin was misconfigured to the source
+        # engine repo must be refused before any destructive fetch/reset.
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            _init_repo(d)
+            subprocess.run(
+                ["git", "-C", str(d), "remote", "add", "origin",
+                 "https://github.com/Eugine336/apex-trader.git"],
+                check=True,
+            )
+            res = sync_clean_state_from_remote(str(d), branch="main")
+            assert res.startswith("refused")
+            assert "source repo" in res
+
+    def test_refuses_reset_when_origin_mismatches_expected(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            _init_repo(d)
+            subprocess.run(
+                ["git", "-C", str(d), "remote", "add", "origin",
+                 "https://github.com/someone/unexpected.git"],
+                check=True,
+            )
+            res = sync_clean_state_from_remote(
+                str(d), branch="main",
+                data_repo_url="https://github.com/Eugine336/apex-trader-data.git",
+            )
+            assert res.startswith("refused")
+
+    def test_plain_dir_inside_source_repo_is_not_a_git_repo(self):
+        # The incident topology: with the ceiling env, a plain data/ nested in
+        # the source checkout does NOT resolve to the enclosing source repo.
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "apex-trader"
+            source.mkdir()
+            _init_repo(source)
+            plain_data = source / "data"
+            plain_data.mkdir()
+            assert (
+                sync_clean_state_from_remote(str(plain_data))
+                == "data dir is not a git repo"
+            )
 
     def test_startup_runner_is_context_free(self):
         with patch(
@@ -406,7 +464,9 @@ class TestCleanStart:
             "event-store healthy",
             "already clean",
         )
-        mock_sync.assert_called_once_with(data_dir="data", branch="main")
+        mock_sync.assert_called_once_with(
+            data_dir="data", branch="main", data_repo_url=None
+        )
         mock_discard.assert_called_once_with(data_dir="data")
         mock_purge.assert_called_once_with(
             data_dir="data",
