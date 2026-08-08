@@ -186,6 +186,34 @@ def test_loop_caps_symbols():
     assert len(brain.calls) == 4
 
 
+def test_loop_rotates_across_cycles_over_full_universe():
+    # The periodic cycle must ROTATE, not always reason the first N symbols —
+    # otherwise symbols past N are starved (the weekend "only 12 of 50" bug).
+    brain = _StubBrain()
+    syms = [f"S{i}" for i in range(5)]
+    loop = CognitionLoop(brain, _StubConsolidator(), lambda: syms, max_symbols_per_cycle=2)
+    loop.run_once()   # S0, S1
+    loop.run_once()   # S2, S3
+    loop.run_once()   # S4, S0 (wrap)
+    assert brain.calls == ["S0", "S1", "S2", "S3", "S4", "S0"]
+    assert set(brain.calls) == set(syms)   # whole universe covered within ceil(5/2) cycles
+
+
+def test_loop_cap_ge_universe_covers_all_each_cycle():
+    brain = _StubBrain()
+    syms = ["A", "B", "C"]
+    loop = CognitionLoop(brain, _StubConsolidator(), lambda: syms, max_symbols_per_cycle=10)
+    loop.run_once()
+    loop.run_once()
+    assert brain.calls == ["A", "B", "C", "A", "B", "C"]
+    assert loop._cycle_offset == 0
+
+
+def test_loop_empty_universe_is_noop():
+    loop = CognitionLoop(_StubBrain(), _StubConsolidator(), lambda: [], max_symbols_per_cycle=4)
+    assert loop.run_once() == 0
+
+
 def test_loop_start_stop_toggles():
     loop = CognitionLoop(_StubBrain(), _StubConsolidator(), lambda: ["X"], interval_seconds=1.0)
     loop.start()
