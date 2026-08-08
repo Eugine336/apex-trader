@@ -10,7 +10,7 @@ them — is not biased to a single methodology:
   * ``volatility_regime``— classifies the market as TREND / RANGE / VOLATILE so
     the learned edge can be scoped per regime.
 
-Each generator returns a uniform :class:`ConceptSignal` (direction + strength)
+Each generator returns a uniform :class:`ConceptSignal` (non-directional strength only)
 or NEUTRAL.  Everything is defensively guarded and returns a neutral result on
 any error or insufficient data, so a concept can never break the analysis plane
 (the caller also wraps each module in try/except).
@@ -33,22 +33,23 @@ REGIME_UNKNOWN = "UNKNOWN"
 
 @dataclass(frozen=True)
 class ConceptSignal:
-    """A single non-ICT concept's directional read.
+    """A single non-ICT concept's NON-DIRECTIONAL strength read.
 
-    ``direction`` is "LONG" / "SHORT" / "NEUTRAL"; ``strength`` is 0.0-1.0.
+    ``strength`` is 0.0-1.0 — the magnitude of the concept's signal, carrying no
+    trade direction (Part XXV: analytical modules are measurement instruments,
+    never voters).
     """
 
     name: str
-    direction: str
     strength: float
 
     @property
-    def is_directional(self) -> bool:
-        return self.direction in ("LONG", "SHORT") and self.strength > 0.0
+    def is_active(self) -> bool:
+        return self.strength > 0.0
 
 
-_NEUTRAL_TREND = ConceptSignal("trend_momentum", "NEUTRAL", 0.0)
-_NEUTRAL_MR = ConceptSignal("mean_reversion", "NEUTRAL", 0.0)
+_NEUTRAL_TREND = ConceptSignal("trend_momentum", 0.0)
+_NEUTRAL_MR = ConceptSignal("mean_reversion", 0.0)
 
 
 def _closes(df: pd.DataFrame) -> Any:
@@ -72,10 +73,10 @@ def trend_momentum(
             return _NEUTRAL_TREND
         sep = abs(sma_fast - sma_slow) / abs(sma_slow)
         strength = max(0.0, min(1.0, sep * 50.0))  # ~2% separation → full
-        if sma_fast > sma_slow and last >= sma_fast:
-            return ConceptSignal("trend_momentum", "LONG", round(strength, 4))
-        if sma_fast < sma_slow and last <= sma_fast:
-            return ConceptSignal("trend_momentum", "SHORT", round(strength, 4))
+        if (sma_fast > sma_slow and last >= sma_fast) or (
+            sma_fast < sma_slow and last <= sma_fast
+        ):
+            return ConceptSignal("trend_momentum", round(strength, 4))
         return _NEUTRAL_TREND
     except Exception:
         return _NEUTRAL_TREND
@@ -101,8 +102,7 @@ def mean_reversion(
         if abs(z) < z_threshold:
             return _NEUTRAL_MR
         strength = max(0.0, min(1.0, abs(z) / 3.0))
-        direction = "SHORT" if z > 0 else "LONG"
-        return ConceptSignal("mean_reversion", direction, round(strength, 4))
+        return ConceptSignal("mean_reversion", round(strength, 4))
     except Exception:
         return _NEUTRAL_MR
 
@@ -124,7 +124,7 @@ def volatility_regime(
         if atr_recent / atr_base >= 1.5:
             return REGIME_VOLATILE
         trend = trend_momentum(df)
-        return REGIME_TREND if trend.is_directional else REGIME_RANGE
+        return REGIME_TREND if trend.is_active else REGIME_RANGE
     except Exception:
         return REGIME_UNKNOWN
 

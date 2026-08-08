@@ -465,52 +465,53 @@ def _event_loop(clock=None):
 def test_event_driven_off_is_noop():
     loop = CognitionLoop(_StubBrain(), _StubConsolidator(), lambda: ["X"],
                          event_driven=False)
-    assert loop.maybe_reason_on_change("X", "LONG", 0.9) is False
+    assert loop.maybe_reason_on_change("X", 0.9) is False
     assert loop._drain_pending() == []
 
 
-def test_event_first_directional_read_triggers():
+def test_event_first_read_triggers():
     loop = _event_loop()
-    assert loop.maybe_reason_on_change("XAUUSD", "LONG", 0.6) is True
+    assert loop.maybe_reason_on_change("XAUUSD", 0.6) is True
     assert "XAUUSD" in loop._drain_pending()
 
 
-def test_event_no_trigger_when_unchanged_and_small_delta():
+def test_event_no_trigger_when_small_magnitude_delta():
     clk = _ManualClock()
     loop = _event_loop(clk)
-    assert loop.maybe_reason_on_change("XAUUSD", "LONG", 0.60) is True
+    assert loop.maybe_reason_on_change("XAUUSD", 0.60) is True
     clk.t += 100.0  # clear the floor
-    # same direction, sub-delta confidence move ⇒ no trigger
-    assert loop.maybe_reason_on_change("XAUUSD", "LONG", 0.70) is False
+    # sub-delta magnitude move ⇒ no trigger (non-directional)
+    assert loop.maybe_reason_on_change("XAUUSD", 0.70) is False
 
 
-def test_event_triggers_on_direction_flip():
+def test_event_triggers_on_bare_nudge():
     clk = _ManualClock()
     loop = _event_loop(clk)
-    assert loop.maybe_reason_on_change("XAUUSD", "LONG", 0.6) is True
+    assert loop.maybe_reason_on_change("XAUUSD", 0.6) is True
     clk.t += 100.0
-    assert loop.maybe_reason_on_change("XAUUSD", "SHORT", 0.6) is True
+    # a bare nudge (no magnitude) always wakes the Brain (throttled only)
+    assert loop.maybe_reason_on_change("XAUUSD") is True
 
 
-def test_event_triggers_on_confidence_jump():
+def test_event_triggers_on_magnitude_jump():
     clk = _ManualClock()
     loop = _event_loop(clk)
-    assert loop.maybe_reason_on_change("XAUUSD", "LONG", 0.50) is True
+    assert loop.maybe_reason_on_change("XAUUSD", 0.50) is True
     clk.t += 100.0
-    assert loop.maybe_reason_on_change("XAUUSD", "LONG", 0.70) is True  # +0.20 >= 0.15
+    assert loop.maybe_reason_on_change("XAUUSD", 0.70) is True  # +0.20 >= 0.15
 
 
 def test_event_per_symbol_floor_throttles():
     clk = _ManualClock()
     loop = _event_loop(clk)
-    assert loop.maybe_reason_on_change("XAUUSD", "LONG", 0.6) is True
-    # within the 8s floor a fresh flip is throttled, not queued
+    assert loop.maybe_reason_on_change("XAUUSD", 0.6) is True
+    # within the 8s floor a fresh material change is throttled, not queued
     clk.t += 3.0
-    assert loop.maybe_reason_on_change("XAUUSD", "SHORT", 0.6) is False
+    assert loop.maybe_reason_on_change("XAUUSD", 0.9) is False
     assert loop.get_status()["event_throttled"] == 1
     # once the floor elapses it fires again
     clk.t += 6.0
-    assert loop.maybe_reason_on_change("XAUUSD", "LONG", 0.6) is True
+    assert loop.maybe_reason_on_change("XAUUSD", 0.6) is True
 
 
 def test_reason_symbol_now_reasons_once():
@@ -525,8 +526,8 @@ def test_reason_symbol_now_reasons_once():
 
 def test_event_trigger_is_fault_safe():
     loop = _event_loop()
-    # non-numeric confidence must not raise
-    assert loop.maybe_reason_on_change("XAUUSD", "LONG", None) is True
+    # non-numeric magnitude must not raise (treated as a bare nudge)
+    assert loop.maybe_reason_on_change("XAUUSD", None) is True
 
 
 # ── Brain management → sink (Part VI) ─────────────────────────────────────────

@@ -32,7 +32,6 @@ class WyckoffAnalysis:
     spring_detected: bool
     upthrust_detected: bool
     phase_confidence: float
-    expected_direction: str
 
 
 class WyckoffEngine:
@@ -84,7 +83,6 @@ class WyckoffEngine:
                 spring_detected=False,
                 upthrust_detected=False,
                 phase_confidence=0.0,
-                expected_direction="NONE",
             )
 
         volume = self.volume_analyzer.analyze(closed)
@@ -109,7 +107,6 @@ class WyckoffEngine:
             spring_detected=spring,
             upthrust_detected=upthrust,
             phase_confidence=round(confidence, 4),
-            expected_direction=direction,
         )
 
     def _range_state(self, df: pd.DataFrame) -> tuple[float, float, bool]:
@@ -176,9 +173,6 @@ class WyckoffEngine:
             return WyckoffPhase.PHASE_A, sub, direction, 0.72
 
         if in_range:
-            if volume.confirmation_bias in {"BULLISH", "BEARISH"}:
-                direction = "LONG" if volume.confirmation_bias == "BULLISH" else "SHORT"
-                return WyckoffPhase.PHASE_D, "RANGE_EXIT_PREP", direction, 0.68
             # Gold's accumulation phases are more predictive than forex.
             return WyckoffPhase.PHASE_B, "BUILDING_CAUSE", "NONE", 0.70 if gold else 0.6
 

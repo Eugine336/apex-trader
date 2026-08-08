@@ -12,8 +12,7 @@ Phase 3: scan pipeline + sizing (OpportunityExecutor,
 Orchestrator, SystemVolatilityMonitor, OpportunityDensityTracker,
 EntryEngine, ExecutionMonitor).
 Phase 4: learning + feedback (OutcomeFeedback, SignalLedger,
-EmitterFeedbackService, VoteCalibrator, ModuleGovernor, PostCloseTracker,
-GateTuner, CounterfactualEngine, InteractionAnalyzer, ShadowStore,
+EmitterFeedbackService, PostCloseTracker, GateTuner, ShadowStore,
 TunerAgent, AdaptiveOptimizer).
 
 Usage::
@@ -45,7 +44,6 @@ if TYPE_CHECKING:
     from decision.situation import SituationEngine
     from governance.division import GovernanceDivision
     from governor.portfolio_governor import PortfolioGovernor
-    from management.opportunity_executor import OpportunityExecutor
     from platforms.platform_manager import PlatformManager
     from portfolio.division import PortfolioDivision
     from risk.account_risk import AccountRiskManager
@@ -54,17 +52,13 @@ if TYPE_CHECKING:
     from risk.risk_reporter import RiskReporter
     from trigger.entry_engine import EntryEngine
 
-    from adaptive.counterfactual import CounterfactualEngine
     from adaptive.emitter_feedback import EmitterFeedbackService
     from adaptive.gate_tuner import GateTuner
-    from adaptive.interaction_discovery import InteractionAnalyzer
-    from adaptive.module_governor import ModuleGovernor
     from adaptive.optimizer import AdaptiveOptimizer
     from adaptive.post_close_tracker import PostCloseTracker
     from adaptive.recommendations import RecommendationGateway
     from adaptive.signal_ledger import SignalLedger
     from adaptive.tuner_agent import TunerAgent
-    from adaptive.vote_calibrator import VoteCalibrator
     from persistence.shadow_store import ShadowStore
 
 
@@ -176,7 +170,7 @@ class SystemContext:
     cognition_observability: Optional[Any] = None
 
     # ── Scan pipeline + sizing (Phase 3) ──────────────────────────────
-    opportunity_executor: Optional[OpportunityExecutor] = None
+    opportunity_executor: Optional[Any] = None  # RETIRED ranking executor — always None
     orchestrator: Optional[Any] = None  # RETIRED legacy decider — always None
     system_volatility_monitor: Optional[SystemVolatilityMonitor] = None
     opportunity_density_tracker: Optional[OpportunityDensityTracker] = None
@@ -187,13 +181,8 @@ class SystemContext:
     outcome_feedback: Optional[OutcomeFeedback] = None
     signal_ledger: Optional[SignalLedger] = None
     emitter_feedback: Optional[EmitterFeedbackService] = None
-    vote_calibrator: Optional[VoteCalibrator] = None
-    module_governor: Optional[ModuleGovernor] = None
-    symbol_conviction: Optional[Any] = None
     post_close_tracker: Optional[PostCloseTracker] = None
     gate_tuner: Optional[GateTuner] = None
-    counterfactual_engine: Optional[CounterfactualEngine] = None
-    interaction_analyzer: Optional[InteractionAnalyzer] = None
     shadow_store: Optional[ShadowStore] = None
     tuner_agent: Optional[TunerAgent] = None
     recommendation_gateway: Optional[RecommendationGateway] = None
@@ -549,13 +538,11 @@ class SystemContext:
 
         # ── Scan Pipeline + Sizing (Phase 3) ─────────────────────────
 
-        # ── OpportunityExecutor ─────────────────────────────────────
-        try:
-            from management.opportunity_executor import OpportunityExecutor as _OppExec
-            opp_cfg = getattr(config, "opportunity_ranker", None)
-            ctx.opportunity_executor = _OppExec(opp_cfg)
-        except Exception as exc:
-            logger.warning("[SystemContext] OpportunityExecutor init failed: {}", exc)
+        # ── OpportunityExecutor — RETIRED (directional ranking entry path)
+        # The ranking executor turned module votes into ranked opportunities for
+        # the retired zone/queue entry path; the single Cognitive Brain is now
+        # the sole originator, so it is deleted. ctx.opportunity_executor stays
+        # None and its consumers are None-guarded.
 
         # ── Orchestrator — RETIRED (Single Reasoner cutover, Part III.2) ──
         # The legacy graded-sizing / physics-veto round table was a market
@@ -665,21 +652,7 @@ class SystemContext:
         except Exception as exc:
             logger.warning("[SystemContext] EmitterFeedbackService init failed: {}", exc)
 
-        # ── CounterfactualEngine ────────────────────────────────────
-        # The nested CounterfactualConfig names its fields counterfactual_enabled
-        # / attribution_lookback / attribution_interval — reading enabled /
-        # lookback / interval silently missed all three and used the getattr
-        # fallbacks. Read the real field names so the config is authoritative.
-        try:
-            from adaptive.counterfactual import CounterfactualEngine as _Counterfactual
-            cf_cfg = getattr(config, "counterfactual", None)
-            ctx.counterfactual_engine = _Counterfactual(
-                enabled=getattr(cf_cfg, "counterfactual_enabled", True) if cf_cfg else True,
-                attribution_lookback=getattr(cf_cfg, "attribution_lookback", 500) if cf_cfg else 500,
-                attribution_interval=getattr(cf_cfg, "attribution_interval", 100) if cf_cfg else 100,
-            )
-        except Exception as exc:
-            logger.warning("[SystemContext] CounterfactualEngine init failed: {}", exc)
+        # L4 attribution engine RETIRED - severed from the live path.
 
         # ── RecommendationGateway (Learning ⑦ → Governance ⑧ boundary) ──
         # The single authorisation chokepoint every Learning recommendation
@@ -700,82 +673,9 @@ class SystemContext:
         except Exception as exc:
             logger.warning("[SystemContext] RecommendationGateway init failed: {}", exc)
 
-        # ── VoteCalibrator ──────────────────────────────────────────
-        # The calibrator reads its master switch and hyperparameters off the
-        # config object handed in (vote_calibration_enabled, vote_weight_*, …).
-        # Those live on the nested ``VoteCalibratorConfig`` — pass that, not the
-        # top-level AppConfig, or ``enabled`` resolves to its False default and
-        # the calibrator stays inert despite the config saying it is on.
-        try:
-            from adaptive.vote_calibrator import VoteCalibrator as _VoteCalib
-            ctx.vote_calibrator = _VoteCalib(
-                config=getattr(config, "vote_calibrator", config),
-                emitter_feedback=ctx.emitter_feedback,
-            )
-            if ctx.counterfactual_engine is not None:
-                ctx.vote_calibrator.set_counterfactual(ctx.counterfactual_engine)
-            if ctx.outcome_feedback is not None:
-                try:
-                    ctx.vote_calibrator.set_outcome_feedback(ctx.outcome_feedback)
-                except Exception as exc:
-                    logger.warning(
-                        "[SystemContext] VoteCalibrator→outcome_feedback wire failed: {}",
-                        exc,
-                    )
-            # Route weight-multiplier publication through the recommendation
-            # gateway (Learning recommends → Governance authorises). Auto-approved
-            # until Phase 7, so calibration behaviour is unchanged.
-            if ctx.recommendation_gateway is not None:
-                try:
-                    ctx.vote_calibrator.set_recommendation_gateway(
-                        ctx.recommendation_gateway
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[SystemContext] VoteCalibrator→gateway wire failed: {}", exc
-                    )
-        except Exception as exc:
-            logger.warning("[SystemContext] VoteCalibrator init failed: {}", exc)
-
-        # ── ModuleGovernor ──────────────────────────────────────────
-        # The governor reads ``module_governor_enabled`` and every transition
-        # threshold off the config it is handed. Those fields live on the nested
-        # ``ModuleGovernorConfig`` (config.module_governor), NOT the top-level
-        # AppConfig — passing the AppConfig made ``enabled`` fall through to its
-        # False default, so the governor was permanently inert (no module ever
-        # shadowed) even though the config flag was True. Pass the nested config.
-        try:
-            from adaptive.module_governor import ModuleGovernor as _ModGov
-            ctx.module_governor = _ModGov(
-                config=getattr(config, "module_governor", config),
-                emitter_feedback=ctx.emitter_feedback,
-                counterfactual=ctx.counterfactual_engine,
-            )
-            if ctx.module_governor is not None:
-                logger.info(
-                    "[SystemContext] ModuleGovernor enabled={}",
-                    ctx.module_governor.enabled,
-                )
-        except Exception as exc:
-            logger.warning("[SystemContext] ModuleGovernor init failed: {}", exc)
-
-        # ── SymbolConvictionStore (1B — symbol-relative conviction) ──
-        # Learning ⑦ produces the per-symbol conviction distribution; Consensus
-        # ② consumes the normalized value at form_thesis. Cold-start neutral
-        # (raw passthrough until a symbol warms up) and per-user isolated.
-        try:
-            cn_cfg = getattr(config, "conviction_normalization", None)
-            if cn_cfg is None or bool(getattr(cn_cfg, "enabled", True)):
-                from adaptive.symbol_conviction import SymbolConvictionStore as _SymConv
-                ctx.symbol_conviction = _SymConv(
-                    enabled=bool(getattr(cn_cfg, "enabled", True)) if cn_cfg else True,
-                    min_samples=int(getattr(cn_cfg, "min_samples", 30)) if cn_cfg else 30,
-                    max_history=int(getattr(cn_cfg, "max_history", 300)) if cn_cfg else 300,
-                    blend=float(getattr(cn_cfg, "blend", 0.5)) if cn_cfg else 0.5,
-                    persist=bool(getattr(cn_cfg, "persist", True)) if cn_cfg else True,
-                )
-        except Exception as exc:
-            logger.warning("[SystemContext] SymbolConvictionStore init failed: {}", exc)
+        # Adaptive authority engines RETIRED - the directional-decision and
+        # offline-adaptive subsystem is severed from the live path; the one
+        # Cognitive Brain is the sole decider.
         # ── PostCloseTracker ────────────────────────────────────────
         # Reads enabled/check_intervals_minutes/max_retries off the config it is
         # handed. Those live on the nested PostCloseTrackerConfig — passing the
@@ -805,34 +705,7 @@ class SystemContext:
         except Exception as exc:
             logger.warning("[SystemContext] GateTuner init failed: {}", exc)
 
-        # ── InteractionAnalyzer ─────────────────────────────────────
-        try:
-            from adaptive.interaction_discovery import InteractionAnalyzer as _Interaction
-            if ctx.counterfactual_engine is not None:
-                ia_cfg = getattr(config, "interaction", None)
-                # InteractionConfig fields are interaction_discovery_enabled /
-                # interaction_lookback / interaction_interval — reading enabled /
-                # lookback / interval missed them and used the fallbacks, so the
-                # config never reached the analyzer. Read the real field names.
-                ctx.interaction_analyzer = _Interaction(
-                    ctx.counterfactual_engine,
-                    enabled=getattr(ia_cfg, "interaction_discovery_enabled", True) if ia_cfg else True,
-                    lookback=getattr(ia_cfg, "interaction_lookback", 500) if ia_cfg else 500,
-                    interval=getattr(ia_cfg, "interaction_interval", 500) if ia_cfg else 500,
-                )
-                # Toxic module-pair findings flow to Governance as recommendations.
-                if ctx.recommendation_gateway is not None:
-                    try:
-                        ctx.interaction_analyzer.set_recommendation_gateway(
-                            ctx.recommendation_gateway
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "[SystemContext] InteractionAnalyzer→gateway wire failed: {}",
-                            exc,
-                        )
-        except Exception as exc:
-            logger.warning("[SystemContext] InteractionAnalyzer init failed: {}", exc)
+        # Module-interaction analyzer RETIRED - severed from the live path.
 
         # ── ShadowStore ─────────────────────────────────────────────
         try:
@@ -948,9 +821,8 @@ class SystemContext:
 
         # ── GovernanceDivision (Department 8 — authorise + contain) ──
         # Learning recommends; Governance authorises. Wired as the authoriser on
-        # the RecommendationGateway and given the enforcement arms: the
-        # ModuleGovernor (to shadow a harmful module) and the TunerAgent (to
-        # freeze a runaway tunable). Permissive-but-bounded by default, so
+        # the RecommendationGateway and given the enforcement arm: the TunerAgent
+        # (to freeze a runaway tunable). Permissive-but-bounded by default, so
         # turning governance on is behaviour-neutral — it only adds the explicit
         # gate. If construction fails the gateway keeps no authoriser and
         # auto-approves (fail-safe — trading is never blocked by a governance
@@ -988,7 +860,7 @@ class SystemContext:
             except Exception as exc:
                 logger.warning("[SystemContext] HealthAssessor init failed: {}", exc)
 
-            # ── GateAttributor (per-gate parameter counterfactual) ─────
+            # ── GateAttributor (per-gate parameter attribution) ─────
             # Snapshots the GateTuner offsets at entry and replays the gate
             # decision on the operator's default thresholds at close, so
             # Governance can attribute which learned loosening *opened* a trade
@@ -1294,6 +1166,24 @@ class SystemContext:
                     exit_floor=float(
                         getattr(cog_cfg, "manage_exit_floor", 0.3)
                         if cog_cfg is not None else 0.3
+                    ),
+                    # Part IX Art 1/7 — payoff geometry for the Brain's expected
+                    # value (EV in R). Reuses the same reward multiple the
+                    # origination sink targets so the strategic EV and the
+                    # execution-cost-adjusted EV share one reward-to-risk basis.
+                    reward_r_default=float(
+                        getattr(cog_cfg, "origination_reward_multiple", 2.0)
+                        if cog_cfg is not None else 2.0
+                    ),
+                    # Part IX Q35/Q36 — act only when expected value clears this
+                    # threshold (in R). Default 0.0 ⇒ decline non-positive-EV
+                    # opportunities even when confident. Set to None in config to
+                    # disable the EV gate (not recommended).
+                    min_expected_value=(
+                        None if (cog_cfg is not None
+                                 and getattr(cog_cfg, "min_expected_value", 0.0) is None)
+                        else float(getattr(cog_cfg, "min_expected_value", 0.0)
+                                   if cog_cfg is not None else 0.0)
                     ),
                 )
                 # Part VII — institutional memory (Phase H). Best-effort: a
@@ -1704,7 +1594,6 @@ class SystemContext:
                 logger.warning("[SystemContext] CognitiveBrain init failed: {}", exc)
 
             ctx.governance = _Governance(
-                module_governor=ctx.module_governor,
                 tuner_agent=ctx.tuner_agent,
                 min_size_multiplier=getattr(lg_cfg, "min_size_multiplier", 0.0) if lg_cfg else 0.0,
                 max_size_multiplier=getattr(lg_cfg, "max_size_multiplier", 5.0) if lg_cfg else 5.0,
@@ -1777,19 +1666,14 @@ class SystemContext:
                     )
 
         logger.info(
-            "[SystemContext] learning layer initialized — outcome_fb={} "
-            "ledger={} emitter_fb={} vote_cal={} mod_gov={} post_close={} "
-            "gate_tuner={} counterfactual={} interaction={} shadow={} "
+            "[SystemContext] learning layer initialized - outcome_fb={} "
+            "ledger={} emitter_fb={} post_close={} gate_tuner={} shadow={} "
             "tuner={} ml={}",
             ctx.outcome_feedback is not None,
             ctx.signal_ledger is not None,
             ctx.emitter_feedback is not None,
-            ctx.vote_calibrator is not None,
-            ctx.module_governor is not None,
             ctx.post_close_tracker is not None,
             ctx.gate_tuner is not None,
-            ctx.counterfactual_engine is not None,
-            ctx.interaction_analyzer is not None,
             ctx.shadow_store is not None,
             ctx.tuner_agent is not None,
             ctx.ml_adapter is not None,
@@ -2090,166 +1974,8 @@ class SystemContext:
         except Exception as exc:
             logger.warning("[SystemContext] BehaviorDiscoveryEngine init failed: {}", exc)
 
-        # ── SignalDiscoveryEngine (L5c) ────────────────────────────
-        # Took no config, so its enabled flag used the constructor default
-        # (False) and every mining parameter (lookback, interval, support,
-        # thresholds) ignored SignalDiscoveryConfig. Wire the nested config so
-        # the advisory miner is config-authoritative. enabled is sourced from
-        # signal_discovery_enabled which defaults OFF (per the config docstring),
-        # so the engine stays dormant until an operator enables it.
-        try:
-            from adaptive.signal_discovery import SignalDiscoveryEngine as _SigDisc
-            if ctx.counterfactual_engine is not None:
-                sd_cfg = getattr(config, "signal_discovery", None)
-                if sd_cfg is not None:
-                    ctx.signal_discovery = _SigDisc(
-                        ctx.counterfactual_engine,
-                        enabled=bool(getattr(sd_cfg, "signal_discovery_enabled", False)),
-                        db_path=getattr(sd_cfg, "signal_discovery_db_path", None),
-                        lookback=int(getattr(sd_cfg, "discovery_lookback", 1000)),
-                        interval=int(getattr(sd_cfg, "discovery_interval", 200)),
-                        min_trades=int(getattr(sd_cfg, "min_trades_for_discovery", 100)),
-                        min_support=int(getattr(sd_cfg, "min_rule_support", 15)),
-                        max_conditions=int(getattr(sd_cfg, "max_rule_conditions", 3)),
-                        min_edge_r=float(getattr(sd_cfg, "min_edge_r", 0.10)),
-                        walk_forward_split=float(getattr(sd_cfg, "discovery_walk_forward_split", 0.7)),
-                        bonferroni_alpha=float(getattr(sd_cfg, "bonferroni_alpha", 0.05)),
-                        walk_forward_ratio_threshold=float(
-                            getattr(sd_cfg, "walk_forward_ratio_threshold", 0.6)
-                        ),
-                        score_decay_rate=float(getattr(sd_cfg, "score_decay_rate", 0.05)),
-                        max_active_signals=int(getattr(sd_cfg, "max_active_signals", 5)),
-                    )
-                else:
-                    ctx.signal_discovery = _SigDisc(ctx.counterfactual_engine)
-        except Exception as exc:
-            logger.warning("[SystemContext] SignalDiscoveryEngine init failed: {}", exc)
-
-        # ── ParameterEvolver (L5a) — SHADOW ONLY ───────────────────
-        # Explores consensus/ranker thresholds, replay + shadow validates
-        # candidates, then RECOMMENDS promotions through the RecommendationGateway
-        # (Learning ⑦ → Governance ⑧).  The promote callback NEVER mutates live
-        # config: it submits the proven candidate as a PARAM_PROMOTE recommendation
-        # for audit/authorisation and returns False, so the engine records a
-        # "recommended" decision and the parameter is never changed by it.  A
-        # fault here can never affect trading (construction + run are exception-safe).
-        try:
-            from adaptive.param_evolution import ParameterEvolver as _ParamEvolver
-            from adaptive.recommendations import (
-                LearningRecommendation as _LearnRec,
-                RecommendationType as _RecType,
-            )
-            pe_cfg = getattr(config, "param_evolution", None)
-            if pe_cfg is not None and ctx.counterfactual_engine is not None:
-                _gateway = ctx.recommendation_gateway
-
-                def _param_current_values() -> dict:
-                    """Live centre-point for candidate generation (read-only)."""
-                    cons = getattr(config, "consensus", None)
-                    rank = getattr(config, "opportunity_ranker", None)
-                    vals: dict[str, float] = {}
-                    if cons is not None:
-                        vals["min_net_score"] = float(getattr(cons, "min_net_score", 1.5))
-                        vals["min_agreement"] = float(getattr(cons, "min_agreement", 0.55))
-                        vals["min_contributors"] = float(getattr(cons, "min_contributors", 2))
-                    if rank is not None:
-                        vals["min_expected_value"] = float(getattr(rank, "min_expected_value", 0.0))
-                        vals["min_cluster_confidence"] = float(
-                            getattr(rank, "min_cluster_confidence", 0.0)
-                        )
-                        vals["min_cluster_contributors"] = float(
-                            getattr(rank, "min_cluster_contributors", 1)
-                        )
-                    return vals
-
-                def _param_promote_recommend(name: str, location: str, value: float) -> bool:
-                    """SHADOW-ONLY promotion hook: submit a recommendation through
-                    the gateway (audited + governance-authorised) and ALWAYS return
-                    False so the parameter is never mutated by the evolver."""
-                    if _gateway is None:
-                        return False
-                    try:
-                        _gateway.submit(_LearnRec(
-                            source="param_evolver",
-                            recommendation_type=_RecType.PARAM_PROMOTE,
-                            payload={
-                                "param_name": name,
-                                "location": location,
-                                "proposed_value": float(value),
-                            },
-                            confidence=0.0,
-                            evidence={"mode": "shadow"},
-                        ))
-                    except Exception as exc:  # noqa: BLE001
-                        logger.debug("[SystemContext] param promote submit failed: {}", exc)
-                    return False  # never apply — shadow mode only
-
-                ctx.param_evolver = _ParamEvolver(
-                    ctx.counterfactual_engine,
-                    enabled=bool(getattr(pe_cfg, "param_evolution_enabled", False)),
-                    db_path=getattr(pe_cfg, "param_evolution_db_path", None),
-                    current_values_provider=_param_current_values,
-                    promote_callback=_param_promote_recommend,
-                    candidates_per_param=int(getattr(pe_cfg, "candidates_per_param", 10)),
-                    replay_lookback=int(getattr(pe_cfg, "replay_lookback", 500)),
-                    shadow_validation_trades=int(getattr(pe_cfg, "shadow_validation_trades", 50)),
-                    significance_threshold=float(getattr(pe_cfg, "significance_threshold", 0.05)),
-                    walk_forward_split=float(getattr(pe_cfg, "walk_forward_split", 0.7)),
-                    evolution_cooldown_hours=float(getattr(pe_cfg, "evolution_cooldown_hours", 48.0)),
-                    max_concurrent_shadows=int(getattr(pe_cfg, "max_concurrent_shadows", 3)),
-                    rollback_window=int(getattr(pe_cfg, "rollback_window", 100)),
-                    min_replay_trades=int(getattr(pe_cfg, "min_replay_trades", 50)),
-                )
-        except Exception as exc:
-            logger.warning("[SystemContext] ParameterEvolver init failed: {}", exc)
-
-        # ── VirtualModuleRegistry (L5c) ────────────────────────────
-        try:
-            from adaptive.virtual_modules import VirtualModuleRegistry as _VMReg
-            virt_cfg = getattr(config, "virtual", None)
-            ctx.virtual_module_registry = _VMReg(
-                enabled=getattr(virt_cfg, "kill_switch", True) if virt_cfg else False,
-            )
-        except Exception as exc:
-            logger.warning("[SystemContext] VirtualModuleRegistry init failed: {}", exc)
-
-        # ── VirtualSignalManager (L5c lifecycle) ───────────────────
-        try:
-            from adaptive.virtual_promotion import VirtualSignalManager as _VSM
-            if ctx.virtual_module_registry is not None:
-                # The manager reads virtual_promotion_enabled /
-                # signal_discovery_enabled / feedback_lookback off the config it
-                # is handed. Those live on the nested SignalDiscoveryConfig — the
-                # old config=config (top-level AppConfig) made both flags fall
-                # through to False, so the whole virtual shadow→promote→retire
-                # lifecycle was permanently inert (same class of bug as the
-                # Governor). Pass the nested config so it is config-authoritative.
-                # NOTE: SignalDiscoveryConfig defaults these flags OFF (per its
-                # docstring), so this is behaviour-neutral — the cluster stays
-                # dormant until an operator explicitly flips the flags on.
-                ctx.virtual_signal_manager = _VSM(
-                    registry=ctx.virtual_module_registry,
-                    config=getattr(config, "signal_discovery", config),
-                    signal_discovery=ctx.signal_discovery,
-                    emitter_feedback=ctx.emitter_feedback,
-                    counterfactual=ctx.counterfactual_engine,
-                )
-                # Governance signs off virtual-module promotions (no module
-                # reaches live weight without authorisation). No-op while
-                # virtual promotion is disabled (default) — behaviour-neutral.
-                if ctx.governance is not None:
-                    try:
-                        ctx.virtual_signal_manager.set_governance(ctx.governance)
-                        ctx.governance.bind_runtime(
-                            virtual_registry=ctx.virtual_module_registry
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "[SystemContext] VirtualSignalManager→governance wire failed: {}",
-                            exc,
-                        )
-        except Exception as exc:
-            logger.warning("[SystemContext] VirtualSignalManager init failed: {}", exc)
+        # Signal discovery / parameter evolution / virtual-module engines
+        # RETIRED - severed from the live path; the Cognitive Brain decides.
 
         # ── Planning + Shadow (Phase 6) ──────────────────────────────
 

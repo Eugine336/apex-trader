@@ -1,40 +1,13 @@
 """
-APEX TRADER — Parameter Evolution Engine (L5a)
+APEX TRADER — Parameter Evolution Engine (L5a) — RETIRED / INERT
 
-The TunerAgent nudges parameters by *following gradients* on recent performance.
-It improves what is already there, but it never *explores* — it never asks
-"what if ``min_net_score`` were 1.0 instead of 1.5?".  This engine asks that
-question and answers it with evidence rather than a guess.
-
-It is built on the **same decision-replay foundation as the L4 Counterfactual
-engine** (``replay_consensus`` over the exact vote panel + consensus config that
-opened each trade).  For a candidate parameter value it re-runs the entry
-decision on every recent closed trade and measures whether the realised book
-would have been better.
-
-Honest scope — what this data can and cannot prove:
-  * The counterfactual store only holds snapshots of trades that were *opened*.
-    Replaying a candidate against them faithfully measures the effect of a
-    *tightening* change (a stricter gate drops marginal trades that were taken;
-    we know their realised R).  A *loosening* change would only ever ADD trades
-    that were never taken — there is no snapshot for those — so historical
-    replay cannot validate it.  The forward **shadow-validation** phase is what
-    closes that gap: it re-scores trades that close *after* a candidate enters
-    shadow (genuine out-of-sample), crediting a candidate the losses it would
-    have avoided and debiting the winners it would have skipped.
-  * Therefore replay-based evolution is scoped to the consensus / ranker
-    thresholds that ``replay_consensus`` actually consumes.  Scoring weights and
-    gate offsets are NOT in the snapshot, so we do not pretend to replay them.
-
-Safety: a candidate is never adopted off historical replay alone.  It must
-(1) improve in BOTH halves of a walk-forward split, (2) survive an outlier
-robustness check, (3) then prove itself over ``shadow_validation_trades`` live
-closes, and only then is a promotion *recommended*.  Application is delegated to
-an injected callback (the wiring layer) so this module never mutates live config
-directly and always defers to the TunerAgent as the sole tuning authority.
-
-Leaf-ish module — stdlib + loguru + the pure ``adaptive.counterfactual`` replay
-helpers only.  Exception-safe throughout; a fault here never blocks trading.
+This engine explored the consensus/ranker threshold space by replaying the exact
+decision snapshot that opened each trade. That decision-replay foundation has
+been retired along with the directional vote/consensus/ranking subsystem, so the
+engine is now inert: it is no longer wired into the live path, its per-trade
+replay hook always reports a trade as unchanged, and nothing here can mutate live
+config. The persistence + shadow-lifecycle scaffolding is retained only so any
+existing on-disk state keeps loading; a fault here never blocks trading.
 """
 
 from __future__ import annotations
@@ -50,24 +23,12 @@ from typing import Callable, Optional
 
 from loguru import logger
 
-from adaptive.counterfactual import TradeAttribution, _votes_from_dicts, replay_consensus
-
-# The pure ``decide`` math logs every call at INFO; a single tournament does
-# tens of thousands of replays, so we silence just those two consensus loggers
-# for the duration of a bulk-replay loop (never any other logger), restoring
-# them in a finally so an exception can never leave logging disabled.
-_REPLAY_LOGGERS = ("brain.directional_consensus", "brain.opportunity_ranker")
-
 
 @contextlib.contextmanager
 def _quiet_replay():
-    for name in _REPLAY_LOGGERS:
-        logger.disable(name)
-    try:
-        yield
-    finally:
-        for name in _REPLAY_LOGGERS:
-            logger.enable(name)
+    # Retained as an inert no-op: the consensus-replay loggers it used to
+    # silence belonged to the retired directional-consensus / ranking subsystem.
+    yield
 
 from runtime_paths import data_dir as _data_dir  # noqa: E402
 
@@ -187,18 +148,10 @@ def _apply_candidate(
 def candidate_retains_trade(
     attribution: TradeAttribution, candidate: ParameterCandidate,
 ) -> bool:
-    """True if, under the candidate value, the trade still opens in the SAME
-    direction (so its realised R still counts).  Quiet, never raises."""
-    if attribution.direction not in ("LONG", "SHORT"):
-        return False
-    thresholds, ranker_kwargs = _apply_candidate(attribution, candidate)
-    votes = _votes_from_dicts(attribution.votes)
-    try:
-        cf_dir, _ = replay_consensus(votes, thresholds, ranker_kwargs)
-    except Exception as exc:  # noqa: BLE001
-        logger.debug("[param-evolution] replay failed: {}", exc)
-        return True  # fail-safe: assume unchanged rather than fabricate a drop
-    return cf_dir == attribution.direction
+    """Inert: the consensus-replay foundation this depended on has been retired,
+    so no candidate can be replayed. Fail-safe — always report the trade as
+    unchanged (retained) so no fabricated drop is ever recorded."""
+    return True
 
 
 def evaluate_candidate(
@@ -212,7 +165,7 @@ def evaluate_candidate(
     Single replay pass per trade: each graded trade is replayed once, then the
     overall / train / test improvements and the robustness check are all derived
     from that one pass (no re-replaying).  ``trades`` may arrive newest-first (as
-    the counterfactual store returns them); we sort by open time so the
+    the attribution store returns them); we sort by open time so the
     walk-forward split is train = older 70%, test = newer 30%.
     """
     ev = ReplayEvaluation(candidate=candidate)
@@ -418,7 +371,7 @@ class ParameterEvolver:
 
     def __init__(
         self,
-        counterfactual_engine,
+        attribution_source,
         *,
         enabled: bool = False,
         db_path: Optional[Path | str] = None,
@@ -436,7 +389,7 @@ class ParameterEvolver:
         min_replay_trades: int = 50,
     ) -> None:
         self.enabled = bool(enabled)
-        self._engine = counterfactual_engine
+        self._engine = attribution_source
         self._params = tuple(params or DEFAULT_EVOLVABLE_PARAMS)
         self._current_values_provider = current_values_provider
         self._promote_callback = promote_callback
