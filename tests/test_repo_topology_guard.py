@@ -44,7 +44,9 @@ from scripts import backup_data  # noqa: E402
 from scripts.git_identity import (  # noqa: E402
     DATA_REPO_IDENTITY,
     SOURCE_REPO_IDENTITY,
+    evaluate_topology,
     normalize_repo_identity,
+    render_topology_banner,
     verify_dedicated_data_repo,
 )
 
@@ -288,6 +290,91 @@ class TestSyncGuard:
             )
             assert res.startswith("refused")
             assert "SOURCE repo" in res
+
+    def test_sync_push_to_dedicated_remote_succeeds(self):
+        # Regression: a valid dedicated repo with a non-source remote still
+        # pushes cleanly through the final pre-push identity re-check.
+        with tempfile.TemporaryDirectory() as tmp:
+            remote = Path(tmp) / "remote.git"
+            subprocess.run(["git", "init", "-q", "--bare", str(remote)], check=True)
+            d = Path(tmp) / "apex-trader-data"
+            d.mkdir()
+            _init_repo(d, origin=str(remote))
+            subprocess.run(["git", "-C", str(d), "branch", "-M", "main"], check=True)
+            (d / "apex_positions.db").write_text("rows")
+            res = backup_data.sync_data_repo(
+                commit_message="auto-sync", push=True, branch="main", data_dir=d,
+            )
+            assert res == "synced → origin/main"
+            # The commit really landed on the remote.
+            pushed = subprocess.check_output(
+                ["git", "-C", str(remote), "log", "--oneline", "main"], text=True
+            )
+            assert "auto-sync" in pushed
+
+
+# ── Boot-time topology banner ───────────────────────────────────────────────
+
+
+class TestTopologyBanner:
+    def test_banner_enabled_for_valid_topology(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "apex-trader"
+            source.mkdir()
+            _init_repo(source, origin=_SOURCE_URL)
+            data = Path(tmp) / "apex-trader-data"
+            data.mkdir()
+            _init_repo(data, origin=_DATA_URL)
+
+            ok, banner = render_topology_banner(source, data, data_repo_url=_DATA_URL)
+            assert ok
+            assert "Auto-sync:         ENABLED" in banner
+            assert "Data Git:          SAFE" in banner
+
+            t = evaluate_topology(source, data, data_repo_url=_DATA_URL)
+            assert t["auto_sync_ok"] is True
+            assert t["data_resolves_to_source"] is False
+
+    def test_banner_critical_when_data_resolves_to_source(self):
+        # The incident topology: plain data/ nested in the source repo.
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "apex-trader"
+            source.mkdir()
+            _init_repo(source, origin=_SOURCE_URL)
+            plain_data = source / "data"
+            plain_data.mkdir()
+
+            ok, banner = render_topology_banner(
+                source, plain_data, data_repo_url=_DATA_URL
+            )
+            assert not ok
+            assert "CRITICAL: UNSAFE REPOSITORY TOPOLOGY" in banner
+            assert "resolves to the source repository" in banner
+            assert "AUTO-SYNC DISABLED." in banner
+            assert "the SOURCE repository" in banner
+
+            t = evaluate_topology(source, plain_data, data_repo_url=_DATA_URL)
+            assert t["auto_sync_ok"] is False
+            assert t["data_resolves_to_source"] is True
+
+    def test_banner_critical_when_data_remote_is_source(self):
+        # A dedicated repo (own root, not nested in source) but whose origin was
+        # misconfigured to the source repo → still refused.
+        with tempfile.TemporaryDirectory() as tmp:
+            source = Path(tmp) / "apex-trader"
+            source.mkdir()
+            _init_repo(source, origin=_SOURCE_URL)
+            data = Path(tmp) / "apex-trader-data"
+            data.mkdir()
+            _init_repo(data, origin=_SOURCE_URL)  # wrong remote
+
+            ok, banner = render_topology_banner(source, data, data_repo_url=_DATA_URL)
+            assert not ok
+            assert "AUTO-SYNC DISABLED." in banner
+            t = evaluate_topology(source, data, data_repo_url=_DATA_URL)
+            assert t["auto_sync_ok"] is False
+            assert t["data_git_safe"] is False
+            assert t["data_resolves_to_source"] is False
 
 
 # ── _get_remote_url hardening (run_backup path) ─────────────────────────────

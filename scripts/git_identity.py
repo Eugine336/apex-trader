@@ -133,6 +133,28 @@ def resolve_remote_identity(
     )
 
 
+def resolve_toplevel_unrestricted(work_tree: str | Path) -> str | None:
+    """Like :func:`resolve_toplevel` but WITHOUT the ceiling env.
+
+    Reveals the repository git would *actually* discover by walking parent
+    directories — used only for diagnostics/boot reporting so the topology
+    banner can state explicitly that ``data/`` resolves into the SOURCE repo.
+    Never gate a destructive operation on this; the ceiling-restricted variants
+    are the safety-critical ones.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(work_tree), "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            text=True,
+        )
+    except (FileNotFoundError, OSError):
+        return None
+    if out.returncode != 0:
+        return None
+    return out.stdout.strip() or None
+
+
 def verify_dedicated_data_repo(
     work_tree: str | Path,
     *,
@@ -222,3 +244,116 @@ def describe_repo_topology(
         "DATA_REPO_ROOT": str(resolve_toplevel(dd) or dd),
         "DATA_REMOTE": resolve_remote_identity(dd, remote) or "?",
     }
+
+
+def evaluate_topology(
+    source_root: str | Path,
+    data_dir: str | Path,
+    *,
+    remote: str = "origin",
+    data_repo_url: str | None = None,
+) -> dict[str, object]:
+    """Assess the source/data repo topology for the boot-time safety gate.
+
+    Returns a structured dict. ``auto_sync_ok`` is ``True`` only when the data
+    dir is a valid dedicated data repo (own root + remote resolves to the data
+    repo, never the source) AND it does not, when discovered without the ceiling
+    guard, resolve into the source repository.
+
+    ``data_resolves_to_source`` uses the *unrestricted* probe to surface the
+    exact dangerous condition from the incident (``data/`` → source ``.git``) so
+    the banner can report expected-vs-actual, independent of the ceiling guard
+    that otherwise hides it.
+    """
+    src = Path(source_root)
+    dd = Path(data_dir)
+
+    source_root_actual = resolve_toplevel_unrestricted(src)
+    data_root_ceilinged = resolve_toplevel(dd)  # safe view (None if plain-in-source)
+    data_root_actual = resolve_toplevel_unrestricted(dd)  # what git would discover
+
+    data_resolves_to_source = False
+    if data_root_actual is not None and source_root_actual is not None:
+        try:
+            data_resolves_to_source = (
+                Path(data_root_actual).resolve() == Path(source_root_actual).resolve()
+            )
+        except OSError:
+            data_resolves_to_source = False
+
+    ready, reason = data_repo_ready(dd, remote=remote, data_repo_url=data_repo_url)
+    auto_sync_ok = bool(ready) and not data_resolves_to_source
+    if data_resolves_to_source:
+        reason = "data/ resolves to the source repository"
+
+    return {
+        "source_root": str(source_root_actual or src),
+        "source_remote": resolve_remote_identity(src, remote) or "?",
+        "data_path": str(dd),
+        "data_git_root": str(data_root_ceilinged or data_root_actual or "none"),
+        "data_remote": resolve_remote_identity(dd, remote) or "?",
+        "expected_data_identity": normalize_repo_identity(data_repo_url)
+        or DATA_REPO_IDENTITY,
+        "source_git_safe": not data_resolves_to_source,
+        "data_git_safe": bool(ready),
+        "data_resolves_to_source": data_resolves_to_source,
+        "auto_sync_ok": auto_sync_ok,
+        "reason": reason,
+    }
+
+
+def render_topology_banner(
+    source_root: str | Path,
+    data_dir: str | Path,
+    *,
+    remote: str = "origin",
+    data_repo_url: str | None = None,
+) -> tuple[bool, str]:
+    """Return ``(auto_sync_ok, banner_text)`` — an unambiguous boot report.
+
+    The banner makes the topology and its verdict explicit so an operator never
+    has to infer safety from a stack trace. On failure it prints expected-vs-
+    actual and states that auto-sync is disabled and no git mutation is allowed.
+    """
+    t = evaluate_topology(
+        source_root, data_dir, remote=remote, data_repo_url=data_repo_url
+    )
+    expected = t["expected_data_identity"]
+
+    if t["auto_sync_ok"]:
+        lines = [
+            "REPOSITORY TOPOLOGY",
+            "────────────────────────────────",
+            f"Source repository: {t['source_remote']}",
+            f"Data repository:   {t['data_remote']}",
+            f"Data path:         {t['data_path']}",
+            f"Data Git root:     {t['data_git_root']}",
+            f"Source Git:        {'SAFE' if t['source_git_safe'] else 'UNSAFE'}",
+            f"Data Git:          {'SAFE' if t['data_git_safe'] else 'UNSAFE'}",
+            "Auto-sync:         ENABLED",
+            "────────────────────────────────",
+        ]
+        return True, "\n".join(lines)
+
+    actual = (
+        "the SOURCE repository"
+        if t["data_resolves_to_source"]
+        else t["data_git_root"]
+    )
+    lines = [
+        "CRITICAL: UNSAFE REPOSITORY TOPOLOGY",
+        "",
+        f"{t['reason']}.",
+        "",
+        "Expected:",
+        f"  {t['data_path']}",
+        f"      -> {expected}",
+        "",
+        "Actual:",
+        f"  {t['data_path']}",
+        f"      -> {actual}",
+        "",
+        "AUTO-SYNC DISABLED.",
+        "No Git mutation permitted.",
+    ]
+    return False, "\n".join(lines)
