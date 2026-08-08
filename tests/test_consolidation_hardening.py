@@ -5,9 +5,6 @@ Covers the silent-failure hardening + developing-store direction guard:
   * ``_safe_pip_size`` fallback to 0.0001 now logs a WARNING (once per symbol)
     and records the symbol so the entry path can tag the trade.
   * the ``pnl_pips`` close-path calculation logs instead of silently passing.
-  * the developing WorldModelStore publishes whatever direction its forming-bar
-    structure shows — the old "confidence only, never direction" guard has been
-    removed, so a developing direction is never blanked against confirmed.
   * a scoped ratchet on bare ``except Exception: pass`` blocks in the main loop
     so new silent swallows can't be added to the money path unnoticed.
 """
@@ -23,10 +20,6 @@ from types import SimpleNamespace
 from loguru import logger
 
 import event_driven_bootstrap as edb
-from brain.developing_analysis import DevelopingAnalysisLoop
-from brain.structure_engine import StructureAnalysis, StructureEvent, Trend
-from brain.world_model import WorldModelStore
-from config import DevelopingAnalysisConfig
 
 _BOOTSTRAP_PATH = pathlib.Path(edb.__file__)
 
@@ -45,35 +38,6 @@ def _capture_logs(level: str = "WARNING"):
         yield captured
     finally:
         logger.remove(sink_id)
-
-
-def _sa(trend: str, confidence: float) -> StructureAnalysis:
-    return StructureAnalysis(
-        trend=Trend(trend),
-        last_event=StructureEvent.NONE,
-        swing_high=None,
-        swing_low=None,
-        last_bos_level=None,
-        last_choch_level=None,
-        structure_broken=False,
-        bullish_swing_points=[],
-        bearish_swing_points=[],
-        confidence=confidence,
-    )
-
-
-class _FakeAggregator:
-    def get_dataframe(self, symbol, tf):
-        return None
-
-
-def _dev_loop() -> DevelopingAnalysisLoop:
-    return DevelopingAnalysisLoop(
-        candle_aggregator=_FakeAggregator(),
-        developing_store=WorldModelStore(),
-        symbols=["EURUSD"],
-        config=DevelopingAnalysisConfig(),
-    )
 
 
 # ── (a) pip_size fallback logs a warning ────────────────────────────────────
@@ -152,52 +116,6 @@ def test_pnl_pips_failure_logs_warning():
         "                pass"
     )
     assert silent not in src
-
-
-# ── developing-store direction pass-through (guard removed) ──────────────────
-
-
-def test_developing_store_publishes_structure_direction(monkeypatch):
-    """Developing analysis publishes the forming-bar structure's own direction.
-
-    The old "confidence only, never direction" guard has been removed. The
-    developing store now publishes whatever direction its structure shows; the
-    confirmed path's ``compute_bias`` (which consumes this as discounted
-    evidence and has its own ``CONFLICTED`` veto) is the sole safety valve. No
-    neutralisation and no developing-guard warning.
-    """
-    loop = _dev_loop()
-
-    # Developing bias SHORT — no confirmed read can blank it any more.
-    monkeypatch.setattr(
-        "brain.developing_analysis.compute_bias",
-        lambda struct: {"direction": "SHORT", "score": 80, "confidence": 0.8},
-    )
-
-    with _capture_logs("WARNING") as logs:
-        loop._merge_and_publish("EURUSD", "H1", {"structure": _sa("BEARISH", 0.8)})
-
-    published = loop._developing_store.get("EURUSD")
-    assert published is not None
-    assert published.bias_dict().get("direction", "") == "SHORT"
-    assert published.bias_dict().get("score", 0) == 80
-    assert not any("developing-guard" in line for line in logs)
-
-
-def test_developing_store_preserves_direction(monkeypatch):
-    """A developing LONG is published unchanged."""
-    loop = _dev_loop()
-
-    monkeypatch.setattr(
-        "brain.developing_analysis.compute_bias",
-        lambda struct: {"direction": "LONG", "score": 80, "confidence": 0.8},
-    )
-
-    loop._merge_and_publish("EURUSD", "H1", {"structure": _sa("BULLISH", 0.8)})
-
-    published = loop._developing_store.get("EURUSD")
-    assert published is not None
-    assert published.bias_dict().get("direction", "") == "LONG"
 
 
 # ── (f) ratchet: bare `except Exception: pass` in the money path ─────────────

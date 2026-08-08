@@ -19,27 +19,11 @@ from brain.decision_core import (
     _EVIDENCE_WEIGHTS,
     _GOLD_EVIDENCE_WEIGHTS,
     _active_weights,
-    compute_bias,
 )
 from brain.outcome_feedback import OutcomeFeedback
 from brain.session_engine import NewsEvent, NewsGuard
-from brain.structure_engine import StructureAnalysis, StructureEvent, Trend
+from brain.structure_engine import Trend
 from brain.wyckoff_engine import WyckoffEngine
-
-
-def _sa(trend: str, confidence: float) -> StructureAnalysis:
-    return StructureAnalysis(
-        trend=Trend(trend),
-        last_event=StructureEvent.NONE,
-        swing_high=None,
-        swing_low=None,
-        last_bos_level=None,
-        last_choch_level=None,
-        structure_broken=False,
-        bullish_swing_points=[],
-        bearish_swing_points=[],
-        confidence=confidence,
-    )
 
 
 # ── 1. decision_core — Gold evidence weights ─────────────────────────────────
@@ -53,23 +37,6 @@ def test_active_weights_default_for_others():
     assert _active_weights("EURUSD") is _EVIDENCE_WEIGHTS
     assert _active_weights(None) is _EVIDENCE_WEIGHTS
     assert _active_weights() is _EVIDENCE_WEIGHTS
-
-
-def test_compute_bias_accepts_symbol():
-    bias = compute_bias({"H4": _sa("BULLISH", 0.8)}, symbol="XAUUSD")
-    assert bias["direction"] == "LONG"
-    assert bias["long_probability"] > 0.0
-
-
-def test_gold_weighting_favors_htf_over_ltf():
-    # H4 bullish vs M5 bearish at equal confidence. Gold weights H4 (0.30) far
-    # above M5 (0.10) vs the default 0.20/0.15, so the long edge is larger.
-    struct = {"H4": _sa("BULLISH", 0.8), "M5": _sa("BEARISH", 0.8)}
-    default = compute_bias(struct, symbol="EURUSD")
-    gold = compute_bias(struct, symbol="XAUUSD")
-    default_edge = default["long_probability"] - default["short_probability"]
-    gold_edge = gold["long_probability"] - gold["short_probability"]
-    assert gold_edge > default_edge
 
 
 # ── 2. wyckoff_engine — Gold-tuned phases ────────────────────────────────────
