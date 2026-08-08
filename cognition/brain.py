@@ -124,6 +124,19 @@ class CognitiveBrain:
         return bool(self._reasoner is not None
                     and getattr(self._reasoner, "available", False))
 
+    def _reasoner_degraded(self, symbol: str) -> bool:
+        """True when the wired reasoner reports its last ``reason(symbol)`` call
+        FAILED (provider down / timeout / unparsable reply) rather than simply
+        declining to trade. Fail-safe: a reasoner that does not expose the signal
+        is treated as not-degraded, preserving prior behaviour."""
+        fn = getattr(self._reasoner, "last_reason_degraded", None)
+        if not callable(fn):
+            return False
+        try:
+            return bool(fn(symbol))
+        except Exception:  # noqa: BLE001 — a health probe must never break reasoning
+            return False
+
     # ── Reasoning ─────────────────────────────────────────────────────────
 
     def reason(self, market_state: MarketState, *, now: Optional[float] = None) -> BrainOutput:
@@ -149,7 +162,23 @@ class CognitiveBrain:
                 symbol, self._evidence_payload(market_state, consolidation), now=now,
             )
             if opinion is None:
-                return self._observe(symbol, "no reasoner opinion — do nothing", consolidation)
+                # An AVAILABLE reasoner that yields no opinion did NOT form a
+                # market view. If its last call actually FAILED (provider down /
+                # timeout / unparsable reply) that is an INFRASTRUCTURE state —
+                # Part XVIII Art 5 / Q78/Q80/Q81/Q106: it must never be surfaced
+                # as a FLAT/observe read of the market. Only a benign no-op (e.g.
+                # a throttled cycle: provider healthy, simply no fresh call this
+                # cycle) may lawfully continue observing.
+                if self._reasoner_degraded(symbol):
+                    return self._reasoner_unavailable(
+                        symbol,
+                        "reasoner returned no usable opinion — provider failure / "
+                        "unparsable output (not a market view)",
+                        consolidation,
+                    )
+                return self._observe(
+                    symbol, "no reasoner opinion this cycle — do nothing", consolidation,
+                )
             return self._from_opinion(symbol, market_state, consolidation, opinion, now)
         except Exception as exc:  # noqa: BLE001 — reasoning must never break a cycle
             logger.debug("[brain] reason(%s) ignored a fault: %s", symbol, exc)
