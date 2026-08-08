@@ -4077,7 +4077,17 @@ class CognitionConfig:
     # noise. env COGNITION_EVENT_DRIVEN / _EVENT_MIN_INTERVAL_SECONDS / _EVENT_CONFIDENCE_DELTA.
     event_driven: bool = True
     event_min_interval_seconds: float = 8.0
-    event_confidence_delta: float = 0.15
+    # Lowered 0.15 → 0.10 so smaller (still meaningful) forming-bar shifts wake
+    # the Brain — more responsive entries/management. Extra wakes hit the
+    # per-symbol reasoner throttle (origination + council keep their global
+    # rate), so this adds no provider calls across the scanned universe.
+    event_confidence_delta: float = 0.10
+    # Q40 — the Brain re-reasons an OPEN position on its OWN tighter cadence
+    # (reasoned management, not a static stop/TP). Independent throttle bucket on
+    # the Brain's reasoner: only open positions reason faster; origination + the
+    # advisory council keep loop_interval / the global LLM min-interval, so no
+    # extra cost across scanning. env COGNITION_MANAGE_MIN_INTERVAL_SECONDS.
+    manage_min_interval_seconds: float = 8.0
     # Phase F — Brain-driven management thresholds.
     # allow_scale_in: the Brain may ADD to a winning campaign (Part XVIII Art 1 —
     # one campaign spans multiple entries). Enabled by default; the management
@@ -4193,6 +4203,7 @@ class CognitionConfig:
             ("COGNITION_ORIGINATION_RISK_FRACTION", "origination_risk_fraction"),
             ("COGNITION_ORIGINATION_MAX_EXPOSURE", "origination_max_exposure"),
             ("COGNITION_EVENT_MIN_INTERVAL_SECONDS", "event_min_interval_seconds"),
+            ("COGNITION_MANAGE_MIN_INTERVAL_SECONDS", "manage_min_interval_seconds"),
             ("COGNITION_EVENT_CONFIDENCE_DELTA", "event_confidence_delta"),
             ("COGNITION_ORIGINATION_STOP_FRACTION", "origination_stop_fraction"),
             ("COGNITION_ORIGINATION_REWARD_MULTIPLE", "origination_reward_multiple"),
@@ -4232,6 +4243,11 @@ class CognitionConfig:
         if not (0.0 <= float(self.max_uncertainty_to_act) <= 1.0):
             raise ValueError(
                 f"CognitionConfig.max_uncertainty_to_act must be in [0, 1], got {self.max_uncertainty_to_act!r}"
+            )
+        if float(self.manage_min_interval_seconds) < 0:
+            raise ValueError(
+                "CognitionConfig.manage_min_interval_seconds must be >= 0, got "
+                f"{self.manage_min_interval_seconds!r}"
             )
         if float(self.loop_interval_seconds) < 1.0:
             raise ValueError(

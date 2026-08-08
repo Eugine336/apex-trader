@@ -322,34 +322,43 @@ class LLMReasoner:
         with self._lock:
             return self._last_reason_ok.get(str(symbol or "")) is False
 
-    def _throttled(self, key: str, now: float) -> bool:
-        if self.min_interval_seconds <= 0:
+    def _throttled(self, key: str, now: float, interval: Optional[float] = None) -> bool:
+        iv = self.min_interval_seconds if interval is None else max(0.0, float(interval))
+        if iv <= 0:
             return False
         last = self._last_call.get(key, 0.0)
-        return (now - last) < self.min_interval_seconds
+        return (now - last) < iv
 
     def reason(
         self, symbol: str, evidence: dict, *, now: Optional[float] = None,
+        min_interval: Optional[float] = None, throttle_key: Optional[str] = None,
     ) -> Optional[LLMOpinion]:
         """Ask the model to reason over ``evidence`` for ``symbol``.
 
         Returns a parsed :class:`LLMOpinion`, or ``None`` when unavailable,
         throttled, or on any fault. Blocking (provider round-trip) — call from a
         background/periodic path, never the hot loop. Fail-safe.
+
+        ``min_interval`` overrides the per-symbol throttle window for THIS call
+        and ``throttle_key`` overrides the throttle bucket, so a caller can run a
+        tighter cadence on an independent bucket (e.g. management re-reasoning an
+        open position faster than origination) without changing the global rate.
         """
         if not self.available:
             return None
         t = time.time() if now is None else float(now)
         sym = str(symbol or "")
+        key = str(throttle_key or sym)
+        iv = self.min_interval_seconds if min_interval is None else max(0.0, float(min_interval))
         try:
             with self._lock:
-                if self._throttled(sym, t):
+                if self._throttled(key, t, iv):
                     logger.debug(
                         "[llm] {} throttled ({}s min interval) — no fresh model call this cycle",
-                        sym, self.min_interval_seconds,
+                        sym, iv,
                     )
                     return None
-                self._last_call[sym] = t
+                self._last_call[key] = t
             user = self._build_user_prompt(sym, evidence)
             reply = self._client.complete(_SYSTEM_PROMPT, user)
             if not reply:
