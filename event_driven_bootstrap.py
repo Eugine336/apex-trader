@@ -2744,6 +2744,11 @@ class EventDrivenSystem:
         # a standing thesis is not re-submitted every candle close between fills.
         self._consensus_entry_cooldown: dict[str, float] = {}
         self._paused = False
+        # Edge-triggered market-open logging state: symbol -> last-logged open?
+        # Lets a CLOSED symbol log once then go silent (no weekend flood); only a
+        # transition (closed↔open) logs again. Cosmetic — never gates decisions.
+        self._market_open_state: dict[str, bool] = {}
+        self._market_open_log_lock = threading.Lock()
         self._register_tunable_adapters()
 
         logger.info("[event-driven] system initialized")
@@ -6101,29 +6106,35 @@ class EventDrivenSystem:
         — or a feed without these signals — is never wrongly blocked; the
         SessionEngine gate still applies downstream.
         """
+        is_open, reason = self._market_open_status(symbol)
+        self._log_market_transition(symbol, is_open, reason)
+        return is_open
+
+    def _market_open_status(self, symbol: str) -> "tuple[bool, str]":
+        """Pure (is_open, reason) market-open decision — no logging (that is
+        edge-triggered in :meth:`_log_market_transition`)."""
         try:
             if is_always_open(symbol):
-                return True
-        except Exception:
+                return True, "24/7"
+        except Exception:  # noqa: BLE001
             pass
         try:
             connector = self._pm.get_connector(symbol)
-        except Exception:
-            return True
+        except Exception:  # noqa: BLE001
+            return True, "no connector (fail-open)"
         # (1) Permission flag — explicit broker disable / close-only.
         spec_fn = getattr(connector, "get_symbol_spec", None)
         if callable(spec_fn):
             try:
                 spec = spec_fn(symbol)
                 mode = spec.get("trade_mode") if isinstance(spec, dict) else None
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
                 logger.debug("[market-open] symbol spec lookup failed for {}: {}", symbol, exc)
                 mode = None
             if mode in (0, 3):
-                logger.info("[market-open] {} closed — broker trade_mode={}", symbol, mode)
-                return False
-        # (2) Session signal — no fresh tick ⇒ the session is closed (weekend /
-        # holiday). Non-raising; None ⇒ unknown ⇒ fail-open.
+                return False, f"broker trade_mode={mode}"
+        # (2) Session signal — no fresh tick ⇒ closed (weekend / holiday).
+        # Non-raising; None ⇒ unknown ⇒ fail-open.
         fresh_fn = getattr(connector, "has_fresh_tick", None)
         if callable(fresh_fn):
             try:
@@ -6132,12 +6143,30 @@ class EventDrivenSystem:
                 logger.debug("[market-open] tick-freshness check failed for {}: {}", symbol, exc)
                 fresh = None
             if fresh is False:
+                return False, f"no fresh tick within {_MARKET_CLOSED_TICK_AGE_SECONDS:.0f}s (session closed)"
+        return True, "open"
+
+    def _log_market_transition(self, symbol: str, is_open: bool, reason: str) -> None:
+        """Edge-triggered market-open logging. Announce a symbol going CLOSED
+        ONCE (then stay silent while it stays closed) and REOPENING once — so a
+        weekend never floods the log with the same 'closed' line every cycle;
+        active symbols are surfaced by their own reasoning logs. Purely cosmetic
+        (never affects the gate). Fail-safe."""
+        try:
+            with self._market_open_log_lock:
+                prev = self._market_open_state.get(symbol)  # None | True | False
+                if prev is is_open:
+                    return  # unchanged — silence
+                self._market_open_state[symbol] = is_open
+            if not is_open:
                 logger.info(
-                    "[market-open] {} closed — no fresh tick within {:.0f}s (session closed)",
-                    symbol, _MARKET_CLOSED_TICK_AGE_SECONDS,
+                    "[market-open] {} closed — {} (silencing until it reopens)",
+                    symbol, reason,
                 )
-                return False
-        return True
+            elif prev is False:
+                logger.info("[market-open] {} reopened — resuming analysis", symbol)
+        except Exception:  # noqa: BLE001 — logging must never break the gate
+            pass
 
     def _is_broker_available(self, symbol: str) -> bool:
         """Broker-health permit signal for the ComplianceDivision.

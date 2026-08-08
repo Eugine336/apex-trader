@@ -10,6 +10,9 @@ LLM calls analysing closed instruments.
 import types
 
 from event_driven_bootstrap import EventDrivenSystem, _MARKET_CLOSED_TICK_AGE_SECONDS
+import threading
+
+import event_driven_bootstrap as edb
 
 
 class _Conn:
@@ -36,10 +39,36 @@ class _ConnNoProbe:
         return {"trade_mode": self._trade_mode}
 
 
+def _bind(conn):
+    """A minimal object with the three market-open methods bound, so internal
+    self.* dispatch works without constructing a full EventDrivenSystem."""
+    ns = types.SimpleNamespace(
+        _pm=types.SimpleNamespace(get_connector=lambda s: conn),
+        _market_open_state={}, _market_open_log_lock=threading.Lock(),
+    )
+    for name in ("_check_market_open", "_market_open_status", "_log_market_transition"):
+        setattr(ns, name, types.MethodType(getattr(edb.EventDrivenSystem, name), ns))
+    return ns
+
+
 def _gate(conn, symbol="EURUSD"):
-    pm = types.SimpleNamespace(get_connector=lambda s: conn)
-    self_ = types.SimpleNamespace(_pm=pm)
-    return EventDrivenSystem._check_market_open(self_, symbol)
+    return _bind(conn)._check_market_open(symbol)
+
+
+class _SpyLogger:
+    def __init__(self):
+        self.infos = []
+
+    def info(self, msg, *a, **k):
+        try:
+            self.infos.append(str(msg).format(*a))
+        except Exception:
+            self.infos.append(str(msg))
+
+    def __getattr__(self, _name):
+        def _noop(*a, **k):
+            return None
+        return _noop
 
 
 def test_threshold_is_conservative():
@@ -108,3 +137,44 @@ def test_mt5_has_fresh_tick_none_when_unmapped():
     from platforms.mt5 import mt5_connector as m
     self_ = types.SimpleNamespace(_max_tick_age_seconds=120.0, symbol_map=lambda s: None)
     assert m.MT5Connector.has_fresh_tick(self_, "EURUSD", 900.0) is None
+
+
+# ── Edge-triggered logging: closed once, then silence; reopen once ───────────
+
+def test_closed_logs_once_then_silences(monkeypatch):
+    spy = _SpyLogger()
+    monkeypatch.setattr(edb, "logger", spy)
+    self_ = _bind(_Conn(trade_mode=4, fresh=False))
+    for _ in range(4):   # four cycles, market stays closed
+        assert self_._check_market_open("EURUSD") is False
+    closed = [m for m in spy.infos if "EURUSD closed" in m]
+    assert len(closed) == 1   # logged once, then silent
+
+
+def test_reopen_logs_once(monkeypatch):
+    spy = _SpyLogger()
+    monkeypatch.setattr(edb, "logger", spy)
+    state = {"fresh": False}
+    conn = types.SimpleNamespace(
+        get_symbol_spec=lambda s: {"trade_mode": 4},
+        has_fresh_tick=lambda s, age=None: state["fresh"],
+    )
+    self_ = _bind(conn)
+    self_._check_market_open("EURUSD")   # closed → log
+    self_._check_market_open("EURUSD")   # closed → silent
+    state["fresh"] = True
+    self_._check_market_open("EURUSD")   # reopened → log
+    self_._check_market_open("EURUSD")   # open → silent
+    assert len([m for m in spy.infos if "EURUSD closed" in m]) == 1
+    assert len([m for m in spy.infos if "EURUSD reopened" in m]) == 1
+
+
+def test_open_symbol_not_logged(monkeypatch):
+    # An always-open / active symbol produces NO market-open log line (its own
+    # reasoning logs show it's active).
+    spy = _SpyLogger()
+    monkeypatch.setattr(edb, "logger", spy)
+    self_ = _bind(_Conn(trade_mode=4, fresh=True))
+    for _ in range(3):
+        assert self_._check_market_open("EURUSD") is True
+    assert [m for m in spy.infos if "market-open" in m] == []
