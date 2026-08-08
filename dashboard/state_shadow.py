@@ -1,0 +1,109 @@
+"""
+APEX TRADER — Dashboard Shadow Outcomes Mixin (Phase 5)
+Reads the shadow contract store (apex_shadow.db) for rejected/skipped
+setup outcomes — WIN/LOSS/BE/PARTIAL/EXPIRED grouped by rejecting gate.
+"""
+
+from __future__ import annotations
+
+from typing import Any, Dict, List
+
+from loguru import logger
+
+
+class ShadowMixin:
+    """Reads from ShadowStore for rejected-setup outcome tracking."""
+
+    def _get_shadow_store(self):
+        try:
+            from persistence.shadow_store import ShadowStore
+            if not hasattr(self, "_shadow_store_inst"):
+                self._shadow_store_inst = ShadowStore()
+            return self._shadow_store_inst
+        except Exception as e:
+            logger.debug(f"Shadow store unavailable: {e}")
+            return None
+
+    def get_shadow_outcomes(self) -> dict:
+        """Rejected/skipped setup outcomes grouped by rejecting gate."""
+        store = self._get_shadow_store()
+        if store is None:
+            return {"gates": [], "summary": {}, "contracts": [], "by_symbol": []}
+
+        try:
+            status_counts = store.count_by_status()
+
+            # Per-gate counterfactual edge of REJECTED setups — counts PLUS the
+            # EV (count-weighted mean R) of having taken them. EV is the signal
+            # that matters: a gate rejecting net-profitable setups (ev_r > 0) is
+            # suspect (too strict); one filtering losers (ev_r < 0) is earning
+            # its keep. Rejection counts alone are misleading.
+            gate_list: List[Dict[str, Any]] = []
+            for g in store.get_gate_edge():
+                gate_list.append({
+                    "gate": g["gate"],
+                    "total": g["total"],
+                    "WIN": g["wins"],
+                    "LOSS": g["losses"],
+                    "BE": g["be"],
+                    "PARTIAL": g["partial"],
+                    "EXPIRED": g["expired"],
+                    "ev_r": g["ev_r"],
+                    "avg_r": g["ev_r"],  # corrected blended EV (was last-outcome avg)
+                    "win_rate": g["win_rate"],
+                })
+
+            # Rejected-setup edge grouped by symbol (operator visibility — NOT
+            # auto-fed to the learners; see ShadowStore.get_outcomes_by_symbol).
+            symbols: Dict[str, Dict[str, Any]] = {}
+            for row in store.get_outcomes_by_symbol():
+                sym = row["symbol"]
+                outcome = row["outcome"]
+                cnt = row["cnt"]
+                avg_r = row.get("avg_r")
+                s = symbols.setdefault(sym, {
+                    "symbol": sym, "total": 0,
+                    "WIN": 0, "LOSS": 0, "EXPIRED": 0, "BE": 0, "PARTIAL": 0,
+                    "avg_r": 0.0,
+                })
+                s[outcome] = cnt
+                s["total"] += cnt
+                if avg_r is not None and outcome in ("WIN", "LOSS"):
+                    s["avg_r"] = round(avg_r, 2)
+            by_symbol = sorted(symbols.values(), key=lambda x: x["total"], reverse=True)
+            for s in by_symbol:
+                s["win_rate"] = round(s["WIN"] / s["total"] * 100, 1) if s["total"] else 0.0
+
+            recent = store.get_all_contracts(limit=50)
+            contracts = []
+            for c in recent:
+                contracts.append({
+                    "contract_id": c.contract_id,
+                    "correlation_id": c.correlation_id,
+                    "symbol": c.symbol,
+                    "direction": c.direction,
+                    "entry_price": c.entry_price,
+                    "stop_loss": c.stop_loss,
+                    "tp1": c.tp1,
+                    "tp2": c.tp2,
+                    "rejecting_gate": c.rejecting_gate,
+                    "score": c.score,
+                    "status": c.status,
+                    "outcome": c.outcome,
+                    "r_multiple": c.r_multiple,
+                    "exit_reason": c.exit_reason,
+                    "exit_price": c.exit_price,
+                    "resolution_granularity": c.resolution_granularity,
+                    "bars_replayed": c.bars_replayed,
+                    "timestamp": c.ts_utc_ms,
+                })
+
+            return {
+                "gates": gate_list,
+                "summary": status_counts,
+                "contracts": contracts,
+                "by_symbol": by_symbol,
+            }
+        except Exception as exc:
+            logger.debug("[state_shadow] get_shadow_outcomes failed: {}", exc)
+            return {"gates": [], "summary": {}, "contracts": [], "by_symbol": []}

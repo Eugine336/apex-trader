@@ -1,0 +1,755 @@
+"""
+APEX RL — Shadow Trading Engine
+================================
+Stage 2 of the authority progression model.
+
+The agent trained in simulation now runs against REAL market data
+without sending any real orders.
+
+Every signal is journaled.
+Every outcome is tracked.
+This is where false emergence gets exposed.
+
+A behavior that worked in backtest but fails here is discarded.
+A behavior that works here becomes a candidate for Stage 3.
+
+Integration with APEX scanner:
+  - ShadowEngine.get_signal(pair, obs) returns RLSignal
+  - RLSignal contains: action, confidence, expected_r, latent_repr
+  - scanner.py can consume this as an additional confluence factor
+  - No trade authority. Journal only. Until shadow_score qualifies.
+"""
+
+from __future__ import annotations
+
+import logging
+import sqlite3
+import threading
+import numpy as np
+from collections import deque
+from dataclasses import dataclass
+from datetime import datetime, timezone
+from typing import Optional
+
+from .network import ApexRLAgent, ACTION_LABELS
+
+_logger = logging.getLogger("apex.rl.shadow")
+
+
+# ── Signal dataclass ──────────────────────────────────────────────────────────
+
+@dataclass
+class RLSignal:
+    """
+    The output of the RL subsystem at Stage 2/3.
+    This is what gets fed to the APEX scanner as a confluence factor.
+    """
+    pair:           str
+    timestamp:      str
+    action:         int         # 0=HOLD, 1=BUY, 2=SELL, 3=CLOSE
+    action_label:   str
+    confidence:     float       # probability of chosen action (0-1)
+    expected_r:     float       # estimated R-multiple from value head
+    latent_repr:    list        # raw learned representation (for analysis)
+    authority:      str         # "SHADOW" | "STAGE3" | "STAGE4" etc.
+
+
+@dataclass
+class ShadowTrade:
+    """A paper trade opened by the shadow engine."""
+    pair:       str
+    direction:  int     # 1=long, -1=short
+    entry:      float
+    sl:         float
+    tp:         float
+    open_time:  str
+    open_bar:   int
+    expected_r: float
+    confidence: float
+    closed:     bool   = False
+    exit:       float  = 0.0
+    close_time: str    = ""
+    actual_r:   float  = 0.0
+    close_reason: str  = ""
+    db_id:      int | None = None
+
+
+# ── Shadow Engine ─────────────────────────────────────────────────────────────
+
+class ShadowEngine:
+    """
+    Runs the trained RL agent against live/recent data in shadow mode.
+
+    Usage:
+        engine = ShadowEngine("checkpoints/apex_rl_best.pt")
+        signal = engine.get_signal("EURUSD", obs_array)
+
+        # In APEX scanner — add this alongside existing confluence score:
+        if signal.action in (1, 2) and signal.confidence > 0.6:
+            rl_confluence_boost = signal.expected_r * 0.1  # small weight at Stage 2
+    """
+
+    AUTHORITY = "SHADOW"
+
+    # Thresholds for shadow score qualification (Stage 2 → Stage 3)
+    MIN_SHADOW_TRADES    = 200
+    MIN_WIN_RATE         = 0.52
+    MIN_EXPECTANCY       = 0.3    # R-multiples
+    MAX_DRAWDOWN         = 0.15
+    MIN_REGIMES_TESTED   = 3
+
+    # Minimum recent bars required before a structure-aware SL can be derived.
+    # Below this the engine falls back to an ATR stop (mirrors the live
+    # EntryEngine, which falls back to its ATR stop when structure is absent).
+    MIN_STRUCT_BARS      = 8
+    # How many recent bars to retain per pair for swing-extreme detection.
+    STRUCT_WINDOW        = 50
+
+    def __init__(self, checkpoint_path: str, db_path: str | None = None):
+        self.agent: ApexRLAgent | None = None
+        self._meta: dict = {}
+        self._load(checkpoint_path)
+        self.agent.eval()
+
+        # Per-user writeable state — the shadow journal DB resolves under the
+        # owning user's data tree (APEX_DATA_DIR) rather than a bare cwd-relative
+        # filename, so RL shadow trades stay isolated per instance.
+        if not db_path:
+            try:
+                from runtime_paths import data_dir as _data_dir
+                db_path = str(_data_dir() / "shadow_journal.db")
+            except Exception:
+                db_path = "shadow_journal.db"
+        self.db_path = db_path
+        self._init_db()
+
+        self.open_trades: dict[str, ShadowTrade] = {}
+        self.bar_counter: dict[str, int]          = {}
+
+        # Rolling per-pair high/low buffers, fed by ``update_price`` every bar.
+        # These supply the swing extremes used for the structure-aware stop so
+        # the shadow's exit geometry matches the live engine's intent instead of
+        # a hardcoded ATR multiple.
+        self.recent_highs: dict[str, deque] = {}
+        self.recent_lows:  dict[str, deque] = {}
+
+        # Live exit-model parameters, sourced from the same ConsensusConfig the
+        # live consensus/ATR-stop path uses so authority is earned against the
+        # same SL distance and reward:risk the live engine trades.
+        self._sl_atr_mult = 1.5
+        self._tp_rr       = 3.0
+        try:
+            from config import ConsensusConfig
+            _cc = ConsensusConfig()
+            self._sl_atr_mult = float(_cc.atr_sl_mult)
+            self._tp_rr       = float(_cc.atr_tp2_rr)
+        except Exception as exc:  # pragma: no cover - config import guard
+            _logger.debug("[Shadow] ConsensusConfig unavailable, using defaults: %s", exc)
+
+        # Session awareness — skip shadow entries for session-gated (FX)
+        # instruments when the market is not tradeable, mirroring the live
+        # entry path. Disable per-engine for deterministic/offline tests.
+        self.session_filter_enabled = True
+        self._session_engine = None
+
+        self._reload_open_trades()
+
+    # ── Signal generation ─────────────────────────────────────────────────
+
+    def get_signal(
+        self,
+        pair: str,
+        obs: np.ndarray,
+        context_vec: Optional[np.ndarray] = None,
+        symbol_id: Optional[int] = None,
+    ) -> RLSignal:
+        """
+        Main interface. Call this from APEX scanner for each instrument.
+
+        obs: numpy array of shape (WINDOW, N_FEATURES) — same format
+             as the training environment observation.
+        context_vec: optional instrument context vector (float32).
+        symbol_id: optional integer symbol id for the embedding.
+        """
+        import torch
+        with torch.no_grad():
+            action, conf, exp_r, latent_list = self.agent.predict_full(
+                obs, context_vec=context_vec, symbol_id=symbol_id,
+            )
+
+        signal = RLSignal(
+            pair=pair,
+            timestamp=datetime.now(timezone.utc).isoformat(),
+            action=action,
+            action_label=ACTION_LABELS[action],
+            confidence=round(conf, 4),
+            expected_r=round(exp_r, 4),
+            latent_repr=latent_list,
+            authority=self.AUTHORITY,
+        )
+
+        self._log_signal(signal)
+        return signal
+
+    def update_price(
+        self,
+        pair:      str,
+        high:      float,
+        low:       float,
+        close:     float,
+        atr:       float,
+        obs:       np.ndarray,
+    ):
+        """
+        Call every bar to manage open shadow trades.
+        Checks SL/TP/timeout, records outcomes.
+        """
+        self.bar_counter[pair] = self.bar_counter.get(pair, 0) + 1
+        bar = self.bar_counter[pair]
+
+        # Feed the rolling swing buffers so a structure-aware stop can be
+        # derived when the next trade opens on this pair.
+        if pair not in self.recent_highs:
+            self.recent_highs[pair] = deque(maxlen=self.STRUCT_WINDOW)
+            self.recent_lows[pair]  = deque(maxlen=self.STRUCT_WINDOW)
+        self.recent_highs[pair].append(float(high))
+        self.recent_lows[pair].append(float(low))
+
+        if pair not in self.open_trades:
+            return
+
+        t = self.open_trades[pair]
+        if t.closed:
+            return
+
+        # Check SL/TP
+        reason = None
+        exit_p = None
+
+        if t.direction == 1:
+            if low <= t.sl:
+                reason, exit_p = "sl", t.sl
+            elif high >= t.tp:
+                reason, exit_p = "tp", t.tp
+        else:
+            if high >= t.sl:
+                reason, exit_p = "sl", t.sl
+            elif low <= t.tp:
+                reason, exit_p = "tp", t.tp
+
+        # Timeout
+        if reason is None and (bar - t.open_bar) >= 200:
+            reason, exit_p = "timeout", close
+
+        if reason:
+            self._close_shadow_trade(pair, exit_p, reason)
+
+    def open_shadow_trade(
+        self,
+        pair:       str,
+        signal:     RLSignal,
+        close:      float,
+        atr:        float,
+        pip_size:   float = 0.0001,
+        now:        Optional[datetime] = None,
+    ):
+        """Open a paper trade based on a signal. Called by shadow coordinator.
+
+        The agent decides WHEN to trade (its neural net produced ``signal``);
+        WHERE the stop/target go and HOW risk is measured now mirror the live
+        engine: a structure-aware stop from recent swing extremes, an
+        InstrumentProfile-driven minimum-risk floor, and the live config
+        reward:risk for the target. The hardcoded ATR stop is used only as a
+        fallback when no recent structure is available.
+        """
+        if pair in self.open_trades and not self.open_trades[pair].closed:
+            return  # already in a trade on this pair
+
+        # ── Session gate (live parity) ────────────────────────────────────
+        if self.session_filter_enabled and self._is_session_gated(pair):
+            if not self._session_tradeable(now):
+                _logger.info(
+                    "[Shadow] %s entry skipped — session not tradeable", pair
+                )
+                return
+
+        direction = 1 if signal.action == 1 else -1
+        spread    = 1.5 * pip_size
+        entry     = close + (spread if direction == 1 else -spread)
+
+        sl, tp = self._compute_levels(pair, direction, entry, atr, pip_size)
+        if sl is None or tp is None:
+            _logger.warning(
+                "[Shadow] %s entry skipped — could not derive a valid stop", pair
+            )
+            return
+
+        t = ShadowTrade(
+            pair=pair,
+            direction=direction,
+            entry=entry,
+            sl=sl,
+            tp=tp,
+            open_time=datetime.now(timezone.utc).isoformat(),
+            open_bar=self.bar_counter.get(pair, 0),
+            expected_r=signal.expected_r,
+            confidence=signal.confidence,
+        )
+        self.open_trades[pair] = t
+        self._save_trade(t)
+
+    # ── Live-parity exit-model helpers ────────────────────────────────────
+
+    def _compute_levels(
+        self,
+        pair:      str,
+        direction: int,
+        entry:     float,
+        atr:       float,
+        pip_size:  float,
+    ) -> tuple[Optional[float], Optional[float]]:
+        """Return ``(sl, tp)`` using a structure-aware stop with ATR fallback.
+
+        Structure stop: the protective stop is anchored to the nearest recent
+        swing extreme (swing low for longs, swing high for shorts) plus a
+        per-instrument buffer, then floored to the InstrumentProfile minimum
+        risk distance. When fewer than ``MIN_STRUCT_BARS`` recent bars exist the
+        engine falls back to an ATR stop (logged), exactly like the live
+        EntryEngine falls back when structure is unavailable.
+        """
+        profile, category = self._profile(pair)
+        buffer = (profile.sl_buffer_pips * pip_size) if profile is not None else (2.0 * pip_size)
+        min_risk = self._min_risk_distance(entry, pip_size, profile, category)
+
+        highs = self.recent_highs.get(pair)
+        lows  = self.recent_lows.get(pair)
+        have_structure = (
+            highs is not None and lows is not None and len(lows) >= self.MIN_STRUCT_BARS
+        )
+
+        sl = None
+        if have_structure:
+            if direction == 1:
+                swing_low = min(lows)
+                cand = swing_low - buffer
+                if cand < entry:               # stop must sit below a long entry
+                    sl = cand
+            else:
+                swing_high = max(highs)
+                cand = swing_high + buffer
+                if cand > entry:               # stop must sit above a short entry
+                    sl = cand
+
+        if sl is None:
+            # ── ATR fallback (no usable structure) ───────────────────────
+            _logger.warning(
+                "[Shadow] %s — no usable recent structure (%d bars), using ATR stop",
+                pair, 0 if lows is None else len(lows),
+            )
+            if atr <= 0:
+                return None, None
+            sl = entry - direction * self._sl_atr_mult * atr
+
+        # ── Minimum-risk floor (InstrumentProfile, live parity) ──────────
+        risk = abs(entry - sl)
+        if risk < min_risk:
+            sl = entry - direction * min_risk
+            risk = min_risk
+
+        if risk <= 0:
+            return None, None
+
+        tp = entry + direction * risk * self._tp_rr
+        return sl, tp
+
+    @staticmethod
+    def _profile(pair: str):
+        """Return ``(InstrumentProfile | None, category)`` for *pair*."""
+        try:
+            from brain.instrument_profile import get_profile
+            from config import INSTRUMENT_REGISTRY
+            prof = get_profile(pair)
+            info = INSTRUMENT_REGISTRY.get(pair.upper())
+            category = info.category.value if info is not None else prof.category
+            return prof, category
+        except Exception:
+            return None, ""
+
+    @staticmethod
+    def _min_risk_distance(entry: float, pip_size: float, profile, category: str) -> float:
+        """Per-instrument minimum SL distance, matching EntryEngine's SL floor.
+
+        Synthetics/crypto floor to a price-relative percentage (their pip count
+        is meaningless at high prices); everything else floors to
+        ``min_risk_pips`` distance.
+        """
+        if category == "synthetic":
+            return entry * 0.003   # 0.3%
+        if category == "crypto":
+            return entry * 0.0015  # 0.15%
+        min_pips = profile.min_risk_pips if profile is not None else 5.0
+        return min_pips * pip_size
+
+    @staticmethod
+    def _is_session_gated(pair: str) -> bool:
+        """True only for known FX instruments — others (synthetics, crypto,
+        indices, commodities, unknown) are treated as always-open and never
+        skipped, matching the live ``is_always_open`` handling."""
+        try:
+            from config import INSTRUMENT_REGISTRY, InstrumentCategory
+            info = INSTRUMENT_REGISTRY.get(pair.upper())
+            return info is not None and info.category == InstrumentCategory.FOREX
+        except Exception:
+            return False
+
+    def _session_tradeable(self, now: Optional[datetime]) -> bool:
+        if self._session_engine is None:
+            try:
+                from brain.session_engine import SessionEngine
+                self._session_engine = SessionEngine()
+            except Exception:
+                return True  # cannot evaluate — do not block
+        try:
+            return bool(self._session_engine.get_status(now).is_tradeable)
+        except Exception:
+            return True
+
+    # ── Qualification check ───────────────────────────────────────────────
+
+    def shadow_score(self) -> dict:
+        """
+        Compute current shadow performance.
+        Returns qualification status and detailed metrics.
+        Used by authority progression manager.
+        """
+        trades = self._fetch_closed_trades()
+
+        if len(trades) < self.MIN_SHADOW_TRADES:
+            return {
+                "qualified": False,
+                "reason": f"Need {self.MIN_SHADOW_TRADES} trades, have {len(trades)}",
+                "n_trades": len(trades),
+                "n_shadow_trades": len(trades),
+                # Cold-start: an empty/short book has no realised drawdown. Emit
+                # an explicit 0.0 so the authority manager does not read the
+                # missing key as a 100% drawdown and surface a phantom failure.
+                "win_rate": 0.0,
+                "expectancy": 0.0,
+                "max_drawdown": 0.0,
+            }
+
+        r_values  = [t["actual_r"] for t in trades]
+        wins      = [r for r in r_values if r > 0]
+        losses    = [r for r in r_values if r <= 0]
+
+        win_rate   = len(wins) / len(r_values)
+        expectancy = np.mean(r_values)
+        avg_win    = np.mean(wins)  if wins   else 0.0
+        avg_loss   = np.mean(losses) if losses else 0.0
+
+        # Equity curve drawdown
+        equity     = np.cumsum(r_values)
+        peak       = np.maximum.accumulate(equity)
+        drawdown   = ((peak - equity) / (peak + 1e-8)).max()
+
+        qualified = (
+            win_rate   >= self.MIN_WIN_RATE    and
+            expectancy >= self.MIN_EXPECTANCY  and
+            drawdown   <= self.MAX_DRAWDOWN
+        )
+
+        return {
+            "qualified":   qualified,
+            "n_trades":    len(trades),
+            "n_shadow_trades": len(trades),
+            "win_rate":    round(win_rate, 4),
+            "expectancy":  round(float(expectancy), 4),
+            "avg_win":     round(float(avg_win), 4),
+            "avg_loss":    round(float(avg_loss), 4),
+            "max_drawdown": round(float(drawdown), 4),
+            "reason":      "qualified" if qualified else self._fail_reason(
+                win_rate, expectancy, drawdown
+            ),
+        }
+
+    def _fail_reason(self, wr, exp, dd) -> str:
+        reasons = []
+        if wr   < self.MIN_WIN_RATE:    reasons.append(f"win_rate {wr:.2f} < {self.MIN_WIN_RATE}")
+        if exp  < self.MIN_EXPECTANCY:  reasons.append(f"expectancy {exp:.2f} < {self.MIN_EXPECTANCY}")
+        if dd   > self.MAX_DRAWDOWN:    reasons.append(f"drawdown {dd:.2f} > {self.MAX_DRAWDOWN}")
+        return "; ".join(reasons)
+
+    # ── Database ──────────────────────────────────────────────────────────
+
+    def _init_db(self):
+        con = sqlite3.connect(self.db_path)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS shadow_signals (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair TEXT, timestamp TEXT, action INTEGER,
+                action_label TEXT, confidence REAL, expected_r REAL,
+                authority TEXT
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS shadow_trades (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                pair TEXT, direction INTEGER,
+                entry REAL, sl REAL, tp REAL,
+                open_time TEXT, expected_r REAL, confidence REAL,
+                closed INTEGER DEFAULT 0,
+                exit REAL, close_time TEXT,
+                actual_r REAL, close_reason TEXT
+            )
+        """)
+        con.commit()
+        con.close()
+
+        # Persistent write connection reused across signals/trades. Opening a
+        # fresh sqlite3 connection per emitted signal (on the scan path) was a
+        # measurable hot-path cost; a single shared connection guarded by a lock
+        # removes that per-call connect/close. check_same_thread=False allows
+        # the trading loop and any helper thread to share it safely under the
+        # lock; WAL keeps reads from blocking the writer.
+        self._db_lock = threading.Lock()
+        try:
+            self._conn: Optional[sqlite3.Connection] = sqlite3.connect(
+                self.db_path, timeout=10, check_same_thread=False,
+            )
+            self._conn.execute("PRAGMA journal_mode=WAL")
+            self._conn.execute("PRAGMA synchronous=NORMAL")
+            self._conn.commit()
+        except Exception:
+            self._conn = None
+
+    def _reload_open_trades(self):
+        """Recover unclosed shadow trades from DB on restart.
+
+        Must run AFTER ``self.open_trades`` / ``self.bar_counter`` exist (i.e.
+        from ``__init__`` after _init_db), which is why it lives in its own
+        method rather than inside _init_db.
+        """
+        import logging
+        _logger = logging.getLogger("apex.rl.shadow")
+        try:
+            con = sqlite3.connect(self.db_path)
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                "SELECT id, pair, direction, entry, sl, tp, open_time, "
+                "expected_r, confidence FROM shadow_trades WHERE closed=0"
+            ).fetchall()
+            con.close()
+            for r in rows:
+                t = ShadowTrade(
+                    pair=r["pair"],
+                    direction=r["direction"],
+                    entry=r["entry"],
+                    sl=r["sl"],
+                    tp=r["tp"],
+                    open_time=r["open_time"],
+                    open_bar=0,
+                    expected_r=r["expected_r"],
+                    confidence=r["confidence"],
+                    db_id=r["id"],
+                )
+                self.open_trades[t.pair] = t
+                self.bar_counter[t.pair] = 0
+            if rows:
+                _logger.info(f"[Shadow] Recovered {len(rows)} open shadow trade(s) from DB")
+        except Exception as e:
+            import logging
+            logging.getLogger("apex.rl.shadow").warning(f"[Shadow] Failed to reload open trades: {e}")
+
+    def _log_signal(self, s: RLSignal):
+        sql = """
+            INSERT INTO shadow_signals
+            (pair, timestamp, action, action_label, confidence, expected_r, authority)
+            VALUES (?,?,?,?,?,?,?)
+        """
+        params = (s.pair, s.timestamp, s.action, s.action_label,
+                  s.confidence, s.expected_r, s.authority)
+        if self._conn is not None:
+            with self._db_lock:
+                self._conn.execute(sql, params)
+                self._conn.commit()
+            return
+        con = sqlite3.connect(self.db_path)
+        con.execute(sql, params)
+        con.commit()
+        con.close()
+
+    def _save_trade(self, t: ShadowTrade):
+        sql = """
+            INSERT INTO shadow_trades
+            (pair, direction, entry, sl, tp, open_time, expected_r, confidence)
+            VALUES (?,?,?,?,?,?,?,?)
+        """
+        params = (t.pair, t.direction, t.entry, t.sl, t.tp,
+                  t.open_time, t.expected_r, t.confidence)
+        if self._conn is not None:
+            with self._db_lock:
+                cur = self._conn.execute(sql, params)
+                t.db_id = cur.lastrowid
+                self._conn.commit()
+            return
+        con = sqlite3.connect(self.db_path)
+        cur = con.execute(sql, params)
+        t.db_id = cur.lastrowid
+        con.commit()
+        con.close()
+
+    def _close_shadow_trade(self, pair: str, exit_price: float, reason: str):
+        t = self.open_trades[pair]
+        risk_dist = abs(t.entry - t.sl)
+        actual_r  = t.direction * (exit_price - t.entry) / risk_dist if risk_dist > 0 else 0.0
+        t.closed  = True
+        t.exit    = exit_price
+        t.close_time = datetime.now(timezone.utc).isoformat()
+        t.actual_r   = round(actual_r, 4)
+        t.close_reason = reason
+
+        if t.db_id is not None:
+            sql = """
+                UPDATE shadow_trades SET
+                    closed=1, exit=?, close_time=?, actual_r=?, close_reason=?
+                WHERE id=?
+            """
+            params = (exit_price, t.close_time, t.actual_r, reason, t.db_id)
+        else:
+            sql = """
+                UPDATE shadow_trades SET
+                    closed=1, exit=?, close_time=?, actual_r=?, close_reason=?
+                WHERE pair=? AND closed=0
+                ORDER BY id DESC LIMIT 1
+            """
+            params = (exit_price, t.close_time, t.actual_r, reason, pair)
+        if self._conn is not None:
+            with self._db_lock:
+                self._conn.execute(sql, params)
+                self._conn.commit()
+            return
+        con = sqlite3.connect(self.db_path)
+        con.execute(sql, params)
+        con.commit()
+        con.close()
+
+    def _fetch_closed_trades(self) -> list[dict]:
+        con = sqlite3.connect(self.db_path)
+        rows = con.execute(
+            "SELECT actual_r FROM shadow_trades WHERE closed=1"
+        ).fetchall()
+        con.close()
+        return [{"actual_r": r[0]} for r in rows]
+
+    def reconcile_with_phase4(self, shadow_store) -> dict:
+        """
+        Compare RL shadow trades with Phase 4 shadow contracts
+        tagged with rejecting_gate='rl_shadow'.
+
+        Returns diagnostic summary — not a live path.
+        """
+        try:
+            con = sqlite3.connect(self.db_path)
+            rl_rows = con.execute(
+                "SELECT pair, entry, actual_r, close_time, close_reason "
+                "FROM shadow_trades WHERE closed=1 "
+                "ORDER BY close_time DESC LIMIT 500"
+            ).fetchall()
+            con.close()
+        except Exception:
+            return {"error": "failed to read RL shadow trades"}
+
+        rl_by_pair: dict[str, list] = {}
+        for r in rl_rows:
+            pair = r[0]
+            if pair not in rl_by_pair:
+                rl_by_pair[pair] = []
+            rl_by_pair[pair].append({
+                "entry": r[1], "actual_r": r[2],
+                "close_time": r[3], "reason": r[4],
+            })
+
+        try:
+            p4_contracts = shadow_store.fetch_resolved(gate="rl_shadow", limit=500)
+        except Exception:
+            p4_contracts = []
+
+        p4_by_pair: dict[str, list] = {}
+        for c in p4_contracts:
+            sym = c.get("symbol", c.get("pair", ""))
+            if sym not in p4_by_pair:
+                p4_by_pair[sym] = []
+            p4_by_pair[sym].append(c)
+
+        matched = 0
+        rl_only_pairs = set(rl_by_pair.keys()) - set(p4_by_pair.keys())
+        p4_only_pairs = set(p4_by_pair.keys()) - set(rl_by_pair.keys())
+        both_pairs = set(rl_by_pair.keys()) & set(p4_by_pair.keys())
+
+        r_rl = []
+        r_p4 = []
+        for pair in both_pairs:
+            n = min(len(rl_by_pair[pair]), len(p4_by_pair[pair]))
+            matched += n
+            for i in range(n):
+                r_rl.append(rl_by_pair[pair][i]["actual_r"])
+                r_p4.append(p4_by_pair[pair][i].get("r_multiple", 0.0))
+
+        correlation = None
+        if len(r_rl) >= 5:
+            r_rl_a = np.array(r_rl)
+            r_p4_a = np.array(r_p4)
+            std_prod = r_rl_a.std() * r_p4_a.std()
+            if std_prod > 1e-8:
+                correlation = float(np.corrcoef(r_rl_a, r_p4_a)[0, 1])
+
+        return {
+            "matched": matched,
+            "rl_only": len(rl_only_pairs),
+            "phase4_only": len(p4_only_pairs),
+            "r_multiple_correlation": correlation,
+        }
+
+    def _load(self, path: str):
+        import torch
+        from .contracts import assert_compatible, OBS_FEATURES, N_CONTEXT_FEATURES
+
+        ckpt = torch.load(path, map_location="cpu", weights_only=True)
+        meta = ckpt.get("meta", {})
+
+        assert_compatible(meta)
+
+        n_features = meta.get("n_features", 12)
+        context_dim = meta.get("context_dim", 0)
+        n_symbols = meta.get("n_symbols", 0)
+
+        if n_features != OBS_FEATURES:
+            raise ValueError(
+                f"Checkpoint/production dimension mismatch: "
+                f"checkpoint n_features={n_features}, "
+                f"production contract OBS_FEATURES={OBS_FEATURES}. "
+                f"See rl/contracts.py and docs/rl_obs_contract_decision.md "
+                f"for resolution options."
+            )
+        if context_dim != N_CONTEXT_FEATURES:
+            raise ValueError(
+                f"Checkpoint/production context mismatch: "
+                f"checkpoint context_dim={context_dim}, "
+                f"production contract N_CONTEXT_FEATURES={N_CONTEXT_FEATURES}. "
+                f"See rl/contracts.py and docs/rl_obs_contract_decision.md "
+                f"for resolution options."
+            )
+
+        self.agent = ApexRLAgent(
+            n_features=n_features,
+            context_dim=context_dim,
+            n_symbols=n_symbols,
+        )
+        self.agent.load_state_dict(ckpt["agent"])
+        self._meta = meta
+
+        print(
+            f"[Shadow] Loaded checkpoint: step={ckpt.get('step', '?')}, "
+            f"version={meta.get('obs_contract_version', '?')}, "
+            f"features={n_features}, context={context_dim}"
+        )

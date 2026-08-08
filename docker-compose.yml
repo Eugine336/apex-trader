@@ -1,0 +1,45 @@
+services:
+  apex-trader:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: apex_trader
+    environment:
+      DD_API_KEY: ${DD_API_KEY}
+      DD_AGENT_HOST: datadog-agent
+      DD_SERVICE: apex-trader
+      DD_ENV: production
+      DD_VERSION: "1.0.0"
+    depends_on:
+      datadog-agent:
+        condition: service_healthy
+    networks:
+      - apex-network
+
+  datadog-agent:
+    image: gcr.io/datadoghq/agent:7
+    container_name: apex_datadog
+    environment:
+      DD_API_KEY: ${DD_API_KEY}
+      DD_SITE: "us5.datadoghq.com"
+      DD_APM_ENABLED: "true"
+      DD_APM_NON_LOCAL_TRAFFIC: "true"
+      DD_LOGS_ENABLED: "true"
+      DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL: "true"
+      DD_CONTAINER_EXCLUDE: "name:apex_datadog"
+      DD_DOGSTATSD_NON_LOCAL_TRAFFIC: "true"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc/:/host/proc/:ro
+      - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
+    healthcheck:
+      test: ["CMD-SHELL", "agent health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+    networks:
+      - apex-network
+
+networks:
+  apex-network:
+    driver: bridge
