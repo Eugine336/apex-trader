@@ -16,7 +16,7 @@ import threading
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING, Any, Callable, Optional
+from typing import Any, Callable, Optional
 
 from loguru import logger
 
@@ -27,9 +27,6 @@ from brain.liquidity_mapper import LiquidityMap
 from brain.volume_analyzer import VolumeAnalysis
 from brain.wyckoff_engine import WyckoffAnalysis
 from brain.inducement_detector import InducementAnalysis
-
-if TYPE_CHECKING:
-    from entry.models import EntryZone
 
 
 @dataclass(frozen=True)
@@ -61,13 +58,6 @@ class WorldModel:
     # multi-TF by nature, stored as a frozen dict snapshot.
     bias: tuple[tuple[str, Any], ...] = ()
 
-    # ── Synthesized entry layer ───────────────────────────────────────
-    # Actionable entry zones derived from the raw analysis above (FVG/OB
-    # confluence, bias-filtered).  Populated by the analysis plane at
-    # publish time so the WorldModel is the single source of truth for the
-    # entry plane — consumers read this rather than re-deriving zones.
-    entry_zones: tuple["EntryZone", ...] = ()
-
     # ── Non-ICT concept layer ─────────────────────────────────────────
     # Outputs of the concept generators (trend, mean-reversion, …) keyed by
     # timeframe, plus the classified volatility regime per timeframe.  These
@@ -77,25 +67,11 @@ class WorldModel:
     concepts: tuple[tuple[str, tuple[Any, ...]], ...] = ()
     regime: tuple[tuple[str, str], ...] = ()
 
-    # ── Consensus layer (directional votes + ranked opportunities) ────
-    # Per-module directional votes and the opportunity-ranker's clustered
-    # trade ideas, synthesized at publish time from the analysis above.  They
-    # power the dashboard's module-votes + ranker panels and keep the
-    # WorldModel the single source of truth for them.  Stored as opaque
-    # objects (Vote / Opportunity) to avoid import coupling.
-    votes: tuple[Any, ...] = ()
+    # ── Ranked opportunities ──────────────────────────────────────────
+    # The opportunity-ranker's clustered trade ideas, synthesized at publish
+    # time from the analysis above.  Stored as opaque ``Opportunity`` objects
+    # to avoid import coupling.
     candidates: tuple[Any, ...] = ()
-
-    # ── Setup-quality layer (second-order analysis) ───────────────────
-    # Real Opportunity/Entry Quality scores (0–10) and the per-symbol
-    # RegimeAnalysis, synthesized at publish time by
-    # ``brain.quality_layer.compute_quality_layer``.  Shared by the live and
-    # backtest planes so both engines read identical quality signals.  ``None``
-    # means "not computed this cycle" — consumers apply no quality pressure.
-    opportunity_quality: Optional[float] = None
-    entry_quality_long: Optional[float] = None
-    entry_quality_short: Optional[float] = None
-    regime_analysis: Optional[Any] = None
 
     # ── Helpers ───────────────────────────────────────────────────────
 
@@ -123,10 +99,6 @@ class WorldModel:
     def bias_dict(self) -> dict[str, Any]:
         return dict(self.bias)
 
-    def entry_zones_list(self) -> list["EntryZone"]:
-        """Actionable entry zones synthesized at publish time."""
-        return list(self.entry_zones)
-
     def concepts_by_tf(self) -> dict[str, tuple[Any, ...]]:
         """Non-ICT concept signals keyed by timeframe."""
         return dict(self.concepts)
@@ -134,10 +106,6 @@ class WorldModel:
     def regime_by_tf(self) -> dict[str, str]:
         """Classified volatility regime keyed by timeframe."""
         return dict(self.regime)
-
-    def votes_list(self) -> list[Any]:
-        """Per-module directional votes synthesized at publish time."""
-        return list(self.votes)
 
     def candidates_list(self) -> list[Any]:
         """Ranked opportunity candidates synthesized at publish time."""
@@ -332,10 +300,8 @@ def build_world_model(
     wyckoff: Optional[dict[str, WyckoffAnalysis]] = None,
     inducement: Optional[dict[str, InducementAnalysis]] = None,
     bias: Optional[dict[str, Any]] = None,
-    entry_zones: Optional[list["EntryZone"]] = None,
     concepts: Optional[dict[str, list]] = None,
     regime: Optional[dict[str, str]] = None,
-    votes: Optional[list] = None,
     candidates: Optional[list] = None,
 ) -> WorldModel:
     """Convenience builder: accepts mutable dicts, freezes them into tuples.
@@ -388,9 +354,7 @@ def build_world_model(
         wyckoff=_freeze_scalars(wyckoff),
         inducement=_freeze_scalars(inducement),
         bias=_freeze_scalars(bias),
-        entry_zones=tuple(entry_zones) if entry_zones else (),
         concepts=_freeze_lists(concepts),
         regime=_freeze_scalars(regime),
-        votes=tuple(votes) if votes else (),
         candidates=tuple(candidates) if candidates else (),
     )

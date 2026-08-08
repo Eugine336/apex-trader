@@ -54,7 +54,7 @@ class RecommendationType:
     types can be added without a migration.
     """
 
-    WEIGHT_UPDATE = "WEIGHT_UPDATE"          # VoteCalibrator: module weight multipliers
+    WEIGHT_UPDATE = "WEIGHT_UPDATE"          # module weight multipliers
     AVOID_PATTERN = "AVOID_PATTERN"          # Optimizer: block a losing pair/regime/session pattern
     SIZE_ADJUST = "SIZE_ADJUST"              # Optimizer / CapitalAllocator: position-size multiplier
     PROFILE_CHANGE = "PROFILE_CHANGE"        # ExecutionProfiles: SL/TP execution profile

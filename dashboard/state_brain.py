@@ -23,11 +23,15 @@ from typing import Any
 
 from loguru import logger
 
-from brain.opportunity_ranker import (
-    DEFAULT_SCALP_MODULES,
-    DEFAULT_SWING_MODULES,
-    classify_timeframe,
-)
+# The directional vote/ranker subsystem (brain.opportunity_ranker) was retired
+# with the Single-Reasoner cutover. These inert fallbacks keep the dashboard
+# importable; the vote/ranker panels simply render empty now.
+DEFAULT_SCALP_MODULES: tuple = ()
+DEFAULT_SWING_MODULES: tuple = ()
+
+
+def classify_timeframe(*args, **kwargs) -> str:
+    return ""
 
 
 def _round(x: Any, ndigits: int = 4) -> float:

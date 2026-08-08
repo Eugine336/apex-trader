@@ -410,7 +410,7 @@ class CognitionLoop:
         self._wake = threading.Event()
         self._pending: set = set()
         self._pending_lock = threading.Lock()
-        self._event_last_bias: dict = {}
+        self._event_last_magnitude: dict = {}
         self._event_last_reason_at: dict = {}
         self._cycles = 0
         self._decisions = 0
@@ -625,17 +625,21 @@ class CognitionLoop:
         return made
 
     def maybe_reason_on_change(
-        self, symbol: str, direction: Any, confidence: Any, *, now: Optional[float] = None,
+        self, symbol: str, change_magnitude: Any = None, *, now: Optional[float] = None,
     ) -> bool:
-        """Queue an immediate Brain reason when a symbol's read meaningfully shifts.
+        """Queue an immediate Brain reason when a symbol's market read changes
+        materially — NON-DIRECTIONALLY.
 
-        Triggers on a direction flip or a confidence move ≥
-        ``event_confidence_delta`` versus the last seen read, subject to a
-        per-symbol floor (``event_min_interval_seconds``) so a fast-updating feed
-        cannot spam the reasoner. The actual reasoning runs on the loop thread
-        (this only enqueues + wakes it), so the caller's thread never blocks on an
-        LLM call. No-op unless ``event_driven``. Fail-safe. Returns True when a
-        reason was queued.
+        The wake is driven by a raw *change magnitude* (e.g. a forming-bar
+        activity/conviction level), never by a precomputed LONG/SHORT direction:
+        cognition must not be gated on a directional pre-read (Constitution
+        §XXIV event-driven integrity / §VII Q25 — opportunity discovery is not
+        gated by a precomputed direction). Triggers on the first observation, on
+        a magnitude move ≥ ``event_confidence_delta`` versus the last seen value,
+        or on a bare nudge (``change_magnitude is None``), subject to a per-symbol
+        floor (``event_min_interval_seconds``). The reasoning runs on the loop
+        thread (this only enqueues + wakes it). No-op unless ``event_driven``.
+        Fail-safe. Returns True when a reason was queued.
         """
         if not self.event_driven:
             return False
@@ -643,18 +647,16 @@ class CognitionLoop:
             sym = str(symbol or "")
             if not sym:
                 return False
-            d = str(direction or "").upper()
             try:
-                c = float(confidence)
+                m = None if change_magnitude is None else float(change_magnitude)
             except (TypeError, ValueError):
-                c = 0.0
-            prev = self._event_last_bias.get(sym)
-            self._event_last_bias[sym] = (d, c)
-            if prev is None:
-                triggered = d in ("LONG", "SHORT")
+                m = None
+            prev = self._event_last_magnitude.get(sym)
+            self._event_last_magnitude[sym] = m
+            if m is None or prev is None:
+                triggered = True
             else:
-                pd, pc = prev
-                triggered = (d != pd) or (abs(c - pc) >= self.event_confidence_delta)
+                triggered = abs(m - prev) >= self.event_confidence_delta
             if not triggered:
                 return False
             t = self._clock() if now is None else float(now)

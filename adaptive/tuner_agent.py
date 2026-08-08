@@ -61,7 +61,6 @@ EXPECTED_TUNABLES: tuple[str, ...] = (
     "emitter_feedback",     # 11 — per-emitter accuracy (read-side)
     "post_close_tracker",   # 12 — MFE/MAE post-close checks
     "planner_calibrator",   # 13 — PlannerConfig calibration
-    "vote_calibrator",      # 13b — consensus vote weights from emitter accuracy
     "risk_engine",          # 14 — sizing chain (consumer)
     "position_sizer",       # 15 — risk% -> lots (consumer)
     "orchestrator",         # 16 — bounded size multiplier (consumer)
