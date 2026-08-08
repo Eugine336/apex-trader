@@ -34,8 +34,10 @@ from cognition.contracts import (
     CampaignSpecification,
     DecisionPackage,
     DecisionType,
+    Hypothesis,
     MarketState,
 )
+from cognition.expected_value import expected_value_r, reward_risk_from_opinion
 
 logger = logging.getLogger("apex.cognition.brain")
 
@@ -88,6 +90,8 @@ class CognitiveBrain:
         allow_scale_in: bool = False,
         reverse_confidence: float = 0.7,
         exit_floor: float = 0.3,
+        reward_r_default: float = 2.0,
+        min_expected_value: Optional[float] = None,
     ) -> None:
         self._reasoner = reasoner
         self.min_confidence_to_act = min(1.0, max(0.0, float(min_confidence_to_act)))
@@ -96,6 +100,16 @@ class CognitiveBrain:
         self.allow_scale_in = bool(allow_scale_in)
         self.reverse_confidence = min(1.0, max(0.0, float(reverse_confidence)))
         self.exit_floor = min(1.0, max(0.0, float(exit_floor)))
+        # Payoff geometry used to turn win-probability into a genuine expected
+        # value (Part IX Art 1/7): reward-to-risk multiple when the opinion does
+        # not supply explicit excursions. ``min_expected_value`` is retained for
+        # the Part-C3 EV gate (act only when EV clears it); None ⇒ not enforced
+        # here yet, so this change computes/records EV without altering the
+        # current act/no-act behaviour.
+        self.reward_r_default = max(0.0, float(reward_r_default))
+        self.min_expected_value = (
+            None if min_expected_value is None else float(min_expected_value)
+        )
         self._decisions = 0
         self._campaigns_opened = 0
         self._observed = 0
@@ -117,10 +131,18 @@ class CognitiveBrain:
         symbol = getattr(market_state, "symbol", "") or ""
         try:
             consolidation = market_state.consolidation(now)
-            if not self.available:
+            # Distinguish "no reasoner configured" (a benign build-time state —
+            # no obligation to trade) from "reasoner wired but its provider is
+            # unavailable" (an INFRASTRUCTURE failure). The latter must never be
+            # surfaced as a market view (Part XVIII Art 5 / Q78/Q80): it is a
+            # distinct REASONER_UNAVAILABLE state, not a FLAT/observe conclusion.
+            if self._reasoner is None:
                 return self._observe(
-                    symbol,
-                    "reasoner unavailable — no obligation to trade (do nothing)",
+                    symbol, "no reasoner configured — no obligation to trade", consolidation,
+                )
+            if not getattr(self._reasoner, "available", False):
+                return self._reasoner_unavailable(
+                    symbol, "reasoner unavailable — provider down (not a market view)",
                     consolidation,
                 )
             opinion = self._reasoner.reason(
@@ -163,6 +185,18 @@ class CognitiveBrain:
         uncertainty = _clamp01(consolidation.get("aggregate_uncertainty", 1.0))
 
         supporting, contradicting = self._split_evidence(market_state, direction)
+        # Part IX Art 1/7 — a genuine expected value (in units of risk, R) from
+        # the win-probability (confidence) and the payoff geometry, replacing the
+        # former confidence-as-EV proxy. Part V/VI — carry the
+        # competing hypotheses on the decision so cognition is not collapsed to a
+        # single direction+confidence pair.
+        reward_r, risk_r = reward_risk_from_opinion(opinion, self.reward_r_default)
+        expected_value = expected_value_r(confidence, reward_r, risk_r)
+        hypotheses = self._build_hypotheses(
+            direction, confidence, reward_r, risk_r,
+            primary_hyp or rationale, alternatives, invalidation_txt,
+            supporting, contradicting,
+        )
         questions = {
             "what_is_happening": primary_hyp or rationale,
             "why_is_it_happening": primary_hyp or rationale,
@@ -194,27 +228,43 @@ class CognitiveBrain:
 
         # Constitutional gate: only OPEN a campaign when the Brain can answer
         # with sufficient confidence AND uncertainty is acceptable AND there is a
-        # direction. Otherwise do nothing — there is no obligation to trade.
+        # direction AND the expected value clears the threshold. Otherwise do
+        # nothing — there is no obligation to trade (Part IV Art 7 / Part IX Q35:
+        # a good thesis at negative EV is not an executable trade).
+        ev_ok = (self.min_expected_value is None) or (expected_value >= self.min_expected_value)
         act = (
             direction in (LONG, SHORT)
             and confidence >= self.min_confidence_to_act
             and uncertainty <= self.max_uncertainty_to_act
+            and ev_ok
         )
         if not act:
-            reason_txt = (
-                "insufficient confidence/uncertainty for a campaign"
-                if direction in (LONG, SHORT)
-                else "no exploitable directional opportunity"
+            directional_and_qualified = (
+                direction in (LONG, SHORT)
+                and confidence >= self.min_confidence_to_act
+                and uncertainty <= self.max_uncertainty_to_act
             )
-            dtype = (DecisionType.REJECT_OPPORTUNITY
-                     if direction == FLAT and confidence >= self.min_confidence_to_act
-                     else DecisionType.CONTINUE_OBSERVING)
+            if directional_and_qualified and not ev_ok:
+                # Saw a directional opportunity but its expected value does not
+                # clear the threshold — decline it (Part IX Q35: cannot execute
+                # this opportunity at the current expected value).
+                reason_txt = "expected value below threshold — opportunity declined"
+                dtype = DecisionType.REJECT_OPPORTUNITY
+            elif direction in (LONG, SHORT):
+                reason_txt = "insufficient confidence/uncertainty for a campaign"
+                dtype = DecisionType.CONTINUE_OBSERVING
+            else:
+                reason_txt = "no exploitable directional opportunity"
+                dtype = (DecisionType.REJECT_OPPORTUNITY
+                         if confidence >= self.min_confidence_to_act
+                         else DecisionType.CONTINUE_OBSERVING)
             decision = DecisionPackage(
                 symbol=symbol, decision_type=dtype, thesis=rationale or reason_txt,
                 supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
                 confidence=confidence, uncertainty=uncertainty,
-                expected_value=0.0, campaign_recommendation="observe",
+                expected_value=expected_value, campaign_recommendation="observe",
                 risk_rationale=reason_txt, invalidation_conditions=invalidation_conditions or competing,
+                hypotheses=hypotheses,
                 questions_answered=questions, do_nothing_considered=True,
                 reasoner=self.reasoner_name,
             )
@@ -225,10 +275,11 @@ class CognitiveBrain:
             thesis=rationale or f"{direction} opportunity",
             supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
             confidence=confidence, uncertainty=uncertainty,
-            expected_value=confidence,  # normalised EV proxy until a calibrated EV model lands
+            expected_value=expected_value,
             campaign_recommendation=f"open {direction}",
             risk_rationale="expected value positive on synthesised evidence",
             invalidation_conditions=invalidation_conditions or [f"{direction} thesis contradicted by dominant opposing evidence"],
+            hypotheses=hypotheses,
             questions_answered=questions, do_nothing_considered=True,
             reasoner=self.reasoner_name,
         )
@@ -389,6 +440,45 @@ class CognitiveBrain:
                       if getattr(e, "evidence_id", "")]
         return considered, []
 
+    @staticmethod
+    def _build_hypotheses(
+        direction: str, confidence: float, reward_r: float, risk_r: float,
+        primary_statement: str, alternatives: "list", invalidation_txt: str,
+        supporting: "list[str]", contradicting: "list[str]",
+    ) -> "list[Hypothesis]":
+        """Represent the Brain's primary + competing explanations simultaneously.
+
+        Part V/VI: the decision must not collapse to a single direction. It
+        carries the leading hypothesis (with its payoff geometry + invalidation)
+        alongside the alternatives the Brain weighed, so contradictory readings
+        survive into the record instead of being voted away. The residual
+        probability mass (1 − confidence) is spread across the alternatives.
+        """
+        primary = Hypothesis(
+            statement=(primary_statement or (
+                f"{direction} opportunity" if direction in (LONG, SHORT)
+                else "no directional edge"))[:200],
+            probability=confidence,
+            direction=direction if direction in (LONG, SHORT) else "",
+            expected_reward_r=reward_r, expected_risk_r=risk_r,
+            invalidation=invalidation_txt,
+            supporting_evidence_ids=list(supporting or []),
+            contradicting_evidence_ids=list(contradicting or []),
+        )
+        hyps = [primary]
+        alts = [str(a).strip() for a in (alternatives or []) if str(a).strip()]
+        if alts:
+            residual = max(0.0, 1.0 - confidence)
+            share = round(residual / len(alts), 4)
+            for a in alts:
+                # An opposing scenario's upside is the primary's downside, so its
+                # reward/risk geometry is the primary's mirrored.
+                hyps.append(Hypothesis(
+                    statement=a[:200], probability=share, direction="",
+                    expected_reward_r=risk_r, expected_risk_r=reward_r,
+                ))
+        return hyps
+
     def _observe(self, symbol: str, reason_txt: str, consolidation: dict) -> BrainOutput:
         decision = DecisionPackage(
             symbol=symbol, decision_type=DecisionType.CONTINUE_OBSERVING,
@@ -397,6 +487,25 @@ class CognitiveBrain:
             campaign_recommendation="observe", risk_rationale=reason_txt,
             questions_answered={q: ("considered" if q == "should_i_do_nothing" else "insufficient")
                                 for q in REQUIRED_QUESTIONS},
+            do_nothing_considered=True, reasoner=self.reasoner_name,
+        )
+        return self._record(BrainOutput(decision=decision, direction=FLAT))
+
+    def _reasoner_unavailable(self, symbol: str, reason_txt: str, consolidation: dict) -> BrainOutput:
+        """Emit the distinct provider-unavailable state (Part XVIII Art 5 / Q78/Q80).
+
+        This is NOT a market conclusion: the Brain has no usable reasoner, so it
+        cannot form a view. Downstream must treat this as 'unknown / infrastructure
+        down', never as a FLAT/observe read of the market — so origination and
+        management both stand down without recording a market opinion.
+        """
+        decision = DecisionPackage(
+            symbol=symbol, decision_type=DecisionType.REASONER_UNAVAILABLE,
+            thesis="reasoner unavailable — no market view formed", confidence=0.0,
+            uncertainty=_clamp01(consolidation.get("aggregate_uncertainty", 1.0)) if consolidation else 1.0,
+            campaign_recommendation="stand_down", risk_rationale=reason_txt,
+            questions_answered={q: ("considered" if q == "should_i_do_nothing"
+                                    else "reasoner unavailable") for q in REQUIRED_QUESTIONS},
             do_nothing_considered=True, reasoner=self.reasoner_name,
         )
         return self._record(BrainOutput(decision=decision, direction=FLAT))
