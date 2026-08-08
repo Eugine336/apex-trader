@@ -131,10 +131,18 @@ class CognitiveBrain:
         symbol = getattr(market_state, "symbol", "") or ""
         try:
             consolidation = market_state.consolidation(now)
-            if not self.available:
+            # Distinguish "no reasoner configured" (a benign build-time state —
+            # no obligation to trade) from "reasoner wired but its provider is
+            # unavailable" (an INFRASTRUCTURE failure). The latter must never be
+            # surfaced as a market view (Part XVIII Art 5 / Q78/Q80): it is a
+            # distinct REASONER_UNAVAILABLE state, not a FLAT/observe conclusion.
+            if self._reasoner is None:
                 return self._observe(
-                    symbol,
-                    "reasoner unavailable — no obligation to trade (do nothing)",
+                    symbol, "no reasoner configured — no obligation to trade", consolidation,
+                )
+            if not getattr(self._reasoner, "available", False):
+                return self._reasoner_unavailable(
+                    symbol, "reasoner unavailable — provider down (not a market view)",
                     consolidation,
                 )
             opinion = self._reasoner.reason(
@@ -220,21 +228,36 @@ class CognitiveBrain:
 
         # Constitutional gate: only OPEN a campaign when the Brain can answer
         # with sufficient confidence AND uncertainty is acceptable AND there is a
-        # direction. Otherwise do nothing — there is no obligation to trade.
+        # direction AND the expected value clears the threshold. Otherwise do
+        # nothing — there is no obligation to trade (Part IV Art 7 / Part IX Q35:
+        # a good thesis at negative EV is not an executable trade).
+        ev_ok = (self.min_expected_value is None) or (expected_value >= self.min_expected_value)
         act = (
             direction in (LONG, SHORT)
             and confidence >= self.min_confidence_to_act
             and uncertainty <= self.max_uncertainty_to_act
+            and ev_ok
         )
         if not act:
-            reason_txt = (
-                "insufficient confidence/uncertainty for a campaign"
-                if direction in (LONG, SHORT)
-                else "no exploitable directional opportunity"
+            directional_and_qualified = (
+                direction in (LONG, SHORT)
+                and confidence >= self.min_confidence_to_act
+                and uncertainty <= self.max_uncertainty_to_act
             )
-            dtype = (DecisionType.REJECT_OPPORTUNITY
-                     if direction == FLAT and confidence >= self.min_confidence_to_act
-                     else DecisionType.CONTINUE_OBSERVING)
+            if directional_and_qualified and not ev_ok:
+                # Saw a directional opportunity but its expected value does not
+                # clear the threshold — decline it (Part IX Q35: cannot execute
+                # this opportunity at the current expected value).
+                reason_txt = "expected value below threshold — opportunity declined"
+                dtype = DecisionType.REJECT_OPPORTUNITY
+            elif direction in (LONG, SHORT):
+                reason_txt = "insufficient confidence/uncertainty for a campaign"
+                dtype = DecisionType.CONTINUE_OBSERVING
+            else:
+                reason_txt = "no exploitable directional opportunity"
+                dtype = (DecisionType.REJECT_OPPORTUNITY
+                         if confidence >= self.min_confidence_to_act
+                         else DecisionType.CONTINUE_OBSERVING)
             decision = DecisionPackage(
                 symbol=symbol, decision_type=dtype, thesis=rationale or reason_txt,
                 supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
@@ -464,6 +487,25 @@ class CognitiveBrain:
             campaign_recommendation="observe", risk_rationale=reason_txt,
             questions_answered={q: ("considered" if q == "should_i_do_nothing" else "insufficient")
                                 for q in REQUIRED_QUESTIONS},
+            do_nothing_considered=True, reasoner=self.reasoner_name,
+        )
+        return self._record(BrainOutput(decision=decision, direction=FLAT))
+
+    def _reasoner_unavailable(self, symbol: str, reason_txt: str, consolidation: dict) -> BrainOutput:
+        """Emit the distinct provider-unavailable state (Part XVIII Art 5 / Q78/Q80).
+
+        This is NOT a market conclusion: the Brain has no usable reasoner, so it
+        cannot form a view. Downstream must treat this as 'unknown / infrastructure
+        down', never as a FLAT/observe read of the market — so origination and
+        management both stand down without recording a market opinion.
+        """
+        decision = DecisionPackage(
+            symbol=symbol, decision_type=DecisionType.REASONER_UNAVAILABLE,
+            thesis="reasoner unavailable — no market view formed", confidence=0.0,
+            uncertainty=_clamp01(consolidation.get("aggregate_uncertainty", 1.0)) if consolidation else 1.0,
+            campaign_recommendation="stand_down", risk_rationale=reason_txt,
+            questions_answered={q: ("considered" if q == "should_i_do_nothing"
+                                    else "reasoner unavailable") for q in REQUIRED_QUESTIONS},
             do_nothing_considered=True, reasoner=self.reasoner_name,
         )
         return self._record(BrainOutput(decision=decision, direction=FLAT))
