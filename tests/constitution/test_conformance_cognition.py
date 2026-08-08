@@ -135,12 +135,12 @@ def test_market_state_scrubs_directional_evidence():
     assert got.measurements.get("rsi") == 55, "non-directional measurements must survive"
 
 
-@conformance("§XVIII Q80/Q106: provider failure must NOT become a FLAT market conclusion/trade")
+@conformance("§XVIII Q80/Q106: provider failure must NOT become a tradeable/FLAT market conclusion")
 def test_provider_unavailable_is_not_a_flat_trade():
-    brain = CognitiveBrain(reasoner=_Reasoner(_opinion(), available=False))
-    out = brain.reason(_rich_state())
-    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
-    assert out.campaign is None, "an unavailable reasoner must not open a campaign"
+    out = CognitiveBrain(reasoner=_Reasoner(_opinion(), available=False)).reason(_rich_state())
+    assert out.decision.decision_type != DecisionType.OPEN_CAMPAIGN
+    assert out.decision.authorises_action is False, "provider-down must not authorise action"
+    assert out.campaign is None
     assert out.direction == "FLAT"
 
 
@@ -192,16 +192,40 @@ def test_decision_preserves_competing_hypotheses():
 
 
 @conformance(
-    "§XVIII Q78: 'reasoner unavailable' must be a state distinct from a market 'observe'",
-    expect="xfail", reason="Phase F-1: add a distinct REASONER_UNAVAILABLE brain state",
+    "§XVIII Q78/Q80: 'reasoner unavailable' is a state distinct from a market 'observe'",
 )
 def test_reasoner_unavailable_is_a_distinct_state():
     out = CognitiveBrain(reasoner=_Reasoner(_opinion(), available=False)).reason(_rich_state())
-    distinct = (
-        out.decision.decision_type.value == "reasoner_unavailable"
-        or getattr(out, "reasoner_unavailable", False) is True
+    assert out.decision.decision_type == DecisionType.REASONER_UNAVAILABLE
+    assert out.decision.decision_type != DecisionType.CONTINUE_OBSERVING
+    assert out.campaign is None and out.direction == "FLAT"
+
+
+@conformance(
+    "§IX Q35/Q36: a confident opportunity with non-positive EV is declined, not opened",
+)
+def test_negative_ev_opportunity_is_declined():
+    # reward:risk of 0.5 ⇒ EV at p=0.6 = 0.6*0.5 - 0.4*1 = -0.1 (< 0), so even
+    # though confidence clears the bar, the opportunity is declined on EV.
+    brain = CognitiveBrain(
+        reasoner=_Reasoner(_opinion("LONG", 0.6)),
+        reward_r_default=0.5, min_expected_value=0.0,
     )
-    assert distinct, "provider-unavailable must be distinguishable from a genuine observe"
+    out = brain.reason(_rich_state())
+    assert out.decision.decision_type == DecisionType.REJECT_OPPORTUNITY
+    assert out.campaign is None
+    assert out.decision.expected_value < 0.0
+
+
+@conformance("§IX: an opportunity that clears the EV threshold still opens")
+def test_positive_ev_opportunity_opens():
+    brain = CognitiveBrain(
+        reasoner=_Reasoner(_opinion("LONG", 0.8)),
+        reward_r_default=2.0, min_expected_value=0.0,
+    )
+    out = brain.reason(_rich_state())
+    assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
+    assert out.decision.expected_value >= 0.0
 
 
 # ── headless runner (no pytest required) ────────────────────────────────────

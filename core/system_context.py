@@ -1303,6 +1303,16 @@ class SystemContext:
                         getattr(cog_cfg, "origination_reward_multiple", 2.0)
                         if cog_cfg is not None else 2.0
                     ),
+                    # Part IX Q35/Q36 — act only when expected value clears this
+                    # threshold (in R). Default 0.0 ⇒ decline non-positive-EV
+                    # opportunities even when confident. Set to None in config to
+                    # disable the EV gate (not recommended).
+                    min_expected_value=(
+                        None if (cog_cfg is not None
+                                 and getattr(cog_cfg, "min_expected_value", 0.0) is None)
+                        else float(getattr(cog_cfg, "min_expected_value", 0.0)
+                                   if cog_cfg is not None else 0.0)
+                    ),
                 )
                 # Part VII — institutional memory (Phase H). Best-effort: a
                 # store fault leaves memory None (observational, fail-open).
