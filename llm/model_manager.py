@@ -27,6 +27,7 @@ from typing import Any, Optional
 
 from loguru import logger
 
+from llm.health import CircuitBreaker, CircuitConfig
 from llm.provider_tiers import ProviderTier, resolve_tier, tier_label
 
 # Selection policies.
@@ -46,9 +47,16 @@ class _Candidate:
     # 4 unknown). Leads failover order so Tier 1 is tried before Tier 2 before
     # Tier 3; within a tier the configured policy governs.
     tier: int = int(ProviderTier.UNKNOWN)
-    successes: int = 0
-    failures: int = 0
-    ewma_latency_ms: float = 0.0
+    # Compute-class routing (GPU/Compute Constitution §8/§11): the reasoning
+    # classes this model may serve (e.g. {"fast","deep"}). Empty ⇒ serves ANY
+    # class. ``context_window`` is the model's context in tokens (0 ⇒ unknown ⇒
+    # assumed sufficient) so a request needing a large context can skip a model
+    # that cannot hold it.
+    classes: frozenset = field(default_factory=frozenset)
+    context_window: int = 0
+    # Live health + circuit breaker (§7/§9). Owns successes/failures/latency and
+    # the OPEN/HALF_OPEN/CLOSED state so a failing provider is not re-hammered.
+    breaker: CircuitBreaker = field(default_factory=CircuitBreaker)
 
     @property
     def usable(self) -> bool:
@@ -61,27 +69,49 @@ class _Candidate:
     def model(self) -> str:
         return str(getattr(self.client, "model", "") or "")
 
+    # Stats delegate to the circuit breaker (single source of truth).
+    @property
+    def successes(self) -> int:
+        return self.breaker.successes
+
+    @property
+    def failures(self) -> int:
+        return self.breaker.failures
+
+    @property
+    def ewma_latency_ms(self) -> float:
+        return self.breaker.ewma_latency_ms
+
     @property
     def attempts(self) -> int:
-        return self.successes + self.failures
+        return self.breaker.attempts
 
     @property
     def success_rate(self) -> float:
-        # Optimistic prior so an untried model is tried before a known-bad one.
-        return 1.0 if self.attempts == 0 else self.successes / self.attempts
+        return self.breaker.success_rate
 
-    def record(self, ok: bool, latency_ms: float) -> None:
+    def available(self, now: Optional[float] = None) -> bool:
+        """Usable config AND the circuit admits (healthy / half-open probe)."""
+        return self.usable and self.breaker.admits(now)
+
+    def serves(self, compute_class: Optional[str], min_context: Optional[int]) -> bool:
+        """True if this model may serve the requested class + context window."""
+        if compute_class:
+            if self.classes and str(compute_class).strip().lower() not in self.classes:
+                return False
+        if min_context and int(min_context) > 0:
+            if self.context_window and self.context_window < int(min_context):
+                return False
+        return True
+
+    def record(self, ok: bool, latency_ms: float, error: str = "") -> None:
         if ok:
-            self.successes += 1
+            self.breaker.record_success(latency_ms)
         else:
-            self.failures += 1
-        # EWMA so recent latency dominates without unbounded history.
-        a = 0.3
-        self.ewma_latency_ms = (latency_ms if self.ewma_latency_ms <= 0.0
-                                else (1 - a) * self.ewma_latency_ms + a * latency_ms)
+            self.breaker.record_failure(latency_ms, error)
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "model": self.model,
             "provider": str(getattr(self.client, "provider", "") or ""),
             "priority": self.priority,
@@ -89,12 +119,13 @@ class _Candidate:
             "tier_label": tier_label(ProviderTier(self.tier))
             if self.tier in (1, 2, 3, 4) else "unknown",
             "cost": round(self.cost, 4),
+            "classes": sorted(self.classes),
+            "context_window": self.context_window,
             "usable": self.usable,
-            "successes": self.successes,
-            "failures": self.failures,
-            "success_rate": round(self.success_rate, 4),
-            "ewma_latency_ms": round(self.ewma_latency_ms, 1),
+            "available": self.available(),
         }
+        d.update(self.breaker.to_dict())
+        return d
 
 
 class ModelManager:
@@ -133,48 +164,62 @@ class ModelManager:
         c = self._last_selected
         return str(getattr(c.client, "provider", "") or "") if c is not None else ""
 
-    def _ordered(self) -> list:
-        """Usable candidates in failover order (best first). Deterministic.
+    def _ordered(self, now: Optional[float] = None,
+                 compute_class: Optional[str] = None,
+                 min_context: Optional[int] = None) -> list:
+        """Eligible candidates in failover order (best first). Deterministic.
 
-        Part XXIII Art 14 — tier leads the order (Tier 1 before Tier 2 before
-        Tier 3 before unknown), so a Tier-1 failure fails over to Tier 2, then
-        Tier 3, then local. WITHIN a tier the configured policy governs. When
-        every candidate shares a tier (the common single-tier / single-provider
-        case) the tier key is constant and ordering reduces exactly to the prior
-        policy behaviour."""
-        usable = [c for c in self._candidates if c.usable]
+        Eligible = usable config AND the circuit admits (healthy or half-open) —
+        a provider tripped OPEN is skipped until its cooldown elapses, so a dead
+        provider is not re-hammered every cycle (§7/§9). Then a compute-class /
+        context-window filter (§8) removes models that cannot serve the request;
+        if that would leave nobody, it falls back to all healthy candidates (a
+        generalist answer beats none). Part XXIII Art 14 — tier leads the order;
+        WITHIN a tier the configured policy governs."""
+        healthy = [c for c in self._candidates if c.available(now)]
+        eligible = [c for c in healthy if c.serves(compute_class, min_context)]
+        pool = eligible or healthy
         if self.policy == POLICY_PERFORMANCE:
             # Tier, then best success-rate, then lowest latency, priority, cost.
-            usable.sort(key=lambda c: (c.tier, -c.success_rate, c.ewma_latency_ms,
-                                       c.priority, c.cost))
+            pool.sort(key=lambda c: (c.tier, -c.success_rate, c.ewma_latency_ms,
+                                     c.priority, c.cost))
         else:  # POLICY_PRIORITY
             # Tier, then operator priority, then fewer failures, then cost.
-            usable.sort(key=lambda c: (c.tier, c.priority, c.failures, c.cost))
-        return usable
+            pool.sort(key=lambda c: (c.tier, c.priority, c.failures, c.cost))
+        return pool
 
-    def complete(self, system: str, user: str) -> Optional[str]:
-        """Select a model by policy and complete; fail over on error. Fail-safe."""
-        ordered = self._ordered()
+    def complete(self, system: str, user: str, *,
+                 compute_class: Optional[str] = None,
+                 min_context: Optional[int] = None) -> Optional[str]:
+        """Select a model by policy and complete; fail over on error. Fail-safe.
+
+        ``compute_class`` / ``min_context`` let the Brain request a computational
+        CLASS (e.g. "deep") and a minimum context window; the router serves it
+        from an eligible, HEALTHY provider (never a tripped-open one) and returns
+        to a superior provider automatically the moment it recovers (each call
+        re-ranks from the top)."""
+        now = time.monotonic()
+        ordered = self._ordered(now, compute_class, min_context)
         if not ordered:
             return None
         for idx, cand in enumerate(ordered):
             t0 = time.time()
+            err = ""
             try:
                 reply = cand.client.complete(system, user)
             except Exception as exc:  # noqa: BLE001 — a model fault is a failover, not a crash
                 logger.debug("[model-manager] {} raised: {}", cand.model, exc)
                 reply = None
+                err = f"{type(exc).__name__}: {exc}"
             latency_ms = (time.time() - t0) * 1000.0
             ok = bool(reply)
             with self._lock:
-                cand.record(ok, latency_ms)
+                cand.record(ok, latency_ms, err)
                 if ok:
                     self._selections += 1
                     self._last_selected = cand
                     if idx > 0:
                         self._failovers += 1
-                else:
-                    self._failovers += 1 if idx < len(ordered) - 1 else 0
             if ok:
                 if idx > 0:
                     # Part XXIII/XXIV — reasoning failed over: name the model that
@@ -185,12 +230,10 @@ class ModelManager:
                         cand.model, cand.tier, idx,
                     )
                 return reply
-            else:
-                # The client logs each provider's down transition once; keep the
-                # per-attempt failover step at DEBUG so a persistently unavailable
-                # candidate does not flood the log every cycle. The success line
-                # above still reports how many were skipped ahead of the winner.
-                logger.debug("[model-manager] {} unavailable — trying next in the chain", cand.model)
+            # The client logs each provider's down transition once; keep the
+            # per-attempt failover step at DEBUG so a persistently unavailable
+            # candidate does not flood the log every cycle.
+            logger.debug("[model-manager] {} unavailable — trying next in the chain", cand.model)
         return None
 
     def describe(self) -> dict:
@@ -202,6 +245,7 @@ class ModelManager:
                 "usable": self.usable,
                 "candidate_count": len(self._candidates),
                 "usable_count": sum(1 for c in self._candidates if c.usable),
+                "healthy_count": sum(1 for c in self._candidates if c.available()),
                 "selected_model": selected,
                 "selections": self._selections,
                 "failovers": self._failovers,
@@ -217,20 +261,51 @@ def _coerce_specs(config: Any) -> list:
     return []
 
 
+def _circuit_config(config: Any) -> CircuitConfig:
+    """Build the shared circuit-breaker tuning from an LLMConfig-like object."""
+    return CircuitConfig(
+        failure_threshold=int(getattr(config, "circuit_failure_threshold", 3) or 3),
+        cooldown_seconds=float(getattr(config, "circuit_cooldown_seconds", 30.0) or 30.0),
+        cooldown_max_seconds=float(
+            getattr(config, "circuit_cooldown_max_seconds", 300.0) or 300.0
+        ),
+    )
+
+
+def spec_classes(spec: dict) -> frozenset:
+    """Compute classes a model spec declares (empty ⇒ serves any class)."""
+    raw = spec.get("classes", spec.get("compute_classes", []))
+    if isinstance(raw, str):
+        raw = [raw]
+    if not isinstance(raw, (list, tuple, set, frozenset)):
+        return frozenset()
+    return frozenset(str(c).strip().lower() for c in raw if str(c).strip())
+
+
+def spec_context_window(spec: dict) -> int:
+    try:
+        return max(0, int(spec.get("context_window", 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
 def build_model_manager(config: Any, transport: Optional[Any] = None) -> Optional[Any]:
     """Build a :class:`ModelManager` from an ``LLMConfig``-like object.
 
     The primary model (``provider``/``model``/``api_key``/``base_url``) is the
     first candidate; each entry in ``config.extra_models`` becomes an additional
     candidate, inheriting the primary's key/base_url when it omits its own (the
-    common "one gateway, many models" case). Returns ``None`` when no usable
-    candidate can be built — a safe no-op, exactly like ``build_client``.
+    common "one gateway, many models" case). A spec may declare ``classes`` (the
+    compute classes it serves) and ``context_window`` for compute-class routing.
+    Returns ``None`` when no usable candidate can be built — a safe no-op,
+    exactly like ``build_client``.
     """
     from llm.client import LLMClient  # local import keeps this module lightweight
     from llm.provider_credentials import (
         has_credentials, resolve_api_key, resolve_base_url,
     )
 
+    cc = _circuit_config(config)
     candidates: list = []
     primary_key = str(getattr(config, "api_key", "") or "")
     primary_base = str(getattr(config, "base_url", "") or "")
@@ -256,6 +331,7 @@ def build_model_manager(config: Any, transport: Optional[Any] = None) -> Optiona
         candidates.append(_Candidate(
             client=primary, priority=0,
             tier=int(resolve_tier(primary_provider)),
+            breaker=CircuitBreaker(cc),
         ))
 
     for i, spec in enumerate(_coerce_specs(config), start=1):
@@ -281,6 +357,9 @@ def build_model_manager(config: Any, transport: Optional[Any] = None) -> Optiona
                 priority=int(spec.get("priority", i)),
                 cost=float(spec.get("cost", 0.0) or 0.0),
                 tier=int(resolve_tier(prov, spec.get("tier"))),
+                classes=spec_classes(spec),
+                context_window=spec_context_window(spec),
+                breaker=CircuitBreaker(cc),
             ))
 
     usable = [c for c in candidates if c.usable]

@@ -77,6 +77,13 @@ _KEY_ENV: dict = {
     "nim": ("NVIDIA_API_KEY", "NIM_API_KEY"),
     "nvidia_nim": ("NVIDIA_API_KEY", "NIM_API_KEY"),
     "nvidia-nim": ("NVIDIA_API_KEY", "NIM_API_KEY"),
+    "cloudflare": ("CLOUDFLARE_API_KEY", "CLOUDFLARE_API_TOKEN"),
+    "cloudflare_workers_ai": ("CLOUDFLARE_API_KEY", "CLOUDFLARE_API_TOKEN"),
+    "workers_ai": ("CLOUDFLARE_API_KEY", "CLOUDFLARE_API_TOKEN"),
+    "cf": ("CLOUDFLARE_API_KEY", "CLOUDFLARE_API_TOKEN"),
+    "gmi": ("GMI_API_KEY", "GMI_CLOUD_API_KEY"),
+    "gmi_cloud": ("GMI_API_KEY", "GMI_CLOUD_API_KEY"),
+    "gmicloud": ("GMI_API_KEY", "GMI_CLOUD_API_KEY"),
 }
 
 
@@ -135,15 +142,41 @@ def resolve_base_url(
     *,
     primary_provider: str = "",
     primary_base: str = "",
+    env: Optional[dict] = None,
 ) -> str:
     """Resolve a base_url: explicit spec value, else inherit the primary's base
-    ONLY for the same provider (never point one vendor at another's endpoint)."""
+    ONLY for the same provider (never point one vendor at another's endpoint).
+
+    The resolved URL may embed ``{ENV_VAR}`` placeholders (e.g. Cloudflare's
+    account id: ``.../accounts/{CLOUDFLARE_ACCOUNT_ID}/ai/v1``); each is filled
+    from the environment so an endpoint that needs an account/region can be armed
+    with env alone — no JSON edit. Single braces (not ``${...}``) are used on
+    purpose: python-dotenv expands ``${...}`` at load time, which would clobber
+    the placeholder before it reaches here. If any referenced var is missing, the
+    endpoint is not yet armed → returns ``""`` so the entry stays inert (like a
+    blank key), never a malformed URL pointed at the wrong path.
+    """
+    env = env if env is not None else os.environ
     base = str(spec_base_url or "").strip()
-    if base:
-        return base
-    if _norm(provider) and _norm(provider) == _norm(primary_provider):
-        return str(primary_base or "").strip()
-    return ""
+    if not base and _norm(provider) and _norm(provider) == _norm(primary_provider):
+        base = str(primary_base or "").strip()
+    if not base:
+        return ""
+    return _expand_env_placeholders(base, env)
+
+
+def _expand_env_placeholders(url: str, env) -> str:
+    """Substitute ``{ENV_VAR}`` tokens from ``env``; blank the URL if any is unset."""
+    missing = {"any": False}
+
+    def _sub(m):
+        val = str((env.get(m.group(1)) if hasattr(env, "get") else "") or "").strip()
+        if not val:
+            missing["any"] = True
+        return val
+
+    out = re.sub(r"\{([A-Z][A-Z0-9_]*)\}", _sub, url)
+    return "" if missing["any"] else out
 
 
 def has_credentials(provider, api_key: str) -> bool:

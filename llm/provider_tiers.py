@@ -54,6 +54,11 @@ _TIER_2 = frozenset({
     "huggingface", "hugging_face", "hf", "anyscale", "replicate",
     "agentrouter", "agent_router", "agent-router", "deepseek", "mistral",
     "nvidia", "nim", "nvidia_nim", "nvidia-nim",
+    # Hosted GPU inference clouds serving open models (OpenAI-compatible APIs) —
+    # capacity that offloads the local Tier-3 runtime, never a cognitive authority.
+    "cloudflare", "cloudflare_ai", "cloudflare-ai", "workers_ai", "workers-ai",
+    "cloudflare_workers_ai", "cloudflare-workers-ai", "cf",
+    "gmi", "gmi_cloud", "gmi-cloud", "gmicloud",
 })
 _TIER_3 = frozenset({
     "ollama", "local", "self_hosted", "self-hosted", "vllm", "lmstudio",
