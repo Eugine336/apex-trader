@@ -389,6 +389,7 @@ class CognitionLoop:
         self._operations_author = operations_author
         self._operations_sink = operations_sink
         self._origination_sink: Optional[Callable[[Any], None]] = None
+        self._is_market_open: Optional[Callable[[str], bool]] = None
         self._name = str(name or "cognition-loop")
         # Management realisation (Part VI): the mode mirrors origination —
         # ``off`` never manages, ``shadow`` records the intended action, ``live``
@@ -520,6 +521,18 @@ class CognitionLoop:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition-loop] set_consultation_ledger ignored a fault: %s", exc)
 
+    def set_market_open_source(self, is_market_open: Optional[Callable[[str], bool]]) -> None:
+        """Wire the broker-truth market-open check the EntryOrchestrator already
+        uses, so the reasoning council is skipped for a symbol whose market is
+        closed instead of only being consulted after a full 14-provider fan-out.
+
+        Weekend/holiday closures otherwise burn the full advisory-council token
+        budget (and every provider's rate limit) on instruments that could
+        never be traded anyway, since the market-open gate previously only
+        applied at order-placement time. Fail-safe — a missing or faulting
+        source means every symbol is reasoned over, matching prior behavior."""
+        self._is_market_open = is_market_open
+
     @property
     def running(self) -> bool:
         return self._running
@@ -547,6 +560,18 @@ class CognitionLoop:
         The shared per-symbol body used by both the periodic cycle and the
         event-driven path. Fail-safe: one symbol's fault never propagates.
         """
+        is_open_check = self._is_market_open
+        if is_open_check is not None:
+            try:
+                if not is_open_check(symbol):
+                    logger.debug(
+                        "[cognition-loop] %s market closed — skipping reasoning "
+                        "(origination, not management)", symbol,
+                    )
+                    return 0
+            except Exception as exc:  # noqa: BLE001
+                # Fail-open: a faulting check must never block reasoning.
+                logger.debug("[cognition-loop] market-open check faulted for %s: %s", symbol, exc)
         try:
             ms = self._consolidator.build(symbol, now=now)
             output = self._brain.reason(ms, now=now)

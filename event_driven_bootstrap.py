@@ -4112,6 +4112,17 @@ class EventDrivenSystem:
                     _cog_loop.set_price_source(self._cognition_price_snapshot)
                 except Exception as exc:
                     logger.debug("[event-driven] price-source wiring failed: {}", exc)
+                # Reuse the same broker-truth market-open check EntryOrchestrator
+                # already applies, but at the reasoning stage: a closed market
+                # (weekend forex/index/commodity) previously still burned the
+                # full advisory-council fan-out — every provider, every retry —
+                # for a symbol that could never be traded until the gate later
+                # blocked the order. 24/7 instruments (Deriv synthetics, crypto)
+                # are unaffected via is_always_open() inside the check itself.
+                try:
+                    _cog_loop.set_market_open_source(self._check_market_open)
+                except Exception as exc:
+                    logger.debug("[event-driven] market-open-source wiring failed: {}", exc)
                 # Phase G — when origination is LIVE, wire the executor sink so the
                 # Brain's originated entries reach the SAME execution plane as
                 # every other entry (aggregator → RiskGate → broker). Shadow/off
