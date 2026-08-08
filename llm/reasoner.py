@@ -285,12 +285,21 @@ class LLMReasoner:
         drive_decisions: bool = False,
         min_interval_seconds: float = 30.0,
         recent_limit: int = 50,
+        default_compute_class: str = "",
+        default_min_context: int = 0,
     ) -> None:
         self._client = client
         self.enabled = bool(enabled)
         self.drive_decisions = bool(drive_decisions)
         self.min_interval_seconds = max(0.0, float(min_interval_seconds))
         self._recent_limit = max(1, int(recent_limit))
+        # Compute-class routing (GPU/Compute Constitution §8): the reasoning
+        # CLASS this reasoner requests from a class-aware client (ModelManager).
+        # "" ⇒ request no class (every model eligible). The Brain's strategic
+        # reasoner sets "deep"; a class-tagged model only serves matching
+        # requests, but an untagged roster keeps serving everything (no-op).
+        self.default_compute_class = str(default_compute_class or "").strip().lower()
+        self.default_min_context = max(0, int(default_min_context or 0))
         self._last_call: dict[str, float] = {}
         # Per-symbol liveness of the last NON-throttled reason() attempt:
         # True = produced an opinion, False = failed (provider down/timeout, or
@@ -329,6 +338,22 @@ class LLMReasoner:
         last = self._last_call.get(key, 0.0)
         return (now - last) < iv
 
+    def _complete(self, system: str, user: str) -> Optional[str]:
+        """Call the client, requesting a compute class / min context when the
+        client is class-aware (the ModelManager). Falls back to the plain
+        two-arg call for a simple client that does not accept the kwargs."""
+        client = self._client
+        if not self.default_compute_class and not self.default_min_context:
+            return client.complete(system, user)
+        try:
+            return client.complete(
+                system, user,
+                compute_class=(self.default_compute_class or None),
+                min_context=(self.default_min_context or None),
+            )
+        except TypeError:
+            return client.complete(system, user)
+
     def reason(
         self, symbol: str, evidence: dict, *, now: Optional[float] = None,
         min_interval: Optional[float] = None, throttle_key: Optional[str] = None,
@@ -360,7 +385,7 @@ class LLMReasoner:
                     return None
                 self._last_call[key] = t
             user = self._build_user_prompt(sym, evidence)
-            reply = self._client.complete(_SYSTEM_PROMPT, user)
+            reply = self._complete(_SYSTEM_PROMPT, user)
             if not reply:
                 with self._lock:
                     self._faults += 1

@@ -3740,6 +3740,24 @@ class LLMConfig:
     # number of advisors to the difficulty of the read (1 / several / all).
     # Env: LLM_CONSULT_MODE.
     consult_mode: str = "adaptive"
+    # GPU/Compute Constitution §7/§9 — provider circuit breaker. A provider that
+    # fails ``circuit_failure_threshold`` times in a row trips OPEN for a
+    # cooldown (exponential backoff capped at ``circuit_cooldown_max_seconds``)
+    # so a dead provider is not re-hammered every cycle; it is re-admitted
+    # half-open for one probe when the cooldown elapses. Env:
+    # LLM_CIRCUIT_FAILURE_THRESHOLD / _COOLDOWN_SECONDS / _COOLDOWN_MAX_SECONDS.
+    circuit_failure_threshold: int = 3
+    circuit_cooldown_seconds: float = 30.0
+    circuit_cooldown_max_seconds: float = 300.0
+    # §3/§11 — cap concurrent LOCAL (CPU/GPU-bound) model calls so a full council
+    # panel does not start every local model at once and exhaust the host (the
+    # "all Ollama models on → CPU outage" failure). 0 ⇒ unbounded. Env:
+    # LLM_LOCAL_MAX_CONCURRENCY.
+    local_max_concurrency: int = 1
+    # §8 — the compute CLASS the Brain's strategic reasoner requests ("deep" by
+    # default). Only filters when roster models declare ``classes``; an untagged
+    # roster serves everything (no-op). Env: LLM_REASONING_COMPUTE_CLASS.
+    reasoning_compute_class: str = "deep"
 
     def __post_init__(self) -> None:
         # The environment is the single source of truth — no vendor is baked in.
@@ -3756,6 +3774,10 @@ class LLMConfig:
             ("LLM_MIN_INTERVAL_SECONDS", "min_interval_seconds", float),
             ("LLM_WORKER_INTERVAL_SECONDS", "worker_interval_seconds", float),
             ("LLM_MAX_SYMBOLS_PER_CYCLE", "max_symbols_per_cycle", int),
+            ("LLM_CIRCUIT_FAILURE_THRESHOLD", "circuit_failure_threshold", int),
+            ("LLM_CIRCUIT_COOLDOWN_SECONDS", "circuit_cooldown_seconds", float),
+            ("LLM_CIRCUIT_COOLDOWN_MAX_SECONDS", "circuit_cooldown_max_seconds", float),
+            ("LLM_LOCAL_MAX_CONCURRENCY", "local_max_concurrency", int),
         ):
             raw = os.getenv(env_name)
             if raw is not None:
@@ -3838,6 +3860,19 @@ class LLMConfig:
         if self.consult_mode not in ("adaptive", "panel"):
             raise ValueError(
                 f"LLMConfig.consult_mode must be adaptive|panel, got {self.consult_mode!r}"
+            )
+        self.reasoning_compute_class = (
+            os.getenv("LLM_REASONING_COMPUTE_CLASS", self.reasoning_compute_class) or ""
+        ).strip().lower()
+        if int(self.circuit_failure_threshold) < 1:
+            raise ValueError(
+                "LLMConfig.circuit_failure_threshold must be >= 1, got "
+                f"{self.circuit_failure_threshold!r}"
+            )
+        if float(self.circuit_cooldown_seconds) < 0 or float(self.circuit_cooldown_max_seconds) < 0:
+            raise ValueError(
+                "LLMConfig circuit cooldown seconds must be >= 0, got "
+                f"{self.circuit_cooldown_seconds!r}/{self.circuit_cooldown_max_seconds!r}"
             )
 
 

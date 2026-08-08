@@ -1004,6 +1004,13 @@ class SystemContext:
                         getattr(llm_cfg, "min_interval_seconds", 30.0)
                         if llm_cfg is not None else 30.0
                     ),
+                    # §8 — the Brain's strategic reasoner requests a compute CLASS
+                    # (default "deep"); a class-aware ModelManager serves it from a
+                    # matching, healthy provider. Untagged rosters are unaffected.
+                    default_compute_class=str(
+                        getattr(llm_cfg, "reasoning_compute_class", "")
+                        if llm_cfg is not None else ""
+                    ),
                 )
                 if ctx.llm_reasoner.available:
                     logger.info(
