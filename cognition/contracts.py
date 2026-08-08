@@ -109,6 +109,10 @@ class DecisionType(Enum):
     REJECT_OPPORTUNITY = "reject_opportunity"
     OPEN_CAMPAIGN = "open_campaign"
     CONTINUE_OBSERVING = "continue_observing"
+    # Infrastructure state (Part XVIII, Art 5): the Brain has no usable reasoner
+    # (provider down / unavailable). This is explicitly NOT a market conclusion —
+    # it must never be read as a FLAT/observe view of the market.
+    REASONER_UNAVAILABLE = "reasoner_unavailable"
     # In-campaign management (Part VI, Article 5)
     HOLD = "hold"
     SCALE_IN = "scale_in"
@@ -318,6 +322,50 @@ REQUIRED_QUESTIONS = (
 
 
 @dataclass
+class Hypothesis:
+    """One candidate explanation the Brain holds about the market (Part V / Part VI).
+
+    The constitution forbids collapsing cognition prematurely into a single
+    LONG/SHORT/FLAT verdict. A :class:`DecisionPackage` therefore carries the
+    Brain's *competing* hypotheses simultaneously — each with its own
+    probability, directional interpretation, payoff geometry (in units of risk,
+    R) and invalidation — so the richer reasoning survives into the decision
+    record instead of being reduced to one direction+confidence pair. The
+    ``direction`` here is an execution hint for a hypothesis, never an authority
+    of its own; only a :class:`DecisionPackage` / :class:`CampaignSpecification`
+    authorises action.
+    """
+
+    statement: str
+    probability: float = 0.0          # Brain's P(this hypothesis is correct), [0, 1]
+    direction: str = ""               # LONG | SHORT | FLAT | "" (unknown)
+    expected_reward_r: float = 0.0    # favorable excursion, in units of risk (R)
+    expected_risk_r: float = 1.0      # adverse excursion, in units of risk (R)
+    invalidation: str = ""
+    supporting_evidence_ids: list[str] = field(default_factory=list)
+    contradicting_evidence_ids: list[str] = field(default_factory=list)
+    horizon_seconds: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        self.probability = _clamp01(self.probability)
+        d = str(self.direction or "").upper()
+        self.direction = d if d in ("LONG", "SHORT", "FLAT") else ""
+
+    def to_dict(self) -> dict:
+        return {
+            "statement": self.statement,
+            "probability": round(self.probability, 4),
+            "direction": self.direction,
+            "expected_reward_r": round(self.expected_reward_r, 4),
+            "expected_risk_r": round(self.expected_risk_r, 4),
+            "invalidation": self.invalidation,
+            "supporting_evidence_ids": list(self.supporting_evidence_ids),
+            "contradicting_evidence_ids": list(self.contradicting_evidence_ids),
+            "horizon_seconds": self.horizon_seconds,
+        }
+
+
+@dataclass
 class DecisionPackage:
     """The Brain's structured decision output (Part II, Article 7). Inert record.
 
@@ -337,6 +385,7 @@ class DecisionPackage:
     campaign_recommendation: str = ""
     risk_rationale: str = ""
     invalidation_conditions: list[str] = field(default_factory=list)
+    hypotheses: list["Hypothesis"] = field(default_factory=list)
     questions_answered: dict = field(default_factory=dict)
     do_nothing_considered: bool = False
     reasoner: str = ""                 # which Brain produced it (provenance)
@@ -386,6 +435,7 @@ class DecisionPackage:
             "campaign_recommendation": self.campaign_recommendation,
             "risk_rationale": self.risk_rationale,
             "invalidation_conditions": list(self.invalidation_conditions),
+            "hypotheses": [h.to_dict() for h in self.hypotheses],
             "questions_answered": dict(self.questions_answered),
             "unanswered_questions": self.unanswered_questions(),
             "do_nothing_considered": bool(self.do_nothing_considered),
@@ -450,6 +500,7 @@ __all__ = [
     "domain_from",
     "MarketState",
     "DecisionType",
+    "Hypothesis",
     "DecisionPackage",
     "CampaignSpecification",
     "REQUIRED_QUESTIONS",
