@@ -64,6 +64,18 @@ class WorkerConfig:
     per cycle.
     """
 
+    # ── Management authority (Constitution Part VI / X) ───────────────
+    # True (default) → the worker runs the FULL deterministic management suite
+    # (TP / breakeven / trailing / stall / invalidation / conviction / HTF /
+    # dynamic-SL / opportunity-cost). False → the worker runs ONLY the always-on
+    # catastrophic safety floor (hard stop-loss, weekend / session / spread
+    # protection, absolute-profit backstop) and DEFERS every discretionary exit
+    # to the AI Cognitive Brain, so a trade is held / protected / exited by
+    # reasoning rather than a predefined level or timer. The broker-side
+    # protective stop attached at entry remains the hard capital floor in either
+    # case, so a position is never unprotected even if the Brain/provider is down.
+    discretionary_exits_enabled: bool = True
+
     # ── TradeManager params ───────────────────────────────────────────
     breakeven_buffer_pips: float = 2.0
     breakeven_min_profit_r: float = 0.5
@@ -263,6 +275,16 @@ class PositionWorker:
             age_seconds = float("inf")
         past_grace = age_seconds >= self.cfg.min_hold_seconds
 
+        # Management authority split (Constitution Part VI / X): the checks
+        # marked "safety floor" below only ever protect capital and run ALWAYS
+        # (even if the Brain/provider is unavailable). The DISCRETIONARY checks —
+        # profit-taking, breakeven, trailing, stall, and thesis/conviction exits
+        # — are deferred to the AI Cognitive Brain when it is the live manager
+        # (``discretionary_exits_enabled`` False), so a trade is held / protected
+        # / exited by reasoning rather than a fixed level or timer. The
+        # broker-side protective stop attached at entry is the hard floor either way.
+        discretionary = self.cfg.discretionary_exits_enabled
+
         # ── Layer 1: Tick-level checks (TradeManager.update logic) ────
         # Skip the synthetic stop-hit check while a worker-path SL move is in
         # flight but unconfirmed: the optimistic mutation has written the new
@@ -271,31 +293,35 @@ class PositionWorker:
         # stop-loss CLOSE against a level the broker never accepted. The broker
         # still enforces the real stop server-side during this brief window.
         if not snap.sl_pending_confirmation:
-            self._check_stop_loss(snap, intents)
-        self._check_tp1(snap, intents)
-        self._check_breakeven(snap, intents)
-        self._check_tp3(snap, intents)
-        self._check_tp2(snap, intents)
-        self._check_stall(snap, now, intents, scan=scan)
+            self._check_stop_loss(snap, intents)          # safety floor — always
+        if discretionary:
+            self._check_tp1(snap, intents)
+            self._check_breakeven(snap, intents)
+            self._check_tp3(snap, intents)
+            self._check_tp2(snap, intents)
+            self._check_stall(snap, now, intents, scan=scan)
 
         # ── Layer 2: Exit checks (ExitChecksMixin logic) ─────────────
-        self._check_absolute_profit_protection(snap, intents)
-        self._check_dynamic_sl_tightening(snap, intents)
-        self._check_weekend_protection(snap, now, intents)
+        self._check_absolute_profit_protection(snap, intents)   # safety floor — always
+        if discretionary:
+            self._check_dynamic_sl_tightening(snap, intents)
+        self._check_weekend_protection(snap, now, intents)      # safety floor — always
 
-        if scan is not None and past_grace:
+        if discretionary and scan is not None and past_grace:
             self._check_invalidation(snap, scan, intents)
             self._check_conviction_collapse(snap, intents)
 
         if market is not None:
-            trailed = self._check_structure_trailing(snap, market, out=intents)
-            if not trailed:
-                self._check_atr_trailing(snap, market, out=intents)
-            if past_grace:
-                self._check_htf_candle_close(snap, market, intents)
-            self._check_spread_deterioration(snap, market, intents)
-            self._check_session_close(snap, now, intents)
-            self._check_opportunity_cost(snap, now, market, intents)
+            if discretionary:
+                trailed = self._check_structure_trailing(snap, market, out=intents)
+                if not trailed:
+                    self._check_atr_trailing(snap, market, out=intents)
+                if past_grace:
+                    self._check_htf_candle_close(snap, market, intents)
+            self._check_spread_deterioration(snap, market, intents)  # safety floor
+            self._check_session_close(snap, now, intents)            # safety floor
+            if discretionary:
+                self._check_opportunity_cost(snap, now, market, intents)
 
         return self._drop_too_close_sl_moves(snap, intents)
 
