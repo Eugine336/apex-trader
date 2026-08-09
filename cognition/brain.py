@@ -95,6 +95,9 @@ class CognitiveBrain:
         reward_r_default: float = 2.0,
         min_expected_value: Optional[float] = None,
         manage_min_interval_seconds: Optional[float] = None,
+        min_advisors_for_action: int = 2,
+        min_evidence_domains: int = 2,
+        degraded_confidence_multiplier: float = 0.7,
         default_cost_r: float = 0.0,
     ) -> None:
         self._reasoner = reasoner
@@ -104,6 +107,19 @@ class CognitiveBrain:
         self.allow_scale_in = bool(allow_scale_in)
         self.reverse_confidence = min(1.0, max(0.0, float(reverse_confidence)))
         self.exit_floor = min(1.0, max(0.0, float(exit_floor)))
+        # Article XX — advisor quorum: the Council must not become fake diversity.
+        # A campaign must be backed by at least this many advisors that actually
+        # contributed an opinion; a single advisor's read is insufficient
+        # cognitive coverage for action.
+        self.min_advisors_for_action = max(0, int(min_advisors_for_action))
+        # Article XXXIV — minimum evidence domains: "cannot determine whether an
+        # opportunity exists" ≠ "no opportunity". The Brain refuses to act on too
+        # thin an evidence picture (fewer than this many domains present).
+        self.min_evidence_domains = max(0, int(min_evidence_domains))
+        # Article XXI — degraded cognition must be recognised. When most of the
+        # available council did not respond, the Brain's effective confidence is
+        # attenuated by this multiplier so a partial panel cannot act at full size.
+        self.degraded_confidence_multiplier = min(1.0, max(0.0, float(degraded_confidence_multiplier)))
         # Payoff geometry used to turn win-probability into a genuine expected
         # value (Part IX Art 1/7): reward-to-risk multiple when the opinion does
         # not supply explicit excursions. ``min_expected_value`` is retained for
@@ -270,6 +286,28 @@ class CognitiveBrain:
         # a legacy single-confidence reply is unchanged (every dim == confidence).
         conf_dims, eff_conf, limiting_dim = self._confidence_profile(opinion, confidence)
 
+        # Article XX / XXI — advisory-council coverage. Read how much of the
+        # council actually contributed (None ⇒ no council wired, gates
+        # unenforced). When most of the AVAILABLE advisors did not respond the
+        # cognition is DEGRADED: attenuate the effective conviction so a partial
+        # panel cannot act at full strength (a distinct signal from "no edge").
+        advisors_responded, advisors_available, advisors_total = (
+            self._extract_advisor_counts(market_state)
+        )
+        eff_conf_before_degrade = eff_conf
+        degraded = (
+            advisors_responded is not None
+            and advisors_available is not None
+            and advisors_available > 0
+            and advisors_responded < advisors_available * 0.5
+        )
+        if degraded:
+            eff_conf = _clamp01(eff_conf * self.degraded_confidence_multiplier)
+            logger.warning(
+                "[brain] DEGRADED COGNITION: only %s/%s advisors responded — "
+                "confidence attenuated by %.2f",
+                advisors_responded, advisors_available, self.degraded_confidence_multiplier,
+            )
         # Violation V1 — the Brain is not a pure relay: cross-check the advisor's
         # stated confidence against the evidence picture it synthesised, and
         # attenuate the effective conviction when the advisor is overconfident
@@ -332,6 +370,52 @@ class CognitiveBrain:
                        ("execution_quality", exec_q), ("risk", risk_txt)):
             if _v:
                 questions[_k] = _v
+        # Article XXI — record whether cognition is degraded (partial council).
+        if advisors_available is not None:
+            if degraded:
+                questions["cognitive_degradation"] = (
+                    f"ACTIVE: {advisors_responded}/{advisors_available} advisors — "
+                    f"confidence attenuated {eff_conf_before_degrade:.2f} → {eff_conf:.2f}"
+                )
+            else:
+                questions["cognitive_degradation"] = (
+                    f"NONE: {advisors_responded}/{advisors_available} advisors — "
+                    "full cognitive coverage"
+                )
+        # Article XX — advisor quorum: at least ``min_advisors_for_action`` of the
+        # council must have contributed. Unenforced when no council metadata is
+        # present (a Brain wired without an orchestrator).
+        quorum_ok = (
+            advisors_responded is None
+            or advisors_responded >= self.min_advisors_for_action
+        )
+        if advisors_responded is not None:
+            if quorum_ok:
+                questions["advisor_quorum"] = (
+                    f"MET: {advisors_responded} advisors responded "
+                    f"(available: {advisors_available}, total: {advisors_total})"
+                )
+            else:
+                questions["advisor_quorum"] = (
+                    f"NOT MET: {advisors_responded} of {self.min_advisors_for_action} "
+                    f"required advisors responded (available: {advisors_available}, "
+                    f"total: {advisors_total})"
+                )
+        # Article XXXIV — minimum evidence-domain coverage. Unenforced when the
+        # consolidation omits the count (a hand-built consolidation dict).
+        domain_count = consolidation.get("domain_count")
+        domain_ok = (domain_count is None) or (int(domain_count) >= self.min_evidence_domains)
+        if domain_count is not None:
+            if domain_ok:
+                questions["evidence_coverage"] = (
+                    f"ADEQUATE: {int(domain_count)} domains present "
+                    f"(minimum: {self.min_evidence_domains})"
+                )
+            else:
+                questions["evidence_coverage"] = (
+                    f"INSUFFICIENT: {int(domain_count)} domains present, "
+                    f"minimum {self.min_evidence_domains} required"
+                )
         # Prefer the Brain's explicit invalidation / change-my-mind for the
         # campaign's invalidation conditions; fall back to competing hypotheses.
         invalidation_conditions = (
@@ -340,15 +424,19 @@ class CognitiveBrain:
 
         # Constitutional gate: only OPEN a campaign when the Brain can answer
         # with sufficient confidence AND uncertainty is acceptable AND there is a
-        # direction AND the expected value clears the threshold. Otherwise do
-        # nothing — there is no obligation to trade (Part IV Art 7 / Part IX Q35:
-        # a good thesis at negative EV is not an executable trade).
+        # direction AND the expected value clears the threshold AND the advisory
+        # quorum + evidence-domain coverage are adequate. Otherwise do nothing —
+        # there is no obligation to trade (Part IV Art 7 / Part IX Q35: a good
+        # thesis at negative EV, thin coverage or a lone advisor is not an
+        # executable trade).
         ev_ok = (self.min_expected_value is None) or (expected_value >= self.min_expected_value)
         act = (
             direction in (LONG, SHORT)
             and eff_conf >= self.min_confidence_to_act
             and uncertainty <= self.max_uncertainty_to_act
             and ev_ok
+            and quorum_ok
+            and domain_ok
         )
         if not act:
             directional_and_qualified = (
@@ -356,7 +444,25 @@ class CognitiveBrain:
                 and eff_conf >= self.min_confidence_to_act
                 and uncertainty <= self.max_uncertainty_to_act
             )
-            if directional_and_qualified and not ev_ok:
+            if directional_and_qualified and ev_ok and not quorum_ok:
+                # Article XX — a qualified opportunity backed by too few advisors:
+                # cognitive coverage is insufficient to originate a campaign.
+                reason_txt = (
+                    f"advisor quorum not met: {advisors_responded}/"
+                    f"{self.min_advisors_for_action} advisors responded — "
+                    "cognitive coverage insufficient for action"
+                )
+                dtype = DecisionType.CONTINUE_OBSERVING
+            elif directional_and_qualified and ev_ok and not domain_ok:
+                # Article XXXIV — a qualified opportunity on too few evidence
+                # domains: cannot determine whether an opportunity exists.
+                reason_txt = (
+                    f"insufficient evidence coverage: {int(domain_count)}/"
+                    f"{self.min_evidence_domains} domains — cannot determine "
+                    "whether opportunity exists"
+                )
+                dtype = DecisionType.CONTINUE_OBSERVING
+            elif directional_and_qualified and not ev_ok:
                 # Saw a directional opportunity but its expected value does not
                 # clear the threshold — decline it (Part IX Q35: cannot execute
                 # this opportunity at the current expected value).
@@ -617,6 +723,40 @@ class CognitiveBrain:
         }
 
     @staticmethod
+    def _extract_advisor_counts(
+        market_state: MarketState,
+    ) -> "tuple[Optional[int], Optional[int], Optional[int]]":
+        """Read the advisory-council coverage from the reasoning Evidence.
+
+        Article XX — the ``ReasoningOrchestrator`` records how many advisors were
+        asked and how many actually replied; ``evidence_from_reasoning`` surfaces
+        that on each REASONING Evidence's measurements. Returns
+        ``(responded, available, total)`` taken from the reasoning Evidence
+        carrying the counts (the maximum ``responded`` seen), or ``(None, None,
+        None)`` when no advisor metadata is present — in which case the quorum /
+        degraded-cognition gates are left unenforced (fail-safe, preserves the
+        behaviour of a Brain wired without a council). Never raises.
+        """
+        resp: Optional[int] = None
+        avail: Optional[int] = None
+        total: Optional[int] = None
+        try:
+            for e in getattr(market_state, "evidence", []) or []:
+                if getattr(e, "domain", None) != EvidenceDomain.REASONING:
+                    continue
+                m = getattr(e, "measurements", None)
+                if not isinstance(m, dict) or "advisors_responded" not in m:
+                    continue
+                r = int(m.get("advisors_responded", 0) or 0)
+                if resp is None or r > resp:
+                    resp = r
+                    avail = int(m.get("advisors_available", 0) or 0)
+                    total = int(m.get("advisors_total", 0) or 0)
+        except Exception:  # noqa: BLE001 — a coverage probe must never break reasoning
+            return None, None, None
+        return resp, avail, total
+
+    @staticmethod
     def _confidence_profile(opinion: Any, base: float) -> "tuple[dict, float, str]":
         """Resolve the multidimensional confidence (Part XXV): each dimension, the
         effective conviction (the weakest), and which dimension limited it.
@@ -836,6 +976,9 @@ class CognitiveBrain:
                 "reasoner": self.reasoner_name,
                 "min_confidence_to_act": self.min_confidence_to_act,
                 "max_uncertainty_to_act": self.max_uncertainty_to_act,
+                "min_advisors_for_action": self.min_advisors_for_action,
+                "min_evidence_domains": self.min_evidence_domains,
+                "degraded_confidence_multiplier": self.degraded_confidence_multiplier,
                 "allow_scale_in": self.allow_scale_in,
                 "decisions": self._decisions,
                 "campaigns_opened": self._campaigns_opened,

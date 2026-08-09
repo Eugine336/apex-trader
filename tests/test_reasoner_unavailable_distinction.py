@@ -64,10 +64,12 @@ def test_reasoner_not_degraded_on_success():
 def test_reasoner_recovery_clears_degraded():
     ok = json.dumps({"direction": "LONG", "confidence": 0.8})
     r = LLMReasoner(client=_StubClient(None), enabled=True, min_interval_seconds=0)
-    r.reason("EURUSD", {})
+    r.reason("EURUSD", {}, now=1000.0)
     assert r.last_reason_degraded("EURUSD") is True
     r._client = _StubClient(ok)  # provider recovers
-    r.reason("EURUSD", {})
+    # Advance past the consecutive-failure backoff window (Part XX) so the
+    # recovery call is actually attempted rather than skipped.
+    r.reason("EURUSD", {}, now=2000.0)
     assert r.last_reason_degraded("EURUSD") is False
 
 
