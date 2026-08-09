@@ -23,6 +23,7 @@ importable and testable.
 
 from __future__ import annotations
 
+import inspect
 import logging
 import threading
 import time
@@ -37,7 +38,11 @@ from cognition.contracts import (
     Hypothesis,
     MarketState,
 )
-from cognition.expected_value import expected_value_r, reward_risk_from_opinion
+from cognition.expected_value import (
+    effective_confidence,
+    expected_value_r,
+    reward_risk_from_opinion,
+)
 
 logger = logging.getLogger("apex.cognition.brain")
 
@@ -92,6 +97,7 @@ class CognitiveBrain:
         exit_floor: float = 0.3,
         reward_r_default: float = 2.0,
         min_expected_value: Optional[float] = None,
+        manage_min_interval_seconds: Optional[float] = None,
     ) -> None:
         self._reasoner = reasoner
         self.min_confidence_to_act = min(1.0, max(0.0, float(min_confidence_to_act)))
@@ -110,6 +116,17 @@ class CognitiveBrain:
         self.min_expected_value = (
             None if min_expected_value is None else float(min_expected_value)
         )
+        # Management re-reasons an OPEN position on a tighter, INDEPENDENT cadence
+        # than origination (Q40 — reasoned management, not a static algo). None ⇒
+        # use the reasoner's global interval (unchanged). Applied only on the
+        # management path via a distinct throttle bucket, so origination + the
+        # advisory council keep their global rate (no extra provider cost across
+        # the scanned universe).
+        self.manage_min_interval_seconds = (
+            None if manage_min_interval_seconds is None
+            else max(0.0, float(manage_min_interval_seconds))
+        )
+        self._reason_supports_override = self._detect_override_support(reasoner)
         self._decisions = 0
         self._campaigns_opened = 0
         self._observed = 0
@@ -123,6 +140,48 @@ class CognitiveBrain:
     def available(self) -> bool:
         return bool(self._reasoner is not None
                     and getattr(self._reasoner, "available", False))
+
+    def _reasoner_degraded(self, symbol: str) -> bool:
+        """True when the wired reasoner reports its last ``reason(symbol)`` call
+        FAILED (provider down / timeout / unparsable reply) rather than simply
+        declining to trade. Fail-safe: a reasoner that does not expose the signal
+        is treated as not-degraded, preserving prior behaviour."""
+        fn = getattr(self._reasoner, "last_reason_degraded", None)
+        if not callable(fn):
+            return False
+        try:
+            return bool(fn(symbol))
+        except Exception:  # noqa: BLE001 — a health probe must never break reasoning
+            return False
+
+    @staticmethod
+    def _detect_override_support(reasoner: Optional[Any]) -> bool:
+        """True when ``reasoner.reason`` accepts the ``min_interval`` /
+        ``throttle_key`` overrides (so management can run its own faster cadence).
+        Fail-safe: a duck-typed stub without them is treated as unsupported."""
+        fn = getattr(reasoner, "reason", None)
+        if not callable(fn):
+            return False
+        try:
+            params = inspect.signature(fn).parameters
+        except (TypeError, ValueError):
+            return False
+        if "min_interval" in params and "throttle_key" in params:
+            return True
+        return any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values())
+
+    def _manage_reason(self, symbol: str, payload: dict, now: Optional[float]) -> Any:
+        """Reasoner call for the MANAGEMENT path — a tighter, independent throttle
+        bucket so an open position is re-reasoned faster than origination without
+        raising the global (origination + council) rate. Falls back to the plain
+        call for a reasoner that does not support the override."""
+        if self._reason_supports_override and self.manage_min_interval_seconds is not None:
+            return self._reasoner.reason(
+                symbol, payload, now=now,
+                min_interval=self.manage_min_interval_seconds,
+                throttle_key=f"{symbol}\x00manage",
+            )
+        return self._reasoner.reason(symbol, payload, now=now)
 
     # ── Reasoning ─────────────────────────────────────────────────────────
 
@@ -149,7 +208,23 @@ class CognitiveBrain:
                 symbol, self._evidence_payload(market_state, consolidation), now=now,
             )
             if opinion is None:
-                return self._observe(symbol, "no reasoner opinion — do nothing", consolidation)
+                # An AVAILABLE reasoner that yields no opinion did NOT form a
+                # market view. If its last call actually FAILED (provider down /
+                # timeout / unparsable reply) that is an INFRASTRUCTURE state —
+                # Part XVIII Art 5 / Q78/Q80/Q81/Q106: it must never be surfaced
+                # as a FLAT/observe read of the market. Only a benign no-op (e.g.
+                # a throttled cycle: provider healthy, simply no fresh call this
+                # cycle) may lawfully continue observing.
+                if self._reasoner_degraded(symbol):
+                    return self._reasoner_unavailable(
+                        symbol,
+                        "reasoner returned no usable opinion — provider failure / "
+                        "unparsable output (not a market view)",
+                        consolidation,
+                    )
+                return self._observe(
+                    symbol, "no reasoner opinion this cycle — do nothing", consolidation,
+                )
             return self._from_opinion(symbol, market_state, consolidation, opinion, now)
         except Exception as exc:  # noqa: BLE001 — reasoning must never break a cycle
             logger.debug("[brain] reason(%s) ignored a fault: %s", symbol, exc)
@@ -183,6 +258,27 @@ class CognitiveBrain:
         exec_q = str(getattr(opinion, "execution_quality", "") or "")
         risk_txt = str(getattr(opinion, "risk", "") or "")
         uncertainty = _clamp01(consolidation.get("aggregate_uncertainty", 1.0))
+        # Part XXV — multidimensional confidence. Resolve each dimension (absent ⇒
+        # the overall confidence) and blend to an EFFECTIVE conviction = the
+        # weakest dimension. A strong thesis with poor execution/timing is not an
+        # act-now trade; this makes EV, the act gate AND sizing reflect that, while
+        # a legacy single-confidence reply is unchanged (every dim == confidence).
+        def _rd(attr: str) -> float:
+            v = getattr(opinion, attr, None)
+            if v is None:
+                return confidence
+            try:
+                return min(1.0, max(0.0, float(v)))
+            except (TypeError, ValueError):
+                return confidence
+        conf_dims = {
+            "thesis": _rd("thesis_confidence"),
+            "opportunity": _rd("opportunity_confidence"),
+            "timing": _rd("timing_confidence"),
+            "execution": _rd("execution_confidence"),
+        }
+        eff_conf = effective_confidence(opinion, fallback=confidence)
+        limiting_dim = min(conf_dims, key=conf_dims.get)
 
         supporting, contradicting = self._split_evidence(market_state, direction)
         # Part IX Art 1/7 — a genuine expected value (in units of risk, R) from
@@ -191,9 +287,9 @@ class CognitiveBrain:
         # competing hypotheses on the decision so cognition is not collapsed to a
         # single direction+confidence pair.
         reward_r, risk_r = reward_risk_from_opinion(opinion, self.reward_r_default)
-        expected_value = expected_value_r(confidence, reward_r, risk_r)
+        expected_value = expected_value_r(eff_conf, reward_r, risk_r)
         hypotheses = self._build_hypotheses(
-            direction, confidence, reward_r, risk_r,
+            direction, eff_conf, reward_r, risk_r,
             primary_hyp or rationale, alternatives, invalidation_txt,
             supporting, contradicting,
         )
@@ -208,11 +304,19 @@ class CognitiveBrain:
             "what_would_change_my_mind": "; ".join(wcm) if wcm
             else ("; ".join(competing) if competing else "opposing evidence dominates"),
             "expected_value": ev_txt or ("positive" if direction in (LONG, SHORT)
-            and confidence >= self.min_confidence_to_act else "not established"),
+            and eff_conf >= self.min_confidence_to_act else "not established"),
             "downside": eae or "bounded by invalidation conditions",
             "opportunity": opportunity_txt or (direction if direction in (LONG, SHORT) else "none"),
             "should_i_do_nothing": "considered",
         }
+        # Part XXV — record the raw scalar and the confidence PROFILE so the honest
+        # multidimensional read (and which dimension limited the trade) is auditable.
+        questions["confidence_raw"] = round(confidence, 4)
+        questions["confidence_profile"] = (
+            f"thesis {conf_dims['thesis']:.2f} / opportunity {conf_dims['opportunity']:.2f} / "
+            f"timing {conf_dims['timing']:.2f} / execution {conf_dims['execution']:.2f} "
+            f"→ effective {eff_conf:.2f} (weakest: {limiting_dim})"
+        )
         # Surface the remaining Part XXV context on the decision record for the
         # dashboard/governance (extra keys are harmless to consumers).
         for _k, _v in (("regime", regime), ("opportunity_horizon", opp_horizon),
@@ -234,14 +338,14 @@ class CognitiveBrain:
         ev_ok = (self.min_expected_value is None) or (expected_value >= self.min_expected_value)
         act = (
             direction in (LONG, SHORT)
-            and confidence >= self.min_confidence_to_act
+            and eff_conf >= self.min_confidence_to_act
             and uncertainty <= self.max_uncertainty_to_act
             and ev_ok
         )
         if not act:
             directional_and_qualified = (
                 direction in (LONG, SHORT)
-                and confidence >= self.min_confidence_to_act
+                and eff_conf >= self.min_confidence_to_act
                 and uncertainty <= self.max_uncertainty_to_act
             )
             if directional_and_qualified and not ev_ok:
@@ -251,17 +355,29 @@ class CognitiveBrain:
                 reason_txt = "expected value below threshold — opportunity declined"
                 dtype = DecisionType.REJECT_OPPORTUNITY
             elif direction in (LONG, SHORT):
-                reason_txt = "insufficient confidence/uncertainty for a campaign"
+                # Part XXV — when the thesis itself is strong (raw confidence
+                # clears the bar) but a WEAK actionability dimension (timing or
+                # execution) pulled the effective conviction below it, this is a
+                # deliberate WAIT for better conditions, not a rejected thesis.
+                if (confidence >= self.min_confidence_to_act
+                        and limiting_dim in ("timing", "execution")):
+                    reason_txt = (
+                        f"{limiting_dim} conditions insufficient — waiting "
+                        f"(thesis holds at {confidence:.2f}, "
+                        f"{limiting_dim} {conf_dims[limiting_dim]:.2f})"
+                    )
+                else:
+                    reason_txt = "insufficient confidence/uncertainty for a campaign"
                 dtype = DecisionType.CONTINUE_OBSERVING
             else:
                 reason_txt = "no exploitable directional opportunity"
                 dtype = (DecisionType.REJECT_OPPORTUNITY
-                         if confidence >= self.min_confidence_to_act
+                         if eff_conf >= self.min_confidence_to_act
                          else DecisionType.CONTINUE_OBSERVING)
             decision = DecisionPackage(
                 symbol=symbol, decision_type=dtype, thesis=rationale or reason_txt,
                 supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
-                confidence=confidence, uncertainty=uncertainty,
+                confidence=eff_conf, uncertainty=uncertainty,
                 expected_value=expected_value, campaign_recommendation="observe",
                 risk_rationale=reason_txt, invalidation_conditions=invalidation_conditions or competing,
                 hypotheses=hypotheses,
@@ -274,7 +390,7 @@ class CognitiveBrain:
             symbol=symbol, decision_type=DecisionType.OPEN_CAMPAIGN,
             thesis=rationale or f"{direction} opportunity",
             supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
-            confidence=confidence, uncertainty=uncertainty,
+            confidence=eff_conf, uncertainty=uncertainty,
             expected_value=expected_value,
             campaign_recommendation=f"open {direction}",
             risk_rationale="expected value positive on synthesised evidence",
@@ -285,10 +401,10 @@ class CognitiveBrain:
         )
         campaign = CampaignSpecification(
             symbol=symbol, thesis=decision.thesis, direction=direction,
-            desired_exposure=round(confidence, 4),
-            initial_execution_intent={"kind": "market", "confidence": round(confidence, 4)},
+            desired_exposure=round(eff_conf, 4),
+            initial_execution_intent={"kind": "market", "confidence": round(eff_conf, 4)},
             supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
-            confidence=confidence, invalidation_conditions=decision.invalidation_conditions,
+            confidence=eff_conf, invalidation_conditions=decision.invalidation_conditions,
             objectives=[f"harvest {direction} opportunity while EV positive"],
             decision_id=decision.decision_id,
         )
@@ -313,8 +429,8 @@ class CognitiveBrain:
                 return self._record_management(self._manage_pkg(
                     symbol, want, DecisionType.HOLD, 0.0, uncertainty,
                     "reasoner unavailable — hold (no change)"))
-            opinion = self._reasoner.reason(
-                symbol, self._evidence_payload(market_state, consolidation), now=now)
+            opinion = self._manage_reason(
+                symbol, self._evidence_payload(market_state, consolidation), now)
             if opinion is None:
                 return self._record_management(self._manage_pkg(
                     symbol, want, DecisionType.HOLD, 0.0, uncertainty, "no opinion — hold"))
@@ -423,9 +539,12 @@ class CognitiveBrain:
     @staticmethod
     def _evidence_payload(market_state: MarketState, consolidation: dict) -> dict:
         fresh = market_state.fresh_evidence()
+        # Part XXV — the council's per-advisor REASONING evidence is appended LAST,
+        # so a tight cap would drop exactly the advisors' full analysis. Keep a
+        # generous slice so every advisor's complete cognition reaches the Brain.
         return {
             "consolidation": consolidation,
-            "evidence": [e.to_dict() for e in fresh[:64]],
+            "evidence": [e.to_dict() for e in fresh[:96]],
         }
 
     @staticmethod

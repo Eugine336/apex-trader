@@ -392,15 +392,91 @@ __all__ = [
 ]
 
 
+# Part XXV — the advisor's FULL structured reasoning surfaced to the Brain,
+# verbatim (never collapsed to a direction+confidence summary). No directional
+# key is emitted: an advisor's directional conclusion lives only inside its prose
+# thesis (hypothesis/opportunity/rationale), and any directional key is stripped
+# when the Evidence enters the MarketState (contracts.scrub_directional). This is
+# how the Brain sees each advisor's micro-opportunities, horizons and excursions.
+_REASONING_TEXT_FIELDS = (
+    "regime", "primary_hypothesis", "opportunity", "opportunity_horizon",
+    "expected_favorable_excursion", "expected_adverse_excursion",
+    "expected_value", "execution_quality", "risk", "invalidation",
+    "key_uncertainty", "rationale",
+)
+_REASONING_LIST_FIELDS = (
+    "alternative_hypotheses", "supporting_evidence", "contradicting_evidence",
+    "missing_information", "what_would_change_my_mind", "competing_hypotheses",
+)
+# Part XXV — the advisor's multidimensional confidence profile (each in [0,1]).
+_REASONING_NUM_FIELDS = (
+    "thesis_confidence", "opportunity_confidence", "timing_confidence",
+    "execution_confidence", "effective_confidence",
+)
+
+
+def _reasoning_measurements(engine: str, op: Any, cog: dict) -> dict:
+    """Full advisor cognition as JSON-safe measurements (bounded lists)."""
+    m: dict = {
+        "engine": engine,
+        "latency_ms": round(float(getattr(op, "latency_ms", 0.0) or 0.0), 1),
+    }
+    for k in _REASONING_TEXT_FIELDS:
+        v = str(cog.get(k, "") or "").strip()
+        if v:
+            m[k] = v
+    for k in _REASONING_LIST_FIELDS:
+        v = cog.get(k)
+        if isinstance(v, list):
+            items = [str(i).strip()[:200] for i in v[:4] if str(i).strip()]
+            if items:
+                m[k] = items
+    for k in _REASONING_NUM_FIELDS:
+        v = cog.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            m[k] = round(float(v), 4)
+    return m
+
+
+def _reasoning_observation(engine: str, cog: dict, rationale: str) -> str:
+    """A rich, readable thesis line — the advisor's analysis, not a summary."""
+    parts = [f"{engine} reasons"]
+    regime = str(cog.get("regime", "") or "").strip()
+    if regime:
+        parts.append(f"regime={regime}")
+    primary = str(cog.get("primary_hypothesis", "") or "").strip()
+    if primary:
+        parts.append(f"hypothesis: {primary}")
+    opp = str(cog.get("opportunity", "") or "").strip()
+    if opp:
+        horizon = str(cog.get("opportunity_horizon", "") or "").strip()
+        parts.append(f"opportunity: {opp}" + (f" (horizon {horizon})" if horizon else ""))
+    efe = str(cog.get("expected_favorable_excursion", "") or "").strip()
+    eae = str(cog.get("expected_adverse_excursion", "") or "").strip()
+    if efe or eae:
+        parts.append(f"excursion +{efe or '?'} / -{eae or '?'}")
+    inval = str(cog.get("invalidation", "") or "").strip()
+    if inval:
+        parts.append(f"invalidation: {inval}")
+    if len(parts) == 1 and rationale:
+        parts.append(rationale[:300])
+    return " | ".join(parts)[:900]
+
+
 def evidence_from_reasoning(symbol: str, consultation: Any) -> "list[Evidence]":
     """Turn a multi-engine reasoning consultation into per-engine Evidence.
 
-    Part XVII Art 7: every external opinion is *evidence, not truth* — so each
-    engine's opinion becomes its own :class:`~cognition.contracts.Evidence`
-    (``source_module="reasoning_engine.<name>"``, domain ``REASONING``), never a
-    vote or an average. The Brain synthesises them alongside all other evidence,
-    and the Phase VIII influence ledger grades each engine by realised outcome
-    (Art 11). Fail-safe: returns ``[]`` on empty input or any fault.
+    Part XVII Art 7 / Part XXV: every external opinion is *evidence, not truth* —
+    so each engine's opinion becomes its own
+    :class:`~cognition.contracts.Evidence` (``source_module="reasoning_engine.
+    <name>"``, domain ``REASONING``), never a vote or an average. The Evidence
+    carries the advisor's COMPLETE structured cognition (regime, hypotheses, the
+    opportunity + horizon, expected excursions, invalidation, uncertainties) in
+    ``measurements`` plus a rich thesis ``observation`` — so the Brain synthesises
+    over each advisor's full analysis, never a collapsed summary sentence. It is
+    non-directional (``polarity`` 0, no directional key); the Brain forms
+    direction itself. The Phase VIII influence ledger grades each engine by
+    realised outcome (Art 11). Fail-safe: ``[]`` on empty input or any fault.
     """
     out: list[Evidence] = []
     try:
@@ -410,15 +486,16 @@ def evidence_from_reasoning(symbol: str, consultation: Any) -> "list[Evidence]":
             if not engine:
                 continue
             conf = _clamp01(getattr(op, "confidence", 0.0))
-            rationale = str(getattr(op, "rationale", "") or "")
+            cog = getattr(op, "cognition", None)
+            cog = dict(cog) if isinstance(cog, dict) else {}
+            rationale = str(getattr(op, "rationale", "") or cog.get("rationale", "") or "")
             out.append(Evidence(
                 source_module=f"reasoning_engine.{engine}",
                 domain=EvidenceDomain.REASONING, symbol=str(symbol or ""),
-                observation=f"{engine} reasons: {rationale[:200]}",
+                observation=_reasoning_observation(engine, cog, rationale),
                 confidence=conf, uncertainty=1.0 - conf,
                 polarity=0.0,
-                measurements={"engine": engine,
-                              "latency_ms": round(float(getattr(op, "latency_ms", 0.0) or 0.0), 1)},
+                measurements=_reasoning_measurements(engine, op, cog),
                 relevance_horizon_seconds=900.0,
             ))
     except Exception:  # noqa: BLE001 — consolidation must never raise

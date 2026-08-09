@@ -30,16 +30,28 @@ from typing import Any, Callable, Optional
 
 from loguru import logger
 
+from llm.health import CircuitBreaker, CircuitConfig, ConcurrencyLimiter
+from llm.provider_tiers import ProviderTier, resolve_tier
+
 
 @dataclass
 class EngineOpinion:
-    """One engine's opinion within a consultation (engine name + the opinion)."""
+    """One engine's opinion within a consultation (engine name + the opinion).
+
+    ``cognition`` preserves the engine's FULL structured reasoning (regime,
+    primary/alternative hypotheses, the opportunity + its horizon, expected
+    favourable/adverse excursion, invalidation, key uncertainty, …) so the Brain
+    synthesises over each advisor's complete analysis — never a summary sentence
+    (Part XXV). ``direction`` / ``confidence`` are kept for observability only:
+    they are an execution consequence, never a vote the Council counts.
+    """
 
     engine: str
     direction: str
     confidence: float
     rationale: str = ""
     latency_ms: float = 0.0
+    cognition: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -48,6 +60,7 @@ class EngineOpinion:
             "confidence": round(self.confidence, 4),
             "rationale": self.rationale[:200],
             "latency_ms": round(self.latency_ms, 1),
+            "cognition": dict(self.cognition),
         }
 
 
@@ -76,21 +89,34 @@ class ReasoningConsultation:
 class ReasoningEngine:
     """Wraps one reasoner with a name, capability tags and live health stats."""
 
-    def __init__(self, name: str, reasoner: Any, *, capabilities: Optional[list] = None) -> None:
+    def __init__(self, name: str, reasoner: Any, *, capabilities: Optional[list] = None,
+                 circuit: Optional[CircuitConfig] = None, is_local: bool = False,
+                 local_limiter: Optional[ConcurrencyLimiter] = None,
+                 local_acquire_timeout: float = 30.0) -> None:
         self.name = str(name or "engine")
         self._reasoner = reasoner
         self.capabilities = tuple(str(c).strip().lower() for c in (capabilities or []) if str(c).strip())
         self.calls = 0
         self.faults = 0
         self.ewma_latency_ms = 0.0
+        self.is_local = bool(is_local)
+        self.breaker = CircuitBreaker(circuit)
+        self._local_limiter = local_limiter
+        self._local_acquire_timeout = max(0.0, float(local_acquire_timeout))
         self._lock = threading.Lock()
 
     @property
     def available(self) -> bool:
+        """Usable reasoner AND the circuit admits (healthy / half-open probe).
+
+        A circuit tripped OPEN by repeated real failures removes this advisor
+        from the panel for its cooldown so a dead advisor is not re-consulted
+        every cycle; it rejoins automatically on recovery."""
         try:
-            return bool(getattr(self._reasoner, "available", False))
+            base = bool(getattr(self._reasoner, "available", False))
         except Exception:  # noqa: BLE001
-            return False
+            base = False
+        return base and self.breaker.admits()
 
     def has_capability(self, capability: str) -> bool:
         cap = str(capability or "").strip().lower()
@@ -103,9 +129,23 @@ class ReasoningEngine:
             return 1.0 if total == 0 else self.calls / total
 
     def consult(self, symbol: str, evidence: dict, *, now: Optional[float] = None) -> Optional[EngineOpinion]:
-        """Ask this engine for an opinion. Times + records health. Fail-safe."""
+        """Ask this engine for an opinion. Health-tracked + circuit-broken.
+
+        A LOCAL (CPU/GPU-bound) engine first acquires a shared concurrency slot
+        so a full panel does not start every local model at once and exhaust the
+        host; if no slot frees within the acquire timeout it simply skips this
+        cycle (absent) rather than piling onto an overloaded host. Fail-safe."""
         if not self.available:
             return None
+        if self.is_local and self._local_limiter is not None:
+            with self._local_limiter.slot(timeout=self._local_acquire_timeout) as got:
+                if not got:
+                    logger.debug("[reasoning-orch] {} skipped — no local compute slot free", self.name)
+                    return None
+                return self._consult_inner(symbol, evidence, now=now)
+        return self._consult_inner(symbol, evidence, now=now)
+
+    def _consult_inner(self, symbol: str, evidence: dict, *, now: Optional[float] = None) -> Optional[EngineOpinion]:
         t0 = time.time()
         try:
             op = self._reasoner.reason(symbol, evidence, now=now)
@@ -119,19 +159,53 @@ class ReasoningEngine:
                                     else (1 - a) * self.ewma_latency_ms + a * latency_ms)
             if op is None:
                 self.faults += 1
-                return None
-            self.calls += 1
+            else:
+                self.calls += 1
+        if op is None:
+            # Trip the circuit only on a REAL failure (provider down / timeout /
+            # unparsable) — never on a benign throttle/no-op — using the
+            # reasoner's liveness signal, so a rate-limited advisor is not wrongly
+            # circuit-broken out of the panel.
+            if self._reason_degraded(symbol):
+                self.breaker.record_failure(latency_ms)
+            return None
+        self.breaker.record_success(latency_ms)
         direction = str(getattr(op, "direction", "FLAT") or "FLAT").upper()
         try:
             confidence = float(getattr(op, "confidence", 0.0) or 0.0)
         except (TypeError, ValueError):
             confidence = 0.0
+        # Preserve the engine's FULL structured reasoning (Part XXV) so the Brain
+        # synthesises over each advisor's complete analysis — opportunity, horizon,
+        # hypotheses, excursions, invalidation — never a collapsed summary.
+        cognition: dict = {}
+        try:
+            to_dict = getattr(op, "to_dict", None)
+            if callable(to_dict):
+                got = to_dict()
+                if isinstance(got, dict):
+                    cognition = got
+        except Exception:  # noqa: BLE001 — a serialisation fault must not drop the opinion
+            cognition = {}
         return EngineOpinion(
             engine=self.name, direction=direction,
             confidence=min(1.0, max(0.0, confidence)),
             rationale=str(getattr(op, "rationale", "") or ""),
             latency_ms=latency_ms,
+            cognition=cognition,
         )
+
+    def _reason_degraded(self, symbol: str) -> bool:
+        """True when the reasoner reports its last call really failed (not a
+        throttle). Defaults to True when the reasoner exposes no signal, so a
+        plain None still counts toward the circuit after the threshold."""
+        fn = getattr(self._reasoner, "last_reason_degraded", None)
+        if not callable(fn):
+            return True
+        try:
+            return bool(fn(symbol))
+        except Exception:  # noqa: BLE001
+            return True
 
     def to_dict(self) -> dict:
         # Compute reliability inline under the lock — calling self.reliability
@@ -144,10 +218,12 @@ class ReasoningEngine:
             "name": self.name,
             "capabilities": list(self.capabilities),
             "available": self.available,
+            "is_local": self.is_local,
             "calls": calls,
             "faults": faults,
             "reliability": round(reliability, 4),
             "ewma_latency_ms": round(lat, 1),
+            "circuit": self.breaker.to_dict(),
         }
 
 
@@ -274,11 +350,22 @@ class ReasoningOrchestrator:
             replied = {str(getattr(o, "engine", "") or "") for o in result.opinions}
             asked = list(result.consulted)
             absent = [n for n in asked if n not in replied]
-            advising = ", ".join(
-                f"{getattr(o, 'engine', '?')} {getattr(o, 'direction', '?')}"
-                f"({float(getattr(o, 'confidence', 0.0) or 0.0):.2f})"
-                for o in result.opinions
-            )
+
+            def _render(o: "EngineOpinion") -> str:
+                name = getattr(o, "engine", "?")
+                conf = float(getattr(o, "confidence", 0.0) or 0.0)
+                tag = f"{name} {getattr(o, 'direction', '?')}({conf:.2f})"
+                cog = getattr(o, "cognition", None) or {}
+                extras = []
+                regime = str(cog.get("regime", "") or "").strip()
+                if regime:
+                    extras.append(regime)
+                opp = str(cog.get("opportunity", "") or "").strip()
+                if opp and opp.lower() != "none":
+                    extras.append(f"opp:{opp[:40]}")
+                return tag + (f" [{'; '.join(extras)}]" if extras else "")
+
+            advising = ", ".join(_render(o) for o in result.opinions)
             logger.info(
                 "[council] {} — {}/{} advising: {}{}",
                 result.symbol, len(result.opinions), len(asked),
@@ -330,9 +417,18 @@ def build_reasoning_orchestrator(
     tmp = float(getattr(config, "temperature", 0.2) or 0.2)
     interval = float(getattr(config, "min_interval_seconds", 30.0) or 30.0)
     drive = bool(getattr(config, "drive_decisions", False))
+    # §3/§11 — shared cap on concurrent LOCAL model calls (0 ⇒ unbounded) so a
+    # full panel does not start every local model at once and exhaust the host.
+    local_limiter = ConcurrencyLimiter(int(getattr(config, "local_max_concurrency", 1) or 0))
+    # §7/§9 — shared circuit-breaker tuning for every advisor.
+    circuit = CircuitConfig(
+        failure_threshold=int(getattr(config, "circuit_failure_threshold", 3) or 3),
+        cooldown_seconds=float(getattr(config, "circuit_cooldown_seconds", 30.0) or 30.0),
+        cooldown_max_seconds=float(getattr(config, "circuit_cooldown_max_seconds", 300.0) or 300.0),
+    )
 
     def _engine(provider, model, api_key, base_url, caps, name,
-                timeout=None, max_tokens=None, temperature=None):
+                spec_tier=None, timeout=None, max_tokens=None, temperature=None):
         if not provider or not model:
             return None
         # Per-provider credentials (Part XXIII Art 15): resolve <PROVIDER>_API_KEY
@@ -348,10 +444,11 @@ def build_reasoning_orchestrator(
                                primary_provider=primary_provider, primary_base=primary_base)
         if not has_credentials(provider, key):
             return None
+        eff_timeout = float(timeout if timeout is not None else to)
         client = LLMClient(
             provider=str(provider), model=str(model),
             api_key=str(key or ""), base_url=str(base or ""),
-            timeout_seconds=float(timeout if timeout is not None else to),
+            timeout_seconds=eff_timeout,
             max_tokens=int(max_tokens if max_tokens is not None else mt),
             temperature=float(temperature if temperature is not None else tmp),
             transport=transport,
@@ -360,7 +457,13 @@ def build_reasoning_orchestrator(
             return None
         reasoner = LLMReasoner(client=client, enabled=True, drive_decisions=drive,
                                min_interval_seconds=interval)
-        return ReasoningEngine(name, reasoner, capabilities=caps)
+        # Tier 3 = local (CPU/GPU-bound) — gate it behind the shared local slot.
+        is_local = int(resolve_tier(provider, spec_tier)) == int(ProviderTier.TIER_3)
+        return ReasoningEngine(
+            name, reasoner, capabilities=caps, circuit=circuit,
+            is_local=is_local, local_limiter=local_limiter,
+            local_acquire_timeout=eff_timeout,
+        )
 
     engines: list = []
     seen_names: set = set()
@@ -385,6 +488,7 @@ def build_reasoning_orchestrator(
                 spec.get("provider", primary_provider), spec.get("model", ""),
                 spec.get("api_key", ""), spec.get("base_url", ""),
                 spec.get("capabilities", []), name,
+                spec_tier=spec.get("tier"),
                 timeout=spec.get("timeout_seconds"), max_tokens=spec.get("max_tokens"),
                 temperature=spec.get("temperature"),
             ))
