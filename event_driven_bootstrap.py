@@ -89,6 +89,32 @@ from execution.broker_fields import (  # noqa: E402
 )
 
 
+def _structural_scan_direction(wm: Any) -> str:
+    """Live structural direction from a WorldModel's StructureAnalysis (V5).
+
+    Constitution Art III/V/XL — the world model no longer carries a pre-computed
+    directional bias. This reads the freshest structural trend (H1→H4→M5) and
+    maps it to LONG/SHORT (or "" when structure is ranging/unknown) at evaluation
+    time, so a live structural turn against an open trade can still be observed
+    without storing a directional conclusion on the world model. Fail-safe.
+    """
+    try:
+        structs = wm.structure_by_tf()
+    except Exception:  # noqa: BLE001
+        return ""
+    for tf in ("H1", "H4", "M5"):
+        sa = structs.get(tf)
+        if sa is None:
+            continue
+        trend = str(getattr(sa, "trend", "") or "").upper()
+        if "BULL" in trend:
+            return "LONG"
+        if "BEAR" in trend:
+            return "SHORT"
+        return ""
+    return ""
+
+
 # Operations Division — scale-in / partial-close tuning (V13).
 # A scale-in is an *add* to an existing winner, so it risks a fraction of a
 # fresh entry's per-trade ceiling. The partial-close default banks half the
@@ -535,7 +561,15 @@ class PositionEvaluator:
     def _build_scan_context(
         self, symbol: str, position_direction: str,
     ) -> Optional[ScanContext]:
-        """Build ScanContext from WorldModel data. Returns None if unavailable."""
+        """Build ScanContext from WorldModel data. Returns None if unavailable.
+
+        Violation V5 — the ScanContext direction is derived from STRUCTURAL
+        observations (StructureAnalysis trend) at evaluation time, never from a
+        pre-computed directional bias stored on the WorldModel. The world model
+        now carries only non-directional facts; the Brain is the sole authority
+        that forms direction, and this safety-floor direction for the
+        PositionWorker is a live read of structure, not a stored conclusion.
+        """
         try:
             wm = self._wm_store.get(symbol)
             if wm is None:
@@ -545,26 +579,19 @@ class PositionEvaluator:
             scan_direction = ""
             opposing_boost = 0
 
-            bias_dict = wm.bias_dict()
-            if bias_dict:
-                scan_direction = str(bias_dict.get("direction", "")).upper()
-                score = int(bias_dict.get("score", 0))
-                opposing_boost = int(bias_dict.get("opposing_boost", 0))
-
-            if not scan_direction or score == 0:
-                structs = wm.structure_by_tf()
-                for tf in ("H1", "H4", "M5"):
-                    sa = structs.get(tf)
-                    if sa is not None:
-                        trend = getattr(sa, "trend", "")
-                        if trend:
-                            scan_direction = "LONG" if "BULL" in str(trend).upper() else (
-                                "SHORT" if "BEAR" in str(trend).upper() else ""
-                            )
-                        s = int(round(float(getattr(sa, "confidence", 0.0) or 0.0) * 100))
-                        if s:
-                            score = int(s)
-                        break
+            structs = wm.structure_by_tf()
+            for tf in ("H1", "H4", "M5"):
+                sa = structs.get(tf)
+                if sa is not None:
+                    trend = getattr(sa, "trend", "")
+                    if trend:
+                        scan_direction = "LONG" if "BULL" in str(trend).upper() else (
+                            "SHORT" if "BEAR" in str(trend).upper() else ""
+                        )
+                    s = int(round(float(getattr(sa, "confidence", 0.0) or 0.0) * 100))
+                    if s:
+                        score = int(s)
+                    break
 
             if score == 0:
                 return None
@@ -1249,19 +1276,18 @@ class PositionEvaluator:
                     return
                 # HOLD — scope the panel the strategic engine revalidates on.
                 consensus_votes = payload
-            # Current WorldModel bias direction — feeds scan_direction so the
-            # engine's opposing-scan CLOSE term can actually fire when the live
-            # bias flips against the open trade (previously self-referential: it
-            # was set to the trade's own direction and could never oppose).
+            # Current WorldModel structural direction — feeds scan_direction so
+            # the engine's opposing-scan CLOSE term can fire when live STRUCTURE
+            # turns against the open trade. Violation V5 — derived from the
+            # StructureAnalysis trend at evaluation time, not from a pre-computed
+            # directional bias stored on the world model (which no longer exists).
             bias_scan_dir = ""
             if wm is not None:
                 try:
-                    bias_scan_dir = str(
-                        wm.bias_dict().get("direction", "") or ""
-                    ).upper()
+                    bias_scan_dir = _structural_scan_direction(wm)
                 except Exception as exc:
                     logger.warning(
-                        "[de-mgmt] bias direction read failed for {}: {}",
+                        "[de-mgmt] structural direction read failed for {}: {}",
                         symbol, exc,
                     )
             score_hist = getattr(mgmt, "score_history", []) or []
@@ -3484,13 +3510,15 @@ class EventDrivenSystem:
         return _sink
 
     def _cognition_developing_bias(self, symbol: str) -> dict:
-        """Fresher forming-bar directional bias for one symbol, for cognition.
+        """Fresher forming-bar structural alignment for one symbol, for cognition.
 
-        Returns the DEVELOPING WorldModel's ``bias`` dict — the between-close
-        directional synthesis computed on the still-forming bar. The consolidator
-        turns it into one short-lived multi-timeframe Evidence so the Brain reacts
-        to developing shifts without waiting for the next candle close. Fail-safe:
-        returns ``{}`` when the store is empty or on any fault.
+        Returns the DEVELOPING WorldModel's non-directional
+        ``multi_tf_alignment`` dict — the between-close STRUCTURAL measurements
+        computed on the still-forming bar (Violation V5: no pre-computed
+        directional bias). The consolidator turns it into one short-lived
+        multi-timeframe Evidence so the Brain reacts to developing structural
+        shifts without waiting for the next candle close. Fail-safe: returns
+        ``{}`` when the store is empty or on any fault.
         """
         try:
             store = self._developing_wm_store
@@ -3499,9 +3527,9 @@ class EventDrivenSystem:
             wm = store.get(symbol)
             if wm is None:
                 return {}
-            return wm.bias_dict()
+            return wm.multi_tf_alignment_dict()
         except Exception as exc:  # noqa: BLE001 — never break the cognition loop
-            logger.debug("[cognition] developing bias fetch failed for {}: {}", symbol, exc)
+            logger.debug("[cognition] developing alignment fetch failed for {}: {}", symbol, exc)
             return {}
 
     def _cognition_price_snapshot(self, symbol: str) -> list:

@@ -29,6 +29,17 @@ from brain.wyckoff_engine import WyckoffAnalysis
 from brain.inducement_detector import InducementAnalysis
 
 
+# Violation V5 — directional keys that must never ride on the WorldModel's
+# non-directional multi-TF alignment. Stripped in ``build_world_model`` so no
+# pre-computed directional opinion (direction/score/probability/dominant) can
+# reach the Brain via the world model. The Brain forms direction itself.
+_DIRECTIONAL_ALIGNMENT_KEYS = frozenset({
+    "direction", "score", "signed_score", "long_probability", "short_probability",
+    "long_ev", "short_ev", "flat_ev", "dominant", "bias", "lean",
+    "directional_lean", "vote", "signal", "opposing_boost",
+})
+
+
 @dataclass(frozen=True)
 class WorldModel:
     """Frozen per-symbol snapshot of all brain module outputs.
@@ -54,9 +65,16 @@ class WorldModel:
     wyckoff: tuple[tuple[str, WyckoffAnalysis], ...] = ()
     inducement: tuple[tuple[str, InducementAnalysis], ...] = ()
 
-    # Combined bias from StructureEngine.get_bias(h4, h1, d1) — already
-    # multi-TF by nature, stored as a frozen dict snapshot.
-    bias: tuple[tuple[str, Any], ...] = ()
+    # ── Multi-timeframe structural alignment (NON-directional) ────────────
+    # Violation V5 / Constitution Art III/V/XL — the WorldModel must NOT carry a
+    # pre-computed directional opinion. This field replaces the former directional
+    # ``bias`` (which stored StructureEngine.get_bias's direction / score /
+    # long_probability / short_probability / dominant). It carries only STRUCTURAL
+    # MEASUREMENTS — trend strength WITHOUT a direction label, the degree of
+    # multi-timeframe alignment, and a conflict score — never a conclusion. The
+    # Cognitive Brain is the sole authority that reads the raw state and forms
+    # direction. Stored as a frozen dict snapshot of measurements.
+    multi_tf_alignment: tuple[tuple[str, Any], ...] = ()
 
     # ── Non-ICT concept layer ─────────────────────────────────────────
     # Outputs of the concept generators (trend, mean-reversion, …) keyed by
@@ -96,8 +114,11 @@ class WorldModel:
     def inducement_by_tf(self) -> dict[str, InducementAnalysis]:
         return dict(self.inducement)
 
-    def bias_dict(self) -> dict[str, Any]:
-        return dict(self.bias)
+    def multi_tf_alignment_dict(self) -> dict[str, Any]:
+        """Non-directional multi-timeframe structural alignment measurements
+        (Violation V5): trend strength, alignment degree, conflict score — never
+        a direction/score/probability conclusion."""
+        return dict(self.multi_tf_alignment)
 
     def concepts_by_tf(self) -> dict[str, tuple[Any, ...]]:
         """Non-ICT concept signals keyed by timeframe."""
@@ -299,7 +320,7 @@ def build_world_model(
     volume: Optional[dict[str, VolumeAnalysis]] = None,
     wyckoff: Optional[dict[str, WyckoffAnalysis]] = None,
     inducement: Optional[dict[str, InducementAnalysis]] = None,
-    bias: Optional[dict[str, Any]] = None,
+    multi_tf_alignment: Optional[dict[str, Any]] = None,
     concepts: Optional[dict[str, list]] = None,
     regime: Optional[dict[str, str]] = None,
     candidates: Optional[list] = None,
@@ -342,6 +363,21 @@ def build_world_model(
             return ()
         return tuple((k, v) for k, v in d.items())
 
+    def _freeze_alignment(
+        d: Optional[dict[str, Any]],
+    ) -> tuple[tuple[str, Any], ...]:
+        """Freeze the multi-TF alignment, dropping any directional key (Violation
+        V5). The alignment is a STRUCTURAL measurement snapshot only — a caller
+        that still passes a directional key (direction/score/long_probability/…)
+        has it stripped here so no pre-computed directional opinion can ride on
+        the WorldModel."""
+        if not d:
+            return ()
+        return tuple(
+            (k, v) for k, v in d.items()
+            if str(k).strip().lower() not in _DIRECTIONAL_ALIGNMENT_KEYS
+        )
+
     return WorldModel(
         symbol=symbol,
         version=version,
@@ -353,7 +389,7 @@ def build_world_model(
         volume=_freeze_scalars(volume),
         wyckoff=_freeze_scalars(wyckoff),
         inducement=_freeze_scalars(inducement),
-        bias=_freeze_scalars(bias),
+        multi_tf_alignment=_freeze_alignment(multi_tf_alignment),
         concepts=_freeze_lists(concepts),
         regime=_freeze_scalars(regime),
         candidates=tuple(candidates) if candidates else (),

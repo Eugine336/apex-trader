@@ -38,6 +38,7 @@ from cognition.management_translator import ManagementAction as _ManagementActio
 from cognition.evidence_adapters import (
     evidence_from_analogues,
     evidence_from_developing_bias,
+    evidence_from_execution_cost,
     evidence_from_portfolio,
     evidence_from_reasoning,
     evidence_from_thesis_status,
@@ -83,6 +84,7 @@ class EvidenceConsolidator:
         influence_enabled: bool = False,
         reasoning: Optional[Any] = None,
         knowledge: Optional[Any] = None,
+        execution_cost_source: Optional[Callable[[str], Any]] = None,
     ) -> None:
         self._ctx = ctx
         self._vote_source = vote_source
@@ -94,6 +96,12 @@ class EvidenceConsolidator:
         self._influence_enabled = bool(influence_enabled)
         self._reasoning = reasoning
         self._knowledge = knowledge
+        # Violation V9 — a ``symbol -> cost`` callable estimating the per-symbol
+        # round-trip execution cost (spread + slippage) in R-multiples. Surfaced
+        # as EXECUTION_QUALITY Evidence so the Brain's EV is net of execution
+        # cost (Part XXIV/XXV). May return a float (total cost in R) or a dict
+        # with estimated_spread_r / estimated_slippage_r / estimated_total_cost_r.
+        self._execution_cost_source = execution_cost_source
         self._portfolio_source: Optional[Callable[[], Any]] = None
         self._price_source: Optional[Callable[[str], Any]] = None
         # Part XXI Art 9/10/11 — records each council consultation + grades each
@@ -148,6 +156,17 @@ class EvidenceConsolidator:
         Brain's decision. Fail-safe; never invoked eagerly.
         """
         self._consult_ledger = ledger
+
+    def set_execution_cost_source(self, execution_cost_source: Optional[Callable[[str], Any]]) -> None:
+        """Wire (or clear) the per-symbol execution-cost source (Violation V9).
+
+        A ``symbol -> cost`` callable returning the estimated round-trip cost in
+        R-multiples (a float total, or a dict with estimated_spread_r /
+        estimated_slippage_r / estimated_total_cost_r). The consolidator surfaces
+        it as EXECUTION_QUALITY Evidence so the Brain's EV is net of execution
+        cost (Part XXIV/XXV). Fail-safe callable; never invoked eagerly.
+        """
+        self._execution_cost_source = execution_cost_source
 
     def _consult(self, symbol: str, payload: dict, now: Optional[float],
                  max_engines: Optional[int]) -> Any:
@@ -233,6 +252,18 @@ class EvidenceConsolidator:
                         ms.add(e)
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[consolidator] developing source fault (%s): %s", symbol, exc)
+            # Violation V9 — surface the per-symbol estimated round-trip execution
+            # cost (spread + slippage, in R) as EXECUTION_QUALITY Evidence so the
+            # Brain's EV is net of execution cost (Part XXIV/XXV). A theoretical
+            # thesis that cannot clear its cost is then declined at the EV gate.
+            if self._execution_cost_source is not None:
+                try:
+                    for e in evidence_from_execution_cost(
+                        ms.symbol, self._execution_cost_source(ms.symbol),
+                    ):
+                        ms.add(e)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug("[consolidator] execution-cost source fault (%s): %s", symbol, exc)
             # Part XVIII Art 11 — portfolio intelligence: surface how this
             # symbol's exposure stacks against the live book (correlated
             # clusters, concentration) as risk-context Evidence (never a vote).

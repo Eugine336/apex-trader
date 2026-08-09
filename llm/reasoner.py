@@ -146,6 +146,29 @@ def _map_dir(s: Any) -> str:
     return _DIR_MAP.get(str(s or "").strip().upper(), FLAT)
 
 
+# Part XXV / Violation V2 — the rich cognitive fields that make a reply a valid
+# opinion even when it carries NO ``direction``. A missing direction is itself a
+# cognitive result ("I understand the market but see no directional edge"), so a
+# reply carrying any of these must be kept and parsed (direction ⇒ FLAT), never
+# discarded. Only a reply with NONE of these (and no direction) is unparseable.
+_OPINION_FIELD_KEYS = frozenset({
+    "direction", "confidence", "regime", "primary_hypothesis",
+    "alternative_hypotheses", "supporting_evidence", "contradicting_evidence",
+    "key_uncertainty", "missing_information", "invalidation", "opportunity",
+    "opportunity_horizon", "expected_value", "expected_favorable_excursion",
+    "expected_adverse_excursion", "execution_quality", "risk",
+    "what_would_change_my_mind", "competing_hypotheses", "rationale",
+    "thesis_confidence", "opportunity_confidence", "timing_confidence",
+    "execution_confidence",
+})
+
+
+def _has_opinion_fields(obj: Any) -> bool:
+    """True when ``obj`` is a dict carrying at least one recognisable opinion
+    field — with or without ``direction`` (Violation V2)."""
+    return isinstance(obj, dict) and any(k in obj for k in _OPINION_FIELD_KEYS)
+
+
 def _regex_opinion_fields(reply: str) -> Optional[dict]:
     """Last-resort extraction of the opinion fields from unparseable text.
 
@@ -185,11 +208,11 @@ def _extract_opinion_fields(reply: str) -> Optional[dict]:
     """
     try:
         obj = repair_json(reply)
-        if isinstance(obj, dict) and "direction" in obj:
+        if _has_opinion_fields(obj):
             return obj
         if isinstance(obj, list):
             for x in obj:
-                if isinstance(x, dict) and "direction" in x:
+                if _has_opinion_fields(x):
                     return x
         return _regex_opinion_fields(reply)
     except Exception:  # noqa: BLE001 — recovery must never raise
@@ -197,11 +220,11 @@ def _extract_opinion_fields(reply: str) -> Optional[dict]:
 
 
 def _reply_was_strict_json(reply: str) -> bool:
-    """True when the raw reply is already valid JSON with a direction (no repair
-    needed) — used only for observability (recovered-vs-clean counting)."""
+    """True when the raw reply is already valid JSON carrying opinion fields (no
+    repair needed) — used only for observability (recovered-vs-clean counting)."""
     try:
         raw = json.loads(str(reply or ""))
-        return isinstance(raw, dict) and "direction" in raw
+        return _has_opinion_fields(raw)
     except Exception:  # noqa: BLE001
         return False
 
@@ -528,7 +551,14 @@ class LLMReasoner:
 
     def _parse(self, symbol: str, reply: str) -> Optional[LLMOpinion]:
         fields = _extract_opinion_fields(reply)
-        if not isinstance(fields, dict) or "direction" not in fields:
+        # Violation V2 — keep the reply whenever it carries ANY recognisable
+        # cognitive field, even without ``direction``. A missing direction is a
+        # legitimate cognitive result ("I understand the market but see no
+        # directional edge") and resolves to FLAT below — discarding the whole
+        # rich response (regime, hypotheses, uncertainty, invalidation, …) would
+        # throw away valuable reasoning. Only a truly unparseable reply (no JSON,
+        # no recognisable field at all) is dropped.
+        if not _has_opinion_fields(fields):
             return None
         # Observability: note when the Brain's opinion had to be *recovered* from
         # a fenced / truncated / prose reply rather than clean JSON (Part XXIII).

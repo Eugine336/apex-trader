@@ -66,14 +66,37 @@ class MarketModelMixin:
         return getattr(ed, "_developing_wm_store", None) if ed is not None else None
 
     @staticmethod
+    def _structure_direction(struct: Any) -> str:
+        """Display direction derived from the freshest structural trend (V5).
+
+        The WorldModel no longer stores a pre-computed directional bias; the panel
+        reports a direction derived from the StructureAnalysis trend measurement
+        (H1→H4→M5→M15→D1) at read time. This is a MEASUREMENT-derived display
+        value, not a stored conclusion, and matches how the safety-floor scan
+        direction is derived. Returns "LONG"/"SHORT"/"".
+        """
+        for tf in ("H1", "H4", "M5", "M15", "D1"):
+            sa = struct.get(tf) if isinstance(struct, dict) else None
+            if sa is None:
+                continue
+            trend = str(getattr(getattr(sa, "trend", None), "value", getattr(sa, "trend", "")) or "").upper()
+            if "BULL" in trend:
+                return "LONG"
+            if "BEAR" in trend:
+                return "SHORT"
+            return ""
+        return ""
+
+    @staticmethod
     def _serialize_wm(wm: Any) -> dict:
-        """Serialize a WorldModel's bias + per-TF structure for the panel."""
+        """Serialize a WorldModel's non-directional alignment + per-TF structure
+        for the panel (Violation V5 — no stored directional bias)."""
         if wm is None:
             return {}
         try:
-            bias = wm.bias_dict()
+            alignment = wm.multi_tf_alignment_dict()
         except Exception:
-            bias = {}
+            alignment = {}
         try:
             struct = wm.structure_by_tf()
         except Exception:
@@ -92,12 +115,13 @@ class MarketModelMixin:
             })
 
         return {
-            "bias_direction": str(bias.get("direction", "") or "").upper(),
-            "long_probability": _round(bias.get("long_probability", 0.0)),
-            "short_probability": _round(bias.get("short_probability", 0.0)),
-            "conflict_score": _round(bias.get("conflict_score", 0.0)),
-            "confidence": _round(bias.get("confidence", 0.0)),
-            "strength": str(bias.get("strength", "") or ""),
+            # Direction is derived from the structural trend measurement at read
+            # time (V5), never read from a stored directional bias.
+            "bias_direction": MarketModelMixin._structure_direction(struct),
+            "alignment_strength": _round(alignment.get("trend_strength", 0.0)),
+            "alignment_degree": _round(alignment.get("alignment_degree", 0.0)),
+            "conflict_score": _round(alignment.get("conflict_score", 0.0)),
+            "strength": str(alignment.get("strength", "") or ""),
             "version": int(getattr(wm, "version", 0) or 0),
             "timestamp": (
                 wm.timestamp.isoformat()
