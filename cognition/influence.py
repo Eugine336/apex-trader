@@ -66,6 +66,11 @@ class InfluenceLedger:
         self.gain = max(0.0, float(gain))
         self._wins: dict = {}
         self._losses: dict = {}
+        # Article XIX — running per-source reasoning-quality average (separate
+        # from win/loss). Observational: surfaces how DEEP each source's
+        # reasoning tends to be, independent of whether it won.
+        self._quality_sum: dict = {}
+        self._quality_count: dict = {}
         self._lock = threading.Lock()
 
     def observe(self, source_module: str, won: bool) -> None:
@@ -86,6 +91,35 @@ class InfluenceLedger:
         """Record the same outcome for a collection of sources."""
         for s in list(source_modules or []):
             self.observe(s, won)
+
+    def observe_quality(self, source: str, quality_score: float) -> None:
+        """Record one reasoning-quality observation for a source (Article XIX).
+
+        Maintains a running average per source, separate from win/loss. Purely
+        observational — it never affects ``weight_for``. Fail-safe."""
+        try:
+            src = str(source or "").strip()
+            if not src:
+                return
+            q = _clampf(quality_score, 0.0, 1.0, 0.0)
+            with self._lock:
+                self._quality_sum[src] = self._quality_sum.get(src, 0.0) + q
+                self._quality_count[src] = self._quality_count.get(src, 0) + 1
+        except Exception as exc:  # noqa: BLE001 — learning must never raise
+            logger.debug("[influence] observe_quality fault: %s", exc)
+
+    def quality_for(self, source: str) -> float:
+        """Running-average reasoning quality for a source (1.0 until observed)."""
+        try:
+            src = str(source or "").strip()
+            with self._lock:
+                n = self._quality_count.get(src, 0)
+                if n <= 0:
+                    return 1.0
+                return round(self._quality_sum.get(src, 0.0) / n, 4)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[influence] quality_for fault: %s", exc)
+            return 1.0
 
     def _attempts(self, src: str) -> int:
         return self._wins.get(src, 0) + self._losses.get(src, 0)

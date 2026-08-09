@@ -125,11 +125,13 @@ class _RichOpinion:
 
 def test_sizing_is_lesser_of_confidence_and_ev_normalized():
     # confidence 0.8, default reward 2.0R → EV = 0.8*2 - 0.2*1 = 1.4R;
-    # ev_normalized = 1.4/2.0 = 0.7 → exposure = min(0.8, 0.7) = 0.7 (< confidence).
+    # ev_normalized = 1.4/2.0 = 0.7. Sizing takes the lesser of ev_normalized and
+    # the reasoning-quality-weighted confidence (Art XIX): a bare opinion (quality
+    # 0.1) weights to 0.8*0.1 + 0.9*0.55 = 0.575, so exposure = min(0.575, 0.7).
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)), reward_r_default=2.0)
     out = brain.reason(_confident_state(polarity=0.8))
     assert out.campaign is not None
-    assert out.campaign.desired_exposure == 0.7
+    assert out.campaign.desired_exposure == pytest.approx(0.575)
     assert out.campaign.desired_exposure < out.campaign.confidence
     assert "sizing_rationale" in out.decision.questions_answered
 
