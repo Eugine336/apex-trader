@@ -36,13 +36,22 @@ from llm.provider_tiers import ProviderTier, resolve_tier
 
 @dataclass
 class EngineOpinion:
-    """One engine's opinion within a consultation (engine name + the opinion)."""
+    """One engine's opinion within a consultation (engine name + the opinion).
+
+    ``cognition`` preserves the engine's FULL structured reasoning (regime,
+    primary/alternative hypotheses, the opportunity + its horizon, expected
+    favourable/adverse excursion, invalidation, key uncertainty, …) so the Brain
+    synthesises over each advisor's complete analysis — never a summary sentence
+    (Part XXV). ``direction`` / ``confidence`` are kept for observability only:
+    they are an execution consequence, never a vote the Council counts.
+    """
 
     engine: str
     direction: str
     confidence: float
     rationale: str = ""
     latency_ms: float = 0.0
+    cognition: dict = field(default_factory=dict)
 
     def to_dict(self) -> dict:
         return {
@@ -51,6 +60,7 @@ class EngineOpinion:
             "confidence": round(self.confidence, 4),
             "rationale": self.rationale[:200],
             "latency_ms": round(self.latency_ms, 1),
+            "cognition": dict(self.cognition),
         }
 
 
@@ -165,11 +175,24 @@ class ReasoningEngine:
             confidence = float(getattr(op, "confidence", 0.0) or 0.0)
         except (TypeError, ValueError):
             confidence = 0.0
+        # Preserve the engine's FULL structured reasoning (Part XXV) so the Brain
+        # synthesises over each advisor's complete analysis — opportunity, horizon,
+        # hypotheses, excursions, invalidation — never a collapsed summary.
+        cognition: dict = {}
+        try:
+            to_dict = getattr(op, "to_dict", None)
+            if callable(to_dict):
+                got = to_dict()
+                if isinstance(got, dict):
+                    cognition = got
+        except Exception:  # noqa: BLE001 — a serialisation fault must not drop the opinion
+            cognition = {}
         return EngineOpinion(
             engine=self.name, direction=direction,
             confidence=min(1.0, max(0.0, confidence)),
             rationale=str(getattr(op, "rationale", "") or ""),
             latency_ms=latency_ms,
+            cognition=cognition,
         )
 
     def _reason_degraded(self, symbol: str) -> bool:
@@ -327,11 +350,22 @@ class ReasoningOrchestrator:
             replied = {str(getattr(o, "engine", "") or "") for o in result.opinions}
             asked = list(result.consulted)
             absent = [n for n in asked if n not in replied]
-            advising = ", ".join(
-                f"{getattr(o, 'engine', '?')} {getattr(o, 'direction', '?')}"
-                f"({float(getattr(o, 'confidence', 0.0) or 0.0):.2f})"
-                for o in result.opinions
-            )
+
+            def _render(o: "EngineOpinion") -> str:
+                name = getattr(o, "engine", "?")
+                conf = float(getattr(o, "confidence", 0.0) or 0.0)
+                tag = f"{name} {getattr(o, 'direction', '?')}({conf:.2f})"
+                cog = getattr(o, "cognition", None) or {}
+                extras = []
+                regime = str(cog.get("regime", "") or "").strip()
+                if regime:
+                    extras.append(regime)
+                opp = str(cog.get("opportunity", "") or "").strip()
+                if opp and opp.lower() != "none":
+                    extras.append(f"opp:{opp[:40]}")
+                return tag + (f" [{'; '.join(extras)}]" if extras else "")
+
+            advising = ", ".join(_render(o) for o in result.opinions)
             logger.info(
                 "[council] {} — {}/{} advising: {}{}",
                 result.symbol, len(result.opinions), len(asked),

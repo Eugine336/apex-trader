@@ -494,9 +494,12 @@ class CognitiveBrain:
     @staticmethod
     def _evidence_payload(market_state: MarketState, consolidation: dict) -> dict:
         fresh = market_state.fresh_evidence()
+        # Part XXV — the council's per-advisor REASONING evidence is appended LAST,
+        # so a tight cap would drop exactly the advisors' full analysis. Keep a
+        # generous slice so every advisor's complete cognition reaches the Brain.
         return {
             "consolidation": consolidation,
-            "evidence": [e.to_dict() for e in fresh[:64]],
+            "evidence": [e.to_dict() for e in fresh[:96]],
         }
 
     @staticmethod
