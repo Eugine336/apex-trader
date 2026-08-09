@@ -125,6 +125,14 @@ _CONF_RE = re.compile(r"""(?i)["']?\bconfidence\b["']?\s*[:=]\s*([0-9]*\.?[0-9]+
 _RATIONALE_RE = re.compile(r"""(?i)["']?\brationale\b["']?\s*[:=]\s*["']([^"']*)""")
 _TOKEN_RE = re.compile(r"\b(LONG|SHORT|FLAT)\b")
 
+# Max chars of the serialised evidence payload handed to a reasoner. The council's
+# per-advisor REASONING evidence is appended LAST in the MarketState, so a tight
+# cap truncates exactly the advisors' full analysis off the tail — the collapse we
+# are removing (Part XXV: the Brain must see each advisor's complete cognition, not
+# a summary sentence). Sized for a full panel of rich advisor theses plus the live
+# market view; hosted high-context models handle it comfortably.
+_MAX_USER_PROMPT_CHARS = 60000
+
 
 def _map_dir(s: Any) -> str:
     return _DIR_MAP.get(str(s or "").strip().upper(), FLAT)
@@ -285,13 +293,27 @@ class LLMReasoner:
         drive_decisions: bool = False,
         min_interval_seconds: float = 30.0,
         recent_limit: int = 50,
+        default_compute_class: str = "",
+        default_min_context: int = 0,
     ) -> None:
         self._client = client
         self.enabled = bool(enabled)
         self.drive_decisions = bool(drive_decisions)
         self.min_interval_seconds = max(0.0, float(min_interval_seconds))
         self._recent_limit = max(1, int(recent_limit))
+        # Compute-class routing (GPU/Compute Constitution §8): the reasoning
+        # CLASS this reasoner requests from a class-aware client (ModelManager).
+        # "" ⇒ request no class (every model eligible). The Brain's strategic
+        # reasoner sets "deep"; a class-tagged model only serves matching
+        # requests, but an untagged roster keeps serving everything (no-op).
+        self.default_compute_class = str(default_compute_class or "").strip().lower()
+        self.default_min_context = max(0, int(default_min_context or 0))
         self._last_call: dict[str, float] = {}
+        # Per-symbol liveness of the last NON-throttled reason() attempt:
+        # True = produced an opinion, False = failed (provider down/timeout, or
+        # an unparsable reply). Lets the Brain tell an infrastructure failure
+        # (REASONER_UNAVAILABLE) apart from a genuine market observe (Q78/Q80).
+        self._last_reason_ok: dict[str, bool] = {}
         self._recent: list[LLMOpinion] = []
         self._calls = 0
         self._faults = 0
@@ -304,39 +326,78 @@ class LLMReasoner:
         return bool(self.enabled and self._client is not None
                     and getattr(self._client, "usable", False))
 
-    def _throttled(self, key: str, now: float) -> bool:
-        if self.min_interval_seconds <= 0:
+    def last_reason_degraded(self, symbol: str) -> bool:
+        """True when the last NON-throttled ``reason(symbol)`` FAILED to yield an
+        opinion — provider down/timeout, or an unparsable reply.
+
+        This is a *liveness* signal, distinct from the static :pyattr:`available`
+        config flag, so the Brain can tell an INFRASTRUCTURE failure
+        (REASONER_UNAVAILABLE) apart from a genuine market ``observe`` when
+        ``reason`` returns ``None`` (Part XVIII Art 5; Q78/Q80/Q81/Q106). A
+        throttled cycle leaves this state unchanged.
+        """
+        with self._lock:
+            return self._last_reason_ok.get(str(symbol or "")) is False
+
+    def _throttled(self, key: str, now: float, interval: Optional[float] = None) -> bool:
+        iv = self.min_interval_seconds if interval is None else max(0.0, float(interval))
+        if iv <= 0:
             return False
         last = self._last_call.get(key, 0.0)
-        return (now - last) < self.min_interval_seconds
+        return (now - last) < iv
+
+    def _complete(self, system: str, user: str) -> Optional[str]:
+        """Call the client, requesting a compute class / min context when the
+        client is class-aware (the ModelManager). Falls back to the plain
+        two-arg call for a simple client that does not accept the kwargs."""
+        client = self._client
+        if not self.default_compute_class and not self.default_min_context:
+            return client.complete(system, user)
+        try:
+            return client.complete(
+                system, user,
+                compute_class=(self.default_compute_class or None),
+                min_context=(self.default_min_context or None),
+            )
+        except TypeError:
+            return client.complete(system, user)
 
     def reason(
         self, symbol: str, evidence: dict, *, now: Optional[float] = None,
+        min_interval: Optional[float] = None, throttle_key: Optional[str] = None,
     ) -> Optional[LLMOpinion]:
         """Ask the model to reason over ``evidence`` for ``symbol``.
 
         Returns a parsed :class:`LLMOpinion`, or ``None`` when unavailable,
         throttled, or on any fault. Blocking (provider round-trip) — call from a
         background/periodic path, never the hot loop. Fail-safe.
+
+        ``min_interval`` overrides the per-symbol throttle window for THIS call
+        and ``throttle_key`` overrides the throttle bucket, so a caller can run a
+        tighter cadence on an independent bucket (e.g. management re-reasoning an
+        open position faster than origination) without changing the global rate.
         """
         if not self.available:
             return None
         t = time.time() if now is None else float(now)
         sym = str(symbol or "")
+        key = str(throttle_key or sym)
+        iv = self.min_interval_seconds if min_interval is None else max(0.0, float(min_interval))
         try:
             with self._lock:
-                if self._throttled(sym, t):
+                if self._throttled(key, t, iv):
                     logger.debug(
                         "[llm] {} throttled ({}s min interval) — no fresh model call this cycle",
-                        sym, self.min_interval_seconds,
+                        sym, iv,
                     )
                     return None
-                self._last_call[sym] = t
+                self._last_call[key] = t
             user = self._build_user_prompt(sym, evidence)
-            reply = self._client.complete(_SYSTEM_PROMPT, user)
+            reply = self._complete(_SYSTEM_PROMPT, user)
             if not reply:
                 with self._lock:
                     self._faults += 1
+                    self._last_reason_ok[sym] = False
                 # No reply this cycle (throttle/quota/offline). The client logs
                 # the reason once on its down transition and the council panel
                 # summarises who is absent, so keep this per-symbol line at DEBUG
@@ -350,8 +411,10 @@ class LLMReasoner:
                     self._recent.append(opinion)
                     if len(self._recent) > self._recent_limit:
                         self._recent = self._recent[-self._recent_limit:]
+                    self._last_reason_ok[sym] = True
                 else:
                     self._faults += 1
+                    self._last_reason_ok[sym] = False
             if opinion is not None:
                 logger.info(
                     "[llm] {} [{}] dir={} conf={} | regime={} opp={} ({}) — {}",
@@ -377,6 +440,7 @@ class LLMReasoner:
             logger.debug("[llm] reason({}) ignored a fault: {}", symbol, exc)
             with self._lock:
                 self._faults += 1
+                self._last_reason_ok[str(symbol or "")] = False
             return None
 
     @staticmethod
@@ -387,7 +451,7 @@ class LLMReasoner:
             # Larger cap so the reconstructed multi-timeframe price snapshot
             # (Part XIX Art 2 — the chart) reaches the model alongside the
             # analytical reads rather than being truncated away.
-            return json.dumps(payload, default=str)[:16000]
+            return json.dumps(payload, default=str)[:_MAX_USER_PROMPT_CHARS]
         except Exception:  # noqa: BLE001
             return json.dumps({"symbol": symbol})
 
