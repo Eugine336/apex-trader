@@ -3,8 +3,9 @@
 Executable assertions for the six violations addressed in this session:
 
 * V3  — Advisor quorum (Article XX): a campaign needs at least ``min_advisors``.
-* V4  — Degraded-mode attenuation (Article XXI): a partial council attenuates
-  the Brain's effective confidence.
+* V4  — Degraded-mode observation (Article XXI): a partial council is recorded
+  and logged as DEGRADED COGNITION for visibility, but is observation-only and
+  does NOT attenuate the Brain's effective confidence.
 * V8  — Silent-failure integrity Evidence (Article XXXIV): a failed evidence
   source surfaces a zero-confidence integrity Evidence rather than degrading
   silently.
@@ -111,19 +112,20 @@ def test_v3_quorum_unenforced_without_council_metadata():
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
 
 
-# ── V4 — degraded-mode attenuation ──────────────────────────────────────────
+# ── V4 — degraded-mode observation (observation-only, no penalty) ───────────
 
-def test_v4_confidence_attenuated_when_less_than_half_responded():
+def test_v4_degradation_observed_but_not_penalised_when_less_than_half_responded():
     # 1 of 4 available responded (< 50%) ⇒ degraded; quorum lowered to 1 so the
-    # attenuation is what we observe (not a quorum block).
+    # degradation is what we observe (not a quorum block). Degradation is now
+    # observation-only: it is recorded/logged but does NOT attenuate confidence.
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.9)),
                            min_advisors_for_action=1,
                            degraded_confidence_multiplier=0.7)
     out = brain.reason(_state_with_advisors(1, 4, 15))
     deg = out.decision.questions_answered.get("cognitive_degradation", "")
-    assert deg.startswith("ACTIVE")
-    # 0.9 attenuated by 0.7 → 0.63 (still above the 0.55 act bar, so it opens).
-    assert abs(out.decision.confidence - 0.63) < 1e-6
+    assert deg.startswith("OBSERVED")
+    # Confidence is NOT penalised — 0.9 is preserved (above the 0.55 act bar).
+    assert abs(out.decision.confidence - 0.9) < 1e-6
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
 
 
