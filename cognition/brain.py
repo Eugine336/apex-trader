@@ -484,6 +484,10 @@ class CognitiveBrain:
                     "cognitive coverage insufficient for action"
                 )
                 dtype = DecisionType.CONTINUE_OBSERVING
+                do_nothing_txt = (
+                    f"evaluated: doing nothing is correct — advisor quorum not met "
+                    f"({advisors_responded}/{self.min_advisors_for_action} required)"
+                )
             elif directional_and_qualified and ev_ok and not domain_ok:
                 # Article XXXIV — a qualified opportunity on too few evidence
                 # domains: cannot determine whether an opportunity exists.
@@ -493,6 +497,10 @@ class CognitiveBrain:
                     "whether opportunity exists"
                 )
                 dtype = DecisionType.CONTINUE_OBSERVING
+                do_nothing_txt = (
+                    f"evaluated: doing nothing is correct — insufficient evidence "
+                    f"coverage ({int(domain_count)}/{self.min_evidence_domains} domains)"
+                )
             elif directional_and_qualified and not ev_ok:
                 # Saw a directional opportunity but its expected value does not
                 # clear the threshold — decline it (Part IX Q35: cannot execute
