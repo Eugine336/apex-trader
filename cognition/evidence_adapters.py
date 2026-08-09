@@ -408,6 +408,11 @@ _REASONING_LIST_FIELDS = (
     "alternative_hypotheses", "supporting_evidence", "contradicting_evidence",
     "missing_information", "what_would_change_my_mind", "competing_hypotheses",
 )
+# Part XXV — the advisor's multidimensional confidence profile (each in [0,1]).
+_REASONING_NUM_FIELDS = (
+    "thesis_confidence", "opportunity_confidence", "timing_confidence",
+    "execution_confidence", "effective_confidence",
+)
 
 
 def _reasoning_measurements(engine: str, op: Any, cog: dict) -> dict:
@@ -426,6 +431,10 @@ def _reasoning_measurements(engine: str, op: Any, cog: dict) -> dict:
             items = [str(i).strip()[:200] for i in v[:4] if str(i).strip()]
             if items:
                 m[k] = items
+    for k in _REASONING_NUM_FIELDS:
+        v = cog.get(k)
+        if isinstance(v, (int, float)) and not isinstance(v, bool):
+            m[k] = round(float(v), 4)
     return m
 
 

@@ -38,7 +38,11 @@ from cognition.contracts import (
     Hypothesis,
     MarketState,
 )
-from cognition.expected_value import expected_value_r, reward_risk_from_opinion
+from cognition.expected_value import (
+    effective_confidence,
+    expected_value_r,
+    reward_risk_from_opinion,
+)
 
 logger = logging.getLogger("apex.cognition.brain")
 
@@ -254,6 +258,27 @@ class CognitiveBrain:
         exec_q = str(getattr(opinion, "execution_quality", "") or "")
         risk_txt = str(getattr(opinion, "risk", "") or "")
         uncertainty = _clamp01(consolidation.get("aggregate_uncertainty", 1.0))
+        # Part XXV — multidimensional confidence. Resolve each dimension (absent ⇒
+        # the overall confidence) and blend to an EFFECTIVE conviction = the
+        # weakest dimension. A strong thesis with poor execution/timing is not an
+        # act-now trade; this makes EV, the act gate AND sizing reflect that, while
+        # a legacy single-confidence reply is unchanged (every dim == confidence).
+        def _rd(attr: str) -> float:
+            v = getattr(opinion, attr, None)
+            if v is None:
+                return confidence
+            try:
+                return min(1.0, max(0.0, float(v)))
+            except (TypeError, ValueError):
+                return confidence
+        conf_dims = {
+            "thesis": _rd("thesis_confidence"),
+            "opportunity": _rd("opportunity_confidence"),
+            "timing": _rd("timing_confidence"),
+            "execution": _rd("execution_confidence"),
+        }
+        eff_conf = effective_confidence(opinion, fallback=confidence)
+        limiting_dim = min(conf_dims, key=conf_dims.get)
 
         supporting, contradicting = self._split_evidence(market_state, direction)
         # Part IX Art 1/7 — a genuine expected value (in units of risk, R) from
@@ -262,9 +287,9 @@ class CognitiveBrain:
         # competing hypotheses on the decision so cognition is not collapsed to a
         # single direction+confidence pair.
         reward_r, risk_r = reward_risk_from_opinion(opinion, self.reward_r_default)
-        expected_value = expected_value_r(confidence, reward_r, risk_r)
+        expected_value = expected_value_r(eff_conf, reward_r, risk_r)
         hypotheses = self._build_hypotheses(
-            direction, confidence, reward_r, risk_r,
+            direction, eff_conf, reward_r, risk_r,
             primary_hyp or rationale, alternatives, invalidation_txt,
             supporting, contradicting,
         )
@@ -279,11 +304,19 @@ class CognitiveBrain:
             "what_would_change_my_mind": "; ".join(wcm) if wcm
             else ("; ".join(competing) if competing else "opposing evidence dominates"),
             "expected_value": ev_txt or ("positive" if direction in (LONG, SHORT)
-            and confidence >= self.min_confidence_to_act else "not established"),
+            and eff_conf >= self.min_confidence_to_act else "not established"),
             "downside": eae or "bounded by invalidation conditions",
             "opportunity": opportunity_txt or (direction if direction in (LONG, SHORT) else "none"),
             "should_i_do_nothing": "considered",
         }
+        # Part XXV — record the raw scalar and the confidence PROFILE so the honest
+        # multidimensional read (and which dimension limited the trade) is auditable.
+        questions["confidence_raw"] = round(confidence, 4)
+        questions["confidence_profile"] = (
+            f"thesis {conf_dims['thesis']:.2f} / opportunity {conf_dims['opportunity']:.2f} / "
+            f"timing {conf_dims['timing']:.2f} / execution {conf_dims['execution']:.2f} "
+            f"→ effective {eff_conf:.2f} (weakest: {limiting_dim})"
+        )
         # Surface the remaining Part XXV context on the decision record for the
         # dashboard/governance (extra keys are harmless to consumers).
         for _k, _v in (("regime", regime), ("opportunity_horizon", opp_horizon),
@@ -305,14 +338,14 @@ class CognitiveBrain:
         ev_ok = (self.min_expected_value is None) or (expected_value >= self.min_expected_value)
         act = (
             direction in (LONG, SHORT)
-            and confidence >= self.min_confidence_to_act
+            and eff_conf >= self.min_confidence_to_act
             and uncertainty <= self.max_uncertainty_to_act
             and ev_ok
         )
         if not act:
             directional_and_qualified = (
                 direction in (LONG, SHORT)
-                and confidence >= self.min_confidence_to_act
+                and eff_conf >= self.min_confidence_to_act
                 and uncertainty <= self.max_uncertainty_to_act
             )
             if directional_and_qualified and not ev_ok:
@@ -322,17 +355,29 @@ class CognitiveBrain:
                 reason_txt = "expected value below threshold — opportunity declined"
                 dtype = DecisionType.REJECT_OPPORTUNITY
             elif direction in (LONG, SHORT):
-                reason_txt = "insufficient confidence/uncertainty for a campaign"
+                # Part XXV — when the thesis itself is strong (raw confidence
+                # clears the bar) but a WEAK actionability dimension (timing or
+                # execution) pulled the effective conviction below it, this is a
+                # deliberate WAIT for better conditions, not a rejected thesis.
+                if (confidence >= self.min_confidence_to_act
+                        and limiting_dim in ("timing", "execution")):
+                    reason_txt = (
+                        f"{limiting_dim} conditions insufficient — waiting "
+                        f"(thesis holds at {confidence:.2f}, "
+                        f"{limiting_dim} {conf_dims[limiting_dim]:.2f})"
+                    )
+                else:
+                    reason_txt = "insufficient confidence/uncertainty for a campaign"
                 dtype = DecisionType.CONTINUE_OBSERVING
             else:
                 reason_txt = "no exploitable directional opportunity"
                 dtype = (DecisionType.REJECT_OPPORTUNITY
-                         if confidence >= self.min_confidence_to_act
+                         if eff_conf >= self.min_confidence_to_act
                          else DecisionType.CONTINUE_OBSERVING)
             decision = DecisionPackage(
                 symbol=symbol, decision_type=dtype, thesis=rationale or reason_txt,
                 supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
-                confidence=confidence, uncertainty=uncertainty,
+                confidence=eff_conf, uncertainty=uncertainty,
                 expected_value=expected_value, campaign_recommendation="observe",
                 risk_rationale=reason_txt, invalidation_conditions=invalidation_conditions or competing,
                 hypotheses=hypotheses,
@@ -345,7 +390,7 @@ class CognitiveBrain:
             symbol=symbol, decision_type=DecisionType.OPEN_CAMPAIGN,
             thesis=rationale or f"{direction} opportunity",
             supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
-            confidence=confidence, uncertainty=uncertainty,
+            confidence=eff_conf, uncertainty=uncertainty,
             expected_value=expected_value,
             campaign_recommendation=f"open {direction}",
             risk_rationale="expected value positive on synthesised evidence",
@@ -356,10 +401,10 @@ class CognitiveBrain:
         )
         campaign = CampaignSpecification(
             symbol=symbol, thesis=decision.thesis, direction=direction,
-            desired_exposure=round(confidence, 4),
-            initial_execution_intent={"kind": "market", "confidence": round(confidence, 4)},
+            desired_exposure=round(eff_conf, 4),
+            initial_execution_intent={"kind": "market", "confidence": round(eff_conf, 4)},
             supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
-            confidence=confidence, invalidation_conditions=decision.invalidation_conditions,
+            confidence=eff_conf, invalidation_conditions=decision.invalidation_conditions,
             objectives=[f"harvest {direction} opportunity while EV positive"],
             decision_id=decision.decision_id,
         )
