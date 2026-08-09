@@ -38,11 +38,7 @@ from cognition.contracts import (
     Hypothesis,
     MarketState,
 )
-from cognition.expected_value import (
-    effective_confidence,
-    expected_value_r,
-    reward_risk_from_opinion,
-)
+from cognition.expected_value import expected_value_r, reward_risk_from_opinion
 
 logger = logging.getLogger("apex.cognition.brain")
 
@@ -263,22 +259,7 @@ class CognitiveBrain:
         # weakest dimension. A strong thesis with poor execution/timing is not an
         # act-now trade; this makes EV, the act gate AND sizing reflect that, while
         # a legacy single-confidence reply is unchanged (every dim == confidence).
-        def _rd(attr: str) -> float:
-            v = getattr(opinion, attr, None)
-            if v is None:
-                return confidence
-            try:
-                return min(1.0, max(0.0, float(v)))
-            except (TypeError, ValueError):
-                return confidence
-        conf_dims = {
-            "thesis": _rd("thesis_confidence"),
-            "opportunity": _rd("opportunity_confidence"),
-            "timing": _rd("timing_confidence"),
-            "execution": _rd("execution_confidence"),
-        }
-        eff_conf = effective_confidence(opinion, fallback=confidence)
-        limiting_dim = min(conf_dims, key=conf_dims.get)
+        conf_dims, eff_conf, limiting_dim = self._confidence_profile(opinion, confidence)
 
         supporting, contradicting = self._split_evidence(market_state, direction)
         # Part IX Art 1/7 — a genuine expected value (in units of risk, R) from
@@ -436,6 +417,12 @@ class CognitiveBrain:
                     symbol, want, DecisionType.HOLD, 0.0, uncertainty, "no opinion — hold"))
             odir = str(getattr(opinion, "direction", FLAT) or FLAT).upper()
             conf = _clamp01(getattr(opinion, "confidence", 0.0))
+            # Part XXV — resolve the confidence PROFILE. Risk-ADDING actions
+            # (SCALE_IN) require the effective conviction (the weakest dimension),
+            # so the Brain never adds into weak execution/timing. Risk-REDUCING
+            # actions (EXIT / TIGHTEN / REVERSE) keep using the raw scalar — a poor
+            # execution read must never make it HARDER to cut a position.
+            conf_dims, eff_conf, limiting_dim = self._confidence_profile(opinion, conf)
             rationale = str(getattr(opinion, "rationale", "") or "")
             aligned = odir == want and want in (LONG, SHORT)
             opposite = odir in (LONG, SHORT) and odir != want and want in (LONG, SHORT)
@@ -452,9 +439,18 @@ class CognitiveBrain:
 
             if aligned and conf >= self.min_confidence_to_act \
                     and uncertainty <= self.max_uncertainty_to_act and not thesis_deteriorated:
-                if self.allow_scale_in and conf >= self.reverse_confidence \
-                        and (getattr(position, "profit_r", None) or 0.0) > 0:
+                in_profit = (getattr(position, "profit_r", None) or 0.0) > 0
+                if self.allow_scale_in and in_profit and eff_conf >= self.reverse_confidence:
                     action, why = DecisionType.SCALE_IN, "thesis strengthening + in profit — add"
+                elif (self.allow_scale_in and in_profit
+                      and conf >= self.reverse_confidence
+                      and eff_conf < self.reverse_confidence):
+                    # Would add, but a weak actionability dimension (execution /
+                    # timing) says now is not the moment to increase risk — hold.
+                    action, why = DecisionType.HOLD, (
+                        f"thesis strong but {limiting_dim} weak "
+                        f"({conf_dims[limiting_dim]:.2f}) — hold, not adding"
+                    )
                 else:
                     action, why = DecisionType.HOLD, "thesis intact — hold"
             elif aligned and thesis_deteriorated:
@@ -468,7 +464,7 @@ class CognitiveBrain:
             else:
                 action, why = DecisionType.EXIT, "evidence no longer supports the position — exit"
             return self._record_management(self._manage_pkg(
-                symbol, want, action, conf, uncertainty, rationale or why, opinion=opinion))
+                symbol, want, action, eff_conf, uncertainty, rationale or why, opinion=opinion))
         except Exception as exc:  # noqa: BLE001 — management reasoning must never break a cycle
             logger.debug("[brain] manage(%s) ignored a fault: %s", symbol, exc)
             with self._lock:
@@ -509,6 +505,14 @@ class CognitiveBrain:
                            ("risk", str(getattr(opinion, "risk", "") or ""))):
                 if _v:
                     questions[_k] = _v
+            _raw = _clamp01(getattr(opinion, "confidence", 0.0))
+            _dims, _eff, _lim = self._confidence_profile(opinion, _raw)
+            questions["confidence_raw"] = round(_raw, 4)
+            questions["confidence_profile"] = (
+                f"thesis {_dims['thesis']:.2f} / opportunity {_dims['opportunity']:.2f} / "
+                f"timing {_dims['timing']:.2f} / execution {_dims['execution']:.2f} "
+                f"→ effective {_eff:.2f} (weakest: {_lim})"
+            )
         else:
             questions = {q: ("considered" if q == "should_i_do_nothing" else reason)
                          for q in REQUIRED_QUESTIONS}
@@ -546,6 +550,34 @@ class CognitiveBrain:
             "consolidation": consolidation,
             "evidence": [e.to_dict() for e in fresh[:96]],
         }
+
+    @staticmethod
+    def _confidence_profile(opinion: Any, base: float) -> "tuple[dict, float, str]":
+        """Resolve the multidimensional confidence (Part XXV): each dimension, the
+        effective conviction (the weakest), and which dimension limited it.
+
+        A dimension absent on the opinion resolves to ``base`` (the overall
+        ``confidence``), so a legacy single-scalar opinion yields every dimension
+        equal to it and an effective conviction identical to the scalar (zero
+        behaviour change). Never raises.
+        """
+        def _rd(attr: str) -> float:
+            v = getattr(opinion, attr, None)
+            if v is None:
+                return base
+            try:
+                return min(1.0, max(0.0, float(v)))
+            except (TypeError, ValueError):
+                return base
+        dims = {
+            "thesis": _rd("thesis_confidence"),
+            "opportunity": _rd("opportunity_confidence"),
+            "timing": _rd("timing_confidence"),
+            "execution": _rd("execution_confidence"),
+        }
+        eff = min(dims.values())
+        limiting = min(dims, key=dims.get)
+        return dims, eff, limiting
 
     @staticmethod
     def _split_evidence(market_state: MarketState, direction: str) -> "tuple[list[str], list[str]]":
