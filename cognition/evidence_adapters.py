@@ -167,14 +167,95 @@ def _vote_measurements(vote: Any, weight: Any, timeframe: str) -> dict:
     return out
 
 
+# Violation V6 — an Evidence.observation must describe what the module OBSERVED,
+# not report a generic "instrument reading". These are the raw secondary keys a
+# module commonly records on ``Vote.evidence``; when present they are woven into
+# a readable observation sentence. All are NON-directional measurements (a level,
+# a magnitude, a type, an integrity score) — never a LONG/SHORT verdict.
+_OBSERVATION_HINT_KEYS: tuple[tuple[str, str], ...] = (
+    ("recent_swing_high", "swing high at {}"),
+    ("recent_swing_low", "swing low at {}"),
+    ("displacement", "displacement {}"),
+    ("structural_integrity", "structural integrity {}"),
+    ("bos", "break of structure {}"),
+    ("choch", "change of character {}"),
+    ("sweep", "liquidity sweep {}"),
+    ("sweep_type", "sweep type {}"),
+    ("rsi", "RSI {}"),
+    ("macd", "MACD {}"),
+    ("atr", "ATR {}"),
+    ("zone_score", "zone score {}"),
+    ("volume_z", "volume z-score {}"),
+    ("vwap_distance", "VWAP distance {}"),
+)
+
+# The key most modules use to state their certainty in their OWN observation
+# (Violation V6): the module's confidence that it correctly identified the fact
+# it reports — NOT its directional conviction. Falls back to the vote confidence.
+_OBSERVATION_CONFIDENCE_KEYS = (
+    "observation_confidence", "read_confidence", "structural_integrity",
+    "quality", "clarity",
+)
+
+
+def _observation_certainty(vote: Any, measurements: dict, fallback: float) -> float:
+    """The module's certainty in its OWN observation (Violation V6).
+
+    This is how sure the module is that it correctly read the fact it reports
+    (e.g. "I am 0.85 sure I identified the recent swing high"), NOT its
+    directional conviction. Reads the first present observation-quality key from
+    the module's raw evidence; falls back to the vote's confidence when a module
+    exposes no explicit observation-certainty read.
+    """
+    for k in _OBSERVATION_CONFIDENCE_KEYS:
+        if k in measurements:
+            return _clamp01(measurements.get(k), fallback)
+    return _clamp01(fallback)
+
+
+def _vote_observation(module: str, timeframe: str, measurements: dict) -> str:
+    """Describe what the module OBSERVED from its raw measurements (Violation V6).
+
+    Builds a readable sentence out of the non-directional secondary reads the
+    module recorded (swing levels, displacement, structural integrity, sweep
+    type, oscillator levels, …) instead of a generic "instrument reading". Falls
+    back to a plain "<module> observation" when the module exposed no recognised
+    secondary reads. Never emits a direction/lean/vote.
+    """
+    parts: list[str] = []
+    for key, template in _OBSERVATION_HINT_KEYS:
+        if key in measurements:
+            val = measurements.get(key)
+            if isinstance(val, bool):
+                if not val:
+                    continue
+                parts.append(template.format("present"))
+            else:
+                parts.append(template.format(val))
+        if len(parts) >= 4:
+            break
+    if parts:
+        head = f"{module} observed " + ", ".join(parts)
+    else:
+        head = f"{module} observation"
+    if timeframe:
+        head += f" on {timeframe}"
+    return head[:300]
+
+
 def evidence_from_votes(symbol: str, votes: Any) -> "list[Evidence]":
     """Convert a raw vote panel (module/direction/confidence/weight) to Evidence.
 
-    Each contributing analytical module (structure, liquidity, momentum, volume,
-    order-flow, …) becomes one domain-classified :class:`Evidence`, carrying the
-    module's richer secondary read (``Vote.evidence``) as measurements so nothing
-    is collapsed away. This is the live bridge from the WorldModel's per-module
-    vote panel onto the Brain's consolidated MarketState. Fail-safe.
+    Violation V6 — a Vote's ``confidence`` was a DIRECTIONAL conviction produced
+    by a directional process; carrying it verbatim as ``Evidence.confidence``
+    leaked that directional magnitude into the Brain's evidence picture. Each
+    contributing analytical module now becomes one domain-classified
+    :class:`Evidence` that reports its RAW OBSERVATIONS: the ``observation``
+    describes what the module actually saw (swing levels, displacement,
+    structural integrity, sweep type, …) and ``confidence`` is the module's
+    certainty in that OBSERVATION, not in a direction. The module's secondary
+    reads ride along as ``measurements`` so nothing is collapsed away. The
+    ``scrub_directional`` gate in contracts.py remains defence-in-depth. Fail-safe.
     """
     out: list[Evidence] = []
     try:
@@ -182,18 +263,22 @@ def evidence_from_votes(symbol: str, votes: Any) -> "list[Evidence]":
             module = str(getattr(v, "module", "") or getattr(v, "source", "") or "")
             if not module:
                 continue
-            conf = _clamp01(getattr(v, "confidence", 0.0))
             weight = getattr(v, "weight", 1.0)
             timeframe = str(getattr(v, "timeframe", "") or "")
-            observation = f"{module} instrument reading"
-            if timeframe:
-                observation += f" on {timeframe}"
+            measurements = _vote_measurements(v, weight, timeframe)
+            # The module's certainty in its OWN observation — never its
+            # directional conviction (Violation V6). Falls back to the vote's
+            # confidence only when the module exposes no observation-quality read.
+            conf = _observation_certainty(
+                v, measurements, _clamp01(getattr(v, "confidence", 0.0)),
+            )
+            observation = _vote_observation(module, timeframe, measurements)
             out.append(Evidence(
                 source_module=module, domain=classify_domain(module), symbol=symbol,
                 observation=observation,
                 confidence=conf, uncertainty=1.0 - conf,
                 polarity=0.0,
-                measurements=_vote_measurements(v, weight, timeframe),
+                measurements=measurements,
                 relevance_horizon_seconds=900.0,
             ))
     except Exception:  # noqa: BLE001
@@ -255,6 +340,57 @@ def evidence_from_developing_bias(symbol: str, bias: Any) -> "list[Evidence]":
             relevance_horizon_seconds=120.0,
         ))
     except Exception:  # noqa: BLE001
+        return out
+    return out
+
+
+def evidence_from_execution_cost(symbol: str, cost: Any) -> "list[Evidence]":
+    """Convert an estimated round-trip execution cost into EXECUTION_QUALITY
+    Evidence (Violation V9 — Part XXIV/XXV).
+
+    ``cost`` may be a plain float (total cost in R) or a dict carrying
+    ``estimated_spread_r`` / ``estimated_slippage_r`` / ``estimated_total_cost_r``.
+    The Brain reads the ``estimated_total_cost_r`` measurement and subtracts it
+    from the strategic EV so a theoretical thesis that cannot clear its execution
+    cost is declined at the EV gate. It is a cost *context*, never a directional
+    instruction (``polarity`` 0). Fail-safe: ``[]`` on empty/any fault.
+    """
+    out: list[Evidence] = []
+    try:
+        if cost is None:
+            return out
+        if isinstance(cost, dict):
+            spread_r = _num(cost.get("estimated_spread_r"))
+            slippage_r = _num(cost.get("estimated_slippage_r"))
+            if "estimated_total_cost_r" in cost:
+                total_r = _num(cost.get("estimated_total_cost_r"))
+            else:
+                total_r = spread_r + slippage_r
+        else:
+            total_r = _num(cost)
+            spread_r = total_r
+            slippage_r = 0.0
+        # A round-trip cost is bounded and non-negative in R.
+        total_r = max(0.0, min(5.0, total_r))
+        spread_r = max(0.0, min(5.0, spread_r))
+        slippage_r = max(0.0, min(5.0, slippage_r))
+        out.append(Evidence(
+            source_module="execution.cost_model",
+            domain=EvidenceDomain.EXECUTION_QUALITY, symbol=str(symbol or ""),
+            observation=(
+                f"estimated round-trip execution cost {total_r:.4f}R "
+                f"(spread {spread_r:.4f}R, slippage {slippage_r:.4f}R)"
+            ),
+            # The cost model's certainty in its OWN estimate, not a direction.
+            confidence=0.8, uncertainty=0.2, polarity=0.0,
+            measurements={
+                "estimated_spread_r": round(spread_r, 6),
+                "estimated_slippage_r": round(slippage_r, 6),
+                "estimated_total_cost_r": round(total_r, 6),
+            },
+            relevance_horizon_seconds=300.0,
+        ))
+    except Exception:  # noqa: BLE001 — consolidation must never raise
         return out
     return out
 
@@ -387,6 +523,7 @@ __all__ = [
     "classify_domain",
     "evidence_from_thesis_status",
     "evidence_from_votes",
+    "evidence_from_execution_cost",
     "evidence_from_analogues",
     "evidence_from_reasoning",
 ]
