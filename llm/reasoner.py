@@ -355,6 +355,16 @@ class LLMReasoner:
         return bool(self.enabled and self._client is not None
                     and getattr(self._client, "usable", False))
 
+    @property
+    def client(self) -> Optional[Any]:
+        """The underlying completion client (read-only accessor).
+
+        Exposes the client so the background recovery prober can issue a
+        direct liveness probe and read ``last_fail_signature`` without
+        reaching into private state.
+        """
+        return self._client
+
     def last_reason_degraded(self, symbol: str) -> bool:
         """True when the last NON-throttled ``reason(symbol)`` FAILED to yield an
         opinion — provider down/timeout, or an unparsable reply.

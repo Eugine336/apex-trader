@@ -1259,6 +1259,19 @@ class SystemContext:
                     logger.warning("[SystemContext] ReasoningOrchestrator init failed: {}", exc)
                     _reasoning_orch = None
                 ctx.reasoning_orchestrator = _reasoning_orch
+                # §7/§9 — start the background recovery prober so a benched
+                # (circuit-OPEN) advisor whose failure was transient is retried
+                # quietly OFF the consult path and rejoins the council the moment
+                # it heals. Daemon thread (dies with the process); fail-safe and a
+                # strict no-op when the cadence is 0 or recovery is unsupported.
+                if _reasoning_orch is not None:
+                    try:
+                        _start = getattr(_reasoning_orch, "start_recovery", None)
+                        if callable(_start):
+                            _start()
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(
+                            "[SystemContext] recovery prober start skipped: {}", exc)
                 # Part XXI — Provider Registry / Manager. The catalogue of every
                 # reasoning provider and its constitutional state. Built whenever
                 # an LLM config exists (independent of consult_multi) so it also
