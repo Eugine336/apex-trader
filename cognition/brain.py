@@ -30,6 +30,11 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, Optional
 
+from cognition.brain_reasoning import (
+    BrainHypothesis,
+    BrainReasoner,
+    EvidenceAnalysis,
+)
 from cognition.contracts import (
     REQUIRED_QUESTIONS,
     CampaignSpecification,
@@ -100,6 +105,11 @@ class CognitiveBrain:
         min_evidence_domains: int = 2,
         degraded_confidence_multiplier: float = 0.7,
         default_cost_r: float = 0.0,
+        agreement_boost: float = 1.1,
+        disagreement_penalty: float = 0.8,
+        independent_min_confidence: float = 0.7,
+        independent_max_uncertainty: float = 0.5,
+        independent_sizing_multiplier: float = 0.5,
     ) -> None:
         self._reasoner = reasoner
         self.min_confidence_to_act = min(1.0, max(0.0, float(min_confidence_to_act)))
@@ -138,6 +148,22 @@ class CognitiveBrain:
         # ``estimated_total_cost_r`` measurement, that live estimate is used
         # instead; this default applies only when no such evidence is present.
         self.default_cost_r = max(0.0, float(default_cost_r))
+        # Articles II / IV / IX / X — the Brain's NATIVE reasoner. It reads the
+        # evidence into its own structured analysis, forms its own hypotheses
+        # (with counter-hypotheses), and self-criticises them WITHOUT any LLM
+        # call. Advisors INFORM this reasoning; they are not the reasoning. The
+        # Brain can even originate an opportunity from this layer alone when no
+        # advisor is available (Article X — discovery without explicit
+        # programming). ``independent_sizing_multiplier`` sizes such advisor-less
+        # originations conservatively.
+        self._native = BrainReasoner(
+            agreement_boost=agreement_boost,
+            disagreement_penalty=disagreement_penalty,
+            independent_min_confidence=independent_min_confidence,
+            independent_max_uncertainty=independent_max_uncertainty,
+        )
+        self.independent_sizing_multiplier = min(1.0, max(0.0, float(independent_sizing_multiplier)))
+        self._independent_originations = 0
         # Management re-reasons an OPEN position on a tighter, INDEPENDENT cadence
         # than origination (Q40 — reasoned management, not a static algo). None ⇒
         # use the reasoner's global interval (unchanged). Applied only on the
@@ -217,6 +243,11 @@ class CognitiveBrain:
         symbol = getattr(market_state, "symbol", "") or ""
         try:
             consolidation = market_state.consolidation(now)
+            # Articles II / IV / IX — the Brain ALWAYS reads the evidence into its
+            # own structured analysis and forms its own (self-criticised)
+            # hypotheses BEFORE any advisor is consulted. This is the Brain's
+            # native view; the advisor opinion later INFORMS it, never replaces it.
+            analysis, hypotheses = self._native_reasoning(market_state, consolidation, symbol)
             # Distinguish "no reasoner configured" (a benign build-time state —
             # no obligation to trade) from "reasoner wired but its provider is
             # unavailable" (an INFRASTRUCTURE failure). The latter must never be
@@ -227,6 +258,15 @@ class CognitiveBrain:
                     symbol, "no reasoner configured — no obligation to trade", consolidation,
                 )
             if not getattr(self._reasoner, "available", False):
+                # Article X — the Brain can still DISCOVER an opportunity from its
+                # native analysis when no advisor is available. Only when the
+                # native view is not strong enough does it stand down.
+                independent = self._originate_independent(
+                    symbol, consolidation, analysis, hypotheses,
+                    reason_txt="reasoner unavailable — provider down (not a market view)",
+                )
+                if independent is not None:
+                    return independent
                 return self._reasoner_unavailable(
                     symbol, "reasoner unavailable — provider down (not a market view)",
                     consolidation,
@@ -243,6 +283,13 @@ class CognitiveBrain:
                 # a throttled cycle: provider healthy, simply no fresh call this
                 # cycle) may lawfully continue observing.
                 if self._reasoner_degraded(symbol):
+                    independent = self._originate_independent(
+                        symbol, consolidation, analysis, hypotheses,
+                        reason_txt=("reasoner returned no usable opinion — provider "
+                                    "failure / unparsable output (not a market view)"),
+                    )
+                    if independent is not None:
+                        return independent
                     return self._reasoner_unavailable(
                         symbol,
                         "reasoner returned no usable opinion — provider failure / "
@@ -252,7 +299,10 @@ class CognitiveBrain:
                 return self._observe(
                     symbol, "no reasoner opinion this cycle — do nothing", consolidation,
                 )
-            return self._from_opinion(symbol, market_state, consolidation, opinion, now)
+            return self._from_opinion(
+                symbol, market_state, consolidation, opinion, now,
+                analysis=analysis, brain_hypotheses=hypotheses,
+            )
         except Exception as exc:  # noqa: BLE001 — reasoning must never break a cycle
             logger.debug("[brain] reason(%s) ignored a fault: %s", symbol, exc)
             with self._lock:
@@ -262,6 +312,8 @@ class CognitiveBrain:
     def _from_opinion(
         self, symbol: str, market_state: MarketState, consolidation: dict,
         opinion: Any, now: Optional[float],
+        *, analysis: Optional[EvidenceAnalysis] = None,
+        brain_hypotheses: Optional["list[BrainHypothesis]"] = None,
     ) -> BrainOutput:
         direction = str(getattr(opinion, "direction", FLAT) or FLAT).upper()
         if direction not in (LONG, SHORT, FLAT):
@@ -345,6 +397,16 @@ class CognitiveBrain:
         eff_conf, brain_synthesis = self._synthesize_from_evidence(
             consolidation, confidence, eff_conf)
 
+        # Articles II / IV / IX — INTEGRATE the Brain's own hypotheses with the
+        # advisor opinion (not a relay). Agreement with the Brain's leading
+        # hypothesis boosts conviction; disagreement attenuates it. This runs
+        # BEFORE EV/sizing so the whole decision reflects the synthesis, and is a
+        # no-op when the Brain formed no independent structural view (so a
+        # measurement-thin evidence picture behaves exactly as before).
+        brain_lead = self._native.leading(brain_hypotheses or [])
+        eff_conf, brain_adv_synthesis = self._integrate_brain(
+            direction, eff_conf, brain_lead, analysis)
+
         supporting, contradicting = self._split_evidence(market_state, direction)
         # Part IX Art 1/7 — a genuine expected value (in units of risk, R) from
         # the win-probability (confidence) and the payoff geometry, replacing the
@@ -385,6 +447,20 @@ class CognitiveBrain:
         # evidence picture, so the synthesis (and any attenuation) is auditable.
         if brain_synthesis:
             questions["brain_synthesis"] = brain_synthesis
+        # Articles II / IV / IX — record the FULL native reasoning chain: the
+        # Brain's own evidence analysis, the hypotheses it formed, its
+        # self-criticism, and how it synthesised its view with the advisor's.
+        if analysis is not None:
+            questions["brain_evidence_analysis"] = analysis.summary()
+        if brain_hypotheses:
+            questions["brain_hypotheses"] = " | ".join(
+                f"{(h.direction_implication or 'FLAT')}@{h.confidence:.2f}: {h.statement}"
+                for h in brain_hypotheses
+            )[:1000]
+        if brain_lead is not None and getattr(brain_lead, "criticism", ""):
+            questions["brain_self_criticism"] = brain_lead.criticism
+        if brain_adv_synthesis:
+            questions["brain_advisor_synthesis"] = brain_adv_synthesis
         # Part XXV — record the raw scalar and the confidence PROFILE so the honest
         # multidimensional read (and which dimension limited the trade) is auditable.
         questions["confidence_raw"] = round(confidence, 4)
@@ -449,8 +525,17 @@ class CognitiveBrain:
                 )
         # Prefer the Brain's explicit invalidation / change-my-mind for the
         # campaign's invalidation conditions; fall back to competing hypotheses.
+        # Article IX — the Brain's OWN leading-hypothesis invalidation leads the
+        # list (when it formed a directional view), so the campaign is invalidated
+        # on the Brain's terms, not only the advisor's.
+        brain_invalidation = (
+            [brain_lead.invalidation]
+            if (brain_lead is not None and brain_lead.is_directional and brain_lead.invalidation)
+            else []
+        )
         invalidation_conditions = (
-            ([invalidation_txt] if invalidation_txt else []) + wcm + competing
+            brain_invalidation
+            + ([invalidation_txt] if invalidation_txt else []) + wcm + competing
         )
 
         # Constitutional gate: only OPEN a campaign when the Brain can answer
@@ -484,6 +569,10 @@ class CognitiveBrain:
                     "cognitive coverage insufficient for action"
                 )
                 dtype = DecisionType.CONTINUE_OBSERVING
+                do_nothing_txt = (
+                    "evaluated: doing nothing is correct — advisor quorum not met "
+                    f"({advisors_responded}/{self.min_advisors_for_action})"
+                )
             elif directional_and_qualified and ev_ok and not domain_ok:
                 # Article XXXIV — a qualified opportunity on too few evidence
                 # domains: cannot determine whether an opportunity exists.
@@ -493,6 +582,10 @@ class CognitiveBrain:
                     "whether opportunity exists"
                 )
                 dtype = DecisionType.CONTINUE_OBSERVING
+                do_nothing_txt = (
+                    "evaluated: doing nothing is correct — insufficient evidence "
+                    f"coverage ({int(domain_count)}/{self.min_evidence_domains} domains)"
+                )
             elif directional_and_qualified and not ev_ok:
                 # Saw a directional opportunity but its expected value does not
                 # clear the threshold — decline it (Part IX Q35: cannot execute
@@ -907,6 +1000,221 @@ class CognitiveBrain:
         except Exception:  # noqa: BLE001 — synthesis must never break reasoning
             return effective_confidence, ""
 
+    # ── Native reasoning (Articles II / IV / IX / X) ──────────────────────
+
+    def _analyze_evidence(
+        self, market_state: MarketState, consolidation: Optional[dict] = None,
+    ) -> EvidenceAnalysis:
+        """The Brain's own structured reading of the evidence (no LLM). Never raises."""
+        return self._native.analyze_evidence(market_state, consolidation)
+
+    def _generate_hypotheses(
+        self, analysis: EvidenceAnalysis, symbol: str,
+    ) -> "list[BrainHypothesis]":
+        """The Brain's own hypotheses formed from its evidence analysis (Article IX)."""
+        return self._native.generate_hypotheses(analysis, symbol)
+
+    def _self_criticize(
+        self, hypotheses: "list[BrainHypothesis]", analysis: EvidenceAnalysis,
+    ) -> "list[BrainHypothesis]":
+        """Challenge each hypothesis and adjust confidence up/down (Article IV)."""
+        return self._native.self_criticize(hypotheses, analysis)
+
+    def _compare_opportunities(
+        self, new_opportunity: BrainHypothesis, symbol: str, existing_positions: Any,
+    ) -> str:
+        """Rank a discovered opportunity against the book (Article XXVIII)."""
+        return self._native.compare_opportunities(new_opportunity, symbol, existing_positions)
+
+    def _native_reasoning(
+        self, market_state: MarketState, consolidation: dict, symbol: str,
+    ) -> "tuple[EvidenceAnalysis, list[BrainHypothesis]]":
+        """Run the full native reasoning pass: analyse → hypothesise → self-criticise.
+
+        Fail-safe: on any fault returns a minimal empty analysis and no
+        hypotheses, so the LLM path is entirely unaffected.
+        """
+        try:
+            analysis = self._native.analyze_evidence(market_state, consolidation)
+            hypotheses = self._native.generate_hypotheses(analysis, symbol)
+            hypotheses = self._native.self_criticize(hypotheses, analysis)
+            return analysis, hypotheses
+        except Exception as exc:  # noqa: BLE001 — native reasoning must never break a cycle
+            logger.debug("[brain] native reasoning(%s) ignored a fault: %s", symbol, exc)
+            return EvidenceAnalysis(), []
+
+    def _integrate_brain(
+        self, llm_direction: str, eff_conf: float,
+        brain_lead: Optional[BrainHypothesis], analysis: Optional[EvidenceAnalysis],
+    ) -> "tuple[float, str]":
+        """Integrate the Brain's leading hypothesis with the advisor's direction.
+
+        Agreement boosts the effective conviction, disagreement attenuates it,
+        and when the Brain formed no directional view it defers to the advisor.
+        A no-op (returns ``eff_conf`` unchanged, empty note) when the Brain has
+        no leading hypothesis or no analysis — so a measurement-thin evidence
+        picture behaves exactly as before. Never raises.
+        """
+        if brain_lead is None or analysis is None:
+            return eff_conf, ""
+        try:
+            brain_dir = brain_lead.direction_implication or FLAT
+            brain_conf = _clamp01(brain_lead.confidence)
+            if brain_dir in (LONG, SHORT) and llm_direction in (LONG, SHORT):
+                if brain_dir == llm_direction:
+                    new_conf = _clamp01(max(brain_conf, eff_conf) * self._native.agreement_boost)
+                    outcome, note = "agreement", (
+                        f"agreement (both {brain_dir}) → confidence "
+                        f"{eff_conf:.2f}→{new_conf:.2f}")
+                    eff_conf = new_conf
+                else:
+                    new_conf = _clamp01(min(brain_conf, eff_conf) * self._native.disagreement_penalty)
+                    outcome, note = "disagreement", (
+                        f"disagreement (brain {brain_dir} vs advisor {llm_direction}) → "
+                        f"confidence {eff_conf:.2f}→{new_conf:.2f}")
+                    eff_conf = new_conf
+            elif brain_dir not in (LONG, SHORT):
+                if analysis.detected_patterns:
+                    # The Brain saw non-directional structure (e.g. compression,
+                    # degraded execution): defer to the advisor but attenuate by
+                    # the Brain's own evidence uncertainty.
+                    new_conf = _clamp01(eff_conf * (1.0 - 0.5 * analysis.evidence_uncertainty))
+                    outcome, note = "defer_attenuated", (
+                        f"brain saw non-directional structure — deferring to advisor, "
+                        f"attenuated by evidence uncertainty {analysis.evidence_uncertainty:.2f} "
+                        f"→ {new_conf:.2f}")
+                    eff_conf = new_conf
+                else:
+                    outcome, note = "defer", (
+                        "brain formed no independent directional hypothesis — "
+                        "deferring to advisor")
+            else:
+                outcome, note = "brain_only", (
+                    f"brain holds a {brain_dir} view but the advisor is FLAT — "
+                    "no confidence change")
+            synthesis = (
+                f"Brain hypothesis [{brain_dir} @ {brain_conf:.2f}: "
+                f"{brain_lead.statement[:80]}] + advisor opinion [{llm_direction}] → "
+                f"[{outcome}] → {note}"
+            )
+            return eff_conf, synthesis
+        except Exception:  # noqa: BLE001 — integration must never break reasoning
+            return eff_conf, ""
+
+    def _originate_independent(
+        self, symbol: str, consolidation: dict,
+        analysis: Optional[EvidenceAnalysis], hypotheses: "list[BrainHypothesis]",
+        *, reason_txt: str,
+    ) -> Optional[BrainOutput]:
+        """Discover an opportunity from native analysis when no advisor is available.
+
+        Article X — APEX must be able to discover opportunities that were never
+        explicitly programmed, even when every LLM provider is down. When the
+        Brain's leading hypothesis is confident (>= threshold), directional and
+        the evidence uncertainty is acceptable, the Brain originates a campaign
+        WITHOUT any advisor, sized conservatively. Otherwise returns ``None`` and
+        the caller stands down (REASONER_UNAVAILABLE). Never raises.
+        """
+        if analysis is None or not hypotheses:
+            return None
+        try:
+            lead = self._native.leading(hypotheses)
+            if lead is None or not lead.is_directional:
+                return None
+            if lead.confidence < self._native.independent_min_confidence:
+                return None
+            if analysis.evidence_uncertainty >= self._native.independent_max_uncertainty:
+                return None
+            direction = lead.direction_implication
+            uncertainty = _clamp01(consolidation.get("aggregate_uncertainty", 1.0)) \
+                if consolidation else analysis.evidence_uncertainty
+            reward_r, risk_r = self.reward_r_default, 1.0
+            cost_r = self.default_cost_r
+            expected_value = expected_value_r(lead.confidence, reward_r, risk_r, cost_r=cost_r)
+            # EV must still be positive to justify capital when acting alone.
+            if self.min_expected_value is not None and expected_value < self.min_expected_value:
+                return None
+            if expected_value <= 0.0:
+                return None
+            origination_note = (
+                f"Brain discovered opportunity from native analysis without advisor "
+                f"confirmation — {lead.statement}")
+            considered = self._compare_opportunities(lead, symbol, [])
+            questions = {
+                "what_is_happening": lead.statement,
+                "why_is_it_happening": "; ".join(analysis.observations) or lead.statement,
+                "evidence_supports": "; ".join(
+                    p for p in lead.supporting_patterns) or "native structural patterns",
+                "evidence_contradicts": "; ".join(analysis.contradictions) or "none detected",
+                "information_missing": "; ".join(analysis.missing_information) or "none",
+                "what_would_change_my_mind": lead.invalidation,
+                "expected_value": f"{expected_value:.4f}R (native)",
+                "downside": "bounded by invalidation conditions",
+                "opportunity": lead.opportunity_implication or direction,
+                "should_i_do_nothing": (
+                    f"evaluated: acting alone is justified — native leading hypothesis "
+                    f"at {lead.confidence:.2f} with EV {expected_value:.4f}R"),
+                "brain_independent_origination": origination_note,
+                "brain_evidence_analysis": analysis.summary(),
+                "brain_hypotheses": " | ".join(
+                    f"{(h.direction_implication or 'FLAT')}@{h.confidence:.2f}: {h.statement}"
+                    for h in hypotheses)[:1000],
+                "brain_self_criticism": lead.criticism or "no material criticism",
+                "brain_book_comparison": considered,
+                "reasoner_state": reason_txt,
+            }
+            base_exposure = min(lead.confidence,
+                                min(1.0, max(0.0, expected_value / max(0.01, self.reward_r_default))))
+            desired_exposure = round(self.independent_sizing_multiplier * base_exposure, 4)
+            questions["sizing_rationale"] = (
+                f"independent origination sized {desired_exposure:.4f} = "
+                f"{self.independent_sizing_multiplier:.2f}x base {base_exposure:.4f} "
+                "(conservative — no advisor confirmation)")
+            invalidation_conditions = (
+                ([lead.invalidation] if lead.invalidation else [])
+                + [h.statement for h in hypotheses if h is not lead][:3]
+            )
+            brain_hyps = self._build_hypotheses(
+                direction, lead.confidence, reward_r, risk_r,
+                lead.statement, [h.statement for h in hypotheses if h is not lead],
+                lead.invalidation, [], [],
+            )
+            decision = DecisionPackage(
+                symbol=symbol, decision_type=DecisionType.OPEN_CAMPAIGN,
+                thesis=lead.statement,
+                confidence=lead.confidence, uncertainty=uncertainty,
+                expected_value=expected_value,
+                campaign_recommendation=f"open {direction}",
+                risk_rationale="native opportunity — originated without advisor (Article X)",
+                invalidation_conditions=invalidation_conditions,
+                hypotheses=brain_hyps,
+                questions_answered=questions, do_nothing_considered=True,
+                reasoner=self.reasoner_name,
+            )
+            campaign = CampaignSpecification(
+                symbol=symbol, thesis=lead.statement, direction=direction,
+                desired_exposure=desired_exposure, expected_value=expected_value,
+                initial_execution_intent={"kind": "market",
+                                          "confidence": round(lead.confidence, 4),
+                                          "independent_origination": True},
+                confidence=lead.confidence,
+                invalidation_conditions=invalidation_conditions,
+                objectives=[f"harvest {direction} opportunity discovered from native analysis"],
+                decision_id=decision.decision_id,
+            )
+            with self._lock:
+                self._independent_originations += 1
+            logger.info(
+                "[brain] INDEPENDENT ORIGINATION (%s): %s %s @ conf %.2f, EV %.4fR — no advisor",
+                symbol, direction, lead.statement[:60], lead.confidence, expected_value,
+            )
+            return self._record(BrainOutput(
+                decision=decision, campaign=campaign, direction=direction))
+        except Exception as exc:  # noqa: BLE001 — independent origination must never break a cycle
+            logger.debug("[brain] independent origination(%s) ignored a fault: %s", symbol, exc)
+            return None
+
+
     @staticmethod
     def _split_evidence(market_state: MarketState, direction: str) -> "tuple[list[str], list[str]]":
         # Part XXV — evidence carries no directional reading, so supporting vs
@@ -1026,6 +1334,7 @@ class CognitiveBrain:
                 "allow_scale_in": self.allow_scale_in,
                 "decisions": self._decisions,
                 "campaigns_opened": self._campaigns_opened,
+                "independent_originations": self._independent_originations,
                 "observed": self._observed,
                 "managed": self._managed,
                 "faults": self._faults,
