@@ -462,6 +462,11 @@ class SystemContext:
             logger.warning("[SystemContext] SituationEngine init failed: {}", exc)
 
         # ── DecisionEngine ──────────────────────────────────────────
+        # NOTE: the DecisionEngine's in-trade MANAGEMENT path is RETIRED — the
+        # single Cognitive Brain is the sole market manager (Constitution Part
+        # VI/X); the deterministic protectors remain the Part X safety floor.
+        # The engine is still constructed here for the entry/decision paths that
+        # continue to consume it.
         try:
             from decision.engine import DecisionEngine as _DecisionEngine
             de_cfg = getattr(config, "decision", None)
@@ -1152,6 +1157,52 @@ class SystemContext:
                 )
 
                 cog_cfg = getattr(config, "cognition", None)
+                # Part VII — institutional memory (Phase H). Best-effort: a
+                # store fault leaves memory None (observational, fail-open).
+                _memory = None
+                try:
+                    if bool(getattr(cog_cfg, "memory_enabled", True)
+                            if cog_cfg is not None else True):
+                        from cognition.memory import get_campaign_memory as _get_memory
+                        _memory = _get_memory()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[SystemContext] campaign memory init failed: {}", exc)
+                    _memory = None
+                ctx.campaign_memory = _memory
+                # Phase J (Part VIII) — adaptive influence ledger + Brain
+                # calibration. The ledger always learns from outcomes; whether its
+                # weights are APPLIED to consolidation is gated by influence_enabled
+                # (default shadow). Fail-safe: a fault leaves them None.
+                _influence = None
+                _calibration = None
+                try:
+                    from cognition.influence import (
+                        CalibrationTracker as _CalibrationTracker,
+                        InfluenceLedger as _InfluenceLedger,
+                    )
+                    _influence = _InfluenceLedger(
+                        min_samples=int(getattr(cog_cfg, "influence_min_samples", 20)
+                                        if cog_cfg is not None else 20),
+                        min_weight=float(getattr(cog_cfg, "influence_min_weight", 0.5)
+                                         if cog_cfg is not None else 0.5),
+                        max_weight=float(getattr(cog_cfg, "influence_max_weight", 1.5)
+                                         if cog_cfg is not None else 1.5),
+                    )
+                    _calibration = _CalibrationTracker()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[SystemContext] influence/calibration init failed: {}", exc)
+                    _influence = _calibration = None
+                ctx.influence_ledger = _influence
+                ctx.brain_calibration = _calibration
+                # Art XXXI — applying the learned weights to live consolidation is
+                # safe by default: the ledger's significance floor leaves any
+                # under-sampled source neutral (1.0) and only attenuates
+                # demonstrated poor performers. Wire it True unless config or env
+                # explicitly disables it.
+                _influence_enabled = bool(
+                    getattr(cog_cfg, "influence_weighting_enabled", True)
+                    if cog_cfg is not None else True
+                )
                 ctx.cognitive_brain = _CognitiveBrain(
                     reasoner=ctx.llm_reasoner,
                     min_confidence_to_act=float(
@@ -1199,46 +1250,12 @@ class SystemContext:
                         getattr(cog_cfg, "manage_min_interval_seconds", 8.0)
                         if cog_cfg is not None else 8.0
                     ),
+                    # Art XXXI — close the learning loop: the Brain's stated
+                    # confidence is corrected by its demonstrated calibration
+                    # (Decision → Outcome → Attribution → Calibration → future
+                    # reasoning). Neutral until the tracker has enough samples.
+                    calibration=_calibration,
                 )
-                # Part VII — institutional memory (Phase H). Best-effort: a
-                # store fault leaves memory None (observational, fail-open).
-                _memory = None
-                try:
-                    if bool(getattr(cog_cfg, "memory_enabled", True)
-                            if cog_cfg is not None else True):
-                        from cognition.memory import get_campaign_memory as _get_memory
-                        _memory = _get_memory()
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("[SystemContext] campaign memory init failed: {}", exc)
-                    _memory = None
-                ctx.campaign_memory = _memory
-                # Phase J (Part VIII) — adaptive influence ledger + Brain
-                # calibration. The ledger always learns from outcomes; whether its
-                # weights are APPLIED to consolidation is gated by influence_enabled
-                # (default shadow). Fail-safe: a fault leaves them None.
-                _influence = None
-                _calibration = None
-                try:
-                    from cognition.influence import (
-                        CalibrationTracker as _CalibrationTracker,
-                        InfluenceLedger as _InfluenceLedger,
-                    )
-                    _influence = _InfluenceLedger(
-                        min_samples=int(getattr(cog_cfg, "influence_min_samples", 20)
-                                        if cog_cfg is not None else 20),
-                        min_weight=float(getattr(cog_cfg, "influence_min_weight", 0.5)
-                                         if cog_cfg is not None else 0.5),
-                        max_weight=float(getattr(cog_cfg, "influence_max_weight", 1.5)
-                                         if cog_cfg is not None else 1.5),
-                    )
-                    _calibration = _CalibrationTracker()
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("[SystemContext] influence/calibration init failed: {}", exc)
-                    _influence = _calibration = None
-                ctx.influence_ledger = _influence
-                ctx.brain_calibration = _calibration
-                _influence_enabled = bool(getattr(cog_cfg, "influence_enabled", False)
-                                          if cog_cfg is not None else False)
                 # Part XVII — Reasoning Orchestrator: the one Brain may consult
                 # several reasoning engines whose opinions become advisory
                 # Evidence (never a vote). Built only when LLM is enabled AND

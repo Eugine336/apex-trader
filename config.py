@@ -4218,6 +4218,12 @@ class CognitionConfig:
     influence_min_samples: int = 20
     influence_min_weight: float = 0.5
     influence_max_weight: float = 1.5
+    # Art XXXI — learning must feed future reasoning. Applying the learned
+    # per-source influence weights to the live consolidation is SAFE by default:
+    # the ledger's ``influence_min_samples`` significance floor leaves any source
+    # without enough data at the neutral 1.0, and demonstrated poor performers are
+    # only attenuated (bounded by ``influence_min_weight``). Default True.
+    influence_weighting_enabled: bool = True
 
     def __post_init__(self) -> None:
         self.enabled = _llm_env_bool("COGNITION_ENABLED", self.enabled)
@@ -4239,6 +4245,9 @@ class CognitionConfig:
         )
         self.influence_enabled = _llm_env_bool(
             "COGNITION_INFLUENCE_ENABLED", self.influence_enabled
+        )
+        self.influence_weighting_enabled = _llm_env_bool(
+            "COGNITION_INFLUENCE_WEIGHTING_ENABLED", self.influence_weighting_enabled
         )
         self.origination_mode = (
             os.getenv("COGNITION_ORIGINATION_MODE", self.origination_mode) or "live"

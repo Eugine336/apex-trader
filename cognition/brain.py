@@ -94,6 +94,7 @@ class CognitiveBrain:
         reward_r_default: float = 2.0,
         min_expected_value: Optional[float] = None,
         manage_min_interval_seconds: Optional[float] = None,
+        calibration: Optional[Any] = None,
     ) -> None:
         self._reasoner = reasoner
         self.min_confidence_to_act = min(1.0, max(0.0, float(min_confidence_to_act)))
@@ -123,6 +124,11 @@ class CognitiveBrain:
             else max(0.0, float(manage_min_interval_seconds))
         )
         self._reason_supports_override = self._detect_override_support(reasoner)
+        # Part VIII / Art XXXI — the Brain's own confidence is corrected by its
+        # demonstrated calibration (Decision → Outcome → Attribution →
+        # Calibration → Future reasoning). Observational until wired; a None
+        # tracker (or one below its sample floor) leaves confidence untouched.
+        self._calibration = calibration
         self._decisions = 0
         self._campaigns_opened = 0
         self._observed = 0
@@ -261,6 +267,31 @@ class CognitiveBrain:
         # a legacy single-confidence reply is unchanged (every dim == confidence).
         conf_dims, eff_conf, limiting_dim = self._confidence_profile(opinion, confidence)
 
+        # Art XXXI — apply the Brain's demonstrated calibration correction to the
+        # effective confidence. If the Brain has been over-predicting, this
+        # attenuates conviction (factor < 1.0); if under-predicting, it amplifies
+        # (factor > 1.0). Neutral (1.0) until the tracker has enough samples.
+        calib_factor = 1.0
+        calib_note = "not active (insufficient samples or not wired)"
+        if self._calibration is not None:
+            try:
+                calib_factor = float(self._calibration.calibration_adjustment())
+            except Exception as exc:  # noqa: BLE001 — calibration must never break reasoning
+                logger.debug("[brain] calibration fault (%s): %s", symbol, exc)
+                calib_factor = 1.0
+            if calib_factor != 1.0:
+                eff_conf = _clamp01(eff_conf * calib_factor)
+                try:
+                    _m = self._calibration.metrics()
+                    calib_note = (
+                        f"applied: factor {calib_factor:.3f} "
+                        f"(reliability gap {_m.get('reliability_gap', 0.0):.3f}, "
+                        f"Brier {_m.get('brier', 0.0):.3f}, "
+                        f"{int(_m.get('samples', 0))} samples)"
+                    )
+                except Exception:  # noqa: BLE001
+                    calib_note = f"applied: factor {calib_factor:.3f}"
+
         supporting, contradicting = self._split_evidence(market_state, direction)
         # Part IX Art 1/7 — a genuine expected value (in units of risk, R) from
         # the win-probability (confidence) and the payoff geometry, replacing the
@@ -298,6 +329,7 @@ class CognitiveBrain:
             f"timing {conf_dims['timing']:.2f} / execution {conf_dims['execution']:.2f} "
             f"→ effective {eff_conf:.2f} (weakest: {limiting_dim})"
         )
+        questions["calibration_correction"] = calib_note
         # Surface the remaining Part XXV context on the decision record for the
         # dashboard/governance (extra keys are harmless to consumers).
         for _k, _v in (("regime", regime), ("opportunity_horizon", opp_horizon),
@@ -380,9 +412,22 @@ class CognitiveBrain:
             questions_answered=questions, do_nothing_considered=True,
             reasoner=self.reasoner_name,
         )
+        # Part XXVIII — capital is competitive: sizing reflects EXPECTED VALUE,
+        # not confidence alone. Normalise EV against the reward multiple and take
+        # the LESSER of confidence and EV-proportional sizing — a high-confidence
+        # trade with poor payoff geometry is sized down; an excellent-payoff
+        # trade is sized to (never above) its confidence, for risk control.
+        ev_normalized = min(1.0, max(0.0, expected_value / max(0.01, self.reward_r_default)))
+        desired_exposure = round(min(eff_conf, ev_normalized), 4)
+        questions["sizing_rationale"] = (
+            f"exposure {desired_exposure:.4f} = min(confidence {eff_conf:.2f}, "
+            f"ev_normalized {ev_normalized:.2f}) — EV {expected_value:.4f}R "
+            f"on {reward_r:.1f}R reward"
+        )
         campaign = CampaignSpecification(
             symbol=symbol, thesis=decision.thesis, direction=direction,
-            desired_exposure=round(eff_conf, 4),
+            desired_exposure=desired_exposure,
+            expected_value=expected_value,
             initial_execution_intent={"kind": "market", "confidence": round(eff_conf, 4)},
             supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
             confidence=eff_conf, invalidation_conditions=decision.invalidation_conditions,

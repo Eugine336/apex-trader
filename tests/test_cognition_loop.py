@@ -799,8 +799,9 @@ def _pos_r(symbol, direction="LONG", profit_r=0.0):
 
 
 def test_reallocation_trims_weakest_correlated_via_sink():
-    """Art 11 — an over-concentrated correlated book trims its weakest campaign
-    through the SAME management sink (partial_close), driven by Brain health."""
+    """Art 11/XXVII — an over-concentrated correlated book trims its weakest
+    campaign through the SAME management sink (partial_close), but ONLY once the
+    Brain's reasoned verdict de-risks the candidate (SCALE_OUT here)."""
     from brain.campaign import CampaignRegistry
     reg = CampaignRegistry(enabled=True)
     positions = [
@@ -810,7 +811,7 @@ def test_reallocation_trims_weakest_correlated_via_sink():
     ]
     calls = []
     loop = CognitionLoop(
-        _ManageBrain(DecisionType.HOLD), _StubConsolidator(), lambda: [],
+        _ManageBrain(DecisionType.SCALE_OUT), _StubConsolidator(), lambda: [],
         position_source=lambda: positions, management_mode="live",
         campaign_registry=reg, reallocation_enabled=True, clock=_ManualClock(),
     )
@@ -820,6 +821,28 @@ def test_reallocation_trims_weakest_correlated_via_sink():
     assert trims, "no reallocation trim was issued"
     assert any(a.symbol == "AUDUSD" for a in trims)
     assert loop.get_status()["reallocations"] >= 1
+
+
+def test_reallocation_brain_veto_prevents_mechanical_trim():
+    """Art XXVII — the registry proposes a trim but a confident Brain HOLD
+    vetoes it: the reasoned portfolio view overrides the mechanical rule."""
+    from brain.campaign import CampaignRegistry
+    reg = CampaignRegistry(enabled=True)
+    positions = [
+        _pos_r("EURUSD", "LONG", profit_r=2.0),
+        _pos_r("GBPUSD", "LONG", profit_r=1.0),
+        _pos_r("AUDUSD", "LONG", profit_r=-0.5),
+    ]
+    calls = []
+    loop = CognitionLoop(
+        _ManageBrain(DecisionType.HOLD), _StubConsolidator(), lambda: [],
+        position_source=lambda: positions, management_mode="live",
+        campaign_registry=reg, reallocation_enabled=True, clock=_ManualClock(),
+    )
+    loop.set_management_sink(lambda action, pos: calls.append(action))
+    loop.run_once()
+    assert [a for a in calls if a.kind == "partial_close"] == []
+    assert loop.get_status()["reallocations"] == 0
 
 
 def test_reallocation_disabled_is_noop():
@@ -839,3 +862,55 @@ def test_reallocation_disabled_is_noop():
     loop.set_management_sink(lambda action, pos: calls.append(action))
     loop.run_once()
     assert [a for a in calls if a.kind == "partial_close"] == []
+
+
+# ── V11: influence weighting applied live when enabled ─────────────────────────
+
+def test_consolidator_applies_influence_weights_when_enabled():
+    """Part VIII / Art XXXI — a source past the significance floor earns a
+    non-neutral weight that is applied to the live consolidation."""
+    from cognition.influence import InfluenceLedger
+    led = InfluenceLedger(min_samples=10, gain=1.0, max_weight=1.5)
+    for _ in range(10):
+        led.observe("mod.a", won=True)          # 100% win rate → weight 1.5
+    cons = EvidenceConsolidator(ctx=None, influence=led, influence_enabled=True)
+    ev = Evidence(source_module="mod.a", confidence=0.8, polarity=0.0, symbol="EURUSD")
+    ms = cons.build("EURUSD", injected=[ev])
+    assert ms.influence_weights.get("mod.a") == 1.5
+    assert ms.consolidation()["influence_weighted"] is True
+
+
+def test_consolidator_neutral_weight_below_min_samples():
+    """A source without enough samples stays neutral (1.0) — the safety floor."""
+    from cognition.influence import InfluenceLedger
+    led = InfluenceLedger(min_samples=20)
+    for _ in range(5):
+        led.observe("mod.a", won=True)          # below significance floor
+    cons = EvidenceConsolidator(ctx=None, influence=led, influence_enabled=True)
+    ev = Evidence(source_module="mod.a", confidence=0.8, polarity=0.0, symbol="EURUSD")
+    ms = cons.build("EURUSD", injected=[ev])
+    assert ms.influence_weights.get("mod.a") == 1.0
+
+
+def test_consolidator_ignores_influence_when_disabled():
+    from cognition.influence import InfluenceLedger
+    led = InfluenceLedger(min_samples=10, gain=1.0, max_weight=1.5)
+    for _ in range(10):
+        led.observe("mod.a", won=True)
+    cons = EvidenceConsolidator(ctx=None, influence=led, influence_enabled=False)
+    ev = Evidence(source_module="mod.a", confidence=0.8, polarity=0.0, symbol="EURUSD")
+    ms = cons.build("EURUSD", injected=[ev])
+    assert ms.consolidation()["influence_weighted"] is False
+
+
+def test_consolidator_influence_enabled_by_default():
+    """Art XXXI — applying learned weights is live by default (safe: the ledger's
+    significance floor leaves under-sampled sources neutral)."""
+    from cognition.influence import InfluenceLedger
+    led = InfluenceLedger(min_samples=10, gain=1.0, max_weight=1.5)
+    for _ in range(10):
+        led.observe("mod.a", won=True)
+    cons = EvidenceConsolidator(ctx=None, influence=led)   # no influence_enabled arg
+    ev = Evidence(source_module="mod.a", confidence=0.8, polarity=0.0, symbol="EURUSD")
+    ms = cons.build("EURUSD", injected=[ev])
+    assert ms.influence_weights.get("mod.a") == 1.5

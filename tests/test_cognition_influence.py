@@ -122,3 +122,39 @@ def test_calibration_overconfident_has_gap_and_brier():
 
 def test_calibration_empty_is_safe():
     assert CalibrationTracker().metrics()["samples"] == 0
+
+
+# ── CalibrationTracker.calibration_adjustment (Art XXXI) ───────────────────────
+
+def test_calibration_adjustment_neutral_below_min_samples():
+    cal = CalibrationTracker(min_samples=30)
+    for _ in range(10):
+        cal.observe(0.9, won=False)
+    assert cal.calibration_adjustment() == 1.0    # not enough data yet
+
+
+def test_calibration_adjustment_attenuates_overconfident_brain():
+    # States 0.90 confidence but only wins 45% → factor 0.45/0.90 = 0.5 → clamp 0.7.
+    cal = CalibrationTracker(min_samples=30)
+    for i in range(100):
+        cal.observe(0.9, won=(i % 20 < 9))       # 45% win rate
+    factor = cal.calibration_adjustment()
+    assert factor < 1.0
+    assert factor == 0.7                          # clamped lower bound
+
+
+def test_calibration_adjustment_amplifies_underconfident_brain():
+    # States 0.50 confidence but wins 90% → factor 0.90/0.50 = 1.8 → clamp 1.3.
+    cal = CalibrationTracker(min_samples=30)
+    for i in range(100):
+        cal.observe(0.5, won=(i % 10 < 9))       # 90% win rate
+    factor = cal.calibration_adjustment()
+    assert factor > 1.0
+    assert factor == 1.3                          # clamped upper bound
+
+
+def test_calibration_adjustment_well_calibrated_is_near_one():
+    cal = CalibrationTracker(min_samples=30)
+    for i in range(100):
+        cal.observe(0.6, won=(i % 10 < 6))       # 60% win rate, 0.6 confidence
+    assert cal.calibration_adjustment() == 1.0

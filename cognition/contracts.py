@@ -457,6 +457,7 @@ class CampaignSpecification:
     thesis: str = ""
     direction: str = "FLAT"            # LONG | SHORT | FLAT
     desired_exposure: float = 0.0      # normalised target exposure the Brain wants
+    expected_value: float = 0.0        # EV in R that justified the sizing (Part XXVIII)
     initial_execution_intent: dict = field(default_factory=dict)
     supporting_evidence_ids: list[str] = field(default_factory=list)
     contradicting_evidence_ids: list[str] = field(default_factory=list)
@@ -484,6 +485,7 @@ class CampaignSpecification:
             "thesis": self.thesis,
             "direction": self.direction,
             "desired_exposure": round(self.desired_exposure, 6),
+            "expected_value": round(self.expected_value, 6),
             "initial_execution_intent": dict(self.initial_execution_intent),
             "supporting_evidence_ids": list(self.supporting_evidence_ids),
             "contradicting_evidence_ids": list(self.contradicting_evidence_ids),

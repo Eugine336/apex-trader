@@ -80,7 +80,7 @@ class EvidenceConsolidator:
         memory: Optional[Any] = None,
         max_analogues: int = 5,
         influence: Optional[Any] = None,
-        influence_enabled: bool = False,
+        influence_enabled: bool = True,
         reasoning: Optional[Any] = None,
         knowledge: Optional[Any] = None,
     ) -> None:
@@ -281,6 +281,18 @@ class EvidenceConsolidator:
                     ms.influence_weights = {
                         s: self._influence.weight_for(s) for s in sources
                     }
+                    # Art XXXI — surface which sources are being actively weighted
+                    # (non-neutral) so the live influence of demonstrated quality
+                    # is observable, not silent. Logged once per build when active.
+                    non_neutral = {
+                        s: w for s, w in ms.influence_weights.items() if w != 1.0
+                    }
+                    if non_neutral:
+                        logger.info(
+                            "[consolidator] influence weighting active (%s): "
+                            "%d/%d sources non-neutral %s",
+                            symbol, len(non_neutral), len(sources), non_neutral,
+                        )
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[consolidator] influence weighting fault (%s): %s", symbol, exc)
         except Exception as exc:  # noqa: BLE001 — consolidation must never break
@@ -947,6 +959,24 @@ class CognitionLoop:
                 last = self._last_realloc_at.get((sym, direction), 0.0)
                 if (t - last) < floor:
                     continue
+                # Part XXVII/XXVIII — reallocation is Brain-reasoned capital
+                # management, not a mechanical trim. The registry only proposes a
+                # CANDIDATE; the Brain has veto power. Ask it to manage this exact
+                # position and only trim when its reasoned verdict de-risks
+                # (EXIT / TIGHTEN_RISK / SCALE_OUT). A confident HOLD overrides the
+                # mechanical concentration rule — the weakest campaign may be about
+                # to turn around, and its capital is not obviously better elsewhere.
+                approved, verdict, verdict_conf = self._reason_reallocation(
+                    tgt, pos, now=now,
+                )
+                logger.info(
+                    "[cognition-loop] REALLOCATE check: registry targets %s for "
+                    "trim, Brain says %s (conf=%.2f) — %s",
+                    sym, verdict, verdict_conf,
+                    "trimming" if approved else "vetoed (holding)",
+                )
+                if not approved:
+                    continue
                 action = _ManagementAction(
                     symbol=sym, kind=str(getattr(tgt, "kind", "partial_close")),
                     direction=direction,
@@ -974,6 +1004,61 @@ class CognitionLoop:
         except Exception as exc:  # noqa: BLE001 — reallocation must never break the loop
             logger.debug("[cognition-loop] reallocation fault: %s", exc)
             return 0
+
+    def _reason_reallocation(
+        self, target: Any, position: Any, *, now: Optional[float] = None,
+    ) -> "tuple[bool, str, float]":
+        """Consult the Brain on a reallocation CANDIDATE (Part XXVII/XXVIII).
+
+        The campaign registry proposes trimming an over-concentrated cluster's
+        weakest campaign, but capital reallocation is a reasoned, portfolio-level
+        decision — "where does the next unit of risk capital have the highest
+        justified expected value?" — not a mechanical rule. This asks the single
+        Brain to manage the exact position; the trim proceeds ONLY when the
+        Brain's verdict de-risks (EXIT / TIGHTEN_RISK / SCALE_OUT). A confident
+        HOLD (or any non-de-risking verdict) vetoes the mechanical trim — the
+        weakest campaign may be about to turn around. Fail-open: when no reasoner
+        is available (or a fault occurs) the deterministic concentration trim
+        still runs as the Part X safety floor. Returns ``(approved, verdict, conf)``.
+        """
+        brain = self._brain
+        if brain is None or not hasattr(brain, "manage"):
+            return True, "unavailable", 0.0
+        if not getattr(brain, "available", True):
+            return True, "unavailable", 0.0
+        try:
+            sym = str(getattr(target, "symbol", "") or "")
+            ms = self._consolidator.build(sym, now=now)
+            output = brain.manage(position, ms, now=now)
+            decision = getattr(output, "decision", None)
+            dtype = getattr(decision, "decision_type", None)
+            verdict = getattr(dtype, "value", None) or str(dtype or "hold")
+            conf = float(getattr(decision, "confidence", 0.0) or 0.0)
+            approved = dtype in (
+                DecisionType.EXIT, DecisionType.TIGHTEN_RISK, DecisionType.SCALE_OUT,
+            )
+            # Part XXVII — annotate the management decision so the portfolio-level
+            # review that produced this verdict is auditable downstream.
+            if decision is not None:
+                try:
+                    qa = getattr(decision, "questions_answered", None)
+                    if isinstance(qa, dict):
+                        qa["reallocation_context"] = (
+                            "portfolio concentration triggered review — Brain "
+                            f"{'approved' if approved else 'vetoed'} trim"
+                        )
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "[cognition-loop] reallocation annotate fault (%s): %s",
+                        sym, exc,
+                    )
+            return approved, str(verdict), conf
+        except Exception as exc:  # noqa: BLE001 — a fault must never disable the safety trim
+            logger.debug(
+                "[cognition-loop] reallocation reasoning fault (%s): %s",
+                getattr(target, "symbol", "?"), exc,
+            )
+            return True, "fault", 0.0
 
     def _campaign_open(self, symbol: str, direction: str, campaign: Any,
                        decision: Any) -> None:

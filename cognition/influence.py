@@ -150,8 +150,9 @@ class CalibrationTracker:
     better). Thread-safe, fail-safe, bounded history.
     """
 
-    def __init__(self, *, history_limit: int = 500) -> None:
+    def __init__(self, *, history_limit: int = 500, min_samples: int = 30) -> None:
         self._limit = max(1, int(history_limit))
+        self.min_samples = max(1, int(min_samples))
         self._samples: list = []          # list[(confidence, won)]
         self._lock = threading.Lock()
 
@@ -183,6 +184,32 @@ class CalibrationTracker:
             "reliability_gap": round(abs(mean_conf - win_rate), 4),
             "brier": round(brier, 4),
         }
+
+    def calibration_adjustment(self) -> float:
+        """Return a multiplicative correction factor for the Brain's confidence.
+
+        If the Brain consistently over-predicts (states 0.70 confidence but
+        only wins 50% of the time), the factor is < 1.0 to attenuate.
+        If the Brain under-predicts, the factor is > 1.0 to amplify.
+        Bounded [0.7, 1.3] and requires ``min_samples`` before activating.
+        Returns 1.0 (neutral) when insufficient data. Never raises.
+        """
+        try:
+            with self._lock:
+                samples = list(self._samples)
+            n = len(samples)
+            if n < self.min_samples:
+                return 1.0
+            mean_conf = sum(c for c, _ in samples) / n
+            win_rate = sum(o for _, o in samples) / n
+            if mean_conf > 0 and win_rate > 0:
+                raw_factor = win_rate / mean_conf
+                clamped = min(1.3, max(0.7, raw_factor))
+                return round(clamped, 4)
+            return 1.0
+        except Exception as exc:  # noqa: BLE001 — calibration must never raise
+            logger.debug("[calibration] adjustment fault: %s", exc)
+            return 1.0
 
     def get_status(self) -> dict:
         return self.metrics()
