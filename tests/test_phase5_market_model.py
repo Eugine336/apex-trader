@@ -36,15 +36,15 @@ def _sa(trend, conf, event=StructureEvent.NONE):
 
 
 class _DevWM:
-    def __init__(self, struct: dict, bias: dict | None = None):
+    def __init__(self, struct: dict, multi_tf_alignment: dict | None = None):
         self._struct = struct
-        self._bias = bias or {}
+        self._alignment = multi_tf_alignment or {}
 
     def structure_by_tf(self) -> dict:
         return dict(self._struct)
 
-    def bias_dict(self) -> dict:
-        return dict(self._bias)
+    def multi_tf_alignment_dict(self) -> dict:
+        return dict(self._alignment)
 
 
 class _DevStore:
@@ -227,17 +227,18 @@ def _first_registry_symbol() -> str:
 
 
 def _wm(symbol, store, h1_trend, direction):
+    # Violation V5 — the WorldModel carries only non-directional facts; the panel
+    # derives its display direction from the structure trend. ``direction`` is
+    # kept in the signature for test readability but no longer stored as a bias.
     return build_world_model(
         symbol=symbol,
         version=store.next_version(),
         timestamp=datetime.now(timezone.utc),
         structure={"H1": _sa(h1_trend, 0.8)},
-        bias={
-            "direction": direction,
-            "long_probability": 0.7 if direction == "LONG" else 0.3,
-            "short_probability": 0.3 if direction == "LONG" else 0.7,
+        multi_tf_alignment={
+            "trend_strength": 0.6,
+            "alignment_degree": 0.7,
             "conflict_score": 0.2,
-            "confidence": 0.6,
             "strength": "MODERATE",
         },
     )

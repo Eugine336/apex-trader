@@ -1199,6 +1199,13 @@ class SystemContext:
                         getattr(cog_cfg, "manage_min_interval_seconds", 8.0)
                         if cog_cfg is not None else 8.0
                     ),
+                    # Violation V9 (Part XXIV/XXV) — fallback round-trip execution
+                    # cost in R subtracted from the Brain's EV when no live
+                    # EXECUTION_QUALITY evidence is present. 0.05 ≈ 5% of R.
+                    default_cost_r=float(
+                        getattr(cog_cfg, "default_execution_cost_r", 0.05)
+                        if cog_cfg is not None else 0.05
+                    ),
                 )
                 # Part VII — institutional memory (Phase H). Best-effort: a
                 # store fault leaves memory None (observational, fail-open).
@@ -1381,6 +1388,42 @@ class SystemContext:
                         ctx.campaign_registry.set_memory_sink(_campaign_close_sink)
                     except Exception as exc:  # noqa: BLE001
                         logger.debug("[SystemContext] close sink wiring failed: {}", exc)
+
+                # Violation V9 — per-symbol round-trip execution-cost estimate in
+                # R for the Brain's EV. Uses the instrument's typical spread and a
+                # nominal stop distance: cost_r ≈ spread_pips / stop_distance_pips
+                # (spread + a slippage allowance). Falls back to the Brain's
+                # default_cost_r when the instrument is unknown. Fail-safe.
+                _default_cost_r = float(
+                    getattr(cog_cfg, "default_execution_cost_r", 0.05)
+                    if cog_cfg is not None else 0.05
+                )
+                _stop_distance_pips = float(
+                    getattr(cog_cfg, "execution_cost_stop_distance_pips", 20.0)
+                    if cog_cfg is not None else 20.0
+                )
+
+                def _execution_cost_source(symbol: str) -> dict:
+                    try:
+                        from config import INSTRUMENT_REGISTRY
+                        info = INSTRUMENT_REGISTRY.get(str(symbol or ""))
+                        if info is None:
+                            return {"estimated_total_cost_r": _default_cost_r}
+                        spread_pips = float(getattr(info, "typical_spread_pips", 0.0) or 0.0)
+                        stop_pips = _stop_distance_pips if _stop_distance_pips > 0 else 20.0
+                        if spread_pips <= 0.0:
+                            return {"estimated_total_cost_r": _default_cost_r}
+                        spread_r = min(0.5, spread_pips / stop_pips)
+                        # Slippage allowance ≈ half the spread cost.
+                        slippage_r = 0.5 * spread_r
+                        return {
+                            "estimated_spread_r": round(spread_r, 6),
+                            "estimated_slippage_r": round(slippage_r, 6),
+                            "estimated_total_cost_r": round(spread_r + slippage_r, 6),
+                        }
+                    except Exception:  # noqa: BLE001 — cost estimate must never break the loop
+                        return {"estimated_total_cost_r": _default_cost_r}
+
                 _consolidator = _EvidenceConsolidator(
                     ctx=ctx,
                     per_module=bool(
@@ -1396,6 +1439,7 @@ class SystemContext:
                     influence_enabled=_influence_enabled,
                     reasoning=_reasoning_orch,
                     knowledge=ctx.knowledge_source,
+                    execution_cost_source=_execution_cost_source,
                 )
                 # Part XXI — record + grade every council consultation.
                 if ctx.consultation_ledger is not None:
