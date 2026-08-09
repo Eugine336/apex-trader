@@ -110,6 +110,9 @@ class CognitiveBrain:
         independent_min_confidence: float = 0.7,
         independent_max_uncertainty: float = 0.5,
         independent_sizing_multiplier: float = 0.5,
+        pattern_tracker: Optional[Any] = None,
+        max_correlated_positions: int = 3,
+        max_total_exposure: float = 3.0,
     ) -> None:
         self._reasoner = reasoner
         self.min_confidence_to_act = min(1.0, max(0.0, float(min_confidence_to_act)))
@@ -164,6 +167,22 @@ class CognitiveBrain:
         )
         self.independent_sizing_multiplier = min(1.0, max(0.0, float(independent_sizing_multiplier)))
         self._independent_originations = 0
+        # Article X — pattern EVOLUTION. An optional
+        # :class:`~cognition.pattern_evolution.PatternOutcomeTracker` learns which
+        # detected structural patterns preceded winning vs losing campaigns and
+        # returns a bounded per-pattern confidence modifier. When wired, the Brain
+        # multiplies its effective conviction by the average modifier of the
+        # leading hypothesis's supporting patterns (Decision → Outcome →
+        # Attribution → future reasoning). None ⇒ patterns are treated as neutral
+        # (modifier 1.0), preserving prior behaviour.
+        self._pattern_tracker = pattern_tracker
+        # Articles XXVII / XXVIII — portfolio-level reasoning. The Brain reasons
+        # over the WHOLE book simultaneously (not only per-symbol): it caps how
+        # many correlated same-direction positions it will hold in one asset
+        # class and bounds total open exposure, demoting the lower-EV
+        # opportunities when either limit is breached.
+        self.max_correlated_positions = max(1, int(max_correlated_positions))
+        self.max_total_exposure = max(0.0, float(max_total_exposure))
         # Management re-reasons an OPEN position on a tighter, INDEPENDENT cadence
         # than origination (Q40 — reasoned management, not a static algo). None ⇒
         # use the reasoner's global interval (unchanged). Applied only on the
@@ -344,6 +363,15 @@ class CognitiveBrain:
         # a legacy single-confidence reply is unchanged (every dim == confidence).
         conf_dims, eff_conf, limiting_dim = self._confidence_profile(opinion, confidence)
 
+        # Article XIX — the Council is graded on reasoning QUALITY, not counted.
+        # A shallow advisor reply (bare direction + confidence) is trusted far
+        # less than a deep one that states its hypothesis, invalidation, expected
+        # excursions and alternatives. The quality score (0.1–1.0) pulls a shallow
+        # opinion's conviction toward the act threshold for SIZING, so a thin read
+        # cannot claim full size even if its stated confidence is high; a fully
+        # reasoned opinion keeps its stated conviction.
+        quality_score, quality_note = self._evaluate_reasoning_quality(opinion)
+
         # Art XXXI — apply the Brain's demonstrated calibration correction to the
         # effective confidence. If the Brain has been over-predicting, this
         # attenuates conviction (factor < 1.0); if under-predicting, it amplifies
@@ -406,6 +434,14 @@ class CognitiveBrain:
         brain_lead = self._native.leading(brain_hypotheses or [])
         eff_conf, brain_adv_synthesis = self._integrate_brain(
             direction, eff_conf, brain_lead, analysis)
+
+        # Article X — pattern EVOLUTION. When a pattern tracker is wired and the
+        # leading hypothesis rests on detected structural patterns, weight the
+        # effective conviction by those patterns' DEMONSTRATED edge: a pattern
+        # that keeps losing attenuates conviction, one that keeps winning
+        # amplifies it (bounded, and neutral until statistically meaningful).
+        eff_conf, pattern_mod_note, lead_pattern_names = self._apply_pattern_modifier(
+            eff_conf, brain_lead)
 
         supporting, contradicting = self._split_evidence(market_state, direction)
         # Part IX Art 1/7 — a genuine expected value (in units of risk, R) from
@@ -470,6 +506,16 @@ class CognitiveBrain:
             f"→ effective {eff_conf:.2f} (weakest: {limiting_dim})"
         )
         questions["calibration_correction"] = calib_note
+        # Article XIX — record how the advisor's reasoning quality weighted its
+        # confidence contribution (observability + audit).
+        questions["advisor_reasoning_quality"] = quality_note
+        # Article X — record the pattern-evolution confidence modification and the
+        # supporting pattern names (the loop uses the latter to record the
+        # origination against each pattern for outcome learning).
+        if pattern_mod_note:
+            questions["pattern_confidence_modifier"] = pattern_mod_note
+        if lead_pattern_names:
+            questions["supporting_patterns"] = list(lead_pattern_names)
         # Surface the remaining Part XXV context on the decision record for the
         # dashboard/governance (extra keys are harmless to consumers).
         for _k, _v in (("regime", regime), ("opportunity_horizon", opp_horizon),
@@ -672,11 +718,17 @@ class CognitiveBrain:
         # trade with poor payoff geometry is sized down; an excellent-payoff
         # trade is sized to (never above) its confidence, for risk control.
         ev_normalized = min(1.0, max(0.0, expected_value / max(0.01, self.reward_r_default)))
-        desired_exposure = round(min(eff_conf, ev_normalized), 4)
+        # Article XIX — a shallow advisor reply is sized down: the effective
+        # conviction is pulled toward the act threshold in proportion to how thin
+        # its reasoning was. A fully reasoned opinion (quality 1.0) is unaffected.
+        weighted_confidence = _clamp01(
+            eff_conf * quality_score + (1.0 - quality_score) * self.min_confidence_to_act)
+        desired_exposure = round(min(weighted_confidence, ev_normalized), 4)
         questions["sizing_rationale"] = (
-            f"exposure {desired_exposure:.4f} = min(confidence {eff_conf:.2f}, "
-            f"ev_normalized {ev_normalized:.2f}) — EV {expected_value:.4f}R "
-            f"on {reward_r:.1f}R reward"
+            f"exposure {desired_exposure:.4f} = min(quality-weighted confidence "
+            f"{weighted_confidence:.2f}, ev_normalized {ev_normalized:.2f}) — "
+            f"effective confidence {eff_conf:.2f} x reasoning quality {quality_score:.2f}, "
+            f"EV {expected_value:.4f}R on {reward_r:.1f}R reward"
         )
         campaign = CampaignSpecification(
             symbol=symbol, thesis=decision.thesis, direction=direction,
@@ -689,6 +741,183 @@ class CognitiveBrain:
             decision_id=decision.decision_id,
         )
         return self._record(BrainOutput(decision=decision, campaign=campaign, direction=direction))
+
+    # ── Portfolio-level reasoning (Articles XXVII / XXVIII) ───────────────
+
+    def reason_portfolio(
+        self, all_outputs: "list[BrainOutput]", existing_positions: "list",
+    ) -> "list[BrainOutput]":
+        """Reason across the WHOLE book at once, after per-symbol reasoning.
+
+        Receives this cycle's OPEN_CAMPAIGN outputs and the current open
+        positions, then ranks by EV, enforces correlated-concentration and total-
+        exposure limits (demoting the lower-EV opportunities to CONTINUE_OBSERVING
+        when a limit is breached), and annotates opportunities that dominate a
+        weaker existing position in the same asset class. Returns the (possibly
+        modified) outputs ranked by EV. Never raises."""
+        try:
+            outputs = [o for o in (all_outputs or []) if o is not None]
+            positions = [p for p in (existing_positions or []) if p is not None]
+            opens = [o for o in outputs if self._is_open_output(o)]
+            # 1) Rank the opportunities by expected value (highest first).
+            opens.sort(key=self._output_ev, reverse=True)
+
+            # 2) Correlated concentration: at most ``max_correlated_positions``
+            # same-direction opportunities per asset class this cycle. Keep the
+            # highest-EV ones (opens are already EV-sorted), demote the rest.
+            class_dir_counts: dict = {}
+            for o in opens:
+                if not self._is_open_output(o):
+                    continue
+                ac = self._asset_class(o.decision.symbol)
+                d = str(getattr(o, "direction", FLAT) or FLAT).upper()
+                if not ac or d not in (LONG, SHORT):
+                    continue
+                key = (ac, d)
+                count = class_dir_counts.get(key, 0)
+                if count >= self.max_correlated_positions:
+                    self._demote_output(o, (
+                        f"portfolio concentration: {count + 1} correlated {ac} "
+                        "positions — deferring lower-EV opportunity"))
+                    continue
+                class_dir_counts[key] = count + 1
+
+            # 3) Total open exposure cap. Demote the LOWEST-EV survivors until the
+            # book-wide exposure (this cycle's opportunities + existing positions)
+            # is within budget.
+            existing_exposure = sum(self._position_exposure(p) for p in positions)
+            survivors = [o for o in opens if self._is_open_output(o)]
+            total = existing_exposure + sum(self._output_exposure(o) for o in survivors)
+            for o in reversed(survivors):  # lowest EV first
+                if total <= self.max_total_exposure:
+                    break
+                exp = self._output_exposure(o)
+                self._demote_output(o, (
+                    f"portfolio exposure cap: total {total:.2f} exceeds "
+                    f"{self.max_total_exposure:.2f} — deferring lowest-EV opportunity"))
+                total -= exp
+
+            # 4) Rebalance hint: an opportunity that dominates a weaker existing
+            # position in the same asset class suggests trimming that position.
+            for o in opens:
+                if not self._is_open_output(o):
+                    continue
+                ac = self._asset_class(o.decision.symbol)
+                if not ac:
+                    continue
+                new_ev = self._output_ev(o)
+                weak = [
+                    self._position_symbol(p) for p in positions
+                    if self._asset_class(self._position_symbol(p)) == ac
+                    and self._position_ev(p) is not None
+                    and self._position_ev(p) < new_ev
+                ]
+                if weak:
+                    try:
+                        o.decision.questions_answered["portfolio_rebalance"] = (
+                            f"higher-EV {ac} opportunity ({new_ev:.4f}R) dominates weaker "
+                            f"existing position(s) {', '.join(sorted(set(weak)))} — "
+                            "consider trimming to free capital")
+                    except Exception:  # noqa: BLE001
+                        pass
+
+            # Return every output ranked by EV (demoted ones retain their EV).
+            return sorted(outputs, key=self._output_ev, reverse=True)
+        except Exception as exc:  # noqa: BLE001 — portfolio reasoning must never break a cycle
+            logger.debug("[brain] reason_portfolio ignored a fault: %s", exc)
+            return list(all_outputs or [])
+
+    @staticmethod
+    def _is_open_output(output: Any) -> bool:
+        try:
+            return (getattr(output, "campaign", None) is not None
+                    and output.decision.decision_type == DecisionType.OPEN_CAMPAIGN)
+        except Exception:  # noqa: BLE001
+            return False
+
+    @staticmethod
+    def _output_ev(output: Any) -> float:
+        try:
+            return float(getattr(output.decision, "expected_value", 0.0) or 0.0)
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    @staticmethod
+    def _output_exposure(output: Any) -> float:
+        try:
+            camp = getattr(output, "campaign", None)
+            if camp is None:
+                return 0.0
+            return max(0.0, float(getattr(camp, "desired_exposure", 0.0) or 0.0))
+        except Exception:  # noqa: BLE001
+            return 0.0
+
+    def _demote_output(self, output: Any, rationale: str) -> None:
+        """Turn an OPEN_CAMPAIGN output into CONTINUE_OBSERVING (Art XXVII/XXVIII)."""
+        try:
+            output.decision.decision_type = DecisionType.CONTINUE_OBSERVING
+            output.decision.campaign_recommendation = "observe"
+            output.decision.risk_rationale = rationale
+            try:
+                output.decision.questions_answered["portfolio_decision"] = rationale
+            except Exception:  # noqa: BLE001
+                pass
+            output.campaign = None
+            output.direction = FLAT
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[brain] demote_output fault: %s", exc)
+
+    @staticmethod
+    def _asset_class(symbol: str) -> str:
+        """Coarse asset-class grouping for correlation (Art XXVII). '' if unknown."""
+        s = str(symbol or "").upper()
+        if any(x in s for x in ("BTC", "ETH", "SOL", "XRP")):
+            return "crypto"
+        if any(x in s for x in ("XAU", "XAG")):
+            return "metals"
+        if any(x in s for x in ("SPX", "NDX", "DJI", "RUT")):
+            return "equity_index"
+        if any(x in s for x in ("EUR", "GBP", "JPY", "AUD", "NZD", "CAD", "CHF")):
+            return "forex"
+        if any(x in s for x in ("CL", "NG")):
+            return "energy"
+        return ""
+
+    @staticmethod
+    def _position_symbol(pos: Any) -> str:
+        try:
+            v = getattr(pos, "symbol", None)
+            if v is None and isinstance(pos, dict):
+                v = pos.get("symbol")
+            return str(v or "")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    @staticmethod
+    def _position_exposure(pos: Any) -> float:
+        try:
+            for attr in ("desired_exposure", "size", "exposure"):
+                v = getattr(pos, attr, None)
+                if v is None and isinstance(pos, dict):
+                    v = pos.get(attr)
+                if v is not None:
+                    return max(0.0, float(v))
+        except Exception:  # noqa: BLE001
+            pass
+        return 0.0
+
+    @staticmethod
+    def _position_ev(pos: Any) -> Optional[float]:
+        try:
+            for attr in ("expected_value", "ev"):
+                v = getattr(pos, attr, None)
+                if v is None and isinstance(pos, dict):
+                    v = pos.get(attr)
+                if v is not None:
+                    return float(v)
+        except Exception:  # noqa: BLE001
+            pass
+        return None
 
     # ── Management (Phase F — Brain drives the open campaign) ─────────────
 
@@ -1101,6 +1330,88 @@ class CognitiveBrain:
         except Exception:  # noqa: BLE001 — integration must never break reasoning
             return eff_conf, ""
 
+    @staticmethod
+    def _evaluate_reasoning_quality(opinion: Any) -> "tuple[float, str]":
+        """Score an advisor opinion's reasoning DEPTH 0.1–1.0 (Article XIX).
+
+        The Council is weighted by reasoning quality, not merely counted for
+        quorum. Seven structural signals (a stated hypothesis, its invalidation,
+        expected favourable/adverse excursions, alternative hypotheses, the key
+        uncertainty, and what-would-change-my-mind) each contribute, plus a bonus
+        when the full multidimensional confidence profile is supplied. A bare
+        direction+confidence reply floors at 0.1; a fully reasoned opinion
+        approaches 1.0. Returns ``(score, explanation)``. Never raises.
+        """
+        try:
+            def _present(attr: str) -> bool:
+                v = getattr(opinion, attr, None)
+                return bool(str(v).strip()) if v is not None else False
+
+            def _list_has(attr: str) -> bool:
+                v = getattr(opinion, attr, None)
+                try:
+                    return len(list(v or [])) >= 1
+                except TypeError:
+                    return False
+
+            raw = 0.0
+            signals: list[str] = []
+            if _present("primary_hypothesis"):
+                raw += 0.15; signals.append("hypothesis")
+            if _present("invalidation"):
+                raw += 0.15; signals.append("invalidation")
+            if _present("expected_favorable_excursion"):
+                raw += 0.10; signals.append("efe")
+            if _present("expected_adverse_excursion"):
+                raw += 0.10; signals.append("eae")
+            if _list_has("alternative_hypotheses"):
+                raw += 0.10; signals.append("alternatives")
+            if _present("key_uncertainty"):
+                raw += 0.10; signals.append("key_uncertainty")
+            if _list_has("what_would_change_my_mind"):
+                raw += 0.10; signals.append("wcm")
+            dims = ("thesis_confidence", "opportunity_confidence",
+                    "timing_confidence", "execution_confidence")
+            if all(getattr(opinion, d, None) is not None for d in dims):
+                raw += 0.20; signals.append("confidence_dims")
+            score = min(1.0, max(0.1, raw))
+            note = (
+                f"reasoning quality {score:.2f} from {len(signals)} signal(s): "
+                f"{', '.join(signals) or 'none (bare direction+confidence)'}"
+            )
+            return score, note
+        except Exception:  # noqa: BLE001 — quality scoring must never break reasoning
+            return 1.0, "reasoning quality not evaluated (fault)"
+
+    def _apply_pattern_modifier(
+        self, eff_conf: float, brain_lead: Optional[BrainHypothesis],
+    ) -> "tuple[float, str, list[str]]":
+        """Weight conviction by the leading hypothesis's patterns' demonstrated
+        edge (Article X). No-op (returns ``eff_conf`` unchanged) when no tracker
+        is wired or the hypothesis rests on no detected pattern. Never raises."""
+        names: list[str] = []
+        try:
+            if brain_lead is not None:
+                from cognition.pattern_rules import pattern_name
+                names = [pattern_name(p)
+                         for p in (getattr(brain_lead, "supporting_patterns", []) or [])]
+                names = [n for n in names if n]
+        except Exception:  # noqa: BLE001
+            names = []
+        if self._pattern_tracker is None or not names:
+            return eff_conf, "", names
+        try:
+            mods = [float(self._pattern_tracker.confidence_modifier(n)) for n in names]
+            avg = (sum(mods) / len(mods)) if mods else 1.0
+            new_conf = _clamp01(eff_conf * avg)
+            note = (
+                f"pattern edge modifier {avg:.3f} (avg over {len(mods)} pattern(s): "
+                f"{', '.join(names)}) → confidence {eff_conf:.2f}→{new_conf:.2f}"
+            )
+            return new_conf, note, names
+        except Exception:  # noqa: BLE001 — pattern weighting must never break reasoning
+            return eff_conf, "", names
+
     def _originate_independent(
         self, symbol: str, consolidation: dict,
         analysis: Optional[EvidenceAnalysis], hypotheses: "list[BrainHypothesis]",
@@ -1128,9 +1439,13 @@ class CognitiveBrain:
             direction = lead.direction_implication
             uncertainty = _clamp01(consolidation.get("aggregate_uncertainty", 1.0)) \
                 if consolidation else analysis.evidence_uncertainty
+            # Article X — weight the lead confidence by its patterns' demonstrated
+            # edge before computing EV (neutral when no tracker is wired).
+            lead_conf, pattern_mod_note, lead_pattern_names = self._apply_pattern_modifier(
+                _clamp01(lead.confidence), lead)
             reward_r, risk_r = self.reward_r_default, 1.0
             cost_r = self.default_cost_r
-            expected_value = expected_value_r(lead.confidence, reward_r, risk_r, cost_r=cost_r)
+            expected_value = expected_value_r(lead_conf, reward_r, risk_r, cost_r=cost_r)
             # EV must still be positive to justify capital when acting alone.
             if self.min_expected_value is not None and expected_value < self.min_expected_value:
                 return None
@@ -1163,7 +1478,11 @@ class CognitiveBrain:
                 "brain_book_comparison": considered,
                 "reasoner_state": reason_txt,
             }
-            base_exposure = min(lead.confidence,
+            if pattern_mod_note:
+                questions["pattern_confidence_modifier"] = pattern_mod_note
+            if lead_pattern_names:
+                questions["supporting_patterns"] = list(lead_pattern_names)
+            base_exposure = min(lead_conf,
                                 min(1.0, max(0.0, expected_value / max(0.01, self.reward_r_default))))
             desired_exposure = round(self.independent_sizing_multiplier * base_exposure, 4)
             questions["sizing_rationale"] = (
@@ -1175,14 +1494,14 @@ class CognitiveBrain:
                 + [h.statement for h in hypotheses if h is not lead][:3]
             )
             brain_hyps = self._build_hypotheses(
-                direction, lead.confidence, reward_r, risk_r,
+                direction, lead_conf, reward_r, risk_r,
                 lead.statement, [h.statement for h in hypotheses if h is not lead],
                 lead.invalidation, [], [],
             )
             decision = DecisionPackage(
                 symbol=symbol, decision_type=DecisionType.OPEN_CAMPAIGN,
                 thesis=lead.statement,
-                confidence=lead.confidence, uncertainty=uncertainty,
+                confidence=lead_conf, uncertainty=uncertainty,
                 expected_value=expected_value,
                 campaign_recommendation=f"open {direction}",
                 risk_rationale="native opportunity — originated without advisor (Article X)",
@@ -1195,9 +1514,9 @@ class CognitiveBrain:
                 symbol=symbol, thesis=lead.statement, direction=direction,
                 desired_exposure=desired_exposure, expected_value=expected_value,
                 initial_execution_intent={"kind": "market",
-                                          "confidence": round(lead.confidence, 4),
+                                          "confidence": round(lead_conf, 4),
                                           "independent_origination": True},
-                confidence=lead.confidence,
+                confidence=lead_conf,
                 invalidation_conditions=invalidation_conditions,
                 objectives=[f"harvest {direction} opportunity discovered from native analysis"],
                 decision_id=decision.decision_id,
@@ -1206,7 +1525,7 @@ class CognitiveBrain:
                 self._independent_originations += 1
             logger.info(
                 "[brain] INDEPENDENT ORIGINATION (%s): %s %s @ conf %.2f, EV %.4fR — no advisor",
-                symbol, direction, lead.statement[:60], lead.confidence, expected_value,
+                symbol, direction, lead.statement[:60], lead_conf, expected_value,
             )
             return self._record(BrainOutput(
                 decision=decision, campaign=campaign, direction=direction))

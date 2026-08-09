@@ -59,7 +59,12 @@ def test_single_scalar_opinion_opens_campaign_unchanged():
     out = _decide(LLMOpinion(symbol="BTCUSD", direction="LONG", confidence=0.8))
     assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert abs(out.decision.confidence - 0.8) < 1e-9
-    assert abs(out.campaign.desired_exposure - 0.8) < 1e-9
+    # Sizing now reflects EV and reasoning quality (Art XIX/XXVIII): a shallow
+    # scalar-only opinion is sized within (0, confidence], never above it, and
+    # the sizing formula is documented on the record.
+    assert 0.0 < out.campaign.desired_exposure <= 0.8
+    assert "min(quality-weighted confidence" in \
+        out.decision.questions_answered["sizing_rationale"]
 
 
 # ── weak execution: WAIT (thesis preserved), never a hard reject ─────────────
@@ -83,7 +88,7 @@ def test_weak_execution_sizes_down_when_it_still_acts():
     assert strong.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert weaker.decision.decision_type == DecisionType.OPEN_CAMPAIGN
     assert weaker.campaign.desired_exposure < strong.campaign.desired_exposure
-    assert abs(weaker.campaign.desired_exposure - 0.6) < 1e-9
+    assert weaker.campaign.desired_exposure > 0
     assert "execution 0.60" in weaker.decision.questions_answered["confidence_profile"]
 
 

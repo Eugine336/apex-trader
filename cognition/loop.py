@@ -458,6 +458,7 @@ class CognitionLoop:
         reallocation_max_per_component: int = 2,
         reallocation_concentration_limit: float = 0.6,
         reallocation_trim_fraction: float = 0.5,
+        pattern_tracker: Optional[Any] = None,
         name: str = "cognition-loop",
     ) -> None:
         self._brain = brain
@@ -546,6 +547,14 @@ class CognitionLoop:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[cognition-loop] portfolio source wiring fault: %s", exc)
         self._open_keys: set = set()
+        # Article X — pattern EVOLUTION. When wired, the loop feeds the tracker
+        # the originated patterns at campaign open (via ``_record_open_memory``)
+        # and their realised outcome at campaign close (via management), so the
+        # Brain can learn each pattern's demonstrated edge. Observational — never
+        # drives execution. ``_origination_patterns`` remembers which patterns a
+        # symbol's open campaign rested on, so the close can attribute the outcome.
+        self._pattern_tracker = pattern_tracker
+        self._origination_patterns: dict = {}
 
     def set_origination_sink(self, sink: Optional[Callable[[Any], None]]) -> None:
         """Wire the live order-submission sink (set by the system that owns the
@@ -638,13 +647,47 @@ class CognitionLoop:
             return 0
         self._open_keys = self._current_open_keys()
         made = 0
+        cycle_outputs: list = []
         for symbol in self._select_cycle_batch(symbols):
-            made += self._reason_over_symbol(symbol, now=now)
+            output = self._reason_over_symbol(symbol, now=now)
+            if output is not None:
+                made += 1
+                cycle_outputs.append(output)
         self._cycles += 1
         self._decisions += made
+        # Articles XXVII / XXVIII — reason across the WHOLE book at once before
+        # originating: rank this cycle's opportunities by EV and enforce
+        # correlated-concentration / total-exposure limits, demoting the
+        # lower-EV opportunities. Only then originate the survivors. Fail-safe:
+        # a brain without ``reason_portfolio`` (or a fault) leaves the per-symbol
+        # outputs untouched.
+        portfolio_outputs = self._reason_portfolio(cycle_outputs)
+        if self.origination_mode != "off":
+            for output in portfolio_outputs:
+                self._maybe_originate(output, now=now)
         self._manage_open_positions(now=now)
         self._maybe_author_operations(now=now)
         return made
+
+    def _reason_portfolio(self, cycle_outputs: list) -> list:
+        """Filter this cycle's outputs through the Brain's book-wide reasoning.
+
+        Fail-safe: returns the inputs unchanged when the brain has no
+        ``reason_portfolio`` method or the call faults."""
+        if not cycle_outputs:
+            return cycle_outputs
+        fn = getattr(self._brain, "reason_portfolio", None)
+        if not callable(fn):
+            return cycle_outputs
+        try:
+            existing = []
+            if self._position_source is not None:
+                existing = list(self._position_source() or [])
+            result = fn(list(cycle_outputs), existing)
+            return list(result) if result is not None else cycle_outputs
+        except Exception as exc:  # noqa: BLE001 — portfolio reasoning must never break the loop
+            logger.debug("[cognition-loop] reason_portfolio fault: %s", exc)
+            return cycle_outputs
 
     def _select_cycle_batch(self, symbols: list) -> list:
         """Round-robin the periodic cycle across the FULL symbol universe.
@@ -672,11 +715,14 @@ class CognitionLoop:
         self._cycle_offset = (off + cap) % n
         return batch
 
-    def _reason_over_symbol(self, symbol: str, *, now: Optional[float] = None) -> int:
-        """Consolidate + reason over one symbol. Returns 1 on a decision, else 0.
+    def _reason_over_symbol(self, symbol: str, *, now: Optional[float] = None) -> Optional[Any]:
+        """Consolidate + reason over one symbol. Returns the BrainOutput, else None.
 
         The shared per-symbol body used by both the periodic cycle and the
-        event-driven path. Fail-safe: one symbol's fault never propagates.
+        event-driven path. Origination is intentionally NOT performed here: the
+        caller collects the outputs of a whole cycle and originates only AFTER
+        book-wide portfolio reasoning (Art XXVII/XXVIII). Fail-safe: one symbol's
+        fault never propagates.
         """
         is_open_check = self._is_market_open
         if is_open_check is not None:
@@ -686,7 +732,7 @@ class CognitionLoop:
                         "[cognition-loop] %s market closed — skipping reasoning "
                         "(origination, not management)", symbol,
                     )
-                    return 0
+                    return None
             except Exception as exc:  # noqa: BLE001
                 # Fail-open: a faulting check must never block reasoning.
                 logger.debug("[cognition-loop] market-open check faulted for %s: %s", symbol, exc)
@@ -723,8 +769,6 @@ class CognitionLoop:
                 logger.debug("[cognition-loop] degradation-log fault (%s): %s", symbol, exc)
             if self._memory is not None:
                 self._record_open_memory(output, ms, now=now)
-            if self.origination_mode != "off":
-                self._maybe_originate(output, now=now)
             # Part XVIII Art 13 — management is continuous and event-driven, not
             # clock-gated: the instant a symbol's evidence is re-reasoned (on a
             # periodic pass OR an event wake), immediately manage that symbol's
@@ -732,10 +776,10 @@ class CognitionLoop:
             # backstop for positions whose symbol wasn't in this pass's slice.
             if self.management_mode != "off":
                 self._manage_symbol(symbol, now=now)
-            return 1
+            return output
         except Exception as exc:  # noqa: BLE001 — one symbol must not stop the loop
             logger.warning("[cognition-loop] reason(%s) FAILED: %s", symbol, exc)
-            return 0
+            return None
 
     def reason_symbol_now(self, symbol: str, *, now: Optional[float] = None) -> int:
         """Reason over a single symbol immediately (event-driven wake).
@@ -748,7 +792,12 @@ class CognitionLoop:
             self._open_keys = self._current_open_keys()
         except Exception:  # noqa: BLE001
             pass
-        made = self._reason_over_symbol(symbol, now=now)
+        output = self._reason_over_symbol(symbol, now=now)
+        made = 1 if output is not None else 0
+        # Event-driven origination happens per symbol (no cycle-wide book to rank
+        # against); portfolio-level reasoning is a periodic-cycle concern.
+        if output is not None and self.origination_mode != "off":
+            self._maybe_originate(output, now=now)
         self._decisions += made
         self._event_reasons += made
         return made
@@ -898,8 +947,35 @@ class CognitionLoop:
                 campaign_id=str(getattr(campaign, "campaign_id", "") or ""), spec=spec,
             )
             self._memory_opens += 1
+            # Article X — pattern EVOLUTION. Record each detected pattern's
+            # origination so its realised outcome can be attributed at close.
+            self._record_pattern_originations(output, symbol, direction, now=now)
         except Exception as exc:  # noqa: BLE001 — memory must never break the loop
             logger.debug("[cognition-loop] record-open-memory fault: %s", exc)
+
+    def _record_pattern_originations(
+        self, output: Any, symbol: str, direction: str, *, now: Optional[float] = None,
+    ) -> None:
+        """Record the campaign's supporting patterns with the tracker. Fail-safe."""
+        if self._pattern_tracker is None:
+            return
+        try:
+            decision = getattr(output, "decision", None)
+            qa = getattr(decision, "questions_answered", {}) or {}
+            names = qa.get("supporting_patterns") or []
+            if isinstance(names, str):
+                names = [names]
+            names = [str(n).strip() for n in names if str(n).strip()]
+            if not names:
+                return
+            confidence = float(getattr(decision, "confidence", 0.0) or 0.0)
+            ts = _time.time() if now is None else float(now)
+            for name in names:
+                self._pattern_tracker.record_origination(
+                    name, symbol, direction, confidence, ts)
+            self._origination_patterns[symbol] = names
+        except Exception as exc:  # noqa: BLE001 — learning must never break the loop
+            logger.debug("[cognition-loop] pattern origination fault: %s", exc)
 
     def _maybe_originate(self, output: Any, *, now: Optional[float] = None) -> None:
         """Originate an entry from the Brain's CampaignSpecification. Fail-safe.
@@ -1245,12 +1321,36 @@ class CognitionLoop:
             self._managed += 1
             # Part XVIII Art 12 — fold this verdict into live campaign health.
             self._campaign_record(pos, output, now=now)
+            # Article X — a close (EXIT / REVERSE / TERMINATE) resolves the
+            # originated patterns' outcomes so the tracker learns their edge.
+            self._record_pattern_outcome_on_close(pos, output)
             if self.management_mode != "off":
                 self._realise_management(output, pos)
             return 1
         except Exception as exc:  # noqa: BLE001
             logger.warning("[cognition-loop] manage FAILED: %s", exc)
             return 0
+
+    def _record_pattern_outcome_on_close(self, pos: Any, output: Any) -> None:
+        """Attribute a closed campaign's realised outcome to its patterns. Fail-safe."""
+        if self._pattern_tracker is None:
+            return
+        try:
+            dtype = getattr(getattr(output, "decision", None), "decision_type", None)
+            closing = {DecisionType.EXIT, DecisionType.REVERSE, DecisionType.TERMINATE_CAMPAIGN}
+            if dtype not in closing:
+                return
+            symbol = str(getattr(pos, "symbol", "") or "")
+            names = self._origination_patterns.pop(symbol, None)
+            if not names:
+                return
+            pnl_r = getattr(pos, "profit_r", None)
+            pnl_r = float(pnl_r) if pnl_r is not None else 0.0
+            won = pnl_r > 0.0
+            for name in names:
+                self._pattern_tracker.record_outcome(name, symbol, won, pnl_r)
+        except Exception as exc:  # noqa: BLE001 — learning must never break the loop
+            logger.debug("[cognition-loop] pattern outcome fault: %s", exc)
 
     def _realise_management(self, output: Any, position: Any) -> None:
         """Turn a Brain management verdict into a shadow record or a live action.
