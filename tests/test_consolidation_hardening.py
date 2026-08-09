@@ -154,50 +154,42 @@ def test_pnl_pips_failure_logs_warning():
     assert silent not in src
 
 
-# ── developing-store direction pass-through (guard removed) ──────────────────
+# ── developing-store publishes NON-directional structure facts (V5) ──────────
 
 
-def test_developing_store_publishes_structure_direction(monkeypatch):
-    """Developing analysis publishes the forming-bar structure's own direction.
+def test_developing_store_publishes_non_directional_facts(monkeypatch):
+    """Developing analysis publishes the forming-bar structure FACTS only.
 
-    The old "confidence only, never direction" guard has been removed. The
-    developing store now publishes whatever direction its structure shows; the
-    confirmed path's ``compute_bias`` (which consumes this as discounted
-    evidence and has its own ``CONFLICTED`` veto) is the sole safety valve. No
-    neutralisation and no developing-guard warning.
+    Violation V5 — the developing WorldModel carries no pre-computed directional
+    bias. It publishes the raw StructureAnalysis (a measurement, trend + its own
+    confidence) and NO directional ``multi_tf_alignment`` conclusion; the
+    Cognitive Brain is the sole authority that forms direction from the facts.
     """
     loop = _dev_loop()
 
-    # Developing bias SHORT — no confirmed read can blank it any more.
-    monkeypatch.setattr(
-        "brain.developing_analysis.compute_bias",
-        lambda struct: {"direction": "SHORT", "score": 80, "confidence": 0.8},
-    )
-
-    with _capture_logs("WARNING") as logs:
-        loop._merge_and_publish("EURUSD", "H1", {"structure": _sa("BEARISH", 0.8)})
+    loop._merge_and_publish("EURUSD", "H1", {"structure": _sa("BEARISH", 0.8)})
 
     published = loop._developing_store.get("EURUSD")
     assert published is not None
-    assert published.bias_dict().get("direction", "") == "SHORT"
-    assert published.bias_dict().get("score", 0) == 80
-    assert not any("developing-guard" in line for line in logs)
+    # The structural fact survives …
+    assert published.structure_by_tf()["H1"].trend == Trend("BEARISH")
+    # … and NO directional bias/alignment conclusion rides on the world model.
+    alignment = published.multi_tf_alignment_dict()
+    assert "direction" not in alignment
+    assert "score" not in alignment
+    assert "long_probability" not in alignment
+    assert "short_probability" not in alignment
 
 
-def test_developing_store_preserves_direction(monkeypatch):
-    """A developing LONG is published unchanged."""
+def test_developing_store_carries_no_bias_field(monkeypatch):
+    """The developing WorldModel exposes no directional ``bias`` accessor (V5)."""
     loop = _dev_loop()
-
-    monkeypatch.setattr(
-        "brain.developing_analysis.compute_bias",
-        lambda struct: {"direction": "LONG", "score": 80, "confidence": 0.8},
-    )
-
     loop._merge_and_publish("EURUSD", "H1", {"structure": _sa("BULLISH", 0.8)})
-
     published = loop._developing_store.get("EURUSD")
     assert published is not None
-    assert published.bias_dict().get("direction", "") == "LONG"
+    # The former directional accessor is gone; only the non-directional one remains.
+    assert not hasattr(published, "bias_dict")
+    assert hasattr(published, "multi_tf_alignment_dict")
 
 
 # ── (f) ratchet: bare `except Exception: pass` in the money path ─────────────

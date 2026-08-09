@@ -35,6 +35,7 @@ from cognition.contracts import (
     CampaignSpecification,
     DecisionPackage,
     DecisionType,
+    EvidenceDomain,
     Hypothesis,
     MarketState,
 )
@@ -95,6 +96,10 @@ class CognitiveBrain:
         min_expected_value: Optional[float] = None,
         manage_min_interval_seconds: Optional[float] = None,
         calibration: Optional[Any] = None,
+        min_advisors_for_action: int = 2,
+        min_evidence_domains: int = 2,
+        degraded_confidence_multiplier: float = 0.7,
+        default_cost_r: float = 0.0,
     ) -> None:
         self._reasoner = reasoner
         self.min_confidence_to_act = min(1.0, max(0.0, float(min_confidence_to_act)))
@@ -103,6 +108,19 @@ class CognitiveBrain:
         self.allow_scale_in = bool(allow_scale_in)
         self.reverse_confidence = min(1.0, max(0.0, float(reverse_confidence)))
         self.exit_floor = min(1.0, max(0.0, float(exit_floor)))
+        # Article XX — advisor quorum: the Council must not become fake diversity.
+        # A campaign must be backed by at least this many advisors that actually
+        # contributed an opinion; a single advisor's read is insufficient
+        # cognitive coverage for action.
+        self.min_advisors_for_action = max(0, int(min_advisors_for_action))
+        # Article XXXIV — minimum evidence domains: "cannot determine whether an
+        # opportunity exists" ≠ "no opportunity". The Brain refuses to act on too
+        # thin an evidence picture (fewer than this many domains present).
+        self.min_evidence_domains = max(0, int(min_evidence_domains))
+        # Article XXI — degraded cognition must be recognised. When most of the
+        # available council did not respond, the Brain's effective confidence is
+        # attenuated by this multiplier so a partial panel cannot act at full size.
+        self.degraded_confidence_multiplier = min(1.0, max(0.0, float(degraded_confidence_multiplier)))
         # Payoff geometry used to turn win-probability into a genuine expected
         # value (Part IX Art 1/7): reward-to-risk multiple when the opinion does
         # not supply explicit excursions. ``min_expected_value`` is retained for
@@ -113,6 +131,13 @@ class CognitiveBrain:
         self.min_expected_value = (
             None if min_expected_value is None else float(min_expected_value)
         )
+        # Violation V9 (Part XXIV/XXV) — a per-symbol fallback round-trip
+        # execution cost in R, subtracted from the strategic EV so a theoretical
+        # thesis that cannot clear spread/slippage is correctly rejected. When
+        # the MarketState carries fresh EXECUTION_QUALITY evidence with an
+        # ``estimated_total_cost_r`` measurement, that live estimate is used
+        # instead; this default applies only when no such evidence is present.
+        self.default_cost_r = max(0.0, float(default_cost_r))
         # Management re-reasons an OPEN position on a tighter, INDEPENDENT cadence
         # than origination (Q40 — reasoned management, not a static algo). None ⇒
         # use the reasoner's global interval (unchanged). Applied only on the
@@ -291,6 +316,34 @@ class CognitiveBrain:
                     )
                 except Exception:  # noqa: BLE001
                     calib_note = f"applied: factor {calib_factor:.3f}"
+        # Article XX / XXI — advisory-council coverage. Read how much of the
+        # council actually contributed (None ⇒ no council wired, gates
+        # unenforced). When most of the AVAILABLE advisors did not respond the
+        # cognition is DEGRADED: attenuate the effective conviction so a partial
+        # panel cannot act at full strength (a distinct signal from "no edge").
+        advisors_responded, advisors_available, advisors_total = (
+            self._extract_advisor_counts(market_state)
+        )
+        eff_conf_before_degrade = eff_conf
+        degraded = (
+            advisors_responded is not None
+            and advisors_available is not None
+            and advisors_available > 0
+            and advisors_responded < advisors_available * 0.5
+        )
+        if degraded:
+            eff_conf = _clamp01(eff_conf * self.degraded_confidence_multiplier)
+            logger.warning(
+                "[brain] DEGRADED COGNITION: only %s/%s advisors responded — "
+                "confidence attenuated by %.2f",
+                advisors_responded, advisors_available, self.degraded_confidence_multiplier,
+            )
+        # Violation V1 — the Brain is not a pure relay: cross-check the advisor's
+        # stated confidence against the evidence picture it synthesised, and
+        # attenuate the effective conviction when the advisor is overconfident
+        # relative to the evidence (or claims conviction under high uncertainty).
+        eff_conf, brain_synthesis = self._synthesize_from_evidence(
+            consolidation, confidence, eff_conf)
 
         supporting, contradicting = self._split_evidence(market_state, direction)
         # Part IX Art 1/7 — a genuine expected value (in units of risk, R) from
@@ -299,7 +352,12 @@ class CognitiveBrain:
         # competing hypotheses on the decision so cognition is not collapsed to a
         # single direction+confidence pair.
         reward_r, risk_r = reward_risk_from_opinion(opinion, self.reward_r_default)
-        expected_value = expected_value_r(eff_conf, reward_r, risk_r)
+        # Violation V9 — subtract the round-trip execution cost (spread/slippage,
+        # in R) so a theoretical thesis that cannot clear its cost is declined at
+        # the EV gate (Part XXIV/XXV). Sourced from fresh EXECUTION_QUALITY
+        # evidence when present, else the configured default.
+        cost_r = self._execution_cost_r(market_state)
+        expected_value = expected_value_r(eff_conf, reward_r, risk_r, cost_r=cost_r)
         hypotheses = self._build_hypotheses(
             direction, eff_conf, reward_r, risk_r,
             primary_hyp or rationale, alternatives, invalidation_txt,
@@ -319,8 +377,14 @@ class CognitiveBrain:
             and eff_conf >= self.min_confidence_to_act else "not established"),
             "downside": eae or "bounded by invalidation conditions",
             "opportunity": opportunity_txt or (direction if direction in (LONG, SHORT) else "none"),
-            "should_i_do_nothing": "considered",
+            # Violation V7 — populated with the ACTUAL do-nothing reasoning in the
+            # act/no-act branches below (never left as a static "considered").
+            "should_i_do_nothing": "evaluated",
         }
+        # Violation V1 — record the Brain's cross-check of the advisor against the
+        # evidence picture, so the synthesis (and any attenuation) is auditable.
+        if brain_synthesis:
+            questions["brain_synthesis"] = brain_synthesis
         # Part XXV — record the raw scalar and the confidence PROFILE so the honest
         # multidimensional read (and which dimension limited the trade) is auditable.
         questions["confidence_raw"] = round(confidence, 4)
@@ -337,6 +401,52 @@ class CognitiveBrain:
                        ("execution_quality", exec_q), ("risk", risk_txt)):
             if _v:
                 questions[_k] = _v
+        # Article XXI — record whether cognition is degraded (partial council).
+        if advisors_available is not None:
+            if degraded:
+                questions["cognitive_degradation"] = (
+                    f"ACTIVE: {advisors_responded}/{advisors_available} advisors — "
+                    f"confidence attenuated {eff_conf_before_degrade:.2f} → {eff_conf:.2f}"
+                )
+            else:
+                questions["cognitive_degradation"] = (
+                    f"NONE: {advisors_responded}/{advisors_available} advisors — "
+                    "full cognitive coverage"
+                )
+        # Article XX — advisor quorum: at least ``min_advisors_for_action`` of the
+        # council must have contributed. Unenforced when no council metadata is
+        # present (a Brain wired without an orchestrator).
+        quorum_ok = (
+            advisors_responded is None
+            or advisors_responded >= self.min_advisors_for_action
+        )
+        if advisors_responded is not None:
+            if quorum_ok:
+                questions["advisor_quorum"] = (
+                    f"MET: {advisors_responded} advisors responded "
+                    f"(available: {advisors_available}, total: {advisors_total})"
+                )
+            else:
+                questions["advisor_quorum"] = (
+                    f"NOT MET: {advisors_responded} of {self.min_advisors_for_action} "
+                    f"required advisors responded (available: {advisors_available}, "
+                    f"total: {advisors_total})"
+                )
+        # Article XXXIV — minimum evidence-domain coverage. Unenforced when the
+        # consolidation omits the count (a hand-built consolidation dict).
+        domain_count = consolidation.get("domain_count")
+        domain_ok = (domain_count is None) or (int(domain_count) >= self.min_evidence_domains)
+        if domain_count is not None:
+            if domain_ok:
+                questions["evidence_coverage"] = (
+                    f"ADEQUATE: {int(domain_count)} domains present "
+                    f"(minimum: {self.min_evidence_domains})"
+                )
+            else:
+                questions["evidence_coverage"] = (
+                    f"INSUFFICIENT: {int(domain_count)} domains present, "
+                    f"minimum {self.min_evidence_domains} required"
+                )
         # Prefer the Brain's explicit invalidation / change-my-mind for the
         # campaign's invalidation conditions; fall back to competing hypotheses.
         invalidation_conditions = (
@@ -345,15 +455,19 @@ class CognitiveBrain:
 
         # Constitutional gate: only OPEN a campaign when the Brain can answer
         # with sufficient confidence AND uncertainty is acceptable AND there is a
-        # direction AND the expected value clears the threshold. Otherwise do
-        # nothing — there is no obligation to trade (Part IV Art 7 / Part IX Q35:
-        # a good thesis at negative EV is not an executable trade).
+        # direction AND the expected value clears the threshold AND the advisory
+        # quorum + evidence-domain coverage are adequate. Otherwise do nothing —
+        # there is no obligation to trade (Part IV Art 7 / Part IX Q35: a good
+        # thesis at negative EV, thin coverage or a lone advisor is not an
+        # executable trade).
         ev_ok = (self.min_expected_value is None) or (expected_value >= self.min_expected_value)
         act = (
             direction in (LONG, SHORT)
             and eff_conf >= self.min_confidence_to_act
             and uncertainty <= self.max_uncertainty_to_act
             and ev_ok
+            and quorum_ok
+            and domain_ok
         )
         if not act:
             directional_and_qualified = (
@@ -361,12 +475,34 @@ class CognitiveBrain:
                 and eff_conf >= self.min_confidence_to_act
                 and uncertainty <= self.max_uncertainty_to_act
             )
-            if directional_and_qualified and not ev_ok:
+            if directional_and_qualified and ev_ok and not quorum_ok:
+                # Article XX — a qualified opportunity backed by too few advisors:
+                # cognitive coverage is insufficient to originate a campaign.
+                reason_txt = (
+                    f"advisor quorum not met: {advisors_responded}/"
+                    f"{self.min_advisors_for_action} advisors responded — "
+                    "cognitive coverage insufficient for action"
+                )
+                dtype = DecisionType.CONTINUE_OBSERVING
+            elif directional_and_qualified and ev_ok and not domain_ok:
+                # Article XXXIV — a qualified opportunity on too few evidence
+                # domains: cannot determine whether an opportunity exists.
+                reason_txt = (
+                    f"insufficient evidence coverage: {int(domain_count)}/"
+                    f"{self.min_evidence_domains} domains — cannot determine "
+                    "whether opportunity exists"
+                )
+                dtype = DecisionType.CONTINUE_OBSERVING
+            elif directional_and_qualified and not ev_ok:
                 # Saw a directional opportunity but its expected value does not
                 # clear the threshold — decline it (Part IX Q35: cannot execute
                 # this opportunity at the current expected value).
                 reason_txt = "expected value below threshold — opportunity declined"
                 dtype = DecisionType.REJECT_OPPORTUNITY
+                do_nothing_txt = (
+                    f"evaluated: doing nothing is correct — EV {expected_value:.4f}R "
+                    "below threshold"
+                )
             elif direction in (LONG, SHORT):
                 # Part XXV — when the thesis itself is strong (raw confidence
                 # clears the bar) but a WEAK actionability dimension (timing or
@@ -379,14 +515,33 @@ class CognitiveBrain:
                         f"(thesis holds at {confidence:.2f}, "
                         f"{limiting_dim} {conf_dims[limiting_dim]:.2f})"
                     )
+                    do_nothing_txt = (
+                        f"evaluated: doing nothing is correct — {limiting_dim} "
+                        f"insufficient ({conf_dims[limiting_dim]:.2f}), thesis holds "
+                        "but timing/execution not ready"
+                    )
+                elif uncertainty > self.max_uncertainty_to_act:
+                    reason_txt = "insufficient confidence/uncertainty for a campaign"
+                    do_nothing_txt = (
+                        f"evaluated: doing nothing is correct — uncertainty "
+                        f"{uncertainty:.2f} too high"
+                    )
                 else:
                     reason_txt = "insufficient confidence/uncertainty for a campaign"
+                    do_nothing_txt = (
+                        f"evaluated: doing nothing is correct — confidence "
+                        f"{eff_conf:.2f} below threshold {self.min_confidence_to_act}"
+                    )
                 dtype = DecisionType.CONTINUE_OBSERVING
             else:
                 reason_txt = "no exploitable directional opportunity"
                 dtype = (DecisionType.REJECT_OPPORTUNITY
                          if eff_conf >= self.min_confidence_to_act
                          else DecisionType.CONTINUE_OBSERVING)
+                do_nothing_txt = (
+                    "evaluated: doing nothing is correct — no directional edge (FLAT)"
+                )
+            questions["should_i_do_nothing"] = do_nothing_txt
             decision = DecisionPackage(
                 symbol=symbol, decision_type=dtype, thesis=rationale or reason_txt,
                 supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
@@ -399,6 +554,12 @@ class CognitiveBrain:
             )
             return self._record(BrainOutput(decision=decision, direction=FLAT))
 
+        # Violation V7 — doing nothing was a real candidate action that lost to a
+        # justified opportunity: record the EV it would forfeit.
+        questions["should_i_do_nothing"] = (
+            f"evaluated: doing nothing forfeits EV of {expected_value:.4f}R — "
+            "opportunity justified"
+        )
         decision = DecisionPackage(
             symbol=symbol, decision_type=DecisionType.OPEN_CAMPAIGN,
             thesis=rationale or f"{direction} opportunity",
@@ -526,6 +687,15 @@ class CognitiveBrain:
         # bare direction label. Falls back to the flat record for a minimal
         # opinion (or none), preserving prior behaviour.
         invalidation_conditions: list = []
+        # Violation V7 — the management path's do-nothing (HOLD) is a real
+        # evaluated candidate: when HOLD is chosen, doing nothing IS the action;
+        # otherwise doing nothing lost to the chosen management action.
+        if action == DecisionType.HOLD:
+            do_nothing_txt = f"evaluated: doing nothing (hold) is correct — {reason}"
+        else:
+            do_nothing_txt = (
+                f"evaluated: doing nothing rejected — {action.value} chosen: {reason}"
+            )
         if opinion is not None:
             wcm = list(getattr(opinion, "what_would_change_my_mind", []) or [])
             inv = str(getattr(opinion, "invalidation", "") or "")
@@ -542,7 +712,7 @@ class CognitiveBrain:
                 "expected_value": str(getattr(opinion, "expected_value", "") or reason),
                 "downside": str(getattr(opinion, "expected_adverse_excursion", "") or "bounded by invalidation"),
                 "opportunity": str(getattr(opinion, "opportunity", "") or held_dir),
-                "should_i_do_nothing": "considered",
+                "should_i_do_nothing": do_nothing_txt,
             }
             for _k, _v in (("regime", str(getattr(opinion, "regime", "") or "")),
                            ("opportunity_horizon", str(getattr(opinion, "opportunity_horizon", "") or "")),
@@ -559,7 +729,7 @@ class CognitiveBrain:
                 f"→ effective {_eff:.2f} (weakest: {_lim})"
             )
         else:
-            questions = {q: ("considered" if q == "should_i_do_nothing" else reason)
+            questions = {q: (do_nothing_txt if q == "should_i_do_nothing" else reason)
                          for q in REQUIRED_QUESTIONS}
         decision = DecisionPackage(
             symbol=symbol, decision_type=action, thesis=reason,
@@ -597,6 +767,40 @@ class CognitiveBrain:
         }
 
     @staticmethod
+    def _extract_advisor_counts(
+        market_state: MarketState,
+    ) -> "tuple[Optional[int], Optional[int], Optional[int]]":
+        """Read the advisory-council coverage from the reasoning Evidence.
+
+        Article XX — the ``ReasoningOrchestrator`` records how many advisors were
+        asked and how many actually replied; ``evidence_from_reasoning`` surfaces
+        that on each REASONING Evidence's measurements. Returns
+        ``(responded, available, total)`` taken from the reasoning Evidence
+        carrying the counts (the maximum ``responded`` seen), or ``(None, None,
+        None)`` when no advisor metadata is present — in which case the quorum /
+        degraded-cognition gates are left unenforced (fail-safe, preserves the
+        behaviour of a Brain wired without a council). Never raises.
+        """
+        resp: Optional[int] = None
+        avail: Optional[int] = None
+        total: Optional[int] = None
+        try:
+            for e in getattr(market_state, "evidence", []) or []:
+                if getattr(e, "domain", None) != EvidenceDomain.REASONING:
+                    continue
+                m = getattr(e, "measurements", None)
+                if not isinstance(m, dict) or "advisors_responded" not in m:
+                    continue
+                r = int(m.get("advisors_responded", 0) or 0)
+                if resp is None or r > resp:
+                    resp = r
+                    avail = int(m.get("advisors_available", 0) or 0)
+                    total = int(m.get("advisors_total", 0) or 0)
+        except Exception:  # noqa: BLE001 — a coverage probe must never break reasoning
+            return None, None, None
+        return resp, avail, total
+
+    @staticmethod
     def _confidence_profile(opinion: Any, base: float) -> "tuple[dict, float, str]":
         """Resolve the multidimensional confidence (Part XXV): each dimension, the
         effective conviction (the weakest), and which dimension limited it.
@@ -623,6 +827,85 @@ class CognitiveBrain:
         eff = min(dims.values())
         limiting = min(dims, key=dims.get)
         return dims, eff, limiting
+
+    def _execution_cost_r(self, market_state: MarketState) -> float:
+        """Round-trip execution cost in R for the Brain's EV (Violation V9).
+
+        Reads the freshest EXECUTION_QUALITY evidence's ``estimated_total_cost_r``
+        measurement (emitted by the consolidator's execution-cost source) so the
+        strategic EV is net of spread/slippage — a theoretical thesis that cannot
+        clear its cost is correctly declined at the EV gate. Falls back to
+        ``self.default_cost_r`` when no execution-quality evidence is present.
+        Never raises.
+        """
+        try:
+            best: Optional[float] = None
+            for e in market_state.fresh_evidence():
+                if getattr(e, "domain", None) != EvidenceDomain.EXECUTION_QUALITY:
+                    continue
+                m = getattr(e, "measurements", None)
+                if not isinstance(m, dict):
+                    continue
+                if "estimated_total_cost_r" in m:
+                    best = _clamp01(m.get("estimated_total_cost_r"))
+                elif "estimated_spread_r" in m or "estimated_slippage_r" in m:
+                    best = _clamp01(
+                        _clamp01(m.get("estimated_spread_r"))
+                        + _clamp01(m.get("estimated_slippage_r"))
+                    )
+            if best is not None:
+                return best
+        except Exception:  # noqa: BLE001 — cost estimation must never break reasoning
+            pass
+        return self.default_cost_r
+
+    def _synthesize_from_evidence(
+        self, consolidation: dict, advisor_confidence: float, effective_confidence: float,
+    ) -> "tuple[float, str]":
+        """Cross-check the advisor opinion against the evidence picture (V1).
+
+        Structural strengthening of the Brain toward a native reasoner: before
+        trusting the LLM advisor's stated confidence, the Brain inspects the
+        consolidated evidence it synthesised (how much fresh evidence exists, its
+        mean confidence, the aggregate uncertainty) and compares the advisor's
+        conviction against it. When the advisor is markedly more confident than
+        the evidence supports ("advisor overconfidence"), or claims conviction
+        while evidence uncertainty is high ("confidence-evidence mismatch"), the
+        effective conviction is ATTENUATED toward the evidence's own mean. This
+        keeps the Brain from being a pure relay of the advisor's output. Returns
+        the (possibly attenuated) effective confidence and a synthesis note.
+        Never raises; when there is no fresh evidence to cross-check against, the
+        effective confidence is returned unchanged.
+        """
+        try:
+            n_fresh = int(consolidation.get("evidence_fresh", 0) or 0)
+            if n_fresh <= 0:
+                return effective_confidence, "no fresh evidence to cross-check advisor against"
+            ev_mean = _clamp01(consolidation.get("mean_confidence", 0.0))
+            ev_unc = _clamp01(consolidation.get("aggregate_uncertainty", 1.0))
+            gap = advisor_confidence - ev_mean
+            # Advisor markedly more confident than the evidence's own mean.
+            if gap > 0.15:
+                attenuated = _clamp01(0.5 * effective_confidence + 0.5 * ev_mean)
+                return attenuated, (
+                    f"LLM advisor confidence {advisor_confidence:.2f} vs evidence mean "
+                    f"confidence {ev_mean:.2f} — attenuated effective confidence to "
+                    f"{attenuated:.2f}"
+                )
+            # Advisor claims conviction while the evidence picture is very unsure.
+            if advisor_confidence >= self.min_confidence_to_act and ev_unc > 0.6:
+                attenuated = _clamp01(effective_confidence * (1.0 - ev_unc))
+                return attenuated, (
+                    f"confidence-evidence mismatch: advisor confidence "
+                    f"{advisor_confidence:.2f} but evidence uncertainty {ev_unc:.2f} — "
+                    f"attenuated effective confidence to {attenuated:.2f}"
+                )
+            return effective_confidence, (
+                f"LLM advisor confidence {advisor_confidence:.2f} consistent with "
+                f"evidence mean confidence {ev_mean:.2f} (uncertainty {ev_unc:.2f})"
+            )
+        except Exception:  # noqa: BLE001 — synthesis must never break reasoning
+            return effective_confidence, ""
 
     @staticmethod
     def _split_evidence(market_state: MarketState, direction: str) -> "tuple[list[str], list[str]]":
@@ -676,12 +959,15 @@ class CognitiveBrain:
         return hyps
 
     def _observe(self, symbol: str, reason_txt: str, consolidation: dict) -> BrainOutput:
+        # Violation V7 — doing nothing is an actual evaluated candidate, not a
+        # static "considered": record why observing is the correct action.
+        do_nothing_txt = f"evaluated: doing nothing is correct — {reason_txt}"
         decision = DecisionPackage(
             symbol=symbol, decision_type=DecisionType.CONTINUE_OBSERVING,
             thesis="no action", confidence=0.0,
             uncertainty=_clamp01(consolidation.get("aggregate_uncertainty", 1.0)) if consolidation else 1.0,
             campaign_recommendation="observe", risk_rationale=reason_txt,
-            questions_answered={q: ("considered" if q == "should_i_do_nothing" else "insufficient")
+            questions_answered={q: (do_nothing_txt if q == "should_i_do_nothing" else "insufficient")
                                 for q in REQUIRED_QUESTIONS},
             do_nothing_considered=True, reasoner=self.reasoner_name,
         )
@@ -700,8 +986,11 @@ class CognitiveBrain:
             thesis="reasoner unavailable — no market view formed", confidence=0.0,
             uncertainty=_clamp01(consolidation.get("aggregate_uncertainty", 1.0)) if consolidation else 1.0,
             campaign_recommendation="stand_down", risk_rationale=reason_txt,
-            questions_answered={q: ("considered" if q == "should_i_do_nothing"
-                                    else "reasoner unavailable") for q in REQUIRED_QUESTIONS},
+            questions_answered={q: (
+                "evaluated: doing nothing is mandatory — reasoner unavailable "
+                "(infrastructure, not market view)"
+                if q == "should_i_do_nothing" else "reasoner unavailable")
+                for q in REQUIRED_QUESTIONS},
             do_nothing_considered=True, reasoner=self.reasoner_name,
         )
         return self._record(BrainOutput(decision=decision, direction=FLAT))
@@ -731,6 +1020,9 @@ class CognitiveBrain:
                 "reasoner": self.reasoner_name,
                 "min_confidence_to_act": self.min_confidence_to_act,
                 "max_uncertainty_to_act": self.max_uncertainty_to_act,
+                "min_advisors_for_action": self.min_advisors_for_action,
+                "min_evidence_domains": self.min_evidence_domains,
+                "degraded_confidence_multiplier": self.degraded_confidence_multiplier,
                 "allow_scale_in": self.allow_scale_in,
                 "decisions": self._decisions,
                 "campaigns_opened": self._campaigns_opened,

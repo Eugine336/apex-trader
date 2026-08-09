@@ -69,6 +69,15 @@ def _clamp_signed(value: Any, default: float = 0.0) -> float:
     return min(1.0, max(-1.0, f))
 
 
+# Part XXXV (Art) — stale information must not masquerade as current reality.
+# Evidence that omits an explicit relevance horizon is NOT fresh forever: it
+# ages out after this default (15 minutes — a reasonable ceiling for most market
+# evidence). Sources whose reading has a genuinely different lifetime set their
+# own ``relevance_horizon_seconds`` explicitly; only an explicit non-positive
+# horizon means "never expires".
+DEFAULT_EVIDENCE_HORIZON_SECONDS = 900.0
+
+
 class EvidenceDomain(Enum):
     """The evidence domains named in Part III, Article 3 (extensible)."""
 
@@ -164,11 +173,21 @@ class Evidence:
         self.polarity = _clamp_signed(self.polarity)
 
     def is_fresh(self, now: Optional[float] = None) -> bool:
-        """True if within its relevance horizon (always True when unbounded)."""
-        if self.relevance_horizon_seconds is None or self.relevance_horizon_seconds <= 0:
+        """True if within its relevance horizon (Part XXXV).
+
+        Evidence with no explicit ``relevance_horizon_seconds`` is NOT fresh
+        forever: it ages out after :data:`DEFAULT_EVIDENCE_HORIZON_SECONDS`, so
+        a stale reading that simply never declared a horizon cannot masquerade
+        as current reality. Only an explicit non-positive horizon means the
+        evidence never expires (e.g. a deliberately timeless fact).
+        """
+        horizon = self.relevance_horizon_seconds
+        if horizon is None:
+            horizon = DEFAULT_EVIDENCE_HORIZON_SECONDS
+        if horizon <= 0:
             return True
         t = _now_epoch() if now is None else float(now)
-        return (t - self.timestamp_epoch) <= self.relevance_horizon_seconds
+        return (t - self.timestamp_epoch) <= horizon
 
     def to_dict(self) -> dict:
         return {
@@ -499,6 +518,7 @@ class CampaignSpecification:
 __all__ = [
     "Evidence",
     "EvidenceDomain",
+    "DEFAULT_EVIDENCE_HORIZON_SECONDS",
     "domain_from",
     "MarketState",
     "DecisionType",

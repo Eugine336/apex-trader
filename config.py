@@ -4117,6 +4117,16 @@ class CognitionConfig:
     per_module_evidence: bool = True   # Phase E: emit one Evidence per contributing module/domain
     min_confidence_to_act: float = 0.55
     max_uncertainty_to_act: float = 0.6
+    # Article XX — advisor quorum: the Council must not become fake diversity. A
+    # Brain-originated campaign must be backed by at least this many advisors that
+    # actually contributed an opinion (a single advisor is insufficient coverage).
+    min_advisors_for_action: int = 2
+    # Article XXXIV — minimum evidence-domain coverage before the Brain may act
+    # ("cannot determine whether an opportunity exists" ≠ "no opportunity").
+    min_evidence_domains: int = 2
+    # Article XXI — when most of the available council did not respond, the Brain
+    # attenuates its effective confidence by this multiplier (degraded cognition).
+    degraded_confidence_multiplier: float = 0.7
     loop_interval_seconds: float = 30.0
     max_symbols_per_cycle: int = 12
     emit_operator_notifications: bool = True
@@ -4311,6 +4321,21 @@ class CognitionConfig:
         if not (0.0 <= float(self.max_uncertainty_to_act) <= 1.0):
             raise ValueError(
                 f"CognitionConfig.max_uncertainty_to_act must be in [0, 1], got {self.max_uncertainty_to_act!r}"
+            )
+        if int(self.min_advisors_for_action) < 0:
+            raise ValueError(
+                "CognitionConfig.min_advisors_for_action must be >= 0, got "
+                f"{self.min_advisors_for_action!r}"
+            )
+        if int(self.min_evidence_domains) < 0:
+            raise ValueError(
+                "CognitionConfig.min_evidence_domains must be >= 0, got "
+                f"{self.min_evidence_domains!r}"
+            )
+        if not (0.0 <= float(self.degraded_confidence_multiplier) <= 1.0):
+            raise ValueError(
+                "CognitionConfig.degraded_confidence_multiplier must be in [0, 1], got "
+                f"{self.degraded_confidence_multiplier!r}"
             )
         if float(self.manage_min_interval_seconds) < 0:
             raise ValueError(

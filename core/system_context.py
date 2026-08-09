@@ -1255,6 +1255,28 @@ class SystemContext:
                     # (Decision → Outcome → Attribution → Calibration → future
                     # reasoning). Neutral until the tracker has enough samples.
                     calibration=_calibration,
+                    # Article XX — advisor quorum: a campaign must be backed by at
+                    # least this many advisors that actually responded.
+                    min_advisors_for_action=int(
+                        getattr(cog_cfg, "min_advisors_for_action", 2)
+                        if cog_cfg is not None else 2
+                    ),
+                    # Article XXXIV — minimum evidence-domain coverage to act.
+                    min_evidence_domains=int(
+                        getattr(cog_cfg, "min_evidence_domains", 2)
+                        if cog_cfg is not None else 2
+                    ),
+                    # Article XXI — attenuate confidence under degraded cognition.
+                    degraded_confidence_multiplier=float(
+                        getattr(cog_cfg, "degraded_confidence_multiplier", 0.7)
+                        if cog_cfg is not None else 0.7
+                    # Violation V9 (Part XXIV/XXV) — fallback round-trip execution
+                    # cost in R subtracted from the Brain's EV when no live
+                    # EXECUTION_QUALITY evidence is present. 0.05 ≈ 5% of R.
+                    default_cost_r=float(
+                        getattr(cog_cfg, "default_execution_cost_r", 0.05)
+                        if cog_cfg is not None else 0.05
+                    ),
                 )
                 # Part XVII — Reasoning Orchestrator: the one Brain may consult
                 # several reasoning engines whose opinions become advisory
@@ -1398,6 +1420,42 @@ class SystemContext:
                         ctx.campaign_registry.set_memory_sink(_campaign_close_sink)
                     except Exception as exc:  # noqa: BLE001
                         logger.debug("[SystemContext] close sink wiring failed: {}", exc)
+
+                # Violation V9 — per-symbol round-trip execution-cost estimate in
+                # R for the Brain's EV. Uses the instrument's typical spread and a
+                # nominal stop distance: cost_r ≈ spread_pips / stop_distance_pips
+                # (spread + a slippage allowance). Falls back to the Brain's
+                # default_cost_r when the instrument is unknown. Fail-safe.
+                _default_cost_r = float(
+                    getattr(cog_cfg, "default_execution_cost_r", 0.05)
+                    if cog_cfg is not None else 0.05
+                )
+                _stop_distance_pips = float(
+                    getattr(cog_cfg, "execution_cost_stop_distance_pips", 20.0)
+                    if cog_cfg is not None else 20.0
+                )
+
+                def _execution_cost_source(symbol: str) -> dict:
+                    try:
+                        from config import INSTRUMENT_REGISTRY
+                        info = INSTRUMENT_REGISTRY.get(str(symbol or ""))
+                        if info is None:
+                            return {"estimated_total_cost_r": _default_cost_r}
+                        spread_pips = float(getattr(info, "typical_spread_pips", 0.0) or 0.0)
+                        stop_pips = _stop_distance_pips if _stop_distance_pips > 0 else 20.0
+                        if spread_pips <= 0.0:
+                            return {"estimated_total_cost_r": _default_cost_r}
+                        spread_r = min(0.5, spread_pips / stop_pips)
+                        # Slippage allowance ≈ half the spread cost.
+                        slippage_r = 0.5 * spread_r
+                        return {
+                            "estimated_spread_r": round(spread_r, 6),
+                            "estimated_slippage_r": round(slippage_r, 6),
+                            "estimated_total_cost_r": round(spread_r + slippage_r, 6),
+                        }
+                    except Exception:  # noqa: BLE001 — cost estimate must never break the loop
+                        return {"estimated_total_cost_r": _default_cost_r}
+
                 _consolidator = _EvidenceConsolidator(
                     ctx=ctx,
                     per_module=bool(
@@ -1413,6 +1471,7 @@ class SystemContext:
                     influence_enabled=_influence_enabled,
                     reasoning=_reasoning_orch,
                     knowledge=ctx.knowledge_source,
+                    execution_cost_source=_execution_cost_source,
                 )
                 # Part XXI — record + grade every council consultation.
                 if ctx.consultation_ledger is not None:
