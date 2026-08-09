@@ -92,11 +92,19 @@ _SYSTEM_PROMPT = (
     "\"what_would_change_my_mind\": [\"...\"], "
     "\"invalidation\": \"the level/condition that voids the thesis\", "
     "\"direction\": \"LONG|SHORT|FLAT\", \"confidence\": 0.0-1.0, "
+    "\"thesis_confidence\": 0.0-1.0, \"opportunity_confidence\": 0.0-1.0, "
+    "\"timing_confidence\": 0.0-1.0, \"execution_confidence\": 0.0-1.0, "
     "\"rationale\": \"one or two sentences tying it together\"}\n"
     "FLAT means the evidence does not support acting. 'confidence' is your "
     "calibrated probability that the stated direction is correct; it is NOT a "
-    "substitute for the reasoning above. You may answer FLAT with an opportunity "
-    "of 'none' and that is a valid, complete cognitive outcome."
+    "substitute for the reasoning above. Decompose it into: thesis_confidence "
+    "(is your read correct?), opportunity_confidence (is there a real exploitable "
+    "edge?), timing_confidence (is NOW the moment, or is it early?) and "
+    "execution_confidence (can it be realised after spread/slippage/liquidity?). "
+    "If unsure, set each to your overall 'confidence'. A strong thesis with weak "
+    "timing or execution is NOT an act-now trade — say so via these fields. You "
+    "may answer FLAT with an opportunity of 'none' and that is a valid, complete "
+    "cognitive outcome."
 )
 
 
@@ -214,10 +222,17 @@ class LLMOpinion:
 
     symbol: str
     direction: str                 # LONG | SHORT | FLAT (execution consequence)
-    confidence: float              # 0..1
+    confidence: float              # 0..1 (overall — the execution consequence)
     rationale: str = ""
     competing_hypotheses: list[str] = field(default_factory=list)
     missing_information: list[str] = field(default_factory=list)
+    # Part XXV — multidimensional confidence. Each is None when the model returned
+    # only the overall scalar; it then resolves to ``confidence`` downstream, so a
+    # legacy single-confidence reply is unchanged (zero behaviour change).
+    thesis_confidence: Optional[float] = None
+    opportunity_confidence: Optional[float] = None
+    timing_confidence: Optional[float] = None
+    execution_confidence: Optional[float] = None
     # Part XXV — non-collapsed cognitive state.
     regime: str = ""
     primary_hypothesis: str = ""
@@ -238,10 +253,24 @@ class LLMOpinion:
     model: str = ""
 
     def to_dict(self) -> dict:
+        def _rc(v):
+            try:
+                return round(self.confidence if v is None else min(1.0, max(0.0, float(v))), 4)
+            except (TypeError, ValueError):
+                return round(self.confidence, 4)
+        thesis_c = _rc(self.thesis_confidence)
+        opp_c = _rc(self.opportunity_confidence)
+        timing_c = _rc(self.timing_confidence)
+        exec_c = _rc(self.execution_confidence)
         return {
             "symbol": self.symbol,
             "direction": self.direction,
             "confidence": round(self.confidence, 4),
+            "thesis_confidence": thesis_c,
+            "opportunity_confidence": opp_c,
+            "timing_confidence": timing_c,
+            "execution_confidence": exec_c,
+            "effective_confidence": round(min(thesis_c, opp_c, timing_c, exec_c), 4),
             "rationale": self.rationale,
             "competing_hypotheses": list(self.competing_hypotheses),
             "missing_information": list(self.missing_information),
@@ -477,6 +506,15 @@ class LLMReasoner:
         def _txt(key, cap=300):
             return str(fields.get(key, "") or "")[:cap]
 
+        def _conf(key):
+            v = fields.get(key)
+            if v is None:
+                return None
+            try:
+                return min(1.0, max(0.0, float(v)))
+            except (TypeError, ValueError):
+                return None
+
         # Backward-compat: a legacy reply carries only competing_hypotheses /
         # missing_information — keep populating them, and cross-fill the Part XXV
         # fields so neither representation is empty when only one was returned.
@@ -490,6 +528,10 @@ class LLMReasoner:
             rationale=str(fields.get("rationale", ""))[:500],
             competing_hypotheses=ch_l,
             missing_information=_list(mi),
+            thesis_confidence=_conf("thesis_confidence"),
+            opportunity_confidence=_conf("opportunity_confidence"),
+            timing_confidence=_conf("timing_confidence"),
+            execution_confidence=_conf("execution_confidence"),
             regime=_txt("regime", 48),
             primary_hypothesis=_txt("primary_hypothesis"),
             alternative_hypotheses=alt_l or ch_l,
