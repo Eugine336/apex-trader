@@ -1004,6 +1004,13 @@ class SystemContext:
                         getattr(llm_cfg, "min_interval_seconds", 30.0)
                         if llm_cfg is not None else 30.0
                     ),
+                    # §8 — the Brain's strategic reasoner requests a compute CLASS
+                    # (default "deep"); a class-aware ModelManager serves it from a
+                    # matching, healthy provider. Untagged rosters are unaffected.
+                    default_compute_class=str(
+                        getattr(llm_cfg, "reasoning_compute_class", "")
+                        if llm_cfg is not None else ""
+                    ),
                 )
                 if ctx.llm_reasoner.available:
                     logger.info(
@@ -1184,6 +1191,13 @@ class SystemContext:
                                  and getattr(cog_cfg, "min_expected_value", 0.0) is None)
                         else float(getattr(cog_cfg, "min_expected_value", 0.0)
                                    if cog_cfg is not None else 0.0)
+                    ),
+                    # Q40 — management re-reasons an OPEN position on its own
+                    # tighter cadence (independent throttle bucket); origination
+                    # and the advisory council keep the global rate.
+                    manage_min_interval_seconds=float(
+                        getattr(cog_cfg, "manage_min_interval_seconds", 8.0)
+                        if cog_cfg is not None else 8.0
                     ),
                 )
                 # Part VII — institutional memory (Phase H). Best-effort: a

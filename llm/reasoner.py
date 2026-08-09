@@ -92,11 +92,19 @@ _SYSTEM_PROMPT = (
     "\"what_would_change_my_mind\": [\"...\"], "
     "\"invalidation\": \"the level/condition that voids the thesis\", "
     "\"direction\": \"LONG|SHORT|FLAT\", \"confidence\": 0.0-1.0, "
+    "\"thesis_confidence\": 0.0-1.0, \"opportunity_confidence\": 0.0-1.0, "
+    "\"timing_confidence\": 0.0-1.0, \"execution_confidence\": 0.0-1.0, "
     "\"rationale\": \"one or two sentences tying it together\"}\n"
     "FLAT means the evidence does not support acting. 'confidence' is your "
     "calibrated probability that the stated direction is correct; it is NOT a "
-    "substitute for the reasoning above. You may answer FLAT with an opportunity "
-    "of 'none' and that is a valid, complete cognitive outcome."
+    "substitute for the reasoning above. Decompose it into: thesis_confidence "
+    "(is your read correct?), opportunity_confidence (is there a real exploitable "
+    "edge?), timing_confidence (is NOW the moment, or is it early?) and "
+    "execution_confidence (can it be realised after spread/slippage/liquidity?). "
+    "If unsure, set each to your overall 'confidence'. A strong thesis with weak "
+    "timing or execution is NOT an act-now trade — say so via these fields. You "
+    "may answer FLAT with an opportunity of 'none' and that is a valid, complete "
+    "cognitive outcome."
 )
 
 
@@ -124,6 +132,14 @@ _DIR_RE = re.compile(r"""(?i)["']?\bdirection\b["']?\s*[:=]\s*["']?([A-Za-z]+)""
 _CONF_RE = re.compile(r"""(?i)["']?\bconfidence\b["']?\s*[:=]\s*([0-9]*\.?[0-9]+)""")
 _RATIONALE_RE = re.compile(r"""(?i)["']?\brationale\b["']?\s*[:=]\s*["']([^"']*)""")
 _TOKEN_RE = re.compile(r"\b(LONG|SHORT|FLAT)\b")
+
+# Max chars of the serialised evidence payload handed to a reasoner. The council's
+# per-advisor REASONING evidence is appended LAST in the MarketState, so a tight
+# cap truncates exactly the advisors' full analysis off the tail — the collapse we
+# are removing (Part XXV: the Brain must see each advisor's complete cognition, not
+# a summary sentence). Sized for a full panel of rich advisor theses plus the live
+# market view; hosted high-context models handle it comfortably.
+_MAX_USER_PROMPT_CHARS = 60000
 
 
 def _map_dir(s: Any) -> str:
@@ -206,10 +222,17 @@ class LLMOpinion:
 
     symbol: str
     direction: str                 # LONG | SHORT | FLAT (execution consequence)
-    confidence: float              # 0..1
+    confidence: float              # 0..1 (overall — the execution consequence)
     rationale: str = ""
     competing_hypotheses: list[str] = field(default_factory=list)
     missing_information: list[str] = field(default_factory=list)
+    # Part XXV — multidimensional confidence. Each is None when the model returned
+    # only the overall scalar; it then resolves to ``confidence`` downstream, so a
+    # legacy single-confidence reply is unchanged (zero behaviour change).
+    thesis_confidence: Optional[float] = None
+    opportunity_confidence: Optional[float] = None
+    timing_confidence: Optional[float] = None
+    execution_confidence: Optional[float] = None
     # Part XXV — non-collapsed cognitive state.
     regime: str = ""
     primary_hypothesis: str = ""
@@ -230,10 +253,24 @@ class LLMOpinion:
     model: str = ""
 
     def to_dict(self) -> dict:
+        def _rc(v):
+            try:
+                return round(self.confidence if v is None else min(1.0, max(0.0, float(v))), 4)
+            except (TypeError, ValueError):
+                return round(self.confidence, 4)
+        thesis_c = _rc(self.thesis_confidence)
+        opp_c = _rc(self.opportunity_confidence)
+        timing_c = _rc(self.timing_confidence)
+        exec_c = _rc(self.execution_confidence)
         return {
             "symbol": self.symbol,
             "direction": self.direction,
             "confidence": round(self.confidence, 4),
+            "thesis_confidence": thesis_c,
+            "opportunity_confidence": opp_c,
+            "timing_confidence": timing_c,
+            "execution_confidence": exec_c,
+            "effective_confidence": round(min(thesis_c, opp_c, timing_c, exec_c), 4),
             "rationale": self.rationale,
             "competing_hypotheses": list(self.competing_hypotheses),
             "missing_information": list(self.missing_information),
@@ -285,13 +322,27 @@ class LLMReasoner:
         drive_decisions: bool = False,
         min_interval_seconds: float = 30.0,
         recent_limit: int = 50,
+        default_compute_class: str = "",
+        default_min_context: int = 0,
     ) -> None:
         self._client = client
         self.enabled = bool(enabled)
         self.drive_decisions = bool(drive_decisions)
         self.min_interval_seconds = max(0.0, float(min_interval_seconds))
         self._recent_limit = max(1, int(recent_limit))
+        # Compute-class routing (GPU/Compute Constitution §8): the reasoning
+        # CLASS this reasoner requests from a class-aware client (ModelManager).
+        # "" ⇒ request no class (every model eligible). The Brain's strategic
+        # reasoner sets "deep"; a class-tagged model only serves matching
+        # requests, but an untagged roster keeps serving everything (no-op).
+        self.default_compute_class = str(default_compute_class or "").strip().lower()
+        self.default_min_context = max(0, int(default_min_context or 0))
         self._last_call: dict[str, float] = {}
+        # Per-symbol liveness of the last NON-throttled reason() attempt:
+        # True = produced an opinion, False = failed (provider down/timeout, or
+        # an unparsable reply). Lets the Brain tell an infrastructure failure
+        # (REASONER_UNAVAILABLE) apart from a genuine market observe (Q78/Q80).
+        self._last_reason_ok: dict[str, bool] = {}
         self._recent: list[LLMOpinion] = []
         self._calls = 0
         self._faults = 0
@@ -304,39 +355,78 @@ class LLMReasoner:
         return bool(self.enabled and self._client is not None
                     and getattr(self._client, "usable", False))
 
-    def _throttled(self, key: str, now: float) -> bool:
-        if self.min_interval_seconds <= 0:
+    def last_reason_degraded(self, symbol: str) -> bool:
+        """True when the last NON-throttled ``reason(symbol)`` FAILED to yield an
+        opinion — provider down/timeout, or an unparsable reply.
+
+        This is a *liveness* signal, distinct from the static :pyattr:`available`
+        config flag, so the Brain can tell an INFRASTRUCTURE failure
+        (REASONER_UNAVAILABLE) apart from a genuine market ``observe`` when
+        ``reason`` returns ``None`` (Part XVIII Art 5; Q78/Q80/Q81/Q106). A
+        throttled cycle leaves this state unchanged.
+        """
+        with self._lock:
+            return self._last_reason_ok.get(str(symbol or "")) is False
+
+    def _throttled(self, key: str, now: float, interval: Optional[float] = None) -> bool:
+        iv = self.min_interval_seconds if interval is None else max(0.0, float(interval))
+        if iv <= 0:
             return False
         last = self._last_call.get(key, 0.0)
-        return (now - last) < self.min_interval_seconds
+        return (now - last) < iv
+
+    def _complete(self, system: str, user: str) -> Optional[str]:
+        """Call the client, requesting a compute class / min context when the
+        client is class-aware (the ModelManager). Falls back to the plain
+        two-arg call for a simple client that does not accept the kwargs."""
+        client = self._client
+        if not self.default_compute_class and not self.default_min_context:
+            return client.complete(system, user)
+        try:
+            return client.complete(
+                system, user,
+                compute_class=(self.default_compute_class or None),
+                min_context=(self.default_min_context or None),
+            )
+        except TypeError:
+            return client.complete(system, user)
 
     def reason(
         self, symbol: str, evidence: dict, *, now: Optional[float] = None,
+        min_interval: Optional[float] = None, throttle_key: Optional[str] = None,
     ) -> Optional[LLMOpinion]:
         """Ask the model to reason over ``evidence`` for ``symbol``.
 
         Returns a parsed :class:`LLMOpinion`, or ``None`` when unavailable,
         throttled, or on any fault. Blocking (provider round-trip) — call from a
         background/periodic path, never the hot loop. Fail-safe.
+
+        ``min_interval`` overrides the per-symbol throttle window for THIS call
+        and ``throttle_key`` overrides the throttle bucket, so a caller can run a
+        tighter cadence on an independent bucket (e.g. management re-reasoning an
+        open position faster than origination) without changing the global rate.
         """
         if not self.available:
             return None
         t = time.time() if now is None else float(now)
         sym = str(symbol or "")
+        key = str(throttle_key or sym)
+        iv = self.min_interval_seconds if min_interval is None else max(0.0, float(min_interval))
         try:
             with self._lock:
-                if self._throttled(sym, t):
+                if self._throttled(key, t, iv):
                     logger.debug(
                         "[llm] {} throttled ({}s min interval) — no fresh model call this cycle",
-                        sym, self.min_interval_seconds,
+                        sym, iv,
                     )
                     return None
-                self._last_call[sym] = t
+                self._last_call[key] = t
             user = self._build_user_prompt(sym, evidence)
-            reply = self._client.complete(_SYSTEM_PROMPT, user)
+            reply = self._complete(_SYSTEM_PROMPT, user)
             if not reply:
                 with self._lock:
                     self._faults += 1
+                    self._last_reason_ok[sym] = False
                 # No reply this cycle (throttle/quota/offline). The client logs
                 # the reason once on its down transition and the council panel
                 # summarises who is absent, so keep this per-symbol line at DEBUG
@@ -350,8 +440,10 @@ class LLMReasoner:
                     self._recent.append(opinion)
                     if len(self._recent) > self._recent_limit:
                         self._recent = self._recent[-self._recent_limit:]
+                    self._last_reason_ok[sym] = True
                 else:
                     self._faults += 1
+                    self._last_reason_ok[sym] = False
             if opinion is not None:
                 logger.info(
                     "[llm] {} [{}] dir={} conf={} | regime={} opp={} ({}) — {}",
@@ -377,6 +469,7 @@ class LLMReasoner:
             logger.debug("[llm] reason({}) ignored a fault: {}", symbol, exc)
             with self._lock:
                 self._faults += 1
+                self._last_reason_ok[str(symbol or "")] = False
             return None
 
     @staticmethod
@@ -387,7 +480,7 @@ class LLMReasoner:
             # Larger cap so the reconstructed multi-timeframe price snapshot
             # (Part XIX Art 2 — the chart) reaches the model alongside the
             # analytical reads rather than being truncated away.
-            return json.dumps(payload, default=str)[:16000]
+            return json.dumps(payload, default=str)[:_MAX_USER_PROMPT_CHARS]
         except Exception:  # noqa: BLE001
             return json.dumps({"symbol": symbol})
 
@@ -413,6 +506,15 @@ class LLMReasoner:
         def _txt(key, cap=300):
             return str(fields.get(key, "") or "")[:cap]
 
+        def _conf(key):
+            v = fields.get(key)
+            if v is None:
+                return None
+            try:
+                return min(1.0, max(0.0, float(v)))
+            except (TypeError, ValueError):
+                return None
+
         # Backward-compat: a legacy reply carries only competing_hypotheses /
         # missing_information — keep populating them, and cross-fill the Part XXV
         # fields so neither representation is empty when only one was returned.
@@ -426,6 +528,10 @@ class LLMReasoner:
             rationale=str(fields.get("rationale", ""))[:500],
             competing_hypotheses=ch_l,
             missing_information=_list(mi),
+            thesis_confidence=_conf("thesis_confidence"),
+            opportunity_confidence=_conf("opportunity_confidence"),
+            timing_confidence=_conf("timing_confidence"),
+            execution_confidence=_conf("execution_confidence"),
             regime=_txt("regime", 48),
             primary_hypothesis=_txt("primary_hypothesis"),
             alternative_hypotheses=alt_l or ch_l,
