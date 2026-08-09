@@ -106,3 +106,91 @@ def test_required_questions_are_recorded():
     out = brain.reason(_confident_state())
     assert out.decision.questions_answered.get("should_i_do_nothing")
     assert "news" in out.decision.questions_answered.get("information_missing", "")
+
+
+# ── V15: EV-proportional sizing (Part XXVIII — capital is competitive) ─────────
+
+class _RichOpinion:
+    """Opinion carrying payoff-geometry excursions so EV is meaningful."""
+
+    def __init__(self, direction, confidence, efe="", eae=""):
+        self.direction = direction
+        self.confidence = confidence
+        self.rationale = "because"
+        self.competing_hypotheses = []
+        self.missing_information = []
+        self.expected_favorable_excursion = efe
+        self.expected_adverse_excursion = eae
+
+
+def test_sizing_is_lesser_of_confidence_and_ev_normalized():
+    # confidence 0.8, default reward 2.0R → EV = 0.8*2 - 0.2*1 = 1.4R;
+    # ev_normalized = 1.4/2.0 = 0.7 → exposure = min(0.8, 0.7) = 0.7 (< confidence).
+    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)), reward_r_default=2.0)
+    out = brain.reason(_confident_state(polarity=0.8))
+    assert out.campaign is not None
+    assert out.campaign.desired_exposure == 0.7
+    assert out.campaign.desired_exposure < out.campaign.confidence
+    assert "sizing_rationale" in out.decision.questions_answered
+
+
+def test_high_confidence_poor_payoff_is_sized_down():
+    # Same 0.8 confidence but poor payoff geometry (0.5R favorable vs 1.0R adverse)
+    # → reward 0.5R → EV = 0.8*0.5 - 0.2*1 = 0.2R → ev_normalized = 0.2/2.0 = 0.1
+    # → exposure = min(0.8, 0.1) = 0.1 — sized far below confidence.
+    op = _RichOpinion("LONG", 0.8, efe="0.5R", eae="1.0R")
+    brain = CognitiveBrain(reasoner=_Reasoner(op), reward_r_default=2.0)
+    out = brain.reason(_confident_state(polarity=0.8))
+    assert out.campaign is not None
+    assert out.campaign.desired_exposure == 0.1
+
+
+def test_campaign_carries_expected_value_field():
+    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)), reward_r_default=2.0)
+    out = brain.reason(_confident_state(polarity=0.8))
+    assert out.campaign is not None
+    assert out.campaign.expected_value == pytest.approx(1.4)
+    assert out.campaign.to_dict()["expected_value"] == pytest.approx(1.4)
+
+
+# ── V13: Brain applies calibration correction to effective confidence ──────────
+
+class _StubCalibration:
+    def __init__(self, factor):
+        self._factor = factor
+
+    def calibration_adjustment(self):
+        return self._factor
+
+    def metrics(self):
+        return {"samples": 100, "mean_confidence": 0.9,
+                "win_rate": 0.63, "reliability_gap": 0.27, "brier": 0.24}
+
+
+def test_calibration_attenuates_effective_confidence():
+    # Over-predicting Brain: factor 0.7 attenuates eff_conf 0.8 → 0.56.
+    brain = CognitiveBrain(
+        reasoner=_Reasoner(_Opinion("LONG", 0.8)),
+        calibration=_StubCalibration(0.7),
+    )
+    out = brain.reason(_confident_state(polarity=0.8))
+    assert out.decision.confidence == pytest.approx(0.56)
+    note = out.decision.questions_answered.get("calibration_correction", "")
+    assert note.startswith("applied: factor 0.700")
+
+
+def test_calibration_not_wired_records_inactive():
+    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)))
+    out = brain.reason(_confident_state(polarity=0.8))
+    assert out.decision.questions_answered.get("calibration_correction") == (
+        "not active (insufficient samples or not wired)"
+    )
+
+
+def test_calibration_neutral_factor_leaves_confidence_unchanged():
+    brain = CognitiveBrain(
+        reasoner=_Reasoner(_Opinion("LONG", 0.8)),
+        calibration=_StubCalibration(1.0),
+    )
+    out = brain.reason(_confident_state(polarity=0.8))
+    assert out.decision.confidence == pytest.approx(0.8)
