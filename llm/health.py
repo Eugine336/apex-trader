@@ -143,6 +143,29 @@ class CircuitBreaker:
         }
 
 
+# ── Failure classification (background recovery prober) ──────────────────────
+# A provider that is circuit-OPEN is retried quietly in the background so it
+# rejoins the council the moment it heals — but HOW eagerly depends on WHY it is
+# failing. Transient faults (5xx, gateway timeouts, connection refused) clear on
+# their own, so probe them eagerly. Quota/credit/auth faults (HTTP 401/402/403/
+# 429) do NOT clear by retrying — hammering them just deepens the rate-limit or
+# wastes calls — so those are left to their own reset clock (no background probe).
+_NON_TRANSIENT_SIGNATURES = frozenset({
+    "http:401", "http:402", "http:403", "http:429",
+})
+
+
+def is_transient_failure(signature: str) -> bool:
+    """True when a failure signature is worth retrying eagerly in the background.
+
+    ``signature`` is the client's last failure key (e.g. ``http:504``,
+    ``transport:TimeoutError``, ``http:429``). Quota/credit/auth signatures are
+    NOT transient (return False); everything else — including an empty/unknown
+    signature — is treated as transient (return True) so we err toward retrying.
+    """
+    return str(signature or "").strip().lower() not in _NON_TRANSIENT_SIGNATURES
+
+
 class ConcurrencyLimiter:
     """Bounds concurrent calls to a class of providers (e.g. local CPU/GPU-bound
     models). ``limit <= 0`` ⇒ unbounded (a transparent no-op). Fail-safe."""

@@ -30,7 +30,12 @@ from typing import Any, Callable, Optional
 
 from loguru import logger
 
-from llm.health import CircuitBreaker, CircuitConfig, ConcurrencyLimiter
+from llm.health import (
+    CircuitBreaker,
+    CircuitConfig,
+    ConcurrencyLimiter,
+    is_transient_failure,
+)
 from llm.provider_tiers import ProviderTier, resolve_tier
 
 
@@ -84,6 +89,14 @@ class ReasoningConsultation:
             "consulted": list(self.consulted),
             "opinions": [o.to_dict() for o in self.opinions],
         }
+
+
+# A liveness probe kept deliberately tiny: it exists only to learn whether a
+# benched provider answers again, so it must cost next to nothing and never be
+# mistaken for a real consultation. The reply is discarded — only success vs
+# failure matters to the circuit breaker.
+_PROBE_SYSTEM = "You are a liveness probe. Reply with the single word: READY."
+_PROBE_USER = "ping"
 
 
 class ReasoningEngine:
@@ -207,6 +220,51 @@ class ReasoningEngine:
         except Exception:  # noqa: BLE001
             return True
 
+    @property
+    def fail_signature(self) -> str:
+        """The underlying client's last failure signature (e.g. ``http:504``,
+        ``http:429``, ``transport:TimeoutError``), or ``""`` when unknown.
+
+        Lets the background prober decide HOW eagerly to retry: transient faults
+        eagerly, quota/auth faults not at all. Fail-safe — any missing attribute
+        along the chain resolves to ``""`` (treated as transient)."""
+        try:
+            client = getattr(self._reasoner, "client", None)
+            return str(getattr(client, "last_fail_signature", "") or "")
+        except Exception:  # noqa: BLE001
+            return ""
+
+    def probe(self) -> bool:
+        """Issue a direct, off-panel liveness probe and record it to the circuit.
+
+        This bypasses the reasoner's throttle and the local concurrency slot on
+        purpose — it is a background heartbeat, not a consultation — and calls
+        the client straight so a benched provider can rejoin the moment it heals.
+        The reply is discarded; only success/failure is recorded to the breaker
+        (a success clears the OPEN circuit, closing the recovery loop). Never
+        raises: any fault is recorded as a failure and returns ``False``."""
+        t0 = time.time()
+        try:
+            client = getattr(self._reasoner, "client", None)
+            complete = getattr(client, "complete", None)
+            if not callable(complete):
+                return False
+            reply = complete(_PROBE_SYSTEM, _PROBE_USER)
+            latency_ms = (time.time() - t0) * 1000.0
+            if reply is None or not str(reply).strip():
+                self.breaker.record_failure(latency_ms)
+                return False
+            self.breaker.record_success(latency_ms)
+            return True
+        except Exception as exc:  # noqa: BLE001 — a probe fault must never propagate
+            latency_ms = (time.time() - t0) * 1000.0
+            logger.debug("[reasoning-orch] probe of {} raised: {}", self.name, exc)
+            try:
+                self.breaker.record_failure(latency_ms)
+            except Exception:  # noqa: BLE001
+                pass
+            return False
+
     def to_dict(self) -> dict:
         # Compute reliability inline under the lock — calling self.reliability
         # here would re-acquire the same (non-reentrant) lock and deadlock.
@@ -241,6 +299,7 @@ class ReasoningOrchestrator:
         max_engines: int = 3,
         reliability_provider: Optional[Callable[[str], float]] = None,
         panel: bool = False,
+        recovery_interval: float = 60.0,
     ) -> None:
         self._engines = [e for e in (engines or []) if isinstance(e, ReasoningEngine)]
         self.max_engines = max(1, int(max_engines))
@@ -254,10 +313,82 @@ class ReasoningOrchestrator:
         self._reliability_provider = reliability_provider
         self._consultations = 0
         self._lock = threading.Lock()
+        # Background recovery prober — a benched (circuit-OPEN) advisor is retried
+        # quietly OFF the consult path so it rejoins the council the moment it
+        # heals, without ever slowing a live decision. <= 0 disables it.
+        try:
+            self._recovery_interval = max(0.0, float(recovery_interval))
+        except (TypeError, ValueError):
+            self._recovery_interval = 60.0
+        self._recovery_last: dict[str, float] = {}
+        self._recovery_stop = threading.Event()
+        self._recovery_thread: Optional[threading.Thread] = None
 
     @property
     def available(self) -> bool:
         return any(e.available for e in self._engines)
+
+    def recover_once(self, *, now: Optional[float] = None) -> int:
+        """Probe each benched (circuit-OPEN) advisor once, off the consult path.
+
+        Only engines whose LAST failure was transient (5xx / gateway timeout /
+        connection) are probed — quota/credit/auth faults (HTTP 401/402/403/429)
+        are left to their own reset clock so we never hammer a rate-limited or
+        unpaid provider. Each engine is probed at most once per recovery
+        interval. Returns the count of advisors that answered the probe (and thus
+        rejoined the council). Fail-safe per engine — one bad probe never stops
+        the sweep.
+        """
+        if now is None:
+            now = time.monotonic()
+        recovered = 0
+        for e in self._engines:
+            try:
+                if not e.breaker.is_open():
+                    continue  # healthy or half-open — nothing to recover
+                if not is_transient_failure(e.fail_signature):
+                    continue  # quota/auth — leave it to its own reset clock
+                last = self._recovery_last.get(e.name, -1e18)
+                if (now - last) < self._recovery_interval:
+                    continue  # probed too recently
+                self._recovery_last[e.name] = now
+                if e.probe():
+                    recovered += 1
+            except Exception as exc:  # noqa: BLE001 — a probe fault must not stop recovery
+                logger.debug("[reasoning-orch] recovery probe of {} failed: {}", e.name, exc)
+        return recovered
+
+    def start_recovery(self, interval: Optional[float] = None) -> None:
+        """Start the background recovery loop (idempotent, daemon thread).
+
+        The loop probes benched advisors every ``interval`` seconds (default: the
+        orchestrator's configured recovery interval). ``interval <= 0`` disables
+        recovery entirely (no thread started). Safe to call more than once — a
+        second call while a loop is running is a no-op."""
+        iv = self._recovery_interval if interval is None else max(0.0, float(interval))
+        self._recovery_interval = iv
+        if iv <= 0.0:
+            return
+        with self._lock:
+            if self._recovery_thread is not None and self._recovery_thread.is_alive():
+                return
+            self._recovery_stop.clear()
+
+            def _loop() -> None:
+                while not self._recovery_stop.wait(iv):
+                    try:
+                        self.recover_once()
+                    except Exception as exc:  # noqa: BLE001 — never let the loop die
+                        logger.debug("[reasoning-orch] recovery sweep failed: {}", exc)
+
+            self._recovery_thread = threading.Thread(
+                target=_loop, name="reasoning-recovery", daemon=True)
+            self._recovery_thread.start()
+        logger.debug("[reasoning-orch] background recovery prober started (every {}s)", iv)
+
+    def stop_recovery(self) -> None:
+        """Signal the background recovery loop to stop (best-effort, non-blocking)."""
+        self._recovery_stop.set()
 
     def _measured_usefulness(self, engine: ReasoningEngine) -> float:
         if self._reliability_provider is None:
@@ -506,6 +637,7 @@ def build_reasoning_orchestrator(
         max_engines=int(getattr(config, "consult_max_engines", 3) or 3),
         reliability_provider=reliability_provider,
         panel=panel,
+        recovery_interval=float(getattr(config, "recovery_probe_seconds", 60.0) or 0.0),
     )
 
 

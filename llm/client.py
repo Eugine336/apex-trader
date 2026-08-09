@@ -200,6 +200,16 @@ class LLMClient:
             return False
         return True
 
+    @property
+    def last_fail_signature(self) -> str:
+        """The most recent failure signature (e.g. ``http:504``, ``http:429``,
+        ``transport:TimeoutError``), or ``""`` when the last call succeeded.
+
+        Read-only view used by the background recovery prober to decide how
+        eagerly a benched provider should be retried.
+        """
+        return getattr(self, "_last_fail_key", "") or ""
+
     def _effective_base(self) -> str:
         if self.base_url:
             return self.base_url.rstrip("/")

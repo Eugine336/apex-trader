@@ -3758,6 +3758,13 @@ class LLMConfig:
     # default). Only filters when roster models declare ``classes``; an untagged
     # roster serves everything (no-op). Env: LLM_REASONING_COMPUTE_CLASS.
     reasoning_compute_class: str = "deep"
+    # §7/§9 — background recovery prober cadence. A benched (circuit-OPEN) advisor
+    # whose last failure was TRANSIENT (5xx/gateway-timeout/connection) is retried
+    # quietly OFF the consult path every ``recovery_probe_seconds`` so it rejoins
+    # the council the moment it heals, without slowing any live decision. Quota/
+    # auth faults (401/402/403/429) are never background-probed. 0 ⇒ disabled.
+    # Env: LLM_RECOVERY_PROBE_SECONDS.
+    recovery_probe_seconds: float = 60.0
 
     def __post_init__(self) -> None:
         # The environment is the single source of truth — no vendor is baked in.
@@ -3778,6 +3785,7 @@ class LLMConfig:
             ("LLM_CIRCUIT_COOLDOWN_SECONDS", "circuit_cooldown_seconds", float),
             ("LLM_CIRCUIT_COOLDOWN_MAX_SECONDS", "circuit_cooldown_max_seconds", float),
             ("LLM_LOCAL_MAX_CONCURRENCY", "local_max_concurrency", int),
+            ("LLM_RECOVERY_PROBE_SECONDS", "recovery_probe_seconds", float),
         ):
             raw = os.getenv(env_name)
             if raw is not None:
@@ -3874,6 +3882,13 @@ class LLMConfig:
                 "LLMConfig circuit cooldown seconds must be >= 0, got "
                 f"{self.circuit_cooldown_seconds!r}/{self.circuit_cooldown_max_seconds!r}"
             )
+        # A negative recovery cadence is meaningless — clamp to 0 (disabled)
+        # rather than raise, so a stray env value can never crash startup.
+        try:
+            if float(self.recovery_probe_seconds) < 0:
+                self.recovery_probe_seconds = 0.0
+        except (TypeError, ValueError):
+            self.recovery_probe_seconds = 60.0
 
 
 @dataclass
