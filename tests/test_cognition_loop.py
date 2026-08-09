@@ -62,7 +62,12 @@ def test_consolidator_vote_source_is_fault_safe():
         raise RuntimeError("store down")
     cons.set_vote_source(_boom)
     ms = cons.build("XAUUSD")  # must not raise
-    assert ms.consolidation()["evidence_fresh"] == 0
+    # Article XXXIV — a failed source no longer degrades silently: instead of
+    # producing no evidence, it surfaces a zero-confidence integrity Evidence so
+    # the Brain can tell "no observations" apart from "observations unavailable".
+    integrity = [e for e in ms.evidence if e.source_module == "consolidator.integrity"]
+    assert any("MODULE OBSERVATIONS UNAVAILABLE" in e.observation for e in integrity)
+    assert all(e.confidence == 0.0 and e.uncertainty == 1.0 for e in integrity)
 
 
 def test_loop_set_vote_source_delegates_to_consolidator():

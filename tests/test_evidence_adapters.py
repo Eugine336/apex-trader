@@ -170,7 +170,7 @@ def test_developing_bias_long_is_attenuated_multi_tf():
     assert e.measurements["developing"] is True
     assert e.measurements["tradeable"] is True
     assert "long_probability" not in e.measurements  # directional keys dropped
-    assert e.relevance_horizon_seconds == 120.0
+    assert e.relevance_horizon_seconds == 60.0
     assert "developing-candle instrument reading" in e.observation
     assert "votes" not in e.observation and "LONG" not in e.observation
 

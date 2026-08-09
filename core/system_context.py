@@ -1199,6 +1199,22 @@ class SystemContext:
                         getattr(cog_cfg, "manage_min_interval_seconds", 8.0)
                         if cog_cfg is not None else 8.0
                     ),
+                    # Article XX — advisor quorum: a campaign must be backed by at
+                    # least this many advisors that actually responded.
+                    min_advisors_for_action=int(
+                        getattr(cog_cfg, "min_advisors_for_action", 2)
+                        if cog_cfg is not None else 2
+                    ),
+                    # Article XXXIV — minimum evidence-domain coverage to act.
+                    min_evidence_domains=int(
+                        getattr(cog_cfg, "min_evidence_domains", 2)
+                        if cog_cfg is not None else 2
+                    ),
+                    # Article XXI — attenuate confidence under degraded cognition.
+                    degraded_confidence_multiplier=float(
+                        getattr(cog_cfg, "degraded_confidence_multiplier", 0.7)
+                        if cog_cfg is not None else 0.7
+                    ),
                 )
                 # Part VII — institutional memory (Phase H). Best-effort: a
                 # store fault leaves memory None (observational, fail-open).

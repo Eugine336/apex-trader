@@ -81,6 +81,15 @@ class ReasoningConsultation:
     opinions: list = field(default_factory=list)      # list[EngineOpinion]
     consulted: list = field(default_factory=list)     # engine names asked
     capability: str = ""
+    # Part XX (advisor quorum) — cognitive-coverage metadata the Brain gates on.
+    # ``advisors_responded`` = engines that returned an opinion this consultation;
+    # ``advisors_available`` = engines asked (available + selected this cycle);
+    # ``advisors_total`` = every engine configured on the orchestrator (available
+    # or not). The Brain refuses to originate from a single advisor and attenuates
+    # confidence when most of the available council did not respond.
+    advisors_responded: int = 0
+    advisors_available: int = 0
+    advisors_total: int = 0
 
     def to_dict(self) -> dict:
         return {
@@ -88,6 +97,9 @@ class ReasoningConsultation:
             "capability": self.capability,
             "consulted": list(self.consulted),
             "opinions": [o.to_dict() for o in self.opinions],
+            "advisors_responded": self.advisors_responded,
+            "advisors_available": self.advisors_available,
+            "advisors_total": self.advisors_total,
         }
 
 
@@ -428,6 +440,7 @@ class ReasoningOrchestrator:
     ) -> ReasoningConsultation:
         """Fan out to the selected engines and collect every opinion. No vote."""
         result = ReasoningConsultation(symbol=str(symbol or ""), capability=str(capability or ""))
+        result.advisors_total = len(self._engines)
         try:
             selected = self.select(capability=capability, max_engines=max_engines)
             result.consulted = [e.name for e in selected]
@@ -465,6 +478,10 @@ class ReasoningOrchestrator:
                             result.opinions.append(op)
             with self._lock:
                 self._consultations += 1
+            # Part XX — record cognitive coverage: how many of the asked council
+            # actually contributed an opinion this consultation.
+            result.advisors_responded = len(result.opinions)
+            result.advisors_available = len(result.consulted)
             # Part XXIV — surface the live panel: who advised (with their vote)
             # and who was asked but did not reply (an advisor that "left the
             # panel" this cycle). One concise INFO line so the operator can see,

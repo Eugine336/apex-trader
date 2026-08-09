@@ -347,6 +347,13 @@ class LLMReasoner:
         self._calls = 0
         self._faults = 0
         self._recovered = 0   # opinions recovered from non-strict/truncated JSON
+        # Part XX (provider health) — consecutive-failure backoff. A provider
+        # that keeps failing is not retried every cycle: each failure lengthens
+        # an exponential cooldown (capped at 5 minutes) during which reason()
+        # skips the call outright; a single success resets it. Prevents wasting
+        # provider budget and flooding logs on a persistently down provider.
+        self._consecutive_failures = 0
+        self._backoff_until = 0.0
         self._lock = threading.Lock()
 
     @property
@@ -384,6 +391,20 @@ class LLMReasoner:
             return False
         last = self._last_call.get(key, 0.0)
         return (now - last) < iv
+
+    def _note_failure(self, now: float) -> None:
+        """Record a provider failure and extend the exponential backoff window.
+
+        Backoff = min(300, 2 ** min(consecutive_failures, 8)) seconds — capped at
+        5 minutes. Must be called while holding ``self._lock``.
+        """
+        self._consecutive_failures += 1
+        self._backoff_until = now + min(300.0, 2.0 ** min(self._consecutive_failures, 8))
+
+    def _note_success(self, now: float) -> None:
+        """Clear the failure counter + backoff after a healthy call. Lock held."""
+        self._consecutive_failures = 0
+        self._backoff_until = 0.0
 
     def _complete(self, system: str, user: str) -> Optional[str]:
         """Call the client, requesting a compute class / min context when the
@@ -424,6 +445,13 @@ class LLMReasoner:
         iv = self.min_interval_seconds if min_interval is None else max(0.0, float(min_interval))
         try:
             with self._lock:
+                if t < self._backoff_until:
+                    logger.debug(
+                        "[llm] {} backing off {:.1f}s after {} consecutive failure(s) "
+                        "— skipping call",
+                        sym, max(0.0, self._backoff_until - t), self._consecutive_failures,
+                    )
+                    return None
                 if self._throttled(key, t, iv):
                     logger.debug(
                         "[llm] {} throttled ({}s min interval) — no fresh model call this cycle",
@@ -437,6 +465,7 @@ class LLMReasoner:
                 with self._lock:
                     self._faults += 1
                     self._last_reason_ok[sym] = False
+                    self._note_failure(t)
                 # No reply this cycle (throttle/quota/offline). The client logs
                 # the reason once on its down transition and the council panel
                 # summarises who is absent, so keep this per-symbol line at DEBUG
@@ -451,9 +480,11 @@ class LLMReasoner:
                     if len(self._recent) > self._recent_limit:
                         self._recent = self._recent[-self._recent_limit:]
                     self._last_reason_ok[sym] = True
+                    self._note_success(t)
                 else:
                     self._faults += 1
                     self._last_reason_ok[sym] = False
+                    self._note_failure(t)
             if opinion is not None:
                 logger.info(
                     "[llm] {} [{}] dir={} conf={} | regime={} opp={} ({}) — {}",
@@ -480,6 +511,7 @@ class LLMReasoner:
             with self._lock:
                 self._faults += 1
                 self._last_reason_ok[str(symbol or "")] = False
+                self._note_failure(t)
             return None
 
     @staticmethod
@@ -584,6 +616,8 @@ class LLMReasoner:
                 recent = [o.to_dict() for o in self._recent[-10:]]
                 calls, faults = self._calls, self._faults
                 recovered = self._recovered
+                consecutive_failures = self._consecutive_failures
+                backoff_remaining = max(0.0, self._backoff_until - time.time())
             client_desc = None
             if self._client is not None and hasattr(self._client, "describe"):
                 try:
@@ -598,6 +632,8 @@ class LLMReasoner:
                 "calls": calls,
                 "faults": faults,
                 "recovered": recovered,
+                "consecutive_failures": consecutive_failures,
+                "backoff_seconds_remaining": round(backoff_remaining, 3),
                 "client": client_desc,
                 "recent_opinions": recent,
             }

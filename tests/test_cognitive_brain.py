@@ -32,7 +32,12 @@ class _Reasoner:
 
 def _confident_state(symbol="EURUSD", polarity=0.8):
     ms = MarketState(symbol=symbol)
-    ms.add(Evidence(source_module="s", confidence=0.9, uncertainty=0.1, polarity=polarity))
+    # Two distinct evidence domains so the Brain's minimum-coverage gate
+    # (Article XXXIV, default 2 domains) is satisfied for the act path.
+    ms.add(Evidence(source_module="s", domain="momentum", confidence=0.9,
+                    uncertainty=0.1, polarity=polarity))
+    ms.add(Evidence(source_module="s2", domain="structure", confidence=0.9,
+                    uncertainty=0.1, polarity=polarity))
     return ms
 
 

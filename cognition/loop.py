@@ -32,7 +32,7 @@ import time as _time
 from typing import Any, Callable, Optional
 
 from cognition.campaign_translator import translate as _translate
-from cognition.contracts import DecisionType, MarketState
+from cognition.contracts import DecisionType, Evidence, EvidenceDomain, MarketState
 from cognition.management_translator import translate_management as _translate_management
 from cognition.management_translator import ManagementAction as _ManagementAction
 from cognition.evidence_adapters import (
@@ -174,6 +174,23 @@ class EvidenceConsolidator:
         now: Optional[float] = None,
     ) -> MarketState:
         ms = MarketState(symbol=str(symbol or ""))
+        # Article XXXIV — silent failure is unacceptable. An infrastructure fault
+        # in a source degrades the evidence picture; that is a WARNING, not a
+        # debug detail, and it is surfaced back into the MarketState as a
+        # zero-confidence / max-uncertainty integrity Evidence so the Brain can
+        # tell "no opportunity exists" apart from "cannot determine whether one
+        # exists". ``failed_sources`` counts the guarded sources that faulted;
+        # ``attempted_sources`` counts those that were wired and tried.
+        failed_sources: list[str] = []
+        attempted_sources = 0
+
+        def _integrity(observation: str) -> None:
+            ms.add(Evidence(
+                source_module="consolidator.integrity",
+                domain=EvidenceDomain.OTHER, symbol=ms.symbol,
+                observation=observation, confidence=0.0, uncertainty=1.0,
+            ))
+
         try:
             if injected:
                 for e in injected:
@@ -183,11 +200,14 @@ class EvidenceConsolidator:
             # sees the actual market, not only derived module verdicts. Added
             # first so the price picture leads the evidence the reasoner reads.
             if self._price_source is not None:
+                attempted_sources += 1
                 try:
                     for e in self._price_source(ms.symbol) or []:
                         ms.add(e)
                 except Exception as exc:  # noqa: BLE001
-                    logger.debug("[consolidator] price source fault (%s): %s", symbol, exc)
+                    logger.warning("[consolidator] price source FAILED (%s): %s", symbol, exc)
+                    failed_sources.append("price")
+                    _integrity("PRICE DATA UNAVAILABLE — cannot determine market state")
             ctx = self._ctx
             engine = getattr(ctx, "thesis_engine", None) if ctx is not None else None
             if engine is not None:
@@ -197,11 +217,14 @@ class EvidenceConsolidator:
                     if self._per_module or e.source_module == "brain.thesis_engine":
                         ms.add(e)
             if self._vote_source is not None:
+                attempted_sources += 1
                 try:
                     for e in evidence_from_votes(ms.symbol, self._vote_source(ms.symbol)):
                         ms.add(e)
                 except Exception as exc:  # noqa: BLE001
-                    logger.debug("[consolidator] vote source fault (%s): %s", symbol, exc)
+                    logger.warning("[consolidator] vote source FAILED (%s): %s", symbol, exc)
+                    failed_sources.append("votes")
+                    _integrity("MODULE OBSERVATIONS UNAVAILABLE")
             if self._developing_source is not None:
                 try:
                     for e in evidence_from_developing_bias(
@@ -214,13 +237,17 @@ class EvidenceConsolidator:
             # symbol's exposure stacks against the live book (correlated
             # clusters, concentration) as risk-context Evidence (never a vote).
             if self._portfolio_source is not None:
+                attempted_sources += 1
                 try:
                     for e in evidence_from_portfolio(ms.symbol, self._portfolio_source()):
                         ms.add(e)
                 except Exception as exc:  # noqa: BLE001
-                    logger.debug("[consolidator] portfolio source fault (%s): %s", symbol, exc)
+                    logger.warning("[consolidator] portfolio source FAILED (%s): %s", symbol, exc)
+                    failed_sources.append("portfolio")
+                    _integrity("PORTFOLIO DATA UNAVAILABLE — exposure unknown")
             # advisory Evidence (never a vote). The Brain synthesises them.
             if self._reasoning is not None:
+                attempted_sources += 1
                 try:
                     if getattr(self._reasoning, "available", False):
                         cons = ms.consolidation(now)
@@ -252,26 +279,32 @@ class EvidenceConsolidator:
                                 capability=_REASONING_CAPABILITY, now=now,
                             )
                 except Exception as exc:  # noqa: BLE001
-                    logger.debug("[consolidator] reasoning consult fault (%s): %s", symbol, exc)
+                    logger.warning("[consolidator] reasoning consult FAILED (%s): %s", symbol, exc)
+                    failed_sources.append("reasoning")
             # Part IX v3.0 — the Operational Intelligence Layer: external market
             # context, institutional research and AI advisors reached through
             # Composio become advisory Evidence (never a vote). Read-only, gated,
             # throttled and self-measuring; a fault degrades to no evidence.
             if self._knowledge is not None:
+                attempted_sources += 1
                 try:
                     for e in self._knowledge.evidence_for(ms.symbol, now=now):
                         ms.add(e)
                 except Exception as exc:  # noqa: BLE001
-                    logger.debug("[consolidator] knowledge source fault (%s): %s", symbol, exc)
+                    logger.warning("[consolidator] knowledge source FAILED (%s): %s", symbol, exc)
+                    failed_sources.append("knowledge")
             # Part VII — consult institutional memory: surface similar past
             # campaigns and their outcomes as a historical-analogue Evidence.
             if self._memory is not None:
+                attempted_sources += 1
                 try:
                     analogues = self._memory.find_analogues(ms, limit=self._max_analogues)
                     for e in evidence_from_analogues(ms.symbol, analogues):
                         ms.add(e)
                 except Exception as exc:  # noqa: BLE001
-                    logger.debug("[consolidator] memory recall fault (%s): %s", symbol, exc)
+                    logger.warning("[consolidator] memory recall FAILED (%s): %s", symbol, exc)
+                    failed_sources.append("memory")
+                    _integrity("INSTITUTIONAL MEMORY UNAVAILABLE")
             # Part VIII — attach learned per-source influence weights so the
             # Brain's consolidation weights each source by demonstrated quality.
             # Observational unless explicitly enabled (shadow → authoritative).
@@ -283,8 +316,20 @@ class EvidenceConsolidator:
                     }
                 except Exception as exc:  # noqa: BLE001
                     logger.debug("[consolidator] influence weighting fault (%s): %s", symbol, exc)
+            # Article XXXIV — when more than two sources failed, the whole picture
+            # is compromised: surface a meta-integrity Evidence so the Brain knows
+            # it is reasoning on an incomplete picture, not a quiet market.
+            if len(failed_sources) > 2:
+                logger.warning(
+                    "[consolidator] EVIDENCE INTEGRITY DEGRADED (%s): %d of %d sources failed: %s",
+                    symbol, len(failed_sources), attempted_sources, ", ".join(failed_sources),
+                )
+                _integrity(
+                    f"EVIDENCE INTEGRITY DEGRADED: {len(failed_sources)} of "
+                    f"{attempted_sources} sources failed — reasoning on incomplete picture"
+                )
         except Exception as exc:  # noqa: BLE001 — consolidation must never break
-            logger.debug("[consolidator] build(%s) ignored a fault: %s", symbol, exc)
+            logger.warning("[consolidator] build(%s) FAILED with a fault: %s", symbol, exc)
         return ms
 
 
@@ -622,6 +667,17 @@ class CognitionLoop:
                 pass
             if self._action_bridge is not None:
                 self._action_bridge.on_decision(output)
+            # Article XXI — degraded cognition must be recognised operationally:
+            # when the Brain attenuated its confidence because most of the
+            # council was absent, surface it at WARNING (not just debug) so a
+            # partial-panel decision is visible in operational logs.
+            try:
+                _qa = getattr(output.decision, "questions_answered", {}) or {}
+                _deg = str(_qa.get("cognitive_degradation", "") or "")
+                if _deg.startswith("ACTIVE"):
+                    logger.warning("[cognition] %s DEGRADED COGNITION — %s", symbol, _deg)
+            except Exception as exc:  # noqa: BLE001 — logging must never break the cycle
+                logger.debug("[cognition-loop] degradation-log fault (%s): %s", symbol, exc)
             if self._memory is not None:
                 self._record_open_memory(output, ms, now=now)
             if self.origination_mode != "off":
@@ -635,7 +691,7 @@ class CognitionLoop:
                 self._manage_symbol(symbol, now=now)
             return 1
         except Exception as exc:  # noqa: BLE001 — one symbol must not stop the loop
-            logger.debug("[cognition-loop] reason(%s) fault: %s", symbol, exc)
+            logger.warning("[cognition-loop] reason(%s) FAILED: %s", symbol, exc)
             return 0
 
     def reason_symbol_now(self, symbol: str, *, now: Optional[float] = None) -> int:
@@ -1077,7 +1133,7 @@ class CognitionLoop:
                 self._realise_management(output, pos)
             return 1
         except Exception as exc:  # noqa: BLE001
-            logger.debug("[cognition-loop] manage fault: %s", exc)
+            logger.warning("[cognition-loop] manage FAILED: %s", exc)
             return 0
 
     def _realise_management(self, output: Any, position: Any) -> None:

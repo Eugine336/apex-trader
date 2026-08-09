@@ -527,7 +527,7 @@ class PositionEvaluator:
             if self._mgmt_store.get(order_id) is not None:
                 self._mgmt_store.persist(mgmt)
         except Exception as exc:
-            logger.debug(
+            logger.warning(
                 "[pos-eval] error evaluating {}: {}",
                 getattr(pos, "symbol", "?"), exc,
             )

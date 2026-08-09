@@ -3,6 +3,7 @@
 import pytest
 
 from cognition.contracts import (
+    DEFAULT_EVIDENCE_HORIZON_SECONDS,
     REQUIRED_QUESTIONS,
     CampaignSpecification,
     DecisionPackage,
@@ -36,8 +37,16 @@ def test_evidence_freshness():
                  timestamp_epoch=1000.0)
     assert e.is_fresh(now=1050.0) is True
     assert e.is_fresh(now=1200.0) is False
+    # Part XXXV — evidence with NO explicit horizon is NOT fresh forever: it ages
+    # out after DEFAULT_EVIDENCE_HORIZON_SECONDS so stale data cannot masquerade
+    # as current reality.
     unbounded = Evidence(source_module="x", timestamp_epoch=1000.0)
-    assert unbounded.is_fresh(now=10_000.0) is True
+    assert unbounded.is_fresh(now=1000.0 + DEFAULT_EVIDENCE_HORIZON_SECONDS - 1.0) is True
+    assert unbounded.is_fresh(now=1000.0 + DEFAULT_EVIDENCE_HORIZON_SECONDS + 1.0) is False
+    # An explicit non-positive horizon still means "never expires".
+    timeless = Evidence(source_module="x", timestamp_epoch=1000.0,
+                        relevance_horizon_seconds=0.0)
+    assert timeless.is_fresh(now=10_000.0) is True
 
 
 def test_evidence_to_dict_shape():

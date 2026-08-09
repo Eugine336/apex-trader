@@ -252,7 +252,7 @@ def evidence_from_developing_bias(symbol: str, bias: Any) -> "list[Evidence]":
                 "strength": str(b.get("strength", "") or "")[:32],
                 "tradeable": bool(b.get("tradeable", False)),
             },
-            relevance_horizon_seconds=120.0,
+            relevance_horizon_seconds=60.0,
         ))
     except Exception:  # noqa: BLE001
         return out
@@ -305,7 +305,7 @@ def evidence_from_knowledge(
                 confidence=conf, uncertainty=1.0 - conf,
                 polarity=0.0,
                 measurements={"advisor": True},
-                relevance_horizon_seconds=1800.0,
+                relevance_horizon_seconds=600.0,
             ))
         # ── Research / market-context items → MACRO evidence each ─────────
         items = data.get("items", data.get("results", []))
@@ -376,7 +376,7 @@ def evidence_from_analogues(symbol: str, analogues: Any) -> "list[Evidence]":
             confidence=confidence, uncertainty=1.0 - confidence, polarity=0.0,
             measurements={"analogues": n, "wins": wins, "losses": losses,
                           "mean_similarity": round(mean_sim, 4)},
-            relevance_horizon_seconds=1800.0,
+            relevance_horizon_seconds=3600.0,
         ))
     except Exception:  # noqa: BLE001 — consolidation must never raise
         return out
@@ -481,6 +481,14 @@ def evidence_from_reasoning(symbol: str, consultation: Any) -> "list[Evidence]":
     out: list[Evidence] = []
     try:
         opinions = list(getattr(consultation, "opinions", None) or [])
+        # Part XX (advisor quorum) — surface how much of the council actually
+        # contributed, so the Brain can gate on cognitive coverage (a trade must
+        # not originate from a single advisor). Present only when the
+        # consultation carries the counts (a legacy/duck-typed result omits them,
+        # leaving the gate unenforced rather than blocking).
+        adv_responded = getattr(consultation, "advisors_responded", None)
+        adv_available = getattr(consultation, "advisors_available", None)
+        adv_total = getattr(consultation, "advisors_total", None)
         for op in opinions:
             engine = str(getattr(op, "engine", "") or "").strip()
             if not engine:
@@ -489,14 +497,21 @@ def evidence_from_reasoning(symbol: str, consultation: Any) -> "list[Evidence]":
             cog = getattr(op, "cognition", None)
             cog = dict(cog) if isinstance(cog, dict) else {}
             rationale = str(getattr(op, "rationale", "") or cog.get("rationale", "") or "")
+            measurements = _reasoning_measurements(engine, op, cog)
+            if adv_responded is not None:
+                measurements["advisors_responded"] = int(adv_responded)
+            if adv_available is not None:
+                measurements["advisors_available"] = int(adv_available)
+            if adv_total is not None:
+                measurements["advisors_total"] = int(adv_total)
             out.append(Evidence(
                 source_module=f"reasoning_engine.{engine}",
                 domain=EvidenceDomain.REASONING, symbol=str(symbol or ""),
                 observation=_reasoning_observation(engine, cog, rationale),
                 confidence=conf, uncertainty=1.0 - conf,
                 polarity=0.0,
-                measurements=_reasoning_measurements(engine, op, cog),
-                relevance_horizon_seconds=900.0,
+                measurements=measurements,
+                relevance_horizon_seconds=600.0,
             ))
     except Exception:  # noqa: BLE001 — consolidation must never raise
         return out
