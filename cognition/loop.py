@@ -757,13 +757,14 @@ class CognitionLoop:
             if self._action_bridge is not None:
                 self._action_bridge.on_decision(output)
             # Article XXI — degraded cognition must be recognised operationally:
-            # when the Brain attenuated its confidence because most of the
-            # council was absent, surface it at WARNING (not just debug) so a
-            # partial-panel decision is visible in operational logs.
+            # when most of the council was absent the Brain records DEGRADED
+            # COGNITION (observation-only; confidence is not penalised). Surface
+            # it at WARNING (not just debug) so a partial-panel decision is
+            # visible in operational logs.
             try:
                 _qa = getattr(output.decision, "questions_answered", {}) or {}
                 _deg = str(_qa.get("cognitive_degradation", "") or "")
-                if _deg.startswith("ACTIVE"):
+                if _deg.startswith("OBSERVED"):
                     logger.warning("[cognition] %s DEGRADED COGNITION — %s", symbol, _deg)
             except Exception as exc:  # noqa: BLE001 — logging must never break the cycle
                 logger.debug("[cognition-loop] degradation-log fault (%s): %s", symbol, exc)

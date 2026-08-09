@@ -131,8 +131,10 @@ class CognitiveBrain:
         # thin an evidence picture (fewer than this many domains present).
         self.min_evidence_domains = max(0, int(min_evidence_domains))
         # Article XXI — degraded cognition must be recognised. When most of the
-        # available council did not respond, the Brain's effective confidence is
-        # attenuated by this multiplier so a partial panel cannot act at full size.
+        # available council did not respond, the Brain records/logs DEGRADED
+        # COGNITION for visibility. Retained for config/serialisation
+        # compatibility; the multiplier is observation-only and is no longer
+        # applied to the effective confidence.
         self.degraded_confidence_multiplier = min(1.0, max(0.0, float(degraded_confidence_multiplier)))
         # Payoff geometry used to turn win-probability into a genuine expected
         # value (Part IX Art 1/7): reward-to-risk multiple when the opinion does
@@ -399,12 +401,11 @@ class CognitiveBrain:
         # Article XX / XXI — advisory-council coverage. Read how much of the
         # council actually contributed (None ⇒ no council wired, gates
         # unenforced). When most of the AVAILABLE advisors did not respond the
-        # cognition is DEGRADED: attenuate the effective conviction so a partial
-        # panel cannot act at full strength (a distinct signal from "no edge").
+        # cognition is DEGRADED: this is recorded and logged for visibility, but
+        # is observation-only and does NOT attenuate the effective conviction.
         advisors_responded, advisors_available, advisors_total = (
             self._extract_advisor_counts(market_state)
         )
-        eff_conf_before_degrade = eff_conf
         degraded = (
             advisors_responded is not None
             and advisors_available is not None
@@ -412,11 +413,10 @@ class CognitiveBrain:
             and advisors_responded < advisors_available * 0.5
         )
         if degraded:
-            eff_conf = _clamp01(eff_conf * self.degraded_confidence_multiplier)
             logger.warning(
                 "[brain] DEGRADED COGNITION: only %s/%s advisors responded — "
-                "confidence attenuated by %.2f",
-                advisors_responded, advisors_available, self.degraded_confidence_multiplier,
+                "observed but not penalised",
+                advisors_responded, advisors_available,
             )
         # Violation V1 — the Brain is not a pure relay: cross-check the advisor's
         # stated confidence against the evidence picture it synthesised, and
@@ -527,8 +527,8 @@ class CognitiveBrain:
         if advisors_available is not None:
             if degraded:
                 questions["cognitive_degradation"] = (
-                    f"ACTIVE: {advisors_responded}/{advisors_available} advisors — "
-                    f"confidence attenuated {eff_conf_before_degrade:.2f} → {eff_conf:.2f}"
+                    f"OBSERVED: {advisors_responded}/{advisors_available} advisors — "
+                    "partial council coverage observed but not penalised"
                 )
             else:
                 questions["cognitive_degradation"] = (
