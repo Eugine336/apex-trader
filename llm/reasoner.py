@@ -125,6 +125,14 @@ _CONF_RE = re.compile(r"""(?i)["']?\bconfidence\b["']?\s*[:=]\s*([0-9]*\.?[0-9]+
 _RATIONALE_RE = re.compile(r"""(?i)["']?\brationale\b["']?\s*[:=]\s*["']([^"']*)""")
 _TOKEN_RE = re.compile(r"\b(LONG|SHORT|FLAT)\b")
 
+# Max chars of the serialised evidence payload handed to a reasoner. The council's
+# per-advisor REASONING evidence is appended LAST in the MarketState, so a tight
+# cap truncates exactly the advisors' full analysis off the tail — the collapse we
+# are removing (Part XXV: the Brain must see each advisor's complete cognition, not
+# a summary sentence). Sized for a full panel of rich advisor theses plus the live
+# market view; hosted high-context models handle it comfortably.
+_MAX_USER_PROMPT_CHARS = 60000
+
 
 def _map_dir(s: Any) -> str:
     return _DIR_MAP.get(str(s or "").strip().upper(), FLAT)
@@ -443,7 +451,7 @@ class LLMReasoner:
             # Larger cap so the reconstructed multi-timeframe price snapshot
             # (Part XIX Art 2 — the chart) reaches the model alongside the
             # analytical reads rather than being truncated away.
-            return json.dumps(payload, default=str)[:16000]
+            return json.dumps(payload, default=str)[:_MAX_USER_PROMPT_CHARS]
         except Exception:  # noqa: BLE001
             return json.dumps({"symbol": symbol})
 
