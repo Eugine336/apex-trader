@@ -196,6 +196,18 @@ class CognitiveBrain:
             else max(0.0, float(manage_min_interval_seconds))
         )
         self._reason_supports_override = self._detect_override_support(reasoner)
+        # Q40 — the MANAGEMENT reasoning entrypoint. A reasoner may expose a
+        # dedicated ``reason_management`` (Part XXV Art 11 — a thesis-evaluation
+        # prompt for an OPEN campaign, distinct from the origination prompt). When
+        # present it is preferred on the management path; a legacy reasoner
+        # without it falls back to plain ``reason`` (direction-based) and the
+        # Brain then uses its backward-compatible management tree.
+        self._manage_supports_management = callable(
+            getattr(reasoner, "reason_management", None)
+        )
+        self._manage_supports_override = self._fn_supports_override(
+            getattr(reasoner, "reason_management", None)
+        )
         # Part VIII / Art XXXI — the Brain's own confidence is corrected by its
         # demonstrated calibration (Decision → Outcome → Attribution →
         # Calibration → Future reasoning). Observational until wired; a None
@@ -233,7 +245,13 @@ class CognitiveBrain:
         """True when ``reasoner.reason`` accepts the ``min_interval`` /
         ``throttle_key`` overrides (so management can run its own faster cadence).
         Fail-safe: a duck-typed stub without them is treated as unsupported."""
-        fn = getattr(reasoner, "reason", None)
+        return CognitiveBrain._fn_supports_override(getattr(reasoner, "reason", None))
+
+    @staticmethod
+    def _fn_supports_override(fn: Optional[Any]) -> bool:
+        """True when ``fn`` accepts the ``min_interval`` / ``throttle_key``
+        overrides (or **kwargs). Fail-safe: a missing/duck-typed callable without
+        them is treated as unsupported."""
         if not callable(fn):
             return False
         try:
@@ -247,13 +265,26 @@ class CognitiveBrain:
     def _manage_reason(self, symbol: str, payload: dict, now: Optional[float]) -> Any:
         """Reasoner call for the MANAGEMENT path — a tighter, independent throttle
         bucket so an open position is re-reasoned faster than origination without
-        raising the global (origination + council) rate. Falls back to the plain
-        call for a reasoner that does not support the override."""
+        raising the global (origination + council) rate.
+
+        Prefers a dedicated ``reason_management`` entrypoint (Part XXV Art 11 —
+        the thesis-evaluation prompt for an open campaign) when the reasoner
+        exposes one; otherwise falls back to plain ``reason`` (the legacy
+        direction-based path). Both honour the management throttle override when
+        supported, and degrade safely for a duck-typed stub without it."""
+        throttle = f"{symbol}\x00manage"
+        if self._manage_supports_management:
+            fn = self._reasoner.reason_management
+            if self._manage_supports_override and self.manage_min_interval_seconds is not None:
+                return fn(symbol, payload, now=now,
+                          min_interval=self.manage_min_interval_seconds,
+                          throttle_key=throttle)
+            return fn(symbol, payload, now=now)
         if self._reason_supports_override and self.manage_min_interval_seconds is not None:
             return self._reasoner.reason(
                 symbol, payload, now=now,
                 min_interval=self.manage_min_interval_seconds,
-                throttle_key=f"{symbol}\x00manage",
+                throttle_key=throttle,
             )
         return self._reasoner.reason(symbol, payload, now=now)
 
@@ -925,9 +956,16 @@ class CognitiveBrain:
                now: Optional[float] = None) -> BrainOutput:
         """Decide the management action for an OPEN position/campaign. Never raises.
 
-        Reasons over the current evidence + the held direction and emits a
-        management ``DecisionPackage`` (HOLD / SCALE_IN / TIGHTEN_RISK / EXIT /
-        REVERSE). Fallback = HOLD (do nothing) when the reasoner is unavailable.
+        Part XXV Art 11 — management asks a DIFFERENT question from origination:
+        "given everything that has happened since this campaign was opened, what
+        should Apex do with THIS campaign now?" — never "does the council still
+        say LONG?". The decision is THESIS-BASED, not a direction comparison:
+        temporary uncertainty, a FLAT read, low confidence or conflicting
+        evidence NEVER liquidate a live campaign. An EXIT requires a reasoned
+        determination that the thesis is invalidated, has materially deteriorated
+        beyond its risk/EV boundary, has been superseded, or must be terminated
+        for an independent risk constraint. LONG and SHORT are treated with
+        perfect symmetry. Fail-safe: any fault ⇒ HOLD (never EXIT on error).
         """
         symbol = getattr(position, "symbol", "") or getattr(market_state, "symbol", "") or ""
         want = str(getattr(position, "direction", "") or "").upper()
@@ -938,67 +976,237 @@ class CognitiveBrain:
                 return self._record_management(self._manage_pkg(
                     symbol, want, DecisionType.HOLD, 0.0, uncertainty,
                     "reasoner unavailable — hold (no change)"))
-            opinion = self._manage_reason(
-                symbol, self._evidence_payload(market_state, consolidation), now)
+            # Article XX / Flaw 4 — read council coverage up front so a DEGRADED
+            # council cannot authorise a state change (EXIT / REVERSE / SCALE_IN).
+            # Cognitive uncertainty (too few advisors) is distinct from market
+            # uncertainty (the thesis genuinely deteriorating): the former holds,
+            # it never liquidates. None ⇒ no council metadata (gate unenforced).
+            advisors_responded, advisors_available, advisors_total = (
+                self._extract_advisor_counts(market_state)
+            )
+            # Change 4 — the management payload carries the CAMPAIGN CONTEXT (held
+            # side, entry, P&L, duration, original thesis/invalidation) so the
+            # reasoner evaluates the existing position, not the market in the
+            # abstract.
+            payload = self._management_evidence_payload(
+                symbol, market_state, consolidation, position)
+            opinion = self._manage_reason(symbol, payload, now)
             if opinion is None:
                 return self._record_management(self._manage_pkg(
                     symbol, want, DecisionType.HOLD, 0.0, uncertainty, "no opinion — hold"))
-            odir = str(getattr(opinion, "direction", FLAT) or FLAT).upper()
             conf = _clamp01(getattr(opinion, "confidence", 0.0))
             # Part XXV — resolve the confidence PROFILE. Risk-ADDING actions
             # (SCALE_IN) require the effective conviction (the weakest dimension),
             # so the Brain never adds into weak execution/timing. Risk-REDUCING
-            # actions (EXIT / TIGHTEN / REVERSE) keep using the raw scalar — a poor
-            # execution read must never make it HARDER to cut a position.
+            # actions keep using the raw scalar — a poor execution read must never
+            # make it HARDER to cut/reduce a position.
             conf_dims, eff_conf, limiting_dim = self._confidence_profile(opinion, conf)
             rationale = str(getattr(opinion, "rationale", "") or "")
-            aligned = odir == want and want in (LONG, SHORT)
-            opposite = odir in (LONG, SHORT) and odir != want and want in (LONG, SHORT)
-            # Part XXV Art 11 — management re-reasons over the SAME non-collapsed
-            # cognitive state: the opportunity's persistence and expected value
-            # govern the exit, not only whether the direction label still matches.
-            # Empty fields (a minimal/legacy opinion) never force an exit — these
-            # overrides fire only on an EXPLICIT signal, so behaviour is preserved.
-            opportunity = str(getattr(opinion, "opportunity", "") or "").strip().lower()
-            ev_txt = str(getattr(opinion, "expected_value", "") or "").strip().lower()
-            opportunity_gone = opportunity in ("none", "no", "n/a", "gone", "expired")
-            ev_negative = ev_txt.startswith("negative")
-            thesis_deteriorated = opportunity_gone or ev_negative
-
-            if aligned and conf >= self.min_confidence_to_act \
-                    and uncertainty <= self.max_uncertainty_to_act and not thesis_deteriorated:
-                in_profit = (getattr(position, "profit_r", None) or 0.0) > 0
-                if self.allow_scale_in and in_profit and eff_conf >= self.reverse_confidence:
-                    action, why = DecisionType.SCALE_IN, "thesis strengthening + in profit — add"
-                elif (self.allow_scale_in and in_profit
-                      and conf >= self.reverse_confidence
-                      and eff_conf < self.reverse_confidence):
-                    # Would add, but a weak actionability dimension (execution /
-                    # timing) says now is not the moment to increase risk — hold.
-                    action, why = DecisionType.HOLD, (
-                        f"thesis strong but {limiting_dim} weak "
-                        f"({conf_dims[limiting_dim]:.2f}) — hold, not adding"
-                    )
-                else:
-                    action, why = DecisionType.HOLD, "thesis intact — hold"
-            elif aligned and thesis_deteriorated:
-                action, why = DecisionType.EXIT, "opportunity gone / EV no longer positive — exit"
-            elif aligned and conf >= self.exit_floor:
-                action, why = DecisionType.TIGHTEN_RISK, "supporting thesis weakening — tighten risk"
-            elif opposite and conf >= self.reverse_confidence:
-                action, why = DecisionType.REVERSE, "strong contrary evidence — reverse"
-            elif opposite and conf >= self.min_confidence_to_act:
-                action, why = DecisionType.EXIT, "contrary evidence dominant — exit"
+            # A management opinion (thesis_state / management_action present) is
+            # decided by the thesis-based tree; a legacy direction-based opinion
+            # falls back to the backward-compatible tree (with FLAT ⇒ HOLD, never
+            # EXIT). Both are directionally symmetric.
+            mgmt_action = str(getattr(opinion, "management_action", "") or "").strip()
+            thesis_state = str(getattr(opinion, "thesis_state", "") or "").strip()
+            if mgmt_action or thesis_state:
+                action, why = self._decide_management_thesis(
+                    position, opinion, conf, conf_dims, eff_conf, limiting_dim)
             else:
-                action, why = DecisionType.EXIT, "evidence no longer supports the position — exit"
+                action, why = self._decide_management_legacy(
+                    position, opinion, want, uncertainty, conf,
+                    conf_dims, eff_conf, limiting_dim)
+            # Flaw 4 — council quorum guard: below quorum, state-changing actions
+            # degrade to HOLD; risk-reducing actions (TIGHTEN_RISK / PROTECT_PROFIT
+            # / SCALE_OUT) are always permitted.
+            pre_quorum_action = action
+            action, why = self._apply_management_quorum(
+                symbol, action, why, advisors_responded, advisors_available)
+            # When the guard OVERRODE the model's action, the record must explain
+            # the override (why we held), not echo the model's original rationale.
+            reason_txt = why if action != pre_quorum_action else (rationale or why)
+            logger.info(
+                "[brain] MANAGE %s held=%s → %s | thesis=%s conf=%.2f (council %s/%s) — %s",
+                symbol, want or "?", action.value,
+                (thesis_state.lower() or "legacy"), eff_conf,
+                ("?" if advisors_responded is None else advisors_responded),
+                ("?" if advisors_available is None else advisors_available),
+                reason_txt[:120],
+            )
             return self._record_management(self._manage_pkg(
-                symbol, want, action, eff_conf, uncertainty, rationale or why, opinion=opinion))
+                symbol, want, action, eff_conf, uncertainty, reason_txt, opinion=opinion))
         except Exception as exc:  # noqa: BLE001 — management reasoning must never break a cycle
             logger.debug("[brain] manage(%s) ignored a fault: %s", symbol, exc)
             with self._lock:
                 self._faults += 1
             return self._record_management(self._manage_pkg(
                 symbol, want, DecisionType.HOLD, 0.0, 1.0, f"manage fault: {exc}"))
+
+    def _decide_management_legacy(
+        self, position: "PositionView", opinion: Any, want: str, uncertainty: float,
+        conf: float, conf_dims: dict, eff_conf: float, limiting_dim: str,
+    ) -> "tuple[DecisionType, str]":
+        """Backward-compatible management decision for a legacy DIRECTION-based
+        opinion (one carrying no thesis_state / management_action).
+
+        Identical to the historical tree EXCEPT the catch-all no longer exits:
+        Flaw 1 — a FLAT / uncertain / ambiguous read is NOT an invalidation, so
+        it HOLDS the campaign. An EXIT still fires on an EXPLICIT deterioration
+        (opportunity gone / EV negative) or dominant high-confidence contrary
+        evidence; REVERSE only on very-high-confidence contrary evidence. LONG
+        and SHORT are handled symmetrically (``aligned`` / ``opposite`` are
+        computed identically for both sides)."""
+        odir = str(getattr(opinion, "direction", FLAT) or FLAT).upper()
+        if odir not in (LONG, SHORT, FLAT):
+            odir = FLAT
+        aligned = odir == want and want in (LONG, SHORT)
+        opposite = odir in (LONG, SHORT) and odir != want and want in (LONG, SHORT)
+        # Empty fields (a minimal/legacy opinion) never force an exit — these
+        # overrides fire only on an EXPLICIT signal, so prior behaviour is kept.
+        opportunity = str(getattr(opinion, "opportunity", "") or "").strip().lower()
+        ev_txt = str(getattr(opinion, "expected_value", "") or "").strip().lower()
+        opportunity_gone = opportunity in ("none", "no", "n/a", "gone", "expired")
+        ev_negative = ev_txt.startswith("negative")
+        thesis_deteriorated = opportunity_gone or ev_negative
+        in_profit = (getattr(position, "profit_r", None) or 0.0) > 0
+
+        if aligned and conf >= self.min_confidence_to_act \
+                and uncertainty <= self.max_uncertainty_to_act and not thesis_deteriorated:
+            if self.allow_scale_in and in_profit and eff_conf >= self.reverse_confidence:
+                return DecisionType.SCALE_IN, "thesis strengthening + in profit — add"
+            if (self.allow_scale_in and in_profit
+                    and conf >= self.reverse_confidence
+                    and eff_conf < self.reverse_confidence):
+                # Would add, but a weak actionability dimension (execution /
+                # timing) says now is not the moment to increase risk — hold.
+                return DecisionType.HOLD, (
+                    f"thesis strong but {limiting_dim} weak "
+                    f"({conf_dims[limiting_dim]:.2f}) — hold, not adding")
+            return DecisionType.HOLD, "thesis intact — hold"
+        if aligned and thesis_deteriorated:
+            return DecisionType.EXIT, "opportunity gone / EV no longer positive — exit"
+        if aligned and conf >= self.exit_floor:
+            return DecisionType.TIGHTEN_RISK, "supporting thesis weakening — tighten risk"
+        if opposite and conf >= self.reverse_confidence:
+            return DecisionType.REVERSE, "strong contrary evidence — reverse"
+        if opposite and conf >= self.min_confidence_to_act:
+            return DecisionType.EXIT, "contrary evidence dominant — exit"
+        # Flaw 1 — FLAT / low-confidence / ambiguous is temporary uncertainty, not
+        # invalidation. Hold the campaign; an exit needs a reasoned justification.
+        return DecisionType.HOLD, (
+            "no directional edge / uncertain — thesis not invalidated, holding")
+
+    def _decide_management_thesis(
+        self, position: "PositionView", opinion: Any, conf: float,
+        conf_dims: dict, eff_conf: float, limiting_dim: str,
+    ) -> "tuple[DecisionType, str]":
+        """THESIS-based management decision (Part XXV Art 11) for a management
+        opinion carrying a thesis_state and/or a management_action.
+
+        No direction comparison anywhere — LONG and SHORT are perfectly
+        symmetric. Defaults to HOLD on uncertainty/ambiguity. EXIT only on an
+        explicit invalidation, opportunity gone, negative EV, or a confident
+        contrary EXIT recommendation; REVERSE only on very-high-confidence
+        contrary evidence; TIGHTEN_RISK when the thesis is weakening; SCALE_IN
+        only when the thesis is strengthening, in profit and every actionability
+        dimension is strong."""
+        action_hint = str(getattr(opinion, "management_action", "") or "").strip().upper()
+        thesis = str(getattr(opinion, "thesis_state", "") or "").strip().lower()
+        opp_status = str(getattr(opinion, "opportunity_status", "") or "").strip().lower()
+        opportunity = str(getattr(opinion, "opportunity", "") or "").strip().lower()
+        ev_txt = str(getattr(opinion, "expected_value", "") or "").strip().lower()
+        ev_negative = ev_txt.startswith("negative")
+        in_profit = (getattr(position, "profit_r", None) or 0.0) > 0
+        # A "very high" bar for flipping the book — at least the reverse gate and
+        # never below a hard 0.7 floor, symmetric for both sides.
+        very_high = max(self.reverse_confidence, 0.7)
+
+        thesis_invalidated = (thesis == "invalidated") or (opp_status in ("invalidated", "replaced"))
+        opportunity_gone = (
+            opp_status in ("invalidated", "replaced")
+            or opportunity in ("none", "no", "n/a", "gone", "expired")
+        )
+
+        # 1) Explicit, reasoned invalidation → EXIT.
+        if thesis_invalidated:
+            return DecisionType.EXIT, "thesis invalidated — the opportunity no longer exists"
+
+        # 2) Honour an explicit action, cross-checked so uncertainty never
+        #    liquidates a live campaign.
+        if action_hint == "REVERSE":
+            if eff_conf >= very_high and conf >= self.reverse_confidence:
+                return DecisionType.REVERSE, "very high-confidence contrary evidence — reverse"
+            # Not conclusive enough to flip: de-risk, do not liquidate on doubt.
+            return DecisionType.TIGHTEN_RISK, (
+                "contrary evidence not conclusive enough to reverse — tighten risk")
+        if action_hint == "EXIT":
+            if ev_negative or opportunity_gone or conf >= self.min_confidence_to_act:
+                return DecisionType.EXIT, "thesis no longer supports the position — exit"
+            # Model wants out but has not justified full liquidation → reduce risk.
+            return DecisionType.TIGHTEN_RISK, (
+                "exit not sufficiently justified — tighten risk instead")
+        if action_hint == "SCALE_IN":
+            if (self.allow_scale_in and in_profit and eff_conf >= self.reverse_confidence
+                    and thesis in ("intact", "strengthening", "")):
+                return DecisionType.SCALE_IN, "thesis strengthening + in profit — add"
+            if (self.allow_scale_in and in_profit and conf >= self.reverse_confidence
+                    and eff_conf < self.reverse_confidence):
+                return DecisionType.HOLD, (
+                    f"thesis strong but {limiting_dim} weak "
+                    f"({conf_dims[limiting_dim]:.2f}) — hold, not adding")
+            return DecisionType.HOLD, "scale-in conditions not met — hold"
+        if action_hint == "SCALE_OUT":
+            return DecisionType.SCALE_OUT, "bank partial — reduce exposure while the thesis clarifies"
+        if action_hint == "PROTECT_PROFIT":
+            return DecisionType.PROTECT_PROFIT, "protect profit — move stop to secure gains"
+        if action_hint == "TIGHTEN_RISK":
+            return DecisionType.TIGHTEN_RISK, "reduce risk while the thesis is in question"
+        if action_hint == "HOLD":
+            return DecisionType.HOLD, "thesis holds — hold"
+
+        # 3) No explicit action → derive from the thesis / opportunity state.
+        if ev_negative or opportunity_gone:
+            return DecisionType.EXIT, "expected value negative / opportunity gone — exit"
+        if thesis == "weakening":
+            return DecisionType.TIGHTEN_RISK, "thesis weakening but not invalidated — tighten risk"
+        if thesis == "evolved":
+            return DecisionType.TIGHTEN_RISK, (
+                "opportunity evolving / superseded — tighten risk while reassessing")
+        if thesis in ("intact", "strengthening"):
+            if (self.allow_scale_in and in_profit and thesis == "strengthening"
+                    and eff_conf >= self.reverse_confidence):
+                return DecisionType.SCALE_IN, "thesis strengthening + in profit — add"
+            return DecisionType.HOLD, "thesis intact — hold"
+
+        # 4) Uncertain / temporarily obscured / ambiguous → HOLD (never auto-exit).
+        return DecisionType.HOLD, (
+            "uncertain / temporarily obscured — thesis not invalidated, holding")
+
+    def _apply_management_quorum(
+        self, symbol: str, action: "DecisionType", why: str,
+        responded: Optional[int], available: Optional[int],
+    ) -> "tuple[DecisionType, str]":
+        """Flaw 4 — a DEGRADED council must not authorise a state change.
+
+        Below ``min_advisors_for_action`` responding advisors, the state-changing
+        actions (EXIT / REVERSE / SCALE_IN) degrade to HOLD: too little cognition
+        to justify liquidating, flipping or adding to a live campaign. Risk-
+        reducing actions (TIGHTEN_RISK / PROTECT_PROFIT / SCALE_OUT) are always
+        permitted — de-risking must never be blocked. Unenforced when no council
+        metadata is present (``responded is None`` ⇒ fail-safe, prior behaviour)."""
+        if responded is None or responded >= self.min_advisors_for_action:
+            return action, why
+        state_changing = {DecisionType.EXIT, DecisionType.REVERSE, DecisionType.SCALE_IN}
+        if action in state_changing:
+            logger.info(
+                "[brain] MANAGE %s degraded council (%s/%s advisors) — insufficient "
+                "cognition for state change (%s blocked), holding",
+                symbol, responded,
+                ("?" if available is None else available), action.value,
+            )
+            return DecisionType.HOLD, (
+                f"degraded council ({responded}/{self.min_advisors_for_action} "
+                f"required advisors) — insufficient cognition for {action.value}, holding")
+        return action, why
 
     def _manage_pkg(self, symbol: str, held_dir: str, action: "DecisionType",
                     confidence: float, uncertainty: float, reason: str,
@@ -1050,6 +1258,16 @@ class CognitiveBrain:
                 f"timing {_dims['timing']:.2f} / execution {_dims['execution']:.2f} "
                 f"→ effective {_eff:.2f} (weakest: {_lim})"
             )
+            # Part XXV Art 11 — record the management thesis state / recommended
+            # action / opportunity status when present (a management opinion), so
+            # the reasoning behind HOLD-vs-change is auditable on the record.
+            for _k, _v in (
+                ("thesis_state", str(getattr(opinion, "thesis_state", "") or "")),
+                ("management_action", str(getattr(opinion, "management_action", "") or "")),
+                ("opportunity_status", str(getattr(opinion, "opportunity_status", "") or "")),
+            ):
+                if _v:
+                    questions[_k] = _v
         else:
             questions = {q: (do_nothing_txt if q == "should_i_do_nothing" else reason)
                          for q in REQUIRED_QUESTIONS}
@@ -1087,6 +1305,49 @@ class CognitiveBrain:
             "consolidation": consolidation,
             "evidence": [e.to_dict() for e in fresh[:96]],
         }
+
+    def _management_evidence_payload(
+        self, symbol: str, market_state: MarketState, consolidation: dict,
+        position: "PositionView",
+    ) -> dict:
+        """Change 4 — the management payload = the origination evidence PLUS the
+        CAMPAIGN CONTEXT the reasoner needs to evaluate an EXISTING position:
+        the held side, current P&L (R), how long it has been open, its size, and
+        — when the Brain originated it — the ORIGINAL thesis and invalidation
+        conditions recorded at entry. Without this the model would answer "what
+        direction do I see?" instead of "should Apex keep THIS campaign?".
+        Fail-safe: any fault falls back to the plain origination payload."""
+        payload = self._evidence_payload(market_state, consolidation)
+        try:
+            campaign: dict[str, Any] = {
+                "held_direction": str(getattr(position, "direction", "") or "").upper(),
+                "profit_r": getattr(position, "profit_r", None),
+                "hold_seconds": round(float(getattr(position, "hold_seconds", 0.0) or 0.0), 2),
+                "size": getattr(position, "size", 0.0),
+                "campaign_id": str(getattr(position, "campaign_id", "") or ""),
+                "entry_confidence": getattr(position, "entry_confidence", None),
+            }
+            # Original thesis / invalidation from the Brain's origination record
+            # for this symbol, when available (a position opened elsewhere simply
+            # has no prior record — the context is still valid, just thinner).
+            prior = self._last.get(str(symbol or ""))
+            prior_decision = getattr(prior, "decision", None) if prior is not None else None
+            if prior_decision is not None:
+                thesis = str(getattr(prior_decision, "thesis", "") or "")
+                inval = list(getattr(prior_decision, "invalidation_conditions", []) or [])
+                if thesis:
+                    campaign["original_thesis"] = thesis[:500]
+                if inval:
+                    campaign["invalidation_conditions"] = [str(i)[:200] for i in inval][:6]
+                dtype = getattr(prior_decision, "decision_type", None)
+                dval = getattr(dtype, "value", None)
+                if dval:
+                    campaign["entry_decision_type"] = dval
+            payload["campaign"] = campaign
+            payload["management"] = True
+        except Exception as exc:  # noqa: BLE001 — payload enrichment must never break management
+            logger.debug("[brain] management payload(%s) ignored a fault: %s", symbol, exc)
+        return payload
 
     @staticmethod
     def _extract_advisor_counts(

@@ -108,6 +108,92 @@ _SYSTEM_PROMPT = (
 )
 
 
+# Part XXV Art 11 / Q40 — MANAGEMENT reasoning is a DIFFERENT question from
+# origination. Origination asks "is there an opportunity, and in which
+# direction?". Management asks "given everything that has happened since this
+# campaign was opened, what should be done with THIS campaign now?". The model
+# is told the position it already holds (direction, entry, P&L, duration and the
+# original thesis) and is asked to EVALUATE THE THESIS — never to re-derive a
+# direction. A fresh FLAT read, low confidence, conflicting evidence or a
+# moment of uncertainty is NOT a reason to liquidate a live campaign; only a
+# reasoned determination that the thesis is invalidated, has materially
+# deteriorated beyond its risk/EV boundary, has been superseded by a better
+# opportunity, or must be terminated for an independent risk/execution
+# constraint justifies an exit.
+_MANAGEMENT_SYSTEM_PROMPT = (
+    "You are the Cognitive Brain of an autonomous trading intelligence, MANAGING "
+    "AN EXISTING OPEN CAMPAIGN — not scanning for a new one. The payload includes "
+    "a 'campaign' object: the side already held (LONG or SHORT), the entry "
+    "context, the current profit/loss (in R multiples where available), how long "
+    "the position has been open, and the ORIGINAL thesis and invalidation "
+    "conditions recorded when it was opened. It also includes the SAME structured "
+    "representation of current market reality you receive at origination "
+    "(multi-timeframe price picture, tick tape, order-book depth, session, "
+    "analytical readings as measurements). Do not invent data you were not given.\n\n"
+    "Your question is NOT 'what direction do I see now?' — it is: 'given "
+    "everything that has happened since this campaign was opened, what should be "
+    "done with THIS campaign now?'. Re-examine the ORIGINAL thesis against current "
+    "reality and decide whether the opportunity that justified the position is: "
+    "intact, evolving, temporarily obscured, deteriorating, invalidated, or "
+    "replaced by a superior opportunity.\n\n"
+    "CRITICAL — an open campaign is NEVER closed merely because the latest read is "
+    "FLAT, low-confidence, conflicting, or temporarily uncertain. Temporary "
+    "uncertainty is the normal texture of a live trade, not a reason to "
+    "liquidate. An EXIT requires a REASONED determination that the existing "
+    "opportunity has been (a) invalidated, (b) materially deteriorated beyond its "
+    "acceptable risk/expected-value boundary, (c) superseded by a demonstrably "
+    "superior opportunity, or (d) must be terminated for an independent "
+    "risk/execution constraint. If none of those hold, the correct action is to "
+    "HOLD (or to reduce risk while the picture clarifies) — not to exit. Judge "
+    "LONG and SHORT campaigns with perfect symmetry: apply the identical standard "
+    "to a held long and a held short; there is no directional bias.\n\n"
+    "Choose ONE management action:\n"
+    "  HOLD — the thesis still holds (or is only temporarily obscured); keep the "
+    "position as-is.\n"
+    "  TIGHTEN_RISK — the thesis is weakening but not dead; reduce risk (tighten "
+    "the stop) while staying in.\n"
+    "  PROTECT_PROFIT — the position is in profit and the thesis is maturing; move "
+    "the stop to protect gains.\n"
+    "  SCALE_IN — the thesis is strengthening and conditions justify adding "
+    "(only if genuinely warranted).\n"
+    "  SCALE_OUT — bank part of the position (partial de-risk) while keeping "
+    "core exposure.\n"
+    "  EXIT — the thesis is invalidated / opportunity gone / EV now negative / an "
+    "independent risk constraint forces closure.\n"
+    "  REVERSE — the evidence now supports the OPPOSITE side with very high "
+    "conviction (rare; requires strong, reasoned contrary evidence).\n\n"
+    "Respond with STRICT JSON only, no prose, no markdown fences, exactly these "
+    "keys:\n"
+    "{\"thesis_state\": \"THESIS_INTACT|THESIS_WEAKENING|THESIS_INVALIDATED|"
+    "OPPORTUNITY_EVOLVED\", "
+    "\"opportunity_status\": \"intact|evolving|temporarily_obscured|deteriorating|"
+    "invalidated|replaced\", "
+    "\"primary_hypothesis\": \"what is happening to the campaign's thesis now\", "
+    "\"alternative_hypotheses\": [\"competing reading(s)\"], "
+    "\"supporting_evidence\": [\"what still supports the held side\"], "
+    "\"contradicting_evidence\": [\"what now argues against it\"], "
+    "\"key_uncertainty\": \"the main thing you are unsure of\", "
+    "\"missing_information\": [\"...\"], "
+    "\"expected_value\": \"net of costs, for CONTINUING to hold: positive|negative|unclear\", "
+    "\"risk\": \"the risk of continuing to hold\", "
+    "\"what_would_change_my_mind\": [\"...\"], "
+    "\"invalidation\": \"the condition that proves the campaign thesis dead\", "
+    "\"action\": \"HOLD|TIGHTEN_RISK|PROTECT_PROFIT|SCALE_IN|SCALE_OUT|EXIT|REVERSE\", "
+    "\"confidence\": 0.0-1.0, "
+    "\"thesis_confidence\": 0.0-1.0, \"opportunity_confidence\": 0.0-1.0, "
+    "\"timing_confidence\": 0.0-1.0, \"execution_confidence\": 0.0-1.0, "
+    "\"rationale\": \"one or two sentences tying it together\"}\n"
+    "'confidence' is your calibrated probability that the chosen action is the "
+    "correct thing to do with this campaign right now. Decompose it into "
+    "thesis_confidence (is the original read still correct?), "
+    "opportunity_confidence (does a real exploitable edge still exist?), "
+    "timing_confidence (is now the moment to take this action?) and "
+    "execution_confidence (can it be realised after spread/slippage/liquidity?). "
+    "If unsure, default to HOLD with thesis_state THESIS_INTACT — uncertainty "
+    "resolves toward holding, never toward liquidation."
+)
+
+
 def _clamp01(v: Any) -> float:
     try:
         f = float(v)
@@ -146,6 +232,63 @@ def _map_dir(s: Any) -> str:
     return _DIR_MAP.get(str(s or "").strip().upper(), FLAT)
 
 
+# Part XXV Art 11 — MANAGEMENT vocabulary. A management reply does NOT carry a
+# trade direction; it carries a THESIS STATE and a MANAGEMENT ACTION. These maps
+# normalise the model's (possibly synonymous) words into the canonical action /
+# thesis / opportunity tokens the Brain's management decision tree understands.
+# An unrecognised value maps to "" (empty) so the Brain lawfully falls back to
+# HOLD rather than inventing a state-changing action. NOTE: "HOLD" here means
+# KEEP THE POSITION — it is NEVER mapped to FLAT (the origination collapse that
+# turned "hold" into an exit is precisely what management must not do).
+_MGMT_ACTION_MAP = {
+    "HOLD": "HOLD", "KEEP": "HOLD", "MAINTAIN": "HOLD", "STAY": "HOLD",
+    "CONTINUE": "HOLD", "DO_NOTHING": "HOLD", "NOTHING": "HOLD", "WAIT": "HOLD",
+    "NONE": "HOLD",
+    "TIGHTEN_RISK": "TIGHTEN_RISK", "TIGHTEN": "TIGHTEN_RISK",
+    "REDUCE_RISK": "TIGHTEN_RISK", "TIGHTEN_STOP": "TIGHTEN_RISK",
+    "PROTECT_PROFIT": "PROTECT_PROFIT", "PROTECT": "PROTECT_PROFIT",
+    "LOCK_IN": "PROTECT_PROFIT", "LOCK_PROFIT": "PROTECT_PROFIT",
+    "SECURE": "PROTECT_PROFIT", "SECURE_PROFIT": "PROTECT_PROFIT",
+    "SCALE_IN": "SCALE_IN", "ADD": "SCALE_IN", "PYRAMID": "SCALE_IN",
+    "INCREASE": "SCALE_IN", "ADD_TO_WINNER": "SCALE_IN",
+    "SCALE_OUT": "SCALE_OUT", "TRIM": "SCALE_OUT", "PARTIAL": "SCALE_OUT",
+    "PARTIAL_CLOSE": "SCALE_OUT", "REDUCE": "SCALE_OUT", "TAKE_PARTIAL": "SCALE_OUT",
+    "EXIT": "EXIT", "CLOSE": "EXIT", "LIQUIDATE": "EXIT", "TERMINATE": "EXIT",
+    "SELL_ALL": "EXIT", "CLOSE_ALL": "EXIT",
+    "REVERSE": "REVERSE", "FLIP": "REVERSE",
+}
+_MGMT_THESIS_MAP = {
+    "THESIS_INTACT": "intact", "INTACT": "intact", "VALID": "intact",
+    "CONFIRMED": "intact", "HOLDING": "intact",
+    "THESIS_STRENGTHENING": "strengthening", "STRENGTHENING": "strengthening",
+    "THESIS_WEAKENING": "weakening", "WEAKENING": "weakening",
+    "DETERIORATING": "weakening", "SOFTENING": "weakening",
+    "THESIS_INVALIDATED": "invalidated", "INVALIDATED": "invalidated",
+    "VOID": "invalidated", "BROKEN": "invalidated", "DEAD": "invalidated",
+    "OPPORTUNITY_EVOLVED": "evolved", "EVOLVED": "evolved",
+    "SUPERSEDED": "evolved", "REPLACED": "evolved",
+}
+_MGMT_OPP_MAP = {
+    "INTACT": "intact", "EVOLVING": "evolving",
+    "OBSCURED": "obscured", "TEMPORARILY_OBSCURED": "obscured",
+    "DETERIORATING": "deteriorating", "DECAYING": "deteriorating",
+    "INVALIDATED": "invalidated", "GONE": "invalidated", "EXPIRED": "invalidated",
+    "REPLACED": "replaced", "SUPERSEDED": "replaced",
+}
+
+
+def _map_mgmt_action(s: Any) -> str:
+    return _MGMT_ACTION_MAP.get(str(s or "").strip().upper().replace(" ", "_"), "")
+
+
+def _map_mgmt_thesis(s: Any) -> str:
+    return _MGMT_THESIS_MAP.get(str(s or "").strip().upper().replace(" ", "_"), "")
+
+
+def _map_mgmt_opportunity(s: Any) -> str:
+    return _MGMT_OPP_MAP.get(str(s or "").strip().upper().replace(" ", "_"), "")
+
+
 # Part XXV / Violation V2 — the rich cognitive fields that make a reply a valid
 # opinion even when it carries NO ``direction``. A missing direction is itself a
 # cognitive result ("I understand the market but see no directional edge"), so a
@@ -160,6 +303,11 @@ _OPINION_FIELD_KEYS = frozenset({
     "what_would_change_my_mind", "competing_hypotheses", "rationale",
     "thesis_confidence", "opportunity_confidence", "timing_confidence",
     "execution_confidence",
+    # Part XXV Art 11 — management-only fields. A management reply may carry NO
+    # direction at all (it answers with a thesis state + action instead), so
+    # these must count as recognisable opinion fields or the whole reply is
+    # dropped as unparseable.
+    "thesis_state", "management_action", "action", "opportunity_status",
 })
 
 
@@ -272,6 +420,18 @@ class LLMOpinion:
     execution_quality: str = ""
     risk: str = ""
     what_would_change_my_mind: list[str] = field(default_factory=list)
+    # Part XXV Art 11 — MANAGEMENT state. Populated only when the opinion came
+    # from the management prompt (:meth:`reason_management`); empty on an
+    # origination opinion. ``management_action`` is the canonical action
+    # (HOLD / TIGHTEN_RISK / PROTECT_PROFIT / SCALE_IN / SCALE_OUT / EXIT /
+    # REVERSE); ``thesis_state`` is intact / strengthening / weakening /
+    # invalidated / evolved; ``opportunity_status`` is intact / evolving /
+    # obscured / deteriorating / invalidated / replaced. Their presence is how
+    # the Brain tells a thesis-based management opinion from a legacy
+    # direction-based one.
+    thesis_state: str = ""
+    management_action: str = ""
+    opportunity_status: str = ""
     at_iso: str = ""
     model: str = ""
 
@@ -312,6 +472,9 @@ class LLMOpinion:
             "execution_quality": self.execution_quality,
             "risk": self.risk,
             "what_would_change_my_mind": list(self.what_would_change_my_mind),
+            "thesis_state": self.thesis_state,
+            "management_action": self.management_action,
+            "opportunity_status": self.opportunity_status,
             "at": self.at_iso,
             "model": self.model,
         }
@@ -449,7 +612,7 @@ class LLMReasoner:
         self, symbol: str, evidence: dict, *, now: Optional[float] = None,
         min_interval: Optional[float] = None, throttle_key: Optional[str] = None,
     ) -> Optional[LLMOpinion]:
-        """Ask the model to reason over ``evidence`` for ``symbol``.
+        """Ask the model to reason over ``evidence`` for ``symbol`` (ORIGINATION).
 
         Returns a parsed :class:`LLMOpinion`, or ``None`` when unavailable,
         throttled, or on any fault. Blocking (provider round-trip) — call from a
@@ -460,6 +623,36 @@ class LLMReasoner:
         tighter cadence on an independent bucket (e.g. management re-reasoning an
         open position faster than origination) without changing the global rate.
         """
+        return self._reason_impl(
+            symbol, evidence, now=now, min_interval=min_interval,
+            throttle_key=throttle_key, management=False,
+        )
+
+    def reason_management(
+        self, symbol: str, evidence: dict, *, now: Optional[float] = None,
+        min_interval: Optional[float] = None, throttle_key: Optional[str] = None,
+    ) -> Optional[LLMOpinion]:
+        """Re-reason an OPEN campaign (MANAGEMENT — Part XXV Art 11 / Q40).
+
+        Identical machinery to :meth:`reason` (same throttle/backoff/recovery)
+        but driven by :data:`_MANAGEMENT_SYSTEM_PROMPT` and parsed by
+        :meth:`_parse_management`, so the reply carries a thesis state + a
+        management action rather than a fresh trade direction. ``evidence`` is
+        expected to include the campaign context (held side, entry, P&L,
+        original thesis) so the model evaluates the EXISTING position, not the
+        market in the abstract. Fail-safe.
+        """
+        return self._reason_impl(
+            symbol, evidence, now=now, min_interval=min_interval,
+            throttle_key=throttle_key, management=True,
+        )
+
+    def _reason_impl(
+        self, symbol: str, evidence: dict, *, now: Optional[float],
+        min_interval: Optional[float], throttle_key: Optional[str],
+        management: bool,
+    ) -> Optional[LLMOpinion]:
+        """Shared origination/management reasoning body. Fail-safe."""
         if not self.available:
             return None
         t = time.time() if now is None else float(now)
@@ -483,7 +676,8 @@ class LLMReasoner:
                     return None
                 self._last_call[key] = t
             user = self._build_user_prompt(sym, evidence)
-            reply = self._complete(_SYSTEM_PROMPT, user)
+            system = _MANAGEMENT_SYSTEM_PROMPT if management else _SYSTEM_PROMPT
+            reply = self._complete(system, user)
             if not reply:
                 with self._lock:
                     self._faults += 1
@@ -495,7 +689,7 @@ class LLMReasoner:
                 # to avoid flooding when an advisor is persistently unavailable.
                 logger.debug("[llm] {} — no reply from model (fail-safe: no opinion)", sym)
                 return None
-            opinion = self._parse(sym, reply)
+            opinion = self._parse_management(sym, reply) if management else self._parse(sym, reply)
             with self._lock:
                 self._calls += 1
                 if opinion is not None:
@@ -509,19 +703,30 @@ class LLMReasoner:
                     self._last_reason_ok[sym] = False
                     self._note_failure(t)
             if opinion is not None:
-                logger.info(
-                    "[llm] {} [{}] dir={} conf={} | regime={} opp={} ({}) — {}",
-                    sym,
-                    str(getattr(opinion, "model", "") or getattr(self._client, "model", "") or "?"),
-                    getattr(opinion, "direction", "?"),
-                    round(float(getattr(opinion, "confidence", 0.0) or 0.0), 3),
-                    str(getattr(opinion, "regime", "") or "?"),
-                    str(getattr(opinion, "opportunity", "") or "n/a")[:60],
-                    str(getattr(opinion, "opportunity_horizon", "") or "?"),
-                    str(getattr(opinion, "rationale", "") or "")[:140],
-                )
+                if management:
+                    logger.info(
+                        "[llm] {} [{}] MANAGE thesis={} action={} conf={} — {}",
+                        sym,
+                        str(getattr(opinion, "model", "") or getattr(self._client, "model", "") or "?"),
+                        str(getattr(opinion, "thesis_state", "") or "?"),
+                        str(getattr(opinion, "management_action", "") or "?"),
+                        round(float(getattr(opinion, "confidence", 0.0) or 0.0), 3),
+                        str(getattr(opinion, "rationale", "") or "")[:140],
+                    )
+                else:
+                    logger.info(
+                        "[llm] {} [{}] dir={} conf={} | regime={} opp={} ({}) — {}",
+                        sym,
+                        str(getattr(opinion, "model", "") or getattr(self._client, "model", "") or "?"),
+                        getattr(opinion, "direction", "?"),
+                        round(float(getattr(opinion, "confidence", 0.0) or 0.0), 3),
+                        str(getattr(opinion, "regime", "") or "?"),
+                        str(getattr(opinion, "opportunity", "") or "n/a")[:60],
+                        str(getattr(opinion, "opportunity_horizon", "") or "?"),
+                        str(getattr(opinion, "rationale", "") or "")[:140],
+                    )
             else:
-                # 2xx reply that did not parse into a directional opinion — the
+                # 2xx reply that did not parse into a usable opinion — the
                 # single most common "why is the Brain idle?" cause. Surface the
                 # raw reply (key-free) so the prompt/format can be corrected.
                 logger.warning(
@@ -565,6 +770,38 @@ class LLMReasoner:
         if not _reply_was_strict_json(reply):
             with self._lock:
                 self._recovered += 1
+        return self._build_opinion(symbol, fields)
+
+    def _parse_management(self, symbol: str, reply: str) -> Optional[LLMOpinion]:
+        """Parse a MANAGEMENT reply (Part XXV Art 11).
+
+        A management reply answers with a THESIS STATE and a MANAGEMENT ACTION,
+        not a trade direction. It is parsed with the SAME robust recovery as
+        origination (:func:`_extract_opinion_fields`) but the collapse that maps
+        ``HOLD``/``NEUTRAL``/``WAIT`` → FLAT is DELIBERATELY NOT applied: here
+        ``HOLD`` means *keep the position*, and a missing/uncertain action
+        resolves to HOLD downstream, never to an exit. Never raises.
+        """
+        fields = _extract_opinion_fields(reply)
+        if not _has_opinion_fields(fields):
+            return None
+        if not _reply_was_strict_json(reply):
+            with self._lock:
+                self._recovered += 1
+        return self._build_opinion(symbol, fields, management=True)
+
+    def _build_opinion(
+        self, symbol: str, fields: dict, *, management: bool = False,
+    ) -> LLMOpinion:
+        """Construct an :class:`LLMOpinion` from an extracted fields dict.
+
+        Shared by origination (:meth:`_parse`) and management
+        (:meth:`_parse_management`). The rich cognitive fields are parsed
+        identically; ``management`` only governs the management-specific
+        fields (thesis_state / management_action / opportunity_status) and
+        ensures a management reply is NEVER forced into an exit via the
+        direction map.
+        """
         ch = fields.get("competing_hypotheses") or []
         mi = fields.get("missing_information") or []
         alt = fields.get("alternative_hypotheses") or []
@@ -593,6 +830,18 @@ class LLMReasoner:
         alt_l = _list(alt)
         ch_l = _list(ch) or alt_l
         wcm_l = _list(wcm)
+        # Part XXV Art 11 — management state. Only populated for a management
+        # reply; an origination reply leaves these empty (so the Brain can tell
+        # the two apart). A management reply intentionally carries NO trade
+        # direction, so ``direction`` stays FLAT and is never used to decide an
+        # exit; the management action drives the decision instead.
+        mgmt_action = _map_mgmt_action(
+            fields.get("management_action") or fields.get("action")
+        ) if management else ""
+        thesis_state = _map_mgmt_thesis(fields.get("thesis_state")) if management else ""
+        opportunity_status = _map_mgmt_opportunity(
+            fields.get("opportunity_status") or fields.get("opportunity_state")
+        ) if management else ""
         return LLMOpinion(
             symbol=symbol,
             direction=_norm_dir(fields.get("direction")),
@@ -619,6 +868,9 @@ class LLMReasoner:
             execution_quality=_txt("execution_quality", 160),
             risk=_txt("risk"),
             what_would_change_my_mind=wcm_l,
+            thesis_state=thesis_state,
+            management_action=mgmt_action,
+            opportunity_status=opportunity_status,
             at_iso=time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
             model=str(getattr(self._client, "model", "") or ""),
         )
