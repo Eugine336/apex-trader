@@ -61,22 +61,17 @@ CACHE_DIR = "/root/.cache/huggingface"
 # GPU billing stops once a container is idle this long (5 min warm window).
 SCALEDOWN_WINDOW = 300
 
-# Optional bearer token. The secret is looked up by name; if it does not exist
-# the endpoints run open (see ``_secrets`` below).
-INFERENCE_KEY_SECRET = "apex-inference-key"
-
-
-def _secrets() -> list:
-    """Attach the optional inference-key secret only if it has been created.
-
-    Deploying before running ``modal secret create apex-inference-key ...``
-    must not fail, so a missing secret degrades to open (no auth) rather than
-    raising at deploy time.
-    """
-    try:
-        return [modal.Secret.from_name(INFERENCE_KEY_SECRET)]
-    except Exception:  # noqa: BLE001 — secret not created yet ⇒ run open
-        return []
+# Optional bearer-token auth (off by default). To arm it later:
+#   1. Create a Modal secret holding the token, e.g.
+#        modal secret create apex-inference-key MODAL_INFERENCE_KEY=<token>
+#   2. Add ``secrets=[modal.Secret.from_name("apex-inference-key")]`` to each
+#      ``@app.cls()`` decorator below so MODAL_INFERENCE_KEY is present in the
+#      container environment.
+#   3. Set the same value as MODAL_INFERENCE_KEY in APEX's .env.
+# ``_build_server`` reads MODAL_INFERENCE_KEY from the environment and, when set,
+# enforces ``Authorization: Bearer <token>`` on every request. It is NOT wired
+# by default: ``Secret.from_name`` is validated at deploy time and would abort
+# the deploy with "Secret not found" if the secret has not been created yet.
 
 
 def _build_server(model_name: str):
@@ -120,7 +115,6 @@ def _build_server(model_name: str):
     gpu="a10g",
     volumes={CACHE_DIR: model_cache},
     scaledown_window=SCALEDOWN_WINDOW,
-    secrets=_secrets(),
 )
 class MistralServer:
     MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
@@ -141,7 +135,6 @@ class MistralServer:
     gpu="a10g",
     volumes={CACHE_DIR: model_cache},
     scaledown_window=SCALEDOWN_WINDOW,
-    secrets=_secrets(),
 )
 class QwenServer:
     MODEL = "Qwen/Qwen2.5-7B-Instruct"
