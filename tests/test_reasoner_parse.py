@@ -51,6 +51,34 @@ def test_prose_prefixed_json():
     assert repair_json(txt)["confidence"] == 0.8
 
 
+def test_deepseek_think_block_followed_by_json():
+    txt = """<think>
+Step-by-step analysis of USDJPY...
+The market shows {some reasoning text}...
+Therefore I conclude LONG.
+</think>
+{"direction": "LONG", "confidence": 0.72, "rationale": "breakout held"}"""
+    obj = repair_json(txt)
+    assert obj["direction"] == "LONG"
+    assert obj["confidence"] == 0.72
+
+
+def test_unclosed_think_after_json_is_stripped():
+    txt = """{"direction": "SHORT", "confidence": 0.42}
+<think>
+extra reasoning was truncated with {brace noise}"""
+    obj = repair_json(txt)
+    assert obj["direction"] == "SHORT"
+    assert obj["confidence"] == 0.42
+
+
+def test_truncated_think_without_json_returns_none():
+    txt = """<think>
+Step-by-step analysis with {brace noise}
+No final answer before truncation."""
+    assert repair_json(txt) is None
+
+
 def test_dangling_key_dropped():
     txt = '{"direction": "LONG", "confidence": 0.6, "rationale":'
     obj = repair_json(txt)
@@ -80,6 +108,18 @@ def test_regex_fallback_when_json_unrecoverable():
     fields = _extract_opinion_fields('direction: SHORT, confidence: 0.44 because ...')
     assert fields["direction"] == "SHORT"
     assert float(fields["confidence"]) == 0.44
+
+
+def test_markdown_prose_fallback_extracts_opinion():
+    txt = """**Step-by-Step Explanation and Answer:**
+
+The setup favors continuation after liquidity cleared.
+
+**Direction:** LONG
+**Confidence:** 0.72"""
+    fields = _extract_opinion_fields(txt)
+    assert fields["direction"] == "LONG"
+    assert float(fields["confidence"]) == 0.72
 
 
 def test_regex_maps_buy_sell_synonyms():

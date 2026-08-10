@@ -31,6 +31,8 @@ from typing import Any, Optional
 
 _FENCE_OPEN = re.compile(r"^\s*```[a-zA-Z0-9_-]*[ \t]*\r?\n?")
 _FENCE_CLOSE = re.compile(r"\r?\n?\s*```\s*$")
+_THINK_BLOCK = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.IGNORECASE | re.DOTALL)
+_THINK_OPEN = re.compile(r"<think\b[^>]*>", re.IGNORECASE)
 _TRAILING_COMMA = re.compile(r",(\s*[}\]])")
 _DANGLING_KEY = re.compile(r",?\s*\"[^\"]*\"\s*:\s*$")
 _DANGLING_COLON = re.compile(r":\s*$")
@@ -44,8 +46,12 @@ def _try_load(s: str) -> Optional[Any]:
 
 
 def strip_fences(text: str) -> str:
-    """Remove Markdown code fences, including a lone/truncated opening fence."""
+    """Remove reasoning wrappers and Markdown code fences from model replies."""
     s = str(text or "").strip()
+    s = _THINK_BLOCK.sub("", s)
+    m = _THINK_OPEN.search(s)
+    if m:
+        s = s[:m.start()]
     s = _FENCE_OPEN.sub("", s)
     s = _FENCE_CLOSE.sub("", s)
     return s.strip()
