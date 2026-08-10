@@ -43,6 +43,7 @@ from cognition.contracts import (
     EvidenceDomain,
     Hypothesis,
     MarketState,
+    Opportunity,
 )
 from cognition.expected_value import expected_value_r, reward_risk_from_opinion
 
@@ -220,6 +221,12 @@ class CognitiveBrain:
         self._managed = 0
         self._last: dict[str, BrainOutput] = {}
         self._last_management: dict[str, BrainOutput] = {}
+        # Part XXV / item 8 — the latest opportunity SET the Brain saw per symbol
+        # at origination, so MANAGEMENT can compare a live campaign against the
+        # currently visible opportunities (has a superior competing opportunity
+        # emerged since entry?). Keyed by symbol → list[Opportunity]. Best-effort
+        # (only present after the symbol has been reasoned in harvesting format).
+        self._last_opportunities: dict[str, list[Opportunity]] = {}
         self._lock = threading.Lock()
 
     @property
@@ -624,13 +631,40 @@ class CognitiveBrain:
             + ([invalidation_txt] if invalidation_txt else []) + wcm + competing
         )
 
+        # Part XXV — lift the reasoner's ranked opportunity SET into first-class
+        # Opportunity objects and reason over them directly (not only over the
+        # collapsed direction). ``driving_opp`` is the opportunity whose
+        # activation this campaign depends on; ``is_harvesting`` marks a multi-
+        # opportunity reply (a legacy single-direction reply leaves both empty and
+        # every gate below behaves exactly as before).
+        opportunity_set, preferred_opp_id, is_harvesting = self._build_opportunity_set(opinion)
+        driving_opp = self._select_driving_opportunity(
+            opportunity_set, preferred_opp_id, direction)
+        # Item 8 — remember the set per symbol so MANAGEMENT can later compare a
+        # live campaign against the currently visible opportunities.
+        if is_harvesting:
+            with self._lock:
+                self._last_opportunities[str(symbol or "")] = opportunity_set
+        # ACTIVATION GATE (Part XXV / item 7): a harvesting-format reply may only
+        # OPEN a campaign when the driving opportunity has ACTIVATED. A FORMING
+        # (identified-but-not-yet-triggered) opportunity must WAIT — even at high
+        # thesis confidence — because execution requires activation, not mere
+        # identification. UNKNOWN state (legacy) counts as actionable, so nothing
+        # changes for pre-harvesting replies.
+        activation_ok = (
+            (not is_harvesting)
+            or (driving_opp is None)
+            or driving_opp.is_actionable
+        )
+
         # Constitutional gate: only OPEN a campaign when the Brain can answer
         # with sufficient confidence AND uncertainty is acceptable AND there is a
         # direction AND the expected value clears the threshold AND the advisory
-        # quorum + evidence-domain coverage are adequate. Otherwise do nothing —
+        # quorum + evidence-domain coverage are adequate AND (harvesting format)
+        # the driving opportunity has actually activated. Otherwise do nothing —
         # there is no obligation to trade (Part IV Art 7 / Part IX Q35: a good
-        # thesis at negative EV, thin coverage or a lone advisor is not an
-        # executable trade).
+        # thesis at negative EV, thin coverage, a lone advisor, or an unactivated
+        # opportunity is not an executable trade).
         ev_ok = (self.min_expected_value is None) or (expected_value >= self.min_expected_value)
         act = (
             direction in (LONG, SHORT)
@@ -639,6 +673,7 @@ class CognitiveBrain:
             and ev_ok
             and quorum_ok
             and domain_ok
+            and activation_ok
         )
         if not act:
             directional_and_qualified = (
@@ -646,7 +681,40 @@ class CognitiveBrain:
                 and eff_conf >= self.min_confidence_to_act
                 and uncertainty <= self.max_uncertainty_to_act
             )
-            if directional_and_qualified and ev_ok and not quorum_ok:
+            if (is_harvesting and driving_opp is not None
+                    and driving_opp.is_directional and not driving_opp.is_actionable):
+                # ACTIVATION GATE — a real, directional opportunity exists but has
+                # NOT activated. This is fundamentally different from "no
+                # opportunity" (Part XXV / item 4): the Brain is armed and
+                # tracking it, waiting for its conditions rather than seeing
+                # nothing. A FORMING idea waits (OPPORTUNITY_FORMING); a fading
+                # one (WEAKENING/EXHAUSTED) offers no fresh edge to originate into
+                # (NO_OPPORTUNITY).
+                _state = driving_opp.state.value
+                _entry = "; ".join(driving_opp.entry_conditions[:3])
+                if driving_opp.is_forming:
+                    dtype = DecisionType.OPPORTUNITY_FORMING
+                    reason_txt = (
+                        f"{direction} opportunity identified but NOT yet activated "
+                        f"(state {_state})"
+                        + (f" — awaiting: {_entry}" if _entry else
+                           " — awaiting entry/confirmation conditions")
+                    )
+                    do_nothing_txt = (
+                        "evaluated: doing nothing is correct — opportunity present "
+                        f"but not activated (state {_state}); tracking, not executing"
+                    )
+                else:
+                    dtype = DecisionType.NO_OPPORTUNITY
+                    reason_txt = (
+                        f"{direction} opportunity is {_state} — no fresh edge to "
+                        "originate a new campaign into a decaying opportunity"
+                    )
+                    do_nothing_txt = (
+                        "evaluated: doing nothing is correct — the only opportunity "
+                        f"is {_state} (fading), not an executable entry"
+                    )
+            elif directional_and_qualified and ev_ok and not quorum_ok:
                 # Article XX — a qualified opportunity backed by too few advisors:
                 # cognitive coverage is insufficient to originate a campaign.
                 reason_txt = (
@@ -712,6 +780,21 @@ class CognitiveBrain:
                         f"{eff_conf:.2f} below threshold {self.min_confidence_to_act}"
                     )
                 dtype = DecisionType.CONTINUE_OBSERVING
+            elif is_harvesting:
+                # Harvesting format, no directional edge and no forming
+                # opportunity: the market was understood and offers nothing to
+                # exploit right now (untradeable / all non-directional). This is a
+                # genuine NO_OPPORTUNITY conclusion — distinct from the "waiting
+                # for activation" state above (Part XXV / item 4).
+                reason_txt = (
+                    "no exploitable opportunity — the market offers nothing to "
+                    "harvest right now"
+                )
+                dtype = DecisionType.NO_OPPORTUNITY
+                do_nothing_txt = (
+                    "evaluated: doing nothing is correct — no opportunity exists "
+                    "(nothing to harvest, not merely 'timeframes disagree')"
+                )
             else:
                 reason_txt = "no exploitable directional opportunity"
                 dtype = (DecisionType.REJECT_OPPORTUNITY
@@ -728,6 +811,7 @@ class CognitiveBrain:
                 expected_value=expected_value, campaign_recommendation="observe",
                 risk_rationale=reason_txt, invalidation_conditions=invalidation_conditions or competing,
                 hypotheses=hypotheses,
+                opportunities=opportunity_set, preferred_opportunity_id=preferred_opp_id,
                 questions_answered=questions, do_nothing_considered=True,
                 reasoner=self.reasoner_name,
             )
@@ -749,6 +833,7 @@ class CognitiveBrain:
             risk_rationale="expected value positive on synthesised evidence",
             invalidation_conditions=invalidation_conditions or [f"{direction} thesis contradicted by dominant opposing evidence"],
             hypotheses=hypotheses,
+            opportunities=opportunity_set, preferred_opportunity_id=preferred_opp_id,
             questions_answered=questions, do_nothing_considered=True,
             reasoner=self.reasoner_name,
         )
@@ -778,6 +863,8 @@ class CognitiveBrain:
             supporting_evidence_ids=supporting, contradicting_evidence_ids=contradicting,
             confidence=eff_conf, invalidation_conditions=decision.invalidation_conditions,
             objectives=[f"harvest {direction} opportunity while EV positive"],
+            opportunity_id=(driving_opp.opportunity_id if driving_opp is not None else ""),
+            opportunity_state=(driving_opp.state.value if driving_opp is not None else ""),
             decision_id=decision.decision_id,
         )
         return self._record(BrainOutput(decision=decision, campaign=campaign, direction=direction))
@@ -1352,6 +1439,32 @@ class CognitiveBrain:
                 dval = getattr(dtype, "value", None)
                 if dval:
                     campaign["entry_decision_type"] = dval
+            # Item 8 — thread the CURRENTLY VISIBLE opportunity set for this
+            # symbol into the management payload so the reasoner can compare the
+            # live campaign against newly emerging opportunities (the management
+            # prompt already asks whether a SUPERIOR OPPOSING opportunity has
+            # appeared; previously no set was tracked to answer it). Highlight
+            # any opposing opportunity as an explicit rotation candidate.
+            held = campaign["held_direction"]
+            with self._lock:
+                tracked = list(self._last_opportunities.get(str(symbol or ""), []))
+            if tracked:
+                payload["current_opportunities"] = [o.to_dict() for o in tracked]
+                opposing = [
+                    o for o in tracked
+                    if o.is_directional and held in (LONG, SHORT) and o.direction != held
+                ]
+                if opposing:
+                    best = max(opposing, key=lambda o: o.rank_score)
+                    campaign["competing_opposing_opportunity"] = {
+                        "id": best.opportunity_id,
+                        "direction": best.direction,
+                        "state": best.state.value,
+                        "quality": round(best.quality, 4),
+                        "asymmetry": round(best.asymmetry, 4),
+                        "rank_score": round(best.rank_score, 4),
+                        "thesis": best.thesis[:240],
+                    }
             payload["campaign"] = campaign
             payload["management"] = True
         except Exception as exc:  # noqa: BLE001 — payload enrichment must never break management
@@ -1391,6 +1504,69 @@ class CognitiveBrain:
         except Exception:  # noqa: BLE001 — a coverage probe must never break reasoning
             return None, None, None
         return resp, avail, total
+
+    @staticmethod
+    def _build_opportunity_set(
+        opinion: Any,
+    ) -> "tuple[list[Opportunity], str, bool]":
+        """Build the first-class Opportunity SET from a reasoner opinion (Part XXV).
+
+        The opportunity-harvesting reasoner returns a SET of ranked opportunities
+        (plus a market-state read / untradeable flag) instead of a single
+        collapsed direction. This lifts that raw set into first-class
+        :class:`~cognition.contracts.Opportunity` objects the Brain reasons over
+        directly — each with its own lifecycle state, activation / invalidation
+        conditions and scores — rather than reading only the collapsed
+        direction+confidence.
+
+        Returns ``(opportunities, preferred_id, is_harvesting)``. ``is_harvesting``
+        is True when the reply was in the multi-opportunity format (so the
+        activation gate applies); False for a legacy single-direction reply, whose
+        behaviour is then entirely unchanged. Never raises.
+        """
+        try:
+            raw = list(getattr(opinion, "opportunities", []) or [])
+            untradeable = bool(getattr(opinion, "market_is_untradeable", False))
+            market_state = getattr(opinion, "market_state", {}) or {}
+            is_harvesting = bool(raw) or untradeable or bool(market_state)
+            if not is_harvesting:
+                return [], "", False
+            preferred_id = str(getattr(opinion, "preferred_opportunity_id", "") or "")
+            opps = [
+                Opportunity.from_reply(o, preferred_id=preferred_id)
+                for o in raw if isinstance(o, dict)
+            ]
+            return opps, preferred_id, True
+        except Exception:  # noqa: BLE001 — building the set must never break reasoning
+            return [], "", False
+
+    @staticmethod
+    def _select_driving_opportunity(
+        opps: "list[Opportunity]", preferred_id: str, direction: str,
+    ) -> "Optional[Opportunity]":
+        """The opportunity that produced the collapsed direction — the one whose
+        activation the campaign depends on.
+
+        Prefers the model's named preference when it is directional; otherwise the
+        highest-ranked directional opportunity matching the collapsed ``direction``
+        (falling back to the highest-ranked directional overall). Returns ``None``
+        when no opportunity carries a LONG/SHORT direction. Never raises.
+        """
+        try:
+            directional = [o for o in opps if o.is_directional]
+            if not directional:
+                return None
+            pid = str(preferred_id or "")
+            if pid:
+                for o in directional:
+                    if o.opportunity_id == pid:
+                        return o
+            d = str(direction or "").upper()
+            matching = [o for o in directional if o.direction == d] if d in (LONG, SHORT) else []
+            pool = matching or directional
+            return max(pool, key=lambda o: o.rank_score)
+        except Exception:  # noqa: BLE001
+            return None
 
     @staticmethod
     def _record_opportunity_audit(questions: dict, opinion: Any) -> None:

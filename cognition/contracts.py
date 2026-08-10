@@ -118,6 +118,18 @@ class DecisionType(Enum):
     REJECT_OPPORTUNITY = "reject_opportunity"
     OPEN_CAMPAIGN = "open_campaign"
     CONTINUE_OBSERVING = "continue_observing"
+    # Opportunity-harvesting pre-trade states (Part XXV). Both are non-action —
+    # neither authorises execution — but they are DISTINCT market conclusions
+    # that the old single CONTINUE_OBSERVING/FLAT collapse could not express:
+    #   NO_OPPORTUNITY: no exploitable asymmetry exists right now (the market is
+    #     untradeable / there is genuinely nothing to harvest). The market was
+    #     understood and there is nothing to do.
+    #   OPPORTUNITY_FORMING: one or more real opportunities EXIST and are being
+    #     tracked, but none has ACTIVATED yet — their entry/confirmation
+    #     conditions have not triggered. The Brain is armed and WAITING to
+    #     pounce, which is fundamentally different from seeing nothing.
+    NO_OPPORTUNITY = "no_opportunity"
+    OPPORTUNITY_FORMING = "opportunity_forming"
     # Infrastructure state (Part XVIII, Art 5): the Brain has no usable reasoner
     # (provider down / unavailable). This is explicitly NOT a market conclusion —
     # it must never be read as a FLAT/observe view of the market.
@@ -134,6 +146,72 @@ class DecisionType(Enum):
 
     def __str__(self) -> str:  # pragma: no cover - trivial
         return self.value
+
+
+class OpportunityState(Enum):
+    """The lifecycle state of a single opportunity (Part XXV — harvesting).
+
+    An opportunity is not born tradeable. It is first IDENTIFIED (FORMING),
+    then ACTIVATES when its entry conditions trigger, may be CONFIRMED by
+    follow-through, can keep STRENGTHENING, then eventually WEAKEN and become
+    EXHAUSTED. The distinction between *identified* and *activated* is what lets
+    the Brain hold a forming idea without executing it prematurely.
+    """
+
+    FORMING = "forming"
+    ACTIVE = "active"
+    CONFIRMED = "confirmed"
+    STRENGTHENING = "strengthening"
+    WEAKENING = "weakening"
+    EXHAUSTED = "exhausted"
+    UNKNOWN = "unknown"
+
+    def __str__(self) -> str:  # pragma: no cover - trivial
+        return self.value
+
+
+# States in which a directional opportunity is ELIGIBLE to become a live
+# campaign — it has actually activated, not merely been identified. A FORMING
+# opportunity has been SEEN but its entry/confirmation conditions have not
+# triggered, so it must WAIT rather than execute (Part XXV: identification is
+# not activation). WEAKENING / EXHAUSTED are fading and never originate anew.
+_ACTIONABLE_OPPORTUNITY_STATES = frozenset({
+    OpportunityState.ACTIVE,
+    OpportunityState.CONFIRMED,
+    OpportunityState.STRENGTHENING,
+})
+
+# The model may report a state with a synonym; normalise it to the canonical
+# lifecycle token. An unrecognised value stays UNKNOWN (treated as actionable
+# for a directional opportunity so a legacy reply that omitted state behaves as
+# before — see :meth:`Opportunity.is_actionable`).
+_OPPORTUNITY_STATE_ALIASES = {
+    "FORMING": OpportunityState.FORMING, "PENDING": OpportunityState.FORMING,
+    "SETTING_UP": OpportunityState.FORMING, "WATCHING": OpportunityState.FORMING,
+    "POTENTIAL": OpportunityState.FORMING,
+    "ACTIVE": OpportunityState.ACTIVE, "TRIGGERED": OpportunityState.ACTIVE,
+    "READY": OpportunityState.ACTIVE, "LIVE": OpportunityState.ACTIVE,
+    "CONFIRMED": OpportunityState.CONFIRMED, "VALIDATED": OpportunityState.CONFIRMED,
+    "STRENGTHENING": OpportunityState.STRENGTHENING, "STRONG": OpportunityState.STRENGTHENING,
+    "WEAKENING": OpportunityState.WEAKENING, "FADING": OpportunityState.WEAKENING,
+    "DETERIORATING": OpportunityState.WEAKENING, "SOFTENING": OpportunityState.WEAKENING,
+    "EXHAUSTED": OpportunityState.EXHAUSTED, "SPENT": OpportunityState.EXHAUSTED,
+    "DONE": OpportunityState.EXHAUSTED,
+}
+
+
+def opportunity_state_from(
+    value: Any, default: "OpportunityState" = OpportunityState.UNKNOWN,
+) -> "OpportunityState":
+    if isinstance(value, OpportunityState):
+        return value
+    key = str(value or "").strip().upper().replace(" ", "_")
+    if not key:
+        return default
+    try:
+        return OpportunityState(key.lower())
+    except ValueError:
+        return _OPPORTUNITY_STATE_ALIASES.get(key, default)
 
 
 @dataclass
@@ -385,6 +463,147 @@ class Hypothesis:
 
 
 @dataclass
+class Opportunity:
+    """A single exploitable market asymmetry the Brain reasons over (Part XXV).
+
+    The opportunity — not a collapsed ``direction``+``confidence`` scalar — is
+    the primary cognitive object of the harvesting architecture. The market can
+    contain SEVERAL opportunities simultaneously (e.g. a SHORT correction AND a
+    later LONG reversal on the same instrument); the Brain holds the whole SET
+    and prefers the best, rather than averaging them into one weak directional
+    vote. Each opportunity carries its own lifecycle ``state``, activation /
+    confirmation / invalidation conditions, target logic and bounded 0..1
+    sub-scores (quality, asymmetry, urgency, evidence_strength). That lets
+    execution require ACTIVATION (state ACTIVE/CONFIRMED) instead of firing the
+    instant a thesis is merely identified (FORMING). Inert record — like every
+    contract here it carries no method that decides.
+    """
+
+    opportunity_id: str = ""
+    direction: str = "FLAT"                 # LONG | SHORT | FLAT
+    state: OpportunityState = OpportunityState.UNKNOWN
+    horizon: str = ""                       # HTF | MTF | LTF | MICRO
+    thesis: str = ""
+    why_now: str = ""
+    entry_conditions: list[str] = field(default_factory=list)
+    confirmation_conditions: list[str] = field(default_factory=list)
+    invalidation_conditions: list[str] = field(default_factory=list)
+    target_logic: str = ""
+    quality: float = 0.0
+    asymmetry: float = 0.0
+    urgency: float = 0.0
+    evidence_strength: float = 0.0
+    competing_opportunities: list[str] = field(default_factory=list)
+    is_preferred: bool = False
+
+    def __post_init__(self) -> None:
+        d = str(self.direction or "FLAT").upper()
+        self.direction = d if d in ("LONG", "SHORT", "FLAT") else "FLAT"
+        self.state = opportunity_state_from(self.state)
+        self.quality = _clamp01(self.quality)
+        self.asymmetry = _clamp01(self.asymmetry)
+        self.urgency = _clamp01(self.urgency)
+        self.evidence_strength = _clamp01(self.evidence_strength)
+
+    @property
+    def is_directional(self) -> bool:
+        return self.direction in ("LONG", "SHORT")
+
+    @property
+    def is_actionable(self) -> bool:
+        """True when this opportunity has ACTIVATED and is eligible to become a
+        live campaign: a directional opportunity whose state is ACTIVE /
+        CONFIRMED / STRENGTHENING. A FORMING opportunity is deliberately NOT
+        actionable — it has been identified but its entry conditions have not
+        triggered, so it must wait (the activation gate, Part XXV). An UNKNOWN
+        state (a legacy reply that never reported one) is treated as actionable
+        so pre-harvesting behaviour is unchanged."""
+        if not self.is_directional:
+            return False
+        return (
+            self.state in _ACTIONABLE_OPPORTUNITY_STATES
+            or self.state == OpportunityState.UNKNOWN
+        )
+
+    @property
+    def is_forming(self) -> bool:
+        """Identified but not yet activated — present, tracked, and waiting for
+        its entry/confirmation conditions rather than eligible to execute."""
+        return self.is_directional and self.state == OpportunityState.FORMING
+
+    @property
+    def rank_score(self) -> float:
+        """Ranking score = quality × asymmetry × evidence_strength (Part XXV).
+
+        A sub-score of 0 (typically an omitted field) falls back to ``quality``
+        so a reply that only graded quality still ranks monotonically by it,
+        rather than collapsing every opportunity to a zero product.
+        """
+        a = self.asymmetry if self.asymmetry > 0.0 else self.quality
+        e = self.evidence_strength if self.evidence_strength > 0.0 else self.quality
+        return self.quality * a * e
+
+    @classmethod
+    def from_reply(cls, data: Any, *, preferred_id: str = "") -> "Opportunity":
+        """Build an :class:`Opportunity` from a raw reasoner opportunity dict
+        (the harvesting schema emitted by the LLM). Tolerant of missing keys and
+        legacy field names; never raises."""
+        if not isinstance(data, dict):
+            return cls()
+
+        def _lst(key: str) -> "list[str]":
+            v = data.get(key)
+            if isinstance(v, list):
+                return [str(x)[:200] for x in v][:8]
+            if isinstance(v, str) and v.strip():
+                return [v.strip()[:200]]
+            return []
+
+        oid = str(data.get("id", "") or data.get("opportunity_id", "") or "")
+        return cls(
+            opportunity_id=oid,
+            direction=str(data.get("direction", "") or "FLAT"),
+            state=opportunity_state_from(data.get("state")),
+            horizon=str(data.get("horizon", "") or "")[:16],
+            thesis=str(data.get("thesis", "") or data.get("why_now", "") or "")[:400],
+            why_now=str(data.get("why_now", "") or "")[:280],
+            entry_conditions=_lst("entry_conditions"),
+            confirmation_conditions=_lst("confirmation_conditions"),
+            invalidation_conditions=_lst("invalidation_conditions"),
+            target_logic=str(data.get("target_logic", "") or "")[:280],
+            quality=_clamp01(data.get("quality")),
+            asymmetry=_clamp01(data.get("asymmetry")),
+            urgency=_clamp01(data.get("urgency")),
+            evidence_strength=_clamp01(data.get("evidence_strength")),
+            competing_opportunities=_lst("competing_opportunities"),
+            is_preferred=bool(oid) and oid == str(preferred_id or ""),
+        )
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.opportunity_id,
+            "direction": self.direction,
+            "state": self.state.value,
+            "horizon": self.horizon,
+            "thesis": self.thesis,
+            "why_now": self.why_now,
+            "entry_conditions": list(self.entry_conditions),
+            "confirmation_conditions": list(self.confirmation_conditions),
+            "invalidation_conditions": list(self.invalidation_conditions),
+            "target_logic": self.target_logic,
+            "quality": round(self.quality, 4),
+            "asymmetry": round(self.asymmetry, 4),
+            "urgency": round(self.urgency, 4),
+            "evidence_strength": round(self.evidence_strength, 4),
+            "rank_score": round(self.rank_score, 4),
+            "competing_opportunities": list(self.competing_opportunities),
+            "is_preferred": bool(self.is_preferred),
+            "is_actionable": self.is_actionable,
+            "is_forming": self.is_forming,
+        }
+
+
+@dataclass
 class DecisionPackage:
     """The Brain's structured decision output (Part II, Article 7). Inert record.
 
@@ -405,6 +624,15 @@ class DecisionPackage:
     risk_rationale: str = ""
     invalidation_conditions: list[str] = field(default_factory=list)
     hypotheses: list["Hypothesis"] = field(default_factory=list)
+    # Part XXV — the FULL ranked opportunity set the Brain reasoned over, as
+    # first-class data (not an audit-only log line). The market can hold several
+    # opportunities at once; this preserves every one — including FORMING ideas
+    # the Brain is tracking but has not yet acted on — so consumers (management,
+    # the dashboard, governance) can reason over the SET, not a single collapsed
+    # direction. Empty for a legacy single-direction reply. ``preferred_opportunity_id``
+    # names the opportunity that drove this decision (when one did).
+    opportunities: list["Opportunity"] = field(default_factory=list)
+    preferred_opportunity_id: str = ""
     questions_answered: dict = field(default_factory=dict)
     do_nothing_considered: bool = False
     reasoner: str = ""                 # which Brain produced it (provenance)
@@ -438,6 +666,16 @@ class DecisionPackage:
         """Required questions (Part II, Art 3) without a recorded answer."""
         return [q for q in REQUIRED_QUESTIONS if not str(self.questions_answered.get(q, "")).strip()]
 
+    @property
+    def actionable_opportunities(self) -> list["Opportunity"]:
+        """The subset of the tracked set that has ACTIVATED (eligible now)."""
+        return [o for o in self.opportunities if getattr(o, "is_actionable", False)]
+
+    @property
+    def forming_opportunities(self) -> list["Opportunity"]:
+        """The subset identified but not yet activated (tracked, waiting)."""
+        return [o for o in self.opportunities if getattr(o, "is_forming", False)]
+
     def to_dict(self) -> dict:
         return {
             "decision_id": self.decision_id,
@@ -455,6 +693,8 @@ class DecisionPackage:
             "risk_rationale": self.risk_rationale,
             "invalidation_conditions": list(self.invalidation_conditions),
             "hypotheses": [h.to_dict() for h in self.hypotheses],
+            "opportunities": [o.to_dict() for o in self.opportunities],
+            "preferred_opportunity_id": self.preferred_opportunity_id,
             "questions_answered": dict(self.questions_answered),
             "unanswered_questions": self.unanswered_questions(),
             "do_nothing_considered": bool(self.do_nothing_considered),
@@ -483,6 +723,12 @@ class CampaignSpecification:
     confidence: float = 0.0
     invalidation_conditions: list[str] = field(default_factory=list)
     objectives: list[str] = field(default_factory=list)
+    # Part XXV — provenance of the opportunity that activated this campaign. The
+    # campaign is still a single directional position, but recording WHICH
+    # opportunity (and the state it had activated in) lets management compare the
+    # live campaign against the evolving opportunity set. Empty on a legacy reply.
+    opportunity_id: str = ""
+    opportunity_state: str = ""
     decision_id: str = ""              # link back to the DecisionPackage
     campaign_id: str = ""
     created_iso: str = ""
@@ -511,6 +757,8 @@ class CampaignSpecification:
             "confidence": round(self.confidence, 4),
             "invalidation_conditions": list(self.invalidation_conditions),
             "objectives": list(self.objectives),
+            "opportunity_id": self.opportunity_id,
+            "opportunity_state": self.opportunity_state,
             "decision_id": self.decision_id,
         }
 
@@ -522,7 +770,10 @@ __all__ = [
     "domain_from",
     "MarketState",
     "DecisionType",
+    "OpportunityState",
+    "opportunity_state_from",
     "Hypothesis",
+    "Opportunity",
     "DecisionPackage",
     "CampaignSpecification",
     "REQUIRED_QUESTIONS",
