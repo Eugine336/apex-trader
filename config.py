@@ -4099,7 +4099,9 @@ class CognitionConfig:
     COGNITION_ORIGINATION_MODE (off|shadow|live; default live),
     COGNITION_MEMORY_ENABLED (default true),
     COGNITION_OPERATIONS_ENABLED (default false),
-    COGNITION_INFLUENCE_ENABLED (default false — shadow learning).
+    COGNITION_INFLUENCE_ENABLED (default false — shadow learning),
+    COGNITION_MIN_ADVISORS_FOR_ACTION,
+    COGNITION_MIN_EVIDENCE_DOMAINS.
     """
 
     enabled: bool = True
@@ -4119,11 +4121,12 @@ class CognitionConfig:
     max_uncertainty_to_act: float = 0.6
     # Article XX — advisor quorum: the Council must not become fake diversity. A
     # Brain-originated campaign must be backed by at least this many advisors that
-    # actually contributed an opinion (a single advisor is insufficient coverage).
-    min_advisors_for_action: int = 2
+    # actually contributed an opinion. env COGNITION_MIN_ADVISORS_FOR_ACTION.
+    min_advisors_for_action: int = 1
     # Article XXXIV — minimum evidence-domain coverage before the Brain may act
     # ("cannot determine whether an opportunity exists" ≠ "no opportunity").
-    min_evidence_domains: int = 2
+    # env COGNITION_MIN_EVIDENCE_DOMAINS.
+    min_evidence_domains: int = 1
     # Article XXI — when most of the available council did not respond, the Brain
     # attenuates its effective confidence by this multiplier (degraded cognition).
     degraded_confidence_multiplier: float = 0.7
@@ -4292,15 +4295,17 @@ class CognitionConfig:
             "COGNITION_OPPORTUNITY_QUALIFICATION_ENABLED",
             self.opportunity_qualification_enabled,
         )
-        _msc = os.getenv("COGNITION_MAX_SYMBOLS_PER_CYCLE")
-        if _msc is not None:
-            try:
-                self.max_symbols_per_cycle = int(_msc)
-            except (TypeError, ValueError):
-                logger.warning(
-                    "[config] bad COGNITION_MAX_SYMBOLS_PER_CYCLE '{}' — keeping default",
-                    _msc,
-                )
+        for env_name, attr in (
+            ("COGNITION_MAX_SYMBOLS_PER_CYCLE", "max_symbols_per_cycle"),
+            ("COGNITION_MIN_ADVISORS_FOR_ACTION", "min_advisors_for_action"),
+            ("COGNITION_MIN_EVIDENCE_DOMAINS", "min_evidence_domains"),
+        ):
+            raw = os.getenv(env_name)
+            if raw is not None:
+                try:
+                    setattr(self, attr, int(raw))
+                except (TypeError, ValueError):
+                    logger.warning("[config] bad {} '{}' — keeping default", env_name, raw)
         if self.gate_mode not in ("off", "shadow", "veto", "authoritative"):
             raise ValueError(
                 "CognitionConfig.gate_mode must be off|shadow|veto|authoritative, got "
