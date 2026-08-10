@@ -1,69 +1,66 @@
-# Modal.com GPU inference for APEX's LLM council
+# Modal.com GPU Inference
 
-APEX runs on a small VPS (~1.8 GB RAM, no GPU), so all LLM inference must happen
-off the box. [`infra/modal_vllm_deploy.py`](modal_vllm_deploy.py) deploys two
-OpenAI-compatible inference endpoints on Modal's serverless GPUs — one for
-**Mistral 7B** and one for **Qwen 7B**, each served by vLLM on an A10G. The VPS
-only makes HTTP calls; Modal spins a GPU up on demand and scales it back to zero
-when idle, so you pay only for warm time.
+Serverless-GPU inference for APEX TRADER's LLM council. Serves **Mistral 7B**
+and **Qwen 7B** as OpenAI-compatible endpoints on Modal A10G GPUs, scaling to
+zero when idle so you only pay while a model is warm.
 
-## 1. Install Modal
+The deploy script (`infra/modal_vllm_deploy.py`) launches vLLM through its
+**stable CLI** (`python -m vllm.entrypoints.openai.api_server`) inside a
+`@modal.web_server`. There are **no vLLM internal imports**, so it survives
+vLLM version bumps.
 
-```bash
-pip install modal
-```
+## Prerequisites
 
-## 2. Authenticate (one-time)
+- A [Modal](https://modal.com) account
+- Python with the Modal CLI: `pip install modal`
 
-```bash
-modal token new    # opens a browser to link your Modal account
-```
-
-## 3. Deploy
+## Deploy
 
 ```bash
+modal token new                        # one-time browser auth
 modal deploy infra/modal_vllm_deploy.py
 ```
 
-Modal prints the public endpoint URLs, e.g.
+Modal will:
+
+1. Build the vLLM container image (first run ~5 min).
+2. Download the models into the persistent `apex-model-cache` volume (first run
+   ~10 min).
+3. Print the public URLs, e.g.:
+
+   ```
+   https://<workspace>--apex-trader-llm-mistralserver-serve.modal.run
+   https://<workspace>--apex-trader-llm-qwenserver-serve.modal.run
+   ```
+
+`startup_timeout=300` gives each container up to 5 minutes to load its model on
+a cold start.
+
+## Wire into APEX
+
+Add the endpoints to `LLM_EXTRA_MODELS` in `.env`, appending `/v1` to make them
+OpenAI-compatible base URLs (replace `<workspace>` with your Modal workspace):
 
 ```
-https://<your-workspace>--apex-trader-llm-mistral-serve.modal.run
-https://<your-workspace>--apex-trader-llm-qwen-serve.modal.run
+{"name":"modal-mistral","provider":"modal","model":"mistralai/Mistral-7B-Instruct-v0.3","base_url":"https://<workspace>--apex-trader-llm-mistralserver-serve.modal.run/v1","tier":2,"timeout_seconds":60}
+{"name":"modal-qwen","provider":"modal","model":"Qwen/Qwen2.5-7B-Instruct","base_url":"https://<workspace>--apex-trader-llm-qwenserver-serve.modal.run/v1","tier":2,"timeout_seconds":60}
 ```
 
-## 4. Wire the URLs into `.env`
+`modal` is a keyless, OpenAI-compatible provider — no API key is required.
 
-In `LLM_EXTRA_MODELS`, replace `YOUR_USERNAME` in the two `modal-*` entries with
-your Modal workspace name and append `/v1` to each URL, so `base_url` looks like:
+## Design notes
 
-```
-https://<your-workspace>--apex-trader-llm-mistral-serve.modal.run/v1
-https://<your-workspace>--apex-trader-llm-qwen-serve.modal.run/v1
-```
+- **`@modal.web_server(port=8000, startup_timeout=300)`** — runs vLLM as a
+  subprocess on port 8000; Modal proxies it to the public URL.
+- **No `@modal.enter()`** and **no custom server builder** — the web_server
+  pattern needs neither.
+- **`gpu="a10g"`** (string form) and **`scaledown_window`** match the current
+  Modal SDK.
+- **Optional auth** can be layered on later with a Modal secret and a bearer
+  token; it is intentionally omitted here to keep the deploy minimal.
 
-No API key is required — Modal authenticates deploys via `modal token new`, and
-the served endpoints are keyless by default.
+## Costs
 
-## 5. Optional: bearer-token auth
-
-For an extra layer beyond the unguessable `*.modal.run` URL, arm a bearer token:
-
-```bash
-modal secret create apex-inference-key MODAL_INFERENCE_KEY=<random-token>
-```
-
-Then set the same value in `.env`:
-
-```
-MODAL_INFERENCE_KEY=<random-token>
-```
-
-APEX will send it as `Authorization: Bearer <random-token>`; the deploy adds a
-matching check to each endpoint. Leave both unset to run open.
-
-## Cost
-
-An A10G is roughly **$0.60/hr**, billed only while a container is warm. With the
-default `container_idle_timeout=300` (5 min), a burst of council calls keeps the
-GPU warm for the window, then it scales to zero and billing stops.
+Each A10G container costs roughly **$0.60/hr while warm** and scales to zero
+after 5 minutes of no requests (`SCALEDOWN_WINDOW = 300`). Cold start after idle
+is ~30-60 seconds on the first call.
