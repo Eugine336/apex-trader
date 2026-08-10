@@ -212,3 +212,106 @@ def test_optional_blocks_absent_when_inputs_missing():
     assert snap["depth"] is None
     assert snap["session"] is None
 
+
+# ── Violation #3 — richer multi-scale microstructure ────────────────────────
+
+
+def test_microstructure_keeps_backward_compatible_keys():
+    # Every legacy key must still be present alongside the new ones so existing
+    # consumers keep working.
+    micro = build_microstructure(_ticks([100.0, 100.2, 100.5, 100.9]))
+    for k in (
+        "ticks", "window_seconds", "velocity_tps", "drift", "drift_pct",
+        "up_ticks", "down_ticks", "momentum", "range",
+        "spread_last", "spread_mean", "spread_max", "spread_widening",
+    ):
+        assert k in micro
+
+
+def test_microstructure_multiscale_windows_over_deep_tape():
+    # A ~40s rising tape (1 tick/sec) — the multi-scale reads should all appear.
+    mids = [100.0 + 0.1 * i for i in range(40)]
+    micro = build_microstructure(_ticks(mids))
+    mw = micro.get("momentum_windows")
+    assert mw and set(mw) == {"2s", "10s", "30s"}
+    assert micro.get("velocity_windows") and set(micro["velocity_windows"]) == {"2s", "10s", "30s"}
+    assert micro.get("drift_windows")
+    # A monotonic rise ⇒ every window's momentum is positive.
+    assert all(v > 0 for v in mw.values())
+    # The 30s window drift exceeds the 2s window drift (more ground covered).
+    assert micro["drift_windows"]["30s"] > micro["drift_windows"]["2s"]
+
+
+def test_microstructure_exhaustion_on_decelerating_move():
+    # Big up-steps early, tiny up-steps late — a directional move losing fuel.
+    mids = [100.0, 100.5, 101.0, 101.5, 102.0, 102.05, 102.08, 102.10, 102.11, 102.115]
+    micro = build_microstructure(_ticks(mids))
+    assert micro["velocity_trend"] == "decelerating"
+    assert micro["velocity_accel"] < 0
+    assert micro["exhaustion"] is True
+    assert 0.0 < micro["exhaustion_score"] <= 1.0
+    assert micro["absorption"] is False
+
+
+def test_microstructure_acceleration_flag():
+    # Tiny early, big late — the move is speeding up.
+    mids = [100.0, 100.01, 100.02, 100.03, 100.05, 100.2, 100.5, 101.0]
+    micro = build_microstructure(_ticks(mids))
+    assert micro["velocity_trend"] == "accelerating"
+    assert micro["velocity_accel"] > 0
+
+
+def test_microstructure_absorption_when_pinned_but_active():
+    # Many ticks, price oscillating inside a band ~ the spread — orders absorbed.
+    mids = [100.0 + (0.02 if i % 2 else -0.02) for i in range(30)]
+    micro = build_microstructure(_ticks(mids, spread=0.05))
+    assert micro["ticks"] == 30
+    assert micro["absorption"] is True
+    assert 0.0 < micro["absorption_score"] <= 1.0
+    assert micro["exhaustion"] is False
+
+
+def test_microstructure_spread_trend_widening():
+    mids = [100.0 + 0.01 * i for i in range(20)]
+    ticks = _ticks(mids, spread=0.1)
+    for i in range(10, 20):  # widen the spread across the late half
+        ticks[i] = SimpleNamespace(
+            bid=mids[i] - 0.3, ask=mids[i] + 0.3, mid=mids[i], spread=0.6,
+            epoch=ticks[i].epoch,
+        )
+    micro = build_microstructure(ticks)
+    assert micro["spread_trend"] == "widening"
+    assert micro["spread_trend_ratio"] > 1.2
+
+
+def test_microstructure_tick_rate_burst():
+    base = 1_000_000.0
+    def _mk(mid, ep):
+        return SimpleNamespace(bid=mid - 0.1, ask=mid + 0.1, mid=mid, spread=0.2, epoch=ep)
+    # First ~10s at 1 tick/sec, then a dense burst of 20 ticks in the final ~1s.
+    early = [_mk(100.0 + 0.001 * i, base + float(i)) for i in range(11)]
+    late = [_mk(100.01 + 0.0005 * i, base + 10.0 + 0.05 * (i + 1)) for i in range(20)]
+    micro = build_microstructure(early + late)
+    assert micro.get("tick_rate_change") == "burst"
+    assert micro["tick_rate_ratio"] > 1.5
+
+
+def test_microstructure_no_timestamps_degrades_gracefully():
+    ticks = [
+        SimpleNamespace(bid=m - 0.1, ask=m + 0.1, mid=m, spread=0.2, epoch=0.0)
+        for m in (100.0, 100.5, 101.0)
+    ]
+    micro = build_microstructure(ticks)
+    # Base keys survive; time-only multi-scale windows are omitted; the
+    # index-based velocity trend is still computed.
+    assert micro["ticks"] == 3
+    assert "momentum_windows" not in micro
+    assert micro.get("velocity_trend") in ("accelerating", "decelerating", "steady")
+
+
+def test_microstructure_two_ticks_still_fault_safe():
+    # The enrichment must never drop the base read even on a minimal tape.
+    micro = build_microstructure(_ticks([100.0, 100.2]))
+    assert micro["ticks"] == 2 and "momentum" in micro
+
+

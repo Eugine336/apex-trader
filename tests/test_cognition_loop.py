@@ -109,6 +109,41 @@ def test_loop_set_developing_source_delegates_to_consolidator():
     assert consolidator._developing_source is fn
 
 
+def test_consolidator_structural_interaction_source_surfaces_evidence():
+    # Violation #2 — inter-candle structural interactions ride into the state.
+    cons = EvidenceConsolidator(ctx=None)
+    assert cons.build("XAUUSD").consolidation()["evidence_fresh"] == 0
+    ev = Evidence(
+        source_module="market.structural_interaction",
+        domain=EvidenceDomain.LIQUIDITY, symbol="XAUUSD",
+        observation="XAUUSD M15 sell_side liquidity level sweep @ 1900.0",
+        confidence=0.62, uncertainty=0.38, polarity=0.0,
+        measurements={"interaction": "level_sweep", "level_kind": "liquidity"},
+    )
+    cons.set_structural_interaction_source(lambda sym: [ev] if sym == "XAUUSD" else [])
+    fresh = cons.build("XAUUSD").fresh_evidence()
+    assert any(e.source_module == "market.structural_interaction" for e in fresh)
+    got = next(e for e in fresh if e.source_module == "market.structural_interaction")
+    assert got.polarity == 0.0
+    assert got.measurements.get("interaction") == "level_sweep"
+
+
+def test_consolidator_structural_interaction_source_is_fault_safe():
+    cons = EvidenceConsolidator(ctx=None)
+    def _boom(_sym):
+        raise RuntimeError("detector down")
+    cons.set_structural_interaction_source(_boom)
+    assert cons.build("XAUUSD").consolidation()["evidence_fresh"] == 0  # must not raise
+
+
+def test_loop_set_structural_interaction_source_delegates_to_consolidator():
+    consolidator = EvidenceConsolidator(ctx=None)
+    loop = CognitionLoop(_StubBrain(), consolidator, lambda: ["X"], interval_seconds=1.0)
+    fn = lambda sym: []
+    loop.set_structural_interaction_source(fn)
+    assert consolidator._structural_interaction_source is fn
+
+
 class _StubKnowledge:
     def __init__(self):
         self.calls = 0

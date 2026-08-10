@@ -104,6 +104,11 @@ class EvidenceConsolidator:
         self._execution_cost_source = execution_cost_source
         self._portfolio_source: Optional[Callable[[], Any]] = None
         self._price_source: Optional[Callable[[str], Any]] = None
+        # Violation #2 — a ``symbol -> list[Evidence]`` source of INTER-CANDLE
+        # structural interactions (level touch/sweep/break, FVG fill) detected on
+        # the live tick stream, so the Brain sees a swept pool or filled gap the
+        # instant it happens instead of waiting for the next candle close.
+        self._structural_interaction_source: Optional[Callable[[str], Any]] = None
         # Part XXI Art 9/10/11 — records each council consultation + grades each
         # advisor. Observability/learning only; never authority. Fail-safe.
         self._consult_ledger: Optional[Any] = None
@@ -146,6 +151,19 @@ class EvidenceConsolidator:
         pre-digested module verdicts. Fail-safe callable; never invoked eagerly.
         """
         self._price_source = price_source
+
+    def set_structural_interaction_source(
+        self, source: Optional[Callable[[str], Any]],
+    ) -> None:
+        """Wire (or clear) the inter-candle structural-interaction source (V#2).
+
+        A ``symbol -> list[Evidence]`` callable returning the short-lived
+        structural interactions (level sweep/break/touch, FVG fill) the
+        tick-driven detector has observed since the last candle close, so the
+        Brain reasons over live structural reactions rather than 5-minute-stale
+        levels. Fail-safe callable; never invoked eagerly.
+        """
+        self._structural_interaction_source = source
 
     def set_consultation_ledger(self, ledger: Optional[Any]) -> None:
         """Wire (or clear) the Advisory-Council consultation ledger (Part XXI).
@@ -227,6 +245,19 @@ class EvidenceConsolidator:
                     logger.warning("[consolidator] price source FAILED (%s): %s", symbol, exc)
                     failed_sources.append("price")
                     _integrity("PRICE DATA UNAVAILABLE — cannot determine market state")
+            # Violation #2 — inter-candle structural interactions (a swept pool,
+            # a filled FVG, a broken/tested level) observed on the live tick
+            # stream since the last close. Added right after the chart so the
+            # Brain sees the reaction in the same breath as the price picture.
+            if self._structural_interaction_source is not None:
+                try:
+                    for e in self._structural_interaction_source(ms.symbol) or []:
+                        ms.add(e)
+                except Exception as exc:  # noqa: BLE001
+                    logger.debug(
+                        "[consolidator] structural-interaction source fault (%s): %s",
+                        symbol, exc,
+                    )
             ctx = self._ctx
             engine = getattr(ctx, "thesis_engine", None) if ctx is not None else None
             if engine is not None:
@@ -610,6 +641,21 @@ class CognitionLoop:
             self._consolidator.set_price_source(price_source)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition-loop] set_price_source ignored a fault: %s", exc)
+
+    def set_structural_interaction_source(
+        self, source: Optional[Callable[[str], Any]],
+    ) -> None:
+        """Wire the inter-candle structural-interaction source (Violation #2).
+
+        Delegates to :meth:`EvidenceConsolidator.set_structural_interaction_source`
+        so live level sweeps/breaks/touches and FVG fills reach the Brain
+        between candle closes. Fail-safe — a wiring fault never breaks startup."""
+        try:
+            self._consolidator.set_structural_interaction_source(source)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug(
+                "[cognition-loop] set_structural_interaction_source ignored a fault: %s", exc,
+            )
 
     def set_consultation_ledger(self, ledger: Optional[Any]) -> None:
         """Wire the Advisory-Council consultation ledger onto the consolidator.

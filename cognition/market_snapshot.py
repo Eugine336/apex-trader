@@ -101,6 +101,167 @@ def _tf_rank(label: str) -> int:
     return _TF_SECONDS.get(str(label or "").upper(), 0)
 
 
+# Violation #3 — the tape is now ~30-40s deep (600 ticks), so microstructure
+# reads the DEVELOPING story across several scales, not just the last instant.
+# These trailing windows (seconds) are summarised individually so the Brain can
+# tell a fresh 2s twitch apart from a 30s momentum transition.
+_MICRO_WINDOWS: "tuple[tuple[str, float], ...]" = (
+    ("2s", 2.0), ("10s", 10.0), ("30s", 30.0),
+)
+
+
+def _momentum_of(mids: "list[float]") -> "tuple[int, int, float]":
+    """Up/down tick counts and a bounded momentum score for a mid series."""
+    up = down = 0
+    for a, b in zip(mids, mids[1:]):
+        if b > a:
+            up += 1
+        elif b < a:
+            down += 1
+    moves = up + down
+    momentum = (up - down) / float(moves) if moves else 0.0
+    return up, down, momentum
+
+
+def _segment_speed(seg: "list[tuple[float, float, float]]", *, have_time: bool) -> float:
+    """Absolute price speed of a segment — price move per second (when
+    timestamps are present) or per tick (index fallback). Direction-agnostic;
+    it measures how FAST price is moving, not which way."""
+    if len(seg) < 2:
+        return 0.0
+    move = abs(seg[-1][1] - seg[0][1])
+    if have_time:
+        span = seg[-1][0] - seg[0][0]
+        return (move / span) if span > 0 else 0.0
+    return move / float(len(seg) - 1)
+
+
+def _segment_tick_rate(
+    seg: "list[tuple[float, float, float]]", *, have_time: bool,
+) -> Optional[float]:
+    """Ticks/sec within a segment (only meaningful with real timestamps)."""
+    if not have_time or len(seg) < 2:
+        return None
+    span = seg[-1][0] - seg[0][0]
+    return (len(seg) / span) if span > 0 else None
+
+
+def _enrich_microstructure(
+    rows: "list[tuple[float, float, float]]",
+    out: dict,
+    *,
+    have_time: bool,
+    dp: int,
+) -> None:
+    """Augment the base microstructure dict with multi-scale, velocity-trend,
+    spread-trend, tick-rate and exhaustion/absorption reads (Violation #3).
+
+    Mutates ``out`` in place. Additive only — never removes or rewrites a base
+    key, so every existing consumer keeps working. Fail-safe at the call site.
+    """
+    last_ep = rows[-1][0]
+
+    # ── Multi-scale momentum / drift / velocity over trailing windows ──────
+    if have_time:
+        mom_w: dict = {}
+        drift_w: dict = {}
+        vel_w: dict = {}
+        for label, w in _MICRO_WINDOWS:
+            sub = [r for r in rows if r[0] >= last_ep - w]
+            if len(sub) < 2:
+                continue
+            sub_mids = [r[1] for r in sub]
+            _, _, m = _momentum_of(sub_mids)
+            mom_w[label] = round(m, 3)
+            drift_w[label] = round(sub_mids[-1] - sub_mids[0], dp)
+            sub_span = sub[-1][0] - sub[0][0]
+            denom = sub_span if sub_span > 0 else w
+            vel_w[label] = round(len(sub) / denom, 2) if denom > 0 else None
+        if mom_w:
+            out["momentum_windows"] = mom_w
+            out["drift_windows"] = drift_w
+            out["velocity_windows"] = vel_w
+
+    # ── Early vs late halves — velocity accel, spread & tick-rate trend ────
+    n = len(rows)
+    early: "list[tuple[float, float, float]]" = []
+    late: "list[tuple[float, float, float]]" = []
+    if have_time:
+        mid_ep = (rows[0][0] + last_ep) / 2.0
+        early = [r for r in rows if r[0] <= mid_ep]
+        late = [r for r in rows if r[0] > mid_ep]
+    if len(early) < 2 or len(late) < 2:
+        # Index split fallback (also used when timestamps are absent).
+        half = max(1, n // 2)
+        early, late = rows[:half], rows[half:]
+
+    early_speed = _segment_speed(early, have_time=have_time)
+    late_speed = _segment_speed(late, have_time=have_time)
+    accel = late_speed - early_speed
+    out["velocity_accel"] = round(accel, dp + 2)
+    if early_speed > 0:
+        ratio = late_speed / early_speed
+        if ratio >= 1.25:
+            v_trend = "accelerating"
+        elif ratio <= 0.8:
+            v_trend = "decelerating"
+        else:
+            v_trend = "steady"
+    else:
+        v_trend = "accelerating" if late_speed > 0 else "steady"
+    out["velocity_trend"] = v_trend
+
+    # Spread trend — widening / narrowing over the window (a pattern, not a
+    # single last-vs-mean snapshot).
+    early_spreads = [r[2] for r in early if r[2] > 0]
+    late_spreads = [r[2] for r in late if r[2] > 0]
+    if early_spreads and late_spreads:
+        e_sp = sum(early_spreads) / len(early_spreads)
+        l_sp = sum(late_spreads) / len(late_spreads)
+        if e_sp > 0:
+            sp_ratio = l_sp / e_sp
+            out["spread_trend_ratio"] = round(sp_ratio, 3)
+            out["spread_trend"] = (
+                "widening" if sp_ratio >= 1.2
+                else "narrowing" if sp_ratio <= 0.83
+                else "steady"
+            )
+
+    # Tick-rate change — a sudden burst or a sudden quiet vs earlier.
+    early_rate = _segment_tick_rate(early, have_time=have_time)
+    late_rate = _segment_tick_rate(late, have_time=have_time)
+    if early_rate and late_rate and early_rate > 0:
+        tr_ratio = late_rate / early_rate
+        out["tick_rate_ratio"] = round(tr_ratio, 3)
+        out["tick_rate_change"] = (
+            "burst" if tr_ratio >= 1.5
+            else "quiet" if tr_ratio <= 0.67
+            else "steady"
+        )
+
+    # ── Exhaustion & absorption — the two classic tape transitions ─────────
+    momentum = float(out.get("momentum", 0.0) or 0.0)
+    rng = float(out.get("range", 0.0) or 0.0)
+    spread_mean = float(out.get("spread_mean", 0.0) or 0.0)
+    # Exhaustion: price is still making a directional move, but the speed of
+    # that move is fading (decelerating) — a move running out of fuel.
+    exhaustion = bool(abs(momentum) >= 0.3 and v_trend == "decelerating")
+    out["exhaustion"] = exhaustion
+    out["exhaustion_score"] = (
+        round(min(1.0, abs(momentum) * (1.0 - (late_speed / early_speed)))
+              if (exhaustion and early_speed > 0) else 0.0, 3)
+    )
+    # Absorption: lots of tick activity but price is pinned (tiny range vs the
+    # typical spread and weak net momentum) — orders being absorbed at a level.
+    contained = bool(spread_mean > 0 and rng <= spread_mean * 3.0)
+    active = n >= 10
+    absorption = bool(active and contained and abs(momentum) < 0.2)
+    out["absorption"] = absorption
+    out["absorption_score"] = (
+        round(min(1.0, (1.0 - abs(momentum)) * (n / 60.0)) if absorption else 0.0, 3)
+    )
+
+
 def build_microstructure(ticks: Any, *, now_epoch: Optional[float] = None) -> dict:
     """Summarize the recent tape (tick stream) into compact microstructure.
 
@@ -108,7 +269,17 @@ def build_microstructure(ticks: Any, *, now_epoch: Optional[float] = None) -> di
     ``bid``/``ask``), ``spread`` and ``epoch`` (seconds). Returns velocity
     (ticks/sec), signed drift, up/down tick balance, a bounded momentum score,
     the price range and spread behaviour (last/mean/max + a widening flag).
-    Pure and fail-safe: ``{}`` when fewer than two usable ticks are present.
+
+    Violation #3 — with the deeper ~30-40s tape it additionally layers on
+    multi-scale reads (all keys are additive; the base keys above are
+    unchanged): ``momentum_windows`` / ``drift_windows`` / ``velocity_windows``
+    (2s/10s/30s trailing summaries), ``velocity_accel`` + ``velocity_trend``
+    (is the move speeding up or fading?), ``spread_trend`` (+ ratio),
+    ``tick_rate_change`` (+ ratio, a sudden burst or quiet), and the two classic
+    tape transitions ``exhaustion`` (directional move that is decelerating) and
+    ``absorption`` (heavy tick activity but price pinned at a level), each with a
+    bounded score. Pure and fail-safe: ``{}`` when fewer than two usable ticks
+    are present.
     """
     try:
         rows: list[tuple[float, float, float]] = []
@@ -154,7 +325,7 @@ def build_microstructure(ticks: Any, *, now_epoch: Optional[float] = None) -> di
         spread_mean = (sum(spreads) / len(spreads)) if spreads else 0.0
         spread_max = max(spreads) if spreads else 0.0
         widening = bool(spread_mean > 0 and spread_last > spread_mean * 1.2)
-        return {
+        out = {
             "ticks": len(rows),
             "window_seconds": round(span, 1) if span > 0 else None,
             "velocity_tps": velocity_tps,
@@ -169,6 +340,15 @@ def build_microstructure(ticks: Any, *, now_epoch: Optional[float] = None) -> di
             "spread_max": round(spread_max, dp),
             "spread_widening": widening,
         }
+        # Violation #3 — layer the multi-scale reads on top of the base dict in
+        # a nested guard so any enrichment fault leaves the (backward-compatible)
+        # base untouched.
+        try:
+            have_time = all(r[0] > 0 for r in rows)
+            _enrich_microstructure(rows, out, have_time=have_time, dp=dp)
+        except Exception:  # noqa: BLE001 — enrichment must never drop the base read
+            pass
+        return out
     except Exception:  # noqa: BLE001
         return {}
 
@@ -429,6 +609,13 @@ def snapshot_to_evidence(symbol: str, snapshot: dict) -> "list[Evidence]":
             )
             if micro.get("spread_widening"):
                 micro_txt += " spread↑"
+            v_trend = micro.get("velocity_trend")
+            if v_trend in ("accelerating", "decelerating"):
+                micro_txt += f" vel {v_trend}"
+            if micro.get("exhaustion"):
+                micro_txt += " exhaustion"
+            if micro.get("absorption"):
+                micro_txt += " absorption"
         book = snap.get("depth") or {}
         book_txt = f" | book imb {book.get('imbalance')}" if book else ""
         pull = snap.get("pullback") or {}
