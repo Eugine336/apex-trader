@@ -117,7 +117,7 @@ def _build_server(model_name: str):
 # ── Mistral 7B endpoint ───────────────────────────────────────────────────────
 @app.cls(
     image=vllm_image,
-    gpu=modal.gpu.A10G(),
+    gpu="a10g",
     volumes={CACHE_DIR: model_cache},
     container_idle_timeout=CONTAINER_IDLE_TIMEOUT,
     secrets=_secrets(),
@@ -138,7 +138,7 @@ class MistralServer:
 # ── Qwen 7B endpoint ──────────────────────────────────────────────────────────
 @app.cls(
     image=vllm_image,
-    gpu=modal.gpu.A10G(),
+    gpu="a10g",
     volumes={CACHE_DIR: model_cache},
     container_idle_timeout=CONTAINER_IDLE_TIMEOUT,
     secrets=_secrets(),
