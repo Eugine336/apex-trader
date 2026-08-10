@@ -214,8 +214,8 @@ _DIR_MAP = {
     "SHORT": SHORT, "SELL": SHORT, "BEARISH": SHORT, "DOWN": SHORT,
     "FLAT": FLAT, "HOLD": FLAT, "NEUTRAL": FLAT, "NONE": FLAT, "WAIT": FLAT,
 }
-_DIR_RE = re.compile(r"""(?i)["']?\bdirection\b["']?\s*[:=]\s*["']?([A-Za-z]+)""")
-_CONF_RE = re.compile(r"""(?i)["']?\bconfidence\b["']?\s*[:=]\s*([0-9]*\.?[0-9]+)""")
+_DIR_RE = re.compile(r"""(?i)["'`*_]*\bdirection\b["'`*_\s]*[:=]["'`*_\s]*([A-Za-z]+)""")
+_CONF_RE = re.compile(r"""(?i)["'`*_]*\bconfidence\b["'`*_\s]*[:=]["'`*_\s]*([0-9]*\.?[0-9]+)""")
 _RATIONALE_RE = re.compile(r"""(?i)["']?\brationale\b["']?\s*[:=]\s*["']([^"']*)""")
 _TOKEN_RE = re.compile(r"\b(LONG|SHORT|FLAT)\b")
 
