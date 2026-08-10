@@ -330,11 +330,18 @@ def _map_mgmt_opportunity(s: Any) -> str:
 # ── Opportunity-harvesting normalisation ──────────────────────────────────────
 # The opportunity-harvesting prompt asks the model for a SET of ranked
 # opportunities plus a market-state read, instead of a single collapsed
-# direction. These helpers collapse that richer reply to the legacy
-# direction/confidence (+ multidimensional confidence + excursions) fields the
-# whole downstream pipeline already consumes — so the new format is purely
-# ADDITIVE and an old single-direction reply is untouched. The full opportunity
-# set is preserved separately on the opinion for auditability.
+# direction. These helpers backfill the legacy direction/confidence (+
+# multidimensional confidence + excursions) fields from the PREFERRED
+# opportunity so the pre-existing EV / sizing / cost machinery keeps working
+# with no downstream change — this is a backward-COMPATIBILITY shim, not the
+# primary cognitive path. The FULL opportunity set (with each opportunity's
+# lifecycle state, activation / invalidation conditions and scores) is carried
+# intact on the opinion (``opportunities`` / ``preferred_opportunity_id`` /
+# ``market_is_untradeable`` / ``market_state``); the Brain lifts that set into
+# first-class :class:`~cognition.contracts.Opportunity` objects and reasons over
+# the SET (activation gate, forming-vs-no-opportunity, multiple coexisting
+# ideas) rather than over the collapsed single direction. A legacy single-
+# direction reply carries no set and is untouched.
 
 def _coerce_opportunities(raw: Any) -> "list[dict]":
     """The opportunities value as a list of dicts (defensive; never raises)."""
