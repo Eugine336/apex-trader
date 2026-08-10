@@ -4,6 +4,10 @@ Serves Mistral 7B and Qwen 7B as OpenAI-compatible endpoints on Modal A10G
 GPUs via vLLM's stable CLI (``python -m vllm.entrypoints.openai.api_server``),
 which does not change across vLLM versions.
 
+The container image is vLLM's official Docker image, which ships CUDA (nvcc),
+pre-compiled FlashInfer, and vLLM itself — so no JIT CUDA compilation happens
+at runtime. Pinned to a stable tag (not ``latest``) to avoid future breakage.
+
 Deploy:
     pip install modal
     modal token new                       # one-time browser auth
@@ -24,7 +28,9 @@ import subprocess
 import modal
 
 app = modal.App("apex-trader-llm")
-vllm_image = modal.Image.debian_slim(python_version="3.11").pip_install("vllm")
+vllm_image = modal.Image.from_registry(
+    "vllm/vllm-openai:v0.8.5.post1", add_python="3.11"
+)
 model_cache = modal.Volume.from_name("apex-model-cache", create_if_missing=True)
 CACHE_DIR = "/root/.cache/huggingface"
 SCALEDOWN_WINDOW = 300

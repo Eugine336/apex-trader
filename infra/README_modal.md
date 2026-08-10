@@ -9,6 +9,20 @@ The deploy script (`infra/modal_vllm_deploy.py`) launches vLLM through its
 `@modal.web_server`. There are **no vLLM internal imports**, so it survives
 vLLM version bumps.
 
+## Container image
+
+The image is vLLM's **official Docker image**, pinned to a stable tag:
+
+```python
+modal.Image.from_registry("vllm/vllm-openai:v0.8.5.post1", add_python="3.11")
+```
+
+This ships CUDA (`nvcc`), pre-compiled FlashInfer, and vLLM itself. Using
+`debian_slim` + `pip install vllm` instead fails at runtime with
+`Could not find nvcc ...` because FlashInfer tries to JIT-compile CUDA kernels
+in an image with no CUDA toolkit. Pin a specific tag (never `latest`) to avoid
+surprise breakage on upstream releases.
+
 ## Prerequisites
 
 - A [Modal](https://modal.com) account
@@ -23,7 +37,7 @@ modal deploy infra/modal_vllm_deploy.py
 
 Modal will:
 
-1. Build the vLLM container image (first run ~5 min).
+1. Pull the vLLM image (first run only).
 2. Download the models into the persistent `apex-model-cache` volume (first run
    ~10 min).
 3. Print the public URLs, e.g.:
