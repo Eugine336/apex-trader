@@ -34,8 +34,14 @@ _KEYLESS_PROVIDERS = frozenset({
     "ollama", "vllm", "lmstudio", "lm_studio", "local", "self_hosted",
     "self-hosted", "llamacpp", "llama_cpp", "llamafile", "gpt4all",
     "koboldcpp", "textgen", "text_generation_webui",
+    # Modal.com serverless-GPU vLLM endpoints authenticate by URL, not a key.
+    "modal",
     # NVIDIA NIM served locally authenticates by locality, not an API key.
     "nim_local", "nim_self_hosted", "nvidia_nim_local", "nvidia_nim_self_hosted",
+    # Modal.com serverless GPUs authenticate deploys via `modal token new`;
+    # the served endpoint needs no key by default (an optional bearer token
+    # can be armed with MODAL_INFERENCE_KEY, like a self-hosted vLLM server).
+    "modal",
 })
 
 # Explicit env-var names per provider (first non-empty wins). Anything not listed
@@ -84,6 +90,7 @@ _KEY_ENV: dict = {
     "gmi": ("GMI_API_KEY", "GMI_CLOUD_API_KEY"),
     "gmi_cloud": ("GMI_API_KEY", "GMI_CLOUD_API_KEY"),
     "gmicloud": ("GMI_API_KEY", "GMI_CLOUD_API_KEY"),
+    "modal": ("MODAL_INFERENCE_KEY", "MODAL_API_KEY"),
 }
 
 
