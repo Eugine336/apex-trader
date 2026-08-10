@@ -41,6 +41,7 @@ from persistence.event_store import get_event_store
 from persistence import domain_events as DE
 from tick import EventBus, Tick, TickStore, CandleCloseDetector, TickRouter
 from scanner.candle_close_handler import CandleCloseHandler
+from tick.structural_interaction_detector import StructuralInteractionDetector
 from execution.intents import Intent, IntentType
 from execution.intent_aggregator import IntentAggregator, AggregatorConfig
 from execution.action_executor import ActionExecutor, ExecutorConfig
@@ -1376,7 +1377,11 @@ class EventDrivenSystem:
 
         # ── Core infrastructure ──────────────────────────────────────
         self._event_bus = EventBus()
-        self._tick_store = TickStore(max_hz=15.0)
+        # Violation #3 — the cognition tape reads the last 600 ticks (~30-40s at
+        # the 15Hz coalesced rate) for multi-scale microstructure. Pin the ring
+        # buffer capacity explicitly (≥600 with headroom) so a future default
+        # change can never silently truncate that window.
+        self._tick_store = TickStore(max_ticks_per_symbol=1000, max_hz=15.0)
         self._candle_detector = CandleCloseDetector(self._event_bus)
         self._tick_router = TickRouter(
             self._tick_store, self._candle_detector, self._event_bus,
@@ -1609,6 +1614,31 @@ class EventDrivenSystem:
                     "[event-driven] developing thesis re-eval wiring failed: {}",
                     exc,
                 )
+
+        # ── Inter-candle structural interaction detector (Violation #2) ──
+        # A lightweight tick-driven detector that watches the live price against
+        # the CONFIRMED WorldModel's already-computed structural levels (FVG/OB
+        # zones, liquidity pools, swing/BOS/CHOCH levels) and flags an
+        # interaction — a level touch/sweep/break or an FVG fill — the instant it
+        # happens, instead of the Brain waiting for the next candle close. It
+        # records the interaction as short-lived Evidence and wakes the Brain. It
+        # never re-runs the (expensive) brain modules. Subscriptions are made in
+        # start(); the Brain-wake + evidence source are wired there too. Purely
+        # additive and fully guarded — a fault never affects the confirmed path.
+        self._structural_interaction_detector = None
+        try:
+            self._structural_interaction_detector = StructuralInteractionDetector(
+                world_model_store=self._wm_store,
+                event_bus=self._event_bus,
+                cognition_loop=(
+                    getattr(ctx, "cognition_loop", None) if ctx is not None else None
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 — detector is additive, never fatal
+            logger.warning(
+                "[event-driven] StructuralInteractionDetector init failed: {}", exc,
+            )
+            self._structural_interaction_detector = None
 
         # ── Phase 6: adaptive scheduler (continuous-learning closure) ──
         # Drives the time-based learning cadences (TunerAgent.on_periodic_tick /
@@ -2697,7 +2727,13 @@ class EventDrivenSystem:
             try:
                 if self._tick_store is not None:
                     tick = self._tick_store.get_latest(symbol)
-                    recent_ticks = self._tick_store.get_recent(symbol, count=40) or []
+                    # Violation #3 — a richer tape. 40 ticks at ~20Hz was only
+                    # ~2s of microstructure (the last twitch). 600 ticks spans
+                    # ~30-40s (coalesced at 15Hz), enough for build_microstructure
+                    # to read multi-scale momentum, velocity acceleration, spread
+                    # trend and exhaustion/absorption — the developing tape story,
+                    # not just a snapshot.
+                    recent_ticks = self._tick_store.get_recent(symbol, count=600) or []
             except Exception:  # noqa: BLE001
                 tick = tick
             try:
@@ -3061,6 +3097,21 @@ class EventDrivenSystem:
                     _cog_loop.set_price_source(self._cognition_price_snapshot)
                 except Exception as exc:
                     logger.debug("[event-driven] price-source wiring failed: {}", exc)
+                # Violation #2 — wire the inter-candle structural interactions in
+                # as an evidence source, and give the detector the Brain-wake
+                # handle, then subscribe it to the tick stream. Now a swept pool
+                # / filled FVG / broken level both (a) rides into the MarketState
+                # the Brain reasons over and (b) wakes the Brain immediately.
+                sid = getattr(self, "_structural_interaction_detector", None)
+                if sid is not None:
+                    try:
+                        _cog_loop.set_structural_interaction_source(sid.evidence_for)
+                        sid.set_cognition_loop(_cog_loop)
+                        sid.start()
+                    except Exception as exc:
+                        logger.debug(
+                            "[event-driven] structural-interaction wiring failed: {}", exc,
+                        )
                 # Reuse the same broker-truth market-open check EntryOrchestrator
                 # already applies, but at the reasoning stage: a closed market
                 # (weekend forex/index/commodity) previously still burned the
@@ -3349,6 +3400,11 @@ class EventDrivenSystem:
         if getattr(self, "_proactive_scanner", None) is not None:
             try:
                 self._proactive_scanner.stop()
+            except Exception:
+                pass
+        if getattr(self, "_structural_interaction_detector", None) is not None:
+            try:
+                self._structural_interaction_detector.shutdown()
             except Exception:
                 pass
         if getattr(self, "_llm_worker", None) is not None:
