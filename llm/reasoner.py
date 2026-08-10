@@ -45,66 +45,93 @@ SHORT = "SHORT"
 FLAT = "FLAT"
 
 _SYSTEM_PROMPT = (
-    "You are the Cognitive Brain of an autonomous trading intelligence. You "
-    "receive a STRUCTURED REPRESENTATION OF MARKET REALITY for one instrument — "
-    "NOT a set of votes to arbitrate. It may include a reconstructed multi-"
-    "timeframe price picture (OHLC candles, current price and spread), the tick "
-    "tape (velocity, drift, up/down balance, momentum, spread behaviour), order-"
-    "book depth when available, the session, a higher-vs-lower-timeframe pullback "
-    "read, and per-instrument analytical READINGS expressed as measurements (each "
-    "a signed, bounded 'measured lean' plus secondary values). Those readings are "
-    "instrument outputs, like a thermometer's temperature — NEVER decisions or "
-    "votes to count. Do not invent data you were not given.\n\n"
-    "Observe reality first, then interpret what is actually happening. Form a "
-    "PRIMARY hypothesis and at least one ALTERNATIVE, then actively challenge your "
-    "primary: why might I be wrong? what evidence contradicts it? am I anchoring "
-    "to one timeframe? am I confusing movement with opportunity? has the move "
-    "already happened? State the key uncertainty and what information is missing. "
-    "You may discover an opportunity nobody pre-programmed — it can run against "
-    "the higher-timeframe trend, be very short-lived, or not exist at all.\n\n"
+    "You are the Cognitive Brain of an autonomous trading intelligence, and you "
+    "are an OPPORTUNITY HARVESTER — not a direction predictor. You receive a "
+    "STRUCTURED REPRESENTATION OF MARKET REALITY for one instrument (a "
+    "reconstructed multi-timeframe price picture — OHLC candles, current price "
+    "and spread — the tick tape: velocity, drift, up/down balance, momentum, "
+    "spread behaviour; order-book depth when available; the session; a higher-"
+    "vs-lower-timeframe pullback read; and per-instrument analytical READINGS "
+    "expressed as signed, bounded measurements). Those readings are instrument "
+    "outputs, like a thermometer's temperature — NEVER decisions or votes to "
+    "count. Do not invent data you were not given.\n\n"
+    "CORE PRINCIPLE — the market simultaneously contains MULTIPLE opportunities "
+    "across horizons. A bullish higher timeframe with a bearish lower timeframe "
+    "is NOT 'FLAT': it is a market containing a SHORT correction opportunity AND "
+    "a future LONG reversal opportunity — TWO conditional opportunities. Your job "
+    "is to HARVEST every exploitable asymmetry you can see, rank them, and prefer "
+    "the best — not to collapse the market to one averaged direction.\n\n"
+    "TIMEFRAME ROLES — HTF = context, MTF = opportunity structure, LTF = "
+    "execution. Higher timeframes provide CONTEXT; they NEVER veto a lower-"
+    "timeframe opportunity. When the freshest lower-timeframe evidence conflicts "
+    "with a stale higher-timeframe lean, that conflict is INFORMATION that may "
+    "create opportunities — not a reason to stand down.\n\n"
+    "FLAT / UNTRADEABLE means NO opportunity exists — NOT 'timeframes disagree'. "
+    "Set market_is_untradeable=true and return an EMPTY opportunities list ONLY "
+    "for genuinely incoherent structure with no exploitable asymmetry (or when "
+    "cost/spread makes every candidate unexecutable). Disagreement between "
+    "timeframes is the OPPOSITE of untradeable.\n\n"
+    "CONDITIONAL THINKING — never just 'LONG'. Always 'LONG IF X'. Every "
+    "opportunity MUST carry entry conditions, confirmation conditions, "
+    "invalidation conditions and target logic. The system you feed acts like: "
+    "IF X happens → opportunity A activates; IF Y happens → opportunity B "
+    "activates; IF neither → WAIT.\n\n"
+    "LOCATION MATTERS — the same directional signal has different opportunity "
+    "quality at different locations. A bullish signal at resistance is NOT the "
+    "same opportunity as a bullish signal at demand; grade quality accordingly.\n\n"
+    "SEARCH EXPLICITLY for: continuation, pullback, reversal, liquidity sweep, "
+    "failed breakout/breakdown, displacement, reclaim, rejection, range "
+    "expansion, mean reversion, compression→expansion, exhaustion, trapped "
+    "participants, momentum transition, structural failure, and asymmetric "
+    "risk/reward locations. Judge LONG and SHORT symmetrically — never buy a "
+    "market still actively falling nor sell one still actively rising merely "
+    "because a higher timeframe leans that way (no falling knives; mirror it for "
+    "shorts).\n\n"
     "MOVEMENT IS NOT OPPORTUNITY. An opportunity is executable positive expected "
-    "value after the round-trip spread, commission, slippage and latency. Only act "
-    "when the expected favourable move clears those costs and beats the expected "
-    "adverse excursion; when the edge does not clear costs, or the picture is "
-    "noise, do nothing. Judge LONG and SHORT symmetrically: the higher-timeframe "
-    "trend is CONTEXT, never a default — never buy a market still actively falling "
-    "(down ticks, negative drift, fresh lower lows) nor sell one still actively "
-    "rising merely because a higher timeframe leans that way (no falling knives; "
-    "apply the mirror for shorts). When the freshest lower-timeframe evidence "
-    "conflicts with a stale higher-timeframe lean, trust the fresh evidence or do "
-    "nothing.\n\n"
-    "Direction is the CONSEQUENCE of your reasoning, not its container. Reason "
-    "first; only then collapse to an execution instruction. Respond with STRICT "
-    "JSON only, no prose, no markdown fences, exactly these keys:\n"
-    "{\"regime\": \"trending|ranging|transitional|volatile|uncertain\", "
-    "\"primary_hypothesis\": \"what is happening and why\", "
-    "\"alternative_hypotheses\": [\"competing explanation(s)\"], "
-    "\"supporting_evidence\": [\"...\"], \"contradicting_evidence\": [\"...\"], "
-    "\"key_uncertainty\": \"the main thing you are unsure of\", "
-    "\"missing_information\": [\"...\"], "
-    "\"opportunity\": \"the exploitable opportunity, or 'none'\", "
-    "\"opportunity_horizon\": \"seconds|minutes|hours|days|none\", "
-    "\"expected_favorable_excursion\": \"how far it can go your way\", "
-    "\"expected_adverse_excursion\": \"how far it can go against you first\", "
-    "\"expected_value\": \"net of costs: positive|negative|unclear\", "
-    "\"execution_quality\": \"spread/liquidity/slippage read\", "
-    "\"risk\": \"the risk if wrong\", "
-    "\"what_would_change_my_mind\": [\"...\"], "
-    "\"invalidation\": \"the level/condition that voids the thesis\", "
-    "\"direction\": \"LONG|SHORT|FLAT\", \"confidence\": 0.0-1.0, "
-    "\"thesis_confidence\": 0.0-1.0, \"opportunity_confidence\": 0.0-1.0, "
-    "\"timing_confidence\": 0.0-1.0, \"execution_confidence\": 0.0-1.0, "
-    "\"rationale\": \"one or two sentences tying it together\"}\n"
-    "FLAT means the evidence does not support acting. 'confidence' is your "
-    "calibrated probability that the stated direction is correct; it is NOT a "
-    "substitute for the reasoning above. Decompose it into: thesis_confidence "
-    "(is your read correct?), opportunity_confidence (is there a real exploitable "
-    "edge?), timing_confidence (is NOW the moment, or is it early?) and "
-    "execution_confidence (can it be realised after spread/slippage/liquidity?). "
-    "If unsure, set each to your overall 'confidence'. A strong thesis with weak "
-    "timing or execution is NOT an act-now trade — say so via these fields. You "
-    "may answer FLAT with an opportunity of 'none' and that is a valid, complete "
-    "cognitive outcome."
+    "value AFTER round-trip spread, commission, slippage and latency. DO NOT "
+    "OVERTRADE — opportunity harvesting is SELECTIVE AGGRESSION, not constant "
+    "activity. Reject a candidate when structure is incoherent, payoff is poor, "
+    "invalidation is unclear, spread makes execution unattractive, confirmation "
+    "is absent, or the opportunity is already exhausted.\n\n"
+    "THESIS LIFECYCLE — each opportunity has a state: FORMING → ACTIVE → "
+    "CONFIRMED → STRENGTHENING → WEAKENING → EXHAUSTED (an invalidated idea is "
+    "simply dropped). Report the state you actually observe.\n\n"
+    "RANKING — when multiple opportunities exist, rank them by quality × "
+    "asymmetry × evidence_strength. The highest-ranked is the PREFERRED campaign; "
+    "the rest remain CONDITIONAL ALTERNATIVES (name them in each other's "
+    "competing_opportunities). Score every opportunity on quality (setup grade), "
+    "asymmetry (reward vs risk geometry), urgency (is NOW the moment) and "
+    "evidence_strength (how well the measurements support it), each 0.0–1.0.\n\n"
+    "Respond with STRICT JSON only, no prose, no markdown fences, no <think> "
+    "block, exactly this shape:\n"
+    "{\"market_state\": {"
+    "\"regime\": \"trending|ranging|transitional|volatile|uncertain\", "
+    "\"context\": \"what HTF tells us — this is CONTEXT not a trade\", "
+    "\"dominant_pressure\": \"buyers|sellers|balanced|transitioning\", "
+    "\"key_location\": \"where price is relative to structure/liquidity/demand/supply\", "
+    "\"volatility_state\": \"expanding|contracting|stable\"}, "
+    "\"opportunities\": [{"
+    "\"id\": \"opp_1\", "
+    "\"horizon\": \"HTF|MTF|LTF|MICRO\", "
+    "\"direction\": \"LONG|SHORT\", "
+    "\"state\": \"FORMING|ACTIVE|CONFIRMED|STRENGTHENING|WEAKENING|EXHAUSTED\", "
+    "\"thesis\": \"what is happening and why this is an opportunity\", "
+    "\"why_now\": \"why this opportunity exists at this moment\", "
+    "\"entry_conditions\": [\"what must happen to enter\"], "
+    "\"confirmation_conditions\": [\"what confirms the thesis\"], "
+    "\"invalidation_conditions\": [\"what kills it\"], "
+    "\"target_logic\": \"where the opportunity resolves\", "
+    "\"quality\": 0.0, \"asymmetry\": 0.0, \"urgency\": 0.0, "
+    "\"evidence_strength\": 0.0, "
+    "\"competing_opportunities\": [\"opp_2\"]}], "
+    "\"preferred_opportunity\": \"opp_1\", "
+    "\"market_is_untradeable\": false, "
+    "\"reasoning_summary\": \"one paragraph tying it together\"}\n"
+    "The opportunities list may hold one, several, or zero entries. Zero "
+    "opportunities with market_is_untradeable=true is a valid, complete cognitive "
+    "outcome — it means there is genuinely nothing to exploit right now, NOT that "
+    "the timeframes merely disagree. preferred_opportunity is the id of your "
+    "highest-ranked opportunity (omit or leave empty when the list is empty)."
 )
 
 
@@ -136,6 +163,17 @@ _MANAGEMENT_SYSTEM_PROMPT = (
     "reality and decide whether the opportunity that justified the position is: "
     "intact, evolving, temporarily obscured, deteriorating, invalidated, or "
     "replaced by a superior opportunity.\n\n"
+    "OPPORTUNITY COMPETITION — the market simultaneously contains many "
+    "opportunities, and CAPITAL IS FINITE. Ask explicitly: has a SUPERIOR "
+    "OPPOSING or competing opportunity emerged since entry? Compare THIS "
+    "campaign's remaining edge (its residual asymmetry and expected value from "
+    "here, not from entry) against the best alternative opportunity now visible "
+    "on the same instrument. A held position is only worth its capital while it "
+    "remains the BEST available use of that capital. Rotation of capital toward a "
+    "materially superior opportunity is a legitimate — and sometimes the correct "
+    "— management action; a marginally better idea is NOT (rotation has cost and "
+    "the incumbent thesis may simply be maturing). Judge the incumbent on its "
+    "forward edge, never on sunk entry.\n\n"
     "CRITICAL — an open campaign is NEVER closed merely because the latest read is "
     "FLAT, low-confidence, conflicting, or temporarily uncertain. Temporary "
     "uncertainty is the normal texture of a live trade, not a reason to "
@@ -289,6 +327,147 @@ def _map_mgmt_opportunity(s: Any) -> str:
     return _MGMT_OPP_MAP.get(str(s or "").strip().upper().replace(" ", "_"), "")
 
 
+# ── Opportunity-harvesting normalisation ──────────────────────────────────────
+# The opportunity-harvesting prompt asks the model for a SET of ranked
+# opportunities plus a market-state read, instead of a single collapsed
+# direction. These helpers collapse that richer reply to the legacy
+# direction/confidence (+ multidimensional confidence + excursions) fields the
+# whole downstream pipeline already consumes — so the new format is purely
+# ADDITIVE and an old single-direction reply is untouched. The full opportunity
+# set is preserved separately on the opinion for auditability.
+
+def _coerce_opportunities(raw: Any) -> "list[dict]":
+    """The opportunities value as a list of dicts (defensive; never raises)."""
+    if not isinstance(raw, list):
+        return []
+    return [o for o in raw if isinstance(o, dict)]
+
+
+def _opportunity_rank(opp: dict) -> float:
+    """Rank score = quality × asymmetry × evidence_strength (prompt principle 7).
+
+    A sub-score the model omitted defaults to the opportunity's ``quality`` so a
+    reply that only grades quality still ranks monotonically by it (rather than
+    collapsing every opportunity to a zero product).
+    """
+    q = _clamp01(opp.get("quality"))
+    a = opp.get("asymmetry")
+    e = opp.get("evidence_strength")
+    a = _clamp01(a) if a is not None else q
+    e = _clamp01(e) if e is not None else q
+    return q * a * e
+
+
+def _is_directional_opportunity(opp: dict) -> bool:
+    return _norm_dir(opp.get("direction")) in (LONG, SHORT)
+
+
+def _select_preferred_opportunity(
+    opps: "list[dict]", preferred_id: Any,
+) -> Optional[dict]:
+    """The opportunity that drives the campaign: the model's named preference
+    when it is directional, else the highest-ranked directional opportunity.
+    Returns ``None`` when no opportunity carries a LONG/SHORT direction."""
+    directional = [o for o in opps if _is_directional_opportunity(o)]
+    if not directional:
+        return None
+    pid = str(preferred_id or "").strip()
+    if pid:
+        for o in directional:
+            if str(o.get("id", "") or "").strip() == pid:
+                return o
+    return max(directional, key=_opportunity_rank)
+
+
+def _normalize_opportunity_reply(
+    fields: dict,
+) -> "tuple[dict, list[dict], str, bool, dict]":
+    """Collapse an opportunity-harvesting reply to backward-compatible fields.
+
+    Returns ``(merged_fields, opportunities, preferred_id, untradeable,
+    market_state)``. ``merged_fields`` is ``fields`` with the legacy keys
+    (direction, confidence, the confidence dimensions, excursions, invalidation,
+    alternatives, regime, rationale …) BACKFILLED from the preferred opportunity
+    — but only where the reply did not already state them, so an explicit
+    top-level value always wins. The preferred opportunity's ``quality`` becomes
+    ``confidence`` and its ``asymmetry`` becomes the reward/risk excursions, so
+    the existing EV, act-gate and sizing machinery reflect the opportunity's
+    grade with no downstream change. Never raises.
+    """
+    opps = _coerce_opportunities(fields.get("opportunities"))
+    market_state = fields.get("market_state")
+    market_state = market_state if isinstance(market_state, dict) else {}
+    untradeable = bool(fields.get("market_is_untradeable"))
+    preferred = (
+        None if untradeable
+        else _select_preferred_opportunity(opps, fields.get("preferred_opportunity"))
+    )
+    merged = dict(fields)
+
+    def _empty(v: Any) -> bool:
+        return v is None or v == "" or v == [] or v == {}
+
+    def _fill(key: str, value: Any) -> None:
+        if _empty(value):
+            return
+        if _empty(merged.get(key)):
+            merged[key] = value
+
+    pref_id = str(preferred.get("id", "") or "") if preferred is not None else ""
+    if preferred is not None:
+        _fill("direction", _norm_dir(preferred.get("direction")))
+        _fill("confidence", _clamp01(preferred.get("quality")))
+        _fill("thesis_confidence", preferred.get("quality"))
+        _fill("opportunity_confidence", preferred.get("evidence_strength"))
+        _fill("timing_confidence", preferred.get("urgency"))
+        _fill("primary_hypothesis", preferred.get("thesis"))
+        _fill("opportunity", preferred.get("thesis") or preferred.get("why_now"))
+        _fill("opportunity_horizon", preferred.get("horizon"))
+        inv = preferred.get("invalidation_conditions")
+        if isinstance(inv, list) and inv:
+            _fill("invalidation", "; ".join(str(x) for x in inv))
+            _fill("what_would_change_my_mind", inv)
+        elif isinstance(inv, str) and inv.strip():
+            _fill("invalidation", inv)
+        # Asymmetry (0..1) → reward/risk excursions so the reward multiple, EV and
+        # sizing reflect the opportunity's payoff geometry (favourable = a,
+        # adverse = 1 - a ⇒ reward_r = a / (1 - a)). Only a strictly interior
+        # value yields a usable ratio; otherwise the EV model keeps its default.
+        asym = preferred.get("asymmetry")
+        a = _clamp01(asym) if asym is not None else None
+        if a is not None and 0.0 < a < 1.0:
+            _fill("expected_favorable_excursion", str(round(a, 4)))
+            _fill("expected_adverse_excursion", str(round(1.0 - a, 4)))
+        _fill("expected_value", "positive")
+    else:
+        # Untradeable, or no opportunity carried a LONG/SHORT direction ⇒ FLAT.
+        _fill("direction", FLAT)
+        if _empty(merged.get("confidence")):
+            merged["confidence"] = 0.0
+        _fill("opportunity", "none")
+
+    # Non-preferred opportunities become CONDITIONAL ALTERNATIVES (the losing but
+    # still-live ideas), described compactly for the alternative-hypotheses field.
+    alts: "list[str]" = []
+    for o in opps:
+        if preferred is not None and str(o.get("id", "") or "") == pref_id:
+            continue
+        d = _norm_dir(o.get("direction"))
+        state = str(o.get("state") or "").strip()
+        thesis = str(o.get("thesis") or o.get("why_now") or "").strip()[:180]
+        label = f"{d}/{state}" if state else d
+        q = _clamp01(o.get("quality"))
+        alts.append(f"{label}@{q:.2f}: {thesis}" if thesis else f"{label}@{q:.2f}")
+    if alts:
+        _fill("alternative_hypotheses", alts)
+
+    _fill("regime", market_state.get("regime"))
+    _fill("rationale", fields.get("reasoning_summary"))
+
+    resolved_pref = pref_id or str(fields.get("preferred_opportunity") or "")
+    return merged, opps, resolved_pref, untradeable, market_state
+
+
 # Part XXV / Violation V2 — the rich cognitive fields that make a reply a valid
 # opinion even when it carries NO ``direction``. A missing direction is itself a
 # cognitive result ("I understand the market but see no directional edge"), so a
@@ -308,6 +487,13 @@ _OPINION_FIELD_KEYS = frozenset({
     # these must count as recognisable opinion fields or the whole reply is
     # dropped as unparseable.
     "thesis_state", "management_action", "action", "opportunity_status",
+    # Opportunity-harvesting format — the reply carries a set of ranked
+    # opportunities and a market-state read INSTEAD of a single collapsed
+    # direction. Any of these keys makes the reply a valid, parseable opinion
+    # (the preferred opportunity is collapsed to direction/confidence for
+    # backward compatibility in :meth:`_build_opinion`).
+    "opportunities", "preferred_opportunity", "market_is_untradeable",
+    "market_state", "reasoning_summary",
 })
 
 
@@ -432,6 +618,21 @@ class LLMOpinion:
     thesis_state: str = ""
     management_action: str = ""
     opportunity_status: str = ""
+    # Opportunity-harvesting format — the full ranked opportunity set the model
+    # returned (each a dict: id, horizon, direction, state, thesis, why_now,
+    # entry/confirmation/invalidation conditions, target_logic, quality,
+    # asymmetry, urgency, evidence_strength, competing_opportunities). Empty on a
+    # legacy single-direction reply. ``preferred_opportunity_id`` names the
+    # highest-ranked opportunity (which is collapsed to ``direction`` /
+    # ``confidence`` above for backward compatibility); ``market_is_untradeable``
+    # is the model's explicit "no exploitable opportunity exists" flag; and
+    # ``market_state`` is the structured HTF-context read. All are additive — a
+    # downstream consumer that only reads ``direction`` / ``confidence`` behaves
+    # exactly as before.
+    opportunities: list[dict] = field(default_factory=list)
+    preferred_opportunity_id: str = ""
+    market_is_untradeable: bool = False
+    market_state: dict = field(default_factory=dict)
     at_iso: str = ""
     model: str = ""
 
@@ -475,6 +676,10 @@ class LLMOpinion:
             "thesis_state": self.thesis_state,
             "management_action": self.management_action,
             "opportunity_status": self.opportunity_status,
+            "opportunities": [dict(o) for o in self.opportunities if isinstance(o, dict)],
+            "preferred_opportunity_id": self.preferred_opportunity_id,
+            "market_is_untradeable": bool(self.market_is_untradeable),
+            "market_state": dict(self.market_state),
             "at": self.at_iso,
             "model": self.model,
         }
@@ -801,7 +1006,27 @@ class LLMReasoner:
         fields (thesis_state / management_action / opportunity_status) and
         ensures a management reply is NEVER forced into an exit via the
         direction map.
+
+        When an ORIGINATION reply is in the opportunity-harvesting format (it
+        carries an ``opportunities`` key) it is first collapsed to the legacy
+        direction/confidence fields by :func:`_normalize_opportunity_reply`, and
+        the full opportunity set / preferred id / market-state read are carried
+        on the opinion alongside for auditability.
         """
+        opportunities: "list[dict]" = []
+        preferred_opportunity_id = ""
+        market_is_untradeable = False
+        market_state: dict = {}
+        # A reply is in the opportunity-harvesting format when it carries any of
+        # the new-format keys (an explicitly-untradeable reply may carry only the
+        # market-state read and the flag, with no opportunities array).
+        if (not management and isinstance(fields, dict)
+                and any(k in fields for k in (
+                    "opportunities", "market_state", "market_is_untradeable",
+                    "preferred_opportunity"))):
+            (fields, opportunities, preferred_opportunity_id,
+             market_is_untradeable, market_state) = _normalize_opportunity_reply(fields)
+
         ch = fields.get("competing_hypotheses") or []
         mi = fields.get("missing_information") or []
         alt = fields.get("alternative_hypotheses") or []
@@ -871,6 +1096,10 @@ class LLMReasoner:
             thesis_state=thesis_state,
             management_action=mgmt_action,
             opportunity_status=opportunity_status,
+            opportunities=[o for o in opportunities if isinstance(o, dict)][:12],
+            preferred_opportunity_id=str(preferred_opportunity_id or ""),
+            market_is_untradeable=bool(market_is_untradeable),
+            market_state=market_state if isinstance(market_state, dict) else {},
             at_iso=time.strftime("%Y-%m-%dT%H:%M:%S", time.gmtime()),
             model=str(getattr(self._client, "model", "") or ""),
         )

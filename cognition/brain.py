@@ -554,6 +554,15 @@ class CognitiveBrain:
                        ("execution_quality", exec_q), ("risk", risk_txt)):
             if _v:
                 questions[_k] = _v
+        # Opportunity-harvesting — when the reasoner returned a SET of ranked
+        # opportunities (multi-opportunity format), the preferred one already
+        # drives this decision (it was collapsed to direction/confidence/EV
+        # upstream). Record the FULL set for auditability, name the preferred
+        # opportunity, and log the non-preferred ones as CONDITIONAL ALTERNATIVES
+        # (the still-live ideas that lost the ranking but would activate on their
+        # own conditions). Purely additive: absent on a legacy single-direction
+        # reply, and harmless to consumers that ignore the extra keys.
+        self._record_opportunity_audit(questions, opinion)
         # Article XXI — record whether cognition is degraded (partial council).
         if advisors_available is not None:
             if degraded:
@@ -1382,6 +1391,71 @@ class CognitiveBrain:
         except Exception:  # noqa: BLE001 — a coverage probe must never break reasoning
             return None, None, None
         return resp, avail, total
+
+    @staticmethod
+    def _record_opportunity_audit(questions: dict, opinion: Any) -> None:
+        """Record the reasoner's ranked opportunity SET on ``questions_answered``.
+
+        Opportunity-harvesting (multi-opportunity) format only: when the opinion
+        carries an ``opportunities`` list, store the full set, name the preferred
+        opportunity that drove the decision, and log the non-preferred ones as
+        CONDITIONAL ALTERNATIVES plus the structured market-state read. A no-op
+        for a legacy single-direction opinion (no ``opportunities``). Never raises.
+        """
+        try:
+            opps = list(getattr(opinion, "opportunities", []) or [])
+            if not opps:
+                return
+            preferred_id = str(getattr(opinion, "preferred_opportunity_id", "") or "")
+
+            def _summ(o: dict) -> dict:
+                def _f(k: str) -> float:
+                    return round(_clamp01(o.get(k)), 4)
+
+                def _lst(k: str) -> "list[str]":
+                    v = o.get(k)
+                    return [str(x)[:160] for x in v][:5] if isinstance(v, list) else []
+
+                return {
+                    "id": str(o.get("id", "") or ""),
+                    "horizon": str(o.get("horizon", "") or "")[:16],
+                    "direction": str(o.get("direction", "") or "").upper()[:8],
+                    "state": str(o.get("state", "") or "")[:24],
+                    "thesis": str(o.get("thesis", "") or o.get("why_now", "") or "")[:240],
+                    "why_now": str(o.get("why_now", "") or "")[:180],
+                    "entry_conditions": _lst("entry_conditions"),
+                    "confirmation_conditions": _lst("confirmation_conditions"),
+                    "invalidation_conditions": _lst("invalidation_conditions"),
+                    "target_logic": str(o.get("target_logic", "") or "")[:180],
+                    "quality": _f("quality"),
+                    "asymmetry": _f("asymmetry"),
+                    "urgency": _f("urgency"),
+                    "evidence_strength": _f("evidence_strength"),
+                    "preferred": str(o.get("id", "") or "") == preferred_id,
+                }
+
+            summarised = [_summ(o) for o in opps if isinstance(o, dict)]
+            questions["opportunity_set"] = summarised
+            questions["preferred_opportunity"] = preferred_id or "(highest-ranked)"
+            alternatives = [
+                f"{s['direction'] or 'FLAT'}"
+                f"{('/' + s['state']) if s['state'] else ''}"
+                f"@q{s['quality']:.2f}/a{s['asymmetry']:.2f}: {s['thesis']}".strip()
+                for s in summarised if not s["preferred"]
+            ]
+            questions["conditional_alternatives"] = (
+                "; ".join(a for a in alternatives if a)
+                if alternatives else "none (single opportunity)"
+            )
+            ms = getattr(opinion, "market_state", {}) or {}
+            if isinstance(ms, dict) and ms:
+                questions["market_state"] = {
+                    str(k): str(v)[:200] for k, v in ms.items()
+                }
+            if bool(getattr(opinion, "market_is_untradeable", False)):
+                questions["market_is_untradeable"] = True
+        except Exception:  # noqa: BLE001 — audit recording must never break reasoning
+            pass
 
     @staticmethod
     def _confidence_profile(opinion: Any, base: float) -> "tuple[dict, float, str]":

@@ -5,7 +5,7 @@ JSON truncated at the token cap (missing closing brace), prose-wrapped JSON —
 and asserts the Brain now recovers its own decision instead of dropping it.
 """
 
-from llm.json_repair import repair_json, strip_fences
+from llm.json_repair import repair_json, strip_fences, strip_reasoning
 from llm.reasoner import _extract_opinion_fields, _regex_opinion_fields
 
 
@@ -88,6 +88,50 @@ def test_dangling_key_dropped():
 def test_unrecoverable_returns_none():
     assert repair_json("") is None
     assert repair_json("just some prose, no structure at all") is None
+
+
+# ── json_repair — <think>…</think> stripping (deepseek-r1 & kin) ───────────────
+
+def test_strip_reasoning_removes_think_block():
+    # The reasoning prose contains stray braces/quotes that would derail a scan.
+    txt = ('<think>\nHmm, structure looks {messy} with "quotes" and }}} braces.\n'
+           '</think>\n{"direction": "LONG", "confidence": 0.7}')
+    assert strip_reasoning(txt).startswith("{")
+    assert repair_json(txt) == {"direction": "LONG", "confidence": 0.7}
+
+
+def test_think_block_then_fenced_json():
+    txt = ('<think>reasoning here</think>\n'
+           '```json\n{"direction": "SHORT", "confidence": 0.5}\n```')
+    assert repair_json(txt) == {"direction": "SHORT", "confidence": 0.5}
+
+
+def test_dangling_think_close_tag_only():
+    # The opening <think> was truncated out of the stream; drop up to </think>.
+    txt = 'blah reasoning prose </think> {"direction": "FLAT", "confidence": 0}'
+    assert repair_json(txt) == {"direction": "FLAT", "confidence": 0}
+
+
+def test_think_stripping_is_case_insensitive():
+    txt = '<THINK>noise {x}</THINK>{"direction": "LONG", "confidence": 0.4}'
+    assert repair_json(txt)["direction"] == "LONG"
+
+
+def test_no_think_block_is_unchanged():
+    # A reply with no reasoning block must be untouched.
+    txt = '{"direction": "LONG", "confidence": 0.6}'
+    assert strip_reasoning(txt) == txt
+    assert repair_json(txt) == {"direction": "LONG", "confidence": 0.6}
+
+
+def test_think_block_wrapping_opportunity_reply():
+    txt = ('<think>weighing HTF vs LTF...</think>\n'
+           '{"opportunities": [{"id": "opp_1", "direction": "SHORT", '
+           '"quality": 0.6}], "preferred_opportunity": "opp_1", '
+           '"market_is_untradeable": false}')
+    obj = repair_json(txt)
+    assert obj["preferred_opportunity"] == "opp_1"
+    assert obj["opportunities"][0]["direction"] == "SHORT"
 
 
 # ── reasoner._extract_opinion_fields (JSON layer → regex fallback) ─────────────
