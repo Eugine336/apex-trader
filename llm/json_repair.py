@@ -34,6 +34,8 @@ from typing import Any, Optional
 
 _FENCE_OPEN = re.compile(r"^\s*```[a-zA-Z0-9_-]*[ \t]*\r?\n?")
 _FENCE_CLOSE = re.compile(r"\r?\n?\s*```\s*$")
+_THINK_BLOCK = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.IGNORECASE | re.DOTALL)
+_THINK_OPEN = re.compile(r"<think\b[^>]*>", re.IGNORECASE)
 _TRAILING_COMMA = re.compile(r",(\s*[}\]])")
 _DANGLING_KEY = re.compile(r",?\s*\"[^\"]*\"\s*:\s*$")
 _DANGLING_COLON = re.compile(r":\s*$")
