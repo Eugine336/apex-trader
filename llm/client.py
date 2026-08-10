@@ -49,6 +49,9 @@ _OPENAI_ALIASES = frozenset({
     "vllm", "lmstudio", "lm_studio", "together", "groq", "openrouter",
     "agentrouter", "agent_router", "agent-router",
     "deepseek", "mistral", "self_hosted", "self-hosted", "local",
+    # Modal.com serverless GPUs serve vLLM's OpenAI-compatible API, so the
+    # provider name "modal" shapes exactly like any other vLLM endpoint.
+    "modal",
 })
 _ANTHROPIC_ALIASES = frozenset({"anthropic", "claude"})
 _GEMINI_ALIASES = frozenset({"gemini", "google", "google_gemini"})
