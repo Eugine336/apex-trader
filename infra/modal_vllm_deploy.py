@@ -13,8 +13,11 @@ the box. Modal spins an A10G (24 GB VRAM — ample for a 7B model) only while a
 request is in flight, keeps it warm for ``SCALEDOWN_WINDOW`` seconds, then
 scales to zero so GPU billing stops. The VPS only ever makes HTTP calls.
 
-Each model is served by vLLM's built-in OpenAI-compatible FastAPI app, which
-implements ``/v1/chat/completions``, ``/v1/completions`` and ``/v1/models``
+Each model is served by vLLM's built-in OpenAI-compatible server, launched via
+its **stable CLI** (``python -m vllm.entrypoints.openai.api_server``) behind a
+Modal ``@modal.web_server``. The CLI is stable across vLLM releases, unlike the
+Python internals (``build_app``, ``serving_engine`` …) which move every version.
+It implements ``/v1/chat/completions``, ``/v1/completions`` and ``/v1/models``
 automatically — no request shaping is written here.
 
 ──────────────────────────────────────────────────────────────────────────────
@@ -34,9 +37,12 @@ Append ``/v1`` to each and paste them into ``LLM_EXTRA_MODELS`` in ``.env``
 
 OPTIONAL BEARER-TOKEN AUTH
     modal secret create apex-inference-key MODAL_INFERENCE_KEY=<random-token>
-Then set the same value as ``MODAL_INFERENCE_KEY`` in ``.env`` so APEX sends it
-as ``Authorization: Bearer <token>``. Leave the secret unset to run open (the
-endpoints are still obscured by an unguessable Modal URL).
+Then add ``secrets=[modal.Secret.from_name("apex-inference-key")]`` to each
+``@app.cls()`` decorator so ``MODAL_INFERENCE_KEY`` is present in the container;
+vLLM's own ``--api-key`` flag (wired below from that env var) enforces
+``Authorization: Bearer <token>`` on every request. Set the same value as
+``MODAL_INFERENCE_KEY`` in ``.env`` so APEX sends it. Leave it unset to run open
+(the endpoints are still obscured by an unguessable Modal URL).
 """
 
 from __future__ import annotations
@@ -68,45 +74,36 @@ SCALEDOWN_WINDOW = 300
 #      ``@app.cls()`` decorator below so MODAL_INFERENCE_KEY is present in the
 #      container environment.
 #   3. Set the same value as MODAL_INFERENCE_KEY in APEX's .env.
-# ``_build_server`` reads MODAL_INFERENCE_KEY from the environment and, when set,
-# enforces ``Authorization: Bearer <token>`` on every request. It is NOT wired
-# by default: ``Secret.from_name`` is validated at deploy time and would abort
-# the deploy with "Secret not found" if the secret has not been created yet.
+# Each server reads MODAL_INFERENCE_KEY from the environment and, when set,
+# passes it to vLLM's ``--api-key`` flag (built-in bearer-token enforcement). It
+# is NOT wired by default: ``Secret.from_name`` is validated at deploy time and
+# would abort the deploy with "Secret not found" if the secret does not exist.
+
+VLLM_PORT = 8000
+# Cold-start budget: time for vLLM to import, download (first run) and load the
+# model weights onto the GPU before Modal probes the port.
+STARTUP_TIMEOUT = 300
 
 
-def _build_server(model_name: str):
-    """Return a vLLM OpenAI-compatible ASGI app for ``model_name``.
+def _vllm_command(model_name: str) -> list:
+    """Build the stable-CLI command that serves ``model_name`` over OpenAI's API.
 
-    vLLM ships a FastAPI app that speaks the OpenAI REST API. We construct its
-    engine from the model, then optionally wrap it with a bearer-token check
-    driven by the ``MODAL_INFERENCE_KEY`` env var (populated from the Modal
-    secret when present).
+    Uses ``python -m vllm.entrypoints.openai.api_server`` — vLLM's supported CLI
+    entrypoint, stable across releases (unlike the Python internals). When
+    ``MODAL_INFERENCE_KEY`` is present it is passed to vLLM's ``--api-key`` for
+    built-in bearer-token auth; absent, the server runs open.
     """
-    from vllm.engine.arg_utils import AsyncEngineArgs
-    from vllm.engine.async_llm_engine import AsyncLLMEngine
-    from vllm.entrypoints.openai.api_server import build_app
-    from vllm.entrypoints.openai.serving_engine import BaseModelPath
-    from vllm.entrypoints.openai.serving_chat import OpenAIServingChat
-    from vllm.entrypoints.openai.serving_completion import OpenAIServingCompletion
-
-    engine_args = AsyncEngineArgs(model=model_name, gpu_memory_utilization=0.90)
-    engine = AsyncLLMEngine.from_engine_args(engine_args)
-
-    fastapi_app = build_app(engine)
-
-    required_key = str(os.environ.get("MODAL_INFERENCE_KEY") or "").strip()
-    if required_key:
-        from fastapi import Request
-        from fastapi.responses import JSONResponse
-
-        @fastapi_app.middleware("http")
-        async def _require_bearer(request: Request, call_next):
-            header = request.headers.get("authorization", "")
-            if header != f"Bearer {required_key}":
-                return JSONResponse({"error": "unauthorized"}, status_code=401)
-            return await call_next(request)
-
-    return fastapi_app
+    cmd = [
+        "python", "-m", "vllm.entrypoints.openai.api_server",
+        "--model", model_name,
+        "--host", "0.0.0.0",
+        "--port", str(VLLM_PORT),
+        "--gpu-memory-utilization", "0.90",
+    ]
+    env_key = os.environ.get("MODAL_INFERENCE_KEY", "").strip()
+    if env_key:
+        cmd += ["--api-key", env_key]
+    return cmd
 
 
 # ── Mistral 7B endpoint ───────────────────────────────────────────────────────
@@ -119,14 +116,10 @@ def _build_server(model_name: str):
 class MistralServer:
     MODEL = "mistralai/Mistral-7B-Instruct-v0.3"
 
-    @modal.enter()
-    def load(self) -> None:
-        # Cold-start model load (cached on the Volume after the first download).
-        self._app = _build_server(self.MODEL)
-
-    @modal.asgi_app()
+    @modal.web_server(port=VLLM_PORT, startup_timeout=STARTUP_TIMEOUT)
     def serve(self):
-        return self._app
+        import subprocess
+        subprocess.Popen(_vllm_command(self.MODEL))
 
 
 # ── Qwen 7B endpoint ──────────────────────────────────────────────────────────
@@ -139,13 +132,10 @@ class MistralServer:
 class QwenServer:
     MODEL = "Qwen/Qwen2.5-7B-Instruct"
 
-    @modal.enter()
-    def load(self) -> None:
-        self._app = _build_server(self.MODEL)
-
-    @modal.asgi_app()
+    @modal.web_server(port=VLLM_PORT, startup_timeout=STARTUP_TIMEOUT)
     def serve(self):
-        return self._app
+        import subprocess
+        subprocess.Popen(_vllm_command(self.MODEL))
 
 
 @app.local_entrypoint()
@@ -153,7 +143,7 @@ def main() -> None:
     """Print the endpoint URLs so they can be pasted into ``.env``.
 
     Runs locally on ``modal deploy`` / ``modal run``; the web URLs resolve to
-    the public ``*.modal.run`` hosts Modal assigns to each ASGI app.
+    the public ``*.modal.run`` hosts Modal assigns to each web server.
     """
 
     def _url(server) -> str:
