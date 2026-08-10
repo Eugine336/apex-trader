@@ -40,6 +40,7 @@ from core.system_context import SystemContext
 from persistence.event_store import get_event_store
 from persistence import domain_events as DE
 from tick import EventBus, Tick, TickStore, CandleCloseDetector, TickRouter
+from tick.state_change_detector import TickStateChangeDetector
 from scanner.candle_close_handler import CandleCloseHandler
 from execution.intents import Intent, IntentType
 from execution.intent_aggregator import IntentAggregator, AggregatorConfig
@@ -1859,6 +1860,31 @@ class EventDrivenSystem:
                     getattr(tick, "symbol", ""),
                 ),
             )
+        # Tick-driven cognition: a lightweight per-symbol state-change detector
+        # closes the gap between live tick ingestion and the Brain. It maintains
+        # a running read of each symbol (price/velocity/spread/volatility) that
+        # updates on every tick and wakes the Brain the instant something
+        # meaningful happens (a significant move, spread/velocity spike or
+        # momentum reversal) — instead of the Brain only reasoning on the
+        # periodic cycle and forming-bar shifts. Rate-limited per symbol so it
+        # never wakes the Brain on every tick. Purely additive — the confirmed
+        # candle-close pipeline is untouched. Off only when explicitly disabled.
+        self._tick_state_detector = None
+        _tsc_cfg = getattr(self._config, "tick_state_change", None)
+        if _tsc_cfg is None or getattr(_tsc_cfg, "enabled", True):
+            try:
+                self._tick_state_detector = TickStateChangeDetector(
+                    on_change=self._nudge_cognition_on_tick_change,
+                    config=_tsc_cfg,
+                )
+                self._event_bus.subscribe(
+                    "tick", self._tick_state_detector.on_tick,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[event-driven] tick state-change detector init failed: {}", exc,
+                )
+                self._tick_state_detector = None
         # Feed the fast-then-slow flip sequence tracker (flip Check 7): M1 closes
         # arm the fast confirmation, M5 closes provide the slow confirmation and
         # advance the tracker's M5-bar clock. Both dispatched off the entry pool
@@ -2816,6 +2842,33 @@ class EventDrivenSystem:
         except Exception as exc:  # noqa: BLE001 — never disturb the developing loop
             logger.debug("[cognition] developing nudge failed for {}: {}", symbol, exc)
 
+    def _nudge_cognition_on_tick_change(self, symbol: str, magnitude: float) -> None:
+        """Wake the Brain on a meaningful tick-driven state change (Part XII).
+
+        The sink for :class:`~tick.state_change_detector.TickStateChangeDetector`.
+        Hands the cognition loop a NON-DIRECTIONAL change magnitude (how much the
+        live tick read moved, never which way) so the Brain reasons over that
+        symbol at once, on its OWN thread — this never blocks the tick path on an
+        LLM call. The loop applies its own magnitude-delta trigger and per-symbol
+        floor on top of the detector's rate limit. Best-effort; a wake fault must
+        never break tick routing.
+        """
+        try:
+            ctx = self._ctx
+            loop = getattr(ctx, "cognition_loop", None) if ctx is not None else None
+            if loop is None:
+                return
+            nudge = getattr(loop, "maybe_reason_on_change", None)
+            if not callable(nudge):
+                return
+            try:
+                m = float(magnitude)
+            except (TypeError, ValueError):
+                m = 0.0
+            nudge(symbol, m)
+        except Exception as exc:  # noqa: BLE001 — never disturb the tick path
+            logger.debug("[cognition] tick-change nudge failed for {}: {}", symbol, exc)
+
     # ── Lifecycle ────────────────────────────────────────────────────
 
     def start(self) -> None:
@@ -3515,6 +3568,11 @@ class EventDrivenSystem:
                 "events_emitted": self._candle_detector.events_emitted,
                 "tracked_pairs": self._candle_detector.tracked_pairs,
             },
+            "tick_state_change": (
+                self._tick_state_detector.stats()
+                if getattr(self, "_tick_state_detector", None) is not None
+                else None
+            ),
             "zone_edge": self._zone_edge.snapshot(),
         }
 

@@ -9,6 +9,7 @@ from tick.event_bus import EventBus
 from tick.tick_store import TickStore
 from tick.candle_close_detector import CandleCloseDetector
 from tick.tick_router import TickRouter
+from tick.state_change_detector import TickStateChangeDetector
 
 __all__ = [
     "Tick",
@@ -17,4 +18,5 @@ __all__ = [
     "TickStore",
     "CandleCloseDetector",
     "TickRouter",
+    "TickStateChangeDetector",
 ]

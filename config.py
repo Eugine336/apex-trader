@@ -3424,6 +3424,50 @@ class DevelopingAnalysisConfig:
 
 
 @dataclass
+class TickStateChangeConfig:
+    """Tick-driven market state-change detector (see tick/state_change_detector.py).
+
+    Live ticks reach the TickRouter, which publishes ``"tick"`` events, but no
+    cognitive consumer subscribed to them — the Brain woke only on the periodic
+    cycle and on forming-bar shifts.  This detector maintains a tiny per-symbol
+    running read of the market (reference price, an adaptive per-tick volatility
+    estimate, a spread EMA, a velocity EMA and a smoothed momentum sign) updated
+    on every tick, and wakes the Brain on THAT symbol the instant something
+    meaningful happens: a significant directional move, a spread spike, a
+    velocity spike, a momentum reversal or a structural-level breach.
+
+    It runs on the hot tick path, so it is deliberately a handful of float
+    operations per tick, and it is rate-limited per symbol (``min_interval_seconds``,
+    mirroring ``CognitionConfig.event_min_interval_seconds``) so a fast feed can
+    never wake the Brain on every tick.  Purely additive — the confirmed
+    candle-close analysis pipeline is untouched.
+    """
+
+    enabled: bool = True
+    # Ticks observed for a symbol before it may trigger, so the adaptive
+    # estimates stabilise and early noise does not wake the Brain.
+    warmup_ticks: int = 20
+    # EMA smoothing factors for the volatility / spread / velocity estimates.
+    vol_alpha: float = 0.05
+    spread_alpha: float = 0.05
+    velocity_alpha: float = 0.3
+    # A directional move triggers when the accumulated move since the last wake
+    # exceeds this multiple of the adaptive per-tick volatility estimate (an
+    # ATR-like proxy derived from the tape). Instrument-agnostic: the estimate
+    # self-scales to each symbol (dollars on gold, pips on FX).
+    price_move_atr_fraction: float = 6.0
+    # Spread triggers when it exceeds this multiple of its rolling mean.
+    spread_spike_mult: float = 2.0
+    # Velocity triggers when |velocity| exceeds this multiple of its rolling mean.
+    velocity_spike_mult: float = 3.0
+    # A momentum reversal triggers when the smoothed momentum sign flips AND the
+    # flipping move is at least this multiple of the volatility estimate.
+    reversal_atr_fraction: float = 3.0
+    # Per-symbol wake floor (seconds) — mirrors the cognition loop's own floor.
+    min_interval_seconds: float = 8.0
+
+
+@dataclass
 class ThesisConfig:
     """Gap 1b — the ThesisEngine as a live entry quality gate.
 
@@ -4606,6 +4650,9 @@ class AppConfig:
     calibration: CalibrationConfig = field(default_factory=CalibrationConfig)
     developing_analysis: DevelopingAnalysisConfig = field(
         default_factory=DevelopingAnalysisConfig
+    )
+    tick_state_change: TickStateChangeConfig = field(
+        default_factory=TickStateChangeConfig
     )
     thesis: ThesisConfig = field(default_factory=ThesisConfig)
     campaign: CampaignConfig = field(default_factory=CampaignConfig)
