@@ -31,6 +31,47 @@ from typing import Optional
 from loguru import logger
 
 
+# ── Adaptive heat-ladder scaling bounds ──────────────────────────────────────
+# The ladder sqrt-scales its thresholds UP on a micro account so a single
+# unavoidable min-lot trade (a large fraction of a tiny balance) does not
+# instantly trip DEFENSIVE/EMERGENCY. But raw sqrt-scaling is unbounded: at
+# equity=$136 vs a $10k reference the factor is sqrt(73.5)=8.57x, which pushed
+# the 4% emergency threshold to ~34% — i.e. the system became DRAMATICALLY LESS
+# conservative exactly as capital collapsed. That is backwards. Two guards keep
+# the scaled ladder sane:
+#   * ``_MAX_HEAT_SCALE`` caps the multiplier so a near-zero balance can never
+#     produce an absurd factor (it still permits enough head-room for a min-lot
+#     trade — ~8% heat on a ~$200 account — without tripping DEFENSIVE).
+#   * The per-threshold ceilings bound the ABSOLUTE result, so emergency can
+#     never sit at a self-defeating third of the account. As equity shrinks the
+#     ladder now converges to a fixed, conservative ceiling rather than diverging.
+_MAX_HEAT_SCALE = 6.0
+_HEAT_CEIL_DEFENSIVE = 10.0
+_HEAT_CEIL_RECOVERY = 9.0
+_HEAT_CEIL_REDUCTION = 12.0
+_HEAT_CEIL_EMERGENCY = 15.0
+
+
+def _scaled_heat_thresholds(
+    reference_balance: float, account_equity: float,
+    base_defensive: float, base_recovery: float,
+    base_reduction: float, base_emergency: float,
+) -> "tuple[float, float, float, float, float]":
+    """Return ``(scale, defensive, recovery, reduction, emergency)`` for a micro
+    account, capping the scale factor and clamping each threshold to its sane
+    ceiling. Shared by the constructor and :meth:`recalibrate_for_equity` so the
+    two paths can never diverge. Assumes ``account_equity < reference_balance``.
+    """
+    scale = max(1.0, min(_MAX_HEAT_SCALE, math.sqrt(reference_balance / account_equity)))
+    return (
+        scale,
+        min(base_defensive * scale, _HEAT_CEIL_DEFENSIVE),
+        min(base_recovery * scale, _HEAT_CEIL_RECOVERY),
+        min(base_reduction * scale, _HEAT_CEIL_REDUCTION),
+        min(base_emergency * scale, _HEAT_CEIL_EMERGENCY),
+    )
+
+
 # ── States ──────────────────────────────────────────────────────────────────
 
 class PortfolioRiskState(Enum):
@@ -473,9 +514,12 @@ class PortfolioRiskStateMachine:
 
     Adaptive scaling:
       When ``account_equity`` is provided and below ``reference_balance``, all
-      four thresholds are sqrt-scaled up (and clamped) so micro accounts do not
-      trip DEFENSIVE/EMERGENCY on a single min-lot trade. Ordering is validated
-      AFTER scaling.
+      four thresholds are sqrt-scaled up so micro accounts do not trip
+      DEFENSIVE/EMERGENCY on a single min-lot trade. The scale factor is CAPPED
+      (``_MAX_HEAT_SCALE``) and each threshold is clamped to a sane ceiling, so
+      an equity collapse converges to a fixed conservative ladder instead of
+      diverging (a near-empty account never gets a permissive ~34% emergency
+      threshold). Ordering is validated AFTER scaling.
     """
 
     def __init__(
@@ -505,11 +549,11 @@ class PortfolioRiskStateMachine:
             and account_equity > 0.0
             and account_equity < reference_balance
         ):
-            scale = max(1.0, math.sqrt(reference_balance / account_equity))
-            heat_defensive_pct = min(heat_defensive_pct * scale, 15.0)
-            heat_recovery_pct = min(heat_recovery_pct * scale, 12.0)
-            heat_reduction_pct = min(heat_reduction_pct * scale, 25.0)
-            heat_emergency_pct = min(heat_emergency_pct * scale, 40.0)
+            (scale, heat_defensive_pct, heat_recovery_pct,
+             heat_reduction_pct, heat_emergency_pct) = _scaled_heat_thresholds(
+                reference_balance, account_equity,
+                base_defensive, base_recovery, base_reduction, base_emergency,
+            )
             logger.info(
                 "[PortfolioRisk] Adaptive heat thresholds for equity=${:.2f} "
                 "(reference=${:.2f}, scale={:.2f}x): "
@@ -591,11 +635,17 @@ class PortfolioRiskStateMachine:
             return False
 
         ref = self._reference_balance
-        scale = 1.0 if eq >= ref else max(1.0, math.sqrt(ref / eq))
-        new_def = min(self._base_defensive * scale, 15.0)
-        new_rec = min(self._base_recovery * scale, 12.0)
-        new_red = min(self._base_reduction * scale, 25.0)
-        new_eme = min(self._base_emergency * scale, 40.0)
+        if eq >= ref:
+            scale = 1.0
+            new_def = min(self._base_defensive, _HEAT_CEIL_DEFENSIVE)
+            new_rec = min(self._base_recovery, _HEAT_CEIL_RECOVERY)
+            new_red = min(self._base_reduction, _HEAT_CEIL_REDUCTION)
+            new_eme = min(self._base_emergency, _HEAT_CEIL_EMERGENCY)
+        else:
+            (scale, new_def, new_rec, new_red, new_eme) = _scaled_heat_thresholds(
+                ref, eq, self._base_defensive, self._base_recovery,
+                self._base_reduction, self._base_emergency,
+            )
 
         # Reject any scaling that would violate the ordering invariant (a
         # pathological clamp collapse) — keep the current, valid ladder.
