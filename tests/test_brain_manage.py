@@ -55,9 +55,23 @@ def test_manage_tightens_when_weakening():
     assert out.decision.decision_type == DecisionType.TIGHTEN_RISK
 
 
-def test_manage_exits_when_evidence_gone():
+def test_manage_holds_when_flat_read_is_not_invalidation():
+    # Flaw 1 fix (constitutional rule): a FLAT / uncertain read is NOT a reasoned
+    # invalidation of the campaign thesis, so it must HOLD — never auto-EXIT.
+    # Previously this returned EXIT via the catch-all; that was the bug.
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("FLAT", 0.9)))
     out = brain.manage(_pos("LONG"), _state(polarity=0.0))
+    assert out.decision.decision_type == DecisionType.HOLD
+
+
+def test_manage_exits_on_explicit_opportunity_gone():
+    # An EXIT still fires when the (aligned) opinion EXPLICITLY says the
+    # opportunity is gone — a reasoned deterioration, not bare uncertainty.
+    op = _Opinion("LONG", 0.8)
+    op.opportunity = "none"
+    op.expected_value = "negative — cost exceeds edge"
+    brain = CognitiveBrain(reasoner=_Reasoner(op))
+    out = brain.manage(_pos("LONG"), _state(polarity=0.8))
     assert out.decision.decision_type == DecisionType.EXIT
 
 
