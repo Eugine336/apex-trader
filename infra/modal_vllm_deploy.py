@@ -10,7 +10,7 @@ other vLLM server (see ``llm/client.py`` — an unknown provider with a
 
 Why Modal: the VPS has ~1.8 GB RAM and no GPU, so **all** inference must run off
 the box. Modal spins an A10G (24 GB VRAM — ample for a 7B model) only while a
-request is in flight, keeps it warm for ``CONTAINER_IDLE_TIMEOUT`` seconds, then
+request is in flight, keeps it warm for ``SCALEDOWN_WINDOW`` seconds, then
 scales to zero so GPU billing stops. The VPS only ever makes HTTP calls.
 
 Each model is served by vLLM's built-in OpenAI-compatible FastAPI app, which
@@ -59,7 +59,7 @@ model_cache = modal.Volume.from_name("apex-model-cache", create_if_missing=True)
 CACHE_DIR = "/root/.cache/huggingface"
 
 # GPU billing stops once a container is idle this long (5 min warm window).
-CONTAINER_IDLE_TIMEOUT = 300
+SCALEDOWN_WINDOW = 300
 
 # Optional bearer token. The secret is looked up by name; if it does not exist
 # the endpoints run open (see ``_secrets`` below).
@@ -119,7 +119,7 @@ def _build_server(model_name: str):
     image=vllm_image,
     gpu="a10g",
     volumes={CACHE_DIR: model_cache},
-    container_idle_timeout=CONTAINER_IDLE_TIMEOUT,
+    scaledown_window=SCALEDOWN_WINDOW,
     secrets=_secrets(),
 )
 class MistralServer:
@@ -140,7 +140,7 @@ class MistralServer:
     image=vllm_image,
     gpu="a10g",
     volumes={CACHE_DIR: model_cache},
-    container_idle_timeout=CONTAINER_IDLE_TIMEOUT,
+    scaledown_window=SCALEDOWN_WINDOW,
     secrets=_secrets(),
 )
 class QwenServer:
@@ -159,9 +159,19 @@ class QwenServer:
 def main() -> None:
     """Print the endpoint URLs so they can be pasted into ``.env``.
 
-    Runs locally on ``modal deploy`` / ``modal run``; the ``.web_url`` values
-    resolve to the public ``*.modal.run`` hosts Modal assigns to each ASGI app.
+    Runs locally on ``modal deploy`` / ``modal run``; the web URLs resolve to
+    the public ``*.modal.run`` hosts Modal assigns to each ASGI app.
     """
+
+    def _url(server) -> str:
+        # Recent Modal SDKs expose ``get_web_url()``; older ones use the
+        # now-deprecated ``.web_url`` attribute. Prefer the method, fall back.
+        serve = server().serve
+        getter = getattr(serve, "get_web_url", None)
+        if callable(getter):
+            return getter()
+        return serve.web_url
+
     print("APEX Modal inference endpoints (append /v1 for LLM_EXTRA_MODELS):")
-    print(f"  modal-mistral : {MistralServer().serve.web_url}")
-    print(f"  modal-qwen    : {QwenServer().serve.web_url}")
+    print(f"  modal-mistral : {_url(MistralServer)}")
+    print(f"  modal-qwen    : {_url(QwenServer)}")
