@@ -34,6 +34,8 @@ _KEYLESS_PROVIDERS = frozenset({
     "ollama", "vllm", "lmstudio", "lm_studio", "local", "self_hosted",
     "self-hosted", "llamacpp", "llama_cpp", "llamafile", "gpt4all",
     "koboldcpp", "textgen", "text_generation_webui",
+    # Modal.com serverless-GPU vLLM endpoints authenticate by URL, not a key.
+    "modal",
     # NVIDIA NIM served locally authenticates by locality, not an API key.
     "nim_local", "nim_self_hosted", "nvidia_nim_local", "nvidia_nim_self_hosted",
 })
