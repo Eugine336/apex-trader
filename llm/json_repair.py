@@ -10,6 +10,9 @@ to FLAT). A missing brace must never cost the Brain its decision.
 ``repair_json`` recovers a JSON value from such messy text through escalating,
 purely-deterministic layers:
 
+0. **Reasoning strip** — remove a reasoning model's ``<think>…</think>`` block
+   (deepseek-r1 and kin emit their chain-of-thought there before the answer),
+   so the JSON that follows the reasoning is what gets parsed.
 1. **Fence strip** — remove ```` ``` ```` / ```` ```json ```` wrappers (even a
    dangling opening fence with no close, the truncated case).
 2. **Strict** — ``json.loads`` on the cleaned text.
@@ -34,6 +37,14 @@ _FENCE_CLOSE = re.compile(r"\r?\n?\s*```\s*$")
 _TRAILING_COMMA = re.compile(r",(\s*[}\]])")
 _DANGLING_KEY = re.compile(r",?\s*\"[^\"]*\"\s*:\s*$")
 _DANGLING_COLON = re.compile(r":\s*$")
+# Reasoning models (deepseek-r1 and kin) prepend their chain-of-thought inside a
+# ``<think>…</think>`` block before the actual answer. The reasoning is free
+# prose that routinely contains stray braces / quotes, so it must be removed
+# before any JSON scan. ``_THINK_BLOCK`` strips a complete block; a lone,
+# unmatched closing tag (the opening was cut earlier) is handled by dropping
+# everything up to and including it.
+_THINK_BLOCK = re.compile(r"<think\b[^>]*>.*?</think\s*>", re.DOTALL | re.IGNORECASE)
+_THINK_CLOSE = re.compile(r"(?is)^.*?</think\s*>")
 
 
 def _try_load(s: str) -> Optional[Any]:
@@ -43,9 +54,26 @@ def _try_load(s: str) -> Optional[Any]:
         return None
 
 
+def strip_reasoning(text: str) -> str:
+    """Remove a reasoning model's ``<think>…</think>`` chain-of-thought block.
+
+    deepseek-r1 (and other R1-style models) emit their private reasoning in a
+    ``<think>…</think>`` block before the answer. That prose is not JSON and
+    frequently contains braces/quotes that derail the balanced scan, so it is
+    stripped first. Complete blocks are removed; if only a dangling ``</think>``
+    survives (its opener was truncated away earlier in the stream) everything up
+    to and including that closing tag is dropped, leaving the answer.
+    """
+    s = str(text or "")
+    s = _THINK_BLOCK.sub("", s)
+    if "</think" in s.lower():
+        s = _THINK_CLOSE.sub("", s)
+    return s.strip()
+
+
 def strip_fences(text: str) -> str:
     """Remove Markdown code fences, including a lone/truncated opening fence."""
-    s = str(text or "").strip()
+    s = strip_reasoning(text)
     s = _FENCE_OPEN.sub("", s)
     s = _FENCE_CLOSE.sub("", s)
     return s.strip()
@@ -159,4 +187,4 @@ def repair_json(text: str) -> Optional[Any]:
     return None
 
 
-__all__ = ["repair_json", "strip_fences"]
+__all__ = ["repair_json", "strip_fences", "strip_reasoning"]
