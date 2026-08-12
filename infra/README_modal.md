@@ -2,6 +2,8 @@
 
 ## Recommended: Modal managed inference endpoints
 
+## Recommended: Modal managed inference endpoints
+
 APEX runs on a small VPS (~1.8 GB RAM, no GPU), so all LLM inference must happen
 off the box. The **recommended** way to do this is a **Modal managed inference
 endpoint**, created from the [Modal dashboard](https://modal.com). Modal hosts a
@@ -12,10 +14,15 @@ maintain from this repo.
 APEX currently uses one managed endpoint serving **Qwen 3.6 35B (A3B)** on a
 `1xB200`:
 
-- Endpoint URL: `https://<your-workspace>--<endpoint-name>.modal.run/v1`
-  (e.g. `https://eugine336--qwen3-6-35b-a3b.modal.run/v1`)
+- Endpoint URL: `https://<your-workspace>--ep-<endpoint-name>-server.<region>.modal.direct/v1`
+  (e.g. `https://eugine336--ep-qwen3-6-35b-a3b-server.ap-south.modal.direct/v1`)
 - Auth: a bearer token of the form `TokenID.TokenSecret`, sent as
   `Authorization: Bearer <token>`.
+
+Note the managed-endpoint URL uses the `.modal.direct` domain with an `ep-`
+prefix, a `-server` suffix, and the deployment region (e.g. `ap-south`) — it is
+**not** the `*.modal.run` form produced by the custom deploy script below. Copy
+the exact URL from the Modal dashboard and append `/v1`.
 
 ### Wire it into `.env`
 
@@ -23,7 +30,7 @@ Add one entry to `LLM_EXTRA_MODELS` with `provider:"modal"`, the endpoint
 `base_url` (ending in `/v1`), and the combined bearer token as `api_key`:
 
 ```json
-{"name":"modal-qwen35b","provider":"modal","model":"Qwen/Qwen3.6-35B","base_url":"https://eugine336--qwen3-6-35b-a3b.modal.run/v1","api_key":"<TokenID>.<TokenSecret>","tier":2,"timeout_seconds":90,"classes":["deep"]}
+{"name":"modal-qwen35b","provider":"modal","model":"Qwen/Qwen3.6-35B","base_url":"https://eugine336--ep-qwen3-6-35b-a3b-server.ap-south.modal.direct/v1","api_key":"<TokenID>.<TokenSecret>","tier":2,"timeout_seconds":90,"classes":["deep"]}
 ```
 
 Also set the same token as `MODAL_INFERENCE_KEY` in `.env`. APEX sends the
