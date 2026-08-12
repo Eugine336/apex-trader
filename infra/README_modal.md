@@ -1,7 +1,53 @@
 # Modal.com GPU inference for APEX's LLM council
 
+## Recommended: Modal managed inference endpoints
+
 APEX runs on a small VPS (~1.8 GB RAM, no GPU), so all LLM inference must happen
-off the box. [`infra/modal_vllm_deploy.py`](modal_vllm_deploy.py) deploys two
+off the box. The **recommended** way to do this is a **Modal managed inference
+endpoint**, created from the [Modal dashboard](https://modal.com). Modal hosts a
+model for you, serves an OpenAI-compatible `/v1` API, and handles the container
+image, GPU, CUDA, and scaling automatically — there is nothing to deploy or
+maintain from this repo.
+
+APEX currently uses one managed endpoint serving **Qwen 3.6 35B (A3B)** on a
+`1xB200`:
+
+- Endpoint URL: `https://<your-workspace>--ep-<endpoint-name>-server.<region>.modal.direct/v1`
+  (e.g. `https://eugine336--ep-qwen3-6-35b-a3b-server.ap-south.modal.direct/v1`)
+- Auth: a bearer token of the form `TokenID.TokenSecret`, sent as
+  `Authorization: Bearer <token>`.
+
+Note the managed-endpoint URL uses the `.modal.direct` domain with an `ep-`
+prefix, a `-server` suffix, and the deployment region (e.g. `ap-south`) — it is
+**not** the `*.modal.run` form produced by the custom deploy script below. Copy
+the exact URL from the Modal dashboard and append `/v1`.
+
+### Wire it into `.env`
+
+Add one entry to `LLM_EXTRA_MODELS` with `provider:"modal"`, the endpoint
+`base_url` (ending in `/v1`), and the combined bearer token as `api_key`:
+
+```json
+{"name":"modal-qwen35b","provider":"modal","model":"Qwen/Qwen3.6-35B","base_url":"https://eugine336--ep-qwen3-6-35b-a3b-server.ap-south.modal.direct/v1","api_key":"<TokenID>.<TokenSecret>","tier":2,"timeout_seconds":90,"classes":["deep"]}
+```
+
+Also set the same token as `MODAL_INFERENCE_KEY` in `.env`. APEX sends the
+`api_key` as `Authorization: Bearer <token>` on every request (see
+`llm/client.py`), so the endpoint authenticates automatically. Because a managed
+endpoint always requires the token, keep `api_key` populated on this entry even
+though `provider:"modal"` is otherwise treated as keyless.
+
+---
+
+## Deprecated: custom vLLM deploy script
+
+> **DEPRECATED.** The custom deploy script below
+> ([`infra/modal_vllm_deploy.py`](modal_vllm_deploy.py)) kept crashing
+> (deprecated Modal APIs, missing CUDA toolkit, FlashInfer JIT failures) and has
+> been superseded by the managed inference endpoint documented above. It is kept
+> only as a reference; prefer a managed endpoint for anything new.
+
+[`infra/modal_vllm_deploy.py`](modal_vllm_deploy.py) deploys two
 OpenAI-compatible inference endpoints on Modal's serverless GPUs — one for
 **Mistral 7B** and one for **Qwen 7B**, each served by vLLM on an A10G. The VPS
 only makes HTTP calls; Modal spins a GPU up on demand and scales it back to zero

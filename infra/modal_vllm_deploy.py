@@ -1,5 +1,13 @@
 @'
-"""APEX TRADER - Modal.com serverless-GPU inference."""
+"""APEX TRADER - Modal.com serverless-GPU inference.
+
+DEPRECATED: This custom vLLM deploy script is superseded by Modal's managed
+inference endpoints (created from the Modal dashboard at modal.com), which serve
+an OpenAI-compatible /v1 API and handle the image, GPU, CUDA, and scaling
+automatically. This script kept crashing (deprecated Modal APIs, missing CUDA
+toolkit, FlashInfer JIT failures); prefer a managed endpoint for anything new.
+Kept only as a reference. See infra/README_modal.md.
+"""
 from __future__ import annotations
 import os, subprocess
 import modal
