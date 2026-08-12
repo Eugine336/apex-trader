@@ -9,28 +9,49 @@ toolkit, FlashInfer JIT failures); prefer a managed endpoint for anything new.
 Kept only as a reference. See infra/README_modal.md.
 """
 from __future__ import annotations
-import os, subprocess
+
+import subprocess
+
 import modal
 
 app = modal.App("apex-trader-llm")
-vllm_image = modal.Image.debian_slim(python_version="3.11").pip_install("vllm")
+vllm_image = modal.Image.from_registry(
+    "vllm/vllm-openai:v0.8.5.post1", add_python="3.11"
+)
 model_cache = modal.Volume.from_name("apex-model-cache", create_if_missing=True)
 CACHE_DIR = "/root/.cache/huggingface"
 SCALEDOWN_WINDOW = 300
 
-@app.cls(image=vllm_image, gpu="a10g", volumes={CACHE_DIR: model_cache}, scaledown_window=SCALEDOWN_WINDOW)
+
+@app.cls(
+    image=vllm_image,
+    gpu="a10g",
+    volumes={CACHE_DIR: model_cache},
+    scaledown_window=SCALEDOWN_WINDOW,
+)
 class MistralServer:
     @modal.web_server(port=8000, startup_timeout=300)
     def serve(self):
-        subprocess.Popen(["python", "-m", "vllm.entrypoints.openai.api_server",
+        subprocess.Popen([
+            "python", "-m", "vllm.entrypoints.openai.api_server",
             "--model", "mistralai/Mistral-7B-Instruct-v0.3",
-            "--host", "0.0.0.0", "--port", "8000", "--gpu-memory-utilization", "0.90"])
+            "--host", "0.0.0.0", "--port", "8000",
+            "--gpu-memory-utilization", "0.90",
+        ])
 
-@app.cls(image=vllm_image, gpu="a10g", volumes={CACHE_DIR: model_cache}, scaledown_window=SCALEDOWN_WINDOW)
+
+@app.cls(
+    image=vllm_image,
+    gpu="a10g",
+    volumes={CACHE_DIR: model_cache},
+    scaledown_window=SCALEDOWN_WINDOW,
+)
 class QwenServer:
     @modal.web_server(port=8000, startup_timeout=300)
     def serve(self):
-        subprocess.Popen(["python", "-m", "vllm.entrypoints.openai.api_server",
+        subprocess.Popen([
+            "python", "-m", "vllm.entrypoints.openai.api_server",
             "--model", "Qwen/Qwen2.5-7B-Instruct",
-            "--host", "0.0.0.0", "--port", "8000", "--gpu-memory-utilization", "0.90"])
-'@ | Set-Content infra/modal_vllm_deploy.py
+            "--host", "0.0.0.0", "--port", "8000",
+            "--gpu-memory-utilization", "0.90",
+        ])
