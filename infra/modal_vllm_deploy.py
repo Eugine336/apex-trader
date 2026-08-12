@@ -1,25 +1,12 @@
+@'
 """APEX TRADER - Modal.com serverless-GPU inference.
 
-Serves Mistral 7B and Qwen 7B as OpenAI-compatible endpoints on Modal A10G
-GPUs via vLLM's stable CLI (``python -m vllm.entrypoints.openai.api_server``),
-which does not change across vLLM versions.
-
-The container image is vLLM's official Docker image, which ships CUDA (nvcc),
-pre-compiled FlashInfer, and vLLM itself — so no JIT CUDA compilation happens
-at runtime. Pinned to a stable tag (not ``latest``) to avoid future breakage.
-
-Deploy:
-    pip install modal
-    modal token new                       # one-time browser auth
-    modal deploy infra/modal_vllm_deploy.py
-
-Modal prints the public URLs, e.g.:
-    https://<workspace>--apex-trader-llm-mistralserver-serve.modal.run
-    https://<workspace>--apex-trader-llm-qwenserver-serve.modal.run
-
-Wire them into ``.env`` (LLM_EXTRA_MODELS) with ``/v1`` appended as the
-OpenAI-compatible base_url. Containers scale to zero after SCALEDOWN_WINDOW
-seconds of inactivity; cold start is ~30-60s.
+DEPRECATED: This custom vLLM deploy script is superseded by Modal's managed
+inference endpoints (created from the Modal dashboard at modal.com), which serve
+an OpenAI-compatible /v1 API and handle the image, GPU, CUDA, and scaling
+automatically. This script kept crashing (deprecated Modal APIs, missing CUDA
+toolkit, FlashInfer JIT failures); prefer a managed endpoint for anything new.
+Kept only as a reference. See infra/README_modal.md.
 """
 from __future__ import annotations
 
