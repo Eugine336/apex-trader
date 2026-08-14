@@ -24,6 +24,7 @@ cognitive resource may be spent right now.
 
 from __future__ import annotations
 
+import hashlib
 import threading
 import time
 from typing import Callable, Optional
@@ -51,6 +52,51 @@ def estimate_tokens(system: str, user: str, max_output_tokens: int = 0) -> int:
     except (TypeError, ValueError):
         out = 0
     return int(prompt + out)
+
+
+def account_key(provider: str, base_url: str = "", api_key: str = "") -> str:
+    """Stable, non-secret key identifying a provider ACCOUNT.
+
+    Free-tier quotas are per account/key, not per model — so several models on
+    one key (the "one gateway, many models" case) must share ONE meter. Same
+    provider + endpoint + key ⇒ same key. The api_key is never embedded: only a
+    short one-way fingerprint, so two different keys on the same endpoint do not
+    collide while the secret stays out of logs/state."""
+    prov = (provider or "").strip().lower()
+    base = (base_url or "").strip().lower().rstrip("/")
+    fp = ""
+    if api_key:
+        try:
+            fp = hashlib.sha256(str(api_key).encode("utf-8", "replace")).hexdigest()[:8]
+        except Exception:  # noqa: BLE001 — a hashing fault must not break wiring
+            fp = ""
+    return "|".join((prov, base, fp))
+
+
+def coerce_limits(source: object) -> "tuple[int, int, int, int]":
+    """Read ``(rpm, rpd, tpm, tpd)`` from a config object or a spec dict.
+
+    Accepts both the config attribute form (``rpm_limit`` …) and the roster-spec
+    dict form (``rpm`` … or ``rpm_limit`` …). Missing / non-positive / malformed
+    values become 0 (unlimited). Fail-safe; never raises."""
+    def _get(*names: str) -> int:
+        for n in names:
+            v = source.get(n) if isinstance(source, dict) else getattr(source, n, None)
+            if v is None:
+                continue
+            try:
+                iv = int(v)
+            except (TypeError, ValueError):
+                continue
+            if iv > 0:
+                return iv
+        return 0
+    return (
+        _get("rpm_limit", "rpm"),
+        _get("rpd_limit", "rpd"),
+        _get("tpm_limit", "tpm"),
+        _get("tpd_limit", "tpd"),
+    )
 
 
 class ProviderBudget:
@@ -284,4 +330,39 @@ class BudgetLedger:
         return {name: b.to_dict(now=now) for name, b in budgets.items()}
 
 
-__all__ = ["ProviderBudget", "BudgetLedger", "estimate_tokens"]
+# ── Process-shared ledger ────────────────────────────────────────────────────
+# A provider free-tier quota is a PROCESS-GLOBAL resource: every subsystem that
+# calls a given account (the Brain's single reasoner, its failover roster, and
+# the council) must share ONE meter per account or their combined traffic can
+# quietly exceed the real limit. This lazily-created singleton is the default
+# ledger the builders attach clients to; tests may inject their own for full
+# isolation. Thread-safe.
+_shared_ledger: Optional[BudgetLedger] = None
+_shared_lock = threading.Lock()
+
+
+def get_shared_ledger() -> BudgetLedger:
+    """The process-shared :class:`BudgetLedger` (lazily created)."""
+    global _shared_ledger
+    with _shared_lock:
+        if _shared_ledger is None:
+            _shared_ledger = BudgetLedger()
+        return _shared_ledger
+
+
+def reset_shared_ledger() -> None:
+    """Drop the process-shared ledger (test hook; also useful on reconfigure)."""
+    global _shared_ledger
+    with _shared_lock:
+        _shared_ledger = None
+
+
+__all__ = [
+    "ProviderBudget",
+    "BudgetLedger",
+    "estimate_tokens",
+    "account_key",
+    "coerce_limits",
+    "get_shared_ledger",
+    "reset_shared_ledger",
+]

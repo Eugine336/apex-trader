@@ -563,6 +563,7 @@ def build_reasoning_orchestrator(
     *,
     transport: Optional[Any] = None,
     reliability_provider: Optional[Callable[[str], float]] = None,
+    budget_ledger: Optional[Any] = None,
 ) -> Optional[ReasoningOrchestrator]:
     """Build a :class:`ReasoningOrchestrator` from an ``LLMConfig``-like object.
 
@@ -570,15 +571,19 @@ def build_reasoning_orchestrator(
     a named :class:`ReasoningEngine` backed by its own
     :class:`llm.reasoner.LLMReasoner`. Engines inherit the primary key/base_url
     when a spec omits them (the "one gateway, many models" case). Returns ``None``
-    when fewer than one usable engine can be built. Never raises.
+    when fewer than one usable engine can be built. Never raises. When quota
+    limits are configured each advisor's client gets a shared per-account budget
+    meter (§22–§28); ``budget_ledger`` overrides the process-shared ledger.
     """
     try:
-        from llm.client import LLMClient
+        from llm.client import LLMClient, attach_budget
+        from llm.provider_budget import coerce_limits, get_shared_ledger
         from llm.reasoner import LLMReasoner
     except Exception as exc:  # noqa: BLE001
         logger.debug("[reasoning-orch] build import failed: {}", exc)
         return None
 
+    ledger = budget_ledger if budget_ledger is not None else get_shared_ledger()
     primary_key = str(getattr(config, "api_key", "") or "")
     primary_base = str(getattr(config, "base_url", "") or "")
     to = float(getattr(config, "timeout_seconds", 20.0) or 20.0)
@@ -597,7 +602,8 @@ def build_reasoning_orchestrator(
     )
 
     def _engine(provider, model, api_key, base_url, caps, name,
-                spec_tier=None, timeout=None, max_tokens=None, temperature=None):
+                spec_tier=None, timeout=None, max_tokens=None, temperature=None,
+                limits_source=None):
         if not provider or not model:
             return None
         # Per-provider credentials (Part XXIII Art 15): resolve <PROVIDER>_API_KEY
@@ -624,6 +630,9 @@ def build_reasoning_orchestrator(
         )
         if not client.usable:
             return None
+        # §22–§28 — attach a shared per-account quota meter when limits are set.
+        if limits_source is not None:
+            attach_budget(client, limits_source, provider=provider, budget_ledger=ledger)
         reasoner = LLMReasoner(client=client, enabled=True, drive_decisions=drive,
                                min_interval_seconds=interval)
         # Tier 3 = local (CPU/GPU-bound) — gate it behind the shared local slot.
@@ -644,22 +653,36 @@ def build_reasoning_orchestrator(
 
     primary_provider = getattr(config, "provider", "")
     primary_model = getattr(config, "model", "")
+
+    def _entry_limits(spec: dict, prov: str) -> dict:
+        # A roster entry's own limits; a same-provider entry with none inherits
+        # the primary's (free-tier limits are per account). Cross-provider
+        # entries never inherit.
+        rpm, rpd, tpm, tpd = coerce_limits(spec)
+        if not (rpm or rpd or tpm or tpd) and \
+                str(prov).strip().lower() == str(primary_provider).strip().lower():
+            rpm, rpd, tpm, tpd = coerce_limits(config)
+        return {"rpm": rpm, "rpd": rpd, "tpm": tpm, "tpd": tpd}
+
     _add(_engine(primary_provider, primary_model, primary_key, primary_base,
-                 [], str(primary_model or primary_provider or "primary")))
+                 [], str(primary_model or primary_provider or "primary"),
+                 limits_source=config))
 
     specs = getattr(config, "extra_models", None)
     if isinstance(specs, list):
         for spec in specs:
             if not isinstance(spec, dict):
                 continue
+            prov = spec.get("provider", primary_provider)
             name = str(spec.get("name") or spec.get("model") or spec.get("provider") or "engine")
             _add(_engine(
-                spec.get("provider", primary_provider), spec.get("model", ""),
+                prov, spec.get("model", ""),
                 spec.get("api_key", ""), spec.get("base_url", ""),
                 spec.get("capabilities", []), name,
                 spec_tier=spec.get("tier"),
                 timeout=spec.get("timeout_seconds"), max_tokens=spec.get("max_tokens"),
                 temperature=spec.get("temperature"),
+                limits_source=_entry_limits(spec, prov),
             ))
 
     if not engines:
