@@ -3809,6 +3809,17 @@ class LLMConfig:
     # auth faults (401/402/403/429) are never background-probed. 0 ⇒ disabled.
     # Env: LLM_RECOVERY_PROBE_SECONDS.
     recovery_probe_seconds: float = 60.0
+    # §22–§28 — optional per-provider free-tier quota limits. All default 0 ⇒
+    # unmetered (behaviour unchanged). When set, the client refuses to send a
+    # request that would exceed the provider's remaining requests-per-minute /
+    # -per-day or tokens-per-minute / -per-day and benches it until the window
+    # frees, so a scarce free tier is never blindly exhausted (§28). Limits come
+    # from the provider's real service, never baked in. Env: LLM_RPM / LLM_RPD /
+    # LLM_TPM / LLM_TPD.
+    rpm_limit: int = 0
+    rpd_limit: int = 0
+    tpm_limit: int = 0
+    tpd_limit: int = 0
 
     def __post_init__(self) -> None:
         # The environment is the single source of truth — no vendor is baked in.
@@ -3830,6 +3841,10 @@ class LLMConfig:
             ("LLM_CIRCUIT_COOLDOWN_MAX_SECONDS", "circuit_cooldown_max_seconds", float),
             ("LLM_LOCAL_MAX_CONCURRENCY", "local_max_concurrency", int),
             ("LLM_RECOVERY_PROBE_SECONDS", "recovery_probe_seconds", float),
+            ("LLM_RPM", "rpm_limit", int),
+            ("LLM_RPD", "rpd_limit", int),
+            ("LLM_TPM", "tpm_limit", int),
+            ("LLM_TPD", "tpd_limit", int),
         ):
             raw = os.getenv(env_name)
             if raw is not None:
