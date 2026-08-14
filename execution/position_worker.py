@@ -5,7 +5,7 @@ optional ``WorldModel``, runs ALL management checks and returns a list of
 ``Intent`` objects.  **Never makes broker calls.**  The Action Executor
 (Phase 6) is responsible for sending intents to the broker.
 
-The checks mirror the three management layers in ``main_loop.py``:
+The checks mirror the two management layers in ``main_loop.py``:
 
 1. **Tick-level** — TradeManager's update() logic: SL hit, TP1 partial,
    breakeven, trailing, TP2/TP3 full close, structure exit, stall exit.
@@ -13,9 +13,6 @@ The checks mirror the three management layers in ``main_loop.py``:
 2. **Exit checks** — invalidation, conviction collapse, HTF candle close,
    dynamic SL tightening, absolute profit protection, news exit, session
    close, spread deterioration, opportunity cost.
-
-3. **Strategic** — placeholder hooks for SituationEngine/DecisionEngine/
-   Orchestrator results (populated by Phase 7+).
 
 Thread-safe by construction: no mutable shared state, no side effects.
 """
@@ -238,7 +235,7 @@ class MarketContext:
     h1_last_closed_time: Optional[datetime] = None
     last_seen_h1_close: Optional[datetime] = None
     blocked_candidate: Optional[dict] = None
-    m5_df: Optional[pd.DataFrame] = None
+    m5_df: Optional[pd.DataFrame] = None  # noqa: F821
 
 
 class PositionWorker:

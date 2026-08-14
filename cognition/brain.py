@@ -1905,23 +1905,31 @@ class CognitiveBrain:
             raw = 0.0
             signals: list[str] = []
             if _present("primary_hypothesis"):
-                raw += 0.15; signals.append("hypothesis")
+                raw += 0.15
+                signals.append("hypothesis")
             if _present("invalidation"):
-                raw += 0.15; signals.append("invalidation")
+                raw += 0.15
+                signals.append("invalidation")
             if _present("expected_favorable_excursion"):
-                raw += 0.10; signals.append("efe")
+                raw += 0.10
+                signals.append("efe")
             if _present("expected_adverse_excursion"):
-                raw += 0.10; signals.append("eae")
+                raw += 0.10
+                signals.append("eae")
             if _list_has("alternative_hypotheses"):
-                raw += 0.10; signals.append("alternatives")
+                raw += 0.10
+                signals.append("alternatives")
             if _present("key_uncertainty"):
-                raw += 0.10; signals.append("key_uncertainty")
+                raw += 0.10
+                signals.append("key_uncertainty")
             if _list_has("what_would_change_my_mind"):
-                raw += 0.10; signals.append("wcm")
+                raw += 0.10
+                signals.append("wcm")
             dims = ("thesis_confidence", "opportunity_confidence",
                     "timing_confidence", "execution_confidence")
             if all(getattr(opinion, d, None) is not None for d in dims):
-                raw += 0.20; signals.append("confidence_dims")
+                raw += 0.20
+                signals.append("confidence_dims")
             score = min(1.0, max(0.1, raw))
             note = (
                 f"reasoning quality {score:.2f} from {len(signals)} signal(s): "

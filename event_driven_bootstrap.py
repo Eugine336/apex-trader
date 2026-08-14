@@ -226,7 +226,7 @@ class PositionEvaluator:
         # dashboard read, and this evaluator's candidate-scoped management read
         # all share one map. Defaulted here so the evaluator is also safe to use
         # standalone (and in unit tests) without that aliasing step.
-        self._candidate_positions: dict[str, "CandidatePosition"] = {}
+        self._candidate_positions: dict[str, "CandidatePosition"] = {}  # noqa: F821
         # In-flight optimistic-management rollback snapshots, keyed by
         # (ticket, intent_type). The worker-path optimistic SL / partial writes
         # record the pre-mutation values here so a rejected modify/partial rolls
@@ -1178,7 +1178,7 @@ class EventDrivenSystem:
         # an open position back to the Candidate (and therefore the exact
         # modules + timeframes) that voted it open, so management can be scoped
         # to that same panel rather than the latest net-summed direction.
-        self._candidate_positions: dict[str, "CandidatePosition"] = {}
+        self._candidate_positions: dict[str, "CandidatePosition"] = {}  # noqa: F821
 
         # Atomic reversal (Session 29) — opposite-direction entries armed at a
         # reversal-viable thesis_flip, keyed by the exit leg's ticket. Shared
@@ -1317,9 +1317,7 @@ class EventDrivenSystem:
             vote_calibrator=getattr(ctx, "vote_calibrator", None) if ctx else None,
             module_governor=getattr(ctx, "module_governor", None) if ctx else None,
             win_rate_provider=getattr(ctx, "win_rate_provider", None) if ctx else None,
-            consensus_config=getattr(self._config, "consensus", None),
             ranker_config=getattr(self._config, "opportunity_ranker", None),
-            dynamic_weight_config=getattr(self._config, "dynamic_weights", None),
             calibration_engine=self._calibration_engine,
             get_spread_pips=self._get_spread_pips,
             calibration_spread_tf=getattr(_calib_cfg, "spread_sample_tf", "M5"),
@@ -2038,7 +2036,6 @@ class EventDrivenSystem:
                     symbol, direction, sl, tp, lots, confidence,
                 ):
                     return
-                stake = getattr(origination, "stake_usd", None)
                 idem_key = generate_idempotency_key(symbol, direction, lots)
                 comment = build_order_comment(
                     "APEX", idem_key,
@@ -2539,8 +2536,10 @@ class EventDrivenSystem:
                 return []
             tail = df.tail(max_bars)
             cols = {c.lower(): c for c in tail.columns}
-            oc = cols.get("open"); hc = cols.get("high")
-            lc = cols.get("low"); cc = cols.get("close")
+            oc = cols.get("open")
+            hc = cols.get("high")
+            lc = cols.get("low")
+            cc = cols.get("close")
             if not (oc and hc and lc and cc):
                 return []
             out = []
