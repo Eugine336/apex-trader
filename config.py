@@ -947,6 +947,14 @@ class RiskConfig:
     # The broker's own margin/min-lot floor stays the real hard limit. Default
     # OFF (conservative). env RISK_ALLOW_MIN_LOT_OVER_RISK.
     allow_min_lot_over_risk: bool = False
+    # V-03 (Constitution §I/§IV/§V/§XVII) — defer the compressed direction+score
+    # exits (invalidation / conviction-collapse / structure-loss stall) to the AI
+    # Cognitive Brain instead of closing on a re-derived scan direction/score.
+    # Default True ⇒ the deterministic suite keeps them (non-cognition mode); set
+    # False to hand them to cognition. The hard-SL floor and the non-directional
+    # risk mechanics (TP / breakeven / trailing / time-based stall) are
+    # unaffected. env RISK_SCAN_DIRECTIONAL_EXITS_ENABLED.
+    scan_directional_exits_enabled: bool = True
     backtest_starting_balance_usd: float = 10_000.0
     tp3_ladder_enabled: bool = True
     tp3_r_multiple: float = 5.0
@@ -1251,6 +1259,9 @@ class RiskConfig:
 
         self.allow_min_lot_over_risk = _llm_env_bool(
             "RISK_ALLOW_MIN_LOT_OVER_RISK", self.allow_min_lot_over_risk
+        )
+        self.scan_directional_exits_enabled = _llm_env_bool(
+            "RISK_SCAN_DIRECTIONAL_EXITS_ENABLED", self.scan_directional_exits_enabled
         )
 
         def _check_finite_positive(name: str, val: float) -> None:
