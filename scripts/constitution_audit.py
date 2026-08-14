@@ -47,6 +47,14 @@ class Check:
     exists: list[str] = field(default_factory=list)
     # (relative_path, compiled-regex) pairs; each match line is a violation.
     patterns: list[tuple[str, "re.Pattern[str]"]] = field(default_factory=list)
+    # Method-call regexes that must not appear in ANY production file — a live
+    # call site for a retired decider. Scanned tree-wide (see ``_scan_tree``),
+    # excluding tests, this script, and the retired-cluster files listed in
+    # ``scan_excludes`` (where the deciders are DEFINED and may legitimately
+    # cross-call one another). This catches a regression that re-wires a retired
+    # directional decider back onto the live path from anywhere in the codebase.
+    banned_calls: list["re.Pattern[str]"] = field(default_factory=list)
+    scan_excludes: list[str] = field(default_factory=list)
 
 
 def _p(path: str, pattern: str) -> "tuple[str, re.Pattern[str]]":
@@ -152,6 +160,29 @@ CHECKS: list[Check] = [
             _p("event_driven_bootstrap.py", r"def\s+_single_reasoner_path_active\b"),
         ],
     ),
+    Check(
+        id="retired_directional_deciders_unreachable",
+        clause="§I/§III no analytical module casts a LONG/SHORT vote and no directional consensus substitutes for cognition; §IV higher timeframe is context, not command; §XXX a retired decider must stay off the live path",
+        pr="PR-V05/V06",
+        summary="A retired directional decider (vote/consensus aggregation, or the H4 direction veto / range-edge HTF gate reached via calculate_entry) is invoked from the live path.",
+        # DecisionEngine / SituationEngine / EntryEngine are still CONSTRUCTED
+        # live (evidence provider / safety component), which is allowed — the
+        # violation is calling their retired directional DECIDERS from anywhere
+        # outside the retired cluster. The cluster files are excluded so their
+        # internal cross-calls do not self-trip the guard.
+        banned_calls=[
+            re.compile(r"\.decide_entry\("),
+            re.compile(r"\.decide_management\("),
+            re.compile(r"\.calculate_entry\("),
+            re.compile(r"\.assess_entry\("),
+            re.compile(r"\.assess_open_trade\("),
+        ],
+        scan_excludes=[
+            "decision/",                  # DecisionEngine / SituationEngine cluster
+            "trigger/entry_engine.py",    # calculate_entry (H4 veto + counter-trend penalty)
+            "planning/trade_planner.py",  # retired plan_trade may cross-call assess_*
+        ],
+    ),
 ]
 
 
@@ -188,10 +219,51 @@ def _scan_patterns(check: Check) -> list[Violation]:
     return out
 
 
+# Directories never scanned by the tree walk (VCS / caches / vendored / non-py).
+_SKIP_DIRS = frozenset({
+    ".git", "__pycache__", "node_modules", ".venv", "venv", "build", "dist",
+    ".mypy_cache", ".ruff_cache", ".pytest_cache", "frontend",
+})
+_THIS_FILE = Path(__file__).resolve()
+
+
+def _scan_tree(check: Check) -> list[Violation]:
+    """Flag any production line that CALLS a retired decider (``banned_calls``).
+
+    Walks every ``*.py`` under the repo, skipping tests, this script, vendored /
+    cache dirs, and the retired-cluster files in ``check.scan_excludes`` (a
+    retired module cross-calling its own retired methods is not a live-path
+    violation — only a call from OUTSIDE that cluster is). Empty ``banned_calls``
+    ⇒ no-op."""
+    if not check.banned_calls:
+        return []
+    excludes = tuple(check.scan_excludes)
+    out: list[Violation] = []
+    for fp in sorted(REPO_ROOT.rglob("*.py")):
+        parts = fp.parts
+        if any(d in _SKIP_DIRS for d in parts):
+            continue
+        if "tests" in parts or fp.name.startswith("test_"):
+            continue
+        if fp.resolve() == _THIS_FILE:
+            continue
+        rel = fp.relative_to(REPO_ROOT).as_posix()
+        if any(rel == e or rel.startswith(e) for e in excludes):
+            continue
+        try:
+            text = fp.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for i, line in enumerate(text.splitlines(), start=1):
+            if any(rx.search(line) for rx in check.banned_calls):
+                out.append(Violation(check.id, "call", rel, i, line.strip()[:160]))
+    return out
+
+
 def run() -> "list[tuple[Check, list[Violation]]]":
     results: list[tuple[Check, list[Violation]]] = []
     for check in CHECKS:
-        violations = _scan_exists(check) + _scan_patterns(check)
+        violations = _scan_exists(check) + _scan_patterns(check) + _scan_tree(check)
         results.append((check, violations))
     return results
 
