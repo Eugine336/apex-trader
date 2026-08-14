@@ -11,6 +11,7 @@ Public surface:
 """
 
 from llm.client import LLMClient, Transport, build_client
+from llm.provider_budget import BudgetLedger, ProviderBudget, estimate_tokens
 from llm.model_manager import (
     POLICY_PERFORMANCE,
     POLICY_PRIORITY,
@@ -43,6 +44,9 @@ __all__ = [
     "LLMClient",
     "Transport",
     "build_client",
+    "ProviderBudget",
+    "BudgetLedger",
+    "estimate_tokens",
     "ModelManager",
     "build_model_manager",
     "POLICY_PRIORITY",
