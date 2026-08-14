@@ -94,6 +94,8 @@ class CognitiveBrain:
         *,
         min_confidence_to_act: float = 0.55,
         max_uncertainty_to_act: float = 0.6,
+        ev_primary_gate: bool = False,
+        ev_action_threshold_r: float = 0.0,
         reasoner_name: str = "ai_brain",
         allow_scale_in: bool = False,
         reverse_confidence: float = 0.7,
@@ -118,6 +120,17 @@ class CognitiveBrain:
         self._reasoner = reasoner
         self.min_confidence_to_act = min(1.0, max(0.0, float(min_confidence_to_act)))
         self.max_uncertainty_to_act = min(1.0, max(0.0, float(max_uncertainty_to_act)))
+        # V-01 (§I direction is a CONSEQUENCE of cognition; §VI Q13/Q16/Q17;
+        # §VIII FLAT = "no exploitable opportunity after EV/risk/execution", NOT
+        # "the indicators disagree"). When ``ev_primary_gate`` is on, a campaign
+        # opens on a positive EXPECTED VALUE (net of cost, over flat) rather than
+        # a raw confidence floor — so a genuine positive-expectancy opportunity is
+        # no longer vetoed merely because mixed evidence pulled confidence below a
+        # threshold (the forbidden "conflicting evidence ⇒ FLAT" shortcut).
+        # Confidence/uncertainty still feed the EV and the position sizing either
+        # way. Default False ⇒ the legacy confidence-floor gate is unchanged.
+        self.ev_primary_gate = bool(ev_primary_gate)
+        self.ev_action_threshold_r = float(ev_action_threshold_r)
         self.reasoner_name = str(reasoner_name or "ai_brain")
         self.allow_scale_in = bool(allow_scale_in)
         self.reverse_confidence = min(1.0, max(0.0, float(reverse_confidence)))
@@ -666,21 +679,30 @@ class CognitiveBrain:
         # thesis at negative EV, thin coverage, a lone advisor, or an unactivated
         # opportunity is not an executable trade).
         ev_ok = (self.min_expected_value is None) or (expected_value >= self.min_expected_value)
+        directional = direction in (LONG, SHORT)
+        # V-01 — actionability criterion. Legacy (default): a confidence floor +
+        # uncertainty ceiling. EV-primary (opt-in): a positive EXPECTED VALUE net
+        # of cost, so a genuine positive-expectancy opportunity is taken (and
+        # sized by confidence downstream) instead of being vetoed because mixed
+        # evidence pulled confidence below a threshold. Confidence still shapes EV
+        # and sizing in both modes.
+        if self.ev_primary_gate:
+            ev_ok = expected_value > self.ev_action_threshold_r
+            directional_and_qualified = directional and ev_ok
+        else:
+            directional_and_qualified = (
+                directional
+                and eff_conf >= self.min_confidence_to_act
+                and uncertainty <= self.max_uncertainty_to_act
+            )
         act = (
-            direction in (LONG, SHORT)
-            and eff_conf >= self.min_confidence_to_act
-            and uncertainty <= self.max_uncertainty_to_act
+            directional_and_qualified
             and ev_ok
             and quorum_ok
             and domain_ok
             and activation_ok
         )
         if not act:
-            directional_and_qualified = (
-                direction in (LONG, SHORT)
-                and eff_conf >= self.min_confidence_to_act
-                and uncertainty <= self.max_uncertainty_to_act
-            )
             if (is_harvesting and driving_opp is not None
                     and driving_opp.is_directional and not driving_opp.is_actionable):
                 # ACTIVATION GATE — a real, directional opportunity exists but has
@@ -740,10 +762,14 @@ class CognitiveBrain:
                     "evaluated: doing nothing is correct — insufficient evidence "
                     f"coverage ({int(domain_count)}/{self.min_evidence_domains} domains)"
                 )
-            elif directional_and_qualified and not ev_ok:
+            elif (directional_and_qualified and not ev_ok) or (
+                self.ev_primary_gate and direction in (LONG, SHORT) and not ev_ok
+            ):
                 # Saw a directional opportunity but its expected value does not
                 # clear the threshold — decline it (Part IX Q35: cannot execute
-                # this opportunity at the current expected value).
+                # this opportunity at the current expected value). Under the
+                # EV-primary gate this is the ONLY directional FLAT — a genuine
+                # EV/opportunity verdict, never "confidence below a floor".
                 reason_txt = "expected value below threshold — opportunity declined"
                 dtype = DecisionType.REJECT_OPPORTUNITY
                 do_nothing_txt = (
@@ -751,11 +777,22 @@ class CognitiveBrain:
                     "below threshold"
                 )
             elif direction in (LONG, SHORT):
+                if self.ev_primary_gate:
+                    # EV-primary: EV cleared the bar (else the branch above fired)
+                    # but the opportunity is not yet actionable — a genuine WAIT,
+                    # not a confidence-floor rejection.
+                    reason_txt = (
+                        "positive-EV opportunity not yet actionable — awaiting conditions"
+                    )
+                    do_nothing_txt = (
+                        "evaluated: doing nothing is correct — EV positive but the "
+                        "opportunity is not yet actionable"
+                    )
                 # Part XXV — when the thesis itself is strong (raw confidence
                 # clears the bar) but a WEAK actionability dimension (timing or
                 # execution) pulled the effective conviction below it, this is a
                 # deliberate WAIT for better conditions, not a rejected thesis.
-                if (confidence >= self.min_confidence_to_act
+                elif (confidence >= self.min_confidence_to_act
                         and limiting_dim in ("timing", "execution")):
                     reason_txt = (
                         f"{limiting_dim} conditions insufficient — waiting "
@@ -2158,6 +2195,8 @@ class CognitiveBrain:
                 "reasoner": self.reasoner_name,
                 "min_confidence_to_act": self.min_confidence_to_act,
                 "max_uncertainty_to_act": self.max_uncertainty_to_act,
+                "ev_primary_gate": self.ev_primary_gate,
+                "ev_action_threshold_r": self.ev_action_threshold_r,
                 "min_advisors_for_action": self.min_advisors_for_action,
                 "min_evidence_domains": self.min_evidence_domains,
                 "degraded_confidence_multiplier": self.degraded_confidence_multiplier,
