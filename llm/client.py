@@ -228,6 +228,37 @@ def _parse_retry_after(headers: dict) -> float:
     return best if best > 0.0 else 0.0
 
 
+def _extract_usage(text: str, shape: Optional[str]) -> int:
+    """Total tokens a provider reported for a reply, or 0. Fail-safe.
+
+    Covers the shapes this client speaks: OpenAI-compatible/Azure ``usage``,
+    Anthropic ``usage.input_tokens+output_tokens``, Gemini
+    ``usageMetadata.totalTokenCount``, and Ollama eval counts."""
+    try:
+        data = json.loads(text)
+    except Exception:  # noqa: BLE001 — malformed / empty body
+        return 0
+    if not isinstance(data, dict):
+        return 0
+    try:
+        if shape == "anthropic":
+            u = data.get("usage") or {}
+            return int(u.get("input_tokens", 0) or 0) + int(u.get("output_tokens", 0) or 0)
+        if shape == "gemini":
+            u = data.get("usageMetadata") or {}
+            return int(u.get("totalTokenCount", 0) or 0)
+        if shape == "ollama":
+            return int(data.get("prompt_eval_count", 0) or 0) + int(data.get("eval_count", 0) or 0)
+        # OpenAI-compatible / Azure.
+        u = data.get("usage") or {}
+        total = u.get("total_tokens")
+        if total is not None:
+            return int(total or 0)
+        return int(u.get("prompt_tokens", 0) or 0) + int(u.get("completion_tokens", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def _urllib_transport(url: str, headers: dict, body: bytes, timeout: float) -> "tuple[int, str, dict]":
     """Default transport — a single stdlib POST. Isolated for test injection.
 
@@ -268,6 +299,13 @@ class LLMClient:
     max_tokens: int = 1024
     temperature: float = 0.2
     transport: Optional[Transport] = None
+    # GPU/Compute Constitution §22–§28 — optional per-provider quota meter
+    # (:class:`llm.provider_budget.ProviderBudget`). When attached (an operator
+    # configured real free-tier limits) the client refuses to send a request that
+    # would exceed the provider's remaining RPM/RPD/TPM/TPD and benches it until
+    # the window frees, instead of blindly burning a scarce quota. ``None``
+    # (default) ⇒ unmetered, behaviour unchanged.
+    budget: Optional[Any] = None
 
     def __post_init__(self) -> None:
         self._shape = _shape_for(self.provider, self.base_url)
@@ -288,6 +326,10 @@ class LLMClient:
         # one. Read by the council so a quota-exhausted provider is benched until
         # capacity returns instead of being re-hammered every cycle (§27).
         self._last_retry_after: float = 0.0
+        # Token usage parsed from the most recent successful reply (provider
+        # ``usage`` / ``usageMetadata`` / eval counts), or 0. Feeds the budget
+        # meter and is exposed for observability (§34).
+        self._last_usage_tokens: int = 0
 
     @property
     def usable(self) -> bool:
@@ -326,6 +368,27 @@ class LLMClient:
             return max(0.0, float(getattr(self, "_last_retry_after", 0.0) or 0.0))
         except (TypeError, ValueError):
             return 0.0
+
+    @property
+    def last_usage_tokens(self) -> int:
+        """Total tokens the most recent successful call consumed (provider-
+        reported when available, else 0). Exposed for quota observability (§34).
+        Fail-safe read."""
+        try:
+            return max(0, int(getattr(self, "_last_usage_tokens", 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+
+    def _record_budget(self, tokens: int) -> None:
+        """Log one SENT request against the attached quota meter (if any). A
+        metering fault must never break a reasoning call."""
+        b = self.budget
+        if b is None:
+            return
+        try:
+            b.record(tokens)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[llm] budget record fault ({}): {}", self.provider, exc)
 
     def _effective_base(self) -> str:
         if self.base_url:
@@ -388,10 +451,33 @@ class LLMClient:
         # perfectly valid key/payload. A normal-looking UA avoids that.
         headers.setdefault("user-agent", "apex-trader-llm-client/1.0")
         body = json.dumps(payload).encode("utf-8")
+        # §28 — never blindly exhaust a scarce free tier. When a quota meter is
+        # attached and this request would exceed the provider's remaining
+        # capacity, refuse to send it and bench the provider until the window
+        # frees (reusing the same cooldown path as an HTTP 429), so the council
+        # routes elsewhere instead of burning the quota into a hard rate-limit.
+        est_tokens = 0
+        budget = self.budget
+        if budget is not None:
+            try:
+                from llm.provider_budget import estimate_tokens
+                est_tokens = estimate_tokens(system, user, self.max_tokens)
+                if not budget.admits(est_tokens):
+                    self._last_retry_after = float(budget.blocked_until(est_tokens) or 0.0)
+                    self._last_usage_tokens = 0
+                    self._note_failure(
+                        "budget:exhausted",
+                        f"local quota guard — benched ~{self._last_retry_after:.0f}s",
+                    )
+                    return None
+            except Exception as exc:  # noqa: BLE001 — a metering fault must not block a call
+                logger.debug("[llm] budget guard fault ({}): {}", self.provider, exc)
+                est_tokens = 0
         try:
             result = self._transport(url, headers, body, self.timeout_seconds)
         except Exception as exc:  # noqa: BLE001
             self._last_retry_after = 0.0
+            self._last_usage_tokens = 0
             self._note_failure(
                 f"transport:{type(exc).__name__}", f"transport error: {exc}"
             )
@@ -407,6 +493,7 @@ class LLMClient:
                 status, text = result  # 2-tuple transport
         except Exception as exc:  # noqa: BLE001 — a malformed transport return
             self._last_retry_after = 0.0
+            self._last_usage_tokens = 0
             self._note_failure(
                 f"transport:{type(exc).__name__}", f"malformed transport return: {exc}"
             )
@@ -416,11 +503,17 @@ class LLMClient:
             # reset) BEFORE logging, so the council can bench this provider until
             # its quota returns instead of re-hammering it next cycle (§27).
             self._last_retry_after = _parse_retry_after(resp_headers)
+            self._last_usage_tokens = 0
+            # The request WAS sent — it counts against the provider's RPM/RPD.
+            self._record_budget(0)
             # Edge-triggered: log status + a short, key-free snippet once.
             self._note_failure(f"http:{status}", f"HTTP {status} — {(text or '')[:160]}")
             return None
         # 2xx — clear any stale cooldown carried from a prior throttled call.
         self._last_retry_after = 0.0
+        used = _extract_usage(text, self._shape)
+        self._last_usage_tokens = used if used > 0 else est_tokens
+        self._record_budget(self._last_usage_tokens)
         try:
             reply = self._parse_reply(text)
         except Exception as exc:  # noqa: BLE001
@@ -556,7 +649,18 @@ class LLMClient:
             "timeout_seconds": self.timeout_seconds,
             "max_tokens": self.max_tokens,
             "temperature": self.temperature,
+            "budget": self._budget_snapshot(),
         }
+
+    def _budget_snapshot(self) -> Optional[dict]:
+        """Fail-safe view of the attached quota meter (None when unmetered)."""
+        b = self.budget
+        if b is None:
+            return None
+        try:
+            return b.to_dict()
+        except Exception:  # noqa: BLE001
+            return None
 
 
 def build_client(config: Any, transport: Optional[Transport] = None) -> Optional[LLMClient]:
@@ -591,6 +695,26 @@ def build_client(config: Any, transport: Optional[Transport] = None) -> Optional
                 "LLM_BASE_URL, or no model set) — reasoner disabled", provider,
             )
         return None
+    # §22–§28 — attach a quota meter when the operator configured real free-tier
+    # limits (rpm/rpd/tpm/tpd). All default 0 ⇒ unmetered, behaviour unchanged;
+    # limits come from config (the provider's real service), never baked in.
+    def _limit(attr: str) -> int:
+        try:
+            return max(0, int(getattr(config, attr, 0) or 0))
+        except (TypeError, ValueError):
+            return 0
+    rpm, rpd = _limit("rpm_limit"), _limit("rpd_limit")
+    tpm, tpd = _limit("tpm_limit"), _limit("tpd_limit")
+    if rpm or rpd or tpm or tpd:
+        try:
+            from llm.provider_budget import ProviderBudget
+            client.budget = ProviderBudget(rpm=rpm, rpd=rpd, tpm=tpm, tpd=tpd)
+            logger.info(
+                "[llm] provider '{}' quota meter on (rpm={} rpd={} tpm={} tpd={})",
+                provider, rpm, rpd, tpm, tpd,
+            )
+        except Exception as exc:  # noqa: BLE001 — a budget wiring fault must not disable the client
+            logger.debug("[llm] budget wiring fault ({}): {}", provider, exc)
     return client
 
 
