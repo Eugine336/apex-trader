@@ -10,7 +10,16 @@ Public surface:
   evidence for the consensus panel.
 """
 
-from llm.client import LLMClient, Transport, build_client
+from llm.client import LLMClient, Transport, attach_budget, build_client
+from llm.provider_budget import (
+    BudgetLedger,
+    ProviderBudget,
+    account_key,
+    coerce_limits,
+    estimate_tokens,
+    get_shared_ledger,
+    reset_shared_ledger,
+)
 from llm.model_manager import (
     POLICY_PERFORMANCE,
     POLICY_PRIORITY,
@@ -43,6 +52,14 @@ __all__ = [
     "LLMClient",
     "Transport",
     "build_client",
+    "attach_budget",
+    "ProviderBudget",
+    "BudgetLedger",
+    "estimate_tokens",
+    "account_key",
+    "coerce_limits",
+    "get_shared_ledger",
+    "reset_shared_ledger",
     "ModelManager",
     "build_model_manager",
     "POLICY_PRIORITY",

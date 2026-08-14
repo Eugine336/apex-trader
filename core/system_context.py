@@ -1213,6 +1213,16 @@ class SystemContext:
                         getattr(cog_cfg, "max_uncertainty_to_act", 0.6)
                         if cog_cfg is not None else 0.6
                     ),
+                    # V-01 (§I/§VI/§VIII) — opt-in EV-primary actionability gate.
+                    # Default off ⇒ the legacy confidence-floor gate is unchanged.
+                    ev_primary_gate=bool(
+                        getattr(cog_cfg, "ev_primary_gate", False)
+                        if cog_cfg is not None else False
+                    ),
+                    ev_action_threshold_r=float(
+                        getattr(cog_cfg, "ev_action_threshold_r", 0.0)
+                        if cog_cfg is not None else 0.0
+                    ),
                     allow_scale_in=bool(
                         getattr(cog_cfg, "allow_scale_in", False)
                         if cog_cfg is not None else False

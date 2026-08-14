@@ -43,5 +43,7 @@ def test_retired_candidate_management_helpers_removed():
         "_management_micro_context",
         "_sl_move_too_close",
         "_record_candidate_position",
+        "_scale_in_position",
+        "_partial_close_position",
     ):
         assert gone not in names, f"{gone} should have been removed as dead code"
