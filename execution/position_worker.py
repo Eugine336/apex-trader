@@ -76,6 +76,20 @@ class WorkerConfig:
     # case, so a position is never unprotected even if the Brain/provider is down.
     discretionary_exits_enabled: bool = True
 
+    # ── V-03: compressed direction+score exits (Constitution §I/§IV/§V/§XVII) ──
+    # The invalidation / conviction-collapse / structure-loss-stall exits close a
+    # position from a COMPRESSED scan direction + score (a re-derived directional
+    # opinion), which the constitution forbids as a decision authority. When this
+    # is False those three exits are DEFERRED to the AI Cognitive Brain, while the
+    # non-directional risk mechanics (TP / breakeven / trailing / dynamic-SL /
+    # HTF close / opportunity-cost) and the always-on catastrophic safety floor
+    # (hard SL + weekend / session / spread + absolute-profit backstop, and the
+    # time-based stall fallback) remain. Default True ⇒ behaviour unchanged; only
+    # relevant when ``discretionary_exits_enabled`` is True (non-cognition mode) —
+    # when the Brain is the live manager every discretionary exit is already
+    # deferred to it.
+    scan_directional_exits_enabled: bool = True
+
     # ── TradeManager params ───────────────────────────────────────────
     breakeven_buffer_pips: float = 2.0
     breakeven_min_profit_r: float = 0.5
@@ -308,8 +322,11 @@ class PositionWorker:
         self._check_weekend_protection(snap, now, intents)      # safety floor — always
 
         if discretionary and scan is not None and past_grace:
-            self._check_invalidation(snap, scan, intents)
-            self._check_conviction_collapse(snap, intents)
+            # V-03 — these read a compressed scan direction/score; defer to the
+            # Brain when scan-directional exits are disabled.
+            if self.cfg.scan_directional_exits_enabled:
+                self._check_invalidation(snap, scan, intents)
+                self._check_conviction_collapse(snap, intents)
 
         if market is not None:
             if discretionary:
@@ -510,6 +527,11 @@ class PositionWorker:
             # Safety floor — never cut a brand-new flat position before the
             # brain has had a chance to re-read the market for it.
             if stall_minutes < self.cfg.stall_min_hold_minutes:
+                return
+            # V-03 — the structure-loss test reads a compressed scan direction/
+            # score; defer this exit to the Brain when scan-directional exits are
+            # disabled (the hard-SL floor + Brain management still apply).
+            if not self.cfg.scan_directional_exits_enabled:
                 return
             # No live WorldModel read → cannot confirm the thesis is gone, so
             # hold rather than exit on elapsed time alone.

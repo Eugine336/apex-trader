@@ -947,6 +947,14 @@ class RiskConfig:
     # The broker's own margin/min-lot floor stays the real hard limit. Default
     # OFF (conservative). env RISK_ALLOW_MIN_LOT_OVER_RISK.
     allow_min_lot_over_risk: bool = False
+    # V-03 (Constitution §I/§IV/§V/§XVII) — defer the compressed direction+score
+    # exits (invalidation / conviction-collapse / structure-loss stall) to the AI
+    # Cognitive Brain instead of closing on a re-derived scan direction/score.
+    # Default True ⇒ the deterministic suite keeps them (non-cognition mode); set
+    # False to hand them to cognition. The hard-SL floor and the non-directional
+    # risk mechanics (TP / breakeven / trailing / time-based stall) are
+    # unaffected. env RISK_SCAN_DIRECTIONAL_EXITS_ENABLED.
+    scan_directional_exits_enabled: bool = True
     backtest_starting_balance_usd: float = 10_000.0
     tp3_ladder_enabled: bool = True
     tp3_r_multiple: float = 5.0
@@ -1251,6 +1259,9 @@ class RiskConfig:
 
         self.allow_min_lot_over_risk = _llm_env_bool(
             "RISK_ALLOW_MIN_LOT_OVER_RISK", self.allow_min_lot_over_risk
+        )
+        self.scan_directional_exits_enabled = _llm_env_bool(
+            "RISK_SCAN_DIRECTIONAL_EXITS_ENABLED", self.scan_directional_exits_enabled
         )
 
         def _check_finite_positive(name: str, val: float) -> None:
@@ -3809,6 +3820,17 @@ class LLMConfig:
     # auth faults (401/402/403/429) are never background-probed. 0 ⇒ disabled.
     # Env: LLM_RECOVERY_PROBE_SECONDS.
     recovery_probe_seconds: float = 60.0
+    # §22–§28 — optional per-provider free-tier quota limits. All default 0 ⇒
+    # unmetered (behaviour unchanged). When set, the client refuses to send a
+    # request that would exceed the provider's remaining requests-per-minute /
+    # -per-day or tokens-per-minute / -per-day and benches it until the window
+    # frees, so a scarce free tier is never blindly exhausted (§28). Limits come
+    # from the provider's real service, never baked in. Env: LLM_RPM / LLM_RPD /
+    # LLM_TPM / LLM_TPD.
+    rpm_limit: int = 0
+    rpd_limit: int = 0
+    tpm_limit: int = 0
+    tpd_limit: int = 0
 
     def __post_init__(self) -> None:
         # The environment is the single source of truth — no vendor is baked in.
@@ -3830,6 +3852,10 @@ class LLMConfig:
             ("LLM_CIRCUIT_COOLDOWN_MAX_SECONDS", "circuit_cooldown_max_seconds", float),
             ("LLM_LOCAL_MAX_CONCURRENCY", "local_max_concurrency", int),
             ("LLM_RECOVERY_PROBE_SECONDS", "recovery_probe_seconds", float),
+            ("LLM_RPM", "rpm_limit", int),
+            ("LLM_RPD", "rpd_limit", int),
+            ("LLM_TPM", "tpm_limit", int),
+            ("LLM_TPD", "tpd_limit", int),
         ):
             raw = os.getenv(env_name)
             if raw is not None:
@@ -4163,6 +4189,16 @@ class CognitionConfig:
     per_module_evidence: bool = True   # Phase E: emit one Evidence per contributing module/domain
     min_confidence_to_act: float = 0.55
     max_uncertainty_to_act: float = 0.6
+    # V-01 (§I/§VI/§VIII) — EV-primary actionability gate (OPT-IN, default off).
+    # When true, the Brain opens a campaign on a positive EXPECTED VALUE (net of
+    # cost, over flat) rather than a raw confidence floor, so a genuine positive-
+    # expectancy opportunity is not vetoed merely because mixed evidence pulled
+    # confidence below a threshold ("conflicting evidence ⇒ FLAT" is forbidden).
+    # ``ev_action_threshold_r`` is the minimum EV in R to act on (default 0.0 ⇒
+    # any strictly positive EV). Confidence still feeds the EV and the sizing.
+    # env COGNITION_EV_PRIMARY_GATE / COGNITION_EV_ACTION_THRESHOLD_R.
+    ev_primary_gate: bool = False
+    ev_action_threshold_r: float = 0.0
     # Article XX — advisor quorum: the Council must not become fake diversity. A
     # Brain-originated campaign must be backed by at least this many advisors that
     # actually contributed an opinion. env COGNITION_MIN_ADVISORS_FOR_ACTION.
@@ -4313,6 +4349,9 @@ class CognitionConfig:
             os.getenv("COGNITION_MANAGEMENT_MODE", self.management_mode) or "live"
         ).strip().lower()
         self.event_driven = _llm_env_bool("COGNITION_EVENT_DRIVEN", self.event_driven)
+        self.ev_primary_gate = _llm_env_bool(
+            "COGNITION_EV_PRIMARY_GATE", self.ev_primary_gate
+        )
         for env_name, attr in (
             ("COGNITION_LOOP_INTERVAL_SECONDS", "loop_interval_seconds"),
             ("COGNITION_MAX_DECISION_AGE_SECONDS", "max_decision_age_seconds"),
@@ -4328,6 +4367,7 @@ class CognitionConfig:
             ("COGNITION_OPPORTUNITY_COST_MULTIPLE", "opportunity_cost_multiple"),
             ("COGNITION_OPPORTUNITY_MIN_NET_EV", "opportunity_min_net_ev"),
             ("COGNITION_COMMISSION_PER_LOT_ROUND_TRIP", "commission_per_lot_round_trip"),
+            ("COGNITION_EV_ACTION_THRESHOLD_R", "ev_action_threshold_r"),
         ):
             raw = os.getenv(env_name)
             if raw is not None:

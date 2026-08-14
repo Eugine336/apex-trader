@@ -31,11 +31,6 @@ from brain.compression_detector import CompressionDetector
 from brain.session_context import SessionContext
 from brain.news_planner import NewsPlanner
 from brain.currency_strength import CurrencyStrengthMeter, CURRENCY_PAIRS
-from compliance import (
-    ComplianceAccount,
-    ComplianceBook,
-    ComplianceCandidate,
-)
 from core.system_context import SystemContext
 from persistence.event_store import get_event_store
 from persistence import domain_events as DE
@@ -117,12 +112,6 @@ def _structural_scan_direction(wm: Any) -> str:
 
 
 # Operations Division — scale-in / partial-close tuning (V13).
-# A scale-in is an *add* to an existing winner, so it risks a fraction of a
-# fresh entry's per-trade ceiling. The partial-close default banks half the
-# position when a verdict carries no explicit ratio.
-_SCALE_IN_RISK_FRACTION = 0.5
-_DEFAULT_PARTIAL_CLOSE_RATIO = 0.5
-
 # A tick older than this strongly implies the session is CLOSED (weekend /
 # holiday), not merely quiet. Used by the market-open gate as the session
 # signal ``trade_mode`` cannot give (a broker leaves trade_mode "full" through a
@@ -1104,242 +1093,6 @@ class PositionEvaluator:
                 "closed" if authoritative else "open", exc,
             )
             return not authoritative
-
-    def _scale_in_position(
-        self,
-        pos,
-        price: float,
-        sl: float,
-        symbol: str,
-        direction: str,
-        de_result,
-        current_score: int,
-        open_positions: list,
-    ) -> None:
-        """Add to a winning position through the full entry pipeline.
-
-        A scale-in is a deliberate same-pair+direction *duplicate*, so it cannot
-        simply replay the entry path (Compliance hard-vetoes duplicates). It is
-        routed through ``Compliance.permit`` for every OTHER necessary veto
-        (market-open, broker, news, spread, daily-loss, heat, drawdown-frozen,
-        max-positions, portfolio-risk-state) — the expected ``duplicate`` veto is
-        the only failure tolerated — and then sized by ``Portfolio.evaluate`` from
-        a reduced base risk so the add-on never re-risks a full position. The
-        Portfolio verdict (not the DecisionEngine's advisory ``scale_lots``) is
-        the authoritative size.
-        """
-        ctx = self._ctx
-        if ctx is None:
-            return
-        try:
-            tp = float(_broker_tp(pos) or 0.0)
-            if tp <= 0.0:
-                logger.debug("[de-mgmt] scale-in skipped {} — no take-profit on book", symbol)
-                return
-
-            balance = self._pm.get_platform_balance(symbol)
-            if not balance or balance <= 0:
-                logger.debug("[de-mgmt] scale-in skipped {} — balance unavailable", symbol)
-                return
-            acct = ctx.account_key(symbol, self._pm)
-
-            # ── Compliance (duplicate-tolerant) ──────────────────────
-            if ctx.compliance is None:
-                logger.error(
-                    "[de-mgmt] scale-in BLOCKED {} — Compliance unavailable (fail-closed)",
-                    symbol,
-                )
-                return
-            verdict = ctx.compliance.permit(
-                ComplianceCandidate(symbol=symbol, direction=direction),
-                ComplianceBook(open_positions=open_positions),
-                ComplianceAccount(account_key=acct, balance=balance or 0.0),
-            )
-            if verdict.rejected:
-                blocking = [
-                    o for o in verdict.outcomes
-                    if not o.passed and o.name != "duplicate"
-                ]
-                if blocking:
-                    logger.info(
-                        "[de-mgmt] scale-in BLOCKED {} — Compliance: {}",
-                        symbol, "; ".join(o.reason for o in blocking),
-                    )
-                    return
-
-            # ── Portfolio: size the add-on from a reduced base risk ──
-            from portfolio.models import (
-                PortfolioAccount as _PFAccount,
-                PortfolioCandidate as _PFCandidate,
-                SizingFactors as _PFFactors,
-            )
-
-            portfolio = ctx.portfolio
-            if portfolio is None:
-                logger.debug("[de-mgmt] scale-in skipped {} — Portfolio unavailable", symbol)
-                return
-
-            risk_pct = _SCALE_IN_RISK_FRACTION * (
-                getattr(self._config.risk, "risk_per_trade_pct", 1.0) / 100.0
-                if self._config is not None else 0.01
-            )
-            if ctx.drawdown_guard is not None:
-                try:
-                    dd_risk = getattr(
-                        ctx.drawdown_guard.get_status(), "current_risk_pct", 0.0,
-                    ) or 0.0
-                    if dd_risk > 0:
-                        risk_pct = min(risk_pct, _SCALE_IN_RISK_FRACTION * dd_risk)
-                except Exception as exc:
-                    logger.warning(
-                        "[scale-in] {} drawdown-guard risk read failed — "
-                        "scale-in risk fraction left unclamped: {}", symbol, exc,
-                    )
-            if risk_pct <= 0:
-                return
-
-            pip_size = self._safe_pip_size(symbol)
-            # Broker-truth money-per-pip (registry fallback → live broker spec),
-            # centralised so the scale-in add is sized on the same pip value the
-            # heat monitor and the entry sizer use.
-            pip_value = self._effective_pip_value(symbol, pip_size)
-            pctx = build_context_for_symbol(symbol)
-
-            daily_pnl = 0.0
-            daily_cap = 0.0
-            if ctx.account_risk is not None:
-                try:
-                    if acct:
-                        daily_pnl = float(ctx.account_risk.daily_pnl(acct))
-                    daily_cap = float(
-                        getattr(ctx.account_risk, "daily_loss_cap_pct", 0.0) or 0.0
-                    )
-                except Exception as exc:
-                    daily_pnl, daily_cap = 0.0, 0.0
-                    logger.warning(
-                        "[scale-in] {} daily P&L/cap read failed — daily-loss "
-                        "budget guard defaulting to 0.0/0.0: {}", symbol, exc,
-                    )
-
-            pf_verdict = portfolio.evaluate(
-                _PFCandidate(
-                    symbol=symbol,
-                    direction=direction,
-                    entry_price=price,
-                    stop_loss=sl,
-                    conviction=float(current_score or 0.0),
-                    context=pctx,
-                    pip_size=pip_size,
-                    pip_value_per_lot=pip_value,
-                    broker=self._pm.get_platform_name(symbol) if hasattr(self._pm, "get_platform_name") else "",
-                ),
-                open_positions,
-                _PFAccount(
-                    balance=balance,
-                    account_key=acct,
-                    daily_pnl=daily_pnl,
-                    daily_loss_cap_pct=daily_cap,
-                ),
-                _PFFactors(base_risk_pct=risk_pct),
-            )
-            if not pf_verdict.approved:
-                logger.info(
-                    "[de-mgmt] scale-in SKIPPED {} — Portfolio: {}",
-                    symbol, pf_verdict.reason,
-                )
-                return
-
-            add_lots = pf_verdict.lots
-            add_stake = pf_verdict.stake_usd
-            if add_lots <= 0 and add_stake <= 0:
-                return
-
-            idem_key = generate_idempotency_key(symbol, direction, add_lots or add_stake)
-            comment = build_order_comment("APEX", idem_key, score=current_score)
-            self._aggregator.submit([Intent.open(
-                symbol=symbol,
-                direction=direction,
-                lots=add_lots,
-                entry_price=price,
-                sl=sl,
-                tp=tp,
-                stake_usd=add_stake if add_stake > 0 else None,
-                source="decision_engine_scale_in",
-                reason=f"DE scale-in: {getattr(de_result, 'reason', '')[:60]}",
-                comment=comment,
-                idempotency_key=idem_key,
-            )])
-            logger.info(
-                "[DE-MGMT] {} {} SCALE-IN — {} {:.4g} (risk≈{:.3%})",
-                symbol, direction,
-                "stake" if add_stake > 0 else "lots",
-                add_stake if add_stake > 0 else add_lots,
-                pf_verdict.risk_pct,
-            )
-        except Exception as exc:
-            logger.debug("[de-mgmt] scale-in failed for {}: {}", symbol, exc)
-
-    def _partial_close_position(
-        self,
-        order_id: str,
-        symbol: str,
-        direction: str,
-        sl: float,
-        pip_size: float,
-        de_result,
-    ) -> None:
-        """Bank part of an open position on a DE/governor PARTIAL_CLOSE verdict.
-
-        The close fraction comes from the verdict's ``partial_ratio`` when set,
-        otherwise a sane default. Routed through the IntentAggregator → executor
-        like every other management action (Execution remains the sole gateway).
-        """
-        try:
-            ratio = float(getattr(de_result, "partial_ratio", 0.0) or 0.0)
-            if ratio <= 0.0:
-                ratio = _DEFAULT_PARTIAL_CLOSE_RATIO
-            ratio = max(0.05, min(0.95, ratio))
-            # Guard against repeated banking. The DE re-evaluates a position
-            # every ``_de_interval`` seconds; without an optimistic flag a
-            # persistent PARTIAL_CLOSE verdict would chip the position away on
-            # every cycle. Skip when a partial is already taken/in-flight, then
-            # mark it optimistically (mirrors the worker TP1-partial path) and
-            # record the pre-mutation values so a rejected partial rolls back and
-            # retries instead of being permanently marked done.
-            mgmt = self._mgmt_store.get(order_id)
-            if mgmt is not None and getattr(mgmt, "partial_closed", False):
-                logger.debug(
-                    "[de-mgmt] partial-close skipped {} — already partial-closed",
-                    symbol,
-                )
-                return
-            self._aggregator.register_position(
-                ticket=order_id, direction=direction,
-                current_sl=sl, pip_size=pip_size,
-            )
-            self._aggregator.submit([Intent.partial_close(
-                symbol=symbol,
-                ticket=order_id,
-                fraction=ratio,
-                source="decision_engine_partial",
-                reason=f"DE partial {ratio:.0%}: {getattr(de_result, 'reason', '')[:60]}",
-            )])
-            if mgmt is not None:
-                prev_pc = mgmt.partial_closed
-                prev_tp1 = mgmt.tp1_hit
-                mgmt.partial_closed = True
-                mgmt.tp1_hit = True
-                self._record_inflight_manage(
-                    order_id, IntentType.PARTIAL_CLOSE,
-                    {"partial_closed": prev_pc, "tp1_hit": prev_tp1},
-                )
-            logger.info(
-                "[DE-MGMT] {} {} PARTIAL_CLOSE {:.0%} — {}",
-                symbol, direction, ratio,
-                getattr(de_result, "reason", "")[:80],
-            )
-        except Exception as exc:
-            logger.debug("[de-mgmt] partial-close failed for {}: {}", order_id, exc)
 
     @property
     def eval_count(self) -> int:
@@ -5356,6 +5109,11 @@ class EventDrivenSystem:
         friday_hour = getattr(risk_cfg, "friday_close_hour_utc", None)
         if isinstance(friday_hour, int) and not isinstance(friday_hour, bool):
             cfg.friday_close_hour_utc = friday_hour
+        # V-03 — defer the compressed direction+score exits to the Brain when the
+        # operator opts in (default True keeps the deterministic suite intact).
+        scan_dir = getattr(risk_cfg, "scan_directional_exits_enabled", None)
+        if isinstance(scan_dir, bool):
+            cfg.scan_directional_exits_enabled = scan_dir
         return cfg
 
     def _check_market_open(self, symbol: str) -> bool:
