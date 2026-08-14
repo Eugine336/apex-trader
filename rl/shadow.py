@@ -133,18 +133,12 @@ class ShadowEngine:
         self.recent_highs: dict[str, deque] = {}
         self.recent_lows:  dict[str, deque] = {}
 
-        # Live exit-model parameters, sourced from the same ConsensusConfig the
-        # live consensus/ATR-stop path uses so authority is earned against the
-        # same SL distance and reward:risk the live engine trades.
+        # Live exit-model parameters (ATR stop distance + reward:risk). These
+        # were the ConsensusConfig ATR defaults; the retired directional
+        # vote/consensus config has been removed, so the neutral geometry values
+        # live here directly (behaviour-preserving — same 1.5 / 3.0).
         self._sl_atr_mult = 1.5
         self._tp_rr       = 3.0
-        try:
-            from config import ConsensusConfig
-            _cc = ConsensusConfig()
-            self._sl_atr_mult = float(_cc.atr_sl_mult)
-            self._tp_rr       = float(_cc.atr_tp2_rr)
-        except Exception as exc:  # pragma: no cover - config import guard
-            _logger.debug("[Shadow] ConsensusConfig unavailable, using defaults: %s", exc)
 
         # Session awareness — skip shadow entries for session-gated (FX)
         # instruments when the market is not tradeable, mirroring the live

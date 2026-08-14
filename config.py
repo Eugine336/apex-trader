@@ -312,195 +312,11 @@ class ConfirmationPenaltyConfig:
 
 
 # ---------------------------------------------------------------------------
-# Directional consensus — weighted signed voting across brain modules
+# Directional vote/consensus config — REMOVED (Constitution §I/§III). The
+# vote/consensus decider it configured was physically removed; nothing reads
+# it. Neutral exit geometry that used to live here (ATR mult / RR) is now held
+# by its consumers directly.
 # ---------------------------------------------------------------------------
-
-_DEFAULT_CONSENSUS_WEIGHTS: dict[str, float] = {
-    "structure": 1.0,
-    "currency_strength": 1.0,
-    "wyckoff": 1.0,
-    "volume": 1.0,
-    "order_block": 1.0,
-    "fvg": 1.0,
-    "liquidity": 1.0,
-    "momentum": 1.0,
-    "vwap": 1.0,
-    "inducement": 1.0,
-    "volatility": 1.0,
-    "correlation": 1.0,
-}
-
-
-@dataclass
-class ConsensusConfig:
-    enabled: bool = True
-    weights: dict[str, float] = field(default_factory=lambda: dict(_DEFAULT_CONSENSUS_WEIGHTS))
-    min_net_score: float = 1.5
-    min_agreement: float = 0.55
-    high_authority_modules: list[str] = field(
-        default_factory=lambda: ["currency_strength"]
-    )
-    high_authority_oppose_confidence: float = 0.6
-    # ── currency_strength authority mode (verification gap #2) ────────────
-    # Historically ``currency_strength`` (a cross-pair aggregate, not a single
-    # timeframe) had a binary VETO: when it opposed the net consensus with
-    # confidence >= high_authority_oppose_confidence the entire thesis — no
-    # matter how unanimous the rest of the panel — was forced to NEUTRAL. That
-    # is directional authority, not the probabilistic-evidence philosophy the
-    # rest of the stack follows (the H4 bias gate is a graded penalty, not a
-    # veto). "penalty" (default) makes currency_strength a GRADED voice: its
-    # opposition subtracts a confidence-scaled penalty from the thesis
-    # conviction (so a strong-enough multi-TF setup survives, a marginal one
-    # naturally falls below the conviction threshold → NEUTRAL through normal
-    # flow). Set to "veto" to restore the legacy binary kill.
-    currency_strength_penalty_mode: str = "penalty"
-    # Conviction penalty (points on the 0–100 conviction-percent scale, applied
-    # as ``amount/100 × opposing confidence``) when currency_strength opposes in
-    # "penalty" mode. 20 points ≈ a 0.6-confidence opposition shaving 0.12 off
-    # conviction, scaling to the full 0.20 at max confidence. Sized like the H4
-    # bias penalty (15) so the two graded authorities are comparable.
-    currency_strength_penalty_amount: float = 20.0
-    min_contributors: int = 2
-    # PR10 Phase 0: when the panel collapses to NEUTRAL on the agreement gate,
-    # log the suppressed minority cluster and emit a counterfactual shadow so
-    # the opportunity cost of the collapse can be measured. Logging/shadow only
-    # — it never changes the consensus verdict.
-    log_suppressed_minorities: bool = True
-    # ── Signal-fidelity flags (Session 4) ─────────────────────────────────
-    # #11 — derive the momentum vote's confidence continuously from how far RSI
-    # is past the 70/30 extreme and the MACD histogram magnitude, instead of the
-    # legacy hardcoded 0.8 (both agree) / 0.4 (one source). Set False to restore
-    # the constant confidences.
-    momentum_continuous_confidence: bool = True
-    # #25 — let stacked same-side order-block / FVG zones reinforce each other
-    # (three bullish OBs read stronger than one) instead of only the single best
-    # zone counting. ``zone_confluence_step`` is the diminishing weight each extra
-    # stacked zone adds on top of the best. Set ``zone_confluence_bonus=False`` to
-    # restore the legacy best-per-side ``max()``.
-    zone_confluence_bonus: bool = True
-    zone_confluence_step: float = 0.15
-    # #26 — carry each module's richer secondary read (RSI level, MACD histogram,
-    # zone stacking, sweep type, …) onto the Vote.evidence map instead of
-    # discarding it at the (direction, confidence) collapse. Additive context for
-    # the ranker / orchestrator / dashboard — never changes the consensus verdict.
-    carry_vote_evidence: bool = True
-    # ── Concept direction flip (Intelligence de-biasing) ──────────────────
-    # ``blend_concepts`` normally only nudges the bias *score* and can never
-    # flip the structural *direction*. That makes structure authoritative even
-    # when the non-ICT concept panel overwhelmingly disagrees. When the absolute
-    # net concept vote clears this threshold AND the concept direction opposes
-    # structure, the blended bias is allowed to flip to the concept direction —
-    # so strong, convergent market evidence is no longer discarded. The default
-    # is conservative: it takes ~3 full-strength concepts agreeing on the
-    # opposite side to flip. Set to 0 to disable flipping (legacy nudge-only).
-    concept_flip_threshold: float = 3.0
-    # ── Active market-driven trigger (Phase 4 — the "big flip") ───────────
-    # When enabled, the Consensus Division stops being a passive confirmer and
-    # becomes the ACTIVE entry trigger: on every analysis cycle it forms a
-    # thesis from the full analyst panel and, when conviction clears
-    # ``conviction_threshold``, initiates an entry candidate WITHOUT requiring a
-    # structural zone (direction comes from the weighted vote, SL/TP are
-    # ATR-derived). The candidate then flows through the SAME
-    # Compliance → Portfolio → Execution pipeline as a zone-triggered entry, so
-    # the only hardcoded vetoes remain the physically necessary ones (market
-    # closed, risk cap, spread, duplicate, broker down). There is deliberately
-    # NO hardcoded frequency governor — the Learning Division tightens
-    # conviction organically via trade outcomes; ``trigger_cooldown_seconds`` is
-    # only a re-fire debounce so the same standing thesis is not re-submitted
-    # every candle between fills (Compliance still owns the duplicate veto).
-    #
-    # Flip ``active_trigger_enabled`` to True to activate the market-driven
-    # trigger so the intelligence layer can initiate entries without a zone.
-    active_trigger_enabled: bool = True
-    conviction_threshold: float = 0.62
-    # Saturation scale for |net_score| in the conviction blend; <=0 derives it
-    # from ``min_net_score * 2`` so a panel at ~2× the net floor reads decisive.
-    net_scale: float = 0.0
-    atr_period: int = 14
-    atr_sl_mult: float = 1.5
-    atr_tp1_rr: float = 1.5
-    atr_tp2_rr: float = 3.0
-    trigger_cooldown_seconds: float = 300.0
-
-    def __post_init__(self) -> None:
-        if not isinstance(self.min_contributors, int) or self.min_contributors < 1:
-            raise ValueError(
-                f"ConsensusConfig.min_contributors must be an int >= 1, "
-                f"got {self.min_contributors!r}"
-            )
-        for name, w in self.weights.items():
-            if not isinstance(w, (int, float)) or not math.isfinite(w) or w < 0:
-                raise ValueError(
-                    f"ConsensusConfig.weights['{name}'] must be finite >= 0, got {w!r}"
-                )
-        if not any(w > 0 for w in self.weights.values()):
-            raise ValueError("ConsensusConfig.weights must have at least one weight > 0")
-        if not (0 < self.min_agreement <= 1.0):
-            raise ValueError(
-                f"ConsensusConfig.min_agreement must be in (0, 1], got {self.min_agreement!r}"
-            )
-        if not isinstance(self.min_net_score, (int, float)) or self.min_net_score < 0:
-            raise ValueError(
-                f"ConsensusConfig.min_net_score must be >= 0, got {self.min_net_score!r}"
-            )
-        if not (0 < self.high_authority_oppose_confidence <= 1.0):
-            raise ValueError(
-                f"ConsensusConfig.high_authority_oppose_confidence must be in (0, 1], "
-                f"got {self.high_authority_oppose_confidence!r}"
-            )
-        for mod in self.high_authority_modules:
-            if mod not in self.weights:
-                raise ValueError(
-                    f"ConsensusConfig.high_authority_modules entry '{mod}' "
-                    f"not present in weights: {list(self.weights.keys())}"
-                )
-        if self.currency_strength_penalty_mode not in ("penalty", "veto"):
-            raise ValueError(
-                f"ConsensusConfig.currency_strength_penalty_mode must be "
-                f"'penalty' or 'veto', got {self.currency_strength_penalty_mode!r}"
-            )
-        if (
-            not isinstance(self.currency_strength_penalty_amount, (int, float))
-            or not math.isfinite(self.currency_strength_penalty_amount)
-            or self.currency_strength_penalty_amount < 0
-        ):
-            raise ValueError(
-                f"ConsensusConfig.currency_strength_penalty_amount must be a "
-                f"finite number >= 0, got {self.currency_strength_penalty_amount!r}"
-            )
-        if not (0.0 <= self.conviction_threshold <= 1.0):
-            raise ValueError(
-                f"ConsensusConfig.conviction_threshold must be in [0, 1], "
-                f"got {self.conviction_threshold!r}"
-            )
-        if not isinstance(self.net_scale, (int, float)) or self.net_scale < 0:
-            raise ValueError(
-                f"ConsensusConfig.net_scale must be >= 0, got {self.net_scale!r}"
-            )
-        if not isinstance(self.atr_period, int) or self.atr_period < 1:
-            raise ValueError(
-                f"ConsensusConfig.atr_period must be an int >= 1, got {self.atr_period!r}"
-            )
-        for fld in ("atr_sl_mult", "atr_tp1_rr", "atr_tp2_rr"):
-            val = getattr(self, fld)
-            if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
-                raise ValueError(
-                    f"ConsensusConfig.{fld} must be finite > 0, got {val!r}"
-                )
-        if not isinstance(self.trigger_cooldown_seconds, (int, float)) or self.trigger_cooldown_seconds < 0:
-            raise ValueError(
-                f"ConsensusConfig.trigger_cooldown_seconds must be >= 0, "
-                f"got {self.trigger_cooldown_seconds!r}"
-            )
-        if (
-            not isinstance(self.concept_flip_threshold, (int, float))
-            or not math.isfinite(self.concept_flip_threshold)
-            or self.concept_flip_threshold < 0
-        ):
-            raise ValueError(
-                f"ConsensusConfig.concept_flip_threshold must be finite >= 0, "
-                f"got {self.concept_flip_threshold!r}"
-            )
 
 
 # ---------------------------------------------------------------------------
@@ -947,6 +763,14 @@ class RiskConfig:
     # The broker's own margin/min-lot floor stays the real hard limit. Default
     # OFF (conservative). env RISK_ALLOW_MIN_LOT_OVER_RISK.
     allow_min_lot_over_risk: bool = False
+    # V-03 (Constitution §I/§IV/§V/§XVII) — defer the compressed direction+score
+    # exits (invalidation / conviction-collapse / structure-loss stall) to the AI
+    # Cognitive Brain instead of closing on a re-derived scan direction/score.
+    # Default True ⇒ the deterministic suite keeps them (non-cognition mode); set
+    # False to hand them to cognition. The hard-SL floor and the non-directional
+    # risk mechanics (TP / breakeven / trailing / time-based stall) are
+    # unaffected. env RISK_SCAN_DIRECTIONAL_EXITS_ENABLED.
+    scan_directional_exits_enabled: bool = True
     backtest_starting_balance_usd: float = 10_000.0
     tp3_ladder_enabled: bool = True
     tp3_r_multiple: float = 5.0
@@ -1252,6 +1076,9 @@ class RiskConfig:
         self.allow_min_lot_over_risk = _llm_env_bool(
             "RISK_ALLOW_MIN_LOT_OVER_RISK", self.allow_min_lot_over_risk
         )
+        self.scan_directional_exits_enabled = _llm_env_bool(
+            "RISK_SCAN_DIRECTIONAL_EXITS_ENABLED", self.scan_directional_exits_enabled
+        )
 
         def _check_finite_positive(name: str, val: float) -> None:
             if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
@@ -1329,165 +1156,8 @@ class RiskConfig:
 
 
 # ---------------------------------------------------------------------------
-# Decision Intelligence System
+# Decision Intelligence config — REMOVED with the retired DecisionEngine.
 # ---------------------------------------------------------------------------
-
-@dataclass
-class DecisionConfig:
-    enabled: bool = True
-    journal_enabled: bool = True
-    journal_dir: str = "data/decision_journal"
-    governor_enabled: bool = True
-    adopted_observation_minutes: float = 10.0
-    # ── M5-primary decision weights (roadmap C) ───────────────────────────
-    # APEX is an M5/M1 opportunity-capture system, so M5 structure quality and
-    # M1 momentum CARRY the entry decision and trade SIZE; HTF (D1/H4/H1)
-    # alignment is context, not the dictator. Conviction weights (≈ sum 1.0)
-    # map conviction → size multiplier (0.5–1.5×). Previously HTF dominated at
-    # 0.40; it is now demoted to 0.20 with M5/M1 taking the lead.
-    conviction_htf_weight: float = 0.20        # was 0.40
-    conviction_structure_weight: float = 0.40  # M5 zone quality (was 0.30)
-    conviction_momentum_weight: float = 0.30   # M1 momentum (was 0.20)
-    conviction_confidence_weight: float = 0.10
-    # ENTER/SKIP scoring coefficients — HTF demoted, M5/M1 promoted.
-    enter_htf_coeff: float = 0.20        # was 0.35
-    enter_structure_coeff: float = 0.45  # M5 (was 0.40)
-    enter_momentum_coeff: float = 0.30   # M1 (was 0.15)
-    skip_htf_coeff: float = 0.20         # counter-HTF no longer dominates SKIP (was 0.35)
-    skip_momentum_coeff: float = 0.30    # opposing M1 matters more (was 0.20)
-    # ── Regime-dependent weighting (roadmap D) ────────────────────────────
-    # In ranging/reversal regimes, shift decision influence off the slow HTF
-    # and onto M1 momentum (HTF reacts last). Trending regimes keep the base
-    # M5-primary weights above. regime_ranging_htf_scale=0.5 halves the HTF
-    # weights and reallocates the freed conviction weight to M1 momentum.
-    regime_weighting_enabled: bool = True
-    regime_ranging_htf_scale: float = 0.5
-    # ── Reversal trade type (roadmap E) ───────────────────────────────────
-    # A counter-HTF entry is taken as a REVERSAL only when it carries strong
-    # lower-timeframe evidence — M5 sweep + M1 BOS + momentum (all required by
-    # default) — and such trades are sized down. Counter-trend setups WITHOUT
-    # that evidence are pushed toward SKIP (falling-knife guard).
-    reversal_trades_enabled: bool = True
-    reversal_min_momentum: float = 0.2
-    reversal_required_evidence: int = 3
-    reversal_size_multiplier: float = 0.7   # counter-trend reversals run at −30% size
-    reversal_no_evidence_skip_penalty: float = 0.30
-    # #17 — weighted reversal evidence. Legacy counts the M5-sweep / M1-BOS /
-    # momentum signals and gates on an integer (≥ reversal_required_evidence),
-    # so a +0.21 momentum reads identical to +0.95 and two strong signals lose
-    # to three weak ones. When enabled, each signal contributes a continuous
-    # strength and the gate compares the summed strength to
-    # reversal_required_strength (default 2.0 ≈ two full signals). LIVE: each
-    # signal contributes a continuous strength rather than an integer count.
-    reversal_weighted_evidence: bool = True
-    reversal_required_strength: float = 2.0
-    reversal_momentum_full: float = 0.6      # momentum reaching this counts as full strength
-    # #TF-conflict — when enabled the management read folds higher-timeframe
-    # conflict into opposition scoring (helper is always present; this turns it
-    # on in the live decision path).
-    tf_conflict_aware: bool = True
-    # ── No-directional-edge range guard ───────────────────────────────────
-    # A flat "range" setup (|tf_alignment| < range_edge_htf_min) with no strong
-    # module-panel consensus (consensus_alignment < range_edge_consensus_min)
-    # has no directional edge: entering it on zone shape + R:R alone is the
-    # dominant slow-bleed loss pattern. When enabled, such setups are forced to
-    # SKIP unless the HTF stack or the consensus panel supplies real direction.
-    range_edge_required: bool = True
-    range_edge_htf_min: float = 0.20
-    range_edge_consensus_min: float = 0.40
-    # ── HTF = bounded context (Scenario A) ────────────────────────────────
-    # When the full HTF stack (D1+H4+H1) supports the trade direction, give a
-    # bounded size BONUS on top of the conviction model — HTF helps when it
-    # agrees, hurts (reversal haircut) when it opposes, but never dictates.
-    htf_aligned_size_bonus: float = 0.15     # +15% size on a fully-aligned stack
-    htf_aligned_threshold: float = 0.5       # min tf_alignment to count as "aligned"
-    # ── Conviction → size mapping (#18, smooth curves) ────────────────────
-    # Conviction 0→min, 1→max, mapped linearly (continuous, no tier cliffs, so
-    # 0.879 and 0.851 size differently). Defaults reproduce the legacy 0.5–1.5×
-    # mapping; widen (e.g. 0.25–2.0) to let strong/weak conviction express more.
-    conviction_size_min: float = 0.5
-    conviction_size_max: float = 1.5
-    # MARKET vs PENDING preference cutoff on the (now smooth) market score.
-    market_mode_threshold: float = 0.40
-    # ── Thesis-deterioration secure (roadmap G) ───────────────────────────
-    # The exit brain's profit-securing actions (MOVE_TO_BREAKEVEN, TIGHTEN_SL)
-    # are all gated on profit_state (an R-multiple). Adopted/orphan trades carry
-    # a *reconstructed* risk, so their R is detached from real economic profit —
-    # a winner can run +$X (meaningful cash) while profit_state ≈ 0.2R, below
-    # every R-gate, and HOLD wins by default because nothing else can score.
-    # This layer asks the trader's question instead — "is the reason I'm holding
-    # still valid?" — and secures profit when MEANINGFUL ECONOMIC PROFIT exists
-    # AND the thesis is deteriorating, UNLESS it's a healthy pullback in an
-    # intact trend. It overrides only a would-be default HOLD; a stronger CLOSE/
-    # TIGHTEN/BE verdict from the normal scoring still takes precedence.
-    thesis_secure_enabled: bool = True
-    thesis_secure_min_profit_usd: float = 15.0   # economic-profit trigger (account ccy)
-    thesis_secure_min_profit_pips: float = 12.0  # ...or this many pips (whichever first)
-    thesis_deterioration_threshold: float = 0.35  # 0..1 decay score needed to act
-    # When decay is SEVERE (most dimensions collapsing at once), securing the
-    # stop and waiting to be stopped just gives the move back — bank the profit
-    # at market instead. Hard-close once deterioration ≥ this (and profit
-    # exists). Must be > thesis_deterioration_threshold; set ≥ 1.01 to disable
-    # the hard-close tier and keep only stop-securing.
-    thesis_close_threshold: float = 0.80
-    thesis_healthy_structure: float = 0.5    # structure ≥ this AND momentum ≥ healthy → hold (pullback)
-    thesis_healthy_momentum: float = 0.0
-    thesis_lock_fraction: float = 0.5        # lock this fraction of open profit into the stop
-    thesis_struct_ref: float = 0.6           # structure below this starts contributing to decay
-    thesis_conviction_cycles: int = 3        # re-score window for conviction-collapse detection
-    thesis_conviction_drop: float = 10.0     # min scan-score drop over window to count as collapse
-    thesis_conviction_full_drop: float = 30.0  # drop giving the conviction leg full weight
-    # ── Live OQ/EQ decay management (P3) ──────────────────────────────────
-    # OQ/EQ gated the trade READY at entry; they are recomputed on fresh
-    # candles during management (decision.context.live_oq/live_eq). When the
-    # market conditions (OQ) or entry geometry (EQ) that justified the trade
-    # decay, add bounded CLOSE/TIGHTEN pressure — "the reason this was tradeable
-    # is gone". Additive weighted terms, never a hard override; inert when the
-    # live scores are unavailable (None).
-    oq_eq_decay_enabled: bool = True
-    oq_floor: float = 5.0                    # live OQ below this → CLOSE/TIGHTEN pressure
-    eq_floor: float = 5.0                    # live EQ below this → TIGHTEN pressure
-    oq_decay_significant: float = 2.0        # OQ drop (even above floor) → TIGHTEN pressure
-    # ── Fast-cluster opposition decay (PR10) ──────────────────────────────
-    # Data showed the management engine holds losing trades while the fast-
-    # evidence cluster (momentum + M1 alignment) has flipped against the
-    # position, anchored by "HTF aligned" as the hold reason. When the fast
-    # cluster has opposed for ``fast_opposition_min_streak`` consecutive
-    # management cycles AND the trade is NOT meaningfully in profit (profit_r <
-    # fast_opposition_profit_threshold), add bounded, progressively-ramping
-    # CLOSE pressure (weight × min(streak/max_streak, 1)). Additive only — it
-    # never overrides a stronger verdict and never touches the stop. Winners are
-    # unaffected. Set enabled=False to disable.
-    fast_opposition_decay_enabled: bool = True
-    fast_opposition_min_streak: int = 3      # cycles of opposition before pressure starts
-    fast_opposition_max_streak: int = 8      # streak at which the pressure ramp caps
-    fast_opposition_decay_weight: float = 0.30  # max CLOSE pressure at full ramp
-    fast_opposition_profit_threshold: float = 0.3  # only applies below this R
-    # ── Softened entry gate floor ─────────────────────────────────────────
-    # When ``soften_gate`` is on, a mildly-negative ENTER/SKIP margin flows
-    # through as ENTER carrying a bounded quality multiplier (orchestrator
-    # sizes it) instead of a hard SKIP. ``gate_safety_margin`` is the hard
-    # floor: a margin at/below it is genuinely hopeless and still hard-SKIPs.
-    # Tightened from the legacy -1.0 (which let alignment as bad as -0.95 enter
-    # softened) to -0.3 so the softened gate actually has teeth — deeply
-    # counter-trend setups are rejected, not merely sized down.
-    soften_gate: bool = True
-    gate_safety_margin: float = -0.3
-    # ── Candidate-scoped management (Session 4 multi-opportunity) ──────────
-    # A position is opened because specific modules on specific timeframes
-    # voted for it (its Candidate). When this is on, management revalidates an
-    # open position against ONLY those contributing modules' latest votes —
-    # not the latest net-summed consensus direction — so a LONG swing and a
-    # SHORT scalp on one symbol live and die by their own theses. When the
-    # contributing modules flip against the position a thesis-invalidation
-    # CLOSE is raised; when they go silent a conservative CLOSE is raised. Only
-    # acts when candidate provenance was captured at entry — positions without
-    # provenance fall back to the unchanged net-summed management read.
-    candidate_scoped_management_enabled: bool = True
-    # Minimum number of the position's contributing modules that must still be
-    # voting (any direction) for the thesis read to be considered "live". Below
-    # this the contributing panel has gone silent → conservative exit.
-    candidate_thesis_min_live_votes: int = 1
 
 
 # ---------------------------------------------------------------------------
@@ -3809,6 +3479,17 @@ class LLMConfig:
     # auth faults (401/402/403/429) are never background-probed. 0 ⇒ disabled.
     # Env: LLM_RECOVERY_PROBE_SECONDS.
     recovery_probe_seconds: float = 60.0
+    # §22–§28 — optional per-provider free-tier quota limits. All default 0 ⇒
+    # unmetered (behaviour unchanged). When set, the client refuses to send a
+    # request that would exceed the provider's remaining requests-per-minute /
+    # -per-day or tokens-per-minute / -per-day and benches it until the window
+    # frees, so a scarce free tier is never blindly exhausted (§28). Limits come
+    # from the provider's real service, never baked in. Env: LLM_RPM / LLM_RPD /
+    # LLM_TPM / LLM_TPD.
+    rpm_limit: int = 0
+    rpd_limit: int = 0
+    tpm_limit: int = 0
+    tpd_limit: int = 0
 
     def __post_init__(self) -> None:
         # The environment is the single source of truth — no vendor is baked in.
@@ -3830,6 +3511,10 @@ class LLMConfig:
             ("LLM_CIRCUIT_COOLDOWN_MAX_SECONDS", "circuit_cooldown_max_seconds", float),
             ("LLM_LOCAL_MAX_CONCURRENCY", "local_max_concurrency", int),
             ("LLM_RECOVERY_PROBE_SECONDS", "recovery_probe_seconds", float),
+            ("LLM_RPM", "rpm_limit", int),
+            ("LLM_RPD", "rpd_limit", int),
+            ("LLM_TPM", "tpm_limit", int),
+            ("LLM_TPD", "tpd_limit", int),
         ):
             raw = os.getenv(env_name)
             if raw is not None:
@@ -4163,6 +3848,16 @@ class CognitionConfig:
     per_module_evidence: bool = True   # Phase E: emit one Evidence per contributing module/domain
     min_confidence_to_act: float = 0.55
     max_uncertainty_to_act: float = 0.6
+    # V-01 (§I/§VI/§VIII) — EV-primary actionability gate (OPT-IN, default off).
+    # When true, the Brain opens a campaign on a positive EXPECTED VALUE (net of
+    # cost, over flat) rather than a raw confidence floor, so a genuine positive-
+    # expectancy opportunity is not vetoed merely because mixed evidence pulled
+    # confidence below a threshold ("conflicting evidence ⇒ FLAT" is forbidden).
+    # ``ev_action_threshold_r`` is the minimum EV in R to act on (default 0.0 ⇒
+    # any strictly positive EV). Confidence still feeds the EV and the sizing.
+    # env COGNITION_EV_PRIMARY_GATE / COGNITION_EV_ACTION_THRESHOLD_R.
+    ev_primary_gate: bool = False
+    ev_action_threshold_r: float = 0.0
     # Article XX — advisor quorum: the Council must not become fake diversity. A
     # Brain-originated campaign must be backed by at least this many advisors that
     # actually contributed an opinion. env COGNITION_MIN_ADVISORS_FOR_ACTION.
@@ -4313,6 +4008,9 @@ class CognitionConfig:
             os.getenv("COGNITION_MANAGEMENT_MODE", self.management_mode) or "live"
         ).strip().lower()
         self.event_driven = _llm_env_bool("COGNITION_EVENT_DRIVEN", self.event_driven)
+        self.ev_primary_gate = _llm_env_bool(
+            "COGNITION_EV_PRIMARY_GATE", self.ev_primary_gate
+        )
         for env_name, attr in (
             ("COGNITION_LOOP_INTERVAL_SECONDS", "loop_interval_seconds"),
             ("COGNITION_MAX_DECISION_AGE_SECONDS", "max_decision_age_seconds"),
@@ -4328,6 +4026,7 @@ class CognitionConfig:
             ("COGNITION_OPPORTUNITY_COST_MULTIPLE", "opportunity_cost_multiple"),
             ("COGNITION_OPPORTUNITY_MIN_NET_EV", "opportunity_min_net_ev"),
             ("COGNITION_COMMISSION_PER_LOT_ROUND_TRIP", "commission_per_lot_round_trip"),
+            ("COGNITION_EV_ACTION_THRESHOLD_R", "ev_action_threshold_r"),
         ):
             raw = os.getenv(env_name)
             if raw is not None:
@@ -4634,7 +4333,6 @@ class AppConfig:
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     confirmation_penalties: ConfirmationPenaltyConfig = field(default_factory=ConfirmationPenaltyConfig)
-    consensus: ConsensusConfig = field(default_factory=ConsensusConfig)
     dynamic_weights: DynamicWeightConfig = field(default_factory=DynamicWeightConfig)
     opportunity_ranker: OpportunityRankerConfig = field(default_factory=OpportunityRankerConfig)
     decision_trace: DecisionTraceConfig = field(default_factory=DecisionTraceConfig)
@@ -4680,7 +4378,6 @@ class AppConfig:
     risk_management: RiskManagementConfig = field(default_factory=RiskManagementConfig)
     behavior_discovery: BehaviorDiscoveryConfig = field(default_factory=BehaviorDiscoveryConfig)
     layered_decision: LayeredDecisionConfig = field(default_factory=LayeredDecisionConfig)
-    decision: DecisionConfig = field(default_factory=DecisionConfig)
     backtest: BacktestConfig = field(default_factory=BacktestConfig)
     data_backup: DataBackupConfig = field(default_factory=DataBackupConfig)
     planner: PlannerConfig = field(default_factory=PlannerConfig)
