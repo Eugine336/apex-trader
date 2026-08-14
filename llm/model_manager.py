@@ -289,7 +289,12 @@ def spec_context_window(spec: dict) -> int:
         return 0
 
 
-def build_model_manager(config: Any, transport: Optional[Any] = None) -> Optional[Any]:
+def build_model_manager(
+    config: Any,
+    transport: Optional[Any] = None,
+    *,
+    budget_ledger: Optional[Any] = None,
+) -> Optional[Any]:
     """Build a :class:`ModelManager` from an ``LLMConfig``-like object.
 
     The primary model (``provider``/``model``/``api_key``/``base_url``) is the
@@ -298,18 +303,32 @@ def build_model_manager(config: Any, transport: Optional[Any] = None) -> Optiona
     common "one gateway, many models" case). A spec may declare ``classes`` (the
     compute classes it serves) and ``context_window`` for compute-class routing.
     Returns ``None`` when no usable candidate can be built — a safe no-op,
-    exactly like ``build_client``.
+    exactly like ``build_client``. When quota limits are configured, each
+    candidate gets a shared per-account budget meter (§22–§28); ``budget_ledger``
+    overrides the process-shared ledger (tests / a scoped subsystem).
     """
-    from llm.client import LLMClient  # local import keeps this module lightweight
+    from llm.client import LLMClient, attach_budget  # local import keeps this module lightweight
+    from llm.provider_budget import coerce_limits, get_shared_ledger
     from llm.provider_credentials import (
         has_credentials, resolve_api_key, resolve_base_url,
     )
 
+    ledger = budget_ledger if budget_ledger is not None else get_shared_ledger()
     cc = _circuit_config(config)
     candidates: list = []
     primary_key = str(getattr(config, "api_key", "") or "")
     primary_base = str(getattr(config, "base_url", "") or "")
     primary_provider = str(getattr(config, "provider", "") or "")
+
+    def _entry_limits(spec: dict, prov: str) -> dict:
+        # A roster entry's own limits; a same-provider entry with none inherits
+        # the primary's (free-tier limits are per account, mirroring key
+        # inheritance). Cross-provider entries never inherit.
+        rpm, rpd, tpm, tpd = coerce_limits(spec)
+        if not (rpm or rpd or tpm or tpd) and \
+                str(prov).strip().lower() == primary_provider.strip().lower():
+            rpm, rpd, tpm, tpd = coerce_limits(config)
+        return {"rpm": rpm, "rpd": rpd, "tpm": tpm, "tpd": tpd}
 
     def _mk(provider, model, api_key, base_url, timeout, max_tokens, temperature):
         if not provider or not model:
@@ -328,6 +347,7 @@ def build_model_manager(config: Any, transport: Optional[Any] = None) -> Optiona
     primary = _mk(getattr(config, "provider", ""), getattr(config, "model", ""),
                   primary_key, primary_base, to, mt, tmp)
     if primary is not None and has_credentials(primary_provider, primary_key):
+        attach_budget(primary, config, provider=primary_provider, budget_ledger=ledger)
         candidates.append(_Candidate(
             client=primary, priority=0,
             tier=int(resolve_tier(primary_provider)),
@@ -352,6 +372,7 @@ def build_model_manager(config: Any, transport: Optional[Any] = None) -> Optiona
             spec.get("temperature", tmp),
         )
         if client is not None:
+            attach_budget(client, _entry_limits(spec, prov), provider=prov, budget_ledger=ledger)
             candidates.append(_Candidate(
                 client=client,
                 priority=int(spec.get("priority", i)),

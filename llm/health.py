@@ -65,6 +65,11 @@ class CircuitBreaker:
         self.last_error = ""
         self._trips = 0
         self._open_until = 0.0            # monotonic; 0 ⇒ closed
+        # Provider-signaled cooldown (e.g. HTTP 429 Retry-After / rate-limit
+        # reset). A vendor that tells us exactly when capacity returns is worth
+        # more than a blind backoff guess (Constitution §27 — quota recovery);
+        # kept for observability even after the window elapses.
+        self._last_retry_after = 0.0
         self._lock = threading.Lock()
 
     # ── outcome recording ────────────────────────────────────────────────
@@ -74,6 +79,7 @@ class CircuitBreaker:
             self.consecutive_failures = 0
             self._trips = 0
             self._open_until = 0.0
+            self._last_retry_after = 0.0
             self.last_error = ""
             self._ewma(latency_ms)
 
@@ -88,6 +94,31 @@ class CircuitBreaker:
                 self._trips += 1
                 backoff = self.cfg.cooldown_seconds * (2 ** (self._trips - 1))
                 self._open_until = self._clock() + min(backoff, self.cfg.cooldown_max_seconds)
+
+    def bench(self, seconds: float, *, error: str = "") -> None:
+        """Bench the provider for a vendor-signaled cooldown (HTTP 429
+        ``Retry-After`` / rate-limit reset) WITHOUT counting a hard failure.
+
+        A throttle is not a fault — the provider is healthy, just out of quota
+        for now — so this must not degrade ``success_rate`` or trip the fault
+        counter (that would wrongly bench it further). It only holds the circuit
+        OPEN until the reset the vendor gave us, so APEX stops re-hammering an
+        exhausted free-tier quota every cycle (Constitution §26/§27). Only ever
+        EXTENDS an existing OPEN window (never shortens it); ignores a
+        non-positive or malformed value; bounded to 24h so a bad header cannot
+        bench a provider forever. Thread-safe; never raises."""
+        try:
+            s = float(seconds)
+        except (TypeError, ValueError):
+            return
+        if s <= 0.0:
+            return
+        s = min(s, 86400.0)  # 24h ceiling — a malformed reset must not bench forever
+        with self._lock:
+            self._open_until = max(self._open_until, self._clock() + s)
+            self._last_retry_after = s
+            if error:
+                self.last_error = str(error)[:160]
 
     def _ewma(self, latency_ms: float) -> None:
         if latency_ms and latency_ms > 0:
@@ -139,6 +170,7 @@ class CircuitBreaker:
             "success_rate": round(self.success_rate, 4),
             "ewma_latency_ms": round(self.ewma_latency_ms, 1),
             "cooldown_remaining_s": round(self.seconds_until_retry(now), 1),
+            "signaled_cooldown_s": round(self._last_retry_after, 1),
             "last_error": self.last_error,
         }
 
@@ -150,8 +182,10 @@ class CircuitBreaker:
 # their own, so probe them eagerly. Quota/credit/auth faults (HTTP 401/402/403/
 # 429) do NOT clear by retrying — hammering them just deepens the rate-limit or
 # wastes calls — so those are left to their own reset clock (no background probe).
+# ``budget:exhausted`` is our OWN local quota guard refusing to spend a scarce
+# free tier; like a 429 it clears only when the window resets, never by probing.
 _NON_TRANSIENT_SIGNATURES = frozenset({
-    "http:401", "http:402", "http:403", "http:429",
+    "http:401", "http:402", "http:403", "http:429", "budget:exhausted",
 })
 
 

@@ -2,8 +2,6 @@
 
 ## Recommended: Modal managed inference endpoints
 
-## Recommended: Modal managed inference endpoints
-
 APEX runs on a small VPS (~1.8 GB RAM, no GPU), so all LLM inference must happen
 off the box. The **recommended** way to do this is a **Modal managed inference
 endpoint**, created from the [Modal dashboard](https://modal.com). Modal hosts a
@@ -11,18 +9,27 @@ model for you, serves an OpenAI-compatible `/v1` API, and handles the container
 image, GPU, CUDA, and scaling automatically — there is nothing to deploy or
 maintain from this repo.
 
-APEX currently uses one managed endpoint serving **Qwen 3.6 35B (A3B)** on a
-`1xB200`:
+APEX currently uses one managed endpoint serving **Qwen 3.6 35B (A3B)** through
+SGLang on a `1xB200`:
 
 - Endpoint URL: `https://<your-workspace>--ep-<endpoint-name>-server.<region>.modal.direct/v1`
   (e.g. `https://eugine336--ep-qwen3-6-35b-a3b-server.ap-south.modal.direct/v1`)
+- Served model name: `Qwen/Qwen3.6-35B-A3B`
 - Auth: a bearer token of the form `TokenID.TokenSecret`, sent as
   `Authorization: Bearer <token>`.
 
 Note the managed-endpoint URL uses the `.modal.direct` domain with an `ep-`
 prefix, a `-server` suffix, and the deployment region (e.g. `ap-south`) — it is
 **not** the `*.modal.run` form produced by the custom deploy script below. Copy
-the exact URL from the Modal dashboard and append `/v1`.
+the exact URL from the Modal dashboard and append `/v1`:
+
+```text
+https://USERNAME--ENDPOINT-NAME-server.REGION.modal.direct/v1
+```
+
+The `model` field in `LLM_EXTRA_MODELS` must exactly match the endpoint's
+`--served-model-name`. In Modal's managed endpoint UI, check the Source tab for
+the served name instead of guessing from the Hugging Face repository name.
 
 ### Wire it into `.env`
 
@@ -30,14 +37,17 @@ Add one entry to `LLM_EXTRA_MODELS` with `provider:"modal"`, the endpoint
 `base_url` (ending in `/v1`), and the combined bearer token as `api_key`:
 
 ```json
-{"name":"modal-qwen35b","provider":"modal","model":"Qwen/Qwen3.6-35B","base_url":"https://eugine336--ep-qwen3-6-35b-a3b-server.ap-south.modal.direct/v1","api_key":"<TokenID>.<TokenSecret>","tier":2,"timeout_seconds":90,"classes":["deep"]}
+{"name":"modal-qwen35b","provider":"modal","model":"Qwen/Qwen3.6-35B-A3B","base_url":"https://eugine336--ep-qwen3-6-35b-a3b-server.ap-south.modal.direct/v1","api_key":"<TokenID>.<TokenSecret>","tier":2,"timeout_seconds":300,"classes":["deep"]}
 ```
 
 Also set the same token as `MODAL_INFERENCE_KEY` in `.env`. APEX sends the
 `api_key` as `Authorization: Bearer <token>` on every request (see
-`llm/client.py`), so the endpoint authenticates automatically. Because a managed
-endpoint always requires the token, keep `api_key` populated on this entry even
-though `provider:"modal"` is otherwise treated as keyless.
+`llm/client.py`), so an endpoint with `REQUIRE_AUTHENTICATION=True`
+authenticates automatically. Keep `timeout_seconds` at `300` or higher when the
+endpoint scales to zero (`min_containers=0`, `scaledown_window=300`), because the
+first request after idle must tolerate the cold start. Unauthenticated Modal
+endpoints can omit `api_key`, but authenticated managed endpoints need either
+the entry-level `api_key` or `MODAL_INFERENCE_KEY`.
 
 ---
 
@@ -111,7 +121,8 @@ OpenAI-compatible base URLs (replace `<workspace>` with your Modal workspace):
 {"name":"modal-qwen","provider":"modal","model":"Qwen/Qwen2.5-7B-Instruct","base_url":"https://<workspace>--apex-trader-llm-qwenserver-serve.modal.run/v1","tier":2,"timeout_seconds":60}
 ```
 
-`modal` is a keyless, OpenAI-compatible provider — no API key is required.
+Those deprecated custom endpoints were unauthenticated, so no API key was
+required for that setup.
 
 ## Design notes
 
