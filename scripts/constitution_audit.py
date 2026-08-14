@@ -161,15 +161,25 @@ CHECKS: list[Check] = [
         ],
     ),
     Check(
-        id="retired_directional_deciders_unreachable",
-        clause="§I/§III no analytical module casts a LONG/SHORT vote and no directional consensus substitutes for cognition; §IV higher timeframe is context, not command; §XXX a retired decider must stay off the live path",
-        pr="PR-V05/V06",
-        summary="A retired directional decider (vote/consensus aggregation, or the H4 direction veto / range-edge HTF gate reached via calculate_entry) is invoked from the live path.",
-        # DecisionEngine / SituationEngine / EntryEngine are still CONSTRUCTED
-        # live (evidence provider / safety component), which is allowed — the
-        # violation is calling their retired directional DECIDERS from anywhere
-        # outside the retired cluster. The cluster files are excluded so their
-        # internal cross-calls do not self-trip the guard.
+        id="retired_directional_deciders_removed",
+        clause="§I/§III no analytical module casts a LONG/SHORT vote and no directional consensus substitutes for cognition; §IV higher timeframe is context, not command; §XXX a retired decider must not exist on the live path",
+        pr="PR-V05/V06 (guard) + retired-decider removal",
+        summary="A retired directional decider (DecisionEngine/SituationEngine/RiskGovernor/DecisionJournal vote+consensus pipeline, or the EntryEngine.calculate_entry H4 direction / range-edge gate) is present or invoked on the live path.",
+        # The decider cluster has been physically REMOVED; these files must stay
+        # gone and calculate_entry must not reappear. The banned_calls also fail
+        # if any live-path file calls a retired decider (defence in depth). The
+        # remaining cluster files are excluded so a re-added decider cannot hide
+        # by cross-calling within the cluster.
+        exists=[
+            "decision/engine.py",
+            "decision/situation.py",
+            "decision/governor.py",
+            "decision/journal.py",
+            "decision/context.py",
+        ],
+        patterns=[
+            _p("trigger/entry_engine.py", r"def\s+calculate_entry\b"),
+        ],
         banned_calls=[
             re.compile(r"\.decide_entry\("),
             re.compile(r"\.decide_management\("),
@@ -178,8 +188,8 @@ CHECKS: list[Check] = [
             re.compile(r"\.assess_open_trade\("),
         ],
         scan_excludes=[
-            "decision/",                  # DecisionEngine / SituationEngine cluster
-            "trigger/entry_engine.py",    # calculate_entry (H4 veto + counter-trend penalty)
+            "decision/",                  # (now only actions.py) — no deciders
+            "trigger/entry_engine.py",    # live zone/stop/target/sizing utilities
             "planning/trade_planner.py",  # retired plan_trade may cross-call assess_*
         ],
     ),
