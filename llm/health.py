@@ -182,8 +182,10 @@ class CircuitBreaker:
 # their own, so probe them eagerly. Quota/credit/auth faults (HTTP 401/402/403/
 # 429) do NOT clear by retrying — hammering them just deepens the rate-limit or
 # wastes calls — so those are left to their own reset clock (no background probe).
+# ``budget:exhausted`` is our OWN local quota guard refusing to spend a scarce
+# free tier; like a 429 it clears only when the window resets, never by probing.
 _NON_TRANSIENT_SIGNATURES = frozenset({
-    "http:401", "http:402", "http:403", "http:429",
+    "http:401", "http:402", "http:403", "http:429", "budget:exhausted",
 })
 
 
