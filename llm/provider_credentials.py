@@ -29,18 +29,17 @@ import os
 import re
 from typing import Optional
 
-# Providers served by a local runtime need no API key (authenticate by locality).
+# Providers that do not require a mandatory API key at the provider level.
 _KEYLESS_PROVIDERS = frozenset({
     "ollama", "vllm", "lmstudio", "lm_studio", "local", "self_hosted",
     "self-hosted", "llamacpp", "llama_cpp", "llamafile", "gpt4all",
     "koboldcpp", "textgen", "text_generation_webui",
-    # Modal.com serverless-GPU vLLM endpoints authenticate by URL, not a key.
-    "modal",
     # NVIDIA NIM served locally authenticates by locality, not an API key.
     "nim_local", "nim_self_hosted", "nvidia_nim_local", "nvidia_nim_self_hosted",
-    # Modal.com serverless GPUs authenticate deploys via `modal token new`;
-    # the served endpoint needs no key by default (an optional bearer token
-    # can be armed with MODAL_INFERENCE_KEY, like a self-hosted vLLM server).
+    # Modal endpoints are key-optional at the provider level: unauthenticated
+    # endpoints work without a key, while managed endpoints configured with
+    # REQUIRE_AUTHENTICATION=True use MODAL_INFERENCE_KEY / api_key as bearer
+    # auth when supplied.
     "modal",
 })
 

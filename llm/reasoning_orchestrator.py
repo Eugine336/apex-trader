@@ -187,6 +187,13 @@ class ReasoningEngine:
             else:
                 self.calls += 1
         if op is None:
+            # Honour any vendor-signalled cooldown (HTTP 429 Retry-After / rate-
+            # limit reset) so a throttled advisor is benched until its quota
+            # returns instead of being re-consulted every cycle — WITHOUT
+            # counting a hard fault (a throttle is not an outage), Article 27.
+            retry_after = self._retry_after()
+            if retry_after > 0.0:
+                self.breaker.bench(retry_after, error="rate-limited")
             # Trip the circuit only on a REAL failure (provider down / timeout /
             # unparsable) — never on a benign throttle/no-op — using the
             # reasoner's liveness signal, so a rate-limited advisor is not wrongly
@@ -246,6 +253,17 @@ class ReasoningEngine:
         except Exception:  # noqa: BLE001
             return ""
 
+    def _retry_after(self) -> float:
+        """Seconds the underlying client was told to wait (HTTP 429
+        ``Retry-After`` / rate-limit reset), or ``0.0``. Lets the circuit bench a
+        throttled advisor until its quota resets rather than re-consulting it
+        every cycle (Article 27). Fail-safe — any missing attribute ⇒ 0.0."""
+        try:
+            client = getattr(self._reasoner, "client", None)
+            return max(0.0, float(getattr(client, "last_retry_after_seconds", 0.0) or 0.0))
+        except Exception:  # noqa: BLE001
+            return 0.0
+
     def probe(self) -> bool:
         """Issue a direct, off-panel liveness probe and record it to the circuit.
 
@@ -264,6 +282,9 @@ class ReasoningEngine:
             reply = complete(_PROBE_SYSTEM, _PROBE_USER)
             latency_ms = (time.time() - t0) * 1000.0
             if reply is None or not str(reply).strip():
+                retry_after = self._retry_after()
+                if retry_after > 0.0:
+                    self.breaker.bench(retry_after, error="rate-limited")
                 self.breaker.record_failure(latency_ms)
                 return False
             self.breaker.record_success(latency_ms)
