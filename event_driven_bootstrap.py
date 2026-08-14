@@ -5109,6 +5109,11 @@ class EventDrivenSystem:
         friday_hour = getattr(risk_cfg, "friday_close_hour_utc", None)
         if isinstance(friday_hour, int) and not isinstance(friday_hour, bool):
             cfg.friday_close_hour_utc = friday_hour
+        # V-03 — defer the compressed direction+score exits to the Brain when the
+        # operator opts in (default True keeps the deterministic suite intact).
+        scan_dir = getattr(risk_cfg, "scan_directional_exits_enabled", None)
+        if isinstance(scan_dir, bool):
+            cfg.scan_directional_exits_enabled = scan_dir
         return cfg
 
     def _check_market_open(self, symbol: str) -> bool:
