@@ -1,25 +1,15 @@
-"""
-APEX TRADER — Decision Intelligence System
-Situation-aware decision layer between analysis and execution.
+"""APEX TRADER — decision action types.
+
+The directional vote/consensus + higher-timeframe-gate decider cluster
+(``DecisionEngine``, ``SituationEngine``, ``RiskGovernor``, ``DecisionJournal``
+and their ``EntryContext``/``TradeContext``/``SituationAssessment`` containers)
+has been physically REMOVED per the constitution (§I/§III/§IV) — the single
+Cognitive Brain is the sole market decider/manager.
+
+Only the shared action types remain: ``Action`` (still consumed by the
+developing-structure management advisory) and the decision dataclasses.
 """
 
-from decision.context import TradeContext, EntryContext
-from decision.situation import SituationEngine, SituationAssessment
 from decision.actions import Action, ManagementDecision, EntryAction, EntryDecision
-from decision.engine import DecisionEngine
-from decision.governor import RiskGovernor
-from decision.journal import DecisionJournal
 
-__all__ = [
-    "TradeContext",
-    "EntryContext",
-    "SituationEngine",
-    "SituationAssessment",
-    "Action",
-    "ManagementDecision",
-    "EntryAction",
-    "EntryDecision",
-    "DecisionEngine",
-    "RiskGovernor",
-    "DecisionJournal",
-]
+__all__ = ["Action", "ManagementDecision", "EntryAction", "EntryDecision"]

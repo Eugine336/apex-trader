@@ -45,7 +45,7 @@ def test_live_path_is_constitutional():
 def test_retired_decider_guard_present_and_has_teeth():
     guard = _load_guard()
     check = next(
-        (c for c in guard.CHECKS if c.id == "retired_directional_deciders_unreachable"),
+        (c for c in guard.CHECKS if c.id == "retired_directional_deciders_removed"),
         None,
     )
     assert check is not None, "the V-05/V-06 retired-decider guard must exist"
@@ -62,7 +62,7 @@ def test_guard_flags_a_synthetic_live_call():
     """A retired-decider call planted in a production-looking file is caught."""
     guard = _load_guard()
     check = next(
-        c for c in guard.CHECKS if c.id == "retired_directional_deciders_unreachable"
+        c for c in guard.CHECKS if c.id == "retired_directional_deciders_removed"
     )
     sample = "        verdict = self._decision_engine.decide_management(pos, ctx)"
     assert any(rx.search(sample) for rx in check.banned_calls)

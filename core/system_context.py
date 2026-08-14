@@ -38,10 +38,6 @@ if TYPE_CHECKING:
     from brain.session_engine import NewsGuard, SessionEngine
     from compliance.division import ComplianceDivision
     from config import AppConfig
-    from decision.engine import DecisionEngine
-    from decision.governor import RiskGovernor
-    from decision.journal import DecisionJournal
-    from decision.situation import SituationEngine
     from governance.division import GovernanceDivision
     from governor.portfolio_governor import PortfolioGovernor
     from platforms.platform_manager import PlatformManager
@@ -83,10 +79,11 @@ class SystemContext:
     portfolio: Optional["PortfolioDivision"] = None
 
     # ── Decision intelligence ────────────────────────────────────────
-    decision_engine: Optional[DecisionEngine] = None
-    situation_engine: Optional[SituationEngine] = None
-    risk_governor: Optional[RiskGovernor] = None
-    decision_journal: Optional[DecisionJournal] = None
+    # The retired directional-decider cluster (DecisionEngine / SituationEngine /
+    # RiskGovernor / DecisionJournal) has been REMOVED — it was a directional
+    # vote/consensus + higher-timeframe-gate pipeline the constitution forbids
+    # (§I/§III/§IV) and was already severed from the live path (constructed but
+    # never invoked). The single Cognitive Brain is the sole decider/manager.
     session_engine: Optional[SessionEngine] = None
     news_guard: Optional[NewsGuard] = None
 
@@ -454,91 +451,17 @@ class SystemContext:
             logger.critical("[SystemContext] ComplianceDivision init failed — SAFETY DEGRADED: {}", exc)
             ctx._mark_safety_degraded("ComplianceDivision")
 
-        # ── SituationEngine ─────────────────────────────────────────
-        try:
-            from decision.situation import SituationEngine as _SituationEngine
-            ctx.situation_engine = _SituationEngine()
-        except Exception as exc:
-            logger.warning("[SystemContext] SituationEngine init failed: {}", exc)
-
-        # ── DecisionEngine ──────────────────────────────────────────
-        # NOTE: the DecisionEngine's in-trade MANAGEMENT path is RETIRED — the
-        # single Cognitive Brain is the sole market manager (Constitution Part
-        # VI/X); the deterministic protectors remain the Part X safety floor.
-        # The engine is still constructed here for the entry/decision paths that
-        # continue to consume it.
-        try:
-            from decision.engine import DecisionEngine as _DecisionEngine
-            de_cfg = getattr(config, "decision", None)
-            if de_cfg is not None:
-                ctx.decision_engine = _DecisionEngine(
-                    soften_gate=getattr(de_cfg, "soften_gate", True),
-                    gate_safety_margin=getattr(
-                        de_cfg, "gate_safety_margin", -0.3,
-                    ),
-                    reversal_weighted_evidence=getattr(
-                        de_cfg, "reversal_weighted_evidence", True,
-                    ),
-                    reversal_required_strength=getattr(
-                        de_cfg, "reversal_required_strength", 2.0,
-                    ),
-                    reversal_momentum_full=getattr(
-                        de_cfg, "reversal_momentum_full", 0.6,
-                    ),
-                    tf_conflict_aware=getattr(de_cfg, "tf_conflict_aware", True),
-                    range_edge_required=getattr(
-                        de_cfg, "range_edge_required", True,
-                    ),
-                    range_edge_htf_min=getattr(
-                        de_cfg, "range_edge_htf_min", 0.20,
-                    ),
-                    range_edge_consensus_min=getattr(
-                        de_cfg, "range_edge_consensus_min", 0.40,
-                    ),
-                    fast_opposition_decay_enabled=getattr(
-                        de_cfg, "fast_opposition_decay_enabled", True,
-                    ),
-                    fast_opposition_min_streak=getattr(
-                        de_cfg, "fast_opposition_min_streak", 3,
-                    ),
-                    fast_opposition_max_streak=getattr(
-                        de_cfg, "fast_opposition_max_streak", 8,
-                    ),
-                    fast_opposition_decay_weight=getattr(
-                        de_cfg, "fast_opposition_decay_weight", 0.30,
-                    ),
-                    fast_opposition_profit_threshold=getattr(
-                        de_cfg, "fast_opposition_profit_threshold", 0.3,
-                    ),
-                )
-            else:
-                ctx.decision_engine = _DecisionEngine(soften_gate=True)
-        except Exception as exc:
-            logger.warning("[SystemContext] DecisionEngine init failed: {}", exc)
-
-        # ── RiskGovernor ────────────────────────────────────────────
-        try:
-            from decision.governor import RiskGovernor as _RiskGovernor
-            ctx.risk_governor = _RiskGovernor(graded_risk=True)
-        except Exception as exc:
-            logger.warning("[SystemContext] RiskGovernor init failed: {}", exc)
-
-        # ── DecisionJournal ─────────────────────────────────────────
-        try:
-            from decision.journal import DecisionJournal as _DecisionJournal
-            ctx.decision_journal = _DecisionJournal()
-        except Exception as exc:
-            logger.warning("[SystemContext] DecisionJournal init failed: {}", exc)
-
+        # ── Retired directional-decider cluster — REMOVED ─────────
+        # DecisionEngine / SituationEngine / RiskGovernor / DecisionJournal
+        # were a directional vote/consensus + HTF-gate pipeline the
+        # constitution forbids (Constitution §I/§III/§IV). They were already
+        # severed from the live path (constructed but never invoked) and are
+        # now physically removed; the single Cognitive Brain is the sole
+        # decider/manager.
         logger.info(
-            "[SystemContext] decision layer initialized — session={} news={} "
-            "situation={} decision={} governor={} journal={}",
+            "[SystemContext] decision layer initialized — session={} news={}",
             ctx.session_engine is not None,
             ctx.news_guard is not None,
-            ctx.situation_engine is not None,
-            ctx.decision_engine is not None,
-            ctx.risk_governor is not None,
-            ctx.decision_journal is not None,
         )
 
         # ── Scan Pipeline + Sizing (Phase 3) ─────────────────────────
