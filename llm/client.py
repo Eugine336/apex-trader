@@ -663,12 +663,19 @@ class LLMClient:
             return None
 
 
-def build_client(config: Any, transport: Optional[Transport] = None) -> Optional[LLMClient]:
+def build_client(
+    config: Any,
+    transport: Optional[Transport] = None,
+    *,
+    budget_ledger: Optional[Any] = None,
+) -> Optional[LLMClient]:
     """Construct an :class:`LLMClient` from an ``LLMConfig``-like object.
 
     Returns ``None`` when no provider is configured or the provider cannot be
     resolved to a usable request shape — so an absent/mis-set env is a safe
-    no-op, never an error.
+    no-op, never an error. When the config carries quota limits a shared budget
+    meter (keyed by provider account) is attached; ``budget_ledger`` overrides
+    the process-shared ledger (used by tests / a scoped subsystem).
     """
     provider = str(getattr(config, "provider", "") or "").strip()
     if not provider:
@@ -695,27 +702,45 @@ def build_client(config: Any, transport: Optional[Transport] = None) -> Optional
                 "LLM_BASE_URL, or no model set) — reasoner disabled", provider,
             )
         return None
-    # §22–§28 — attach a quota meter when the operator configured real free-tier
-    # limits (rpm/rpd/tpm/tpd). All default 0 ⇒ unmetered, behaviour unchanged;
-    # limits come from config (the provider's real service), never baked in.
-    def _limit(attr: str) -> int:
-        try:
-            return max(0, int(getattr(config, attr, 0) or 0))
-        except (TypeError, ValueError):
-            return 0
-    rpm, rpd = _limit("rpm_limit"), _limit("rpd_limit")
-    tpm, tpd = _limit("tpm_limit"), _limit("tpd_limit")
-    if rpm or rpd or tpm or tpd:
-        try:
-            from llm.provider_budget import ProviderBudget
-            client.budget = ProviderBudget(rpm=rpm, rpd=rpd, tpm=tpm, tpd=tpd)
-            logger.info(
-                "[llm] provider '{}' quota meter on (rpm={} rpd={} tpm={} tpd={})",
-                provider, rpm, rpd, tpm, tpd,
-            )
-        except Exception as exc:  # noqa: BLE001 — a budget wiring fault must not disable the client
-            logger.debug("[llm] budget wiring fault ({}): {}", provider, exc)
+    # §22–§28 — attach a shared quota meter when the operator configured real
+    # free-tier limits (rpm/rpd/tpm/tpd). All default 0 ⇒ unmetered, behaviour
+    # unchanged; limits come from config (the provider's real service), never
+    # baked in. The meter is shared by provider account so the reasoner, its
+    # failover roster and the council respect ONE quota.
+    attach_budget(client, config, budget_ledger=budget_ledger)
     return client
 
 
-__all__ = ["LLMClient", "Transport", "build_client"]
+def attach_budget(
+    client: "LLMClient",
+    limits_source: Any,
+    *,
+    provider: str = "",
+    budget_ledger: Optional[Any] = None,
+) -> None:
+    """Attach a shared per-account quota meter to ``client`` when ``limits_source``
+    declares any positive rpm/rpd/tpm/tpd limit; otherwise a no-op.
+
+    ``limits_source`` may be an ``LLMConfig``-like object or a roster-spec dict.
+    Budgets are shared by provider ACCOUNT (provider + endpoint + key
+    fingerprint) via the process-shared ledger, so several models on one free
+    tier share a single meter. Fail-safe — a wiring fault never disables the
+    client."""
+    try:
+        from llm.provider_budget import account_key, coerce_limits, get_shared_ledger
+        rpm, rpd, tpm, tpd = coerce_limits(limits_source)
+        if not (rpm or rpd or tpm or tpd):
+            return
+        ledger = budget_ledger if budget_ledger is not None else get_shared_ledger()
+        prov = str(provider or getattr(client, "provider", "") or "")
+        key = account_key(prov, getattr(client, "base_url", ""), getattr(client, "api_key", ""))
+        client.budget = ledger.budget(key, rpm=rpm, rpd=rpd, tpm=tpm, tpd=tpd)
+        logger.info(
+            "[llm] provider '{}' quota meter on (rpm={} rpd={} tpm={} tpd={})",
+            prov, rpm, rpd, tpm, tpd,
+        )
+    except Exception as exc:  # noqa: BLE001 — a budget wiring fault must not disable the client
+        logger.debug("[llm] budget wiring fault: {}", exc)
+
+
+__all__ = ["LLMClient", "Transport", "build_client", "attach_budget"]
