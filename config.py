@@ -4178,6 +4178,16 @@ class CognitionConfig:
     per_module_evidence: bool = True   # Phase E: emit one Evidence per contributing module/domain
     min_confidence_to_act: float = 0.55
     max_uncertainty_to_act: float = 0.6
+    # V-01 (§I/§VI/§VIII) — EV-primary actionability gate (OPT-IN, default off).
+    # When true, the Brain opens a campaign on a positive EXPECTED VALUE (net of
+    # cost, over flat) rather than a raw confidence floor, so a genuine positive-
+    # expectancy opportunity is not vetoed merely because mixed evidence pulled
+    # confidence below a threshold ("conflicting evidence ⇒ FLAT" is forbidden).
+    # ``ev_action_threshold_r`` is the minimum EV in R to act on (default 0.0 ⇒
+    # any strictly positive EV). Confidence still feeds the EV and the sizing.
+    # env COGNITION_EV_PRIMARY_GATE / COGNITION_EV_ACTION_THRESHOLD_R.
+    ev_primary_gate: bool = False
+    ev_action_threshold_r: float = 0.0
     # Article XX — advisor quorum: the Council must not become fake diversity. A
     # Brain-originated campaign must be backed by at least this many advisors that
     # actually contributed an opinion. env COGNITION_MIN_ADVISORS_FOR_ACTION.
@@ -4328,6 +4338,9 @@ class CognitionConfig:
             os.getenv("COGNITION_MANAGEMENT_MODE", self.management_mode) or "live"
         ).strip().lower()
         self.event_driven = _llm_env_bool("COGNITION_EVENT_DRIVEN", self.event_driven)
+        self.ev_primary_gate = _llm_env_bool(
+            "COGNITION_EV_PRIMARY_GATE", self.ev_primary_gate
+        )
         for env_name, attr in (
             ("COGNITION_LOOP_INTERVAL_SECONDS", "loop_interval_seconds"),
             ("COGNITION_MAX_DECISION_AGE_SECONDS", "max_decision_age_seconds"),
@@ -4343,6 +4356,7 @@ class CognitionConfig:
             ("COGNITION_OPPORTUNITY_COST_MULTIPLE", "opportunity_cost_multiple"),
             ("COGNITION_OPPORTUNITY_MIN_NET_EV", "opportunity_min_net_ev"),
             ("COGNITION_COMMISSION_PER_LOT_ROUND_TRIP", "commission_per_lot_round_trip"),
+            ("COGNITION_EV_ACTION_THRESHOLD_R", "ev_action_threshold_r"),
         ):
             raw = os.getenv(env_name)
             if raw is not None:
