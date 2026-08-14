@@ -58,7 +58,7 @@ from loguru import logger
 from adaptive.tunable import TuningGuardMixin
 
 # The nine brain modules that cast directional votes (matches the emitter names
-# the SignalLedger records and the keys in ConsensusConfig.weights). "consensus"
+# the SignalLedger records). "consensus"
 # is deliberately excluded — it is the derived verdict, not an organ to govern.
 DEFAULT_GOVERNED_MODULES: tuple[str, ...] = (
     "structure",

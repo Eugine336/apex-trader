@@ -320,113 +320,6 @@ class ConfirmationPenaltyConfig:
 
 
 # ---------------------------------------------------------------------------
-# Dynamic consensus voting weights — make each module's vote weight contextual
-# instead of a fixed ``ConsensusConfig.weights`` constant.  The same base
-# weights are scaled per cycle by regime, volatility and data recency so the
-# panel self-balances: trending markets lean on the slow structural (HTF)
-# modules, ranging/volatile markets lean on the fast tactical (LTF) modules,
-# and a live forming-bar read is discounted vs a confirmed candle-close read.
-# This is the *mechanism* only — no learning/calibration here.
-# ---------------------------------------------------------------------------
-
-# HTF (strategic/structural) vs LTF (tactical/reactive) module classification.
-# Aligned with the existing _DEFAULT_SWING_MODULES / _DEFAULT_SCALP_MODULES
-# convention below: the slow structural reads (structure, wyckoff, order_block,
-# fvg) plus the macro context modules (currency_strength, correlation) are HTF;
-# the fast reactive reads (momentum, volume, vwap, liquidity, inducement,
-# volatility) are LTF.  Any module in neither list gets no regime/volatility
-# bias (recency only).
-_DEFAULT_HTF_MODULES: list[str] = [
-    "structure",
-    "currency_strength",
-    "wyckoff",
-    "order_block",
-    "fvg",
-    "correlation",
-]
-_DEFAULT_LTF_MODULES: list[str] = [
-    "momentum",
-    "volume",
-    "vwap",
-    "liquidity",
-    "inducement",
-    "volatility",
-]
-
-
-@dataclass
-class DynamicWeightConfig:
-    """Context-dependent scaling of the static consensus vote weights.
-
-    When ``enabled`` (default), :class:`brain.dynamic_weights.DynamicWeightProvider`
-    multiplies each module's base ``ConsensusConfig.weights`` entry by a
-    regime factor, a volatility factor, and a recency factor before the vote is
-    cast, then clamps to ``[min_weight, max_weight]``.  Turning ``enabled`` off
-    restores the static weights exactly (behaviour-neutral).
-    """
-
-    enabled: bool = True
-    htf_modules: list[str] = field(default_factory=lambda: list(_DEFAULT_HTF_MODULES))
-    ltf_modules: list[str] = field(default_factory=lambda: list(_DEFAULT_LTF_MODULES))
-    # Regime scaling: trending favours HTF, ranging favours LTF, volatile leans
-    # LTF (fast reaction). Neutral/unknown regimes apply 1.0 (no bias).
-    trending_htf_mult: float = 1.3
-    trending_ltf_mult: float = 0.8
-    ranging_htf_mult: float = 0.8
-    ranging_ltf_mult: float = 1.3
-    volatile_htf_mult: float = 0.9
-    volatile_ltf_mult: float = 1.2
-    # Volatility scaling: high vol favours LTF, low vol favours HTF.
-    # ``volatility_ratio`` = current ATR / baseline ATR.
-    high_vol_threshold: float = 1.5
-    low_vol_threshold: float = 0.7
-    high_vol_htf_mult: float = 0.9
-    high_vol_ltf_mult: float = 1.2
-    low_vol_htf_mult: float = 1.2
-    low_vol_ltf_mult: float = 0.9
-    # Recency scaling: confirmed candle-close = 1.0; developing forming-bar
-    # estimate is discounted uniformly across all modules.
-    developing_weight_mult: float = 0.85
-    # Hard clamp on the final per-module weight (safety rail for large base
-    # weights or extreme multiplier configs).
-    min_weight: float = 0.3
-    max_weight: float = 5.0
-
-    def __post_init__(self) -> None:
-        mult_fields = (
-            "trending_htf_mult", "trending_ltf_mult",
-            "ranging_htf_mult", "ranging_ltf_mult",
-            "volatile_htf_mult", "volatile_ltf_mult",
-            "high_vol_htf_mult", "high_vol_ltf_mult",
-            "low_vol_htf_mult", "low_vol_ltf_mult",
-            "developing_weight_mult",
-            "high_vol_threshold", "low_vol_threshold",
-        )
-        for fld in mult_fields:
-            val = getattr(self, fld)
-            if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
-                raise ValueError(
-                    f"DynamicWeightConfig.{fld} must be finite > 0, got {val!r}"
-                )
-        for fld in ("min_weight", "max_weight"):
-            val = getattr(self, fld)
-            if not isinstance(val, (int, float)) or not math.isfinite(val) or val <= 0:
-                raise ValueError(
-                    f"DynamicWeightConfig.{fld} must be finite > 0, got {val!r}"
-                )
-        if self.min_weight >= self.max_weight:
-            raise ValueError(
-                f"DynamicWeightConfig.min_weight ({self.min_weight}) must be "
-                f"< max_weight ({self.max_weight})"
-            )
-        if self.low_vol_threshold >= self.high_vol_threshold:
-            raise ValueError(
-                f"DynamicWeightConfig.low_vol_threshold ({self.low_vol_threshold}) "
-                f"must be < high_vol_threshold ({self.high_vol_threshold})"
-            )
-
-
-# ---------------------------------------------------------------------------
 # Opportunity ranker — open-ended trade ideas from the same module votes.
 # Instead of collapsing votes to one scalar (LONG/SHORT/NEUTRAL), coherent vote
 # clusters (direction × timeframe) are scored as independent opportunities with
@@ -1621,8 +1514,8 @@ class SignalLedgerConfig:
 class VoteCalibratorConfig:
     """Settings for the Vote Calibrator (learning layer #6).
 
-    The consensus math weights each module's vote by a STATIC
-    ``ConsensusConfig.weights`` entry — a module that is 80%% accurate carries
+    The consensus math weights each module's vote by a STATIC base
+    weight — a module that is 80%% accurate carries
     the same weight as one that is 40%% accurate. The SignalLedger already
     grades every signal (traded or blocked); this calibrator reads each
     module's track record (via the read-only EmitterFeedback service) and turns
@@ -4333,7 +4226,6 @@ class AppConfig:
     scoring: ScoringConfig = field(default_factory=ScoringConfig)
     risk: RiskConfig = field(default_factory=RiskConfig)
     confirmation_penalties: ConfirmationPenaltyConfig = field(default_factory=ConfirmationPenaltyConfig)
-    dynamic_weights: DynamicWeightConfig = field(default_factory=DynamicWeightConfig)
     opportunity_ranker: OpportunityRankerConfig = field(default_factory=OpportunityRankerConfig)
     decision_trace: DecisionTraceConfig = field(default_factory=DecisionTraceConfig)
     orchestrator: OrchestratorConfig = field(default_factory=OrchestratorConfig)
