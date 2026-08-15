@@ -1204,6 +1204,12 @@ class SystemContext:
                         getattr(cog_cfg, "degraded_confidence_multiplier", 0.7)
                         if cog_cfg is not None else 0.7
                     ),
+                    # V-013 — treat UNKNOWN council coverage (no council metadata)
+                    # as degraded cognition and attenuate accordingly.
+                    degrade_on_unknown_council=bool(
+                        getattr(cog_cfg, "degrade_on_unknown_council", True)
+                        if cog_cfg is not None else True
+                    ),
                     # Violation V9 (Part XXIV/XXV) — fallback round-trip execution
                     # cost in R subtracted from the Brain's EV when no live
                     # EXECUTION_QUALITY evidence is present. 0.05 ≈ 5% of R.

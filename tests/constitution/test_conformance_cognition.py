@@ -151,7 +151,10 @@ def test_provider_unavailable_is_not_a_flat_trade():
     assert out.decision.decision_type != DecisionType.OPEN_CAMPAIGN
     assert out.decision.authorises_action is False, "provider-down must not authorise action"
     assert out.campaign is None
-    assert out.direction == "FLAT"
+    # V-016 — provider unavailability must be distinguishable from a FLAT market
+    # read: direction is None (not "FLAT") and provider_unavailable is set.
+    assert out.direction is None
+    assert out.provider_unavailable is True
 
 
 @conformance("§XVIII Q81/Q104: a None/errored reasoner degrades to observe, never a trade")
@@ -208,7 +211,12 @@ def test_reasoner_unavailable_is_a_distinct_state():
     out = CognitiveBrain(reasoner=_Reasoner(_opinion(), available=False)).reason(_rich_state())
     assert out.decision.decision_type == DecisionType.REASONER_UNAVAILABLE
     assert out.decision.decision_type != DecisionType.CONTINUE_OBSERVING
-    assert out.campaign is None and out.direction == "FLAT"
+    # V-016 — provider unavailability is NOT a FLAT market read: direction is None
+    # (distinct from FLAT) and provider_unavailable flags the infrastructure state
+    # so no consumer/log can mistake it for "the market is flat".
+    assert out.campaign is None
+    assert out.direction is None
+    assert out.provider_unavailable is True
 
 
 @conformance(
