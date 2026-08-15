@@ -47,45 +47,48 @@ def _strong_long(**overrides) -> TradePlanContext:
     return TradePlanContext(**base)
 
 
-# ── Planner: ENTER / SKIP / WAIT ─────────────────────────────────────────
+# ── Planner: deprecated, no directional authority (V-005) ────────────────
 
-def test_strong_setup_enters_with_market_and_conviction_boost():
+def test_planner_instantiation_warns_deprecated():
+    import warnings
+
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        TradePlanner()
+    assert any(issubclass(w.category, DeprecationWarning) for w in caught)
+
+
+def test_plan_trade_is_non_directional_noop():
+    # DIRECTIONAL_AUTHORITY (V-005): the planner emits no BUY/SELL verdict and
+    # computes no advisor agreement — it returns a non-actionable, directionless
+    # plan regardless of how "strong" the (upstream) setup looks.
     plan = TradePlanner().plan_trade(_strong_long())
-    assert plan.action == "ENTER"
-    assert plan.entry_mode == "MARKET"
-    assert plan.sl_strategy == "structure"
-    # high agreement should boost size above base
-    assert plan.risk_pct > 0.5
-    assert plan.advisor_agreement > 0.5
-    assert "ENTER" in plan.reasoning
-
-
-def test_weak_conflicted_setup_skips():
-    ctx = _strong_long(
-        scanner_score=55.0,
-        zone_quality=0.2,
-        de_confidence=0.2,
-        de_tf_alignment=-0.5,
-        rl_action=2,           # RL says SELL against our LONG
-        rl_confidence=0.5,
-        pair_win_rate=0.4,
-    )
-    # soften_gates is now live by default (low-conviction flows as ENTER and is
-    # sized down). This test asserts the legacy hard-SKIP path explicitly.
-    plan = TradePlanner(PlannerConfig(soften_gates=False)).plan_trade(ctx)
     assert plan.action == "SKIP"
-    assert plan.risk_pct == 0.0 or plan.action == "SKIP"
+    assert plan.direction == ""
+    assert plan.advisor_agreement == 0.0
+    assert not plan.should_enter
 
 
-def test_wait_when_weak_session_and_change_imminent():
+def test_weighted_advisor_agreement_machinery_removed():
+    # The forbidden weighted directional-agreement/consensus methods are gone.
+    planner = TradePlanner()
+    assert not hasattr(planner, "_advisor_agreement")
+    assert not hasattr(planner, "advisor_vector")
+    assert not hasattr(planner, "_gate_agreement")
+
+
+# ── Execution-geometry helpers (given an already-decided direction) ───────
+# These shape SL/TP/entry/size/BE for a direction decided UPSTREAM; they carry
+# no directional authority of their own.
+
+def test_wait_helper_when_weak_session_and_change_imminent():
     ctx = _strong_long(session_win_rate=0.30, minutes_to_session_change=20)
-    plan = TradePlanner().plan_trade(ctx)
-    assert plan.action == "WAIT"
-    assert plan.wait_reason is not None
-    assert plan.wait_until_minutes and plan.wait_until_minutes > 0
+    reason, minutes = TradePlanner()._wait_decision(ctx)
+    assert reason is not None
+    assert minutes and minutes > 0
 
 
-def test_limit_entry_when_price_far_from_zone():
+def test_entry_mode_limit_when_price_far_from_zone():
     # price 30 pips above zone, ATR 20 → > 0.5×ATR distance → LIMIT
     ctx = _strong_long(
         brain_entry_mode="PENDING",
@@ -93,37 +96,36 @@ def test_limit_entry_when_price_far_from_zone():
         zone_entry_price=1.1000,
         atr_pips=20.0,
     )
-    plan = TradePlanner().plan_trade(ctx)
-    assert plan.action == "ENTER"
-    assert plan.entry_mode == "LIMIT"
-    assert plan.entry_price == pytest.approx(1.1000)
+    mode, price = TradePlanner()._entry_mode(ctx)
+    assert mode == "LIMIT"
+    assert price == pytest.approx(1.1000)
 
 
 def test_trail_only_for_strong_trend():
     ctx = _strong_long(de_tf_alignment=0.85)
-    plan = TradePlanner().plan_trade(ctx)
-    assert plan.tp_strategy == "trail_only"
-    assert plan.tp2_price is None
+    strat, _tp1, _tp1_rr, tp2, _tp2_rr, _runner = TradePlanner()._tp_plan(ctx, sl_pips=20.0)
+    assert strat == "trail_only"
+    assert tp2 is None
 
 
 def test_fixed_tp_for_low_expected_r():
     ctx = _strong_long(de_tf_alignment=0.5, rl_expected_r=1.0)
-    plan = TradePlanner().plan_trade(ctx)
-    assert plan.tp_strategy == "fixed_rr"
-    assert plan.runner_pct == 0.0
+    strat, _tp1, _tp1_rr, _tp2, _tp2_rr, runner = TradePlanner()._tp_plan(ctx, sl_pips=20.0)
+    assert strat == "fixed_rr"
+    assert runner == 0.0
 
 
 def test_correlation_reduces_size():
-    cfg = PlannerConfig()
-    base = TradePlanner(cfg).plan_trade(_strong_long(correlated_exposure=0.0))
-    corr = TradePlanner(cfg).plan_trade(_strong_long(correlated_exposure=0.8))
-    assert corr.risk_pct < base.risk_pct
+    planner = TradePlanner()
+    base_risk, _ = planner._size_plan(_strong_long(correlated_exposure=0.0))
+    corr_risk, _ = planner._size_plan(_strong_long(correlated_exposure=0.8))
+    assert corr_risk < base_risk
 
 
 def test_news_tightens_breakeven_trigger():
     cfg = PlannerConfig()
-    plan = TradePlanner(cfg).plan_trade(_strong_long(is_news_window=True, minutes_to_news=5))
-    assert plan.be_trigger_r == cfg.news_be_trigger_r
+    trigger = TradePlanner(cfg)._be_trigger(_strong_long(is_news_window=True, minutes_to_news=5))
+    assert trigger == cfg.news_be_trigger_r
 
 
 # ── Config round-trip ────────────────────────────────────────────────────

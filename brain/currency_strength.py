@@ -1,8 +1,12 @@
 """
 APEX TRADER — Currency Strength Meter
-Ranks all 8 major currencies in real time.
-We always trade the STRONGEST vs the WEAKEST.
-This alone eliminates 30% of bad trades.
+Ranks all 8 major currencies in real time by relative movement.
+
+This is an analytical instrument, not a trader: it *observes* and reports which
+currencies are strengthening or weakening relative to each other. It does NOT
+decide a trade direction or emit a "best pair to buy/sell" — direction is a
+consequence of the Brain's cognition, not of this meter. Consumers read the
+rankings and relative-strength differentials as observations.
 """
 
 import pandas as pd
@@ -50,21 +54,22 @@ class CurrencyStrength:
 @dataclass
 class StrengthAnalysis:
     rankings: list[CurrencyStrength]
-    strongest: str
-    weakest: str
-    best_pair_long: str   # Best pair to go long on
-    best_pair_short: str  # Best pair to go short on
-    spread: float         # Strength difference between strongest and weakest
-    signal_quality: str   # "EXCELLENT", "GOOD", "POOR"
+    strongest: str        # Observed strongest currency (rank 1) — an observation
+    weakest: str          # Observed weakest currency (last rank) — an observation
+    spread: float         # Observed strength differential (strongest − weakest)
+    signal_quality: str   # Spread dispersion: "EXCELLENT" | "GOOD" | "POOR"
 
 
 class CurrencyStrengthMeter:
     """
-    Calculates real-time currency strength across all 8 majors.
-    Uses RSI-based momentum across multiple timeframes.
+    Measures real-time currency strength across all 8 majors using RSI-based
+    momentum across multiple timeframes.
 
-    Strategy: Always trade the strongest currency AGAINST the weakest.
-    If GBP is #1 and USD is #8, take GBP/USD long. Simple. Effective.
+    This is an instrument, not a trader: it reports *relative movement* — which
+    currency is strengthening or weakening versus the others — as an observation.
+    It does not choose a pair or a trade direction. For example, it observes
+    "GBP is strongest, USD is weakest" and leaves any GBPUSD interpretation to
+    the Brain.
     """
 
     def __init__(self, rsi_period: int = 14):
@@ -139,9 +144,6 @@ class CurrencyStrengthMeter:
         weakest   = rankings[-1].currency
         spread    = rankings[0].score - rankings[-1].score
 
-        best_long  = self._find_best_pair(strongest, weakest, "LONG")
-        best_short = self._find_best_pair(weakest, strongest, "SHORT")
-
         signal_quality = (
             "EXCELLENT" if spread > 0.3 else
             "GOOD"      if spread > 0.15 else
@@ -152,8 +154,6 @@ class CurrencyStrengthMeter:
             rankings=rankings,
             strongest=strongest,
             weakest=weakest,
-            best_pair_long=best_long,
-            best_pair_short=best_short,
             spread=round(spread, 4),
             signal_quality=signal_quality,
         )
@@ -202,57 +202,48 @@ class CurrencyStrengthMeter:
         if ch1h < -0.001:  return "FALLING"
         return "STABLE"
 
-    def _find_best_pair(self, base: str, quote: str, direction: str) -> str:
-        """Find the direct pair for two currencies, or construct cross."""
-        direct = f"{base}{quote}"
-        reverse = f"{quote}{base}"
-
-        if direct in CURRENCY_PAIRS:
-            return direct
-        if reverse in CURRENCY_PAIRS:
-            return reverse
-
-        # Return constructed name
-        return f"{base}/{quote}"
-
-    def get_pair_alignment(
+    def get_pair_strength_differential(
         self,
         pair: str,
         analysis: StrengthAnalysis,
-        direction: str
     ) -> dict:
         """
-        Check if a specific pair aligns with currency strength readings.
-        Returns alignment score and whether to trade.
+        Observe the relative strength of a pair's two currencies.
+
+        Reports which side (base vs quote) is currently stronger and by how
+        much, as a pure observation. It does NOT say whether to go long or
+        short — that interpretation belongs to the Brain. ``rank_differential``
+        is positive when the base currency ranks stronger than the quote and
+        negative when it ranks weaker (lower rank number = stronger).
         """
         if pair not in CURRENCY_PAIRS:
-            return {"aligned": False, "score": 0, "reason": "Unknown pair"}
+            return {"observed": False, "reason": "Unknown pair"}
 
         base, quote = CURRENCY_PAIRS[pair]
         base_strength  = next((r for r in analysis.rankings if r.currency == base), None)
         quote_strength = next((r for r in analysis.rankings if r.currency == quote), None)
 
         if not base_strength or not quote_strength:
-            return {"aligned": False, "score": 0, "reason": "Data missing"}
+            return {"observed": False, "reason": "Data missing"}
 
-        if direction == "LONG":
-            # For long: base should be stronger than quote
-            aligned = base_strength.rank < quote_strength.rank
-            rank_diff = quote_strength.rank - base_strength.rank
-        else:
-            # For short: quote should be stronger than base
-            aligned = quote_strength.rank < base_strength.rank
-            rank_diff = base_strength.rank - quote_strength.rank
-
-        score = min(rank_diff * 15, 60)  # Up to 60 points for perfect alignment
+        # Lower rank number = stronger; positive differential ⇒ base is stronger.
+        differential = quote_strength.rank - base_strength.rank
+        stronger_side = (
+            base if differential > 0 else
+            quote if differential < 0 else
+            "EVEN"
+        )
 
         return {
-            "aligned": aligned and rank_diff >= 2,
-            "score": score if aligned else 0,
-            "rank_diff": rank_diff,
+            "observed": True,
+            "base": base,
+            "quote": quote,
             "base_rank": base_strength.rank,
             "quote_rank": quote_strength.rank,
             "base_label": base_strength.label,
             "quote_label": quote_strength.label,
+            "stronger_side": stronger_side,
+            "rank_differential": differential,
+            "abs_differential": abs(differential),
             "reason": f"{base} #{base_strength.rank} vs {quote} #{quote_strength.rank}"
         }

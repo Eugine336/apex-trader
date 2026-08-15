@@ -66,7 +66,7 @@ def _liqmap(buy=None, sell=None):
     return SimpleNamespace(
         buy_side_liquidity=buy or [], sell_side_liquidity=sell or [],
         nearest_buy_liq=None, nearest_sell_liq=None,
-        liquidity_bias="NEUTRAL", current_price=0.0,
+        dominant_liquidity_side="BALANCED", current_price=0.0,
     )
 
 

@@ -2051,6 +2051,11 @@ class SystemContext:
         # ── Planning + Shadow (Phase 6) ──────────────────────────────
 
         # ── TradePlanner ───────────────────────────────────────────
+        # DIRECTIONAL_AUTHORITY (V-005): TradePlanner is deprecated and has no
+        # directional authority — plan_trade() is a non-actionable no-op and
+        # emits a DeprecationWarning on init. It is retained only so the
+        # PlannerCalibrator tunable can carry a config target; direction and
+        # opportunity discovery are the Brain's authority.
         try:
             from planning.trade_planner import TradePlanner as _TradePlanner
             ctx.trade_planner = _TradePlanner(governor=ctx.portfolio_governor)
