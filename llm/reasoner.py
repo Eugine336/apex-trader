@@ -582,6 +582,12 @@ class LLMOpinion:
     ``direction``/``confidence`` are the *consequence* of that reasoning — the
     execution instruction — never a substitute for it. Every rich field defaults
     empty so a legacy minimal reply still parses.
+
+    V-002 — ``direction``/``confidence`` are NOT execution authority on their own.
+    Origination requires a first-class, ACTIVATED opportunity in ``opportunities``
+    (with a lifecycle ``state``); a reply that carries no opportunity set is
+    OBSERVATIONAL input only and the Brain will not open a campaign from it (see
+    :meth:`cognition.brain.CognitiveBrain._from_opinion`).
     """
 
     symbol: str
@@ -692,19 +698,51 @@ class LLMOpinion:
         }
 
     def as_evidence(self, *, weight: float = 1.0, module: str = "llm_reasoner") -> dict:
-        """Vote-like evidence object for the consensus panel (future promotion).
+        """Observation-shaped evidence for the Brain — never a vote.
 
-        Shaped like the attributes the panel reads (``module`` / ``direction`` /
-        ``confidence`` / ``weight``). It is *evidence*, subject to the same
-        performance-based authority and physics vetoes as any module — never an
-        override.
+        Mirrors the reasoning Evidence bridge (``cognition.evidence_adapters``):
+        the advisor contributes its full structured thesis as an OBSERVATION with
+        a confidence *magnitude* and strictly zero directional polarity — the
+        Brain forms direction itself (Part XVII Art 7 / Part XXV). No ``direction``
+        key is emitted; the directional conclusion lives only inside the prose
+        thesis. It is evidence, subject to the same performance-based authority
+        and physics vetoes as any module — never an override.
         """
+        conf = _clamp01(self.confidence)
+        parts = [f"{module} reasons"]
+        if self.regime:
+            parts.append(f"regime={self.regime}")
+        if self.primary_hypothesis:
+            parts.append(f"hypothesis: {self.primary_hypothesis}")
+        if self.opportunity:
+            horizon = f" (horizon {self.opportunity_horizon})" if self.opportunity_horizon else ""
+            parts.append(f"opportunity: {self.opportunity}{horizon}")
+        if self.invalidation:
+            parts.append(f"invalidation: {self.invalidation}")
+        if len(parts) == 1 and self.rationale:
+            parts.append(self.rationale[:300])
+        observation = " | ".join(parts)[:900]
+
+        measurements: dict = {}
+        for k in ("thesis_confidence", "opportunity_confidence",
+                  "timing_confidence", "execution_confidence"):
+            v = getattr(self, k, None)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                measurements[k] = round(float(v), 4)
+        if self.opportunity:
+            measurements["opportunity"] = self.opportunity
+        if self.opportunity_horizon:
+            measurements["opportunity_horizon"] = self.opportunity_horizon
+
         return {
             "module": module,
-            "direction": self.direction,
-            "confidence": _clamp01(self.confidence),
-            "weight": max(0.0, float(weight)),
             "source": "llm",
+            "observation": observation,
+            "confidence": conf,
+            "uncertainty": round(1.0 - conf, 4),
+            "polarity": 0.0,               # non-directional — the Brain decides
+            "weight": max(0.0, float(weight)),
+            "measurements": measurements,
             "rationale": self.rationale,
         }
 

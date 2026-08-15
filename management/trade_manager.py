@@ -10,6 +10,7 @@ No ego. Pure management.
 """
 
 import uuid
+import warnings
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -165,6 +166,15 @@ class TradeManager:
         heat_trail_factor_reducing: float = 0.5,
         heat_trail_factor_emergency: float = 0.5,
     ):
+        warnings.warn(
+            "TradeManager is a retired legacy component (superseded by the "
+            "event-driven execution/ management path, e.g. PositionWorker). It "
+            "is retained only for the legacy trading loop, shadow/backtest "
+            "replay and tests, and is slated for removal — do not use it in new "
+            "code.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.max_stall_candles = max_stall_candles
         self.partial_close_ratio = partial_close_ratio
         self.breakeven_buffer_pips = breakeven_buffer_pips

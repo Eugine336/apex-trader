@@ -137,11 +137,12 @@ def test_opportunity_actionability_by_state():
         assert o.is_actionable is False and o.is_forming is False
 
 
-def test_opportunity_unknown_state_is_actionable_for_backward_compat():
-    # A legacy reply that never reported a state must behave as before (a
-    # directional opportunity is actionable).
+def test_opportunity_unknown_state_is_not_actionable():
+    # V-003 — an opportunity with no explicit lifecycle state (UNKNOWN) has not
+    # been shown to have ACTIVATED, so it is NOT actionable: direction alone is
+    # not an activated opportunity.
     assert Opportunity(direction="LONG").state is OpportunityState.UNKNOWN
-    assert Opportunity(direction="LONG").is_actionable is True
+    assert Opportunity(direction="LONG").is_actionable is False
     # A non-directional opportunity is never actionable regardless of state.
     assert Opportunity(direction="FLAT", state="active").is_actionable is False
 
@@ -272,17 +273,23 @@ def test_campaign_forms_on_quality_not_directional_consensus():
 
 # ── Backward compatibility: legacy single-direction replies unaffected ──────
 
-def test_legacy_reply_opens_without_activation_gate():
+# ── V-002: a legacy single-direction reply is observational, not authority ──
+
+def test_legacy_reply_is_observational_not_execution_authority():
+    # V-002 — a legacy direction+confidence reply carries no first-class,
+    # activated opportunity, so it is OBSERVATIONAL input only and must NOT open a
+    # campaign from a pre-collapsed directional scalar.
     reply = json.dumps({
         "direction": "LONG", "confidence": 0.72, "rationale": "HTF trend up",
     })
     out = _brain(reply).reason(_confident_state())
-    assert out.decision.decision_type == DecisionType.OPEN_CAMPAIGN
-    assert out.campaign is not None and out.campaign.direction == "LONG"
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.campaign is None
+    assert out.direction == "FLAT"
     # No opportunity-set metadata on a legacy decision.
     assert out.decision.opportunities == []
     assert out.decision.preferred_opportunity_id == ""
-    assert out.campaign.opportunity_id == ""
+    assert "observational" in out.decision.risk_rationale
 
 
 def test_legacy_flat_reply_still_continue_observing():

@@ -3,17 +3,24 @@
 Closes the last open link in the continuous-learning loop: the per-timeframe
 evidence weights that drive the probabilistic bias model
 (:data:`brain.decision_core._EVIDENCE_WEIGHTS`) were a *static* dict that no
-learning code ever touched.  This provider tracks, per timeframe, how
-predictive that timeframe's confirmed structure direction has been versus the
-realized trade outcome, and nudges the weights toward the timeframes that
-actually pay off — within hard, reversible safety bounds.
+learning code ever touched.  This provider tracks, per timeframe, how *useful*
+that timeframe's observations were as context for opportunity quality, and nudges
+the weights toward the timeframes whose observations actually help — within hard,
+reversible safety bounds.
+
+Constitutional note (§XXIX): a timeframe is credited whenever it produced a
+*definite observation* (a confident structural read) and the opportunity it
+contextualised turned out well — never for having a trend that pointed the same
+way as the taken trade.  Direction is irrelevant; observation usefulness is the
+learning target.  A timeframe that was ranging / silent contributes no
+observation and is not scored that cycle.
 
 Design properties
 -----------------
 * **Bounded.**  Every weight stays in ``[min_weight, max_weight]``, the full
   vector always renormalises to sum 1.0, and no single weight may move more
-  than ``max_shift_per_cycle`` per recompute.  A pathological accuracy reading
-  can therefore only ever drift weights slowly and within a tight envelope.
+  than ``max_shift_per_cycle`` per recompute.  A pathological reading can
+  therefore only ever drift weights slowly and within a tight envelope.
 * **Conservative cold-start.**  Until at least ``min_trades`` outcomes have
   been recorded, :meth:`get_weights` returns the static defaults untouched —
   the system behaves exactly as before while it gathers evidence.
@@ -63,40 +70,54 @@ def _default_weights() -> Dict[str, float]:
     return dict(_FALLBACK_WEIGHTS)
 
 
-def _norm_trend(value) -> str:
-    """Normalise a trend value to BULLISH / BEARISH / "" (everything else)."""
+def _has_observation(value) -> bool:
+    """True when a timeframe produced a definite structural observation.
+
+    An observation is "present" when the timeframe reported a confident
+    structural state (any non-empty read, e.g. BULLISH / BEARISH / RANGING). A
+    missing / empty / unknown read means the timeframe was silent this cycle and
+    contributes no observation. Direction is deliberately NOT inspected — only
+    whether an observation was made (Constitution §XXIX).
+    """
     if value is None:
-        return ""
-    trend = getattr(value, "value", None)
-    trend = str(trend if trend is not None else value).upper()
-    if trend in ("BULLISH", "BEARISH"):
-        return trend
-    return ""
+        return False
+    raw = getattr(value, "value", None)
+    raw = str(raw if raw is not None else value).strip().upper()
+    return raw not in ("", "NONE", "UNKNOWN", "NEUTRAL")
 
 
-def _dir_for(trend: str) -> str:
-    """Map a structure trend to the trade direction it would back."""
-    if trend == "BULLISH":
-        return "LONG"
-    if trend == "BEARISH":
-        return "SHORT"
-    return ""
+def _as_quality(outcome_quality) -> float:
+    """Coerce an outcome-quality signal to a bounded [0.0, 1.0] float.
+
+    Accepts a bool (won/lost) or an already-bounded score. A trade win is the
+    simplest proxy for "the opportunity this observation contextualised turned
+    out well"; richer callers may pass a graded quality in [0, 1].
+    """
+    if isinstance(outcome_quality, bool):
+        return 1.0 if outcome_quality else 0.0
+    try:
+        return max(0.0, min(1.0, float(outcome_quality)))
+    except (TypeError, ValueError):
+        return 0.0
 
 
-class _TFAccuracy:
-    """Rolling agree/win bookkeeping for one timeframe."""
+class _TFObservationUsefulness:
+    """Rolling observation-usefulness bookkeeping for one timeframe.
+
+    Each entry is the outcome quality (0.0 .. 1.0) of an opportunity that this
+    timeframe produced a definite observation for. Timeframes that were silent
+    (no observation) on a given trade contribute nothing — usefulness is scored
+    only over the opportunities the timeframe actually observed, regardless of
+    whether its observation's direction matched the taken trade.
+    """
 
     __slots__ = ("window",)
 
     def __init__(self, window_size: int) -> None:
-        # Each entry is 1 (the TF agreed with the trade AND it won) or 0 (the
-        # TF agreed but the trade lost). Trades where the TF did not agree with
-        # the taken direction contribute nothing — we only score a timeframe on
-        # the trades it actually backed.
-        self.window: Deque[int] = deque(maxlen=max(1, int(window_size)))
+        self.window: Deque[float] = deque(maxlen=max(1, int(window_size)))
 
-    def record(self, won: bool) -> None:
-        self.window.append(1 if won else 0)
+    def record(self, quality: float) -> None:
+        self.window.append(_as_quality(quality))
 
     @property
     def samples(self) -> int:
@@ -140,8 +161,8 @@ class AdaptiveWeightProvider:
         self._defaults: Dict[str, float] = _default_weights()
         # Live, adapted vector (starts at defaults).
         self._weights: Dict[str, float] = dict(self._defaults)
-        self._acc: Dict[str, _TFAccuracy] = {
-            tf: _TFAccuracy(self._window_size) for tf in self._defaults
+        self._acc: Dict[str, _TFObservationUsefulness] = {
+            tf: _TFObservationUsefulness(self._window_size) for tf in self._defaults
         }
         self._total_trades = 0
         self._recompute_count = 0
@@ -174,34 +195,38 @@ class AdaptiveWeightProvider:
 
     # ── Write side (fed from the trade-close path) ───────────────────────
 
-    def record_trade_outcome(
-        self, direction: str, per_tf_trends: Mapping[str, str], won: bool,
+    def record_observation_outcome(
+        self, per_tf_observations: Mapping[str, str], outcome_quality,
     ) -> None:
-        """Record one closed trade's per-TF structure agreement and outcome.
+        """Record one closed opportunity's per-TF observations and its quality.
 
-        ``per_tf_trends`` maps a timeframe (e.g. ``"H1"``) to the structure
-        trend at entry; a timeframe is credited/debited only when its trend
-        backed the taken ``direction``.  Never raises.
+        ``per_tf_observations`` maps a timeframe (e.g. ``"H1"``) to the
+        structural observation it produced at entry. A timeframe is credited with
+        the opportunity's ``outcome_quality`` whenever it produced a *definite
+        observation* — regardless of whether that observation's direction matched
+        the taken trade. Silent / ranging-less timeframes contribute nothing.
+        ``outcome_quality`` is a bool (won/lost) or a bounded [0, 1] score. Never
+        raises.
         """
         try:
-            taken = str(direction or "").upper()
-            if taken not in ("LONG", "SHORT") or not per_tf_trends:
+            if not per_tf_observations:
                 return
+            quality = _as_quality(outcome_quality)
             with self._lock:
                 self._total_trades += 1
-                for tf, raw in per_tf_trends.items():
+                for tf, observation in per_tf_observations.items():
                     acc = self._acc.get(tf)
                     if acc is None:
                         continue
-                    if _dir_for(_norm_trend(raw)) == taken:
-                        acc.record(bool(won))
+                    if _has_observation(observation):
+                        acc.record(quality)
         except Exception as exc:  # noqa: BLE001
             logger.debug("[adaptive-weights] record fell back: {}", exc)
 
     # ── Adaptation ───────────────────────────────────────────────────────
 
     def recompute(self) -> bool:
-        """Nudge weights toward the better-performing timeframes (bounded).
+        """Nudge weights toward the more *useful* timeframes (bounded).
 
         Returns ``True`` if any weight changed.  Safe to call on a timer; a
         no-op (insufficient samples, disabled, or already converged) just
@@ -212,17 +237,18 @@ class AdaptiveWeightProvider:
                 if not self.enabled or self._total_trades < self._min_trades:
                     return False
 
-                # Per-TF accuracy, defaulting to 0.5 (neutral) when a TF has no
-                # samples yet so it neither gains nor loses weight.
+                # Per-TF observation usefulness, defaulting to 0.5 (neutral) when
+                # a TF has no samples yet so it neither gains nor loses weight.
                 accs: Dict[str, float] = {}
                 for tf in self._defaults:
                     a = self._acc[tf].accuracy()
                     accs[tf] = 0.5 if a is None else a
                 mean_acc = sum(accs.values()) / len(accs)
 
-                # Target weight: scale the default by how far this TF's accuracy
-                # sits above/below the mean, gated by adapt_gain.  >mean → up,
-                # <mean → down.  Then clamp + limit per-cycle shift + renormalise.
+                # Target weight: scale the default by how far this TF's observation
+                # usefulness sits above/below the mean, gated by adapt_gain.
+                # >mean → up, <mean → down. Then clamp + limit per-cycle shift +
+                # renormalise.
                 targets: Dict[str, float] = {}
                 for tf, base in self._defaults.items():
                     factor = 1.0 + self._adapt_gain * (accs[tf] - mean_acc)
@@ -266,11 +292,11 @@ class AdaptiveWeightProvider:
             return False
 
     def reset_to_defaults(self) -> None:
-        """Emergency escape hatch — revert weights and clear accuracy history."""
+        """Emergency escape hatch — revert weights and clear usefulness history."""
         with self._lock:
             self._weights = dict(self._defaults)
             self._acc = {
-                tf: _TFAccuracy(self._window_size) for tf in self._defaults
+                tf: _TFObservationUsefulness(self._window_size) for tf in self._defaults
             }
             self._total_trades = 0
             self._last_change = {}

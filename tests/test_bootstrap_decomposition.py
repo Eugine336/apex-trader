@@ -147,13 +147,15 @@ def test_select_empty_returns_empty():
     assert cycle_selection.select_cycle_candidates([]) == ([], [], "")
 
 
-def test_select_locks_to_best_direction():
+def test_select_keeps_all_directions():
+    # Constitution (V-006): no within-cycle direction lock — a LONG and a SHORT
+    # coexist. All candidates survive, ranked best-first; nothing is dropped on
+    # direction and no winning direction is declared.
     items = [_item("LONG", 0.9), _item("SHORT", 0.8), _item("LONG", 0.5)]
     survivors, dropped, winning = cycle_selection.select_cycle_candidates(items)
-    assert winning == "LONG"
-    assert len(survivors) == 2 and all(
-        s[0].candidate.direction == "LONG" for s in survivors)
-    assert len(dropped) == 1 and dropped[0][0].candidate.direction == "SHORT"
+    assert winning == ""
+    assert dropped == []
+    assert [s[0].candidate.direction for s in survivors] == ["LONG", "SHORT", "LONG"]
 
 
 def test_select_ranks_best_first_with_ev_tiebreak():

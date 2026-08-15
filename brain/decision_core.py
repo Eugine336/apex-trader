@@ -76,12 +76,15 @@ _TF_BY_RECENCY = ("M5", "M15", "H1", "H4", "D1")
 
 # ── Probabilistic evidence model (Phase 3) ──────────────────────────────────
 # Each timeframe contributes evidence proportional to its weight × confidence.
-# No timeframe holds veto power: higher timeframes weigh more (strategic
-# context) while lower timeframes can outvote them when their combined,
-# confident evidence is larger.  Weights are normalised across the timeframes
-# that actually contributed directional structure, so missing/ranging frames
-# never introduce a systematic bias.  Developing (forming-bar) structure
-# contributes as additional, discounted evidence alongside confirmed structure.
+# The per-timeframe weight reflects how USEFUL that timeframe's observations are
+# as context (learned by the AdaptiveWeightProvider from observation usefulness,
+# never from directional agreement). No timeframe holds veto power: higher
+# timeframes weigh more (strategic context) while lower timeframes can outweigh
+# them when their combined, confident evidence is larger. Weights are normalised
+# across the timeframes that actually contributed a structural observation, so
+# silent/ranging frames never introduce a systematic bias. Developing
+# (forming-bar) structure contributes as additional, discounted evidence
+# alongside confirmed structure.
 _EVIDENCE_WEIGHTS: dict[str, float] = {
     "D1": 0.10,
     "H4": 0.20,
@@ -106,11 +109,13 @@ _GOLD_EVIDENCE_WEIGHTS: dict[str, float] = {
 }
 
 # Phase 6 — optional adaptive override of the static weights above. When a
-# provider is registered (``set_evidence_weight_provider``) its bounded,
-# learned vector is used; otherwise the static defaults apply. The provider is
-# duck-typed (only ``get_weights() -> dict``) so this stays a leaf module with
-# no learning-layer dependency, and any provider fault transparently falls back
-# to the static defaults.
+# provider is registered (``set_evidence_weight_provider``) its bounded, learned
+# vector is used; the provider learns each timeframe's weight from how USEFUL its
+# observations were as context (never from directional agreement, Constitution
+# §XXIX). Otherwise the static defaults apply. The provider is duck-typed (only
+# ``get_weights() -> dict``) so this stays a leaf module with no learning-layer
+# dependency, and any provider fault transparently falls back to the static
+# defaults.
 _weight_provider = None  # set via set_evidence_weight_provider
 
 

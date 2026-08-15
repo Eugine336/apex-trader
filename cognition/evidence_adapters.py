@@ -133,159 +133,6 @@ def evidence_from_thesis_status(status: dict, symbol: str) -> "list[Evidence]":
     return out
 
 
-def _vote_measurements(vote: Any, weight: Any, timeframe: str) -> dict:
-    """Flatten a vote's rich per-module ``evidence`` dict into JSON-safe
-    measurements.
-
-    The ``(direction, confidence)`` collapse used to discard every secondary
-    read a module computed (RSI level, MACD histogram, zone stacking, sweep
-    type, …). ``Vote.evidence`` preserves it; this surfaces it to the Brain as
-    structured measurements so the reasoner sees the full per-module picture.
-    Only scalar values are carried (numbers, bools, short strings) so the LLM
-    payload stays clean and serialisable. No directional field is emitted (Part
-    XXV); any directional key that slips through is stripped when the Evidence
-    enters the MarketState (see ``contracts.scrub_directional``).
-    """
-    out: dict = {"weight": _clamp01(weight, 1.0)}
-    if timeframe:
-        out["timeframe"] = timeframe
-    try:
-        raw = getattr(vote, "evidence", None)
-        if isinstance(raw, dict):
-            for k, val in raw.items():
-                if len(out) >= 24:
-                    break
-                key = str(k)[:48]
-                if key in out:
-                    continue
-                if isinstance(val, bool) or isinstance(val, (int, float)):
-                    out[key] = val
-                elif isinstance(val, str):
-                    out[key] = val[:120]
-    except Exception:  # noqa: BLE001
-        pass
-    return out
-
-
-# Violation V6 — an Evidence.observation must describe what the module OBSERVED,
-# not report a generic "instrument reading". These are the raw secondary keys a
-# module commonly records on ``Vote.evidence``; when present they are woven into
-# a readable observation sentence. All are NON-directional measurements (a level,
-# a magnitude, a type, an integrity score) — never a LONG/SHORT verdict.
-_OBSERVATION_HINT_KEYS: tuple[tuple[str, str], ...] = (
-    ("recent_swing_high", "swing high at {}"),
-    ("recent_swing_low", "swing low at {}"),
-    ("displacement", "displacement {}"),
-    ("structural_integrity", "structural integrity {}"),
-    ("bos", "break of structure {}"),
-    ("choch", "change of character {}"),
-    ("sweep", "liquidity sweep {}"),
-    ("sweep_type", "sweep type {}"),
-    ("rsi", "RSI {}"),
-    ("macd", "MACD {}"),
-    ("atr", "ATR {}"),
-    ("zone_score", "zone score {}"),
-    ("volume_z", "volume z-score {}"),
-    ("vwap_distance", "VWAP distance {}"),
-)
-
-# The key most modules use to state their certainty in their OWN observation
-# (Violation V6): the module's confidence that it correctly identified the fact
-# it reports — NOT its directional conviction. Falls back to the vote confidence.
-_OBSERVATION_CONFIDENCE_KEYS = (
-    "observation_confidence", "read_confidence", "structural_integrity",
-    "quality", "clarity",
-)
-
-
-def _observation_certainty(vote: Any, measurements: dict, fallback: float) -> float:
-    """The module's certainty in its OWN observation (Violation V6).
-
-    This is how sure the module is that it correctly read the fact it reports
-    (e.g. "I am 0.85 sure I identified the recent swing high"), NOT its
-    directional conviction. Reads the first present observation-quality key from
-    the module's raw evidence; falls back to the vote's confidence when a module
-    exposes no explicit observation-certainty read.
-    """
-    for k in _OBSERVATION_CONFIDENCE_KEYS:
-        if k in measurements:
-            return _clamp01(measurements.get(k), fallback)
-    return _clamp01(fallback)
-
-
-def _vote_observation(module: str, timeframe: str, measurements: dict) -> str:
-    """Describe what the module OBSERVED from its raw measurements (Violation V6).
-
-    Builds a readable sentence out of the non-directional secondary reads the
-    module recorded (swing levels, displacement, structural integrity, sweep
-    type, oscillator levels, …) instead of a generic "instrument reading". Falls
-    back to a plain "<module> observation" when the module exposed no recognised
-    secondary reads. Never emits a direction/lean/vote.
-    """
-    parts: list[str] = []
-    for key, template in _OBSERVATION_HINT_KEYS:
-        if key in measurements:
-            val = measurements.get(key)
-            if isinstance(val, bool):
-                if not val:
-                    continue
-                parts.append(template.format("present"))
-            else:
-                parts.append(template.format(val))
-        if len(parts) >= 4:
-            break
-    if parts:
-        head = f"{module} observed " + ", ".join(parts)
-    else:
-        head = f"{module} observation"
-    if timeframe:
-        head += f" on {timeframe}"
-    return head[:300]
-
-
-def evidence_from_votes(symbol: str, votes: Any) -> "list[Evidence]":
-    """Convert a raw vote panel (module/direction/confidence/weight) to Evidence.
-
-    Violation V6 — a Vote's ``confidence`` was a DIRECTIONAL conviction produced
-    by a directional process; carrying it verbatim as ``Evidence.confidence``
-    leaked that directional magnitude into the Brain's evidence picture. Each
-    contributing analytical module now becomes one domain-classified
-    :class:`Evidence` that reports its RAW OBSERVATIONS: the ``observation``
-    describes what the module actually saw (swing levels, displacement,
-    structural integrity, sweep type, …) and ``confidence`` is the module's
-    certainty in that OBSERVATION, not in a direction. The module's secondary
-    reads ride along as ``measurements`` so nothing is collapsed away. The
-    ``scrub_directional`` gate in contracts.py remains defence-in-depth. Fail-safe.
-    """
-    out: list[Evidence] = []
-    try:
-        for v in list(votes or []):
-            module = str(getattr(v, "module", "") or getattr(v, "source", "") or "")
-            if not module:
-                continue
-            weight = getattr(v, "weight", 1.0)
-            timeframe = str(getattr(v, "timeframe", "") or "")
-            measurements = _vote_measurements(v, weight, timeframe)
-            # The module's certainty in its OWN observation — never its
-            # directional conviction (Violation V6). Falls back to the vote's
-            # confidence only when the module exposes no observation-quality read.
-            conf = _observation_certainty(
-                v, measurements, _clamp01(getattr(v, "confidence", 0.0)),
-            )
-            observation = _vote_observation(module, timeframe, measurements)
-            out.append(Evidence(
-                source_module=module, domain=classify_domain(module), symbol=symbol,
-                observation=observation,
-                confidence=conf, uncertainty=1.0 - conf,
-                polarity=0.0,
-                measurements=measurements,
-                relevance_horizon_seconds=900.0,
-            ))
-    except Exception:  # noqa: BLE001
-        return out
-    return out
-
-
 def _num(value: Any, default: float = 0.0) -> float:
     try:
         f = float(value)
@@ -297,43 +144,56 @@ def _num(value: Any, default: float = 0.0) -> float:
 
 
 def evidence_from_developing_bias(symbol: str, bias: Any) -> "list[Evidence]":
-    """Convert the DEVELOPING (forming-bar) WorldModel bias into one Evidence.
+    """Convert the DEVELOPING (forming-bar) WorldModel structural read into one Evidence.
 
-    Closed-candle votes are the confirmed read; the developing store carries the
-    *fresher* directional synthesis computed on the still-forming bar (no votes,
-    only a bias dict). Surfacing it as a single, clearly-labelled multi-timeframe
-    Evidence lets the Brain react between candle closes without mistaking it for
-    a confirmed module vote. It is deliberately short-lived (a forming bar's read
-    goes stale in seconds) and directionally attenuated so it informs rather than
-    dominates the confirmed panel. Fail-safe: returns ``[]`` on empty/any fault.
+    Closed-candle readings are the confirmed picture; the developing store carries
+    the *fresher* NON-directional structural measurements computed on the still-
+    forming bar (trend strength, multi-timeframe alignment degree, conflict) — no
+    votes, only a measurements dict. Surfacing it as a single, clearly-labelled
+    multi-timeframe Evidence lets the Brain react between candle closes without
+    mistaking it for a confirmed module vote. It is deliberately short-lived (a
+    forming bar's read goes stale in seconds).
+
+    V-004 — this path must NEVER leak a directional conviction as evidence weight.
+    The Evidence ``confidence`` is derived ONLY from the NON-directional clarity of
+    the structural read (how strongly/aligned the forming bar reads, eroded by its
+    conflict); any directional conviction the store may carry
+    (``confidence`` / ``long_probability`` / ``short_probability`` / ``score`` /
+    ``direction``) is ignored, and ``polarity`` is always 0.0. Fail-safe: returns
+    ``[]`` on empty/any fault.
     """
     out: list[Evidence] = []
     try:
         b = dict(bias or {})
         if not b:
             return out
-        # Prefer the explicit confidence; fall back to the dominant probability
-        # as a *magnitude of conviction* (never a direction).
-        conf = _clamp01(b.get("confidence", 0.0))
-        if conf <= 0.0:
-            conf = _clamp01(max(_num(b.get("long_probability")),
-                               _num(b.get("short_probability"))))
         conflict = _clamp01(b.get("conflict_score", 0.0))
+        # Observation certainty = the NON-directional clarity of the forming-bar
+        # structural read: how strongly/aligned the developing structure reads,
+        # eroded by its own conflict. Never a directional conviction — directional
+        # keys (confidence / long_probability / short_probability / score) are
+        # deliberately NOT read here (V-004).
+        alignment = _clamp01(_num(b.get("alignment_degree")))
+        strength = _clamp01(_num(b.get("trend_strength")))
+        clarity = max(alignment, strength)
+        read_certainty = _clamp01(clarity * (1.0 - conflict))
         observation = (
-            f"developing-candle instrument reading "
-            f"(reading strength {conf:.2f}, conflict {conflict:.2f})"
+            f"developing-candle structural reading "
+            f"(clarity {read_certainty:.2f}, conflict {conflict:.2f})"
         )
         out.append(Evidence(
             source_module="world_model.developing",
             domain=EvidenceDomain.MULTI_TIMEFRAME, symbol=symbol,
             observation=observation,
-            confidence=conf,
+            confidence=read_certainty,
             # Higher forming-bar conflict ⇒ more source-side doubt.
-            uncertainty=_clamp01(max(1.0 - conf, conflict)),
+            uncertainty=_clamp01(max(1.0 - read_certainty, conflict)),
             polarity=0.0,
             measurements={
                 "developing": True,
                 "conflict_score": round(conflict, 4),
+                "alignment_degree": round(alignment, 4),
+                "trend_strength": round(strength, 4),
                 "strength": str(b.get("strength", "") or "")[:32],
                 "tradeable": bool(b.get("tradeable", False)),
             },
@@ -522,7 +382,6 @@ def evidence_from_analogues(symbol: str, analogues: Any) -> "list[Evidence]":
 __all__ = [
     "classify_domain",
     "evidence_from_thesis_status",
-    "evidence_from_votes",
     "evidence_from_execution_cost",
     "evidence_from_analogues",
     "evidence_from_reasoning",

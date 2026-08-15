@@ -219,12 +219,19 @@ def test_reasoner_throttle():
 
 
 def test_opinion_as_evidence_shape():
-    op = LLMOpinion(symbol="EURUSD", direction="LONG", confidence=0.6)
+    op = LLMOpinion(symbol="EURUSD", direction="LONG", confidence=0.6,
+                    primary_hypothesis="range breakout continuation",
+                    opportunity="long the retest", opportunity_horizon="hours")
     ev = op.as_evidence(weight=2.0)
     assert ev["module"] == "llm_reasoner"
-    assert ev["direction"] == "LONG"
+    # Observation-shaped, NOT vote-shaped: no directional key, zero polarity.
+    assert "direction" not in ev
+    assert ev["polarity"] == 0.0
+    assert "hypothesis:" in ev["observation"] or "opportunity:" in ev["observation"]
     assert ev["confidence"] == pytest.approx(0.6)
+    assert ev["uncertainty"] == pytest.approx(0.4)
     assert ev["weight"] == pytest.approx(2.0)
+    assert ev["measurements"]["opportunity"] == "long the retest"
 
 
 def test_reasoner_status_is_secret_safe():

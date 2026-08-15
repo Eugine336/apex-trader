@@ -13,9 +13,12 @@ from cognition.loop import EvidenceConsolidator
 
 # ── Fakes ─────────────────────────────────────────────────────────────────────
 
-def _op(engine, direction, confidence=0.7, latency_ms=10.0):
+def _op(engine, direction="LONG", confidence=0.7, latency_ms=10.0, cognition=None):
+    # ``direction`` is accepted for call-site compatibility but the ledger no
+    # longer grades on it; ``cognition`` carries the advisor's structured thesis.
     return SimpleNamespace(engine=engine, direction=direction,
-                           confidence=confidence, latency_ms=latency_ms)
+                           confidence=confidence, latency_ms=latency_ms,
+                           cognition=dict(cognition or {}))
 
 
 def _consultation(symbol, opinions, consulted=None, capability="strategic_reasoning"):
@@ -56,22 +59,53 @@ def _evi(polarity, confidence=0.9, uncertainty=0.05):
     )  # relevance_horizon_seconds defaults to None ⇒ always fresh
 
 
-# ── ConsultationLedger: records + scorecards ──────────────────────────────────
+# ── ConsultationLedger: records + reasoning-quality scorecards ────────────────
 
-def test_record_builds_scorecards_and_majority():
+# Rich, structured advisor theses (Part XXV) — the ledger grades on these, never
+# on which direction they point.
+_RICH_A = {
+    "regime": "trending",
+    "primary_hypothesis": "London breakout continuation",
+    "opportunity": "long the retest of the breakout",
+    "opportunity_horizon": "hours",
+    "invalidation": "close back inside the range",
+    "key_uncertainty": "whether momentum sustains into NY",
+    "thesis_confidence": 0.7, "execution_confidence": 0.6,
+    "alternative_hypotheses": ["false breakout"],
+    "what_would_change_my_mind": ["acceptance back inside the range"],
+}
+_RICH_B = {
+    "regime": "ranging",
+    "primary_hypothesis": "mean reversion to the range mid",
+    "opportunity": "fade the range extreme",
+    "opportunity_horizon": "minutes",
+    "invalidation": "range expansion on volume",
+    "thesis_confidence": 0.5,
+}
+
+
+def test_record_grades_reasoning_quality_not_agreement():
     led = ConsultationLedger()
     rec = led.record(_consultation(
         "EURUSD",
-        [_op("gpt", "LONG", 0.8, 12.0), _op("claude", "LONG", 0.6, 30.0),
-         _op("gemini", "SHORT", 0.5, 20.0)],
+        [_op("gpt", cognition=_RICH_A), _op("claude", cognition=_RICH_B),
+         _op("gemini")],  # bare reply: no structured thesis
     ), uncertainty=0.4)
-    assert rec["majority"] == "LONG"          # 2 LONG vs 1 SHORT
-    assert 0.0 < rec["dispersion"] < 1.0       # not unanimous
+    # No directional-voting artefacts anywhere in the record.
+    assert "majority" not in rec and "dispersion" not in rec
     assert rec["replies"] == 3
-    sc = led.scorecard("gpt")
-    assert sc["consulted"] == 1 and sc["replies"] == 1
-    assert sc["agreement_rate"] == 1.0         # gpt agreed with LONG majority
-    assert led.scorecard("gemini")["agreement_rate"] == 0.0  # disagreed
+    # Distinct independent perspectives are counted — NOT collapsed to a majority.
+    assert rec["perspectives"] == 3
+    assert rec["opportunities_identified"] == 2
+    # A rich thesis outscores a bare reply: graded on reasoning, not direction.
+    gpt = led.scorecard("gpt")
+    gemini = led.scorecard("gemini")
+    assert gpt["thesis_quality"] > gemini["thesis_quality"]
+    assert gpt["opportunity_rate"] == 1.0 and gemini["opportunity_rate"] == 0.0
+    assert gpt["calibration"] > 0.0
+    # Independent theses ⇒ useful dissent is credited; agreement is never scored.
+    assert gpt["useful_dissent_rate"] == 1.0
+    assert "agreement_rate" not in gpt
 
 
 def test_non_reply_lowers_reply_rate():
@@ -113,7 +147,9 @@ def test_record_fail_safe_on_garbage():
 
 
 def test_persistence_writes_jsonl(tmp_path=None):
-    import os, tempfile, json
+    import os
+    import tempfile
+    import json
     path = os.path.join(tempfile.gettempdir(), "apex_test_consultations.jsonl")
     try:
         if os.path.exists(path):
@@ -123,7 +159,8 @@ def test_persistence_writes_jsonl(tmp_path=None):
         with open(path, encoding="utf-8") as fh:
             line = fh.readline()
         rec = json.loads(line)
-        assert rec["symbol"] == "EURUSD" and rec["majority"] == "LONG"
+        assert rec["symbol"] == "EURUSD" and rec["replies"] == 1
+        assert "majority" not in rec and "dispersion" not in rec
     finally:
         if os.path.exists(path):
             os.remove(path)

@@ -17,38 +17,13 @@ Leaf module — depends only on the standard library + loguru + planning.models.
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from loguru import logger
 
 from planning.models import TradePlan, TradePlanContext
-
-
-def _gate_quality_multiplier(
-    measures: list[tuple[float, float]], floor: float = 0.15
-) -> float:
-    """Bounded quality multiplier for the softened conviction gate.
-
-    Mirrors ``brain.orchestrator.gate_quality_multiplier`` but kept inline so the
-    planner stays a leaf module (stdlib + loguru + planning.models). For each
-    ``(value, threshold)`` a shortfall contributes ``value / threshold`` (<1.0);
-    the product is bounded to ``[floor, 1.0]`` so a near-miss flows through small
-    and is never zero (a graded "barely" is still a tiny trade) nor above 1.0.
-    """
-    mult = 1.0
-    for value, threshold in measures:
-        try:
-            threshold = float(threshold)
-            value = float(value)
-        except (TypeError, ValueError):
-            continue
-        if threshold <= 0:
-            continue
-        ratio = value / threshold
-        if ratio < 1.0:
-            mult *= max(0.0, ratio)
-    return max(floor, min(1.0, mult))
 
 
 def _smoothstep(x: float, edge0: float, edge1: float) -> float:
@@ -203,9 +178,24 @@ class PlannerConfig:
 
 
 class TradePlanner:
-    """Reads a `TradePlanContext` and produces a complete `TradePlan`."""
+    """Deprecated — retired directional decider with no directional authority.
+
+    ``plan_trade`` is a non-actionable no-op (see its docstring). The remaining
+    ``PlannerConfig``/``Calibrator``/``OutcomeLogger`` ecosystem and the pure
+    execution-geometry helpers stay usable, but this class no longer decides
+    direction or computes advisor agreement — that is the Brain's authority.
+    """
 
     def __init__(self, config: PlannerConfig | None = None, governor=None) -> None:
+        warnings.warn(
+            "TradePlanner is a legacy planning component slated for retirement "
+            "as management/origination authority consolidates in the "
+            "event-driven Cognitive Brain path; it is retained for the current "
+            "wiring, backtests and tests. Avoid introducing new dependencies on "
+            "it.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.config = config or PlannerConfig()
         # Portfolio Governor (duck-typed: any object with a .check() returning
         # an object carrying .allowed/.reason/.blocked_by).  Optional — when
@@ -221,269 +211,36 @@ class TradePlanner:
     # ── Main entry point ─────────────────────────────────────────────────
 
     def plan_trade(self, ctx: TradePlanContext) -> TradePlan:
-        cfg = self.config
-        is_long = ctx.is_long
+        """Deprecated — the planner has no directional authority.
 
-        agreement = self._advisor_agreement(ctx)
-        # #8: dispersion-aware gate metric — a split advisor panel reads below a
-        # united-but-mediocre one (the mean hides that). Equals the mean when the
-        # feature is off. The reported `advisor_agreement` stays the mean.
-        gate_agreement, advisor_dispersion = self._gate_agreement(ctx, agreement)
-        confidence = self._confidence(ctx, agreement)
+        Constitution (DIRECTIONAL_AUTHORITY, V-005): this method used to compute
+        a weighted directional "advisor agreement" across the scanner, decision
+        engine, RL and adaptive pair win-rate, blend it into a confidence, and
+        emit a ``TradePlan(direction="BUY"/"SELL")`` verdict. That recreated the
+        forbidden directional-consensus architecture downstream of cognition.
 
-        plan = TradePlan(direction="BUY" if is_long else "SELL")
-        plan.advisor_agreement = agreement
-        plan.confidence = confidence
-
-        # ── 1. ENTER / WAIT / SKIP ───────────────────────────────────────
-        # Both floors must be cleared to ENTER: a strong reading on one
-        # dimension must NOT let a setup that fails the other dimension through.
-        # (Previously `and` meant the setup was only gated when BOTH failed, so
-        # one strong dimension bypassed the other.)
-        if confidence < cfg.min_confidence_to_enter or gate_agreement < cfg.min_advisor_agreement:
-            if cfg.soften_gates:
-                # Phase 9: soften the conviction floor into a bounded dimmer.
-                # Instead of killing the setup, flow it through as ENTER carrying
-                # a quality multiplier (how far below the floors it was) that the
-                # orchestrator folds into graded size. The governor veto below
-                # still applies — only this QUALITY gate is softened.
-                plan.gate_quality_multiplier = _gate_quality_multiplier(
-                    [
-                        (confidence, cfg.min_confidence_to_enter),
-                        (gate_agreement, cfg.min_advisor_agreement),
-                    ],
-                    cfg.gate_quality_floor,
-                )
-                logger.info(
-                    "[gate-soften] planner {} low conviction "
-                    "(confidence {:.2f}<{:.2f}, agreement {:.2f}<{:.2f}"
-                    "{}) — flowing as ENTER ×{:.2f}",
-                    ctx.symbol, confidence, cfg.min_confidence_to_enter,
-                    gate_agreement, cfg.min_advisor_agreement,
-                    (f", dispersion {advisor_dispersion:.2f}" if advisor_dispersion > 0 else ""),
-                    plan.gate_quality_multiplier,
-                )
-            else:
-                plan.action = "SKIP"
-                plan.reasoning = (
-                    f"[{ctx.situation_label}] SKIP — low conviction "
-                    f"(confidence {confidence:.2f} < {cfg.min_confidence_to_enter:.2f}, "
-                    f"agreement {gate_agreement:.2f} < {cfg.min_advisor_agreement:.2f})"
-                )
-                return plan
-
-        wait_reason, wait_minutes = self._wait_decision(ctx)
-        if wait_reason is not None:
-            plan.action = "WAIT"
-            plan.wait_reason = wait_reason
-            plan.wait_until_minutes = wait_minutes
-            plan.reasoning = (
-                f"[{ctx.situation_label}] WAIT — {wait_reason} "
-                f"(retry in ~{wait_minutes}min)"
-            )
-            return plan
-
-        # ── 1b. Portfolio Governor — portfolio-level risk veto ───────────
-        if self._governor is not None:
-            try:
-                verdict = self._governor.check(
-                    ctx.symbol,
-                    plan.direction,
-                    ctx.open_position_book,
-                    ctx.account_balance,
-                )
-            except Exception as exc:  # governor.check is normally self-guarding
-                # Mirror the governor's own policy: fail-closed (SKIP) unless it
-                # is explicitly configured fail-open.
-                gov_fail_closed = getattr(
-                    getattr(self._governor, "config", None), "fail_closed", True
-                )
-                if gov_fail_closed:
-                    logger.error("[Planner] governor check error — SKIP (fail-closed): {}", exc)
-                    plan.action = "SKIP"
-                    plan.governor_blocked_by = "governor_error"
-                    plan.reasoning = (
-                        f"[{ctx.situation_label}] SKIP — governor error "
-                        f"(fail-closed): {exc}"
-                    )
-                    return plan
-                logger.warning("[Planner] governor check error — allowing (fail-open): {}", exc)
-                verdict = None
-            if verdict is not None and not getattr(verdict, "allowed", True):
-                plan.action = "SKIP"
-                plan.governor_blocked_by = getattr(verdict, "blocked_by", None)
-                plan.reasoning = (
-                    f"[{ctx.situation_label}] SKIP — governor "
-                    f"({getattr(verdict, 'blocked_by', 'portfolio')}): "
-                    f"{getattr(verdict, 'reason', 'portfolio limit')}"
-                )
-                return plan
-
-            # Allowed — capture any graded analytical-risk dimmer (#24) so the
-            # orchestrator sizes a near-/over-limit concentration DOWN instead of
-            # opening it at full size (the governor no longer hard-blocks it in
-            # graded mode, so the dimmer must be applied downstream).
-            if verdict is not None:
-                try:
-                    plan.governor_risk_multiplier = float(
-                        getattr(verdict, "risk_multiplier", 1.0) or 1.0
-                    )
-                except (TypeError, ValueError):
-                    plan.governor_risk_multiplier = 1.0
-
-        plan.action = "ENTER"
-
-        # ── 2. Entry mode ────────────────────────────────────────────────
-        plan.entry_mode, plan.entry_price = self._entry_mode(ctx)
-
-        # ── 3. Stop loss strategy ────────────────────────────────────────
-        plan.sl_strategy, plan.sl_price, plan.sl_pips = self._sl_plan(ctx)
-
-        # ── 4. Take profit strategy ──────────────────────────────────────
-        (
-            plan.tp_strategy,
-            plan.tp1_price,
-            plan.tp1_rr,
-            plan.tp2_price,
-            plan.tp2_rr,
-            plan.runner_pct,
-        ) = self._tp_plan(ctx, plan.sl_pips)
-
-        # ── 5. Sizing ────────────────────────────────────────────────────
-        plan.risk_pct, plan.size_reasoning = self._size_plan(ctx, agreement, confidence)
-
-        # ── 6. Management ────────────────────────────────────────────────
-        plan.be_trigger_r = self._be_trigger(ctx)
-        plan.trail_activation_r = cfg.default_trail_activation_r
-        plan.trail_strategy = "swing" if plan.tp_strategy != "fixed_rr" else "none"
-        plan.scale_in_allowed = agreement >= cfg.scale_in_min_agreement and ctx.daily_pnl_r >= 0
-
-        # ── 7. Reasoning ─────────────────────────────────────────────────
-        plan.reasoning = (
-            f"[{ctx.situation_label}] ENTER {plan.direction} via {plan.entry_mode} | "
-            f"SL={plan.sl_strategy}({plan.sl_pips:.1f}pip) "
-            f"TP={plan.tp_strategy} runner={plan.runner_pct:.0%} | "
-            f"risk={plan.risk_pct:.2f}% ({plan.size_reasoning}) | "
-            f"BE@{plan.be_trigger_r:.1f}R trail={plan.trail_strategy} | "
-            f"agreement={agreement:.2f} confidence={confidence:.2f}"
+        Opportunity discovery and trade direction are the Brain's authority, so
+        the planner no longer reasons over direction or advisor agreement and
+        returns a non-actionable, directionless plan. The execution-geometry
+        helpers (``_sl_plan``/``_tp_plan``/``_entry_mode``/``_size_plan``/
+        ``_be_trigger``) remain as pure utilities that shape an already-decided
+        opportunity, but they are no longer driven from here.
+        """
+        logger.warning(
+            "[Planner] plan_trade is deprecated and has no directional authority; "
+            "returning a non-actionable plan for {} — direction is decided by the "
+            "Brain, not recomputed here.",
+            ctx.symbol or "?",
         )
-        return plan
-
-    # ── Advisor agreement ────────────────────────────────────────────────
-
-    def _advisor_agreement(self, ctx: TradePlanContext) -> float:
-        """Weighted directional agreement across advisors → 0..1.
-
-        Each advisor contributes a signed alignment in [-1, +1]; the weighted
-        mean is mapped to [0, 1].  Advisors that abstain contribute zero weight.
-        """
-        cfg = self.config
-        num = 0.0
-        denom = 0.0
-
-        # Scanner produced the setup — full support, scaled by score.
-        scanner_align = max(0.0, min(1.0, ctx.scanner_score / 100.0))
-        num += cfg.scanner_weight * scanner_align
-        denom += cfg.scanner_weight
-
-        # Decision engine — signed directional read.
-        if abs(ctx.de_tf_alignment) > 1e-6 or ctx.de_confidence > 0:
-            num += cfg.de_weight * max(-1.0, min(1.0, ctx.de_tf_alignment))
-            denom += cfg.de_weight
-
-        # RL — only votes when it has an opinion (not HOLD).
-        if ctx.rl_action in (1, 2):
-            rl_supports = (
-                (ctx.is_long and ctx.rl_action == 1)
-                or (not ctx.is_long and ctx.rl_action == 2)
-            )
-            rl_align = ctx.rl_confidence if rl_supports else -ctx.rl_confidence
-            num += cfg.rl_weight * max(-1.0, min(1.0, rl_align))
-            denom += cfg.rl_weight
-
-        # Adaptive — pair win-rate as a soft directional confirmation.
-        if ctx.pair_win_rate > 0:
-            adaptive_align = max(-1.0, min(1.0, (ctx.pair_win_rate - 0.5) * 2.0))
-            num += cfg.adaptive_weight * adaptive_align
-            denom += cfg.adaptive_weight
-
-        if denom <= 0:
-            return 0.5
-        raw = num / denom            # −1..+1
-        return max(0.0, min(1.0, (raw + 1.0) / 2.0))
-
-    def advisor_vector(self, ctx: TradePlanContext) -> dict:
-        """Per-advisor signed alignment in [-1, +1] kept alongside the mean.
-
-        Where ``_advisor_agreement`` collapses the four advisors (scanner,
-        decision engine, RL, adaptive pair win-rate) into one number, this keeps
-        each advisor's signed read intact so a consumer (e.g. the orchestrator)
-        can see *disagreement shape* — a strong scanner opposed by RL is very
-        different from four mediocre advisors, but the mean hides that. Abstaining
-        advisors are omitted. ``agreement`` mirrors ``_advisor_agreement``.
-        """
-        vec: dict = {}
-        vec["scanner"] = round(max(0.0, min(1.0, ctx.scanner_score / 100.0)), 4)
-        if abs(ctx.de_tf_alignment) > 1e-6 or ctx.de_confidence > 0:
-            vec["decision_engine"] = round(max(-1.0, min(1.0, ctx.de_tf_alignment)), 4)
-        if ctx.rl_action in (1, 2):
-            rl_supports = (
-                (ctx.is_long and ctx.rl_action == 1)
-                or (not ctx.is_long and ctx.rl_action == 2)
-            )
-            rl_align = ctx.rl_confidence if rl_supports else -ctx.rl_confidence
-            vec["rl"] = round(max(-1.0, min(1.0, rl_align)), 4)
-        if ctx.pair_win_rate > 0:
-            vec["pair_win_rate"] = round(max(-1.0, min(1.0, (ctx.pair_win_rate - 0.5) * 2.0)), 4)
-        return {"advisors": vec, "agreement": round(self._advisor_agreement(ctx), 4)}
-
-    def _advisor_supports(self, ctx: TradePlanContext) -> list[float]:
-        """Per-present-advisor support normalised to [0, 1] (1 = fully backs the
-        trade, 0 = fully opposes). Mirrors the advisors :meth:`_advisor_agreement`
-        sums, used only to measure *dispersion* across them."""
-        supports: list[float] = []
-        supports.append(max(0.0, min(1.0, ctx.scanner_score / 100.0)))
-        if abs(ctx.de_tf_alignment) > 1e-6 or ctx.de_confidence > 0:
-            s = max(-1.0, min(1.0, ctx.de_tf_alignment))
-            supports.append((s + 1.0) / 2.0)
-        if ctx.rl_action in (1, 2):
-            rl_supports = (
-                (ctx.is_long and ctx.rl_action == 1)
-                or (not ctx.is_long and ctx.rl_action == 2)
-            )
-            rl_align = ctx.rl_confidence if rl_supports else -ctx.rl_confidence
-            supports.append((max(-1.0, min(1.0, rl_align)) + 1.0) / 2.0)
-        if ctx.pair_win_rate > 0:
-            a = max(-1.0, min(1.0, (ctx.pair_win_rate - 0.5) * 2.0))
-            supports.append((a + 1.0) / 2.0)
-        return supports
-
-    def _gate_agreement(self, ctx: TradePlanContext, agreement: float) -> tuple[float, float]:
-        """Dispersion-aware agreement used by the conviction gate.
-
-        Returns ``(effective_agreement, dispersion)``. When
-        ``dispersion_aware_agreement`` is off (legacy) the mean is returned
-        unchanged with zero dispersion. Otherwise the mean is reduced by
-        ``advisor_dispersion_penalty × (mean_support − min_support)`` so a split
-        panel (one advisor strongly opposing) reads lower than a genuinely
-        mediocre-but-united one — the very distinction the mean erases.
-        """
-        if not self.config.dispersion_aware_agreement:
-            return agreement, 0.0
-        supports = self._advisor_supports(ctx)
-        if len(supports) < 2:
-            return agreement, 0.0
-        mean_support = sum(supports) / len(supports)
-        dispersion = max(0.0, mean_support - min(supports))
-        eff = agreement - self.config.advisor_dispersion_penalty * dispersion
-        return max(0.0, min(1.0, eff)), dispersion
-
-    def _confidence(self, ctx: TradePlanContext, agreement: float) -> float:
-        """Blend DE confidence, advisor agreement and structure quality."""
-        de = max(0.0, min(1.0, ctx.de_confidence))
-        zone = max(0.0, min(1.0, ctx.zone_quality))
-        c = de * 0.4 + agreement * 0.4 + zone * 0.2
-        return max(0.0, min(1.0, c))
+        return TradePlan(
+            action="SKIP",
+            direction="",
+            reasoning=(
+                f"[{ctx.situation_label}] SKIP — TradePlanner is deprecated and "
+                "has no directional authority; opportunity direction and entry "
+                "are decided by the Brain."
+            ),
+        )
 
     # ── WAIT decision ────────────────────────────────────────────────────
 
@@ -600,9 +357,7 @@ class TradePlanner:
 
     # ── Sizing ───────────────────────────────────────────────────────────
 
-    def _size_plan(
-        self, ctx: TradePlanContext, agreement: float, confidence: float,
-    ) -> tuple[float, str]:
+    def _size_plan(self, ctx: TradePlanContext) -> tuple[float, str]:
         cfg = self.config
         risk = ctx.base_risk_pct
         parts: list[str] = [f"base {risk:.2f}%"]
@@ -629,24 +384,6 @@ class TradePlanner:
         if dd_factor < 1.0 - 1e-6:
             risk *= dd_factor
             parts.append(f"×{dd_factor:.2f} drawdown")
-
-        # High-conviction boost — ramps in with agreement, gated smoothly by
-        # confidence. Strong agreement+confidence → ~full boost; a single weak
-        # input scales the boost down instead of switching it off.
-        boost_t = _smoothstep(
-            agreement,
-            cfg.high_conviction_agreement - cfg.conviction_boost_band,
-            cfg.high_conviction_agreement + cfg.conviction_boost_band,
-        )
-        conf_gate = _smoothstep(
-            confidence,
-            cfg.min_confidence_to_enter - cfg.conviction_boost_band,
-            cfg.min_confidence_to_enter + cfg.conviction_boost_band,
-        )
-        boost_factor = 1.0 + (cfg.high_conviction_size_boost - 1.0) * boost_t * conf_gate
-        if boost_factor > 1.0 + 1e-6:
-            risk *= boost_factor
-            parts.append(f"×{boost_factor:.2f} conviction")
 
         # Adaptive pair multiplier folds in too.
         if ctx.pair_multiplier > 0 and abs(ctx.pair_multiplier - 1.0) > 1e-6:

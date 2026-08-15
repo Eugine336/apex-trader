@@ -8,7 +8,6 @@ from cognition.evidence_adapters import (
     evidence_from_knowledge,
     evidence_from_reasoning,
     evidence_from_thesis_status,
-    evidence_from_votes,
 )
 
 
@@ -90,88 +89,45 @@ def test_thesis_status_missing_symbol_is_empty():
     assert evidence_from_thesis_status({}, "EURUSD") == []
 
 
-# ── evidence_from_votes ───────────────────────────────────────────────────────
+# ── V-004 — the vote-source adapter API has been removed ──────────────────────
 
-class _Vote:
-    def __init__(self, module, direction, confidence, weight=1.0):
-        self.module = module
-        self.direction = direction
-        self.confidence = confidence
-        self.weight = weight
-
-
-def test_evidence_from_votes():
-    votes = [_Vote("structure_engine", "LONG", 0.8), _Vote("volume_analyzer", "SHORT", 0.6)]
-    ev = evidence_from_votes("EURUSD", votes)
-    assert len(ev) == 2
-    long_e = next(e for e in ev if e.source_module == "structure_engine")
-    short_e = next(e for e in ev if e.source_module == "volume_analyzer")
-    assert long_e.polarity == 0.0 and long_e.domain == EvidenceDomain.STRUCTURE
-    assert short_e.polarity == 0.0 and short_e.domain == EvidenceDomain.VOLUME
-    assert "votes" not in long_e.observation and "LONG" not in long_e.observation
-
-
-def test_evidence_from_votes_empty_and_fault_safe():
-    assert evidence_from_votes("EURUSD", None) == []
-    assert evidence_from_votes("EURUSD", [object()]) == []  # no module attr → skipped
-
-
-class _RichVote:
-    def __init__(self, module, direction, confidence, weight=1.0, timeframe="", evidence=None):
-        self.module = module
-        self.direction = direction
-        self.confidence = confidence
-        self.weight = weight
-        self.timeframe = timeframe
-        self.evidence = evidence or {}
-
-
-def test_evidence_from_votes_preserves_per_module_richness():
-    # The richer per-module read (Vote.evidence) must survive onto the Evidence
-    # measurements instead of being collapsed to a bare direction+weight.
-    votes = [_RichVote(
-        "liquidity", "SHORT", 0.6, weight=1.0, timeframe="M5",
-        evidence={"sweep_type": "buyside", "pool_count": 3, "stacked": True,
-                  "note": "x" * 400},
-    )]
-    ev = evidence_from_votes("XAUUSD", votes)
-    assert len(ev) == 1
-    m = ev[0].measurements
-    assert m["timeframe"] == "M5"
-    assert m["sweep_type"] == "buyside"
-    assert m["pool_count"] == 3
-    assert m["stacked"] is True
-    assert len(m["note"]) == 120  # long strings capped, never unbounded
-    assert "on M5" in ev[0].observation
-
-
-def test_evidence_from_votes_richness_is_bounded():
-    # A pathological evidence dict must not explode the measurements payload.
-    big = {f"k{i}": i for i in range(200)}
-    ev = evidence_from_votes("XAUUSD", [_RichVote("momentum", "LONG", 0.7, evidence=big)])
-    assert len(ev) == 1
-    assert len(ev[0].measurements) <= 24
+def test_vote_source_adapter_api_is_removed():
+    # V-004: a vote panel is a pre-collapsed direction+confidence read, so it must
+    # not be wireable into the MarketState as evidence. The adapter is gone.
+    import cognition.evidence_adapters as ea
+    assert not hasattr(ea, "evidence_from_votes")
 
 
 # ── evidence_from_developing_bias (forming-bar read) ──────────────────────────
 
-def test_developing_bias_long_is_attenuated_multi_tf():
+def test_developing_bias_confidence_is_structural_not_directional():
+    # V-004 — the Evidence confidence must come ONLY from the non-directional
+    # structural clarity (alignment / trend strength, eroded by conflict), NEVER
+    # from a directional conviction. Here a high directional conviction rides
+    # alongside a moderate structural clarity: the evidence weight tracks the
+    # structure, not the conviction.
     ev = evidence_from_developing_bias("XAUUSD", {
-        "direction": "LONG", "confidence": 0.8, "conflict_score": 0.2,
-        "long_probability": 0.8, "short_probability": 0.2,
-        "score": 0.6, "strength": "STRONG", "tradeable": True,
+        "direction": "LONG", "confidence": 0.9, "conflict_score": 0.2,
+        "long_probability": 0.9, "short_probability": 0.1, "score": 0.8,
+        "alignment_degree": 0.6, "trend_strength": 0.5,
+        "strength": "STRONG", "tradeable": True,
     })
     assert len(ev) == 1
     e = ev[0]
     assert e.domain == EvidenceDomain.MULTI_TIMEFRAME
     assert e.source_module == "world_model.developing"
-    # Part XXV — the developing read is non-directional: no lean, only magnitude.
+    # Part XXV / V-004 — the developing read is non-directional: no lean.
     assert e.polarity == 0.0
+    # confidence = clarity * (1 - conflict) = max(0.6, 0.5) * (1 - 0.2) = 0.48,
+    # derived from structure — NOT from the 0.9 directional conviction.
+    assert abs(e.confidence - 0.48) < 1e-6
     assert e.measurements["developing"] is True
     assert e.measurements["tradeable"] is True
-    assert "long_probability" not in e.measurements  # directional keys dropped
+    # Directional keys never ride along as measurements.
+    assert "long_probability" not in e.measurements
+    assert "direction" not in e.measurements and "score" not in e.measurements
     assert e.relevance_horizon_seconds == 60.0
-    assert "developing-candle instrument reading" in e.observation
+    assert "developing-candle structural reading" in e.observation
     assert "votes" not in e.observation and "LONG" not in e.observation
 
 
@@ -180,11 +136,16 @@ def test_developing_bias_short_is_non_directional():
     assert ev[0].polarity == 0.0
 
 
-def test_developing_bias_falls_back_to_probability():
+def test_developing_bias_directional_conviction_does_not_leak():
+    # V-004 — a read carrying ONLY a directional conviction (no structural
+    # clarity) must NOT let that conviction become the evidence weight.
     ev = evidence_from_developing_bias("XAUUSD", {
-        "direction": "LONG", "long_probability": 0.7, "short_probability": 0.3,
+        "direction": "LONG", "confidence": 0.9,
+        "long_probability": 0.7, "short_probability": 0.3,
     })
-    assert abs(ev[0].confidence - 0.7) < 1e-6
+    assert len(ev) == 1
+    assert ev[0].confidence == 0.0  # no structural clarity ⇒ no evidence weight
+    assert ev[0].polarity == 0.0
 
 
 def test_developing_bias_empty_and_fault_safe():

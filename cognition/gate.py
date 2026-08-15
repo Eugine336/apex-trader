@@ -75,7 +75,25 @@ class CognitionGate:
         self._evaluations = 0
         self._would_veto = 0
         self._vetoed = 0
+        # V-017 — throttle the "absent cognition failed OPEN" warning to once per
+        # gate instance (the condition is persistent; per-entry logging would spam).
+        self._warned_absent = False
         self._lock = threading.Lock()
+
+    def _warn_absent_once(self, symbol: str, reason: str) -> None:
+        """V-017 — absent cognition that fails OPEN must not pass silently: log it
+        at WARNING (once). Non-authoritative modes are transitional and allow an
+        entry with NO Brain backing; the operator must be able to see that."""
+        with self._lock:
+            if self._warned_absent:
+                return
+            self._warned_absent = True
+        logger.warning(
+            "[cognition-gate] %s ALLOWING %s with absent cognition (%s, mode=%s) — "
+            "non-authoritative gate is fail-open and TRANSITIONAL; entries proceed "
+            "without Brain backing. Set gate_mode=authoritative to fail closed.",
+            symbol, self.mode.upper(), reason, self.mode,
+        )
 
     @property
     def authoritative(self) -> bool:
@@ -89,7 +107,9 @@ class CognitionGate:
         authoritative = self.mode == MODE_AUTHORITATIVE
         if self._brain is None:
             # authoritative ⇒ no reasoner, no trade (fail-closed, single reasoner);
-            # shadow/veto ⇒ fail-open.
+            # shadow/veto ⇒ fail-open (but no longer silent — V-017).
+            if not authoritative:
+                self._warn_absent_once(symbol, "no brain wired")
             return GateVerdict(not authoritative, self.mode, authoritative, None,
                                "no brain (authoritative fail-closed)" if authoritative
                                else "no brain (fail-open)")
@@ -99,8 +119,11 @@ class CognitionGate:
             output = self._brain.latest(symbol)
             if output is None:
                 # Cold start: authoritative blocks (no decision ⇒ no trade);
-                # shadow/veto allow (never block on absent evidence).
+                # shadow/veto allow (never block on absent evidence) — but the
+                # fail-open allow is logged at WARNING now, never silent (V-017).
                 self._bump(evaluated=True, would_veto=authoritative, vetoed=authoritative)
+                if not authoritative:
+                    self._warn_absent_once(symbol, "no brain read yet (cold start)")
                 return GateVerdict(not authoritative, self.mode, authoritative, None,
                                    "no brain read yet (authoritative fail-closed)" if authoritative
                                    else "no brain read yet (fail-open)")
@@ -122,6 +145,13 @@ class CognitionGate:
             allow = aligned or (self.mode == MODE_SHADOW)
             self._bump(evaluated=True, would_veto=would_veto,
                        vetoed=(would_veto and not allow))
+
+            # V-016 / V-017 — a provider-unavailable Brain read is ABSENT cognition
+            # (infrastructure down), not a market view. When a non-authoritative
+            # gate lets the entry through anyway, surface it at WARNING — never a
+            # silent pass on absent cognition.
+            if dtype_val == "reasoner_unavailable" and allow and not aligned:
+                self._warn_absent_once(symbol, "brain reasoner unavailable (provider down)")
 
             if would_veto and not allow:
                 logger.info(

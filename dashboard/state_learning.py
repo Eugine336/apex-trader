@@ -209,19 +209,19 @@ class LearningMixin:
                 "strength": _round(r.get("strength", 0.0), 3),
                 "trade_opened": bool(r.get("trade_opened")),
                 "gate_blocked_by": str(r.get("gate_blocked_by") or ""),
-                "direction_correct": r.get("direction_correct"),
+                "observation_useful": r.get("observation_useful"),
                 "max_favorable_pct": _round(r.get("max_favorable_move_pct", 0.0), 3),
                 "max_adverse_pct": _round(r.get("max_adverse_move_pct", 0.0), 3),
             })
 
         total_graded = len(graded)
-        correct = sum(1 for r in graded if r.get("direction_correct"))
+        useful = sum(1 for r in graded if r.get("observation_useful"))
         return {
             "enabled": True,
             "source": "live",
             "total_recorded": len(all_rows),
             "total_graded": total_graded,
-            "overall_accuracy": _round(correct / total_graded, 4) if total_graded else 0.0,
+            "overall_accuracy": _round(useful / total_graded, 4) if total_graded else 0.0,
             "emitters": emitters,
             "recent": recent,
             **meta,

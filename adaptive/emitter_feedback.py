@@ -1,16 +1,18 @@
 """
 APEX TRADER — Emitter Feedback Service
 
-The signal ledger records and grades every directional read.  This service is
-the read side every module can use to *ask its own question*: "of the signals I
-emitted, how many were right — and does it matter whether they became trades or
-got blocked?"
+The observation ledger records and grades every observation a module emits. This
+service is the read side every module can use to *ask its own question*: "of the
+observations I emitted, how many were high-quality — a material move actually
+followed — and does it matter whether they became trades or got blocked?"
 
-That last split is the whole point.  A module whose blocked signals are highly
-accurate is being over-filtered by a gate; a gate that blocks mostly-correct
-signals is destroying edge.  ``signal_value_when_blocked`` and
+That last split is the whole point.  A module whose blocked observations are
+consistently high-quality is being over-filtered by a gate; a gate that blocks
+mostly-real observations is destroying edge.  ``signal_value_when_blocked`` and
 ``get_gate_effectiveness`` surface exactly that, turning the ledger's raw rows
-into the per-emitter and per-gate verdicts a later phase will act on.
+into the per-emitter and per-gate verdicts a later phase will act on. Quality is
+direction-agnostic (Constitution §XXIX): a module is credited for seeing a real
+market event, never for calling a direction that happened to be right.
 
 Purely observational — reads the ledger, changes nothing live.
 
@@ -51,25 +53,26 @@ class EmitterFeedbackResponse:
     accuracy_blocked: float = 0.0
     accuracy_by_pair: dict = field(default_factory=dict)
     accuracy_by_gate: dict = field(default_factory=dict)
-    common_correct_context: dict = field(default_factory=dict)
-    common_wrong_context: dict = field(default_factory=dict)
+    common_useful_context: dict = field(default_factory=dict)
+    common_low_quality_context: dict = field(default_factory=dict)
     trade_outcomes: list = field(default_factory=list)
-    # How often blocked signals were actually correct — a direct measure of gate
-    # over-filtering for this emitter (1.0 = every blocked signal would have been
-    # directionally right).
+    # How often blocked observations were actually high-quality — a direct
+    # measure of gate over-filtering for this emitter (1.0 = every blocked
+    # observation was followed by a material move).
     signal_value_when_blocked: float = 0.0
 
 
 def _accuracy(rows: List[dict]) -> float:
-    # Only graded rows (direction_correct is True/False) belong in the
-    # denominator. Ungraded rows (direction_correct is None — signal not yet
-    # evaluated) must be excluded, or a burst of recent signals drags accuracy
-    # toward zero and can wrongly trip a module into SHADOW/DISABLED.
-    graded = [r for r in rows if r.get("direction_correct") is not None]
+    # Only graded rows (observation_useful is True/False) belong in the
+    # denominator. Ungraded rows (observation_useful is None — not yet
+    # evaluated) must be excluded, or a burst of recent observations drags the
+    # quality score toward zero and can wrongly trip a module into
+    # SHADOW/DISABLED.
+    graded = [r for r in rows if r.get("observation_useful") is not None]
     if not graded:
         return 0.0
-    correct = sum(1 for r in graded if r.get("direction_correct"))
-    return round(correct / len(graded), 4)
+    useful = sum(1 for r in graded if r.get("observation_useful"))
+    return round(useful / len(graded), 4)
 
 
 def _context_frequencies(rows: List[dict], top: int = 8) -> dict:
@@ -115,8 +118,8 @@ class EmitterFeedbackService:
 
             traded = [r for r in rows if r.get("trade_opened")]
             blocked = [r for r in rows if (not r.get("trade_opened")) and r.get("gate_blocked_by")]
-            correct_rows = [r for r in rows if r.get("direction_correct")]
-            wrong_rows = [r for r in rows if r.get("direction_correct") is False]
+            useful_rows = [r for r in rows if r.get("observation_useful")]
+            low_quality_rows = [r for r in rows if r.get("observation_useful") is False]
 
             by_pair: Dict[str, list] = {}
             for r in rows:
@@ -144,8 +147,8 @@ class EmitterFeedbackService:
                 accuracy_blocked=_accuracy(blocked),
                 accuracy_by_pair=accuracy_by_pair,
                 accuracy_by_gate=accuracy_by_gate,
-                common_correct_context=_context_frequencies(correct_rows),
-                common_wrong_context=_context_frequencies(wrong_rows),
+                common_useful_context=_context_frequencies(useful_rows),
+                common_low_quality_context=_context_frequencies(low_quality_rows),
                 trade_outcomes=trade_outcomes,
                 signal_value_when_blocked=_accuracy(blocked),
             )
@@ -185,12 +188,12 @@ class EmitterFeedbackService:
             return 0
 
     def get_gate_effectiveness(self, lookback: int = 500) -> dict:
-        """Per-gate verdict: what % of the signals each gate blocked would have
-        been directionally correct.
+        """Per-gate verdict: what % of the observations each gate blocked were
+        actually high-quality (a material move followed).
 
-        High ``blocked_accuracy`` ⇒ the gate is rejecting profitable signals
-        (suspect — too strict). Low ⇒ it is correctly filtering noise (earning
-        its keep). Aggregated across all emitters.
+        High ``blocked_accuracy`` ⇒ the gate is rejecting real reads (suspect —
+        too strict). Low ⇒ it is correctly filtering noise (earning its keep).
+        Aggregated across all emitters.
         """
         try:
             rows = self._ledger.get_graded_signals(lookback=lookback)
@@ -205,12 +208,12 @@ class EmitterFeedbackService:
 
         out: dict = {}
         for gate, items in gates.items():
-            correct = sum(1 for r in items if r.get("direction_correct"))
+            useful = sum(1 for r in items if r.get("observation_useful"))
             n = len(items)
             out[gate] = {
                 "gate": gate,
                 "blocked": n,
-                "would_have_been_correct": correct,
-                "blocked_accuracy": round(correct / n, 4) if n else 0.0,
+                "would_have_been_useful": useful,
+                "blocked_accuracy": round(useful / n, 4) if n else 0.0,
             }
         return out
