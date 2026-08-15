@@ -1,15 +1,16 @@
 """
-APEX TRADER — Dashboard Brain Mixin (module votes + opportunity ranker)
+APEX TRADER — Dashboard Brain Mixin (module observations + opportunity ranker)
 
 Two of the system's richest output producers were invisible on the dashboard:
 
   * the **9 analysis modules** (momentum, order blocks, FVGs, liquidity, VWAP,
-    structure, currency strength, wyckoff, volume) — each casts a directional
-    ``Vote`` per pair every scan, and
-  * the **opportunity ranker** — which clusters those same votes into coherent,
-    independently-scored trade ideas (``Opportunity``) by direction × horizon.
+    structure, currency strength, wyckoff, volume) — each emits a directional
+    observation per pair every scan, and
+  * the **opportunity ranker** — which clusters those same observations into
+    coherent, independently-scored trade ideas (``Opportunity``) by
+    direction × horizon.
 
-Both are produced by the event-driven analysis path (per-module ``Vote`` and
+Both are produced by the event-driven analysis path (per-module observations and
 ranked ``Opportunity`` candidates).  This mixin reads them from the event-driven
 system — the same live source the Scanner panel uses — serialises the frozen
 dataclasses, and adds the aggregates the panels need (per-module agreement,
@@ -23,9 +24,9 @@ from typing import Any
 
 from loguru import logger
 
-# The directional vote/ranker subsystem (brain.opportunity_ranker) was retired
-# with the Single-Reasoner cutover. These inert fallbacks keep the dashboard
-# importable; the vote/ranker panels simply render empty now.
+# The directional observation/ranker subsystem (brain.opportunity_ranker) was
+# retired with the Single-Reasoner cutover. These inert fallbacks keep the
+# dashboard importable; the observation/ranker panels simply render empty now.
 DEFAULT_SCALP_MODULES: tuple = ()
 DEFAULT_SWING_MODULES: tuple = ()
 
@@ -78,9 +79,9 @@ class BrainMixin:
         rc = getattr(getattr(ed, "_config", None), "opportunity_ranker", None) if ed is not None else None
         return bool(getattr(rc, "execute", False))
 
-    # ── Module votes ────────────────────────────────────────────────────────
+    # ── Module observations ─────────────────────────────────────────────────
     def get_module_votes(self) -> dict:
-        """Per-pair grid of the 9 modules' directional votes + per-module stats."""
+        """Per-pair grid of the 9 modules' directional observations + per-module stats."""
         scalp, swing = self._horizon_modules()
         results = self._scan_results()
 
@@ -92,21 +93,21 @@ class BrainMixin:
             pair = str(getattr(result, "pair", "") or "").upper()
             if not pair:
                 continue
-            votes = getattr(result, "votes", None) or []
-            if not votes:
+            observations = getattr(result, "votes", None) or []
+            if not observations:
                 continue
 
-            vote_rows: list[dict] = []
-            for v in votes:
-                module = str(getattr(v, "module", "") or "")
+            evidence_rows: list[dict] = []
+            for obs in observations:
+                module = str(getattr(obs, "module", "") or "")
                 if not module:
                     continue
-                direction = str(getattr(v, "direction", "NEUTRAL") or "NEUTRAL").upper()
-                confidence = _round(getattr(v, "confidence", 0.0))
-                weight = _round(getattr(v, "weight", 0.0), 3)
-                signed = _round(getattr(v, "signed", 0.0), 4)
+                direction = str(getattr(obs, "direction", "NEUTRAL") or "NEUTRAL").upper()
+                confidence = _round(getattr(obs, "confidence", 0.0))
+                weight = _round(getattr(obs, "weight", 0.0), 3)
+                signed = _round(getattr(obs, "signed", 0.0), 4)
                 horizon = classify_timeframe(module, scalp, swing)
-                vote_rows.append({
+                evidence_rows.append({
                     "module": module,
                     "direction": direction,
                     "confidence": confidence,
@@ -125,13 +126,15 @@ class BrainMixin:
                     acc["conf_sum"] += confidence
                     acc["conf_cnt"] += 1
 
-            if not vote_rows:
+            if not evidence_rows:
                 continue
 
-            long_n = sum(1 for r in vote_rows if r["direction"] == "LONG")
-            short_n = sum(1 for r in vote_rows if r["direction"] == "SHORT")
-            neutral_n = sum(1 for r in vote_rows if r["direction"] == "NEUTRAL")
-            net = _round(sum(r["signed"] for r in vote_rows), 3)
+            # Directional evidence-source counts: how many of this pair's module
+            # observations lean LONG / SHORT / NEUTRAL this scan.
+            long_obs = sum(1 for r in evidence_rows if r["direction"] == "LONG")
+            short_obs = sum(1 for r in evidence_rows if r["direction"] == "SHORT")
+            neutral_obs = sum(1 for r in evidence_rows if r["direction"] == "NEUTRAL")
+            net = _round(sum(r["signed"] for r in evidence_rows), 3)
 
             pairs.append({
                 "pair": pair,
@@ -141,10 +144,10 @@ class BrainMixin:
                 ).upper(),
                 "consensus_net": _round(getattr(result, "consensus_net", 0.0), 3),
                 "consensus_agreement": _round(getattr(result, "consensus_agreement", 0.0), 3),
-                "votes": vote_rows,
-                "long_count": long_n,
-                "short_count": short_n,
-                "neutral_count": neutral_n,
+                "votes": evidence_rows,
+                "long_count": long_obs,
+                "short_count": short_obs,
+                "neutral_count": neutral_obs,
                 "net_signed": net,
             })
 
@@ -173,7 +176,7 @@ class BrainMixin:
 
     # ── Opportunity ranker ──────────────────────────────────────────────────
     def get_ranker(self) -> dict:
-        """Ranked opportunities (vote clusters) per pair + horizon/EV aggregates."""
+        """Ranked opportunities (observation clusters) per pair + horizon/EV aggregates."""
         results = self._scan_results()
         execute = self._ranker_execute()
 
@@ -247,7 +250,7 @@ class BrainMixin:
         try:
             contributors = list(getattr(opp, "contributors", []) or [])
             summary = getattr(opp, "summary", "")
-            votes = list(getattr(opp, "votes", []) or [])
+            observations = list(getattr(opp, "votes", []) or [])
             return {
                 "direction": str(getattr(opp, "direction", "") or "").upper(),
                 "timeframe_class": str(getattr(opp, "timeframe_class", "") or "").upper(),
@@ -259,11 +262,11 @@ class BrainMixin:
                 "win_prob": _round(getattr(opp, "win_prob", 0.0), 3),
                 "contributors": contributors,
                 # Multi-opportunity provenance — the distinct real timeframes
-                # behind this idea and how many votes formed it, so the panel
+                # behind this idea and how many observations formed it, so the panel
                 # shows WHICH timeframes (not just the SCALP/SWING bucket) and a
                 # stable candidate id where one is attached.
                 "timeframes": [str(t).upper() for t in getattr(opp, "timeframes", []) or []],
-                "vote_count": len(votes),
+                "vote_count": len(observations),
                 "candidate_id": str(getattr(opp, "candidate_id", "") or ""),
                 "summary": str(summary),
             }

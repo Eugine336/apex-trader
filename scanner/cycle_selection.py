@@ -12,6 +12,8 @@ identically — behaviour unchanged.
 
 from __future__ import annotations
 
+import warnings
+
 
 def select_cycle_candidates(items: list) -> tuple[list, list, str]:
     """Pure cycle-boundary selector for per-candidate entry decisions.
@@ -32,6 +34,13 @@ def select_cycle_candidates(items: list) -> tuple[list, list, str]:
     exposure budget. Keeping the lock here prevents over-trading until those
     capital-allocation caps exist.
     """
+    warnings.warn(
+        "select_cycle_candidates is a retired legacy within-cycle selector, "
+        "superseded by PortfolioGovernor.allocate; it is retained only for "
+        "tests and is slated for removal — do not use it in new code.",
+        DeprecationWarning,
+        stacklevel=2,
+    )
     if not items:
         return [], [], ""
 

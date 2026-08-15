@@ -17,6 +17,7 @@ Leaf module — depends only on the standard library + loguru + planning.models.
 from __future__ import annotations
 
 import json
+import warnings
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -206,6 +207,15 @@ class TradePlanner:
     """Reads a `TradePlanContext` and produces a complete `TradePlan`."""
 
     def __init__(self, config: PlannerConfig | None = None, governor=None) -> None:
+        warnings.warn(
+            "TradePlanner is a legacy planning component slated for retirement "
+            "as management/origination authority consolidates in the "
+            "event-driven Cognitive Brain path; it is retained for the current "
+            "wiring, backtests and tests. Avoid introducing new dependencies on "
+            "it.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         self.config = config or PlannerConfig()
         # Portfolio Governor (duck-typed: any object with a .check() returning
         # an object carrying .allowed/.reason/.blocked_by).  Optional — when
