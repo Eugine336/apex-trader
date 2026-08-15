@@ -54,16 +54,43 @@ SHORT = "SHORT"
 FLAT = "FLAT"
 
 
+_direction_deprecation_logged = False
+
+
+def _warn_direction_deprecated() -> None:
+    """Log a deprecation notice when ``BrainOutput.direction`` is read (V-026).
+
+    Emitted once at WARNING (then DEBUG thereafter) so the notice is visible
+    without spamming the hot loop. The collapsed top-level direction is retained
+    only for backward compatibility; consumers should reason in the
+    constitutional vocabulary — ``decision.decision_type`` plus the
+    opportunity/thesis (see :meth:`BrainOutput.decision_summary` /
+    :attr:`~cognition.contracts.DecisionPackage.summary`).
+    """
+    global _direction_deprecation_logged
+    if not _direction_deprecation_logged:
+        _direction_deprecation_logged = True
+        logger.warning(
+            "BrainOutput.direction is deprecated (V-026): reason with "
+            "decision.decision_type + opportunity/thesis (decision_summary()) "
+            "instead of the collapsed direction. Logged once per process."
+        )
+    else:
+        logger.debug("BrainOutput.direction accessed — deprecated (V-026)")
+
+
 @dataclass
 class BrainOutput:
     """The Brain's complete output for one reasoning pass.
 
-    V-016 / Part XVIII Art 5 — ``direction`` is the Brain's directional MARKET
-    read (LONG/SHORT/FLAT). It is ``None`` ONLY when the Brain formed no cognitive
-    view at all because its reasoner/provider was unavailable: provider
-    unavailability is an INFRASTRUCTURE state, never a FLAT market assessment.
-    Consumers and logging must check ``decision_type`` / ``provider_unavailable``
-    FIRST and never read ``FLAT`` (or ``None``) direction as "the market is flat".
+    .. deprecated:: V-026
+        ``direction`` — the collapsed top-level LONG/SHORT/FLAT — is retained
+        only for backward compatibility and logs a deprecation notice when read.
+        Reason instead in the constitutional vocabulary: ``decision.decision_type``
+        plus the opportunity/thesis fields (``decision.preferred_opportunity`` /
+        ``decision.opportunities`` / ``decision.thesis``), or the ready-made
+        :meth:`decision_summary`. The goal is to remove ``direction`` once every
+        consumer thinks in decisions/opportunities rather than a bare direction.
     """
 
     decision: DecisionPackage
@@ -71,28 +98,52 @@ class BrainOutput:
     direction: Optional[str] = FLAT
     decided_at_epoch: float = 0.0
 
+    # ``direction`` is declared twice on purpose: the field annotation above gives
+    # the dataclass its ``direction=`` init parameter (so existing call sites keep
+    # working), and this property overlays the V-026 deprecation getter. Ruff's
+    # F811 "redefinition" is expected and suppressed for exactly this recipe.
     @property
-    def decision_type(self) -> str:
-        """The decision's type as a string (e.g. ``open_campaign``,
-        ``reasoner_unavailable``) — the primary status consumers/logs read BEFORE
-        interpreting ``direction``."""
-        dt = getattr(self.decision, "decision_type", None)
-        return getattr(dt, "value", str(dt)) if dt is not None else ""
+    def direction(self) -> str:  # noqa: F811
+        """DEPRECATED (V-026) — the collapsed top-level trade side.
 
-    @property
-    def provider_unavailable(self) -> bool:
-        """True when this output reflects an unavailable reasoner/provider
-        (infrastructure down), NOT a market read. ``direction`` is ``None`` here
-        so it can never be mistaken for a FLAT market conclusion."""
-        return getattr(self.decision, "decision_type", None) == DecisionType.REASONER_UNAVAILABLE
+        Kept for backward compatibility only; logs a deprecation notice on
+        access. Prefer ``decision.decision_type`` + opportunity/thesis (or
+        :meth:`decision_summary`).
+        """
+        _warn_direction_deprecated()
+        return self._direction
+
+    @direction.setter
+    def direction(self, value: Any) -> None:
+        # During dataclass ``__init__`` the class-level default resolves to the
+        # ``property`` object itself when no ``direction=`` was passed; normalise
+        # that (and ``None``) to FLAT so the stored value stays a plain string.
+        if value is None or isinstance(value, property):
+            value = FLAT
+        self._direction = str(value)
+
+    def decision_summary(self) -> str:
+        """Human-readable decision framed in the constitutional vocabulary.
+
+        Leads with the decision type and the opportunity/thesis that drove it
+        (Part XXV) rather than a bare direction — e.g.
+        ``decision=open_campaign opp=momentum_breakout thesis=…``. Delegates to
+        :attr:`~cognition.contracts.DecisionPackage.summary`.
+        """
+        try:
+            return self.decision.summary
+        except Exception:  # noqa: BLE001 — a summary must never break a caller
+            return ""
 
     def to_dict(self) -> dict:
         return {
             "decision": self.decision.to_dict(),
             "campaign": self.campaign.to_dict() if self.campaign is not None else None,
-            "direction": self.direction,
-            "decision_type": self.decision_type,
-            "provider_unavailable": self.provider_unavailable,
+            "decision_type": self.decision.decision_type.value,
+            "decision_summary": self.decision_summary(),
+            # Deprecated (V-026): retained for back-compat. Read the backing field
+            # directly so serialisation does not self-trip the deprecation notice.
+            "direction": self._direction,
             "decided_at_epoch": round(self.decided_at_epoch, 3),
         }
 

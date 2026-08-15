@@ -599,16 +599,25 @@ class ReasoningOrchestrator:
                 # Show the advisor's THESIS, not "name direction(conf)": the
                 # council is a panel of thinkers, not a directional vote.
                 name = getattr(o, "engine", "?")
-                summary = ""
-                try:
-                    summary = o.thesis_summary(90)
-                except Exception:  # noqa: BLE001 — never let logging break
-                    cog = getattr(o, "cognition", None) or {}
-                    summary = (str(cog.get("primary_hypothesis", "") or "").strip()
-                               or str(cog.get("opportunity", "") or "").strip())[:90]
-                return f"{name}: {summary or '(no thesis)'}"
+                conf = float(getattr(o, "confidence", 0.0) or 0.0)
+                cog = getattr(o, "cognition", None) or {}
+                # V-027 — lead with the advisor's opportunity + thesis (the
+                # constitutional framing), not its direction. Direction + confidence
+                # trail as supplementary operator context.
+                lead = []
+                opp = str(cog.get("opportunity", "") or "").strip()
+                if opp and opp.lower() != "none":
+                    lead.append(f"opp:{opp[:40]}")
+                thesis = str(cog.get("primary_hypothesis", "") or "").strip()
+                if thesis:
+                    lead.append(f"thesis:{thesis[:60]}")
+                regime = str(cog.get("regime", "") or "").strip()
+                if regime:
+                    lead.append(regime)
+                head = f"{name} " + "; ".join(lead) if lead else name
+                return f"{head} [{getattr(o, 'direction', '?')}({conf:.2f})]"
 
-            contributing = " | ".join(_render(o) for o in result.opinions)
+            advising = ", ".join(_render(o) for o in result.opinions)
             logger.info(
                 "[council] {} — {}/{} advisors contributing: {}{}",
                 result.symbol, len(result.opinions), len(asked),

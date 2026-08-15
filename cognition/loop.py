@@ -412,14 +412,30 @@ class BrainActionBridge:
                 return
             from action.orchestrator import ActionObjective, RiskTier  # lazy
 
+            # V-026/V-027 — describe the decision by its type + opportunity/thesis,
+            # not the collapsed top-level direction. Side is kept only as
+            # supplementary operator context, sourced from the campaign/opportunity
+            # (never the deprecated ``BrainOutput.direction``).
+            dtype = getattr(getattr(decision, "decision_type", None), "value", "") or "decision"
+            thesis = str(getattr(decision, "thesis", "") or "")
+            camp = getattr(output, "campaign", None)
+            side = str(getattr(camp, "direction", "") or "")
+            if not side:
+                opp = getattr(decision, "preferred_opportunity", None)
+                side = str(getattr(opp, "direction", "") or "")
+
             obj = ActionObjective(
                 capability="operator.notify",
-                objective=f"Campaign opened on {decision.symbol} ({output.direction})",
+                objective=f"{dtype} on {getattr(decision, 'symbol', '')}: {thesis[:120]}",
                 params={
-                    "symbol": decision.symbol,
-                    "direction": output.direction,
-                    "confidence": round(decision.confidence, 4),
-                    "thesis": decision.thesis[:280],
+                    "symbol": getattr(decision, "symbol", ""),
+                    "decision_type": dtype,
+                    "opportunity": getattr(decision, "preferred_opportunity_id", "") or "",
+                    "thesis": thesis[:280],
+                    "confidence": round(float(getattr(decision, "confidence", 0.0) or 0.0), 4),
+                    # Deprecated/supplementary (V-026): the collapsed side, sourced
+                    # from the campaign/opportunity rather than BrainOutput.direction.
+                    "direction": side,
                 },
                 expected_outcome="operator informed of a new campaign",
                 confidence=decision.confidence,
@@ -759,17 +775,16 @@ class CognitionLoop:
             # when it originates a trade.
             try:
                 _dec = output.decision
-                _dtype = getattr(getattr(_dec, "decision_type", None), "value", None) \
+                # V-027 — lead with the decision type + opportunity/thesis
+                # (DecisionPackage.summary), not the collapsed dir/conf. Confidence
+                # is kept as supplementary operator context.
+                _summary = getattr(_dec, "summary", None) or (
+                    getattr(getattr(_dec, "decision_type", None), "value", None)
                     or str(getattr(_dec, "decision_type", "?"))
-                # V-016 — decision_type is the primary status; provider
-                # unavailability must never be rendered as a FLAT market read.
-                _pu = bool(getattr(output, "provider_unavailable", False))
-                _dir = getattr(output, "direction", None)
-                _dir_txt = "n/a(provider-unavailable)" if _pu else (
-                    _dir if _dir is not None else "n/a")
+                )
                 logger.info(
-                    "[cognition] %s -> decision=%s (dir=%s conf=%.2f) reasoner=%s",
-                    symbol, _dtype, _dir_txt,
+                    "[cognition] %s -> %s (conf=%.2f) reasoner=%s",
+                    symbol, _summary,
                     float(getattr(_dec, "confidence", 0.0) or 0.0),
                     "live" if getattr(self._brain, "available", False) else "unavailable",
                 )
@@ -942,7 +957,9 @@ class CognitionLoop:
                 return
             if getattr(decision, "decision_type", None) != DecisionType.OPEN_CAMPAIGN:
                 return
-            direction = str(getattr(output, "direction", "") or "").upper()
+            # V-026 — source the side from the campaign (an OPEN_CAMPAIGN always
+            # carries one) rather than the deprecated ``BrainOutput.direction``.
+            direction = str(getattr(campaign, "direction", "") or "").upper()
             symbol = str(getattr(campaign, "symbol", "") or "")
             if direction not in ("LONG", "SHORT") or not symbol:
                 return
@@ -1016,7 +1033,9 @@ class CognitionLoop:
                 return
             if getattr(decision, "decision_type", None) != DecisionType.OPEN_CAMPAIGN:
                 return
-            direction = str(getattr(output, "direction", "") or "").upper()
+            # V-026 — source the side from the campaign (an OPEN_CAMPAIGN always
+            # carries one) rather than the deprecated ``BrainOutput.direction``.
+            direction = str(getattr(campaign, "direction", "") or "").upper()
             symbol = str(getattr(campaign, "symbol", "") or "")
             if direction not in ("LONG", "SHORT") or not symbol:
                 return

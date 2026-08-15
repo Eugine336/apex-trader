@@ -34,11 +34,14 @@ vocabulary is trivially importable and testable everywhere.
 
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
+
+logger = logging.getLogger("apex.cognition.contracts")
 
 
 def _now_epoch() -> float:
@@ -287,6 +290,13 @@ class Evidence:
 # Part XXV — the Brain must never receive a directional reading from any module.
 # These measurement keys encode a precomputed direction/lean/probability and are
 # stripped from every Evidence as it enters a MarketState (see MarketState.add).
+#
+# V-025 (semantic debt): this denylist is defense-in-depth only. Its continued
+# existence proves upstream evidence producers may STILL emit these forbidden
+# keys at the Brain's boundary. The goal is to make this sanitizer unnecessary —
+# every actual strip is logged (DEBUG) in :func:`scrub_directional` so the
+# offending source module can be found and cleaned up, after which this frozenset
+# can shrink and eventually be removed.
 _DIRECTIONAL_MEASUREMENT_KEYS = frozenset({
     "directional_lean", "lean", "direction", "bias", "sentiment",
     "long_probability", "short_probability", "long_ev", "short_ev", "flat_ev",
@@ -301,14 +311,31 @@ def scrub_directional(ev: "Evidence") -> "Evidence":
     that encodes a precomputed direction/probability. The Brain forms direction
     itself from raw measurements + the price picture; nothing upstream may hand
     it a directional reading. Fail-safe — never raises.
+
+    V-025: when a forbidden key is ACTUALLY stripped, log which source module
+    still emitted it (DEBUG) so this sanitizer can be retired once every upstream
+    producer stops emitting directional readings.
     """
     try:
         ev.polarity = 0.0
         m = getattr(ev, "measurements", None)
         if isinstance(m, dict) and m:
-            for k in list(m.keys()):
-                if str(k).strip().lower() in _DIRECTIONAL_MEASUREMENT_KEYS:
-                    m.pop(k, None)
+            stripped = [
+                k for k in list(m.keys())
+                if str(k).strip().lower() in _DIRECTIONAL_MEASUREMENT_KEYS
+            ]
+            for k in stripped:
+                m.pop(k, None)
+            if stripped:
+                logger.debug(
+                    "scrub_directional: %s/%s stripped forbidden directional "
+                    "measurement key(s) %s — upstream producer still emits a "
+                    "directional reading (goal: eliminate this sanitizer as "
+                    "producers are cleaned up)",
+                    getattr(ev, "source_module", "?"),
+                    getattr(ev, "symbol", "?"),
+                    stripped,
+                )
     except Exception:  # noqa: BLE001 — sanitising must never break consolidation
         pass
     return ev
@@ -675,6 +702,46 @@ class DecisionPackage:
     def forming_opportunities(self) -> list["Opportunity"]:
         """The subset identified but not yet activated (tracked, waiting)."""
         return [o for o in self.opportunities if getattr(o, "is_forming", False)]
+
+    @property
+    def preferred_opportunity(self) -> Optional["Opportunity"]:
+        """The opportunity that drove this decision (by id), or ``None``.
+
+        Part XXV — a decision is anchored to an *opportunity* (thesis, lifecycle
+        state, asymmetry), not a bare direction. Consumers and logs should
+        describe a decision through this richer object rather than the collapsed
+        top-level direction.
+        """
+        pid = self.preferred_opportunity_id
+        if pid:
+            for o in self.opportunities:
+                if getattr(o, "opportunity_id", "") == pid:
+                    return o
+        return None
+
+    @property
+    def summary(self) -> str:
+        """One-line, constitution-aligned decision summary for logs/operators.
+
+        Leads with the decision type and the opportunity + thesis that drove it
+        (Part XXV) — e.g. ``decision=open_campaign opp=momentum_breakout
+        state=active thesis=…`` — deliberately NOT a ``dir=LONG conf=…`` collapse.
+        Direction, when relevant, is carried by the opportunity object as
+        secondary context, not surfaced as the headline.
+        """
+        parts = [f"decision={self.decision_type.value}"]
+        opp = self.preferred_opportunity
+        thesis = self.thesis
+        if opp is not None:
+            if opp.opportunity_id:
+                parts.append(f"opp={opp.opportunity_id}")
+            state = getattr(opp, "state", None)
+            if state is not None:
+                parts.append(f"state={getattr(state, 'value', state)}")
+            thesis = opp.thesis or thesis
+        if thesis:
+            parts.append(f"thesis={thesis[:80]}")
+        return " ".join(parts)
 
     def to_dict(self) -> dict:
         return {
