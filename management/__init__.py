@@ -1,17 +1,19 @@
 """
 APEX TRADER — Management Package
 The Hands. Protects every winner and cuts every loser.
+
+.. deprecated::
+    ``TradeManager`` (and the ``EntrySignal`` / ``ManagedTrade`` / ``TradeStatus``
+    dataclasses it drives) is a retired legacy component — superseded by the
+    event-driven ``execution/`` management path (e.g. PositionWorker) and kept
+    only for the legacy loop, shadow/backtest replay and tests. Constructing a
+    ``TradeManager`` emits a ``DeprecationWarning``; do not use it in new code.
 """
 
 from management.partial_close import PartialCloseCalculator
 from management.trailing_stop import StructureTrailingStop
-# V-012 — DEPRECATED LEGACY: TradeManager (and its EntrySignal / ManagedTrade /
-# TradeStatus dataclasses) is the mechanical management layer (fixed stop-loss /
-# TP1 / breakeven / trailing / TP2 adjustment / M5 structure exit / stall exit).
-# Live management is Brain-driven (thesis-based) and the event-driven bootstrap
-# runs with ``trade_manager = None``. This export is retained ONLY for backtests /
-# legacy tooling; constructing TradeManager emits a DeprecationWarning. Do not
-# wire it into the live path.
+# Deprecated (retired legacy): TradeManager and its dataclasses — construction
+# emits a DeprecationWarning. See management/trade_manager.py.
 from management.trade_manager import (
     EntrySignal,
     ManagedTrade,

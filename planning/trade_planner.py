@@ -188,18 +188,13 @@ class TradePlanner:
 
     def __init__(self, config: PlannerConfig | None = None, governor=None) -> None:
         warnings.warn(
-            "TradePlanner is deprecated and retired from the live decision path. "
-            "It no longer has directional authority: plan_trade() does not compute "
-            "advisor agreement or emit a BUY/SELL verdict — opportunity direction "
-            "is decided by the Brain. Only PlannerConfig/Calibrator/OutcomeLogger "
-            "remain in use.",
+            "TradePlanner is a legacy planning component slated for retirement "
+            "as management/origination authority consolidates in the "
+            "event-driven Cognitive Brain path; it is retained for the current "
+            "wiring, backtests and tests. Avoid introducing new dependencies on "
+            "it.",
             DeprecationWarning,
             stacklevel=2,
-        )
-        logger.warning(
-            "[Planner] TradePlanner instantiated — deprecated, no directional "
-            "authority (direction is the Brain's; plan_trade is a non-actionable "
-            "no-op)."
         )
         self.config = config or PlannerConfig()
         # Portfolio Governor (duck-typed: any object with a .check() returning

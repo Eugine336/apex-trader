@@ -166,26 +166,14 @@ class TradeManager:
         heat_trail_factor_reducing: float = 0.5,
         heat_trail_factor_emergency: float = 0.5,
     ):
-        # V-012 — TradeManager is the LEGACY mechanical management layer (fixed
-        # stop-loss / TP1 / breakeven / trailing / TP2 adjustment / M5 structure
-        # exit / stall exit). It embodies predefined-level + timer management, not
-        # the thesis-based cognitive management the constitution requires, and the
-        # event-driven bootstrap already runs with ``trade_manager = None``.
-        # Retained only for backtests / legacy tooling; do not wire it into the
-        # live path. Emits a DeprecationWarning (plus an operational log, since
-        # DeprecationWarnings are silent by default) on construction.
         warnings.warn(
-            "TradeManager is deprecated (V-012): it is the legacy mechanical "
-            "management layer (stop-loss / TP1 / breakeven / trailing / TP2 "
-            "adjustment / M5 structure exit / stall exit). Live management flows "
-            "through the Cognitive Brain (thesis-based); bootstrap sets "
-            "trade_manager=None. Use it only for backtests / legacy tooling.",
+            "TradeManager is a retired legacy component (superseded by the "
+            "event-driven execution/ management path, e.g. PositionWorker). It "
+            "is retained only for the legacy trading loop, shadow/backtest "
+            "replay and tests, and is slated for removal — do not use it in new "
+            "code.",
             DeprecationWarning,
             stacklevel=2,
-        )
-        logger.warning(
-            "TradeManager constructed — DEPRECATED legacy mechanical management "
-            "(V-012); live management is Brain-driven (thesis-based)."
         )
         self.max_stall_candles = max_stall_candles
         self.partial_close_ratio = partial_close_ratio

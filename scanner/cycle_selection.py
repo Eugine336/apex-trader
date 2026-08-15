@@ -43,13 +43,12 @@ def select_cycle_candidates(items: list) -> tuple[list, list, str]:
     and ``winning_direction`` is always ``""`` (no direction is declared).
     """
     warnings.warn(
-        "select_cycle_candidates is deprecated and dormant: it now only ranks "
-        "candidates best-first and no longer imposes a within-cycle direction "
-        "lock (directions coexist; portfolio/risk reasoning ranks them).",
+        "select_cycle_candidates is a retired legacy within-cycle selector, "
+        "superseded by PortfolioGovernor.allocate; it is retained only for "
+        "tests and is slated for removal — do not use it in new code.",
         DeprecationWarning,
         stacklevel=2,
     )
-
     if not items:
         return [], [], ""
 
