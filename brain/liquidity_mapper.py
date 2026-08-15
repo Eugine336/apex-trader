@@ -28,7 +28,10 @@ class LiquidityMap:
     sell_side_liquidity: list[LiquidityZone]  # Below price — sell stops
     nearest_buy_liq: Optional[LiquidityZone]
     nearest_sell_liq: Optional[LiquidityZone]
-    liquidity_bias: str   # "BUY_SIDE_SWEEP_LIKELY" | "SELL_SIDE_SWEEP_LIKELY" | "NEUTRAL"
+    # Observation only: which side currently holds the greater resting-liquidity
+    # pressure (strength × proximity × touches). It does NOT predict the next
+    # move or imply a trade direction — the Brain interprets it.
+    dominant_liquidity_side: str   # "BUY_SIDE" | "SELL_SIDE" | "BALANCED"
     current_price: float
 
 
@@ -88,15 +91,15 @@ class LiquidityMapper:
         buy_side.sort(key=lambda x: x.price)   # Nearest first (lowest above price)
         sell_side.sort(key=lambda x: x.price, reverse=True)  # Nearest first (highest below price)
 
-        # Determine liquidity bias
-        bias = self._determine_bias(df, buy_side, sell_side, current_price)
+        # Observe which side currently holds the greater resting liquidity.
+        dominant_side = self._dominant_liquidity_side(df, buy_side, sell_side, current_price)
 
         return LiquidityMap(
             buy_side_liquidity=buy_side,
             sell_side_liquidity=sell_side,
             nearest_buy_liq=buy_side[0] if buy_side else None,
             nearest_sell_liq=sell_side[0] if sell_side else None,
-            liquidity_bias=bias,
+            dominant_liquidity_side=dominant_side,
             current_price=current_price,
         )
 
@@ -216,7 +219,7 @@ class LiquidityMapper:
         thr = threshold
         return int(((df[column] - level).abs() <= thr * 2).sum())
 
-    def _determine_bias(
+    def _dominant_liquidity_side(
         self,
         df: pd.DataFrame,
         buy_side: list,
@@ -224,22 +227,26 @@ class LiquidityMapper:
         current_price: float
     ) -> str:
         """
-        Which side is more likely to get swept next?
-        Price always moves toward the most liquidity.
+        Observe which side currently holds the greater resting liquidity.
+
+        Measures each side by strength × proximity × touches and reports the
+        dominant side as an observation. This is a measurement of where stops
+        are resting — not a prediction of the next move and not a trade
+        direction; the Brain interprets it.
         """
         if not buy_side and not sell_side:
-            return "NEUTRAL"
+            return "BALANCED"
 
         # Score each side by strength and proximity
         buy_score  = self._score_side(buy_side,  current_price, above=True)
         sell_score = self._score_side(sell_side, current_price, above=False)
 
         if buy_score > sell_score * 1.3:
-            return "BUY_SIDE_SWEEP_LIKELY"    # Price likely to sweep above first
+            return "BUY_SIDE"     # Greater resting liquidity above price
         elif sell_score > buy_score * 1.3:
-            return "SELL_SIDE_SWEEP_LIKELY"   # Price likely to sweep below first
+            return "SELL_SIDE"    # Greater resting liquidity below price
         else:
-            return "NEUTRAL"
+            return "BALANCED"
 
     def _score_side(self, zones: list, current_price: float, above: bool) -> float:
         """Score a liquidity side based on strength and proximity."""
@@ -294,10 +301,15 @@ class LiquidityMapper:
         pre-reaction state), then inspects the last *reaction_window* bars for
         a pierce-then-reaction sequence across multiple candles.
 
-        Returns (kind, direction, confidence):
-            kind:       "REVERSAL" | "CONTINUATION" | "NONE"
-            direction:  "LONG" | "SHORT" | "NEUTRAL"
-            confidence: 0.0 .. 1.0
+        Returns (event, reaction, confidence) — all observations, never a trade
+        call:
+            event:      "REVERSAL" | "CONTINUATION" | "NONE"
+                        (the observed liquidity-interaction event)
+            reaction:   "UP" | "DOWN" | "NONE"
+                        (the observed direction of the price reaction — a
+                         measurement of what price did, NOT a LONG/SHORT vote;
+                         the Brain decides any trade direction)
+            confidence: 0.0 .. 1.0 (reaction magnitude relative to ATR)
         """
         try:
             if reaction_window < 1:
@@ -305,15 +317,15 @@ class LiquidityMapper:
 
             min_bars = max(5, reaction_window + 3)
             if df is None or len(df) < min_bars:
-                return ("NONE", "NEUTRAL", 0.0)
+                return ("NONE", "NONE", 0.0)
 
             close_vals = df["close"].values
             if np.isnan(close_vals[-1]):
-                return ("NONE", "NEUTRAL", 0.0)
+                return ("NONE", "NONE", 0.0)
 
             pre_reaction = df.iloc[:-reaction_window]
             if len(pre_reaction) < 3:
-                return ("NONE", "NEUTRAL", 0.0)
+                return ("NONE", "NONE", 0.0)
 
             threshold = self.equal_threshold_pips * pip_size
             equal_highs = self._find_equal_levels(pre_reaction, "high", threshold)
@@ -323,34 +335,34 @@ class LiquidityMapper:
             all_zones = equal_highs + swing_highs + equal_lows + swing_lows
 
             if not all_zones:
-                return ("NONE", "NEUTRAL", 0.0)
+                return ("NONE", "NONE", 0.0)
 
             atr = self._recent_atr(df, pip_size)
             if atr <= 0:
-                return ("NONE", "NEUTRAL", 0.0)
+                return ("NONE", "NONE", 0.0)
 
             window_df = df.iloc[-reaction_window:]
             anchor_close = df.iloc[-(reaction_window + 1)]["close"]
 
             best_kind = "NONE"
-            best_dir = "NEUTRAL"
+            best_reaction = "NONE"
             best_conf = 0.0
 
             for zone in all_zones:
-                kind, direction, conf = self._classify_zone_reaction(
+                kind, reaction, conf = self._classify_zone_reaction(
                     window_df, zone, pip_size, atr, anchor_close,
                 )
                 if conf > best_conf:
                     best_kind = kind
-                    best_dir = direction
+                    best_reaction = reaction
                     best_conf = conf
 
-            return (best_kind, best_dir, best_conf)
+            return (best_kind, best_reaction, best_conf)
 
         except Exception as exc:
             from loguru import logger
             logger.warning("[liquidity] classify_sweep_reaction failed, returning NONE: {}", exc)
-            return ("NONE", "NEUTRAL", 0.0)
+            return ("NONE", "NONE", 0.0)
 
     def _classify_zone_reaction(
         self,
@@ -365,7 +377,9 @@ class LiquidityMapper:
         Scans the window for: (a) a pierce of the zone, then (b) on a
         subsequent or same bar, a reversal (close back on original side)
         or continuation (close beyond with displacement).  Returns the
-        highest-confidence classification found.
+        highest-confidence ``(event, reaction, confidence)`` observation, where
+        ``reaction`` is the observed price-reaction direction ("UP"/"DOWN"/
+        "NONE") — a measurement of what price did, not a trade direction.
         """
         threshold = 2 * pip_size
         highs = window_df["high"].values
@@ -374,7 +388,7 @@ class LiquidityMapper:
         closes = window_df["close"].values
         n = len(window_df)
 
-        best = ("NONE", "NEUTRAL", 0.0)
+        best = ("NONE", "NONE", 0.0)
 
         if zone.kind == "BUY_SIDE":
             anchor_below = anchor_close < zone.price
@@ -400,7 +414,7 @@ class LiquidityMapper:
                     speed_bonus = max(0.0, 0.1 * (3 - bars_to_reclaim))
                     conf = min(conf + speed_bonus, 1.0)
                 conf = max(conf, 0.3)
-                best = ("REVERSAL", "SHORT", conf)
+                best = ("REVERSAL", "DOWN", conf)
             else:
                 displacement = last_close - zone.price
                 body = abs(last_close - float(opens[-1]))
@@ -408,7 +422,7 @@ class LiquidityMapper:
                     conf = min(displacement / atr, 1.0) if atr > 0 else 0.0
                     conf = max(conf, 0.3)
                     if conf > best[2]:
-                        best = ("CONTINUATION", "LONG", conf)
+                        best = ("CONTINUATION", "UP", conf)
 
         elif zone.kind == "SELL_SIDE":
             anchor_above = anchor_close > zone.price
@@ -434,7 +448,7 @@ class LiquidityMapper:
                     speed_bonus = max(0.0, 0.1 * (3 - bars_to_reclaim))
                     conf = min(conf + speed_bonus, 1.0)
                 conf = max(conf, 0.3)
-                best = ("REVERSAL", "LONG", conf)
+                best = ("REVERSAL", "UP", conf)
             else:
                 displacement = zone.price - last_close
                 body = abs(last_close - float(opens[-1]))
@@ -442,7 +456,7 @@ class LiquidityMapper:
                     conf = min(displacement / atr, 1.0) if atr > 0 else 0.0
                     conf = max(conf, 0.3)
                     if conf > best[2]:
-                        best = ("CONTINUATION", "SHORT", conf)
+                        best = ("CONTINUATION", "DOWN", conf)
 
         return best
 
