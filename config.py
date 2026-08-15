@@ -1469,13 +1469,14 @@ class SignalLedgerConfig:
     signal_ledger_enabled: bool = True
     # Run the background grading cycle (price sampling + finalisation).
     signal_grading_enabled: bool = True
-    # Elapsed time before a signal is finalised (direction_correct decided).
+    # Elapsed time before an observation is finalised (observation_useful decided).
     signal_grading_delay_minutes: int = 30
     # Minutes at which intermediate price observations are stamped.
     signal_grading_check_intervals: list[int] = field(
         default_factory=lambda: [5, 15, 30, 60]
     )
-    # Minimum signed move (%) in the predicted direction to count as correct.
+    # Minimum realized move (%) in EITHER direction to count an observation as
+    # high-quality (a material market event followed it — direction-agnostic).
     signal_min_move_pct: float = 0.1
     # Enable the read-side EmitterFeedback service.
     emitter_feedback_enabled: bool = True

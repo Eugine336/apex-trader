@@ -1,11 +1,15 @@
 """
 Tests for the Emitter Feedback service (adaptive/emitter_feedback.py).
 
-Dependency-light — builds a real SignalLedger on a temp DB, grades signals,
-then verifies the read-side feedback: traded-vs-blocked accuracy split, pair and
-gate breakdowns, the signal_value_when_blocked over-filtering metric, context
-frequency surfacing, gate effectiveness aggregation, all-emitter summaries, and
-safe defaults on empty data.
+Dependency-light — builds a real observation ledger on a temp DB, grades
+observations, then verifies the read-side feedback: the traded-vs-blocked quality
+split, pair and gate breakdowns, the signal_value_when_blocked over-filtering
+metric, useful/low-quality context surfacing, gate effectiveness aggregation,
+all-emitter summaries, and safe defaults on empty data.
+
+Grading is direction-agnostic (Constitution §XXIX): an observation is
+high-quality when a material move followed it — in EITHER direction — never
+because a direction it implied turned out right.
 """
 
 import pytest
@@ -39,12 +43,13 @@ def _sig(pair, emitter, direction, price, ctx=None):
 
 class TestRequestFeedback:
     def test_basic_split(self, ledger, service):
-        # momentum: one traded (correct), one blocked (wrong).
+        # momentum: one traded observation followed by a material move (useful),
+        # one blocked observation with NO material move (low quality).
         t = ledger.record_signal(_sig("EURUSD", "momentum", "LONG", 100.0))
         b = ledger.record_signal(_sig("GBPUSD", "momentum", "LONG", 100.0))
         ledger.record_trade_opened(t, "ord1")
         ledger.record_gate_block(b, "planner_skip")
-        ledger.run_grading_cycle({"EURUSD": 101.0, "GBPUSD": 99.0})
+        ledger.run_grading_cycle({"EURUSD": 101.0, "GBPUSD": 100.0})
 
         resp = service.request_feedback(EmitterFeedbackRequest(emitter="momentum"))
         assert isinstance(resp, EmitterFeedbackResponse)
@@ -55,10 +60,19 @@ class TestRequestFeedback:
         assert resp.accuracy_blocked == 0.0
         assert resp.accuracy_all == 0.5
 
+    def test_quality_is_direction_agnostic(self, ledger, service):
+        # A SHORT observation followed by a +1% move still SAW a real event —
+        # it is high-quality, not "wrong". This is the core §XXIX behaviour.
+        ledger.record_signal(_sig("EURUSD", "structure", "SHORT", 100.0))
+        ledger.run_grading_cycle({"EURUSD": 101.0})
+        resp = service.request_feedback(EmitterFeedbackRequest(emitter="structure"))
+        assert resp.accuracy_all == 1.0
+
     def test_accuracy_by_pair(self, ledger, service):
         ledger.record_signal(_sig("EURUSD", "structure", "LONG", 100.0))
         ledger.record_signal(_sig("GBPUSD", "structure", "LONG", 100.0))
-        ledger.run_grading_cycle({"EURUSD": 101.0, "GBPUSD": 99.0})
+        # EURUSD sees a material move; GBPUSD stays flat (no material event).
+        ledger.run_grading_cycle({"EURUSD": 101.0, "GBPUSD": 100.0})
         resp = service.request_feedback(EmitterFeedbackRequest(emitter="structure"))
         assert resp.accuracy_by_pair["EURUSD"] == 1.0
         assert resp.accuracy_by_pair["GBPUSD"] == 0.0
@@ -73,7 +87,8 @@ class TestRequestFeedback:
         assert resp.accuracy_by_gate["entry_score"] == 1.0
 
     def test_signal_value_when_blocked(self, ledger, service):
-        # Both blocked signals were actually correct → gate is over-filtering.
+        # Both blocked observations were followed by a material move → the gate
+        # is over-filtering real reads.
         b1 = ledger.record_signal(_sig("EURUSD", "liquidity", "LONG", 100.0))
         b2 = ledger.record_signal(_sig("GBPUSD", "liquidity", "LONG", 100.0))
         ledger.record_gate_block(b1, "corr")
@@ -95,14 +110,16 @@ class TestRequestFeedback:
         assert resp.blocked_signals == 0
 
     def test_context_frequencies(self, ledger, service):
+        # Two M5 observations see a material move (useful); one H1 observation
+        # stays flat (low quality). Context frequencies split accordingly.
         c1 = ledger.record_signal(_sig("EURUSD", "momentum", "LONG", 100.0, {"timeframe": "M5"}))
         c2 = ledger.record_signal(_sig("GBPUSD", "momentum", "LONG", 100.0, {"timeframe": "M5"}))
         w1 = ledger.record_signal(_sig("USDJPY", "momentum", "LONG", 100.0, {"timeframe": "H1"}))
         assert c1 and c2 and w1
-        ledger.run_grading_cycle({"EURUSD": 101.0, "GBPUSD": 101.0, "USDJPY": 99.0})
+        ledger.run_grading_cycle({"EURUSD": 101.0, "GBPUSD": 101.0, "USDJPY": 100.0})
         resp = service.request_feedback(EmitterFeedbackRequest(emitter="momentum"))
-        assert resp.common_correct_context.get("timeframe=M5") == 2
-        assert resp.common_wrong_context.get("timeframe=H1") == 1
+        assert resp.common_useful_context.get("timeframe=M5") == 2
+        assert resp.common_low_quality_context.get("timeframe=H1") == 1
 
     def test_trade_outcomes_collected(self, ledger, service):
         t = ledger.record_signal(_sig("EURUSD", "momentum", "LONG", 100.0))
@@ -115,30 +132,33 @@ class TestRequestFeedback:
 
 class TestGateEffectiveness:
     def test_gate_effectiveness(self, ledger, service):
-        # gate "strict": blocked 2, both correct → over-filtering.
-        # gate "good":   blocked 1, wrong → earning its keep.
+        # gate "strict": blocked 2, both saw a material move → over-filtering.
+        # gate "good":   blocked 1, flat (no move) → earning its keep.
         b1 = ledger.record_signal(_sig("EURUSD", "momentum", "LONG", 100.0))
         b2 = ledger.record_signal(_sig("GBPUSD", "structure", "LONG", 100.0))
         b3 = ledger.record_signal(_sig("USDJPY", "vwap", "LONG", 100.0))
         ledger.record_gate_block(b1, "strict")
         ledger.record_gate_block(b2, "strict")
         ledger.record_gate_block(b3, "good")
-        ledger.run_grading_cycle({"EURUSD": 101.0, "GBPUSD": 101.0, "USDJPY": 99.0})
+        ledger.run_grading_cycle({"EURUSD": 101.0, "GBPUSD": 101.0, "USDJPY": 100.0})
         eff = service.get_gate_effectiveness()
         assert eff["strict"]["blocked"] == 2
+        assert eff["strict"]["would_have_been_useful"] == 2
         assert eff["strict"]["blocked_accuracy"] == 1.0
         assert eff["good"]["blocked_accuracy"] == 0.0
 
 
 class TestAllSummaries:
     def test_all_emitter_summaries(self, ledger, service):
+        # Both observations are followed by the same +1% material move, so both
+        # are high-quality — direction (LONG vs SHORT) is irrelevant to quality.
         ledger.record_signal(_sig("EURUSD", "momentum", "LONG", 100.0))
         ledger.record_signal(_sig("EURUSD", "structure", "SHORT", 100.0))
         ledger.run_grading_cycle({"EURUSD": 101.0})
         summaries = service.get_all_emitter_summaries()
         assert set(summaries.keys()) == {"momentum", "structure"}
-        assert summaries["momentum"].accuracy_all == 1.0   # LONG, price up
-        assert summaries["structure"].accuracy_all == 0.0  # SHORT, price up
+        assert summaries["momentum"].accuracy_all == 1.0
+        assert summaries["structure"].accuracy_all == 1.0
 
 
 class TestSafeDefaults:
