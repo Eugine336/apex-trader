@@ -23,10 +23,12 @@ from management.trade_manager import (
 from management.re_entry import ReEntryManager, ReEntryOpportunity
 
 __all__ = [
+    # ── DEPRECATED LEGACY (V-012) — backtests / legacy tooling only ──
     "TradeManager",
     "ManagedTrade",
     "EntrySignal",
     "TradeStatus",
+    # ── Active helpers ──
     "PartialCloseCalculator",
     "StructureTrailingStop",
     "ReEntryManager",

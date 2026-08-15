@@ -44,14 +44,25 @@ class TestBatchRecord:
         for s in sigs:
             assert ledger.get_signal(s.signal_id) is not None
 
-    def test_record_signals_skips_neutral_and_empty(self, ledger):
+    def test_record_signals_records_any_direction(self, ledger):
+        # Observations of any directional character (incl. NEUTRAL / empty) are
+        # recorded — modules are measurement instruments, not directional voters.
         sigs = [
             _sig(emitter="a"),
             _sig(emitter="b", direction="NEUTRAL"),
             _sig(emitter="c", direction=""),
             _sig(emitter="d", direction="SHORT"),
         ]
-        assert ledger.record_signals(sigs) == 2
+        assert ledger.record_signals(sigs) == 4
+
+    def test_record_signals_skips_missing_pair_or_emitter(self, ledger):
+        # Only records that carry no observation (no pair or no emitter) are skipped.
+        sigs = [
+            _sig(emitter="a"),
+            SignalRecord(pair="", emitter="b", direction="LONG"),
+            SignalRecord(pair="EURUSD", emitter="", direction="LONG"),
+        ]
+        assert ledger.record_signals(sigs) == 1
 
     def test_record_signals_empty_input(self, ledger):
         assert ledger.record_signals([]) == 0

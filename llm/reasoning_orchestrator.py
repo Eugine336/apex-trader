@@ -41,30 +41,100 @@ from llm.provider_tiers import ProviderTier, resolve_tier
 
 @dataclass
 class EngineOpinion:
-    """One engine's opinion within a consultation (engine name + the opinion).
+    """One advisor's INDEPENDENT cognitive contribution to a consultation.
 
-    ``cognition`` preserves the engine's FULL structured reasoning (regime,
-    primary/alternative hypotheses, the opportunity + its horizon, expected
-    favourable/adverse excursion, invalidation, key uncertainty, …) so the Brain
-    synthesises over each advisor's complete analysis — never a summary sentence
-    (Part XXV). ``direction`` / ``confidence`` are kept for observability only:
-    they are an execution consequence, never a vote the Council counts.
+    The canonical payload is ``cognition`` — the advisor's COMPLETE structured
+    reasoning (regime, primary/alternative hypotheses, the ranked opportunity set
+    + horizons, expected favourable/adverse excursion, invalidation, the
+    multidimensional confidence breakdown, key uncertainties, …). The Brain
+    synthesises over each advisor's WHOLE analysis (Part XXV); the council is a
+    panel of independent thinkers, never a directional vote (Part XVII Art 7).
+
+    ``direction`` / ``confidence`` are retained ONLY as observability projections
+    of the execution consequence — never a ballot the Council counts, and never a
+    substitute for the thesis. Prefer the structured accessors below
+    (:attr:`thesis`, :attr:`hypotheses`, :attr:`opportunities`,
+    :attr:`confidence_breakdown`) when reading an advisor's contribution.
     """
 
     engine: str
-    direction: str
-    confidence: float
+    direction: str = "FLAT"          # observability only — execution consequence
+    confidence: float = 0.0          # observability only — execution consequence
     rationale: str = ""
     latency_ms: float = 0.0
-    cognition: dict = field(default_factory=dict)
+    cognition: dict = field(default_factory=dict)  # the FULL opinion (canonical)
+
+    # ── first-class structured contribution (Part XXV) ──────────────────────
+    @property
+    def regime(self) -> str:
+        return str(self.cognition.get("regime", "") or "").strip()
+
+    @property
+    def opportunity(self) -> str:
+        return str(self.cognition.get("opportunity", "") or "").strip()
+
+    @property
+    def opportunities(self) -> list:
+        """The advisor's full ranked opportunity set (each a dict), or ``[]``."""
+        opps = self.cognition.get("opportunities")
+        return [dict(o) for o in opps if isinstance(o, dict)] if isinstance(opps, list) else []
+
+    @property
+    def hypotheses(self) -> list:
+        """Primary hypothesis first, then the alternatives it weighed."""
+        out: list = []
+        primary = str(self.cognition.get("primary_hypothesis", "") or "").strip()
+        if primary:
+            out.append(primary)
+        alts = self.cognition.get("alternative_hypotheses")
+        if isinstance(alts, list):
+            out.extend(str(a).strip() for a in alts if str(a).strip())
+        return out
+
+    @property
+    def key_uncertainty(self) -> str:
+        return str(self.cognition.get("key_uncertainty", "") or "").strip()
+
+    @property
+    def confidence_breakdown(self) -> dict:
+        """The advisor's multidimensional confidence profile (never one scalar)."""
+        out: dict = {}
+        for k in ("thesis_confidence", "opportunity_confidence",
+                  "timing_confidence", "execution_confidence", "effective_confidence"):
+            v = self.cognition.get(k)
+            if isinstance(v, (int, float)) and not isinstance(v, bool):
+                out[k] = round(float(v), 4)
+        return out
+
+    @property
+    def thesis(self) -> str:
+        """The advisor's core thesis (hypothesis + opportunity) — not a vote."""
+        primary = str(self.cognition.get("primary_hypothesis", "") or "").strip()
+        opp = self.opportunity
+        if primary and opp:
+            return f"{primary} — opportunity: {opp}"
+        return primary or opp or str(self.rationale or "").strip()
+
+    def thesis_summary(self, limit: int = 90) -> str:
+        """A short, readable thesis line for panel logging (never direction+conf)."""
+        parts: list = []
+        if self.regime:
+            parts.append(self.regime)
+        t = self.thesis
+        if t:
+            parts.append(t)
+        return (" · ".join(parts) if parts else "(no thesis)")[:max(1, int(limit))]
 
     def to_dict(self) -> dict:
         return {
             "engine": self.engine,
-            "direction": self.direction,
-            "confidence": round(self.confidence, 4),
+            "thesis": self.thesis_summary(160),
+            "confidence_breakdown": self.confidence_breakdown,
             "rationale": self.rationale[:200],
             "latency_ms": round(self.latency_ms, 1),
+            # observability projections of the execution consequence (not a vote)
+            "direction": self.direction,
+            "confidence": round(self.confidence, 4),
             "cognition": dict(self.cognition),
         }
 
@@ -202,14 +272,10 @@ class ReasoningEngine:
                 self.breaker.record_failure(latency_ms)
             return None
         self.breaker.record_success(latency_ms)
-        direction = str(getattr(op, "direction", "FLAT") or "FLAT").upper()
-        try:
-            confidence = float(getattr(op, "confidence", 0.0) or 0.0)
-        except (TypeError, ValueError):
-            confidence = 0.0
-        # Preserve the engine's FULL structured reasoning (Part XXV) so the Brain
-        # synthesises over each advisor's complete analysis — opportunity, horizon,
-        # hypotheses, excursions, invalidation — never a collapsed summary.
+        # Preserve the advisor's FULL structured reasoning (Part XXV) as the
+        # CANONICAL payload so the Brain synthesises over its complete analysis —
+        # regime, hypotheses, opportunity + horizon, excursions, invalidation,
+        # the confidence breakdown — never a collapsed direction+confidence.
         cognition: dict = {}
         try:
             to_dict = getattr(op, "to_dict", None)
@@ -219,6 +285,14 @@ class ReasoningEngine:
                     cognition = got
         except Exception:  # noqa: BLE001 — a serialisation fault must not drop the opinion
             cognition = {}
+        # ``direction`` / ``confidence`` are captured ONLY as observability
+        # projections of the execution consequence — never a vote the Council
+        # counts. The Brain forms direction itself from the cognition above.
+        direction = str(getattr(op, "direction", "FLAT") or "FLAT").upper()
+        try:
+            confidence = float(getattr(op, "confidence", 0.0) or 0.0)
+        except (TypeError, ValueError):
+            confidence = 0.0
         return EngineOpinion(
             engine=self.name, direction=direction,
             confidence=min(1.0, max(0.0, confidence)),
@@ -503,10 +577,11 @@ class ReasoningOrchestrator:
             # actually contributed an opinion this consultation.
             result.advisors_responded = len(result.opinions)
             result.advisors_available = len(result.consulted)
-            # Part XXIV — surface the live panel: who advised (with their vote)
-            # and who was asked but did not reply (an advisor that "left the
-            # panel" this cycle). One concise INFO line so the operator can see,
-            # at a glance, which AIs are still in it when one fails.
+            # Part XXIV — surface the live panel: each advisor's THESIS summary
+            # (its independent contribution) and who was asked but did not reply
+            # (an advisor that "left the panel" this cycle). One concise INFO line
+            # so the operator sees each AI's reasoning at a glance — never a vote
+            # tally.
             if result.consulted:
                 self._log_panel(result)
         except Exception as exc:  # noqa: BLE001 — consultation must never raise
@@ -521,25 +596,24 @@ class ReasoningOrchestrator:
             absent = [n for n in asked if n not in replied]
 
             def _render(o: "EngineOpinion") -> str:
+                # Show the advisor's THESIS, not "name direction(conf)": the
+                # council is a panel of thinkers, not a directional vote.
                 name = getattr(o, "engine", "?")
-                conf = float(getattr(o, "confidence", 0.0) or 0.0)
-                tag = f"{name} {getattr(o, 'direction', '?')}({conf:.2f})"
-                cog = getattr(o, "cognition", None) or {}
-                extras = []
-                regime = str(cog.get("regime", "") or "").strip()
-                if regime:
-                    extras.append(regime)
-                opp = str(cog.get("opportunity", "") or "").strip()
-                if opp and opp.lower() != "none":
-                    extras.append(f"opp:{opp[:40]}")
-                return tag + (f" [{'; '.join(extras)}]" if extras else "")
+                summary = ""
+                try:
+                    summary = o.thesis_summary(90)
+                except Exception:  # noqa: BLE001 — never let logging break
+                    cog = getattr(o, "cognition", None) or {}
+                    summary = (str(cog.get("primary_hypothesis", "") or "").strip()
+                               or str(cog.get("opportunity", "") or "").strip())[:90]
+                return f"{name}: {summary or '(no thesis)'}"
 
-            advising = ", ".join(_render(o) for o in result.opinions)
+            contributing = " | ".join(_render(o) for o in result.opinions)
             logger.info(
-                "[council] {} — {}/{} advising: {}{}",
+                "[council] {} — {}/{} advisors contributing: {}{}",
                 result.symbol, len(result.opinions), len(asked),
-                advising or "(none replied)",
-                (" | absent: " + ", ".join(absent)) if absent else "",
+                contributing or "(none replied)",
+                (" || absent: " + ", ".join(absent)) if absent else "",
             )
         except Exception:  # noqa: BLE001 — logging must never break consultation
             pass

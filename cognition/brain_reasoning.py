@@ -88,17 +88,15 @@ class EvidenceAnalysis:
     # Overall uncertainty from the evidence alone.
     evidence_uncertainty: float = 1.0
 
-    def leaning(self) -> str:
-        """The Brain's directional lean read from the evidence (LONG/SHORT/FLAT)."""
-        d = str(self.regime_indicators.get("directional_lean", "") or "").upper()
-        return d if d in (LONG, SHORT) else FLAT
-
     def summary(self) -> str:
         cov = ", ".join(f"{k} {v:.2f}" for k, v in sorted(self.domain_coverage.items()))
         pats = "; ".join(pattern_name(p) for p in self.detected_patterns) or "none"
+        regime = self.regime_indicators
+        structure = str(regime.get("structure", "") or "none")
+        order_flow = str(regime.get("order_flow", "") or "balanced")
         return (
             f"{len(self.domain_coverage)} domains ({cov or 'none'}); "
-            f"patterns: {pats}; lean {self.leaning()}; "
+            f"patterns: {pats}; structure {structure}, order flow {order_flow}; "
             f"agreement {self.agreement_score:.2f}; "
             f"uncertainty {self.evidence_uncertainty:.2f}"
         )
@@ -288,42 +286,20 @@ class BrainReasoner:
         else:
             sweep_side = "none"
 
-        lean = self._directional_lean(structure_dir, order_flow, sweep_side, momentum, names)
+        # The regime is a set of INDEPENDENT structured observations — a
+        # displacement magnitude+direction, an order-flow reading, a sweep event,
+        # plus the volatility/momentum regimes. It deliberately does NOT collapse
+        # these into a single directional lean (V-001): direction is not decided
+        # here in the pre-reasoning classifier, it EMERGES per-hypothesis from the
+        # relevant evidence dimensions during hypothesis formation.
         return {
             "volatility": volatility,
             "momentum": momentum,
             "structure": structure_dir,
+            "displacement": disp if disp is not None else 0.0,
             "order_flow": order_flow,
             "liquidity_sweep_side": sweep_side,
-            "directional_lean": lean,
         }
-
-    @staticmethod
-    def _directional_lean(
-        structure_dir: str, order_flow: str, sweep_side: str, momentum: str,
-        names: "list[str]",
-    ) -> str:
-        """Combine directional signals into a single LONG/SHORT/FLAT lean."""
-        score = 0.0
-        if structure_dir == LONG:
-            score += 1.0
-        elif structure_dir == SHORT:
-            score -= 1.0
-        if order_flow == "buying":
-            score += 1.0
-        elif order_flow == "selling":
-            score -= 1.0
-        # An absorbed sweep is a reversal: sell-side taken ⇒ upward reversal.
-        if "liquidity_sweep_absorbed" in names:
-            if sweep_side == "sell":
-                score += 1.0
-            elif sweep_side == "buy":
-                score -= 1.0
-        if score >= 1.0:
-            return LONG
-        if score <= -1.0:
-            return SHORT
-        return FLAT
 
     @staticmethod
     def _observations(fresh: "list[Evidence]", detected: "list[str]", regime: dict) -> "list[str]":
@@ -363,7 +339,14 @@ class BrainReasoner:
         score = 0.6
         score += 0.12 * sum(1 for n in names if n in _CONTINUATION_PATTERNS)
         score -= 0.2 * len(contradictions)
-        if regime.get("directional_lean") in (LONG, SHORT):
+        # Reward a COHERENT directional read that EMERGES from the independent
+        # structured dimensions (structure displacement sign agreeing with the
+        # order-flow sign), rather than reading a pre-collapsed directional lean
+        # scalar (V-001).
+        structure = str(regime.get("structure", "") or "")
+        flow = regime.get("order_flow")
+        flow_dir = LONG if flow == "buying" else (SHORT if flow == "selling" else "")
+        if structure in (LONG, SHORT) and structure == flow_dir:
             score += 0.1
         return _clamp01(score)
 
@@ -378,7 +361,6 @@ class BrainReasoner:
         try:
             names = [pattern_name(p) for p in analysis.detected_patterns]
             regime = analysis.regime_indicators
-            lean = analysis.leaning()
             hyps: list[BrainHypothesis] = []
 
             support = [n for n in names if n in _CONTINUATION_PATTERNS]
@@ -387,7 +369,7 @@ class BrainReasoner:
             # 1) Displacement / continuation thesis.
             if "displacement_confirmed" in names or "volume_confirmed_breakout" in names \
                     or "structural_break" in names or "momentum_acceleration" in names:
-                direction = self._structure_direction(regime, lean)
+                direction = self._continuation_direction(regime)
                 hyps.append(self._make(
                     statement=(
                         f"Structural displacement backed by participation on {symbol} "
@@ -404,7 +386,16 @@ class BrainReasoner:
             # 2) Liquidity-sweep reversal thesis.
             if "liquidity_sweep_absorbed" in names or "liquidity_sweep_with_momentum_exhaustion" in names:
                 side = regime.get("liquidity_sweep_side")
-                direction = LONG if side == "sell" else (SHORT if side == "buy" else self._opposite(lean))
+                if side == "sell":
+                    direction = LONG
+                elif side == "buy":
+                    direction = SHORT
+                else:
+                    # No explicit sweep side — a reversal opposes the prevailing
+                    # order flow (derived from the order-flow dimension itself, not
+                    # a pre-collapsed directional lean).
+                    flow = regime.get("order_flow")
+                    direction = SHORT if flow == "buying" else (LONG if flow == "selling" else FLAT)
                 hyps.append(self._make(
                     statement=(
                         "Liquidity was taken and the resulting flow was absorbed/exhausted; "
@@ -423,7 +414,7 @@ class BrainReasoner:
             if "order_flow_at_structure" in names and not any(
                     h.direction_implication in (LONG, SHORT) for h in hyps):
                 of = regime.get("order_flow")
-                direction = LONG if of == "buying" else (SHORT if of == "selling" else lean)
+                direction = LONG if of == "buying" else (SHORT if of == "selling" else FLAT)
                 hyps.append(self._make(
                     statement="Aggressive order flow is arriving at a structural level — flow meeting structure.",
                     support=["order_flow_at_structure"],
@@ -500,11 +491,19 @@ class BrainReasoner:
         )
 
     @staticmethod
-    def _structure_direction(regime: dict, lean: str) -> str:
+    def _continuation_direction(regime: dict) -> str:
+        """Direction of a continuation thesis — it EMERGES from the structured
+        dimensions that bear on it: the structural displacement sign first, else
+        the order-flow sign. Never a pre-collapsed directional lean (V-001)."""
         s = str(regime.get("structure", "") or "").upper()
         if s in (LONG, SHORT):
             return s
-        return lean
+        flow = regime.get("order_flow")
+        if flow == "buying":
+            return LONG
+        if flow == "selling":
+            return SHORT
+        return FLAT
 
     @staticmethod
     def _opposite(direction: str) -> str:

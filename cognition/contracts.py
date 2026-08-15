@@ -182,9 +182,10 @@ _ACTIONABLE_OPPORTUNITY_STATES = frozenset({
 })
 
 # The model may report a state with a synonym; normalise it to the canonical
-# lifecycle token. An unrecognised value stays UNKNOWN (treated as actionable
-# for a directional opportunity so a legacy reply that omitted state behaves as
-# before — see :meth:`Opportunity.is_actionable`).
+# lifecycle token. An unrecognised or missing value stays UNKNOWN, which is NOT
+# actionable (Part XXV / V-003): an opportunity with no explicit lifecycle state
+# has not been shown to have ACTIVATED, so it must never drive origination — see
+# :meth:`Opportunity.is_actionable`.
 _OPPORTUNITY_STATE_ALIASES = {
     "FORMING": OpportunityState.FORMING, "PENDING": OpportunityState.FORMING,
     "SETTING_UP": OpportunityState.FORMING, "WATCHING": OpportunityState.FORMING,
@@ -516,14 +517,13 @@ class Opportunity:
         CONFIRMED / STRENGTHENING. A FORMING opportunity is deliberately NOT
         actionable — it has been identified but its entry conditions have not
         triggered, so it must wait (the activation gate, Part XXV). An UNKNOWN
-        state (a legacy reply that never reported one) is treated as actionable
-        so pre-harvesting behaviour is unchanged."""
+        state (a reply that never reported a lifecycle state) is likewise NOT
+        actionable (V-003): a missing state is not evidence of activation, so it
+        must never authorise origination — direction alone is not an activated
+        opportunity."""
         if not self.is_directional:
             return False
-        return (
-            self.state in _ACTIONABLE_OPPORTUNITY_STATES
-            or self.state == OpportunityState.UNKNOWN
-        )
+        return self.state in _ACTIONABLE_OPPORTUNITY_STATES
 
     @property
     def is_forming(self) -> bool:

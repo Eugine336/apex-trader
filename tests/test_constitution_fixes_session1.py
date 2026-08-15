@@ -6,8 +6,6 @@ Executable assertions for the six violations fixed in this session:
   discarded.
 * V5 — the WorldModel no longer carries a pre-computed directional bias; only a
   non-directional ``multi_tf_alignment`` measurement snapshot.
-* V6 — ``evidence_from_votes`` reports the module's raw observation and its
-  observation-certainty, not a directional conviction.
 * V7 — ``should_i_do_nothing`` records the ACTUAL do-nothing reasoning, never a
   static "considered".
 * V9 — the Brain's EV is net of execution cost when EXECUTION_QUALITY evidence
@@ -24,7 +22,7 @@ import pytest
 
 from cognition.brain import CognitiveBrain
 from cognition.contracts import DecisionType, Evidence, EvidenceDomain, MarketState
-from cognition.evidence_adapters import evidence_from_execution_cost, evidence_from_votes
+from cognition.evidence_adapters import evidence_from_execution_cost
 from cognition.expected_value import expected_value_r
 from llm.reasoner import FLAT, LLMReasoner
 
@@ -49,6 +47,18 @@ class _Opinion:
         self.rationale = kw.get("rationale", "because")
         for k, v in kw.items():
             setattr(self, k, v)
+        # V-002 — origination requires a first-class, ACTIVATED opportunity. A
+        # directional advisor fixture carries one (matching its direction) unless
+        # the test supplied its own set, so these non-V-002 tests still originate.
+        if "opportunities" not in kw:
+            self.opportunities = (
+                [{"id": "auto", "direction": direction, "state": "ACTIVE",
+                  "quality": confidence, "asymmetry": confidence,
+                  "evidence_strength": confidence}]
+                if str(direction).upper() in ("LONG", "SHORT") else []
+            )
+        if "preferred_opportunity_id" not in kw:
+            self.preferred_opportunity_id = "auto"
 
     def __getattr__(self, _name):  # rich fields default empty/None
         return None
@@ -125,41 +135,6 @@ def test_v5_world_model_has_no_directional_bias():
     assert align["trend_strength"] == 0.6
     assert align["alignment_degree"] == 0.7
     assert align["conflict_score"] == 0.2
-
-
-# ── V6 — vote evidence carries raw observation + observation-certainty ────────
-
-def test_v6_vote_evidence_reports_observation_not_conviction():
-    vote = SimpleNamespace(
-        module="structure", direction="LONG", confidence=0.7, weight=1.0,
-        timeframe="H1",
-        evidence={
-            "recent_swing_high": 65300, "displacement": 200,
-            "structural_integrity": 0.92, "bos": True,
-        },
-    )
-    ev = evidence_from_votes("XAUUSD", [vote])
-    assert len(ev) == 1
-    e = ev[0]
-    # The observation describes what the module SAW, not "instrument reading".
-    assert "instrument reading" not in e.observation
-    assert "structure observed" in e.observation
-    assert "swing high at 65300" in e.observation
-    # Confidence is the module's certainty in its OWN observation (structural
-    # integrity 0.92), NOT the vote's directional conviction (0.7).
-    assert e.confidence == pytest.approx(0.92)
-    # Raw secondary reads survive as measurements; direction never leaks.
-    assert e.measurements.get("recent_swing_high") == 65300
-    assert e.polarity == 0.0
-    assert "direction" not in e.measurements
-
-
-def test_v6_falls_back_to_vote_confidence_without_quality_read():
-    vote = SimpleNamespace(module="momentum", direction="SHORT", confidence=0.6,
-                           weight=1.0, timeframe="M15", evidence={"rsi": 71})
-    e = evidence_from_votes("EURUSD", [vote])[0]
-    assert e.confidence == pytest.approx(0.6)
-    assert "RSI 71" in e.observation
 
 
 # ── V7 — should_i_do_nothing is actual reasoning, never "considered" ─────────

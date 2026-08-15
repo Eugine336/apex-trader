@@ -40,6 +40,16 @@ class _Opinion:
         self.rationale = rationale
         self.competing_hypotheses = []
         self.missing_information = []
+        # V-002 — a directional advisor opinion carries a first-class, ACTIVATED
+        # opportunity so origination flows through a structured object (these
+        # tests exercise native/advisor integration, not the legacy-scalar path).
+        self.opportunities = (
+            [{"id": "auto", "direction": direction, "state": "ACTIVE",
+              "quality": confidence, "asymmetry": confidence,
+              "evidence_strength": confidence}]
+            if str(direction).upper() in ("LONG", "SHORT") else []
+        )
+        self.preferred_opportunity_id = "auto"
 
 
 class _Reasoner:
@@ -97,8 +107,33 @@ def test_analysis_detects_patterns_and_regime():
     analysis = brain._analyze_evidence(ms, ms.consolidation())
     names = [pattern_name(p) for p in analysis.detected_patterns]
     assert "displacement_confirmed" in names
-    assert analysis.regime_indicators.get("directional_lean") == LONG
+    # V-001 — the regime carries INDEPENDENT structured dimensions (a signed
+    # displacement, an order-flow reading), NOT a pre-collapsed directional lean.
+    assert analysis.regime_indicators.get("structure") == LONG
+    assert analysis.regime_indicators.get("order_flow") == "buying"
+    assert analysis.regime_indicators.get("displacement", 0.0) > 0.0
+    assert "directional_lean" not in analysis.regime_indicators
     assert analysis.evidence_uncertainty < 0.5
+
+
+def test_hypothesis_direction_emerges_from_structured_evidence_short():
+    # V-001 — no pre-collapsed lean: a structurally-SHORT picture (negative
+    # displacement + selling order flow) yields a SHORT leading hypothesis purely
+    # by combining the independent structured dimensions during hypothesis
+    # formation, not by reading a directional-lean scalar.
+    ms = MarketState(symbol="EURUSD")
+    ms.add(_ev("structure", {"displacement": -150, "bos": True,
+                             "structural_integrity": 0.85}))
+    ms.add(_ev("volume", {"volume_z": 1.8, "expansion": True}))
+    ms.add(_ev("order_flow", {"delta": -0.8, "imbalance": 0.8}))
+    ms.add(_ev("momentum", {"acceleration": True, "momentum_state": "accelerating"}))
+    brain = CognitiveBrain(reasoner=None)
+    analysis = brain._analyze_evidence(ms, ms.consolidation())
+    assert analysis.regime_indicators.get("structure") == SHORT
+    assert analysis.regime_indicators.get("order_flow") == "selling"
+    assert "directional_lean" not in analysis.regime_indicators
+    lead = brain._native.leading(brain._generate_hypotheses(analysis, "EURUSD"))
+    assert lead is not None and lead.direction_implication == SHORT
 
 
 # ── Article X: every defined pattern rule fires on crafted evidence ───────────
@@ -213,7 +248,7 @@ def test_self_criticism_lowers_confidence_on_contradiction():
             "displacement_confirmed: structural displacement backed by volume",
             "momentum_divergence: price advancing but momentum weakening",
         ],
-        regime_indicators={"structure": LONG, "directional_lean": LONG},
+        regime_indicators={"structure": LONG, "order_flow": "buying"},
         agreement_score=0.4, evidence_uncertainty=0.2,
     )
     hyps = br.generate_hypotheses(analysis, "EURUSD")
@@ -230,7 +265,7 @@ def test_self_criticism_reinforces_clean_hypothesis():
         domain_coverage={"structure": 0.9, "volume": 0.9},
         detected_patterns=[
             "displacement_confirmed: structural displacement backed by volume"],
-        regime_indicators={"structure": LONG, "directional_lean": LONG},
+        regime_indicators={"structure": LONG, "order_flow": "buying"},
         agreement_score=0.85, evidence_uncertainty=0.15,
     )
     hyps = br.generate_hypotheses(analysis, "EURUSD")

@@ -56,18 +56,43 @@ FLAT = "FLAT"
 
 @dataclass
 class BrainOutput:
-    """The Brain's complete output for one reasoning pass."""
+    """The Brain's complete output for one reasoning pass.
+
+    V-016 / Part XVIII Art 5 — ``direction`` is the Brain's directional MARKET
+    read (LONG/SHORT/FLAT). It is ``None`` ONLY when the Brain formed no cognitive
+    view at all because its reasoner/provider was unavailable: provider
+    unavailability is an INFRASTRUCTURE state, never a FLAT market assessment.
+    Consumers and logging must check ``decision_type`` / ``provider_unavailable``
+    FIRST and never read ``FLAT`` (or ``None``) direction as "the market is flat".
+    """
 
     decision: DecisionPackage
     campaign: Optional[CampaignSpecification] = None
-    direction: str = FLAT
+    direction: Optional[str] = FLAT
     decided_at_epoch: float = 0.0
+
+    @property
+    def decision_type(self) -> str:
+        """The decision's type as a string (e.g. ``open_campaign``,
+        ``reasoner_unavailable``) — the primary status consumers/logs read BEFORE
+        interpreting ``direction``."""
+        dt = getattr(self.decision, "decision_type", None)
+        return getattr(dt, "value", str(dt)) if dt is not None else ""
+
+    @property
+    def provider_unavailable(self) -> bool:
+        """True when this output reflects an unavailable reasoner/provider
+        (infrastructure down), NOT a market read. ``direction`` is ``None`` here
+        so it can never be mistaken for a FLAT market conclusion."""
+        return getattr(self.decision, "decision_type", None) == DecisionType.REASONER_UNAVAILABLE
 
     def to_dict(self) -> dict:
         return {
             "decision": self.decision.to_dict(),
             "campaign": self.campaign.to_dict() if self.campaign is not None else None,
             "direction": self.direction,
+            "decision_type": self.decision_type,
+            "provider_unavailable": self.provider_unavailable,
             "decided_at_epoch": round(self.decided_at_epoch, 3),
         }
 
@@ -107,6 +132,7 @@ class CognitiveBrain:
         min_advisors_for_action: int = 2,
         min_evidence_domains: int = 2,
         degraded_confidence_multiplier: float = 0.7,
+        degrade_on_unknown_council: bool = False,
         default_cost_r: float = 0.0,
         agreement_boost: float = 1.1,
         disagreement_penalty: float = 0.8,
@@ -134,6 +160,10 @@ class CognitiveBrain:
         self.reasoner_name = str(reasoner_name or "ai_brain")
         self.allow_scale_in = bool(allow_scale_in)
         self.reverse_confidence = min(1.0, max(0.0, float(reverse_confidence)))
+        # Retained for config compatibility (wired from ``manage_exit_floor``).
+        # V-008 removed the legacy direction-based management tree that consulted
+        # this to auto-TIGHTEN on a weakening aligned read; management is now
+        # thesis-based, so it no longer drives a decision on its own.
         self.exit_floor = min(1.0, max(0.0, float(exit_floor)))
         # Article XX — advisor quorum: the Council must not become fake diversity.
         # A campaign must be backed by at least this many advisors that actually
@@ -144,12 +174,17 @@ class CognitiveBrain:
         # opportunity exists" ≠ "no opportunity". The Brain refuses to act on too
         # thin an evidence picture (fewer than this many domains present).
         self.min_evidence_domains = max(0, int(min_evidence_domains))
-        # Article XXI — degraded cognition must be recognised. When most of the
-        # available council did not respond, the Brain records/logs DEGRADED
-        # COGNITION for visibility. Retained for config/serialisation
-        # compatibility; the multiplier is observation-only and is no longer
-        # applied to the effective confidence.
+        # Article XXI / V-013 — degraded cognition must be recognised AND
+        # enforced. When the council under-delivers (most available advisors did
+        # not respond) the Brain attenuates its effective conviction by this
+        # multiplier — degradation is no longer observation-only. ``degrade_on_
+        # unknown_council`` extends the same penalty to the case where NO council
+        # metadata exists at all (coverage unknown); it is off by default at this
+        # (library) layer so a Brain deliberately wired without a council is not
+        # blanket-penalised, but the deployed system opts in via config, and the
+        # unknown state is ALWAYS logged and recorded (never a silent pass).
         self.degraded_confidence_multiplier = min(1.0, max(0.0, float(degraded_confidence_multiplier)))
+        self._degrade_on_unknown_council = bool(degrade_on_unknown_council)
         # Payoff geometry used to turn win-probability into a genuine expected
         # value (Part IX Art 1/7): reward-to-risk multiple when the opinion does
         # not supply explicit excursions. ``min_expected_value`` is retained for
@@ -449,25 +484,46 @@ class CognitiveBrain:
                     )
                 except Exception:  # noqa: BLE001
                     calib_note = f"applied: factor {calib_factor:.3f}"
-        # Article XX / XXI — advisory-council coverage. Read how much of the
-        # council actually contributed (None ⇒ no council wired, gates
-        # unenforced). When most of the AVAILABLE advisors did not respond the
-        # cognition is DEGRADED: this is recorded and logged for visibility, but
-        # is observation-only and does NOT attenuate the effective conviction.
+        # Article XX / XXI / V-013 — advisory-council coverage. Read how much of
+        # the council actually contributed. This is a first-class health signal:
+        #  * council_unknown — NO council metadata at all (single reasoner, or a
+        #    Brain wired without an orchestrator). Historically this SILENTLY
+        #    passed the quorum gate; it must not. Unknown coverage is itself a
+        #    degraded state — the Brain cannot know whether one advisor or several
+        #    backed this read.
+        #  * council_partial — metadata present but most AVAILABLE advisors did
+        #    not respond (a wired council genuinely under-delivering).
         advisors_responded, advisors_available, advisors_total = (
             self._extract_advisor_counts(market_state)
         )
-        degraded = (
+        council_unknown = advisors_responded is None
+        council_partial = (
             advisors_responded is not None
             and advisors_available is not None
             and advisors_available > 0
             and advisors_responded < advisors_available * 0.5
         )
-        if degraded:
+        # Enforcement (V-013) — degraded cognition ATTENUATES the effective
+        # conviction below (it no longer merely "observes"). A genuine council
+        # under-response always penalises; an UNKNOWN council penalises only when
+        # the operator opted in (``degrade_on_unknown_council``) — but is ALWAYS
+        # logged and recorded so the pass is never silent.
+        penalise_degraded = council_partial or (
+            council_unknown and self._degrade_on_unknown_council
+        )
+        if council_partial:
             logger.warning(
                 "[brain] DEGRADED COGNITION: only %s/%s advisors responded — "
-                "observed but not penalised",
+                "attenuating conviction x%.2f",
                 advisors_responded, advisors_available,
+                self.degraded_confidence_multiplier,
+            )
+        elif council_unknown:
+            logger.warning(
+                "[brain] DEGRADED COGNITION: council coverage UNKNOWN (no council "
+                "metadata) — cannot confirm advisor count; %s",
+                ("attenuating conviction x%.2f" % self.degraded_confidence_multiplier)
+                if self._degrade_on_unknown_council else "recorded, not penalised",
             )
         # Violation V1 — the Brain is not a pure relay: cross-check the advisor's
         # stated confidence against the evidence picture it synthesised, and
@@ -493,6 +549,19 @@ class CognitiveBrain:
         # amplifies it (bounded, and neutral until statistically meaningful).
         eff_conf, pattern_mod_note, lead_pattern_names = self._apply_pattern_modifier(
             eff_conf, brain_lead)
+
+        # V-013 — degraded-cognition attenuation is the FINAL conviction modifier
+        # (after synthesis / brain-integration / patterns) so the recorded
+        # confidence, the EV, the sizing and the act gate all reflect the reduced
+        # council coverage — degradation is enforced, not merely observed.
+        degraded_note = ""
+        if penalise_degraded:
+            _before = eff_conf
+            eff_conf = _clamp01(eff_conf * self.degraded_confidence_multiplier)
+            degraded_note = (
+                f"attenuated {_before:.2f} -> {eff_conf:.2f} "
+                f"(x{self.degraded_confidence_multiplier:.2f})"
+            )
 
         supporting, contradicting = self._split_evidence(market_state, direction)
         # Part IX Art 1/7 — a genuine expected value (in units of risk, R) from
@@ -583,21 +652,29 @@ class CognitiveBrain:
         # own conditions). Purely additive: absent on a legacy single-direction
         # reply, and harmless to consumers that ignore the extra keys.
         self._record_opportunity_audit(questions, opinion)
-        # Article XXI — record whether cognition is degraded (partial council).
-        if advisors_available is not None:
-            if degraded:
-                questions["cognitive_degradation"] = (
-                    f"OBSERVED: {advisors_responded}/{advisors_available} advisors — "
-                    "partial council coverage observed but not penalised"
-                )
-            else:
-                questions["cognitive_degradation"] = (
-                    f"NONE: {advisors_responded}/{advisors_available} advisors — "
-                    "full cognitive coverage"
-                )
-        # Article XX — advisor quorum: at least ``min_advisors_for_action`` of the
-        # council must have contributed. Unenforced when no council metadata is
-        # present (a Brain wired without an orchestrator).
+        # Article XXI / V-013 — record cognition-degradation state on the decision
+        # so a partial OR unknown council is auditable and NEVER a silent pass.
+        if council_partial:
+            questions["cognitive_degradation"] = (
+                f"OBSERVED: {advisors_responded}/{advisors_available} advisors — "
+                "partial council coverage"
+                + (f"; {degraded_note}" if degraded_note else "")
+            )
+        elif council_unknown:
+            questions["cognitive_degradation"] = (
+                "OBSERVED: council coverage unknown (no council metadata) — "
+                + (degraded_note if degraded_note
+                   else "recorded as degraded; conviction not penalised (opt-in)")
+            )
+        elif advisors_available is not None:
+            questions["cognitive_degradation"] = (
+                f"NONE: {advisors_responded}/{advisors_available} advisors — "
+                "full cognitive coverage"
+            )
+        # Article XX / V-013 — advisor quorum: at least ``min_advisors_for_action``
+        # of the council must have contributed. When NO council metadata is present
+        # the quorum cannot be verified — this no longer passes SILENTLY: it is
+        # recorded as UNCONFIRMED (and logged/attenuated as degraded above).
         quorum_ok = (
             advisors_responded is None
             or advisors_responded >= self.min_advisors_for_action
@@ -614,6 +691,11 @@ class CognitiveBrain:
                     f"required advisors responded (available: {advisors_available}, "
                     f"total: {advisors_total})"
                 )
+        else:
+            questions["advisor_quorum"] = (
+                "UNCONFIRMED: no council metadata — quorum cannot be verified "
+                f"(required: {self.min_advisors_for_action}); treated as degraded cognition"
+            )
         # Article XXXIV — minimum evidence-domain coverage. Unenforced when the
         # consolidation omits the count (a hand-built consolidation dict).
         domain_count = consolidation.get("domain_count")
@@ -658,26 +740,27 @@ class CognitiveBrain:
         if is_harvesting:
             with self._lock:
                 self._last_opportunities[str(symbol or "")] = opportunity_set
-        # ACTIVATION GATE (Part XXV / item 7): a harvesting-format reply may only
-        # OPEN a campaign when the driving opportunity has ACTIVATED. A FORMING
-        # (identified-but-not-yet-triggered) opportunity must WAIT — even at high
-        # thesis confidence — because execution requires activation, not mere
-        # identification. UNKNOWN state (legacy) counts as actionable, so nothing
-        # changes for pre-harvesting replies.
-        activation_ok = (
-            (not is_harvesting)
-            or (driving_opp is None)
-            or driving_opp.is_actionable
+        # ACTIVATION GATE (Part XXV / item 7) + V-002: a campaign may only OPEN
+        # when a first-class, STRUCTURED opportunity has ACTIVATED. ``driving_opp``
+        # must exist and be actionable (state ACTIVE / CONFIRMED / STRENGTHENING).
+        # A FORMING (identified-but-not-yet-triggered) opportunity must WAIT — even
+        # at high thesis confidence — and a LEGACY direction+confidence reply that
+        # carries NO opportunity set is OBSERVATIONAL input only: direction and
+        # confidence are not, by themselves, execution authority. The Brain may let
+        # such an opinion inform its confidence, but it never opens a campaign from
+        # a pre-collapsed directional scalar.
+        has_actionable_opportunity = (
+            driving_opp is not None and driving_opp.is_actionable
         )
 
         # Constitutional gate: only OPEN a campaign when the Brain can answer
         # with sufficient confidence AND uncertainty is acceptable AND there is a
         # direction AND the expected value clears the threshold AND the advisory
-        # quorum + evidence-domain coverage are adequate AND (harvesting format)
-        # the driving opportunity has actually activated. Otherwise do nothing —
-        # there is no obligation to trade (Part IV Art 7 / Part IX Q35: a good
-        # thesis at negative EV, thin coverage, a lone advisor, or an unactivated
-        # opportunity is not an executable trade).
+        # quorum + evidence-domain coverage are adequate AND a first-class,
+        # structured opportunity has actually ACTIVATED (V-002). Otherwise do
+        # nothing — there is no obligation to trade (Part IV Art 7 / Part IX Q35:
+        # a good thesis at negative EV, thin coverage, a lone advisor, or an
+        # unactivated/absent opportunity is not an executable trade).
         ev_ok = (self.min_expected_value is None) or (expected_value >= self.min_expected_value)
         directional = direction in (LONG, SHORT)
         # V-01 — actionability criterion. Legacy (default): a confidence floor +
@@ -700,7 +783,7 @@ class CognitiveBrain:
             and ev_ok
             and quorum_ok
             and domain_ok
-            and activation_ok
+            and has_actionable_opportunity
         )
         if not act:
             if (is_harvesting and driving_opp is not None
@@ -736,6 +819,24 @@ class CognitiveBrain:
                         "evaluated: doing nothing is correct — the only opportunity "
                         f"is {_state} (fading), not an executable entry"
                     )
+            elif directional and not has_actionable_opportunity:
+                # V-002 — a directional read with NO structured, activated
+                # opportunity to act on: a legacy direction+confidence reply that
+                # carried no opportunity set (or a harvesting reply whose driving
+                # opportunity is not a directional, activated one). Direction and
+                # confidence alone are not execution authority — the opinion is
+                # OBSERVATIONAL input, so the Brain records it and keeps observing
+                # rather than opening a campaign from a pre-collapsed scalar.
+                reason_txt = (
+                    "advisor opinion is observational — no structured, activated "
+                    "opportunity to act on (direction+confidence is not execution "
+                    "authority)"
+                )
+                dtype = DecisionType.CONTINUE_OBSERVING
+                do_nothing_txt = (
+                    "evaluated: doing nothing is correct — the reply carried a bare "
+                    "direction+confidence with no first-class, activated opportunity"
+                )
             elif directional_and_qualified and ev_ok and not quorum_ok:
                 # Article XX — a qualified opportunity backed by too few advisors:
                 # cognitive coverage is insufficient to originate a campaign.
@@ -1135,19 +1236,39 @@ class CognitiveBrain:
             # make it HARDER to cut/reduce a position.
             conf_dims, eff_conf, limiting_dim = self._confidence_profile(opinion, conf)
             rationale = str(getattr(opinion, "rationale", "") or "")
-            # A management opinion (thesis_state / management_action present) is
-            # decided by the thesis-based tree; a legacy direction-based opinion
-            # falls back to the backward-compatible tree (with FLAT ⇒ HOLD, never
-            # EXIT). Both are directionally symmetric.
+            # A management opinion (any of thesis_state / opportunity_status /
+            # management_action present) is decided by the thesis-based tree —
+            # LONG and SHORT are perfectly symmetric and nothing here compares a
+            # re-derived direction with the held side. An opinion carrying NONE of
+            # those fields is degraded / incomplete management data and HOLDS
+            # (V-008): there is no direction-based fallback tree any more.
             mgmt_action = str(getattr(opinion, "management_action", "") or "").strip()
             thesis_state = str(getattr(opinion, "thesis_state", "") or "").strip()
-            if mgmt_action or thesis_state:
+            opp_status = str(getattr(opinion, "opportunity_status", "") or "").strip()
+            if mgmt_action or thesis_state or opp_status:
                 action, why = self._decide_management_thesis(
                     position, opinion, conf, conf_dims, eff_conf, limiting_dim)
             else:
-                action, why = self._decide_management_legacy(
-                    position, opinion, want, uncertainty, conf,
-                    conf_dims, eff_conf, limiting_dim)
+                # V-008 — a management reply MUST carry a thesis_state /
+                # opportunity_status / management_action. When NONE is present the
+                # reply is degraded / incomplete management data: the system must
+                # NOT fall back to a direction/confidence comparison against the
+                # held side. That legacy fallback let "the council still says
+                # LONG/SHORT" liquidate, flip, add to or tighten a live campaign —
+                # a directional authority the constitution forbids for management.
+                # Treat missing management fields as insufficient cognition and
+                # HOLD the current state (fail-safe); the next cadence re-reasons
+                # the campaign. Logged as a WARNING so the degradation is visible
+                # and can drive re-evaluation upstream.
+                action, why = DecisionType.HOLD, (
+                    "degraded management data — reply carried no thesis_state / "
+                    "opportunity_status / management_action; holding current state "
+                    "(no direction/confidence fallback)")
+                logger.warning(
+                    "[brain] MANAGE %s degraded/incomplete management reply (no "
+                    "thesis_state / opportunity_status / management_action) — "
+                    "holding, not comparing direction", symbol,
+                )
             # Flaw 4 — council quorum guard: below quorum, state-changing actions
             # degrade to HOLD; risk-reducing actions (TIGHTEN_RISK / PROTECT_PROFIT
             # / SCALE_OUT) are always permitted.
@@ -1160,7 +1281,8 @@ class CognitiveBrain:
             logger.info(
                 "[brain] MANAGE %s held=%s → %s | thesis=%s conf=%.2f (council %s/%s) — %s",
                 symbol, want or "?", action.value,
-                (thesis_state.lower() or "legacy"), eff_conf,
+                (thesis_state.lower() or mgmt_action.lower()
+                 or opp_status.lower() or "degraded"), eff_conf,
                 ("?" if advisors_responded is None else advisors_responded),
                 ("?" if advisors_available is None else advisors_available),
                 reason_txt[:120],
@@ -1173,60 +1295,6 @@ class CognitiveBrain:
                 self._faults += 1
             return self._record_management(self._manage_pkg(
                 symbol, want, DecisionType.HOLD, 0.0, 1.0, f"manage fault: {exc}"))
-
-    def _decide_management_legacy(
-        self, position: "PositionView", opinion: Any, want: str, uncertainty: float,
-        conf: float, conf_dims: dict, eff_conf: float, limiting_dim: str,
-    ) -> "tuple[DecisionType, str]":
-        """Backward-compatible management decision for a legacy DIRECTION-based
-        opinion (one carrying no thesis_state / management_action).
-
-        Identical to the historical tree EXCEPT the catch-all no longer exits:
-        Flaw 1 — a FLAT / uncertain / ambiguous read is NOT an invalidation, so
-        it HOLDS the campaign. An EXIT still fires on an EXPLICIT deterioration
-        (opportunity gone / EV negative) or dominant high-confidence contrary
-        evidence; REVERSE only on very-high-confidence contrary evidence. LONG
-        and SHORT are handled symmetrically (``aligned`` / ``opposite`` are
-        computed identically for both sides)."""
-        odir = str(getattr(opinion, "direction", FLAT) or FLAT).upper()
-        if odir not in (LONG, SHORT, FLAT):
-            odir = FLAT
-        aligned = odir == want and want in (LONG, SHORT)
-        opposite = odir in (LONG, SHORT) and odir != want and want in (LONG, SHORT)
-        # Empty fields (a minimal/legacy opinion) never force an exit — these
-        # overrides fire only on an EXPLICIT signal, so prior behaviour is kept.
-        opportunity = str(getattr(opinion, "opportunity", "") or "").strip().lower()
-        ev_txt = str(getattr(opinion, "expected_value", "") or "").strip().lower()
-        opportunity_gone = opportunity in ("none", "no", "n/a", "gone", "expired")
-        ev_negative = ev_txt.startswith("negative")
-        thesis_deteriorated = opportunity_gone or ev_negative
-        in_profit = (getattr(position, "profit_r", None) or 0.0) > 0
-
-        if aligned and conf >= self.min_confidence_to_act \
-                and uncertainty <= self.max_uncertainty_to_act and not thesis_deteriorated:
-            if self.allow_scale_in and in_profit and eff_conf >= self.reverse_confidence:
-                return DecisionType.SCALE_IN, "thesis strengthening + in profit — add"
-            if (self.allow_scale_in and in_profit
-                    and conf >= self.reverse_confidence
-                    and eff_conf < self.reverse_confidence):
-                # Would add, but a weak actionability dimension (execution /
-                # timing) says now is not the moment to increase risk — hold.
-                return DecisionType.HOLD, (
-                    f"thesis strong but {limiting_dim} weak "
-                    f"({conf_dims[limiting_dim]:.2f}) — hold, not adding")
-            return DecisionType.HOLD, "thesis intact — hold"
-        if aligned and thesis_deteriorated:
-            return DecisionType.EXIT, "opportunity gone / EV no longer positive — exit"
-        if aligned and conf >= self.exit_floor:
-            return DecisionType.TIGHTEN_RISK, "supporting thesis weakening — tighten risk"
-        if opposite and conf >= self.reverse_confidence:
-            return DecisionType.REVERSE, "strong contrary evidence — reverse"
-        if opposite and conf >= self.min_confidence_to_act:
-            return DecisionType.EXIT, "contrary evidence dominant — exit"
-        # Flaw 1 — FLAT / low-confidence / ambiguous is temporary uncertainty, not
-        # invalidation. Hold the campaign; an exit needs a reasoned justification.
-        return DecisionType.HOLD, (
-            "no directional edge / uncertain — thesis not invalidated, holding")
 
     def _decide_management_thesis(
         self, position: "PositionView", opinion: Any, conf: float,
@@ -1988,6 +2056,13 @@ class CognitiveBrain:
             lead = self._native.leading(hypotheses)
             if lead is None or not lead.is_directional:
                 return None
+            # V-001 — independent origination requires STRUCTURED EVIDENCE backing
+            # the leading hypothesis, not merely a directional implication. A
+            # directional hypothesis with no detected structural patterns is a
+            # bare direction, not a discovered opportunity, and must never open a
+            # campaign on its own when no advisor is available.
+            if not lead.supporting_patterns:
+                return None
             if lead.confidence < self._native.independent_min_confidence:
                 return None
             if analysis.evidence_uncertainty >= self._native.independent_max_uncertainty:
@@ -2176,7 +2251,10 @@ class CognitiveBrain:
                 for q in REQUIRED_QUESTIONS},
             do_nothing_considered=True, reasoner=self.reasoner_name,
         )
-        return self._record(BrainOutput(decision=decision, direction=FLAT))
+        # V-016 — direction=None (NOT FLAT): this is an infrastructure state, not
+        # a market read. Downstream/logging distinguish it via decision_type /
+        # provider_unavailable and must never render it as a FLAT conclusion.
+        return self._record(BrainOutput(decision=decision, direction=None))
 
     def _record(self, output: BrainOutput) -> BrainOutput:
         output.decided_at_epoch = time.time()
@@ -2208,6 +2286,7 @@ class CognitiveBrain:
                 "min_advisors_for_action": self.min_advisors_for_action,
                 "min_evidence_domains": self.min_evidence_domains,
                 "degraded_confidence_multiplier": self.degraded_confidence_multiplier,
+                "degrade_on_unknown_council": self._degrade_on_unknown_council,
                 "allow_scale_in": self.allow_scale_in,
                 "decisions": self._decisions,
                 "campaigns_opened": self._campaigns_opened,

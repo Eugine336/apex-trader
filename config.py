@@ -656,13 +656,15 @@ class RiskConfig:
     # The broker's own margin/min-lot floor stays the real hard limit. Default
     # OFF (conservative). env RISK_ALLOW_MIN_LOT_OVER_RISK.
     allow_min_lot_over_risk: bool = False
-    # V-03 (Constitution §I/§IV/§V/§XVII) — defer the compressed direction+score
-    # exits (invalidation / conviction-collapse / structure-loss stall) to the AI
-    # Cognitive Brain instead of closing on a re-derived scan direction/score.
-    # Default True ⇒ the deterministic suite keeps them (non-cognition mode); set
-    # False to hand them to cognition. The hard-SL floor and the non-directional
-    # risk mechanics (TP / breakeven / trailing / time-based stall) are
-    # unaffected. env RISK_SCAN_DIRECTIONAL_EXITS_ENABLED.
+    # V-009 (was V-03; Constitution §I/§IV/§V/§XVII) — defer the LEGACY mechanical
+    # directional exits (invalidation / conviction-collapse / structure-loss stall
+    # / H1-candle-against-side) to the AI Cognitive Brain instead of closing on a
+    # re-derived scan direction/score or an opposing HTF candle. Default True ⇒ the
+    # deterministic suite keeps them (non-cognition mode) and each firing is logged
+    # as a WARNING; set False to hand them to cognition (thesis-based management).
+    # The hard-SL floor and the non-directional risk mechanics (TP / breakeven /
+    # trailing / time-based stall) are unaffected. env
+    # RISK_SCAN_DIRECTIONAL_EXITS_ENABLED.
     scan_directional_exits_enabled: bool = True
     backtest_starting_balance_usd: float = 10_000.0
     tp3_ladder_enabled: bool = True
@@ -1469,13 +1471,14 @@ class SignalLedgerConfig:
     signal_ledger_enabled: bool = True
     # Run the background grading cycle (price sampling + finalisation).
     signal_grading_enabled: bool = True
-    # Elapsed time before a signal is finalised (direction_correct decided).
+    # Elapsed time before an observation is finalised (observation_useful decided).
     signal_grading_delay_minutes: int = 30
     # Minutes at which intermediate price observations are stamped.
     signal_grading_check_intervals: list[int] = field(
         default_factory=lambda: [5, 15, 30, 60]
     )
-    # Minimum signed move (%) in the predicted direction to count as correct.
+    # Minimum realized move (%) in EITHER direction to count an observation as
+    # high-quality (a material market event followed it — direction-agnostic).
     signal_min_move_pct: float = 0.1
     # Enable the read-side EmitterFeedback service.
     emitter_feedback_enabled: bool = True
@@ -3383,6 +3386,13 @@ class LLMConfig:
     rpd_limit: int = 0
     tpm_limit: int = 0
     tpd_limit: int = 0
+    # V-015 — provider diversity / local foundation are first-class resilience
+    # concerns. A SINGLE provider with no local baseline model means the Brain
+    # loses ALL cognition the moment that one provider is unreachable. The system
+    # warns loudly about this at startup UNLESS the operator explicitly
+    # acknowledges the single-provider deployment here. env
+    # LLM_ACKNOWLEDGE_SINGLE_PROVIDER.
+    acknowledge_single_provider: bool = False
 
     def __post_init__(self) -> None:
         # The environment is the single source of truth — no vendor is baked in.
@@ -3511,6 +3521,83 @@ class LLMConfig:
                 self.recovery_probe_seconds = 0.0
         except (TypeError, ValueError):
             self.recovery_probe_seconds = 60.0
+        # V-014 / V-015 — provider RESILIENCE warnings. Provider capacity,
+        # diversity and a local foundation are first-class concerns; warn the
+        # operator loudly at startup about a fragile (unmetered / single-provider /
+        # no-local) deployment. Observability only — never fatal.
+        self.acknowledge_single_provider = _llm_env_bool(
+            "LLM_ACKNOWLEDGE_SINGLE_PROVIDER", self.acknowledge_single_provider
+        )
+        if self.enabled:
+            self._warn_provider_resilience()
+
+    def _warn_provider_resilience(self) -> None:
+        """Emit startup warnings when the reasoning layer is configured without
+        capacity limits (V-014), provider diversity, or a local foundation model
+        (V-015). Warnings only — provider health/diversity/capacity are first-class
+        concerns and the operator must be made aware of a fragile deployment."""
+        # V-014 — provider budgets: unmetered by default is a real risk (a scarce
+        # free tier can be silently exhausted). Warn when NO limit is declared.
+        if not (self.rpm_limit or self.rpd_limit or self.tpm_limit or self.tpd_limit):
+            logger.warning(
+                "[config] provider '{}' has NO budget limits configured "
+                "(LLM_RPM/_RPD/_TPM/_TPD all 0) — the reasoner runs UNMETERED and a "
+                "scarce free tier can be exhausted without warning. Declare explicit "
+                "per-provider limits so provider capacity is a first-class concept.",
+                self.provider or "?",
+            )
+        # V-015 — provider diversity + local foundation.
+        extra = [m for m in (self.extra_models or []) if isinstance(m, dict)]
+        distinct = {str(self.provider or "").strip().lower()}
+        for m in extra:
+            p = str(m.get("provider", self.provider) or "").strip().lower()
+            if p:
+                distinct.add(p)
+        distinct.discard("")
+        single_provider = len(distinct) <= 1
+        has_local = self._has_local_foundation(extra)
+        if single_provider and not self.acknowledge_single_provider:
+            logger.warning(
+                "[config] SINGLE reasoning provider '{}' and no model diversity "
+                "(extra_models empty) — the Brain loses ALL advisory cognition if "
+                "this provider is unreachable. Add LLM_EXTRA_MODELS for provider "
+                "diversity, or set LLM_ACKNOWLEDGE_SINGLE_PROVIDER=true to accept "
+                "this reduced resilience.",
+                self.provider or "?",
+            )
+        if not has_local and not self.acknowledge_single_provider:
+            logger.warning(
+                "[config] no LOCAL foundation model detected among configured "
+                "reasoning models — the Brain has no self-hosted baseline advisor "
+                "when external providers are throttled or down. Add a local model "
+                "(e.g. an ollama/vllm/localhost endpoint) for a resilient baseline, "
+                "or set LLM_ACKNOWLEDGE_SINGLE_PROVIDER=true to acknowledge this.",
+            )
+
+    def _has_local_foundation(self, extra_models: list) -> bool:
+        """True when the primary or any extra model looks like a LOCAL/self-hosted
+        foundation (provider name or base_url indicates a local endpoint)."""
+        local_providers = {
+            "ollama", "llama", "llamacpp", "llama_cpp", "local", "vllm",
+            "lmstudio", "koboldcpp", "textgen", "text-generation-webui",
+        }
+        local_hosts = ("localhost", "127.0.0.1", "0.0.0.0", "::1")
+
+        def _is_local(provider: object, base_url: object) -> bool:
+            p = str(provider or "").strip().lower()
+            u = str(base_url or "").strip().lower()
+            if p in local_providers:
+                return True
+            return any(h in u for h in local_hosts)
+
+        if _is_local(self.provider, self.base_url):
+            return True
+        for m in extra_models or []:
+            if isinstance(m, dict) and _is_local(
+                m.get("provider", self.provider), m.get("base_url", "")
+            ):
+                return True
+        return False
 
 
 @dataclass
@@ -3759,9 +3846,16 @@ class CognitionConfig:
     # ("cannot determine whether an opportunity exists" ≠ "no opportunity").
     # env COGNITION_MIN_EVIDENCE_DOMAINS.
     min_evidence_domains: int = 1
-    # Article XXI — when most of the available council did not respond, the Brain
-    # attenuates its effective confidence by this multiplier (degraded cognition).
+    # Article XXI / V-013 — when the council under-delivers (most available
+    # advisors did not respond) the Brain attenuates its effective confidence by
+    # this multiplier: degraded cognition is ENFORCED, not merely observed.
     degraded_confidence_multiplier: float = 0.7
+    # V-013 — extend the same attenuation to the case where NO council metadata
+    # exists at all (coverage unknown): the Brain cannot confirm whether one
+    # advisor or several backed a read, so unknown coverage is treated as degraded
+    # cognition. Default True (the deployed system enforces it); the unknown state
+    # is ALWAYS logged/recorded regardless. env COGNITION_DEGRADE_ON_UNKNOWN_COUNCIL.
+    degrade_on_unknown_council: bool = True
     loop_interval_seconds: float = 30.0
     max_symbols_per_cycle: int = 12
     emit_operator_notifications: bool = True
@@ -3904,6 +3998,9 @@ class CognitionConfig:
         self.ev_primary_gate = _llm_env_bool(
             "COGNITION_EV_PRIMARY_GATE", self.ev_primary_gate
         )
+        self.degrade_on_unknown_council = _llm_env_bool(
+            "COGNITION_DEGRADE_ON_UNKNOWN_COUNCIL", self.degrade_on_unknown_council
+        )
         for env_name, attr in (
             ("COGNITION_LOOP_INTERVAL_SECONDS", "loop_interval_seconds"),
             ("COGNITION_MAX_DECISION_AGE_SECONDS", "max_decision_age_seconds"),
@@ -3946,6 +4043,19 @@ class CognitionConfig:
             raise ValueError(
                 "CognitionConfig.gate_mode must be off|shadow|veto|authoritative, got "
                 f"{self.gate_mode!r}"
+            )
+        # V-017 — provider/cognition resilience: the CognitionGate is only fail-
+        # CLOSED (Brain = sole decider) in 'authoritative' mode. off/shadow/veto
+        # are TRANSITIONAL and fail-OPEN on absent cognition, so a legacy entry
+        # surface can trade without Brain backing. Warn loudly at startup so an
+        # operator is aware they are running without full Brain authority.
+        if self.gate_mode != "authoritative":
+            logger.warning(
+                "[config] CognitionGate mode is '{}', not 'authoritative' — the "
+                "Brain is NOT the sole decider; non-authoritative modes (off/shadow/"
+                "veto) are TRANSITIONAL and fail-open on absent cognition. Set "
+                "COGNITION_GATE_MODE=authoritative for full Brain authority.",
+                self.gate_mode,
             )
         if float(self.max_decision_age_seconds) < 0:
             raise ValueError(

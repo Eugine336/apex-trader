@@ -1,10 +1,15 @@
 """
 Trade Planner data models.
 
-`TradePlanContext` carries every advisor's analysis — scanner, decision
-engine, RL, adaptive/ML, portfolio, timing and market state — without any
-verdict.  The planner consumes it and produces a `TradePlan`: a complete,
-structured, self-explaining trade plan rather than a yes/no answer.
+`TradePlanContext` carries upstream observations — scanner, decision engine,
+RL, adaptive/ML, portfolio, timing and market state — without any verdict. Any
+``direction`` it carries is an opportunity direction already decided by the
+Brain/scanner and is echoed here only for execution geometry; these models do
+NOT decide, vote on, or recompute trade direction.
+
+DIRECTIONAL_AUTHORITY (V-005): the `TradePlanner` that consumed these models is
+deprecated and no longer emits a directional `TradePlan` verdict. The dataclass
+fields remain for journalling/serialisation back-compat.
 
 Leaf module — depends only on the standard library so it can be imported
 from anywhere without circular-import risk.
@@ -26,9 +31,10 @@ def _now_iso() -> str:
 class TradePlanContext:
     """Everything the planner knows about a potential trade.
 
-    Populated from all advisor layers.  No advisor produces a verdict here —
-    they each contribute their analysis and the planner reasons over the whole
-    picture.
+    Populated from all advisor layers as observations.  No advisor produces a
+    verdict here, and the (deprecated) planner does not vote on or recompute
+    direction — the ``direction`` field is an opportunity direction already
+    decided upstream by the Brain, carried only for execution geometry.
     """
 
     # ── Instrument ───────────────────────────────────────────────────────
@@ -39,6 +45,9 @@ class TradePlanContext:
     current_price: float = 0.0
 
     # ── Scanner ──────────────────────────────────────────────────────────
+    # Opportunity direction ALREADY decided upstream (Brain/scanner), carried as
+    # an observation for execution geometry only. The planner does not vote on
+    # or recompute it (DIRECTIONAL_AUTHORITY).
     direction: str = ""              # "BUY"/"LONG" or "SELL"/"SHORT"
     scanner_score: float = 0.0       # 0–100
     zone_type: str = ""              # "ORDER_BLOCK", "FVG", etc.
@@ -134,6 +143,9 @@ class TradePlanContext:
 
     @property
     def is_long(self) -> bool:
+        # Reflects the upstream-decided direction (for stop/target geometry in
+        # the execution-shaping helpers); it is not a directional decision made
+        # here.
         return self.direction.upper() in ("BUY", "LONG")
 
     def to_dict(self) -> dict:
@@ -184,6 +196,8 @@ class TradePlan:
 
     # ── Decision ─────────────────────────────────────────────────────────
     action: str = "SKIP"             # "ENTER", "WAIT", "SKIP"
+    # Echoes the upstream-decided opportunity direction. The deprecated planner
+    # leaves this empty — it has no directional authority (DIRECTIONAL_AUTHORITY).
     direction: str = ""              # "BUY", "SELL"
 
     # ── Entry ────────────────────────────────────────────────────────────
@@ -218,6 +232,8 @@ class TradePlan:
     # ── Meta ─────────────────────────────────────────────────────────────
     confidence: float = 0.0          # 0–1
     reasoning: str = ""
+    # Deprecated: the planner no longer computes a weighted directional advisor
+    # agreement (DIRECTIONAL_AUTHORITY). Retained at 0.0 for journal back-compat.
     advisor_agreement: float = 0.0   # 0–1
     governor_blocked_by: Optional[str] = None  # which governor check blocked, if any
     # #24 — portfolio-governor accumulated-risk dimmer. When the governor runs in

@@ -40,61 +40,14 @@ def _pos(direction="LONG", profit_r=0.0):
     return PositionView(symbol="EURUSD", direction=direction, profit_r=profit_r)
 
 
-# ── Brain.manage ─────────────────────────────────────────────────────────────
-
-def test_manage_holds_when_thesis_intact():
-    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.8)))
-    out = brain.manage(_pos("LONG"), _state(polarity=0.8))
-    assert out.decision.decision_type == DecisionType.HOLD
-
-
-def test_manage_tightens_when_weakening():
-    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.4)),
-                           min_confidence_to_act=0.55, exit_floor=0.3)
-    out = brain.manage(_pos("LONG"), _state(polarity=0.8))
-    assert out.decision.decision_type == DecisionType.TIGHTEN_RISK
-
-
-def test_manage_holds_when_flat_read_is_not_invalidation():
-    # Flaw 1 fix (constitutional rule): a FLAT / uncertain read is NOT a reasoned
-    # invalidation of the campaign thesis, so it must HOLD — never auto-EXIT.
-    # Previously this returned EXIT via the catch-all; that was the bug.
-    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("FLAT", 0.9)))
-    out = brain.manage(_pos("LONG"), _state(polarity=0.0))
-    assert out.decision.decision_type == DecisionType.HOLD
-
-
-def test_manage_exits_on_explicit_opportunity_gone():
-    # An EXIT still fires when the (aligned) opinion EXPLICITLY says the
-    # opportunity is gone — a reasoned deterioration, not bare uncertainty.
-    op = _Opinion("LONG", 0.8)
-    op.opportunity = "none"
-    op.expected_value = "negative — cost exceeds edge"
-    brain = CognitiveBrain(reasoner=_Reasoner(op))
-    out = brain.manage(_pos("LONG"), _state(polarity=0.8))
-    assert out.decision.decision_type == DecisionType.EXIT
-
-
-def test_manage_reverses_on_strong_contrary():
-    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("SHORT", 0.85)), reverse_confidence=0.7)
-    out = brain.manage(_pos("LONG"), _state(polarity=-0.8))
-    assert out.decision.decision_type == DecisionType.REVERSE
-    assert out.direction == "SHORT"          # flipped
-
-
-def test_manage_exits_on_mild_contrary():
-    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("SHORT", 0.6)),
-                           min_confidence_to_act=0.55, reverse_confidence=0.7)
-    out = brain.manage(_pos("LONG"), _state(polarity=-0.5))
-    assert out.decision.decision_type == DecisionType.EXIT
-
-
-def test_manage_scale_in_when_allowed_and_profitable():
-    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.9)),
-                           allow_scale_in=True, reverse_confidence=0.7)
-    out = brain.manage(_pos("LONG", profit_r=0.5), _state(polarity=0.8))
-    assert out.decision.decision_type == DecisionType.SCALE_IN
-
+# ── Brain.manage — V-008: incomplete management data holds (no direction fallback) ──
+# A management opinion carrying NONE of thesis_state / opportunity_status /
+# management_action is degraded/incomplete data. The Brain HOLDS the current
+# state and never falls back to a direction/confidence comparison against the
+# held side (the removed legacy path could SCALE_IN / TIGHTEN / EXIT / REVERSE
+# from that comparison — a directional authority the constitution forbids for
+# management). Thesis-based EXIT / REVERSE / SCALE_IN / TIGHTEN on real
+# management fields is covered in test_brain_manage_thesis.py.
 
 def test_manage_holds_without_reasoner():
     brain = CognitiveBrain(reasoner=None)
@@ -102,6 +55,43 @@ def test_manage_holds_without_reasoner():
     assert out.decision.decision_type == DecisionType.HOLD
     assert brain.get_status()["managed"] == 1
     assert brain.latest_management("EURUSD") is not None
+
+
+def test_manage_holds_when_aligned_direction_lacks_management_fields():
+    # Aligned high-confidence direction read but no management fields → degraded
+    # data → HOLD (previously this could SCALE_IN / hold-as-intact via direction).
+    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("LONG", 0.9)),
+                           allow_scale_in=True, reverse_confidence=0.7)
+    out = brain.manage(_pos("LONG", profit_r=1.0), _state(polarity=0.8))
+    assert out.decision.decision_type == DecisionType.HOLD
+
+
+def test_manage_holds_when_contrary_direction_lacks_management_fields():
+    # A strong CONTRARY direction read must NOT reverse or exit a live campaign
+    # when the reply carries no management fields — no direction comparison.
+    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("SHORT", 0.95)),
+                           min_confidence_to_act=0.55, reverse_confidence=0.7)
+    out = brain.manage(_pos("LONG"), _state(polarity=-0.9))
+    assert out.decision.decision_type == DecisionType.HOLD
+    assert out.direction == "LONG"          # never flipped
+
+
+def test_manage_holds_when_flat_read_is_not_invalidation():
+    # A FLAT / uncertain read is NOT a reasoned invalidation → HOLD, never EXIT.
+    brain = CognitiveBrain(reasoner=_Reasoner(_Opinion("FLAT", 0.9)))
+    out = brain.manage(_pos("LONG"), _state(polarity=0.0))
+    assert out.decision.decision_type == DecisionType.HOLD
+
+
+def test_manage_holds_when_opportunity_signal_lacks_management_fields():
+    # Even an explicit opportunity/EV signal is degraded management data without
+    # the canonical management fields → HOLD (the thesis path owns EXIT-on-EV).
+    op = _Opinion("LONG", 0.8)
+    op.opportunity = "none"
+    op.expected_value = "negative — cost exceeds edge"
+    brain = CognitiveBrain(reasoner=_Reasoner(op))
+    out = brain.manage(_pos("LONG"), _state(polarity=0.8))
+    assert out.decision.decision_type == DecisionType.HOLD
 
 
 # ── ManagementGate ───────────────────────────────────────────────────────────

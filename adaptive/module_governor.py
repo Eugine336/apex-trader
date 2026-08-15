@@ -17,11 +17,13 @@ This governor adds that middle ground.  Each module sits in one of three modes:
 * ``DISABLED`` — statistically harmful; suppressed entirely (also weight 0.0).
   Re-entry is manual, or automatic after ``auto_retry_days`` if configured.
 
-The transitions are driven purely by graded accuracy READ FROM the read-only
-:class:`~adaptive.emitter_feedback.EmitterFeedbackService` — the governor never
-grades signals or computes its own accuracy.  It only owns the *policy*: which
-mode a module belongs in given its track record, and the audit trail of every
-move.
+The transitions are driven purely by graded observation quality READ FROM the
+read-only :class:`~adaptive.emitter_feedback.EmitterFeedbackService` — the
+governor never grades observations or computes its own quality score.  It only
+owns the *policy*: which mode a module belongs in given its track record, and the
+audit trail of every move. Quality is direction-agnostic (Constitution §XXIX): a
+module is measured on whether its observations preceded real market events, never
+on whether a direction it implied turned out correct.
 
 Safety properties:
 
@@ -29,9 +31,9 @@ Safety properties:
   :meth:`is_suppressed` always returns ``False`` and nothing is ever shadowed —
   byte-for-byte the legacy behaviour.
 * **Sample floors.**  A module is never shadowed/disabled until it has enough
-  graded signals; a low-data module is left ACTIVE (we do not punish silence).
-* **Reads, never writes, the ledger.**  Accuracy comes from EmitterFeedback;
-  this module never touches how signals are recorded or graded.
+  graded observations; a low-data module is left ACTIVE (we do not punish silence).
+* **Reads, never writes, the ledger.**  Quality comes from EmitterFeedback;
+  this module never touches how observations are recorded or graded.
 * **Hot path is lock-free.**  Mode lookups (:meth:`is_suppressed`) read an
   atomically-published dict, so the scanner pays no DB / lock cost per observation.
 * **Guarded core op.**  :meth:`evaluate_transitions` defers to a central
@@ -419,9 +421,9 @@ class ModuleGovernor(TuningGuardMixin):
         calls per observation.
 
         When ``symbol`` is given and per-symbol sharding is on (1C), the symbol's
-        own graded accuracy can override the global mode: a module poor on THIS
-        symbol is suppressed here even if globally ACTIVE, and a module reliable
-        on THIS symbol is allowed here even if globally SHADOWED — so one
+        own graded observation quality can override the global mode: a module poor
+        on THIS symbol is suppressed here even if globally ACTIVE, and a module
+        reliable on THIS symbol is allowed here even if globally SHADOWED — so one
         instrument's losses no longer suppress a module everywhere. Falls back to
         the global decision when the symbol lacks enough graded data (cold-start
         neutral).

@@ -98,6 +98,16 @@ def _opinion(direction: str = "LONG", confidence: float = 0.8, **overrides):
         expected_favorable_excursion="", expected_adverse_excursion="",
         expected_value="", execution_quality="", risk="",
         supporting_evidence=[], contradicting_evidence=[],
+        # V-002 — a directional advisor opinion carries a first-class, ACTIVATED
+        # opportunity so origination flows through a structured object; these
+        # conformance tests exercise the EV / act gate, not the legacy-scalar path.
+        opportunities=(
+            [{"id": "auto", "direction": direction, "state": "ACTIVE",
+              "quality": confidence, "asymmetry": confidence,
+              "evidence_strength": confidence}]
+            if str(direction).upper() in ("LONG", "SHORT") else []
+        ),
+        preferred_opportunity_id="auto",
     )
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -141,7 +151,10 @@ def test_provider_unavailable_is_not_a_flat_trade():
     assert out.decision.decision_type != DecisionType.OPEN_CAMPAIGN
     assert out.decision.authorises_action is False, "provider-down must not authorise action"
     assert out.campaign is None
-    assert out.direction == "FLAT"
+    # V-016 — provider unavailability must be distinguishable from a FLAT market
+    # read: direction is None (not "FLAT") and provider_unavailable is set.
+    assert out.direction is None
+    assert out.provider_unavailable is True
 
 
 @conformance("§XVIII Q81/Q104: a None/errored reasoner degrades to observe, never a trade")
@@ -198,7 +211,12 @@ def test_reasoner_unavailable_is_a_distinct_state():
     out = CognitiveBrain(reasoner=_Reasoner(_opinion(), available=False)).reason(_rich_state())
     assert out.decision.decision_type == DecisionType.REASONER_UNAVAILABLE
     assert out.decision.decision_type != DecisionType.CONTINUE_OBSERVING
-    assert out.campaign is None and out.direction == "FLAT"
+    # V-016 — provider unavailability is NOT a FLAT market read: direction is None
+    # (distinct from FLAT) and provider_unavailable flags the infrastructure state
+    # so no consumer/log can mistake it for "the market is flat".
+    assert out.campaign is None
+    assert out.direction is None
+    assert out.provider_unavailable is True
 
 
 @conformance(
