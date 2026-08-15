@@ -73,18 +73,22 @@ class WorkerConfig:
     # case, so a position is never unprotected even if the Brain/provider is down.
     discretionary_exits_enabled: bool = True
 
-    # ── V-03: compressed direction+score exits (Constitution §I/§IV/§V/§XVII) ──
-    # The invalidation / conviction-collapse / structure-loss-stall exits close a
-    # position from a COMPRESSED scan direction + score (a re-derived directional
-    # opinion), which the constitution forbids as a decision authority. When this
-    # is False those three exits are DEFERRED to the AI Cognitive Brain, while the
-    # non-directional risk mechanics (TP / breakeven / trailing / dynamic-SL /
-    # HTF close / opportunity-cost) and the always-on catastrophic safety floor
-    # (hard SL + weekend / session / spread + absolute-profit backstop, and the
-    # time-based stall fallback) remain. Default True ⇒ behaviour unchanged; only
-    # relevant when ``discretionary_exits_enabled`` is True (non-cognition mode) —
-    # when the Brain is the live manager every discretionary exit is already
-    # deferred to it.
+    # ── V-009 (was V-03): LEGACY mechanical directional exits ──────────────────
+    # (Constitution §I/§IV/§V/§XVII). The invalidation / conviction-collapse /
+    # structure-loss-stall / H1-candle-against-side exits close a live position
+    # from a re-derived scan direction+score or an opposing HTF candle — i.e.
+    # "does the market still agree with our side?". That is a directional
+    # comparison the constitution forbids as an exit authority; the correct path
+    # is THESIS-based cognitive management. These four are LEGACY / MECHANICAL and
+    # run ONLY in the non-cognition fallback mode (``discretionary_exits_enabled``
+    # True). When this flag is False they are DEFERRED to the AI Cognitive Brain,
+    # while the non-directional risk mechanics (TP / breakeven / trailing /
+    # dynamic-SL / opportunity-cost) and the always-on catastrophic safety floor
+    # (hard SL + weekend / session / spread + absolute-profit backstop, plus the
+    # time-based stall fallback) remain. Default True ⇒ behaviour unchanged; every
+    # firing is logged as a WARNING so operators can see the mechanical path is
+    # active and migrate to Brain-managed (thesis-based) exits. When the Brain is
+    # the live manager every discretionary exit is already deferred to it.
     scan_directional_exits_enabled: bool = True
 
     # ── TradeManager params ───────────────────────────────────────────
@@ -256,6 +260,26 @@ class PositionWorker:
             swing_lookback=self.cfg.trailing_swing_lookback,
         )
 
+    @staticmethod
+    def _warn_legacy_directional_exit(
+        snap: PositionSnapshot, source: str, detail: str,
+    ) -> None:
+        """V-009 — surface that a LEGACY / MECHANICAL directional exit fired.
+
+        These close a live campaign from a re-derived scan direction/score (or an
+        opposing HTF candle) — a directional comparison ("does the market still
+        agree with our side?") the constitution forbids as an exit authority. They
+        run only in the non-cognition fallback (``discretionary_exits_enabled``
+        True) with ``scan_directional_exits_enabled`` left on. Logged as a WARNING
+        so the mechanical path is visible and can be migrated to thesis-based
+        Brain management."""
+        logger.warning(
+            "[pos-worker] LEGACY directional exit '{}' fired for {} {} — {}; a "
+            "mechanical direction/score rule, NOT thesis-based management (set "
+            "scan_directional_exits_enabled=False to defer to the Cognitive Brain)",
+            source, snap.symbol, snap.direction, detail,
+        )
+
     def evaluate(
         self,
         snap: PositionSnapshot,
@@ -330,7 +354,13 @@ class PositionWorker:
                 trailed = self._check_structure_trailing(snap, market, out=intents)
                 if not trailed:
                     self._check_atr_trailing(snap, market, out=intents)
-                if past_grace:
+                # V-009 — the H1 candle-against-side close is a MECHANICAL
+                # directional exit (it cuts a live campaign because the last HTF
+                # candle printed against the held side — "does price still agree
+                # with our direction?"), not thesis-based management. Gate it with
+                # the other compressed direction/score exits so it too defers to
+                # the Brain when scan-directional exits are disabled.
+                if past_grace and self.cfg.scan_directional_exits_enabled:
                     self._check_htf_candle_close(snap, market, intents)
             self._check_spread_deterioration(snap, market, intents)  # safety floor
             self._check_session_close(snap, now, intents)            # safety floor
@@ -525,9 +555,10 @@ class PositionWorker:
             # brain has had a chance to re-read the market for it.
             if stall_minutes < self.cfg.stall_min_hold_minutes:
                 return
-            # V-03 — the structure-loss test reads a compressed scan direction/
-            # score; defer this exit to the Brain when scan-directional exits are
-            # disabled (the hard-SL floor + Brain management still apply).
+            # V-009 — the structure-loss test reads a compressed scan direction/
+            # score ("does live structure still support our side?"); defer this
+            # mechanical directional exit to the Brain when scan-directional exits
+            # are disabled (the hard-SL floor + Brain management still apply).
             if not self.cfg.scan_directional_exits_enabled:
                 return
             # No live WorldModel read → cannot confirm the thesis is gone, so
@@ -536,6 +567,10 @@ class PositionWorker:
                 return
             if not self._stall_structure_lost(snap, scan):
                 return
+            self._warn_legacy_directional_exit(
+                snap, "stall_exit",
+                f"flat {stall_minutes:.0f}min and scan bias "
+                f"{scan.direction or 'none'}@{scan.score} no longer supports side")
             out.append(Intent.close(
                 symbol=snap.symbol,
                 ticket=snap.order_id,
@@ -780,8 +815,17 @@ class PositionWorker:
     def _check_invalidation(
         self, snap: PositionSnapshot, scan: ScanContext, out: list[Intent],
     ) -> None:
+        """V-009 LEGACY/MECHANICAL — close on a re-derived scan direction/score.
+
+        Reads a compressed scan ``direction``/``score`` and closes the position
+        when it reads low or opposes the held side. This is a directional
+        comparison, not thesis-based management; it runs only in the non-cognition
+        fallback and each firing is warned. The thesis-based path is the Brain."""
         if scan.score < self.cfg.invalidation_score_threshold:
             if snap.pnl_pips <= 0:
+                self._warn_legacy_directional_exit(
+                    snap, "invalidation_low_score",
+                    f"low scan score ({scan.score}) with negative P&L")
                 out.append(Intent.close(
                     symbol=snap.symbol,
                     ticket=snap.order_id,
@@ -796,6 +840,9 @@ class PositionWorker:
         )
         effective_score = min(100, int(scan.score + max(0, scan.opposing_score_boost)))
         if opposing and effective_score >= self.cfg.opposing_signal_threshold:
+            self._warn_legacy_directional_exit(
+                snap, "invalidation_opposing",
+                f"opposing scan signal {scan.direction}@{effective_score}")
             out.append(Intent.close(
                 symbol=snap.symbol,
                 ticket=snap.order_id,
@@ -809,6 +856,12 @@ class PositionWorker:
     def _check_conviction_collapse(
         self, snap: PositionSnapshot, out: list[Intent],
     ) -> None:
+        """V-009 LEGACY/MECHANICAL — close on a declining scan-score trajectory.
+
+        Reads the position's scan ``score_history`` and closes when the score has
+        declined for N cycles. A re-derived directional/score judgement, not
+        thesis-based management; runs only in the non-cognition fallback and each
+        firing is warned."""
         n = self.cfg.conviction_decline_cycles
         scores = snap.score_history
         if len(scores) < n:
@@ -822,6 +875,9 @@ class PositionWorker:
             return
         if snap.pnl_pips > self.cfg.conviction_profit_hold_pips:
             return
+        self._warn_legacy_directional_exit(
+            snap, "conviction_collapse",
+            f"declining scan scores {recent[0]}→{recent[-1]}")
         out.append(Intent.close(
             symbol=snap.symbol,
             ticket=snap.order_id,
@@ -835,6 +891,13 @@ class PositionWorker:
         market: MarketContext,
         out: list[Intent],
     ) -> None:
+        """V-009 LEGACY/MECHANICAL — close when the last H1 candle closes against
+        the held side.
+
+        This is a directional comparison ("did the higher timeframe just print a
+        candle against our direction?"), not thesis-based management. It is gated
+        by ``scan_directional_exits_enabled`` at the call site and each firing is
+        warned; the thesis-based path is the Cognitive Brain."""
         if market.h1_last_closed_open is None or market.h1_last_closed_close is None:
             return
         if market.h1_last_closed_time is None:
@@ -866,6 +929,9 @@ class PositionWorker:
         if snap.pnl_pips > 30:
             return
         direction_str = "BEARISH" if candle_bearish else "BULLISH"
+        self._warn_legacy_directional_exit(
+            snap, "htf_candle_close",
+            f"H1 {direction_str} candle closed against the held side")
         out.append(Intent.close(
             symbol=snap.symbol,
             ticket=snap.order_id,

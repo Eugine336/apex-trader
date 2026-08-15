@@ -656,13 +656,15 @@ class RiskConfig:
     # The broker's own margin/min-lot floor stays the real hard limit. Default
     # OFF (conservative). env RISK_ALLOW_MIN_LOT_OVER_RISK.
     allow_min_lot_over_risk: bool = False
-    # V-03 (Constitution §I/§IV/§V/§XVII) — defer the compressed direction+score
-    # exits (invalidation / conviction-collapse / structure-loss stall) to the AI
-    # Cognitive Brain instead of closing on a re-derived scan direction/score.
-    # Default True ⇒ the deterministic suite keeps them (non-cognition mode); set
-    # False to hand them to cognition. The hard-SL floor and the non-directional
-    # risk mechanics (TP / breakeven / trailing / time-based stall) are
-    # unaffected. env RISK_SCAN_DIRECTIONAL_EXITS_ENABLED.
+    # V-009 (was V-03; Constitution §I/§IV/§V/§XVII) — defer the LEGACY mechanical
+    # directional exits (invalidation / conviction-collapse / structure-loss stall
+    # / H1-candle-against-side) to the AI Cognitive Brain instead of closing on a
+    # re-derived scan direction/score or an opposing HTF candle. Default True ⇒ the
+    # deterministic suite keeps them (non-cognition mode) and each firing is logged
+    # as a WARNING; set False to hand them to cognition (thesis-based management).
+    # The hard-SL floor and the non-directional risk mechanics (TP / breakeven /
+    # trailing / time-based stall) are unaffected. env
+    # RISK_SCAN_DIRECTIONAL_EXITS_ENABLED.
     scan_directional_exits_enabled: bool = True
     backtest_starting_balance_usd: float = 10_000.0
     tp3_ladder_enabled: bool = True

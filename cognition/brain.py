@@ -134,6 +134,10 @@ class CognitiveBrain:
         self.reasoner_name = str(reasoner_name or "ai_brain")
         self.allow_scale_in = bool(allow_scale_in)
         self.reverse_confidence = min(1.0, max(0.0, float(reverse_confidence)))
+        # Retained for config compatibility (wired from ``manage_exit_floor``).
+        # V-008 removed the legacy direction-based management tree that consulted
+        # this to auto-TIGHTEN on a weakening aligned read; management is now
+        # thesis-based, so it no longer drives a decision on its own.
         self.exit_floor = min(1.0, max(0.0, float(exit_floor)))
         # Article XX — advisor quorum: the Council must not become fake diversity.
         # A campaign must be backed by at least this many advisors that actually
@@ -1135,19 +1139,39 @@ class CognitiveBrain:
             # make it HARDER to cut/reduce a position.
             conf_dims, eff_conf, limiting_dim = self._confidence_profile(opinion, conf)
             rationale = str(getattr(opinion, "rationale", "") or "")
-            # A management opinion (thesis_state / management_action present) is
-            # decided by the thesis-based tree; a legacy direction-based opinion
-            # falls back to the backward-compatible tree (with FLAT ⇒ HOLD, never
-            # EXIT). Both are directionally symmetric.
+            # A management opinion (any of thesis_state / opportunity_status /
+            # management_action present) is decided by the thesis-based tree —
+            # LONG and SHORT are perfectly symmetric and nothing here compares a
+            # re-derived direction with the held side. An opinion carrying NONE of
+            # those fields is degraded / incomplete management data and HOLDS
+            # (V-008): there is no direction-based fallback tree any more.
             mgmt_action = str(getattr(opinion, "management_action", "") or "").strip()
             thesis_state = str(getattr(opinion, "thesis_state", "") or "").strip()
-            if mgmt_action or thesis_state:
+            opp_status = str(getattr(opinion, "opportunity_status", "") or "").strip()
+            if mgmt_action or thesis_state or opp_status:
                 action, why = self._decide_management_thesis(
                     position, opinion, conf, conf_dims, eff_conf, limiting_dim)
             else:
-                action, why = self._decide_management_legacy(
-                    position, opinion, want, uncertainty, conf,
-                    conf_dims, eff_conf, limiting_dim)
+                # V-008 — a management reply MUST carry a thesis_state /
+                # opportunity_status / management_action. When NONE is present the
+                # reply is degraded / incomplete management data: the system must
+                # NOT fall back to a direction/confidence comparison against the
+                # held side. That legacy fallback let "the council still says
+                # LONG/SHORT" liquidate, flip, add to or tighten a live campaign —
+                # a directional authority the constitution forbids for management.
+                # Treat missing management fields as insufficient cognition and
+                # HOLD the current state (fail-safe); the next cadence re-reasons
+                # the campaign. Logged as a WARNING so the degradation is visible
+                # and can drive re-evaluation upstream.
+                action, why = DecisionType.HOLD, (
+                    "degraded management data — reply carried no thesis_state / "
+                    "opportunity_status / management_action; holding current state "
+                    "(no direction/confidence fallback)")
+                logger.warning(
+                    "[brain] MANAGE %s degraded/incomplete management reply (no "
+                    "thesis_state / opportunity_status / management_action) — "
+                    "holding, not comparing direction", symbol,
+                )
             # Flaw 4 — council quorum guard: below quorum, state-changing actions
             # degrade to HOLD; risk-reducing actions (TIGHTEN_RISK / PROTECT_PROFIT
             # / SCALE_OUT) are always permitted.
@@ -1160,7 +1184,8 @@ class CognitiveBrain:
             logger.info(
                 "[brain] MANAGE %s held=%s → %s | thesis=%s conf=%.2f (council %s/%s) — %s",
                 symbol, want or "?", action.value,
-                (thesis_state.lower() or "legacy"), eff_conf,
+                (thesis_state.lower() or mgmt_action.lower()
+                 or opp_status.lower() or "degraded"), eff_conf,
                 ("?" if advisors_responded is None else advisors_responded),
                 ("?" if advisors_available is None else advisors_available),
                 reason_txt[:120],
@@ -1173,60 +1198,6 @@ class CognitiveBrain:
                 self._faults += 1
             return self._record_management(self._manage_pkg(
                 symbol, want, DecisionType.HOLD, 0.0, 1.0, f"manage fault: {exc}"))
-
-    def _decide_management_legacy(
-        self, position: "PositionView", opinion: Any, want: str, uncertainty: float,
-        conf: float, conf_dims: dict, eff_conf: float, limiting_dim: str,
-    ) -> "tuple[DecisionType, str]":
-        """Backward-compatible management decision for a legacy DIRECTION-based
-        opinion (one carrying no thesis_state / management_action).
-
-        Identical to the historical tree EXCEPT the catch-all no longer exits:
-        Flaw 1 — a FLAT / uncertain / ambiguous read is NOT an invalidation, so
-        it HOLDS the campaign. An EXIT still fires on an EXPLICIT deterioration
-        (opportunity gone / EV negative) or dominant high-confidence contrary
-        evidence; REVERSE only on very-high-confidence contrary evidence. LONG
-        and SHORT are handled symmetrically (``aligned`` / ``opposite`` are
-        computed identically for both sides)."""
-        odir = str(getattr(opinion, "direction", FLAT) or FLAT).upper()
-        if odir not in (LONG, SHORT, FLAT):
-            odir = FLAT
-        aligned = odir == want and want in (LONG, SHORT)
-        opposite = odir in (LONG, SHORT) and odir != want and want in (LONG, SHORT)
-        # Empty fields (a minimal/legacy opinion) never force an exit — these
-        # overrides fire only on an EXPLICIT signal, so prior behaviour is kept.
-        opportunity = str(getattr(opinion, "opportunity", "") or "").strip().lower()
-        ev_txt = str(getattr(opinion, "expected_value", "") or "").strip().lower()
-        opportunity_gone = opportunity in ("none", "no", "n/a", "gone", "expired")
-        ev_negative = ev_txt.startswith("negative")
-        thesis_deteriorated = opportunity_gone or ev_negative
-        in_profit = (getattr(position, "profit_r", None) or 0.0) > 0
-
-        if aligned and conf >= self.min_confidence_to_act \
-                and uncertainty <= self.max_uncertainty_to_act and not thesis_deteriorated:
-            if self.allow_scale_in and in_profit and eff_conf >= self.reverse_confidence:
-                return DecisionType.SCALE_IN, "thesis strengthening + in profit — add"
-            if (self.allow_scale_in and in_profit
-                    and conf >= self.reverse_confidence
-                    and eff_conf < self.reverse_confidence):
-                # Would add, but a weak actionability dimension (execution /
-                # timing) says now is not the moment to increase risk — hold.
-                return DecisionType.HOLD, (
-                    f"thesis strong but {limiting_dim} weak "
-                    f"({conf_dims[limiting_dim]:.2f}) — hold, not adding")
-            return DecisionType.HOLD, "thesis intact — hold"
-        if aligned and thesis_deteriorated:
-            return DecisionType.EXIT, "opportunity gone / EV no longer positive — exit"
-        if aligned and conf >= self.exit_floor:
-            return DecisionType.TIGHTEN_RISK, "supporting thesis weakening — tighten risk"
-        if opposite and conf >= self.reverse_confidence:
-            return DecisionType.REVERSE, "strong contrary evidence — reverse"
-        if opposite and conf >= self.min_confidence_to_act:
-            return DecisionType.EXIT, "contrary evidence dominant — exit"
-        # Flaw 1 — FLAT / low-confidence / ambiguous is temporary uncertainty, not
-        # invalidation. Hold the campaign; an exit needs a reasoned justification.
-        return DecisionType.HOLD, (
-            "no directional edge / uncertain — thesis not invalidated, holding")
 
     def _decide_management_thesis(
         self, position: "PositionView", opinion: Any, conf: float,

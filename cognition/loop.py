@@ -1227,15 +1227,22 @@ class CognitionLoop:
         Brain to manage the exact position; the trim proceeds ONLY when the
         Brain's verdict de-risks (EXIT / TIGHTEN_RISK / SCALE_OUT). A confident
         HOLD (or any non-de-risking verdict) vetoes the mechanical trim — the
-        weakest campaign may be about to turn around. Fail-open: when no reasoner
-        is available (or a fault occurs) the deterministic concentration trim
-        still runs as the Part X safety floor. Returns ``(approved, verdict, conf)``.
+        weakest campaign may be about to turn around. V-011 — capital
+        reallocation is an OPPORTUNITY decision that requires cognitive input, so
+        it does NOT fail open: when the Brain is unavailable (or a fault occurs)
+        the trim is HELD, not executed. Only risk protections fail open elsewhere;
+        opportunity-level reallocation holds. Returns ``(approved, verdict, conf)``.
         """
         brain = self._brain
+        # V-011 — reallocation is an OPPORTUNITY decision (capital redeployment),
+        # not a risk protection, so it must NOT fail open. With no Brain there is
+        # no cognitive input to justify trimming a live campaign, so HOLD it
+        # (approved=False) rather than letting the mechanical concentration rule
+        # proceed unreasoned.
         if brain is None or not hasattr(brain, "manage"):
-            return True, "unavailable", 0.0
+            return False, "unavailable", 0.0
         if not getattr(brain, "available", True):
-            return True, "unavailable", 0.0
+            return False, "unavailable", 0.0
         try:
             sym = str(getattr(target, "symbol", "") or "")
             ms = self._consolidator.build(sym, now=now)
@@ -1263,12 +1270,15 @@ class CognitionLoop:
                         sym, exc,
                     )
             return approved, str(verdict), conf
-        except Exception as exc:  # noqa: BLE001 — a fault must never disable the safety trim
+        except Exception as exc:  # noqa: BLE001 — a fault must never break the loop
             logger.debug(
-                "[cognition-loop] reallocation reasoning fault (%s): %s",
+                "[cognition-loop] reallocation reasoning fault (%s): %s — holding",
                 getattr(target, "symbol", "?"), exc,
             )
-            return True, "fault", 0.0
+            # V-011 — a reasoning fault leaves us without cognitive input, so hold
+            # the position (no mechanical trim) rather than fail open into a
+            # capital reallocation the Brain never sanctioned.
+            return False, "fault", 0.0
 
     def _campaign_open(self, symbol: str, direction: str, campaign: Any,
                        decision: Any) -> None:

@@ -1,7 +1,13 @@
 """
 APEX TRADER — Re-Entry Logic
 Stopped at breakeven? That's not a loss — that's a reset.
-If the setup is still valid, we go again. No ego. Pure logic.
+
+V-010 — a breakeven exit means the ORIGINAL thesis did not play out, so re-entry
+does NOT assume the original direction is still the trade. It asks a FRESH
+opportunity question: does the CURRENT market structure present a setup right now?
+The candidate direction is DERIVED from the live structure, not inherited from
+the closed campaign — so a same-direction re-entry only happens when the setup
+genuinely reformed on that side. No ego. Pure opportunity.
 """
 
 from dataclasses import dataclass, field
@@ -30,8 +36,9 @@ class ReEntryOpportunity:
 
 class ReEntryManager:
     """
-    After a breakeven stop, evaluates whether the original setup
-    is still valid and a new entry zone exists.
+    After a breakeven stop, evaluates whether a FRESH opportunity exists in the
+    CURRENT market structure (V-010) — the candidate direction is derived from the
+    live structure, not assumed to be the closed trade's original direction.
     """
 
     def __init__(self, cooldown_candles: int = 3):
@@ -50,14 +57,21 @@ class ReEntryManager:
         current_m1_df: Optional[pd.DataFrame] = None,
     ) -> ReEntryOpportunity:
         """
-        Determine if a re-entry is warranted after a breakeven stop.
+        Determine if a FRESH opportunity is warranted after a breakeven stop.
+
         Only considers trades that were stopped at breakeven (re_entry_eligible).
+        V-010 — the breakeven exit means the ORIGINAL thesis did not play out, so
+        the original direction is NOT assumed to still be the trade. The candidate
+        direction is DERIVED from the CURRENT M5 structure: a same-direction
+        re-entry happens only when the setup genuinely reformed on that side; if
+        the structure has flipped, the fresh (opposing) opportunity is surfaced
+        instead of re-arming the invalidated original side.
         """
         pair = closed_trade.pair
-        direction = closed_trade.direction
+        original_direction = closed_trade.direction
 
         if not getattr(closed_trade, "re_entry_eligible", False):
-            return self._not_eligible(pair, direction, "Trade not eligible for re-entry")
+            return self._not_eligible(pair, original_direction, "Trade not eligible for re-entry")
 
         # Cooldown must be measured from when the triggering trade CLOSED, not
         # from when it was opened. Using candles_since_entry let any long-lived
@@ -75,33 +89,42 @@ class ReEntryManager:
         remaining_cooldown = max(0, self.cooldown_candles - candles_since)
         if remaining_cooldown > 0:
             return self._not_eligible(
-                pair, direction,
+                pair, original_direction,
                 f"Cooldown active — wait {remaining_cooldown} more candle(s)",
                 cooldown=remaining_cooldown,
             )
 
+        # V-010 — derive the candidate direction from a FRESH read of the CURRENT
+        # structure rather than inheriting the closed trade's direction. A
+        # RANGING / undecided structure presents no fresh opportunity → not
+        # eligible (we never force the original, invalidated side back on).
         analysis = self._structure.analyze(current_m5_df)
-        bias_valid = (
-            (direction == "LONG" and analysis.trend == Trend.BULLISH)
-            or (direction == "SHORT" and analysis.trend == Trend.BEARISH)
-        )
-        if not bias_valid:
+        fresh_direction = self._fresh_direction(analysis.trend)
+        if fresh_direction is None:
             return self._not_eligible(
-                pair, direction,
-                f"Bias no longer valid — M5 trend is {analysis.trend.value}",
+                pair, original_direction,
+                f"No fresh directional opportunity — M5 structure is {analysis.trend.value}",
             )
 
-        zone = self._find_new_zone(direction, current_m5_df)
+        zone = self._find_new_zone(fresh_direction, current_m5_df)
         if zone is None:
-            return self._not_eligible(pair, direction, "No new FVG or OB formed")
+            return self._not_eligible(pair, fresh_direction, "No new FVG or OB formed")
 
+        same_side = fresh_direction == original_direction
+        reason = (
+            "Fresh setup reformed on the original side"
+            if same_side else
+            "Original thesis invalidated at breakeven — fresh opposing opportunity"
+        )
         logger.info(
-            f"RE-ENTRY ELIGIBLE: {pair} {direction} — new zone at {zone}"
+            f"RE-ENTRY ELIGIBLE: {pair} {fresh_direction} "
+            f"(original {original_direction}, "
+            f"{'same side' if same_side else 'flipped'}) — new zone at {zone}"
         )
         return ReEntryOpportunity(
             pair=pair,
-            direction=direction,
-            reason="Stopped at breakeven, setup still valid",
+            direction=fresh_direction,
+            reason=reason,
             new_entry_zone=zone,
             cooldown_remaining=0,
             eligible=True,
@@ -109,6 +132,19 @@ class ReEntryManager:
         )
 
     # ------------------------------------------------------------------
+
+    @staticmethod
+    def _fresh_direction(trend: Trend) -> Optional[str]:
+        """Map the current M5 structure trend to a fresh candidate direction.
+
+        A clear bull/bear structure yields LONG/SHORT; a RANGING / undecided
+        structure yields None (no fresh directional opportunity), so re-entry is
+        NOT armed on an ambiguous read."""
+        if trend == Trend.BULLISH:
+            return "LONG"
+        if trend == Trend.BEARISH:
+            return "SHORT"
+        return None
 
     def _find_new_zone(
         self, direction: str, df_m5: pd.DataFrame,
