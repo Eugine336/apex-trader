@@ -792,9 +792,15 @@ class CognitionLoop:
                 _dec = output.decision
                 _dtype = getattr(getattr(_dec, "decision_type", None), "value", None) \
                     or str(getattr(_dec, "decision_type", "?"))
+                # V-016 — decision_type is the primary status; provider
+                # unavailability must never be rendered as a FLAT market read.
+                _pu = bool(getattr(output, "provider_unavailable", False))
+                _dir = getattr(output, "direction", None)
+                _dir_txt = "n/a(provider-unavailable)" if _pu else (
+                    _dir if _dir is not None else "n/a")
                 logger.info(
-                    "[cognition] %s -> %s (dir=%s conf=%.2f) reasoner=%s",
-                    symbol, _dtype, getattr(output, "direction", "?"),
+                    "[cognition] %s -> decision=%s (dir=%s conf=%.2f) reasoner=%s",
+                    symbol, _dtype, _dir_txt,
                     float(getattr(_dec, "confidence", 0.0) or 0.0),
                     "live" if getattr(self._brain, "available", False) else "unavailable",
                 )
