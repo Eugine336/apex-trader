@@ -140,3 +140,50 @@ def test_advisor_strength_is_independent_of_council_size():
     # Same advisor, same conviction — presence of fewer/more peers changes nothing.
     assert groq_solo.confidence == groq_full.confidence
     assert groq_solo.measurements["opportunity"] == groq_full.measurements["opportunity"]
+
+
+# ── V-019: EngineOpinion is opinion-shaped, not a direction+confidence vote ──
+
+def test_engine_opinion_exposes_structured_contribution():
+    op = _opinion()
+    # The advisor's full thesis is first-class — hypotheses, opportunity, regime.
+    assert op.regime == "transitional"
+    assert op.opportunity == _RICH["opportunity"]
+    assert _RICH["primary_hypothesis"] in op.hypotheses
+    assert "range continuation" in op.hypotheses          # alternatives too
+    assert op.key_uncertainty == _RICH["key_uncertainty"]
+    # A readable thesis summary — never "name DIRECTION(conf)".
+    s = op.thesis_summary(200)
+    assert "opportunity" in s.lower()
+    assert "LONG" not in s and "(0.7" not in s
+
+
+def test_engine_opinion_to_dict_is_thesis_led():
+    d = _opinion().to_dict()
+    assert d["thesis"] and "cognition" in d
+    # direction/confidence survive ONLY as observability projections.
+    assert d["direction"] == "LONG"
+
+
+def test_panel_log_shows_thesis_not_vote():
+    from types import SimpleNamespace as _NS
+
+    from loguru import logger
+
+    from llm.reasoning_orchestrator import ReasoningOrchestrator
+
+    lines: list = []
+    sink_id = logger.add(lines.append, level="INFO", format="{message}")
+    try:
+        result = _NS(symbol="BTCUSD", opinions=[_opinion("groq")],
+                     consulted=["groq", "absent-one"])
+        ReasoningOrchestrator._log_panel(result)
+    finally:
+        logger.remove(sink_id)
+    blob = "".join(str(x) for x in lines)
+    assert "contributing" in blob and "groq:" in blob
+    assert "opportunity" in blob.lower()
+    # The panel line is thesis-led, not a vote tag.
+    assert "LONG(" not in blob and "(0.70)" not in blob
+    assert "absent-one" in blob                            # who left the panel
+
