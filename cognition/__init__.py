@@ -62,7 +62,7 @@ def __getattr__(name: str):
     if name in ("EvidenceConsolidator", "BrainActionBridge", "CognitionLoop", "SymbolsProvider"):
         from cognition import loop as _loop
         return getattr(_loop, name)
-    if name in ("classify_domain", "evidence_from_thesis_status", "evidence_from_votes",
+    if name in ("classify_domain", "evidence_from_thesis_status",
                 "evidence_from_analogues", "evidence_from_reasoning"):
         from cognition import evidence_adapters as _ea
         return getattr(_ea, name)

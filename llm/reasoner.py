@@ -582,6 +582,12 @@ class LLMOpinion:
     ``direction``/``confidence`` are the *consequence* of that reasoning — the
     execution instruction — never a substitute for it. Every rich field defaults
     empty so a legacy minimal reply still parses.
+
+    V-002 — ``direction``/``confidence`` are NOT execution authority on their own.
+    Origination requires a first-class, ACTIVATED opportunity in ``opportunities``
+    (with a lifecycle ``state``); a reply that carries no opportunity set is
+    OBSERVATIONAL input only and the Brain will not open a campaign from it (see
+    :meth:`cognition.brain.CognitiveBrain._from_opinion`).
     """
 
     symbol: str

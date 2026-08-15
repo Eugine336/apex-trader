@@ -44,6 +44,16 @@ class _Opinion:
         self.direction = direction
         self.confidence = confidence
         self.rationale = "scripted"
+        # V-002 — a directional advisor opinion carries a first-class, ACTIVATED
+        # opportunity so origination flows through a structured object; these
+        # tests exercise the quorum / coverage / degradation gates.
+        self.opportunities = (
+            [{"id": "auto", "direction": direction, "state": "ACTIVE",
+              "quality": confidence, "asymmetry": confidence,
+              "evidence_strength": confidence}]
+            if str(direction).upper() in ("LONG", "SHORT") else []
+        )
+        self.preferred_opportunity_id = "auto"
 
 
 class _Reasoner:
@@ -156,7 +166,9 @@ def test_v8_price_failure_adds_integrity_evidence():
 
 
 def test_v8_many_source_failures_add_meta_integrity_evidence():
-    con = EvidenceConsolidator(vote_source=_boom)
+    # Three guarded sources fail (price + portfolio + memory) ⇒ the whole picture
+    # is compromised and a meta-integrity Evidence is surfaced.
+    con = EvidenceConsolidator(memory=_boom)
     con.set_price_source(_boom)
     con.set_portfolio_source(_boom)
     ms = con.build("EURUSD")

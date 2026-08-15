@@ -42,7 +42,6 @@ from cognition.evidence_adapters import (
     evidence_from_portfolio,
     evidence_from_reasoning,
     evidence_from_thesis_status,
-    evidence_from_votes,
 )
 
 logger = logging.getLogger("apex.cognition.loop")
@@ -64,18 +63,18 @@ def _f(v: Any, default: float = 0.0) -> float:
 class EvidenceConsolidator:
     """Builds a consolidated :class:`MarketState` from live subsystem readings.
 
-    Phase E: converts the full vote panel (every contributing analytical module,
-    surfaced via the ThesisEngine's supporting/opposing modules) into
-    domain-classified :class:`~cognition.contracts.Evidence`, plus an aggregate
-    read. Read-only and fail-safe. An optional ``vote_source`` callable supplies
-    the raw WorldModel vote panel for even richer evidence when available.
+    Phase E: converts the live subsystem readings (the ThesisEngine's
+    supporting/opposing modules, the developing forming-bar structural read, the
+    portfolio/price/structural-interaction sources) into domain-classified
+    :class:`~cognition.contracts.Evidence`, plus an aggregate read. Read-only and
+    fail-safe. Every source is a non-directional OBSERVATION feed — the Brain, not
+    a pre-collapsed vote panel, forms direction (V-004).
     """
 
     def __init__(
         self,
         ctx: Optional[Any] = None,
         *,
-        vote_source: Optional[Callable[[str], Any]] = None,
         developing_source: Optional[Callable[[str], Any]] = None,
         per_module: bool = True,
         memory: Optional[Any] = None,
@@ -87,7 +86,6 @@ class EvidenceConsolidator:
         execution_cost_source: Optional[Callable[[str], Any]] = None,
     ) -> None:
         self._ctx = ctx
-        self._vote_source = vote_source
         self._developing_source = developing_source
         self._per_module = bool(per_module)
         self._memory = memory
@@ -112,15 +110,6 @@ class EvidenceConsolidator:
         # Part XXI Art 9/10/11 — records each council consultation + grades each
         # advisor. Observability/learning only; never authority. Fail-safe.
         self._consult_ledger: Optional[Any] = None
-
-    def set_vote_source(self, vote_source: Optional[Callable[[str], Any]]) -> None:
-        """Wire (or clear) the live WorldModel vote-panel source.
-
-        The bootstrap supplies this once the WorldModel store exists so the
-        consolidator can turn each symbol's live per-module vote panel into
-        domain-classified Evidence. Fail-safe callable — never invoked eagerly.
-        """
-        self._vote_source = vote_source
 
     def set_developing_source(self, developing_source: Optional[Callable[[str], Any]]) -> None:
         """Wire (or clear) the DEVELOPING (forming-bar) bias source.
@@ -266,15 +255,6 @@ class EvidenceConsolidator:
                     # When per-module is off, keep only the aggregate read.
                     if self._per_module or e.source_module == "brain.thesis_engine":
                         ms.add(e)
-            if self._vote_source is not None:
-                attempted_sources += 1
-                try:
-                    for e in evidence_from_votes(ms.symbol, self._vote_source(ms.symbol)):
-                        ms.add(e)
-                except Exception as exc:  # noqa: BLE001
-                    logger.warning("[consolidator] vote source FAILED (%s): %s", symbol, exc)
-                    failed_sources.append("votes")
-                    _integrity("MODULE OBSERVATIONS UNAVAILABLE")
             if self._developing_source is not None:
                 try:
                     for e in evidence_from_developing_bias(
@@ -600,23 +580,12 @@ class CognitionLoop:
         When unset, ``live`` management degrades to shadow-record. Fail-safe."""
         self._management_sink = sink
 
-    def set_vote_source(self, vote_source: Optional[Callable[[str], Any]]) -> None:
-        """Wire the live WorldModel vote-panel source onto the consolidator.
-
-        Delegates to :meth:`EvidenceConsolidator.set_vote_source`. The owning
-        system calls this once its WorldModel store exists, so the Brain reasons
-        over the live per-module market read instead of an empty MarketState."""
-        try:
-            self._consolidator.set_vote_source(vote_source)
-        except Exception as exc:  # noqa: BLE001 — wiring must never break startup
-            logger.debug("[cognition-loop] set_vote_source ignored a fault: %s", exc)
-
     def set_developing_source(self, developing_source: Optional[Callable[[str], Any]]) -> None:
         """Wire the DEVELOPING (forming-bar) bias source onto the consolidator.
 
         Delegates to :meth:`EvidenceConsolidator.set_developing_source` so the
-        Brain also sees the fresher between-close read alongside the confirmed
-        vote panel. Fail-safe — a wiring fault must never break startup."""
+        Brain also sees the fresher between-close structural read alongside the
+        confirmed readings. Fail-safe — a wiring fault must never break startup."""
         try:
             self._consolidator.set_developing_source(developing_source)
         except Exception as exc:  # noqa: BLE001

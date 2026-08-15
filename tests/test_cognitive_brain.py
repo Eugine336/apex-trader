@@ -13,6 +13,16 @@ class _Opinion:
         self.rationale = rationale
         self.competing_hypotheses = competing or []
         self.missing_information = missing or []
+        # V-002 — a directional advisor opinion carries a first-class, ACTIVATED
+        # opportunity so origination flows through a structured object; these
+        # tests exercise sizing/EV/observability, not the legacy-scalar path.
+        self.opportunities = (
+            [{"id": "auto", "direction": direction, "state": "ACTIVE",
+              "quality": confidence, "asymmetry": confidence,
+              "evidence_strength": confidence}]
+            if str(direction).upper() in ("LONG", "SHORT") else []
+        )
+        self.preferred_opportunity_id = "auto"
 
 
 class _Reasoner:
@@ -121,6 +131,15 @@ class _RichOpinion:
         self.missing_information = []
         self.expected_favorable_excursion = efe
         self.expected_adverse_excursion = eae
+        # V-002 — carry a first-class, ACTIVATED opportunity so origination flows
+        # through a structured object (EV/sizing still derive from the excursions).
+        self.opportunities = (
+            [{"id": "auto", "direction": direction, "state": "ACTIVE",
+              "quality": confidence, "asymmetry": confidence,
+              "evidence_strength": confidence}]
+            if str(direction).upper() in ("LONG", "SHORT") else []
+        )
+        self.preferred_opportunity_id = "auto"
 
 
 def test_sizing_is_lesser_of_confidence_and_ev_normalized():
