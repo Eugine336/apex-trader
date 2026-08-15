@@ -98,6 +98,16 @@ def _opinion(direction: str = "LONG", confidence: float = 0.8, **overrides):
         expected_favorable_excursion="", expected_adverse_excursion="",
         expected_value="", execution_quality="", risk="",
         supporting_evidence=[], contradicting_evidence=[],
+        # V-002 — a directional advisor opinion carries a first-class, ACTIVATED
+        # opportunity so origination flows through a structured object; these
+        # conformance tests exercise the EV / act gate, not the legacy-scalar path.
+        opportunities=(
+            [{"id": "auto", "direction": direction, "state": "ACTIVE",
+              "quality": confidence, "asymmetry": confidence,
+              "evidence_strength": confidence}]
+            if str(direction).upper() in ("LONG", "SHORT") else []
+        ),
+        preferred_opportunity_id="auto",
     )
     base.update(overrides)
     return SimpleNamespace(**base)

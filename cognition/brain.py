@@ -658,26 +658,27 @@ class CognitiveBrain:
         if is_harvesting:
             with self._lock:
                 self._last_opportunities[str(symbol or "")] = opportunity_set
-        # ACTIVATION GATE (Part XXV / item 7): a harvesting-format reply may only
-        # OPEN a campaign when the driving opportunity has ACTIVATED. A FORMING
-        # (identified-but-not-yet-triggered) opportunity must WAIT — even at high
-        # thesis confidence — because execution requires activation, not mere
-        # identification. UNKNOWN state (legacy) counts as actionable, so nothing
-        # changes for pre-harvesting replies.
-        activation_ok = (
-            (not is_harvesting)
-            or (driving_opp is None)
-            or driving_opp.is_actionable
+        # ACTIVATION GATE (Part XXV / item 7) + V-002: a campaign may only OPEN
+        # when a first-class, STRUCTURED opportunity has ACTIVATED. ``driving_opp``
+        # must exist and be actionable (state ACTIVE / CONFIRMED / STRENGTHENING).
+        # A FORMING (identified-but-not-yet-triggered) opportunity must WAIT — even
+        # at high thesis confidence — and a LEGACY direction+confidence reply that
+        # carries NO opportunity set is OBSERVATIONAL input only: direction and
+        # confidence are not, by themselves, execution authority. The Brain may let
+        # such an opinion inform its confidence, but it never opens a campaign from
+        # a pre-collapsed directional scalar.
+        has_actionable_opportunity = (
+            driving_opp is not None and driving_opp.is_actionable
         )
 
         # Constitutional gate: only OPEN a campaign when the Brain can answer
         # with sufficient confidence AND uncertainty is acceptable AND there is a
         # direction AND the expected value clears the threshold AND the advisory
-        # quorum + evidence-domain coverage are adequate AND (harvesting format)
-        # the driving opportunity has actually activated. Otherwise do nothing —
-        # there is no obligation to trade (Part IV Art 7 / Part IX Q35: a good
-        # thesis at negative EV, thin coverage, a lone advisor, or an unactivated
-        # opportunity is not an executable trade).
+        # quorum + evidence-domain coverage are adequate AND a first-class,
+        # structured opportunity has actually ACTIVATED (V-002). Otherwise do
+        # nothing — there is no obligation to trade (Part IV Art 7 / Part IX Q35:
+        # a good thesis at negative EV, thin coverage, a lone advisor, or an
+        # unactivated/absent opportunity is not an executable trade).
         ev_ok = (self.min_expected_value is None) or (expected_value >= self.min_expected_value)
         directional = direction in (LONG, SHORT)
         # V-01 — actionability criterion. Legacy (default): a confidence floor +
@@ -700,7 +701,7 @@ class CognitiveBrain:
             and ev_ok
             and quorum_ok
             and domain_ok
-            and activation_ok
+            and has_actionable_opportunity
         )
         if not act:
             if (is_harvesting and driving_opp is not None
@@ -736,6 +737,24 @@ class CognitiveBrain:
                         "evaluated: doing nothing is correct — the only opportunity "
                         f"is {_state} (fading), not an executable entry"
                     )
+            elif directional and not has_actionable_opportunity:
+                # V-002 — a directional read with NO structured, activated
+                # opportunity to act on: a legacy direction+confidence reply that
+                # carried no opportunity set (or a harvesting reply whose driving
+                # opportunity is not a directional, activated one). Direction and
+                # confidence alone are not execution authority — the opinion is
+                # OBSERVATIONAL input, so the Brain records it and keeps observing
+                # rather than opening a campaign from a pre-collapsed scalar.
+                reason_txt = (
+                    "advisor opinion is observational — no structured, activated "
+                    "opportunity to act on (direction+confidence is not execution "
+                    "authority)"
+                )
+                dtype = DecisionType.CONTINUE_OBSERVING
+                do_nothing_txt = (
+                    "evaluated: doing nothing is correct — the reply carried a bare "
+                    "direction+confidence with no first-class, activated opportunity"
+                )
             elif directional_and_qualified and ev_ok and not quorum_ok:
                 # Article XX — a qualified opportunity backed by too few advisors:
                 # cognitive coverage is insufficient to originate a campaign.
@@ -1987,6 +2006,13 @@ class CognitiveBrain:
         try:
             lead = self._native.leading(hypotheses)
             if lead is None or not lead.is_directional:
+                return None
+            # V-001 — independent origination requires STRUCTURED EVIDENCE backing
+            # the leading hypothesis, not merely a directional implication. A
+            # directional hypothesis with no detected structural patterns is a
+            # bare direction, not a discovered opportunity, and must never open a
+            # campaign on its own when no advisor is available.
+            if not lead.supporting_patterns:
                 return None
             if lead.confidence < self._native.independent_min_confidence:
                 return None

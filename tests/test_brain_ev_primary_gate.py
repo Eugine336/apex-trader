@@ -29,6 +29,16 @@ class _Opinion:
         self.rationale = "because"
         self.competing_hypotheses = []
         self.missing_information = []
+        # V-002 — a directional advisor opinion carries a first-class, ACTIVATED
+        # opportunity so origination flows through a structured object; these
+        # tests exercise the EV / act gate, not the legacy-scalar path.
+        self.opportunities = (
+            [{"id": "auto", "direction": direction, "state": "ACTIVE",
+              "quality": confidence, "asymmetry": confidence,
+              "evidence_strength": confidence}]
+            if str(direction).upper() in ("LONG", "SHORT") else []
+        )
+        self.preferred_opportunity_id = "auto"
 
 
 class _Reasoner:

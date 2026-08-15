@@ -41,42 +41,15 @@ def test_consolidator_short_is_non_directional():
     assert ms.fresh_evidence()[0].polarity == 0.0
 
 
-def test_consolidator_set_vote_source_surfaces_live_votes():
-    # With no thesis engine (single-path), the vote source is the Brain's only
-    # window onto the live market — set_vote_source must wire it end-to-end.
-    votes = [SimpleNamespace(module="structure", direction="LONG", confidence=0.8,
-                             weight=1.0, timeframe="H1", evidence={"bos": True})]
+def test_vote_source_adapter_api_is_removed():
+    # V-004 — the vote-source adapter is a pre-collapsed direction+confidence
+    # feed and must not be wireable. The API is gone from both the consolidator
+    # and the loop.
     cons = EvidenceConsolidator(ctx=None)
-    assert cons.build("XAUUSD").consolidation()["evidence_fresh"] == 0
-    cons.set_vote_source(lambda sym: votes if sym == "XAUUSD" else [])
-    ms = cons.build("XAUUSD")
-    fresh = ms.fresh_evidence()
-    assert len(fresh) == 1
-    assert fresh[0].source_module == "structure" and fresh[0].polarity == 0.0
-    assert fresh[0].measurements.get("bos") is True
-
-
-def test_consolidator_vote_source_is_fault_safe():
-    cons = EvidenceConsolidator(ctx=None)
-    def _boom(_sym):
-        raise RuntimeError("store down")
-    cons.set_vote_source(_boom)
-    ms = cons.build("XAUUSD")  # must not raise
-    # Article XXXIV — a failed source no longer degrades silently: instead of
-    # producing no evidence, it surfaces a zero-confidence integrity Evidence so
-    # the Brain can tell "no observations" apart from "observations unavailable".
-    integrity = [e for e in ms.evidence if e.source_module == "consolidator.integrity"]
-    assert any("MODULE OBSERVATIONS UNAVAILABLE" in e.observation for e in integrity)
-    assert all(e.confidence == 0.0 and e.uncertainty == 1.0 for e in integrity)
-
-
-def test_loop_set_vote_source_delegates_to_consolidator():
-    seen = {}
-    consolidator = EvidenceConsolidator(ctx=None)
-    loop = CognitionLoop(_StubBrain(), consolidator, lambda: ["X"], interval_seconds=1.0)
-    fn = lambda sym: []
-    loop.set_vote_source(fn)
-    assert consolidator._vote_source is fn
+    loop = CognitionLoop(_StubBrain(), cons, lambda: ["X"], interval_seconds=1.0)
+    assert not hasattr(cons, "set_vote_source")
+    assert not hasattr(cons, "_vote_source")
+    assert not hasattr(loop, "set_vote_source")
 
 
 def test_consolidator_set_developing_source_surfaces_bias():

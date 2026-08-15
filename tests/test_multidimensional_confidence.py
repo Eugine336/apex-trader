@@ -24,6 +24,17 @@ def _brain():
 
 
 def _decide(opinion, uncertainty=0.1):
+    # V-002 — origination requires a first-class, ACTIVATED opportunity. These
+    # tests exercise the multidimensional-confidence act/sizing path, so attach a
+    # matching ACTIVE opportunity when the opinion carries none (the confidence
+    # dimensions and EV still come from the opinion itself).
+    if not getattr(opinion, "opportunities", None) and opinion.direction in ("LONG", "SHORT"):
+        opinion.opportunities = [{
+            "id": "auto", "direction": opinion.direction, "state": "ACTIVE",
+            "quality": opinion.confidence, "asymmetry": opinion.confidence,
+            "evidence_strength": opinion.confidence,
+        }]
+        opinion.preferred_opportunity_id = "auto"
     return _brain()._from_opinion(
         "BTCUSD", MarketState(symbol="BTCUSD"),
         {"aggregate_uncertainty": uncertainty}, opinion, None,
