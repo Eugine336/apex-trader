@@ -1,27 +1,29 @@
 """
 APEX TRADER — Module Governor (L3: Shadow Mode + auto-reactivation)
 
-A voting module (structure, momentum, order blocks, liquidity, …) used to have
-only two fates: it ran and influenced every decision, or — once the TunerAgent
-3-strike-disabled the component behind it — it was fully OFF.  There was no
-middle ground in which a struggling module could keep being *measured* without
-being allowed to do damage.
+An analytical module (structure, momentum, order blocks, liquidity, …) used to
+have only two fates: it ran and influenced every decision, or — once the
+TunerAgent 3-strike-disabled the component behind it — it was fully OFF.  There
+was no middle ground in which a struggling module could keep being *measured*
+without being allowed to do damage.
 
 This governor adds that middle ground.  Each module sits in one of three modes:
 
-* ``ACTIVE``   — votes normally; its calibrated weight is used as-is.
-* ``SHADOW``   — still runs and is still graded by the SignalLedger, but its
-  vote weight is forced to 0.0 so it cannot influence a live decision.  We keep
-  watching it; if its accuracy recovers it returns to ACTIVE, and if it stays
-  poor it is fully disabled.
+* ``ACTIVE``   — contributes normally; its calibrated weight is used as-is.
+* ``SHADOW``   — still runs and is still graded by the observation ledger, but
+  its influence weight is forced to 0.0 so it cannot affect a live decision.  We
+  keep watching it; if its observation quality recovers it returns to ACTIVE,
+  and if it stays poor it is fully disabled.
 * ``DISABLED`` — statistically harmful; suppressed entirely (also weight 0.0).
   Re-entry is manual, or automatic after ``auto_retry_days`` if configured.
 
-The transitions are driven purely by graded accuracy READ FROM the read-only
-:class:`~adaptive.emitter_feedback.EmitterFeedbackService` — the governor never
-grades signals or computes its own accuracy.  It only owns the *policy*: which
-mode a module belongs in given its track record, and the audit trail of every
-move.
+The transitions are driven purely by graded observation quality READ FROM the
+read-only :class:`~adaptive.emitter_feedback.EmitterFeedbackService` — the
+governor never grades observations or computes its own quality score.  It only
+owns the *policy*: which mode a module belongs in given its track record, and the
+audit trail of every move. Quality is direction-agnostic (Constitution §XXIX): a
+module is measured on whether its observations preceded real market events, never
+on whether a direction it implied turned out correct.
 
 Safety properties:
 
@@ -29,11 +31,11 @@ Safety properties:
   :meth:`is_suppressed` always returns ``False`` and nothing is ever shadowed —
   byte-for-byte the legacy behaviour.
 * **Sample floors.**  A module is never shadowed/disabled until it has enough
-  graded signals; a low-data module is left ACTIVE (we do not punish silence).
-* **Reads, never writes, the ledger.**  Accuracy comes from EmitterFeedback;
-  this module never touches how signals are recorded or graded.
+  graded observations; a low-data module is left ACTIVE (we do not punish silence).
+* **Reads, never writes, the ledger.**  Quality comes from EmitterFeedback;
+  this module never touches how observations are recorded or graded.
 * **Hot path is lock-free.**  Mode lookups (:meth:`is_suppressed`) read an
-  atomically-published dict, so the scanner pays no DB / lock cost per vote.
+  atomically-published dict, so the scanner pays no DB / lock cost per read.
 * **Guarded core op.**  :meth:`evaluate_transitions` defers to a central
   ``TunerAgent`` when one is sole authority (via :class:`TuningGuardMixin`).
 
@@ -57,8 +59,8 @@ from loguru import logger
 
 from adaptive.tunable import TuningGuardMixin
 
-# The nine brain modules that cast directional votes (matches the emitter names
-# the SignalLedger records). "consensus"
+# The nine brain modules that emit observations each cycle (matches the emitter
+# names the observation ledger records). "consensus"
 # is deliberately excluded — it is the derived verdict, not an organ to govern.
 DEFAULT_GOVERNED_MODULES: tuple[str, ...] = (
     "structure",
@@ -403,7 +405,7 @@ class ModuleGovernor(TuningGuardMixin):
         return _coerce_mode(self._modes.get(module, ModuleMode.ACTIVE.value))
 
     def is_shadowed(self, module: str) -> bool:
-        """True when the module is in SHADOW mode (running but vote-suppressed)."""
+        """True when the module is in SHADOW mode (running but influence-suppressed)."""
         return self.mode_for(module) == ModuleMode.SHADOW
 
     def is_disabled(self, module: str) -> bool:
@@ -413,15 +415,15 @@ class ModuleGovernor(TuningGuardMixin):
     def is_suppressed(self, module: str, symbol: Optional[str] = None) -> bool:
         """True when the module must NOT influence a live decision.
 
-        SHADOW and DISABLED both suppress the vote (weight forced to 0.0); only
-        ACTIVE modules contribute. Always ``False`` when the feature is off, so
-        the consensus path is unchanged. This is the single hook the scanner
-        calls per vote.
+        SHADOW and DISABLED both suppress the module's observation influence
+        (weight forced to 0.0); only ACTIVE modules contribute. Always ``False``
+        when the feature is off, so the analysis path is unchanged. This is the
+        single hook the scanner calls per module.
 
         When ``symbol`` is given and per-symbol sharding is on (1C), the symbol's
-        own graded accuracy can override the global mode: a module poor on THIS
-        symbol is suppressed here even if globally ACTIVE, and a module reliable
-        on THIS symbol is allowed here even if globally SHADOWED — so one
+        own graded observation quality can override the global mode: a module poor
+        on THIS symbol is suppressed here even if globally ACTIVE, and a module
+        reliable on THIS symbol is allowed here even if globally SHADOWED — so one
         instrument's losses no longer suppress a module everywhere. Falls back to
         the global decision when the symbol lacks enough graded data (cold-start
         neutral).

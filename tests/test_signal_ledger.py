@@ -1,10 +1,12 @@
 """
-Tests for the universal Signal Ledger (adaptive/signal_ledger.py).
+Tests for the universal Observation Ledger (adaptive/signal_ledger.py).
 
 Dependency-light — sqlite3 + stdlib only, no torch/pandas/numpy. Verifies
-signal recording, NEUTRAL rejection, gate-block + trade linkage, price grading
-in both directions, MFE/MAE accumulation, the traded-vs-blocked accuracy split,
-SQLite persistence across reopen, and exception safety on bad data.
+observation recording (any directional character, non-directional included),
+missing pair/emitter rejection, gate-block + trade linkage, direction-agnostic
+grading (a material move in EITHER direction makes an observation high-quality —
+Constitution §XXIX), up/down excursion accumulation, the traded-vs-blocked
+quality split, SQLite persistence across reopen, and exception safety.
 """
 
 import time
@@ -16,6 +18,7 @@ from adaptive.signal_ledger import (
     SignalRecord,
     SignalOutcome,
     _signed_move_pct,
+    _abs_move_pct,
     new_signal_id,
 )
 
@@ -52,14 +55,26 @@ class TestRecording:
         assert rec["context"] == {"timeframe": "M5"}
         assert rec["outcome"]["graded"] is False
 
-    def test_neutral_is_ignored(self, ledger):
-        assert ledger.record_signal(_sig(direction="NEUTRAL")) is None
-        assert ledger.record_signal(_sig(direction="")) is None
+    def test_observation_recorded_regardless_of_direction(self, ledger):
+        # Modules are measurement instruments: a non-directional / NEUTRAL
+        # observation is still a real, gradeable observation — not dropped.
+        assert ledger.record_signal(_sig(direction="NEUTRAL")) is not None
+        assert ledger.record_signal(_sig(direction="")) is not None
+
+    def test_missing_pair_or_emitter_ignored(self, ledger):
+        # A record with no pair or no emitter carries no observation.
+        assert ledger.record_signal(SignalRecord(pair="", emitter="momentum")) is None
+        assert ledger.record_signal(SignalRecord(pair="EURUSD", emitter="")) is None
 
     def test_signal_id_and_timestamp_autofill(self):
         r = SignalRecord(pair="X", emitter="m", direction="LONG")
         assert r.signal_id.startswith("sig_")
         assert r.timestamp > 0
+
+    def test_direction_is_optional(self):
+        # ``direction`` is provenance only and defaults to empty.
+        r = SignalRecord(pair="X", emitter="m")
+        assert r.direction == ""
 
     def test_explicit_signal_id_preserved(self, ledger):
         r = _sig()
@@ -73,37 +88,35 @@ class TestRecording:
 
 
 class TestGrading:
-    def test_correct_long_direction(self, ledger):
+    def test_useful_when_material_move_follows(self, ledger):
         sid = ledger.record_signal(_sig(direction="LONG", price=100.0))
         out = ledger.run_grading_cycle({"EURUSD": 100.5})
         assert out == {"observed": 1, "graded": 1}
         rec = ledger.get_signal(sid)
-        assert rec["outcome"]["direction_correct"] is True
+        assert rec["outcome"]["observation_useful"] is True
 
-    def test_wrong_long_direction(self, ledger):
+    def test_useful_even_when_move_is_against_direction(self, ledger):
+        # THE constitutional fix: a LONG observation followed by a -0.5% move
+        # still SAW a real market event, so it is high-quality — not penalised
+        # for the direction going the other way (Constitution §XXIX).
         sid = ledger.record_signal(_sig(direction="LONG", price=100.0))
         ledger.run_grading_cycle({"EURUSD": 99.5})
         rec = ledger.get_signal(sid)
-        assert rec["outcome"]["direction_correct"] is False
+        assert rec["outcome"]["observation_useful"] is True
 
-    def test_correct_short_direction(self, ledger):
-        sid = ledger.record_signal(_sig(direction="SHORT", price=100.0))
-        ledger.run_grading_cycle({"EURUSD": 99.0})
-        rec = ledger.get_signal(sid)
-        assert rec["outcome"]["direction_correct"] is True
+    def test_short_observation_useful_on_move_either_way(self, ledger):
+        s_down = ledger.record_signal(_sig(pair="EURUSD", direction="SHORT", price=100.0))
+        s_up = ledger.record_signal(_sig(pair="GBPUSD", direction="SHORT", price=100.0))
+        ledger.run_grading_cycle({"EURUSD": 99.0, "GBPUSD": 101.0})
+        assert ledger.get_signal(s_down)["outcome"]["observation_useful"] is True
+        assert ledger.get_signal(s_up)["outcome"]["observation_useful"] is True
 
-    def test_wrong_short_direction(self, ledger):
-        sid = ledger.record_signal(_sig(direction="SHORT", price=100.0))
-        ledger.run_grading_cycle({"EURUSD": 101.0})
-        rec = ledger.get_signal(sid)
-        assert rec["outcome"]["direction_correct"] is False
-
-    def test_below_min_move_is_not_correct(self, ledger):
-        # 0.05% move < 0.1% min threshold → not correct.
+    def test_low_quality_when_no_material_move(self, ledger):
+        # 0.05% move < 0.1% floor → no material event followed → low quality.
         sid = ledger.record_signal(_sig(direction="LONG", price=100.0))
         ledger.run_grading_cycle({"EURUSD": 100.05})
         rec = ledger.get_signal(sid)
-        assert rec["outcome"]["direction_correct"] is False
+        assert rec["outcome"]["observation_useful"] is False
 
     def test_grade_signal_single(self, ledger):
         sid = ledger.record_signal(_sig(direction="LONG", price=100.0))
@@ -116,12 +129,12 @@ class TestGrading:
         out = ledger.run_grading_cycle({})  # no price for the pair
         assert out == {"observed": 0, "graded": 0}
 
-    def test_mfe_mae_accumulate(self, tmp_path):
+    def test_excursions_accumulate_both_directions(self, tmp_path):
         # Long-delay ledger so grading stays open across multiple observations.
         led = SignalLedger(db_path=tmp_path / "m.db", grading_delay_minutes=999.0)
         sid = led.record_signal(_sig(direction="LONG", price=100.0))
-        led.run_grading_cycle({"EURUSD": 102.0})   # +2% favorable
-        led.run_grading_cycle({"EURUSD": 98.0})    # -2% adverse
+        led.run_grading_cycle({"EURUSD": 102.0})   # +2% up excursion
+        led.run_grading_cycle({"EURUSD": 98.0})    # -2% down excursion
         rec = led.get_signal(sid)
         assert rec["outcome"]["graded"] is False    # still open
         assert rec["outcome"]["max_favorable_move_pct"] == pytest.approx(2.0, abs=1e-6)
@@ -170,6 +183,8 @@ class TestGateAndTradeLinkage:
         assert gbp[0]["gate_blocked_by"] is None
 
     def test_trade_opened_for_pair_direction_filter(self, ledger):
+        # ``direction`` is provenance: the trade-open hook can still link only the
+        # observations whose directional character matched the taken trade.
         ledger.record_signal(_sig(pair="EURUSD", emitter="momentum", direction="LONG"))
         ledger.record_signal(_sig(pair="EURUSD", emitter="vwap", direction="SHORT"))
         n = ledger.record_trade_opened_for_pair("EURUSD", "order_9", direction="LONG")
@@ -181,19 +196,21 @@ class TestGateAndTradeLinkage:
         assert shorts[0]["trade_opened"] is False
 
 
-class TestAccuracySeparation:
+class TestQualitySeparation:
     def test_traded_vs_blocked_split(self, ledger):
-        # Two LONG signals; one becomes a trade (correct), one blocked (wrong).
+        # One observation becomes a trade and a material move follows (useful);
+        # one is blocked and NO material move follows (low quality).
         s_trade = ledger.record_signal(_sig(pair="EURUSD", direction="LONG", price=100.0))
         s_block = ledger.record_signal(_sig(pair="GBPUSD", direction="LONG", price=100.0))
         ledger.record_trade_opened(s_trade, "ord_t")
         ledger.record_gate_block(s_block, "entry_score")
-        ledger.run_grading_cycle({"EURUSD": 101.0, "GBPUSD": 99.0})
+        ledger.run_grading_cycle({"EURUSD": 101.0, "GBPUSD": 100.0})
 
         acc = ledger.get_emitter_accuracy("momentum")
         assert acc["total"] == 2
         assert acc["traded"] == 1
         assert acc["blocked"] == 1
+        assert acc["useful"] == 1
         assert acc["accuracy_traded"] == 1.0
         assert acc["accuracy_blocked"] == 0.0
         assert acc["accuracy"] == 0.5
@@ -209,7 +226,7 @@ class TestAccuracySeparation:
     def test_pair_filter(self, ledger):
         ledger.record_signal(_sig(pair="EURUSD", direction="LONG", price=100.0))
         ledger.record_signal(_sig(pair="GBPUSD", direction="LONG", price=100.0))
-        ledger.run_grading_cycle({"EURUSD": 101.0, "GBPUSD": 99.0})
+        ledger.run_grading_cycle({"EURUSD": 101.0, "GBPUSD": 100.0})
         acc = ledger.get_emitter_accuracy("momentum", pair="EURUSD")
         assert acc["total"] == 1
         assert acc["accuracy"] == 1.0
@@ -259,10 +276,34 @@ class TestPersistence:
         rec = led2.get_signal(sid)
         assert rec is not None
         assert rec["outcome"]["graded"] is True
-        assert rec["outcome"]["direction_correct"] is True
+        assert rec["outcome"]["observation_useful"] is True
         acc = led2.get_emitter_accuracy("momentum")
         assert acc["total"] == 1
         led2.close()
+
+    def test_migrates_legacy_direction_correct_schema(self, tmp_path):
+        import sqlite3
+
+        db = tmp_path / "legacy.db"
+        c = sqlite3.connect(str(db))
+        c.execute(
+            "CREATE TABLE signal_outcomes (signal_id TEXT PRIMARY KEY, "
+            "price_at_signal REAL, price_at_check REAL, check_delays TEXT, "
+            "direction_correct INTEGER, max_favorable_move_pct REAL, "
+            "max_adverse_move_pct REAL, graded INTEGER, graded_at REAL, "
+            "updated_at REAL, trade_outcome TEXT)"
+        )
+        c.commit()
+        c.close()
+        # Opening with the current code migrates the outcomes table in place.
+        led = SignalLedger(db_path=db, grading_delay_minutes=0.0)
+        cur = led._conn.execute("PRAGMA table_info(signal_outcomes)")
+        cols = {str(r[1]) for r in cur.fetchall()}
+        assert "observation_useful" in cols
+        sid = led.record_signal(_sig(direction="LONG", price=100.0))
+        led.run_grading_cycle({"EURUSD": 101.0})
+        assert led.get_signal(sid)["outcome"]["observation_useful"] is True
+        led.close()
 
 
 class TestExceptionSafety:
@@ -284,9 +325,9 @@ class TestExceptionSafety:
     def test_zero_reference_price_safe(self, ledger):
         sid = ledger.record_signal(_sig(price=0.0))
         out = ledger.run_grading_cycle({"EURUSD": 100.0})
-        # reference price 0 → signed move 0 → graded but not correct
+        # reference price 0 → move 0 → graded but not a useful observation
         rec = ledger.get_signal(sid)
-        assert rec["outcome"]["direction_correct"] is False
+        assert rec["outcome"]["observation_useful"] is False
         assert out["graded"] == 1
 
     def test_empty_accuracy_safe(self, ledger):
@@ -307,8 +348,13 @@ class TestHelpers:
     def test_signed_move_bad_ref(self):
         assert _signed_move_pct("LONG", 0.0, 100.0) == 0.0
 
+    def test_abs_move_is_direction_agnostic(self):
+        assert _abs_move_pct(100.0, 101.0) == pytest.approx(1.0)
+        assert _abs_move_pct(100.0, 99.0) == pytest.approx(1.0)
+        assert _abs_move_pct(0.0, 100.0) == 0.0
+
     def test_signal_outcome_dataclass(self):
         o = SignalOutcome(signal_id="s1", price_at_signal=100.0)
         assert o.signal_id == "s1"
-        assert o.direction_correct is False
+        assert o.observation_useful is False
         assert o.check_delays == {}

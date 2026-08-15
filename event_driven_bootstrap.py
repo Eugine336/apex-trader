@@ -5423,29 +5423,37 @@ class EventDrivenSystem:
             except Exception as exc:
                 logger.debug("[density] density tracker update failed: {}", exc)
 
-        # ── Feed signal_ledger with brain module directional reads ────
+        # ── Feed the observation ledger with the world model's structural read ─
+        # Modules are measurement instruments (Constitution §XXIX): record the
+        # strongest structural read as an OBSERVATION. Its ``direction`` is
+        # provenance only — grading asks whether a material move followed (in
+        # either direction), never whether the direction was "right". Best-effort;
+        # never affects the live path.
         if ctx.signal_ledger is not None:
             try:
+                from adaptive.signal_ledger import SignalRecord as _SignalRecord
+
                 sym = getattr(event, "symbol", "")
-                if sym:
-                    wm = self._wm_store.get(sym)
-                    if wm is not None:
-                        zones = getattr(wm, "entry_zones", [])
-                        direction = ""
-                        score = 0
-                        if zones:
-                            best = max(zones, key=lambda z: getattr(z, "conviction", 0))
-                            direction = getattr(best, "direction", "")
-                            score = getattr(best, "conviction", 0)
-                        if direction and score > 0:
-                            ctx.signal_ledger.record_signal(
+                wm = self._wm_store.get(sym) if sym else None
+                if wm is not None:
+                    zones = getattr(wm, "entry_zones", []) or []
+                    if zones:
+                        best = max(zones, key=lambda z: getattr(z, "conviction", 0.0))
+                        direction = str(getattr(best, "direction", "") or "")
+                        conviction = float(getattr(best, "conviction", 0.0) or 0.0)
+                        if conviction > 0.0:
+                            tick = self._tick_store.get_latest(sym)
+                            price = float(getattr(tick, "mid", 0.0) or 0.0) if tick else 0.0
+                            ctx.signal_ledger.record_signal(_SignalRecord(
                                 pair=sym,
+                                emitter="world_model",
                                 direction=direction,
-                                score=score,
-                                source="world_model",
-                            )
+                                strength=conviction,
+                                price_at_signal=price,
+                                context={"source": "world_model"},
+                            ))
             except Exception as exc:
-                logger.debug("[signal-ledger] feed failed: {}", exc)
+                logger.debug("[observation-ledger] feed failed: {}", exc)
 
         # ── Feed spread_monitor with current spreads ─────────────────
         if ctx.risk_engine is not None:
@@ -6074,15 +6082,17 @@ class EventDrivenSystem:
             except Exception as exc:  # noqa: BLE001
                 logger.debug("[campaign] close feed failed for {}: {}", symbol, exc)
 
-        # ── Phase 6: feed per-TF structure agreement into the adaptive
-        # evidence-weight provider so the probabilistic-bias weights learn
-        # which timeframes actually predict winners. Best-effort.
+        # ── Phase 6: feed each timeframe's entry OBSERVATIONS + the opportunity's
+        # outcome quality into the adaptive evidence-weight provider so the
+        # probabilistic-bias weights learn which timeframes' observations are
+        # useful CONTEXT — not which trend agreed with the win (Constitution
+        # §XXIX). Best-effort.
         awp = getattr(ctx, "adaptive_weight_provider", None)
         if awp is not None:
             try:
-                tf_trends = info.get("entry_tf_trends") or {}
-                if tf_trends:
-                    awp.record_trade_outcome(direction, tf_trends, bool(won))
+                tf_observations = info.get("entry_tf_trends") or {}
+                if tf_observations:
+                    awp.record_observation_outcome(tf_observations, bool(won))
             except Exception as exc:
                 logger.debug("[close-learn] weight-provider record failed: {}", exc)
 
