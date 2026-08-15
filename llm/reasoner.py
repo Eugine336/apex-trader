@@ -927,14 +927,15 @@ class LLMReasoner:
                     )
                 else:
                     logger.info(
-                        "[llm] {} [{}] dir={} conf={} | regime={} opp={} ({}) — {}",
+                        "[llm] {} [{}] opp={} ({}) thesis={} | regime={} dir={} conf={} — {}",
                         sym,
                         str(getattr(opinion, "model", "") or getattr(self._client, "model", "") or "?"),
-                        getattr(opinion, "direction", "?"),
-                        round(float(getattr(opinion, "confidence", 0.0) or 0.0), 3),
-                        str(getattr(opinion, "regime", "") or "?"),
                         str(getattr(opinion, "opportunity", "") or "n/a")[:60],
                         str(getattr(opinion, "opportunity_horizon", "") or "?"),
+                        str(getattr(opinion, "primary_hypothesis", "") or "")[:80],
+                        str(getattr(opinion, "regime", "") or "?"),
+                        getattr(opinion, "direction", "?"),
+                        round(float(getattr(opinion, "confidence", 0.0) or 0.0), 3),
                         str(getattr(opinion, "rationale", "") or "")[:140],
                     )
             else:

@@ -33,6 +33,13 @@ from brain.inducement_detector import InducementAnalysis
 # non-directional multi-TF alignment. Stripped in ``build_world_model`` so no
 # pre-computed directional opinion (direction/score/probability/dominant) can
 # reach the Brain via the world model. The Brain forms direction itself.
+#
+# V-025 (semantic debt): this denylist is defense-in-depth only. Its continued
+# existence proves upstream producers may STILL emit these forbidden keys at the
+# world-model boundary. The goal is to make this sanitizer unnecessary — every
+# actual strip is logged (DEBUG) in ``_freeze_alignment`` so the offending
+# producer can be found and cleaned up, after which this frozenset can shrink and
+# eventually be removed.
 _DIRECTIONAL_ALIGNMENT_KEYS = frozenset({
     "direction", "score", "signed_score", "long_probability", "short_probability",
     "long_ev", "short_ev", "flat_ev", "dominant", "bias", "lean",
@@ -370,13 +377,29 @@ def build_world_model(
         V5). The alignment is a STRUCTURAL measurement snapshot only — a caller
         that still passes a directional key (direction/score/long_probability/…)
         has it stripped here so no pre-computed directional opinion can ride on
-        the WorldModel."""
+        the WorldModel.
+
+        V-025: when a forbidden key is ACTUALLY stripped, log which upstream
+        producer still emitted it (DEBUG) so the sanitizer can eventually be
+        retired once every producer has been cleaned up."""
         if not d:
             return ()
-        return tuple(
-            (k, v) for k, v in d.items()
-            if str(k).strip().lower() not in _DIRECTIONAL_ALIGNMENT_KEYS
-        )
+        kept: list[tuple[str, Any]] = []
+        stripped: list[str] = []
+        for k, v in d.items():
+            if str(k).strip().lower() in _DIRECTIONAL_ALIGNMENT_KEYS:
+                stripped.append(str(k))
+            else:
+                kept.append((k, v))
+        if stripped:
+            logger.debug(
+                "[world_model] {} stripped forbidden directional alignment key(s) "
+                "{} — an upstream producer still emits a pre-computed directional "
+                "opinion on the multi-TF alignment (goal: eliminate this sanitizer "
+                "as producers are cleaned up)",
+                symbol, stripped,
+            )
+        return tuple(kept)
 
     return WorldModel(
         symbol=symbol,
