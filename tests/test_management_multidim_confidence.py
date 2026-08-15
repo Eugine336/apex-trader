@@ -1,11 +1,14 @@
 """Management multidimensional confidence (Part XXV) — the profile gates
-risk-ADDING actions only.
+risk-ADDING / book-flipping actions.
 
-SCALE_IN adds risk, so it now requires the EFFECTIVE conviction (the weakest of
-thesis/opportunity/timing/execution): the Brain never adds into weak execution or
-timing. Risk-REDUCING actions (EXIT / TIGHTEN / REVERSE) keep using the raw
-scalar — a poor execution read must never make it harder to cut a position. A
-legacy opinion carrying only the overall scalar is unchanged (zero regression).
+These opinions are THESIS-based (they carry management_action / thesis_state) —
+the only management path after V-008 removed the legacy direction-comparison
+fallback. SCALE_IN adds risk and REVERSE flips the book, so both require the
+EFFECTIVE conviction (the weakest of thesis/opportunity/timing/execution): the
+Brain never adds into — nor flips on — a weak execution or timing read. A purely
+risk-REDUCING EXIT keeps using the raw scalar — a poor execution read must never
+make it harder to cut a position. A degraded opinion carrying no management
+fields at all HOLDS (V-008).
 """
 
 from cognition.brain import CognitiveBrain, PositionView
@@ -56,8 +59,9 @@ def _brain(opinion, **kw):
 # ── SCALE_IN respects the effective conviction ──────────────────────────────
 
 def test_scale_in_suppressed_when_execution_weak():
-    op = LLMOpinion(symbol="EURUSD", direction="LONG", confidence=0.8,
-                    execution_confidence=0.3)   # strong thesis, poor execution
+    op = LLMOpinion(symbol="EURUSD", direction="FLAT", confidence=0.8,
+                    execution_confidence=0.3, management_action="SCALE_IN",
+                    thesis_state="strengthening")   # strong thesis, poor execution
     out = _brain(op).manage(_pos("LONG", profit_r=1.0), _state(0.8))
     assert out.decision.decision_type == DecisionType.HOLD
     rr = out.decision.risk_rationale.lower()
@@ -66,39 +70,54 @@ def test_scale_in_suppressed_when_execution_weak():
 
 
 def test_scale_in_fires_when_every_dimension_is_strong():
-    op = LLMOpinion(symbol="EURUSD", direction="LONG", confidence=0.8)  # all dims ⇒ 0.8
+    op = LLMOpinion(symbol="EURUSD", direction="FLAT", confidence=0.8,
+                    management_action="SCALE_IN", thesis_state="strengthening")  # all dims ⇒ 0.8
     out = _brain(op).manage(_pos("LONG", profit_r=1.0), _state(0.8))
     assert out.decision.decision_type == DecisionType.SCALE_IN
 
 
-def test_scale_in_zero_regression_for_legacy_opinion():
-    # No dimension attributes at all → resolves to the scalar → adds as before.
+def test_legacy_opinion_without_management_fields_holds():
+    # V-008 — a direction-only opinion (no management fields) is degraded
+    # management data → HOLD (previously this added via the direction fallback).
     out = _brain(_LegacyOpinion("LONG", 0.8)).manage(_pos("LONG", profit_r=1.0), _state(0.8))
-    assert out.decision.decision_type == DecisionType.SCALE_IN
+    assert out.decision.decision_type == DecisionType.HOLD
 
 
-# ── risk-REDUCING actions are NOT blocked by a weak execution read ──────────
+# ── EXIT (risk-reducing) is NOT blocked by a weak execution read ────────────
 
-def test_exit_on_contrary_is_unaffected_by_weak_execution():
-    op = LLMOpinion(symbol="EURUSD", direction="SHORT", confidence=0.6,
-                    execution_confidence=0.2)   # contrary; poor execution
+def test_exit_is_unaffected_by_weak_execution():
+    # An EXIT is purely risk-reducing → it uses the raw scalar, so a weak
+    # execution dimension must never make it harder to cut the position.
+    op = LLMOpinion(symbol="EURUSD", direction="FLAT", confidence=0.6,
+                    execution_confidence=0.2, management_action="EXIT",
+                    thesis_state="weakening")
     out = _brain(op).manage(_pos("LONG"), _state(-0.5))
     assert out.decision.decision_type == DecisionType.EXIT
 
 
-def test_reverse_on_strong_contrary_is_unaffected_by_weak_execution():
-    op = LLMOpinion(symbol="EURUSD", direction="SHORT", confidence=0.85,
-                    execution_confidence=0.2)
-    out = _brain(op).manage(_pos("LONG"), _state(-0.8))
-    assert out.decision.decision_type == DecisionType.REVERSE
-    assert out.direction == "SHORT"
+# ── REVERSE flips the book → it DOES require strong effective conviction ─────
+
+def test_reverse_requires_strong_effective_conviction():
+    # A weak execution read degrades a REVERSE to a de-risking TIGHTEN_RISK: the
+    # Brain never flips the book on a dimension it cannot execute.
+    weak = LLMOpinion(symbol="EURUSD", direction="FLAT", confidence=0.85,
+                      execution_confidence=0.2, management_action="REVERSE")
+    out = _brain(weak).manage(_pos("LONG"), _state(-0.8))
+    assert out.decision.decision_type == DecisionType.TIGHTEN_RISK
+    # Every dimension strong → the flip is justified.
+    strong = LLMOpinion(symbol="EURUSD", direction="FLAT", confidence=0.85,
+                        management_action="REVERSE")
+    out2 = _brain(strong).manage(_pos("LONG"), _state(-0.8))
+    assert out2.decision.decision_type == DecisionType.REVERSE
+    assert out2.direction == "SHORT"
 
 
 # ── the profile is recorded on the management decision (audit) ──────────────
 
 def test_management_records_confidence_profile():
-    op = LLMOpinion(symbol="EURUSD", direction="LONG", confidence=0.8,
-                    execution_confidence=0.3)
+    op = LLMOpinion(symbol="EURUSD", direction="FLAT", confidence=0.8,
+                    execution_confidence=0.3, management_action="SCALE_IN",
+                    thesis_state="strengthening")
     out = _brain(op).manage(_pos("LONG", profit_r=1.0), _state(0.8))
     qa = out.decision.questions_answered
     assert qa["confidence_raw"] == 0.8

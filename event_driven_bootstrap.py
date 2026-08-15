@@ -5108,8 +5108,10 @@ class EventDrivenSystem:
         friday_hour = getattr(risk_cfg, "friday_close_hour_utc", None)
         if isinstance(friday_hour, int) and not isinstance(friday_hour, bool):
             cfg.friday_close_hour_utc = friday_hour
-        # V-03 — defer the compressed direction+score exits to the Brain when the
-        # operator opts in (default True keeps the deterministic suite intact).
+        # V-009 — defer the legacy mechanical directional exits (invalidation /
+        # conviction-collapse / structure-loss stall / H1-candle-against-side) to
+        # the Brain when the operator opts in (default True keeps the deterministic
+        # suite intact, with each firing warned).
         scan_dir = getattr(risk_cfg, "scan_directional_exits_enabled", None)
         if isinstance(scan_dir, bool):
             cfg.scan_directional_exits_enabled = scan_dir
@@ -6563,14 +6565,18 @@ class EventDrivenSystem:
                     )
                     opp = ctx.re_entry_manager.check_re_entry(closed, m5_df, m1_df)
                     if opp is not None and getattr(opp, "eligible", False):
+                        # V-010 — arm the FRESH candidate direction the manager
+                        # derived from the CURRENT structure (which may differ
+                        # from the closed trade's original side), not the original.
+                        re_direction = str(getattr(opp, "direction", "") or direction)
                         logger.info(
                             "[re-entry] {} {} opportunity: {} (zone={}, thesis: regime={} zone_type={})",
-                            symbol, direction,
+                            symbol, re_direction,
                             getattr(opp, "reason", ""),
                             getattr(opp, "new_entry_zone", None),
                             info.get("regime"), info.get("zone_type"),
                         )
-                        self._arm_re_entry_zone(symbol, direction, opp)
+                        self._arm_re_entry_zone(symbol, re_direction, opp)
             except Exception as exc:
                 logger.debug("[re-entry] evaluation failed: {}", exc)
 
