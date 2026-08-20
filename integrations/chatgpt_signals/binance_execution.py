@@ -40,7 +40,7 @@ class BinanceSignedClient:
     No withdrawal/transfer endpoint exists in this client.
     """
 
-    BASE = os.getenv("BINANCE_FUTURES_BASE_URL", "https://fapi.binance.com")
+    BASE = os.getenv("BINANCE_FUTURES_BASE_URL", "https://fapi.binance.com").rstrip("/")
 
     def __init__(self) -> None:
         self.key = os.getenv("BINANCE_API_KEY", "")
@@ -94,6 +94,18 @@ class BinanceChatGPTExecutor:
         self.mode = os.getenv("BINANCE_EXECUTION_MODE", "PAPER").upper()
         self.live_enabled = os.getenv("BINANCE_LIVE_EXECUTION_ENABLED", "false").lower() == "true"
         self.max_notional_usdt = float(os.getenv("BINANCE_MAX_NOTIONAL_USDT", "100"))
+        self.max_positions = int(os.getenv("MAX_SIMULTANEOUS_POSITIONS", "3"))
+        self.max_account_risk_percent = float(os.getenv("MAX_ACCOUNT_RISK_PERCENT", "1.0"))
+        self.signal_timeout_seconds = int(os.getenv("CHATGPT_SIGNAL_TIMEOUT_SECONDS", "90"))
+        self.allow_duplicates = os.getenv("CHATGPT_ALLOW_DUPLICATES", "false").lower() == "true"
+        if self.max_notional_usdt <= 0:
+            raise BinanceExecutionError("BINANCE_MAX_NOTIONAL_USDT must be positive")
+        if self.max_positions < 1:
+            raise BinanceExecutionError("MAX_SIMULTANEOUS_POSITIONS must be >= 1")
+        if not 0 < self.max_account_risk_percent <= 100:
+            raise BinanceExecutionError("MAX_ACCOUNT_RISK_PERCENT must be > 0 and <= 100")
+        if self.signal_timeout_seconds <= 0:
+            raise BinanceExecutionError("CHATGPT_SIGNAL_TIMEOUT_SECONDS must be positive")
         self.journal = Path(journal)
         self.journal.parent.mkdir(parents=True, exist_ok=True)
         self.seen: set[str] = set()
@@ -133,7 +145,7 @@ class BinanceChatGPTExecutor:
     def execute(self, signal: ChatGPTTradeSignal) -> ExecutionResult:
         if signal.expired():
             raise BinanceExecutionError(f"expired signal: {signal.signal_id}")
-        if signal.signal_id in self.seen:
+        if signal.signal_id in self.seen and not self.allow_duplicates:
             raise BinanceExecutionError(f"duplicate signal: {signal.signal_id}")
 
         if self.mode != "LIVE":
@@ -161,14 +173,19 @@ class BinanceChatGPTExecutor:
         if symbol_info.get("status") != "TRADING":
             raise BinanceExecutionError(f"symbol not trading: {signal.symbol}")
 
+        account = self.client.account()
+        positions = [p for p in account.get("positions", []) if abs(float(p.get("positionAmt", 0))) > 0]
+        if len(positions) >= self.max_positions:
+            raise BinanceExecutionError("MAX_SIMULTANEOUS_POSITIONS reached")
+
         book = self.client.book_ticker(signal.symbol)
         reference_price = float(book["askPrice"] if signal.side == "BUY" else book["bidPrice"])
         step = self._step_size(info)
         qty = self._round_down(signal.quantity, step)
         if qty <= 0:
             raise BinanceExecutionError("quantity rounds to zero")
-        if qty * reference_price > self.max_notional_usdt:
-            qty = self._round_down(self.max_notional_usdt / reference_price, step)
+
+        qty = self._round_down(min(qty, self.max_notional_usdt / reference_price), step)
         if qty <= 0:
             raise BinanceExecutionError("configured notional limit is below minimum quantity")
 
@@ -180,6 +197,14 @@ class BinanceChatGPTExecutor:
             raise BinanceExecutionError("invalid LONG stop/target geometry")
         if signal.side == "SELL" and not (take_price < reference_price < stop_price):
             raise BinanceExecutionError("invalid SHORT stop/target geometry")
+
+        wallet_balance = float(account.get("totalWalletBalance", 0) or 0)
+        risk_budget = wallet_balance * (self.max_account_risk_percent / 100.0)
+        stop_distance = abs(reference_price - stop_price)
+        if risk_budget > 0 and stop_distance > 0:
+            qty = self._round_down(min(qty, risk_budget / stop_distance), step)
+            if qty <= 0:
+                raise BinanceExecutionError("configured account-risk limit is below minimum quantity")
 
         entry = self.client.place_order(
             symbol=signal.symbol, side=signal.side, type="MARKET",
