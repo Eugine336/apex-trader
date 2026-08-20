@@ -1,0 +1,41 @@
+name: Relay ChatGPT trade signals
+
+on:
+  push:
+    branches:
+      - chatgpt-signal-inbox
+    paths:
+      - 'signals/inbox/*.json'
+
+jobs:
+  relay:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout signal branch
+        uses: actions/checkout@v4
+        with:
+          ref: chatgpt-signal-inbox
+          fetch-depth: 2
+
+      - name: Relay newly changed signals
+        env:
+          RELAY_URL: ${{ secrets.APEX_SIGNAL_RELAY_URL }}
+          RELAY_TOKEN: ${{ secrets.APEX_SIGNAL_RELAY_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$RELAY_URL"
+          test -n "$RELAY_TOKEN"
+          files=$(git diff-tree --no-commit-id --name-only -r "$GITHUB_SHA" -- 'signals/inbox/*.json' || true)
+          for file in $files; do
+            echo "Relaying $file"
+            curl --fail-with-body --silent --show-error \
+              --retry 3 --retry-all-errors --connect-timeout 5 --max-time 20 \
+              -H 'Content-Type: application/json' \
+              -H "X-APEX-Relay-Token: $RELAY_TOKEN" \
+              --data "{\"signal\":$(cat "$file")}" \
+              "$RELAY_URL/v1/signals"
+            echo
+          done
