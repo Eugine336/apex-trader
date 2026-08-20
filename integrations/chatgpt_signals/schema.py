@@ -29,10 +29,10 @@ class ChatGPTTradeSignal:
         mode = str(raw.get("mode", "PAPER")).upper()
         if side not in {"BUY", "SELL"}:
             raise ValueError("side must be BUY or SELL")
-        if order_type not in {"MARKET"}:
-            raise ValueError("only MARKET signals are enabled in the initial adapter")
-        if mode != "PAPER":
-            raise ValueError("initial ChatGPT executor is PAPER-only")
+        if order_type != "MARKET":
+            raise ValueError("only MARKET signals are enabled")
+        if mode not in {"PAPER", "LIVE"}:
+            raise ValueError("mode must be PAPER or LIVE")
         expires = str(raw["expires_at"])
         if expires.endswith("Z"):
             expires = expires[:-1] + "+00:00"
