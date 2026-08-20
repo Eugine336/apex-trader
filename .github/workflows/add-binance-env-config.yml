@@ -1,0 +1,68 @@
+name: Add Binance execution env config
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  configure:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Append Binance/ChatGPT configuration if absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f .env
+          if ! grep -q '^CHATGPT_RELAY_TOKEN=' .env; then
+            cat >> .env <<'EOF'
+
+# ── ChatGPT signal relay ─────────────────────────────────────────────────────
+CHATGPT_RELAY_TOKEN=
+CHATGPT_RELAY_HOST=127.0.0.1
+CHATGPT_RELAY_PORT=8790
+
+# ── Binance Futures execution ────────────────────────────────────────────────
+# PAPER is the default. LIVE requires BOTH explicit switches below.
+BINANCE_EXECUTION_MODE=PAPER
+BINANCE_LIVE_EXECUTION_ENABLED=false
+
+# Only required when LIVE is explicitly enabled. Never commit real values.
+BINANCE_API_KEY=
+BINANCE_API_SECRET=
+
+# Hard notional ceiling per ChatGPT signal, in USDT.
+BINANCE_MAX_NOTIONAL_USDT=100
+
+# Default Binance USD-M Futures endpoint.
+BINANCE_FUTURES_BASE_URL=https://fapi.binance.com
+
+# Signal safety
+CHATGPT_SIGNAL_TIMEOUT_SECONDS=90
+CHATGPT_ALLOW_DUPLICATES=false
+MAX_SIMULTANEOUS_POSITIONS=3
+MAX_ACCOUNT_RISK_PERCENT=1.0
+EOF
+          fi
+
+      - name: Commit configuration
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .env
+          git diff --cached --quiet || git commit -m "Configure Binance and ChatGPT relay environment"
+          git push
+
+      - name: Remove this one-shot workflow
+        run: |
+          rm .github/workflows/add-binance-env-config.yml
+          git add .github/workflows/add-binance-env-config.yml
+          git commit -m "Remove one-shot Binance env workflow"
+          git push
