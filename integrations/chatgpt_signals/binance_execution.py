@@ -7,8 +7,8 @@ import os
 import time
 import urllib.parse
 import urllib.request
-from decimal import Decimal, ROUND_DOWN
 from dataclasses import dataclass
+from decimal import Decimal, ROUND_DOWN
 from pathlib import Path
 from typing import Any
 
@@ -34,10 +34,10 @@ class BinanceExecutionError(RuntimeError):
 
 
 class BinanceSignedClient:
-    """Minimal Binance USD-M Futures signed REST client.
+    """Minimal USD-M Futures signed REST client.
 
-    Credentials are read only from environment variables. No withdrawal,
-    transfer, or account-management endpoints are implemented.
+    Only account, position, exchange-info, ticker and order endpoints are used.
+    No withdrawal/transfer endpoint exists in this client.
     """
 
     BASE = os.getenv("BINANCE_FUTURES_BASE_URL", "https://fapi.binance.com")
@@ -74,6 +74,9 @@ class BinanceSignedClient:
     def exchange_info(self, symbol: str) -> Any:
         return self._request("GET", "/fapi/v1/exchangeInfo", {"symbol": symbol})
 
+    def book_ticker(self, symbol: str) -> Any:
+        return self._request("GET", "/fapi/v1/ticker/bookTicker", {"symbol": symbol})
+
     def position_risk(self, symbol: str) -> Any:
         return self._request("GET", "/fapi/v2/positionRisk", {"symbol": symbol}, signed=True)
 
@@ -82,7 +85,10 @@ class BinanceSignedClient:
 
 
 class BinanceChatGPTExecutor:
-    """Executes ChatGPT signals. PAPER is default; LIVE requires explicit opt-in."""
+    """Execute a ChatGPT-originated Binance Futures signal.
+
+    PAPER is the default. LIVE requires explicit environment opt-in and API keys.
+    """
 
     def __init__(self, journal: str = "runtime/chatgpt_execution_ledger.jsonl") -> None:
         self.mode = os.getenv("BINANCE_EXECUTION_MODE", "PAPER").upper()
@@ -101,16 +107,22 @@ class BinanceChatGPTExecutor:
 
     @staticmethod
     def _step_size(info: Any) -> Decimal:
-        filters = info.get("symbols", [{}])[0].get("filters", [])
-        for f in filters:
+        for f in info.get("symbols", [{}])[0].get("filters", []):
             if f.get("filterType") == "LOT_SIZE":
                 return Decimal(str(f["stepSize"]))
-        return Decimal("0.001")
+        raise BinanceExecutionError("LOT_SIZE filter missing")
 
-    def _round_qty(self, qty: float, step: Decimal) -> float:
-        q = Decimal(str(qty))
-        rounded = (q / step).to_integral_value(rounding=ROUND_DOWN) * step
-        return float(rounded)
+    @staticmethod
+    def _price_tick(info: Any) -> Decimal:
+        for f in info.get("symbols", [{}])[0].get("filters", []):
+            if f.get("filterType") == "PRICE_FILTER":
+                return Decimal(str(f["tickSize"]))
+        raise BinanceExecutionError("PRICE_FILTER missing")
+
+    @staticmethod
+    def _round_down(value: float, step: Decimal) -> float:
+        d = Decimal(str(value))
+        return float((d / step).to_integral_value(rounding=ROUND_DOWN) * step)
 
     def _record(self, result: ExecutionResult) -> ExecutionResult:
         with self.journal.open("a", encoding="utf-8") as fh:
@@ -119,20 +131,22 @@ class BinanceChatGPTExecutor:
         return result
 
     def execute(self, signal: ChatGPTTradeSignal) -> ExecutionResult:
-        if signal.mode != "PAPER":
-            raise BinanceExecutionError("Only PAPER ChatGPT signals are accepted")
         if signal.expired():
             raise BinanceExecutionError(f"expired signal: {signal.signal_id}")
         if signal.signal_id in self.seen:
             raise BinanceExecutionError(f"duplicate signal: {signal.signal_id}")
 
         if self.mode != "LIVE":
+            if signal.mode != "PAPER":
+                raise BinanceExecutionError("PAPER executor requires a PAPER signal")
             return self._record(ExecutionResult(
                 signal_id=signal.signal_id, symbol=signal.symbol, side=signal.side,
                 status="PAPER_ACCEPTED", order_id=None, fill_price=None,
                 executed_qty=signal.quantity, mode="PAPER"
             ))
 
+        if signal.mode != "LIVE":
+            raise BinanceExecutionError("LIVE executor requires a LIVE signal")
         if not self.live_enabled:
             raise BinanceExecutionError("LIVE mode selected but BINANCE_LIVE_EXECUTION_ENABLED is not true")
         assert self.client is not None
@@ -144,44 +158,49 @@ class BinanceChatGPTExecutor:
         symbol_info = info.get("symbols", [{}])[0]
         if not symbol_info:
             raise BinanceExecutionError(f"symbol unavailable: {signal.symbol}")
+        if symbol_info.get("status") != "TRADING":
+            raise BinanceExecutionError(f"symbol not trading: {signal.symbol}")
+
+        book = self.client.book_ticker(signal.symbol)
+        reference_price = float(book["askPrice"] if signal.side == "BUY" else book["bidPrice"])
         step = self._step_size(info)
-        qty = self._round_qty(signal.quantity, step)
+        qty = self._round_down(signal.quantity, step)
         if qty <= 0:
             raise BinanceExecutionError("quantity rounds to zero")
-
-        # Notional guard is checked against the signal's reference entry.
-        reference = signal.stop_loss if signal.stop_loss else 0
-        if reference <= 0:
-            raise BinanceExecutionError("invalid signal pricing")
-        # Caller should size quantity conservatively; this guard is intentionally
-        # based on quantity * a reference price supplied via the signal extension.
-        max_qty = float(Decimal(str(self.max_notional_usdt)) / Decimal(str(reference)))
-        qty = self._round_qty(min(qty, max_qty), step)
+        if qty * reference_price > self.max_notional_usdt:
+            qty = self._round_down(self.max_notional_usdt / reference_price, step)
         if qty <= 0:
-            raise BinanceExecutionError("quantity exceeds configured notional limit")
+            raise BinanceExecutionError("configured notional limit is below minimum quantity")
+
+        tick = self._price_tick(info)
+        stop_price = self._round_down(signal.stop_loss, tick)
+        take_price = self._round_down(signal.take_profit, tick)
+
+        if signal.side == "BUY" and not (stop_price < reference_price < take_price):
+            raise BinanceExecutionError("invalid LONG stop/target geometry")
+        if signal.side == "SELL" and not (take_price < reference_price < stop_price):
+            raise BinanceExecutionError("invalid SHORT stop/target geometry")
 
         entry = self.client.place_order(
-            symbol=signal.symbol,
-            side=signal.side,
-            type="MARKET",
-            quantity=self._format_qty(qty),
-            newOrderRespType="RESULT",
+            symbol=signal.symbol, side=signal.side, type="MARKET",
+            quantity=self._format(qty), newOrderRespType="RESULT",
         )
         order_id = str(entry.get("orderId")) if entry.get("orderId") is not None else None
-        fill_price = float(entry.get("avgPrice") or entry.get("price") or 0) or None
+        fill_price = float(entry.get("avgPrice") or 0) or reference_price
         executed_qty = float(entry.get("executedQty") or qty)
 
         exit_side = "SELL" if signal.side == "BUY" else "BUY"
-        stop = self.client.place_order(
-            symbol=signal.symbol, side=exit_side, type="STOP_MARKET",
-            stopPrice=self._format_price(signal.stop_loss), closePosition="true",
-            workingType="MARK_PRICE",
-        )
-        take = self.client.place_order(
-            symbol=signal.symbol, side=exit_side, type="TAKE_PROFIT_MARKET",
-            stopPrice=self._format_price(signal.take_profit), closePosition="true",
-            workingType="MARK_PRICE",
-        )
+        try:
+            stop = self.client.place_order(
+                symbol=signal.symbol, side=exit_side, type="STOP_MARKET",
+                stopPrice=self._format(stop_price), closePosition="true", workingType="MARK_PRICE",
+            )
+            take = self.client.place_order(
+                symbol=signal.symbol, side=exit_side, type="TAKE_PROFIT_MARKET",
+                stopPrice=self._format(take_price), closePosition="true", workingType="MARK_PRICE",
+            )
+        except Exception as exc:
+            raise BinanceExecutionError(f"ENTRY FILLED but protective order placement failed: {exc}") from exc
 
         return self._record(ExecutionResult(
             signal_id=signal.signal_id, symbol=signal.symbol, side=signal.side,
@@ -193,9 +212,5 @@ class BinanceChatGPTExecutor:
         ))
 
     @staticmethod
-    def _format_qty(value: float) -> str:
-        return format(value, ".12f").rstrip("0").rstrip(".")
-
-    @staticmethod
-    def _format_price(value: float) -> str:
+    def _format(value: float) -> str:
         return format(float(value), ".12f").rstrip("0").rstrip(".")
