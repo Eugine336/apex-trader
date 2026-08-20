@@ -23,6 +23,26 @@ $env:CHATGPT_RELAY_TOKEN = '<long-random-secret>'
 python -m integrations.chatgpt_signals.relay_server
 ```
 
+## Runtime readiness check
+
+Before starting the relay, run:
+
+```powershell
+python -m integrations.chatgpt_signals.runtime_health
+```
+
+The check validates the execution mode, relay token, live-mode gate, and—when LIVE is explicitly enabled—the Binance signed account connection and `canTrade` permission. It never enables LIVE itself.
+
+Expected paper output ends with:
+
+```text
+Execution mode     : PAPER
+Live enabled       : NO
+Binance account    : NOT REQUIRED (paper mode)
+Live trading       : DISABLED
+Status             : READY FOR PAPER
+```
+
 ## Paper test
 
 Leave `BINANCE_EXECUTION_MODE=PAPER`. Send a signal with:
@@ -51,6 +71,7 @@ $env:BINANCE_LIVE_EXECUTION_ENABLED='true'
 $env:BINANCE_API_KEY='...'
 $env:BINANCE_API_SECRET='...'
 $env:BINANCE_MAX_NOTIONAL_USDT='100'
+python -m integrations.chatgpt_signals.runtime_health
 python -m integrations.chatgpt_signals.relay_server
 ```
 
