@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -27,13 +28,17 @@ class BinancePaperExecutor:
     """Paper-only executor using Binance public Futures prices.
 
     This adapter deliberately has no private Binance endpoints and no order
-    placement capability. It turns a valid ChatGPT signal into a deterministic
-    simulated fill at the current Binance Futures book price.
+    placement capability. It turns a valid ChatGPT signal into a simulated fill
+    at the current Binance Futures book price and enforces the configured
+    per-signal notional ceiling.
     """
 
-    BASE = "https://fapi.binance.com"
+    BASE = os.getenv("BINANCE_FUTURES_BASE_URL", "https://fapi.binance.com").rstrip("/")
 
     def __init__(self, journal: str = "runtime/chatgpt_signal_fills.jsonl") -> None:
+        self.max_notional_usdt = float(os.getenv("BINANCE_MAX_NOTIONAL_USDT", "100"))
+        if self.max_notional_usdt <= 0:
+            raise RuntimeError("BINANCE_MAX_NOTIONAL_USDT must be positive")
         self.journal = Path(journal)
         self.journal.parent.mkdir(parents=True, exist_ok=True)
         self.seen: set[str] = set()
@@ -56,16 +61,22 @@ class BinancePaperExecutor:
             raise RuntimeError("ChatGPT signal executor is PAPER-only")
         if signal.expired():
             raise RuntimeError(f"signal expired: {signal.signal_id}")
-        if signal.signal_id in self.seen:
+        if signal.signal_id in self.seen and os.getenv("CHATGPT_ALLOW_DUPLICATES", "false").lower() != "true":
             raise RuntimeError(f"duplicate signal: {signal.signal_id}")
 
         bid, ask = self._book(signal.symbol)
         fill = ask if signal.side == "BUY" else bid
+        quantity = float(signal.quantity)
+        if quantity * fill > self.max_notional_usdt:
+            quantity = self.max_notional_usdt / fill
+        if quantity <= 0:
+            raise RuntimeError("configured notional limit leaves zero quantity")
+
         result = PaperFill(
             signal_id=signal.signal_id,
             symbol=signal.symbol,
             side=signal.side,
-            quantity=signal.quantity,
+            quantity=quantity,
             fill_price=fill,
             stop_loss=signal.stop_loss,
             take_profit=signal.take_profit,
