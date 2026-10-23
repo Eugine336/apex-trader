@@ -1,89 +1,109 @@
-# Apex Gold Trading Desk — implementation branch
+# Apex Gold Desk — single-Brain integration
 
-## Intent
+## Architecture rule
 
-Apex's Gold desk is designed as a continuously operating, market-data-driven
-trading system: market data is authoritative; indicators, CRT/ICT structures,
-statistical models, news context and optional AI are interpretations of that
-data. AI is not required to calculate signals or to keep evaluating XAUUSD.
-No component may claim an edge without out-of-sample evidence.
+Apex has one market decision authority: the existing `CognitiveBrain`, driven
+through `CognitionLoop`. The Gold desk is not a second brain and does not
+arbitrate, rank, or issue trading decisions. It is a market-observation layer.
 
-This change adds an isolated deterministic opportunity-research kernel. It is
-not yet a claim that the full Apex production stack has been integrated or that
-the strategies are profitable.
+The broker feed is the source of market facts: bid/ask, spread, confirmed OHLC
+and timestamps. Pattern detectors are fallible measurements of that data. CRT,
+liquidity sweeps, trend continuation, breakouts, mean reversion, exhaustion and
+event conditions can overlap. Their outputs are therefore consolidated into
+**one neutral `gold_market_desk` Evidence record**; evidence polarity is zero,
+scores are not added, and no detector can choose a trade direction.
 
-## Implemented in this branch
+The path is:
 
-Eight named strategy families are available under `gold_desk.strategies`:
+```text
+Selected XAUUSD broker feed
+   -> confirmed multi-timeframe OHLC + live bid/ask
+   -> deterministic Gold pattern detectors (facts only)
+   -> one neutral Gold evidence record
+   -> existing CognitionLoop / MarketState
+   -> existing CognitiveBrain (sole decision authority)
+   -> existing campaign, portfolio risk, execution gates and ActionExecutor
+```
 
-1. Trend continuation — EMA structure, pullback and close confirmation.
-2. Liquidity-sweep reversal — prior-range sweep and reclaim.
-3. Volatility-expansion breakout — range break plus true-range expansion.
-4. Failed-breakout trap — wick beyond a recent range and close back inside.
-5. Statistical mean reversion — rolling z-score gated by a trend-strength check.
-6. Trend-exhaustion reversal — price/RSI divergence plus local structure break.
-7. Event-driven Gold breakout — requires a verified event window and pre-event range supplied by an adapter.
-8. Candle Range Theory (CRT) — completed H1/H4/D1 anchor, liquidity sweep, close back inside, and an M5 structure-shift confirmation. The anchor midpoint is the first objective; a weak reward/risk is rejected.
+The observer has no broker order API. It emits the monitoring event
+`gold_market_evidence`, not `gold_desk_opportunity`. The actual latest payload
+is read directly by the existing CognitionLoop. Detector results' internal
+direction, entry, stop, target, rationale and ranking score are stripped before
+the payload is stored or supplied to the Brain.
 
-A strategy returns a `TradeIdea` with its own evidence, entry, invalidation stop,
-target, source bar, expiry, ATR and quality ranking. The coordinator runs all
-families, applies a strict Gold symbol allowlist, filters poor spread/reward-risk
-setups, coalesces overlapping entries without adding scores, and abstains when
-opposite-direction candidates are too close in ranking. Scores are not win
-probabilities.
+## Detector families
 
-The async watcher keeps polling the latest quote/candle snapshot, rejects stale
-data, maintains a heartbeat, and deduplicates publication by source bar. The
-preflight gate is intentionally shadow-only unless a caller explicitly arms it.
-It checks symbol, venue, quote freshness, entry drift, spread, reward/risk,
-per-trade and aggregate risk, drawdown, position count and the manual kill switch.
+The deterministic pattern-observation library includes:
 
-## What is deliberately not enabled by this PR
+1. Trend continuation — EMA structure, pullback and close conditions.
+2. Liquidity sweep — prior-range sweep and reclaim.
+3. Volatility expansion — range break with true-range expansion.
+4. Failed breakout — wick beyond the recent range and close back inside.
+5. Statistical mean reversion — rolling z-score and trend-strength context.
+6. Trend exhaustion — price/RSI divergence and local structure shift.
+7. Event-related range breakout — requires an adapter-verified event window and pre-event range.
+8. CRT — completed H1/H4/D1 anchor, sweep/reclaim and M5 structure shift.
 
-The existing production engine already owns candle-close processing, WorldModel
-facts, cognition, campaign/entry logic, position sizing, portfolio risk,
-execution intents and broker routing. This PR does **not** bypass those controls
-or create a parallel order path. The new watcher has to be wired into the active
-event-driven bootstrap through a reviewed adapter that:
-- obtains synchronized completed M5/M15/H1/H4/D1 bars and a fresh bid/ask;
-- routes only XAUUSD to one explicitly configured execution venue;
-- submits candidates into the existing opportunity/campaign pipeline;
-- uses the existing position sizer, portfolio exposure model, execution RiskGate
-  and ActionExecutor for every new order and pending order;
-- reconciles orders and positions after disconnect/restart; and
-- attributes fills, slippage, spread, rejected entries, strategy family and
-  realized R to a durable outcome ledger.
+These are detector families, not eight trading authorities. A detected pattern is
+a measurement for the Brain to consider alongside the actual chart, structural
+interactions, portfolio state, execution cost, memory and optional advisory
+context. The Brain may reject the setup or keep observing. AI-provider availability
+does not determine whether the deterministic market measurements are calculated.
 
-Do not activate live trading by calling the new preflight gate alone. It is not
-a replacement for the existing order-boundary guard, risk engine, portfolio
-netting, broker volume/tick metadata or execution lifecycle.
+## Runtime details
 
-## Required validation before live activation
+- `APEX_GOLD_DESK_SHADOW_ENABLED` defaults to `1` and disables this observer when set to `0`, `false`, `no` or `off`.
+- `APEX_GOLD_DESK_VENUE` defaults to `MT5`. Only `MT5` or `DERIV` is accepted.
+- The chosen venue must match the connector selected by `PlatformManager`; mixed MT5/Deriv ticks are discarded.
+- The observer uses broker-fetch history with `include_forming=False`, filters forming/future bars, checks tick freshness, and updates a cached evidence payload.
+- Evidence is freshness-limited at the CognitiveLoop adapter; an expired or unavailable Gold feed is reported as degraded evidence, not as a no-opportunity market conclusion.
+- Pattern data is provided as one neutral Evidence object. Overlapping modules are not votes, and no additive score or coordinator chooses a winner.
+- The preflight gate remains shadow-only by default and is not an order route. Risk/execution gates remain separate governance safeguards; they do not act as another market brain.
 
-1. Run the new unit tests and the existing regression suite.
-2. Add source-level tests at the real ActionExecutor/order boundary proving
-   every market/pending order, re-entry, news OCO leg, restart-recovered request
-   and AI-originated request rejects all non-Gold symbols.
-3. Verify no forming candle enters confirmed strategy facts; all timestamps and
-   all timeframe bars must be synchronized and broker-specific symbol aliases
-   must be allowlisted explicitly.
-4. Backtest on tick-quality XAUUSD data with variable spread, commission,
-   swap, slippage, rejected/partial fills, market gaps and stop-level constraints.
-   Use rolling walk-forward and a final untouched holdout. Compare each family
-   independently and combined; report net expectancy in R, profit factor,
-   drawdown, trade count, exposure, session/regime breakdown and confidence
-   intervals. Do not optimize on the final holdout.
-5. Run shadow mode, then broker demo with the same execution path and sizing.
-   Compare intended versus actual fills, stale quotes, missed signals and
-   post-restart reconciliation before considering live capital.
-6. Define an operator kill switch, risk caps and rollback procedure. AI provider
-   outage must not stop rule-based market analysis; invalid/stale market data or
-   execution-state uncertainty must stop new entries.
+## Validation
 
-## Live-safety/security note
+The focused tests cover detector registration, CRT pattern conditions, strict
+Gold symbol mapping, shadow-only risk authorization, drawdown blocking, candle
+time integrity, one-record neutral evidence conversion, stale evidence rejection,
+venue-routing mismatch and stripping of trade instructions before evidence
+reaches the central Brain.
 
-The repository had a tracked `.env` file on the base branch. This feature branch
-removes that file from its current tree, but deletion does not remove secrets
-from earlier commits. Rotate any credentials ever committed there and remove
-them from history using a carefully coordinated history rewrite. Do not paste
-credentials into issue or pull-request discussion.
+Run:
+
+```bash
+python -m pytest tests/test_gold_desk_core.py -q
+ruff check gold_desk tests/test_gold_desk_core.py --select E,F,W --ignore E501,E402,F401,E701,E731,E741
+```
+
+The repository-wide CI has baseline problems outside this change, including
+repository-wide lint errors and test-collection failures involving `tick`
+imports. These are distinct from the focused Gold desk checks and still require
+resolution.
+
+## Production gates still open
+
+This branch is not evidence of a profitable strategy and is not ready to send
+live orders. Before enabling live trading:
+
+1. Run a complete regression suite after resolving the repository-wide CI failures.
+2. Verify all real market/pending order paths, re-entry, news OCO, restart recovery
+   and AI-originated requests are guarded against non-Gold exposure at the
+   ActionExecutor/order boundary.
+3. Add Gold-specific tick-quality backtests with real spread, commission, swap,
+   slippage, partial/rejected fills, gaps and broker stop/volume constraints.
+4. Use rolling walk-forward tests plus a final untouched holdout; report net
+   expectancy in R, profit factor, drawdown, sample size, session/regime splits,
+   and uncertainty. Do not optimize on the holdout.
+5. Run shadow mode and broker-demo validation using the same position sizing,
+   portfolio risk, execution RiskGate, ActionExecutor and recovery path as live.
+6. Define operational risk limits, an independent kill switch, alerts and rollback.
+   A broken/stale/uncertain market feed must stop new entries. AI outage must not
+   stop deterministic observation.
+
+## Environment file
+
+The `.env` file has been restored on this feature branch from the exact blob
+present on `main`. Do not delete it as part of the Gold desk work. This update
+did not print or rewrite its contents. If that file contains live credentials,
+rotate them separately if they have been exposed in a shared repository; restoring
+the tracked file does not remove prior Git history.
