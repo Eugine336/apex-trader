@@ -73,6 +73,24 @@ def _ev(domain, measurements, *, conf=0.9, module=None):
     )
 
 
+def _with_verified_council(ms, *, responded=2, available=2, total=2):
+    ms.add(Evidence(
+        source_module="reasoning_engine.test_council",
+        domain="reasoning",
+        symbol=ms.symbol,
+        observation="test council coverage is explicitly known",
+        confidence=0.9,
+        uncertainty=0.1,
+        measurements={
+            "advisors_responded": responded,
+            "advisors_available": available,
+            "advisors_total": total,
+        },
+        relevance_horizon_seconds=600.0,
+    ))
+    return ms
+
+
 def _strong_long_state(symbol="EURUSD"):
     """A rich, low-uncertainty state whose evidence structurally leans LONG."""
     ms = MarketState(symbol=symbol)
@@ -82,7 +100,7 @@ def _strong_long_state(symbol="EURUSD"):
     ms.add(_ev("order_flow", {"delta": 0.8, "imbalance": 0.8}))
     ms.add(_ev("momentum", {"acceleration": True, "momentum_state": "accelerating"}))
     ms.add(_ev("multi_timeframe", {"alignment": "aligned", "conflict_score": 0.1}))
-    return ms
+    return _with_verified_council(ms)
 
 
 # ── Article IX: the Brain forms its OWN hypotheses without any LLM ────────────
@@ -227,6 +245,7 @@ def test_flat_brain_defers_without_changing_confidence():
     ms = MarketState(symbol="EURUSD")
     ms.add(_ev("momentum", {}, conf=0.9))
     ms.add(_ev("structure", {}, conf=0.9))
+    _with_verified_council(ms)
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion(LONG, 0.8)), reward_r_default=2.0)
     out = brain.reason(ms)
     synth = out.decision.questions_answered.get("brain_advisor_synthesis", "")
