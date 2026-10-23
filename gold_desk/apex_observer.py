@@ -121,7 +121,7 @@ class ApexGoldDeskShadowObserver:
         pattern_detectors: Sequence[Any] | None = None,
         max_tick_age_seconds: float = 5.0,
     ) -> None:
-        from gold_desk.strategies import default_strategies
+        from gold_desk.strategies import default_pattern_detectors
 
         selected_venue = str(venue or "").strip().upper()
         if selected_venue not in {"MT5", "DERIV"}:
@@ -138,7 +138,7 @@ class ApexGoldDeskShadowObserver:
         # These modules are read-only pattern detectors. Their TradeIdea-shaped
         # internal result is deliberately stripped down to factual observations
         # before the one evidence record reaches CognitionLoop.
-        self._pattern_detectors = list(pattern_detectors or default_strategies())
+        self._pattern_detectors = list(pattern_detectors or default_pattern_detectors())
         self.max_tick_age_seconds = float(max_tick_age_seconds)
 
         from gold_desk.symbols import GoldOnlyGuard
@@ -407,7 +407,7 @@ class ApexGoldDeskShadowObserver:
         # stripped; only raw pattern facts and their source bar remain.
         observations: list[dict[str, Any]] = []
         for detector in self._pattern_detectors:
-            family = str(getattr(detector, "strategy_id", type(detector).__name__) or type(detector).__name__)
+            family = str(getattr(detector, "pattern_id", type(detector).__name__) or type(detector).__name__)
             try:
                 for finding in detector.evaluate(snapshot) or ():
                     facts = tuple(str(item)[:240] for item in getattr(finding, "evidence", ()) if str(item).strip())
