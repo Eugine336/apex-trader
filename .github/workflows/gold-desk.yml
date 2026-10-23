@@ -1,0 +1,33 @@
+name: Gold desk focused tests
+
+on:
+  pull_request:
+    paths:
+      - "gold_desk/**"
+      - "tests/test_gold_desk_core.py"
+      - ".github/workflows/gold-desk.yml"
+  push:
+    branches:
+      - "feature/gold-desk-core"
+    paths:
+      - "gold_desk/**"
+      - "tests/test_gold_desk_core.py"
+      - ".github/workflows/gold-desk.yml"
+
+jobs:
+  gold-desk:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install focused test tools
+        run: python -m pip install --upgrade pip pytest ruff
+      - name: Test deterministic Gold desk kernel
+        run: python -m pytest tests/test_gold_desk_core.py -q
+      - name: Lint new implementation
+        run: ruff check gold_desk tests/test_gold_desk_core.py --select E,F,W --ignore E501,E402,F401,E701,E731,E741
