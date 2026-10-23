@@ -15,7 +15,7 @@ It never opens or closes anything; remediation is left to a human/operator.
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, Iterable, Optional, Set
 
 from loguru import logger
@@ -26,7 +26,7 @@ from persistence.event_replayer import EventReplayer
 # Lifecycle signals.  An order_id is "open" once an entry event is seen and
 # "closed" once a close event is seen, folded in seq order.
 _OPEN_TYPES = frozenset({DE.ORDER_FILLED, DE.TRADE_OPEN})
-_CLOSE_TYPES = frozenset({DE.TRADE_CLOSE, DE.TRADE_CLOSE_DERIVED})
+_CLOSE_TYPES = frozenset({DE.TRADE_CLOSE, DE.TRADE_CLOSE_DERIVED, DE.TRADE_RECONCILED_CLOSED})
 
 
 def _order_id(event: Dict[str, Any]) -> str:
@@ -90,6 +90,7 @@ class ReconciliationReport:
     missing_from_broker: Set[str]  # log says open, broker doesn't show
     orphan_at_broker: Set[str]  # broker shows, no entry in the log
     store_degraded: bool = False  # backing event DB is corrupt/unwritable
+    log_open_details: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
     @property
     def is_clean(self) -> bool:
@@ -110,18 +111,52 @@ def reconcile(
     )
 
 
-def build_log_open_set(
+def find_confirmed_close_deals(
+    missing_from_broker: Iterable[str],
+    history_deals: Iterable[Dict[str, Any]],
+) -> Dict[str, list[Dict[str, Any]]]:
+    """Index broker-confirmed MT5 exit deals for log-open IDs absent at broker.
+
+    MT5 DEAL_ENTRY_OUT (1) and DEAL_ENTRY_OUT_BY (3) are exit-side deals.
+    This helper only confirms lifecycle closure when a position identifier
+    exactly matches and an exit deal exists. It does not infer closure from an
+    empty/failed history query and does not calculate P&L.
+    """
+    def _normalise_position_id(value: Any) -> str:
+        try:
+            return str(int(value))
+        except (TypeError, ValueError, OverflowError):
+            return str(value or "").strip()
+
+    wanted = {
+        normalised for normalised in
+        (_normalise_position_id(value) for value in missing_from_broker)
+        if normalised
+    }
+    confirmed: Dict[str, list[Dict[str, Any]]] = {}
+    for raw in history_deals or []:
+        if not isinstance(raw, dict):
+            continue
+        position_id = _normalise_position_id(raw.get("position_id"))
+        if not position_id or position_id not in wanted:
+            continue
+        try:
+            entry_type = int(raw.get("entry", -1))
+        except (TypeError, ValueError, OverflowError):
+            continue
+        if entry_type not in (1, 3):
+            continue
+        confirmed.setdefault(position_id, []).append(dict(raw))
+    return confirmed
+
+
+def build_log_open_details(
     store: Any,
     *,
     consumer: str = "startup_recovery",
     checkpoint_db: Optional[str] = None,
-) -> Set[str]:
-    """Full-fold the event log into the order_ids it believes are open.
-
-    Drives the replayable log via ``EventReplayer`` reset to ``seq`` 0 so each
-    call reconstructs the *current* open set (a one-shot reconstruction, not a
-    resume-from-checkpoint).
-    """
+) -> Dict[str, Dict[str, Any]]:
+    """Full-fold the event log into details for positions it believes remain open."""
     proj = PositionLifecycleProjection()
     replayer = EventReplayer(store, consumer=consumer, checkpoint_db=checkpoint_db)
     try:
@@ -129,7 +164,19 @@ def build_log_open_set(
         replayer.drain(proj.apply)
     finally:
         replayer.close()
-    return proj.open_order_ids()
+    return proj.details()
+
+
+def build_log_open_set(
+    store: Any,
+    *,
+    consumer: str = "startup_recovery",
+    checkpoint_db: Optional[str] = None,
+) -> Set[str]:
+    """Full-fold the event log into the order_ids it believes are still open."""
+    return set(build_log_open_details(
+        store, consumer=consumer, checkpoint_db=checkpoint_db,
+    ))
 
 
 def run_startup_recovery(
@@ -144,8 +191,9 @@ def run_startup_recovery(
     Read-only: logs discrepancies (and optionally calls *emit* with the report
     for telemetry); never opens or closes positions.
     """
-    log_open = build_log_open_set(store, checkpoint_db=checkpoint_db)
-    report = reconcile(log_open, broker_order_ids)
+    log_open_details = build_log_open_details(store, checkpoint_db=checkpoint_db)
+    report = reconcile(log_open_details.keys(), broker_order_ids)
+    report.log_open_details = log_open_details
     # If the event DB is corrupt, the folded "open" set is unreliable: a
     # malformed DB yields zero log-open and would otherwise report "clean".
     # Surface it loudly so the caller can degrade safety rather than trust an

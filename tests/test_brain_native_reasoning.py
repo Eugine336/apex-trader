@@ -248,6 +248,8 @@ def test_brain_originates_natively_when_no_external_reasoner_is_configured():
     assert out.campaign.direction == LONG
     assert out.campaign.initial_execution_intent.get("independent_origination") is True
     assert "no external advisor configured" in out.decision.questions_answered["reasoner_state"]
+    assert out.decision.questions_answered["reasoning_mode"] == "native_only"
+    assert out.decision.questions_answered["external_advisor_status"] == "not_configured"
     assert brain.get_status()["independent_originations"] == 1
 
 
@@ -262,6 +264,8 @@ def test_brain_originates_independently_when_advisor_unavailable():
     assert out.campaign.initial_execution_intent.get("independent_origination") is True
     note = out.decision.questions_answered.get("brain_independent_origination", "")
     assert "without advisor" in note
+    assert out.decision.questions_answered["reasoning_mode"] == "native_only"
+    assert out.decision.questions_answered["external_advisor_status"] == "unavailable"
     assert brain.get_status()["independent_originations"] == 1
 
 
@@ -275,6 +279,13 @@ def test_weak_native_view_stands_down_when_advisor_unavailable():
     out = brain.reason(ms)
     assert out.decision.decision_type == DecisionType.REASONER_UNAVAILABLE
     assert out.campaign is None
+    questions = out.decision.questions_answered
+    assert questions["reasoning_mode"] == "native_fallback"
+    assert questions["external_advisor_status"] == "unavailable"
+    assert "no qualified" in out.decision.thesis
+    assert questions["native_analysis_summary"]
+    assert questions["native_fallback_status"]
+    assert questions["native_hypotheses"]
 
 
 # ── Article IV: self-criticism lowers confidence on contradicted hypotheses ───

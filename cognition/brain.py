@@ -439,8 +439,11 @@ class CognitiveBrain:
                 if independent is not None:
                     return independent
                 return self._reasoner_unavailable(
-                    symbol, "reasoner unavailable — provider down (not a market view)",
+                    symbol,
+                    "external advisor unavailable; native analysis completed but no independent campaign qualified",
                     consolidation,
+                    analysis=analysis,
+                    hypotheses=hypotheses,
                 )
             opinion = self._reasoner.reason(
                 symbol, self._evidence_payload(market_state, consolidation), now=now,
@@ -463,9 +466,10 @@ class CognitiveBrain:
                         return independent
                     return self._reasoner_unavailable(
                         symbol,
-                        "reasoner returned no usable opinion — provider failure / "
-                        "unparsable output (not a market view)",
+                        "external advisor returned no usable opinion; native analysis completed but no independent campaign qualified",
                         consolidation,
+                        analysis=analysis,
+                        hypotheses=hypotheses,
                     )
                 return self._observe(
                     symbol, "no reasoner opinion this cycle — do nothing", consolidation,
@@ -647,6 +651,8 @@ class CognitiveBrain:
         )
         questions = {
             "what_is_happening": primary_hyp or rationale,
+            "reasoning_mode": "native_plus_advisor",
+            "external_advisor_status": "available",
             "why_is_it_happening": primary_hyp or rationale,
             "evidence_supports": f"{len(supporting)} evidence items lean {direction}",
             "evidence_contradicts": "; ".join(alternatives) if alternatives
@@ -2152,6 +2158,10 @@ class CognitiveBrain:
             considered = self._compare_opportunities(lead, symbol, [])
             questions = {
                 "what_is_happening": lead.statement,
+                "reasoning_mode": "native_only",
+                "external_advisor_status": (
+                    "not_configured" if "no external advisor configured" in reason_txt else "unavailable"
+                ),
                 "why_is_it_happening": "; ".join(analysis.observations) or lead.statement,
                 "evidence_supports": "; ".join(
                     p for p in lead.supporting_patterns) or "native structural patterns",
@@ -2295,29 +2305,128 @@ class CognitiveBrain:
         )
         return self._record(BrainOutput(decision=decision, direction=FLAT))
 
-    def _reasoner_unavailable(self, symbol: str, reason_txt: str, consolidation: dict) -> BrainOutput:
-        """Emit the distinct provider-unavailable state (Part XVIII Art 5 / Q78/Q80).
+    def _native_fallback_diagnostic(
+        self,
+        analysis: Optional[EvidenceAnalysis],
+        hypotheses: "list[BrainHypothesis]",
+    ) -> tuple[str, list[str], str]:
+        """Summarise why native-only origination did not qualify, without calling an advisor."""
+        patterns: list[str] = []
+        lead = None
+        reasons: list[str] = []
+        if analysis is not None:
+            try:
+                from cognition.pattern_rules import pattern_name
+                patterns = [pattern_name(p) for p in (analysis.detected_patterns or [])]
+                patterns = [str(name) for name in patterns if name]
+            except Exception:  # noqa: BLE001 — diagnostics must not affect the decision
+                patterns = []
+        try:
+            lead = self._native.leading(hypotheses or [])
+        except Exception:  # noqa: BLE001
+            lead = None
 
-        This is NOT a market conclusion: the Brain has no usable reasoner, so it
-        cannot form a view. Downstream must treat this as 'unknown / infrastructure
-        down', never as a FLAT/observe read of the market — so origination and
-        management both stand down without recording a market opinion.
+        if not hypotheses:
+            reasons.append("native analysis formed no hypotheses from the available evidence")
+        if lead is None:
+            reasons.append("no leading native hypothesis was available")
+        else:
+            direction = str(lead.direction_implication or FLAT).upper()
+            if not lead.is_directional or direction not in (LONG, SHORT):
+                reasons.append("leading hypothesis was not directional")
+            if not lead.supporting_patterns:
+                reasons.append("leading hypothesis had no recognised supporting structural patterns")
+            if float(lead.confidence) < self._native.independent_min_confidence:
+                reasons.append(
+                    f"confidence {float(lead.confidence):.2f} below native-only threshold "
+                    f"{self._native.independent_min_confidence:.2f}"
+                )
+        if analysis is None:
+            reasons.append("native evidence analysis unavailable")
+        elif float(getattr(analysis, "evidence_uncertainty", 1.0)) >= self._native.independent_max_uncertainty:
+            reasons.append(
+                f"evidence uncertainty {float(analysis.evidence_uncertainty):.2f} is at/above "
+                f"native-only limit {self._native.independent_max_uncertainty:.2f}"
+            )
+
+        hypothesis_summary = " | ".join(
+            f"{(h.direction_implication or 'FLAT')}@{float(h.confidence):.2f}: {h.statement}"
+            for h in (hypotheses or [])
+        )[:1600]
+        if not reasons:
+            reasons.append("native-only expected-value or final qualification gate did not pass")
+        return "; ".join(reasons), patterns, hypothesis_summary
+
+    def _reasoner_unavailable(
+        self,
+        symbol: str,
+        reason_txt: str,
+        consolidation: dict,
+        *,
+        analysis: Optional[EvidenceAnalysis] = None,
+        hypotheses: Optional[list[BrainHypothesis]] = None,
+    ) -> BrainOutput:
+        """Report advisor outage while preserving the native analysis and its no-entry rationale.
+
+        This is an infrastructure state, not a claim that market analysis stopped.
+        Native reasoning has already run. If it qualified a campaign, the caller
+        returns that campaign; otherwise we stand down and surface the native
+        evidence, hypotheses and qualification blockers for diagnosis.
         """
+        hypotheses = list(hypotheses or [])
+        native_status, patterns, hypothesis_summary = self._native_fallback_diagnostic(
+            analysis, hypotheses,
+        )
+        try:
+            analysis_summary = analysis.summary() if analysis is not None else "native analysis unavailable"
+        except Exception:  # noqa: BLE001
+            analysis_summary = "native analysis summary unavailable"
+        uncertainty = (
+            _clamp01(getattr(analysis, "evidence_uncertainty", 1.0))
+            if analysis is not None else 1.0
+        )
+        questions = {q: "not established by native analysis" for q in REQUIRED_QUESTIONS}
+        questions.update({
+            "what_is_happening": "native market analysis ran; no independent campaign qualified",
+            "why_is_it_happening": analysis_summary,
+            "evidence_supports": "; ".join(patterns) or "no recognised native structural pattern",
+            "evidence_contradicts": (
+                "; ".join(getattr(analysis, "contradictions", []) or [])
+                if analysis is not None else "native analysis unavailable"
+            ),
+            "information_missing": (
+                "; ".join(getattr(analysis, "missing_information", []) or [])
+                if analysis is not None else "native analysis unavailable"
+            ),
+            "what_would_change_my_mind": (
+                str(getattr(self._native.leading(hypotheses), "invalidation", "") or "")
+                if hypotheses else "a qualified native hypothesis with fresh supporting evidence"
+            ),
+            "expected_value": "not qualified for independent origination",
+            "downside": "no new exposure authorised",
+            "opportunity": "none qualified by native-only gates",
+            "should_i_do_nothing": (
+                "evaluated: continue observing because native-only qualification did not pass; "
+                "external-advisor outage is not evidence of a market opportunity"
+            ),
+            "reasoner_state": reason_txt,
+            "reasoning_mode": "native_fallback",
+            "external_advisor_status": "unavailable",
+            "native_fallback_status": native_status,
+            "native_analysis_summary": analysis_summary,
+            "native_hypotheses": hypothesis_summary or "none",
+            "native_detected_patterns": patterns,
+            "native_evidence_uncertainty": uncertainty,
+        })
         decision = DecisionPackage(
             symbol=symbol, decision_type=DecisionType.REASONER_UNAVAILABLE,
-            thesis="reasoner unavailable — no market view formed", confidence=0.0,
-            uncertainty=_clamp01(consolidation.get("aggregate_uncertainty", 1.0)) if consolidation else 1.0,
-            campaign_recommendation="stand_down", risk_rationale=reason_txt,
-            questions_answered={q: (
-                "evaluated: doing nothing is mandatory — reasoner unavailable "
-                "(infrastructure, not market view)"
-                if q == "should_i_do_nothing" else "reasoner unavailable")
-                for q in REQUIRED_QUESTIONS},
-            do_nothing_considered=True, reasoner=self.reasoner_name,
+            thesis="external advisor unavailable; native analysis ran but no qualified independent campaign was found",
+            confidence=0.0, uncertainty=uncertainty,
+            campaign_recommendation="stand_down",
+            risk_rationale=reason_txt,
+            questions_answered=questions, do_nothing_considered=True,
+            reasoner=self.reasoner_name,
         )
-        # V-016 — direction=None (NOT FLAT): this is an infrastructure state, not
-        # a market read. Downstream/logging distinguish it via decision_type /
-        # provider_unavailable and must never render it as a FLAT conclusion.
         return self._record(BrainOutput(decision=decision, direction=None))
 
     def _record(self, output: BrainOutput) -> BrainOutput:

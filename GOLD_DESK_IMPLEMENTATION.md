@@ -90,6 +90,24 @@ repository-wide lint errors and test-collection failures involving `tick`
 imports. These are distinct from the focused Gold desk checks and still require
 resolution.
 
+## External-advisor outages and execution authority
+
+The native `CognitiveBrain` analyzes consolidated evidence before consulting
+an external adviser. If the adviser fails, it attempts the same conservative
+native-only origination gates. When those gates do not pass, the system must
+stand down rather than invent an entry. The unavailable-provider decision now
+also records the native analysis summary, hypotheses, detected patterns,
+uncertainty, and the native-only qualification blockers. The cognition log
+labels this as `reasoning_mode=native_fallback` with
+`external_advisor=unavailable`, rather than implying that the market observer
+has stopped.
+
+`COGNITION_ORIGINATION_MODE=live` controls whether a qualified Brain
+`OPEN_CAMPAIGN` is sent to the existing origination sink and shared execution
+plane. It does not mean that every observation becomes an order. The Gold
+observer itself remains orderless (`live_orders=disabled`) by design: it
+publishes facts to the Brain and must not become a second trade authority.
+
 ## Production gates still open
 
 This branch is not evidence of a profitable strategy and is not ready to send
