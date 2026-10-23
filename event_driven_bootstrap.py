@@ -5959,60 +5959,16 @@ class EventDrivenSystem:
             return []
 
     def _gold_event_window(self, symbol: str, observed_at: datetime, candles: dict) -> Optional[Any]:
-        """Build a verified Gold event window from NewsGuard + pre-event broker bars.
-
-        NewsGuard supplies the actual scheduled event timestamp/impact; the Gold
-        desk measures the pre-event high/low from completed M5 candles ending
-        before the release. No release time or range is inferred from the pattern.
-        """
+        """Adapt NewsGuard's verified event data into Gold evidence context."""
         try:
-            if str(symbol or "").strip().upper() != "XAUUSD":
-                return None
+            from gold_desk.news_context import build_verified_event_window
             ctx = self._ctx
             guard = getattr(ctx, "news_guard", None) if ctx is not None else None
-            if guard is None:
-                return None
-            status = guard.check(["XAUUSD"], observed_at)
-            events = list(getattr(status, "events_nearby", None) or [])
-            events = [event for event in events if str(getattr(event, "impact", "")).upper() in {"HIGH", "CRITICAL"}]
-            if not events:
-                return None
-            event = min(
-                events,
-                key=lambda item: abs((item.time_utc - observed_at).total_seconds()),
-            )
-            event_time = getattr(event, "time_utc", None)
-            if not isinstance(event_time, datetime):
-                return None
-            if event_time.tzinfo is None or event_time.utcoffset() is None:
-                event_time = event_time.replace(tzinfo=timezone.utc)
-            else:
-                event_time = event_time.astimezone(timezone.utc)
-            pause_before = max(1.0, float(getattr(guard, "pause_before", 15) or 15))
-            pause_after = max(0.0, float(getattr(guard, "pause_after", 5) or 0))
-            if not (event_time - timedelta(minutes=pause_before) <= observed_at <= event_time + timedelta(minutes=pause_after)):
-                return None
-            m5_bars = list((candles or {}).get("M5", ()) or ())
-            pre_event_bars = [bar for bar in m5_bars if bar.timestamp < event_time and bar.timestamp <= observed_at]
-            if len(pre_event_bars) < 3:
-                return None
-            pre_event_bars = pre_event_bars[-12:]
-            high = max(float(bar.high) for bar in pre_event_bars)
-            low = min(float(bar.low) for bar in pre_event_bars)
-            if high <= low:
-                return None
-            from gold_desk.models import EventWindow
-            return EventWindow(
-                name=str(getattr(event, "title", "High-impact event") or "High-impact event"),
-                starts_at=event_time - timedelta(minutes=pause_before),
-                ends_at=event_time + timedelta(minutes=pause_after),
-                pre_event_high=high,
-                pre_event_low=low,
-                impact=str(getattr(event, "impact", "HIGH") or "HIGH"),
-            )
-        except Exception as exc:  # noqa: BLE001 — news context must not break observation
+            return build_verified_event_window(symbol, observed_at, candles, guard)
+        except Exception as exc:  # noqa: BLE001 — event context must not break observation
             logger.debug("[gold-desk] verified event-window lookup failed: {}", exc)
             return None
+
     def _news_range_candles(self, symbol: str, bars: int):
         """Last ``bars`` M5 candles for the pre-event breakout range."""
         return self._fetch_candles(symbol, "M5", max(int(bars), 1))
