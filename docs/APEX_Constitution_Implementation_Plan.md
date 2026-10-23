@@ -482,5 +482,10 @@ E (evidence) → F (management authority) → G (origination + spec execution) �
 H (institutional memory) → I (Composio ops) → J (adaptive) → K (legacy removal +
 god-file decomposition) → L (observability + validation).
 
-E–L are all shipped; the sequence now converges on the single validated cutover
-(legacy-decider deletion + coupled-core decomposition) that Phase L unblocks.
+**Historical claim superseded by the current identity audit:** the earlier plan
+marked Phases E–L as shipped, but those checkmarks do not prove current-head
+runtime reachability or production readiness. The current branch still has
+unclosed legacy-route, hypothesis-breadth, full-suite CI and demo-validation gates.
+Use the current identity implementation audit as the live acceptance register;
+do not perform a legacy-decider deletion or mark the migration complete until the
+current call graph, tests and broker-demo evidence pass.
