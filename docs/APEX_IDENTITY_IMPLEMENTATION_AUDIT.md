@@ -77,7 +77,7 @@ Outcome attribution → memory/calibration → validated adaptation
 
 ### Phase 4 — all-horizon opportunity set and continuous reassessment
 - Track several conditional opportunities simultaneously across micro / short / medium / longer horizons.
-- Use event-driven updates and bounded computation; "continuously" means process every material market change, not call an LLM every tick.
+- Use event-driven updates and bounded computation; the default material-change wake floor is one second per symbol. "Continuously" means process material market changes as they arrive, not call an LLM every tick; periodic sweeps and feed/provider limits remain explicit.
 - Reassess during open campaigns from thesis, current book, exit evidence, execution conditions and alternatives.
 - Test missed-opportunity / duplicate-entry / overtrading failure modes.
 
