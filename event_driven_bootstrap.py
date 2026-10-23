@@ -1151,6 +1151,27 @@ class EventDrivenSystem:
         self._live_candle_aggregator = LiveCandleAggregator(max_candles=200)
         self._tick_router.register_callback(self._live_candle_aggregator.on_tick)
 
+        # ── Gold specialist research observer (shadow-only) ───────────
+        # This observes only the explicitly selected venue and publishes
+        # structured hypotheses to EventBus. It has no order/execution API and
+        # never bypasses the campaign, portfolio, or execution risk path.
+        self._gold_desk_observer = None
+        _gold_shadow_enabled = os.getenv("APEX_GOLD_DESK_SHADOW_ENABLED", "1").strip().lower()
+        if _gold_shadow_enabled not in {"0", "false", "no", "off"}:
+            try:
+                from gold_desk.apex_observer import ApexGoldDeskShadowObserver
+                self._gold_desk_observer = ApexGoldDeskShadowObserver(
+                    symbols=list(getattr(self._config, "enabled_pairs", []) or []),
+                    venue=os.getenv("APEX_GOLD_DESK_VENUE", "MT5"),
+                    tick_router=self._tick_router,
+                    event_bus=self._event_bus,
+                    candle_fetcher=self._fetch_confirmed_gold_candles,
+                    venue_resolver=lambda symbol: type(self._pm.get_connector(symbol)).__name__,
+                    market_open=self._check_market_open,
+                )
+            except Exception as exc:
+                logger.warning("[gold-desk] shadow observer construction failed: {}", exc)
+
         # ── Developing analysis store (Phase 2 — live/forming-bar view) ──
         # A SEPARATE WorldModelStore holding the continuously-evolving
         # developing analysis. The confirmed CandleCloseHandler reads it to
@@ -2812,6 +2833,15 @@ class EventDrivenSystem:
                 exc,
             )
 
+        # Start after broker/candle warmup, but before the tick router and
+        # broker pollers. The observer's callback is non-blocking and its worker
+        # has no order API; provider/data faults cannot interrupt trading loops.
+        if self._gold_desk_observer is not None:
+            try:
+                self._gold_desk_observer.start()
+            except Exception as exc:
+                logger.warning("[gold-desk] shadow observer start failed: {}", exc)
+
         self._tick_router.start()
         self._candle_detector.start()
         self._mt5_poller.start()
@@ -3188,6 +3218,11 @@ class EventDrivenSystem:
 
         self._tick_eval_loop.stop()
         self._flush_loop.stop()
+        if getattr(self, "_gold_desk_observer", None) is not None:
+            try:
+                self._gold_desk_observer.stop()
+            except Exception as exc:
+                logger.debug("[gold-desk] shadow observer stop failed: {}", exc)
         self._mt5_poller.stop()
         self._deriv_adapter.stop()
         # Stop the developing analysis loop before the tick router so it stops
@@ -4735,6 +4770,22 @@ class EventDrivenSystem:
             else:
                 mt5.append(sym)
         return mt5, deriv
+
+    def _fetch_confirmed_gold_candles(
+        self, symbol: str, timeframe: str, count: int,
+    ) -> Optional[pd.DataFrame]:
+        """Gold-desk history fetch: confirmed bars only, same connector as routing."""
+        try:
+            data = self._pm.fetch_market_data(
+                symbol, [timeframe], count, include_forming=False,
+            )
+            return data.get(timeframe)
+        except Exception as exc:
+            logger.debug(
+                "[gold-desk] confirmed candle fetch failed {}/{}: {}",
+                symbol, timeframe, exc,
+            )
+            return None
 
     def _fetch_candles(
         self, symbol: str, timeframe: str, count: int,
