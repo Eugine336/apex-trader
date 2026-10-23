@@ -156,9 +156,11 @@ cd apex-trader
 # Install dependencies
 pip install -r requirements.txt
 
-# Configure
+# Configure (runtime credentials stay local and are ignored by Git)
 cp .env.example .env
-# Edit .env with your broker credentials
+# Fill broker/provider credentials in .env on your machine only
+# Never commit .env. Credentials committed in the past must be revoked/rotated;
+# deleting a secret from the current file does not erase Git history.
 
 # Run headless
 python main.py
@@ -201,7 +203,9 @@ The effective values depend on config.py plus environment overrides. Review runt
 
 | Variable | Meaning |
 |---|---|
-| `COGNITION_GATE_MODE` | Whether the cognition gate is off, shadow, veto or authoritative |
+| `COGNITION_GATE_MODE` | Default `authoritative`: stale/missing cognition cannot silently authorize a legacy exposure-increasing route |
+| `COGNITION_EV_PRIMARY_GATE` | Default `true`: requires positive net expected value after estimated costs, not only confidence |
+| `COGNITION_MIN_EVIDENCE_DOMAINS` | Default `3`: requires multi-domain evidence before advisor-assisted origination |
 | `COGNITION_ORIGINATION_MODE` | Whether Brain-authored campaigns are off, shadow-recorded or submitted to the configured execution sink |
 | `COGNITION_SINGLE_PATH` | Suppresses legacy entry routes when enabled; verify its effective runtime value before relying on it |
 | `APEX_GOLD_DESK_SHADOW_ENABLED` | Enables/disables the Gold-specific observation layer; the observer itself cannot place orders |
@@ -214,9 +218,7 @@ A live origination setting does not prove that the advisor, feed, broker or stra
 python -m pytest tests/ -v
 ```
 
-Currently: 390+ tests across 16 test files covering risk engine, trade manager, entry engine, pair scanner, structure engine, FVG detector, session engine, symbol mapper, platforms, position store, dashboard auth, adaptive optimizer, capital context, intelligence (Phase 2), and full integration pipeline.
-
-CI runs automatically on every push to main and every pull request.
+The repository contains a large legacy and current test suite. Use the latest CI run as the authority for pass/fail status; a passing focused cognition suite does not imply that the entire repository is green.
 
 ---
 
