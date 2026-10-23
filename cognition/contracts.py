@@ -392,6 +392,19 @@ class MarketState:
             EvidenceDomain.OTHER.value,
         }
         market_domains = domains - non_market_domains
+        # These OHLC observers can retain an unknown-time reading for qualitative
+        # context, but that reading cannot satisfy a mandatory breadth gate: it
+        # might be cached or stale and cannot prove a current market condition.
+        for item in fresh:
+            measurements = getattr(item, "measurements", None)
+            if not isinstance(measurements, dict):
+                continue
+            source_kind = measurements.get("source_kind")
+            if (
+                source_kind in {"market_lens", "m1_price_action"}
+                and measurements.get("source_timestamp_known") is not True
+            ):
+                market_domains.discard(item.domain.value)
         weights = self.influence_weights
         if not weights:
             # Unweighted (default) — every source counts equally.
