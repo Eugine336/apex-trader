@@ -10,6 +10,7 @@ price-action evidence.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from math import isfinite, sqrt
 from typing import Any
 
@@ -33,7 +34,37 @@ def _safe_float(value: Any) -> float | None:
     return number if isfinite(number) else None
 
 
-def _rows(frame: Any, limit: int = 32) -> list[dict[str, float]]:
+def _timestamp_epoch(value: Any) -> float | None:
+    """Convert broker time values or a datetime-like index to Unix seconds."""
+    if value is None:
+        return None
+    stamp = getattr(value, "timestamp", None)
+    if callable(stamp):
+        try:
+            parsed = float(stamp())
+            return parsed if isfinite(parsed) and parsed > 0 else None
+        except (TypeError, ValueError, OverflowError, OSError):
+            pass
+    numeric = _safe_float(value)
+    if numeric is not None and numeric > 0:
+        # A few providers expose milliseconds since epoch instead of seconds.
+        if numeric > 100_000_000_000:
+            numeric /= 1000.0
+        return numeric if numeric > 0 else None
+    try:
+        text = str(value).strip()
+        if not text:
+            return None
+        parsed_dt = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        if parsed_dt.tzinfo is None:
+            parsed_dt = parsed_dt.replace(tzinfo=timezone.utc)
+        parsed = parsed_dt.timestamp()
+        return parsed if isfinite(parsed) and parsed > 0 else None
+    except (TypeError, ValueError, OverflowError, OSError):
+        return None
+
+
+def _rows(frame: Any, limit: int = 32) -> list[dict[str, Any]]:
     """Read a pandas-like OHLC(V) frame without importing pandas."""
     if frame is None:
         return []
@@ -43,8 +74,17 @@ def _rows(frame: Any, limit: int = 32) -> list[dict[str, float]]:
         tail = frame.tail(limit) if callable(getattr(frame, "tail", None)) else frame
         columns = {str(name).lower(): name for name in getattr(tail, "columns", [])}
         iterator = tail.iterrows() if callable(getattr(tail, "iterrows", None)) else enumerate(tail)
-        result: list[dict[str, float]] = []
-        for _, row in iterator:
+        result: list[dict[str, Any]] = []
+        for row_index, row in iterator:
+            def raw_value(*aliases: str) -> Any:
+                names = tuple(columns[name] for name in aliases if name in columns) + aliases
+                for name in names:
+                    try:
+                        return row.get(name, None) if callable(getattr(row, "get", None)) else row[name]
+                    except (KeyError, TypeError, IndexError, ValueError):
+                        continue
+                return None
+
             def value(*aliases: str) -> float | None:
                 names = tuple(columns[name] for name in aliases if name in columns) + aliases
                 for name in names:
@@ -65,9 +105,15 @@ def _rows(frame: Any, limit: int = 32) -> list[dict[str, float]]:
                 continue
             if high < low or high < max(opening, close) or low > min(opening, close):
                 continue
-            row_data = {
+            row_data: dict[str, Any] = {
                 "open": opening, "high": high, "low": low, "close": close,
             }
+            source_time = raw_value("time", "timestamp", "datetime", "date")
+            epoch = _timestamp_epoch(source_time)
+            if epoch is None:
+                epoch = _timestamp_epoch(row_index)
+            if epoch is not None:
+                row_data["timestamp_epoch"] = epoch
             volume = value("volume", "tick_volume", "real_volume")
             if volume is not None and volume >= 0:
                 row_data["volume"] = volume
@@ -95,10 +141,20 @@ def _record(
     kind: str,
     observation: str,
     measurements: dict[str, Any],
+    *,
+    source_epoch: float | None = None,
 ) -> Evidence:
-    minutes = _TIMEFRAME_SECONDS.get(timeframe, 60)
-    confidence = 0.72
-    uncertainty = 0.28
+    seconds = _TIMEFRAME_SECONDS.get(timeframe, 60)
+    known_source_time = bool(source_epoch and source_epoch > 0)
+    sampled_at = source_epoch if known_source_time else datetime.now(timezone.utc).timestamp()
+    try:
+        timestamp_iso = datetime.fromtimestamp(sampled_at, tz=timezone.utc).isoformat()
+    except (OverflowError, OSError, ValueError):
+        sampled_at = datetime.now(timezone.utc).timestamp()
+        timestamp_iso = datetime.fromtimestamp(sampled_at, tz=timezone.utc).isoformat()
+        known_source_time = False
+    confidence = 0.72 if known_source_time else 0.55
+    uncertainty = 0.28 if known_source_time else 0.45
     return Evidence(
         source_module=f"market_lenses.{timeframe.lower()}.{kind}",
         domain=domain,
@@ -113,8 +169,12 @@ def _record(
             "timeframe": timeframe,
             "provisional": False,
             "data_basis": "completed_ohlc",
+            "source_timestamp_known": known_source_time,
+            "source_bar_epoch": source_epoch,
         },
-        relevance_horizon_seconds=max(3 * minutes, 180.0),
+        timestamp_epoch=sampled_at,
+        timestamp_iso=timestamp_iso,
+        relevance_horizon_seconds=max(3 * seconds, 180.0),
     )
 
 
@@ -134,6 +194,7 @@ def analyze_market_frames(
     output: list[Evidence] = []
     timeframe_signs: list[int] = []
     timeframe_scores: list[float] = []
+    timeframe_source_epochs: list[float | None] = []
 
     for raw_tf, frame in (frames or {}).items():
         timeframe = str(raw_tf or "").upper()
@@ -145,6 +206,8 @@ def analyze_market_frames(
             continue
 
         current = bars[-1]
+        source_epoch = _safe_float(current.get("timestamp_epoch"))
+        timeframe_source_epochs.append(source_epoch)
         ranges = [max(0.0, bar["high"] - bar["low"]) for bar in bars]
         current_range = ranges[-1]
         baseline_ranges = ranges[-11:-1]
@@ -221,6 +284,7 @@ def analyze_market_frames(
             f"{timeframe} completed-candle structure: {location}; "
             f"close location within prior range={range_position:.2f}.",
             measurements,
+            source_epoch=source_epoch,
         ))
 
         # Sweep/reclaim is a boundary event, not proof that actual order flow was
@@ -244,6 +308,7 @@ def analyze_market_frames(
                     "prior_range_low": prior_low,
                     "lookback_bars": lookback,
                 },
+                source_epoch=source_epoch,
             ))
 
         # Momentum is a measurement of recent price changes. Only assign
@@ -275,6 +340,7 @@ def analyze_market_frames(
                 "candle_body_sign": 1 if candle_body > 0 else (-1 if candle_body < 0 else 0),
                 "body_to_range": measurements["body_to_range"],
             },
+            source_epoch=source_epoch,
         ))
 
         # Volatility: current range vs earlier range baseline, plus short-window
@@ -305,6 +371,7 @@ def analyze_market_frames(
                 "recent_mean_range": recent_mean,
                 "earlier_mean_range": earlier_mean,
             },
+            source_epoch=source_epoch,
         ))
 
         # Volume is included only when the selected broker actually supplies it.
@@ -330,6 +397,7 @@ def analyze_market_frames(
                     "volume_state": "expanding" if volume_ratio >= 1.25 else "baseline_or_lower",
                     "volume_source": "broker_frame",
                 },
+                source_epoch=source_epoch,
             ))
 
     # Non-directional cross-timeframe alignment. Individual timeframe facts remain
@@ -341,6 +409,11 @@ def analyze_market_frames(
         agreement_n = max(bullish_n, bearish_n)
         conflict_score = 1.0 - (agreement_n / len(active))
         alignment_degree = agreement_n / len(active)
+        alignment_source_epoch = (
+            min(timeframe_source_epochs)
+            if timeframe_source_epochs and all(epoch is not None for epoch in timeframe_source_epochs)
+            else None
+        )
         output.append(_record(
             symbol, "MULTI", EvidenceDomain.MULTI_TIMEFRAME, "alignment",
             f"Independent timeframe measurements: {len(active)} active timeframe readings; alignment degree={alignment_degree:.2f}; conflict={conflict_score:.2f}. No directional verdict is emitted.",
@@ -352,6 +425,7 @@ def analyze_market_frames(
                 "alignment": "aligned" if conflict_score <= 0.2 else ("conflict" if conflict_score >= 0.5 else "mixed"),
                 "trend_strength": min(1.0, _mean(timeframe_scores)),
             },
+            source_epoch=alignment_source_epoch,
         ))
 
     return output
