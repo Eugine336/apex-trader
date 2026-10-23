@@ -39,6 +39,7 @@ from cognition.evidence_adapters import (
     evidence_from_analogues,
     evidence_from_developing_bias,
     evidence_from_execution_cost,
+    evidence_from_gold_market,
     evidence_from_portfolio,
     evidence_from_reasoning,
     evidence_from_thesis_status,
@@ -102,6 +103,8 @@ class EvidenceConsolidator:
         self._execution_cost_source = execution_cost_source
         self._portfolio_source: Optional[Callable[[], Any]] = None
         self._price_source: Optional[Callable[[str], Any]] = None
+        # Gold detectors add one neutral evidence record; they are not trade authorities.
+        self._gold_market_source: Optional[Callable[[str], Any]] = None
         # Violation #2 — a ``symbol -> list[Evidence]`` source of INTER-CANDLE
         # structural interactions (level touch/sweep/break, FVG fill) detected on
         # the live tick stream, so the Brain sees a swept pool or filled gap the
@@ -140,6 +143,10 @@ class EvidenceConsolidator:
         pre-digested module verdicts. Fail-safe callable; never invoked eagerly.
         """
         self._price_source = price_source
+
+    def set_gold_market_source(self, source: Optional[Callable[[str], Any]]) -> None:
+        """Wire a single consolidated Gold market-read payload into MarketState."""
+        self._gold_market_source = source
 
     def set_structural_interaction_source(
         self, source: Optional[Callable[[str], Any]],
@@ -234,6 +241,29 @@ class EvidenceConsolidator:
                     logger.warning("[consolidator] price source FAILED (%s): %s", symbol, exc)
                     failed_sources.append("price")
                     _integrity("PRICE DATA UNAVAILABLE — cannot determine market state")
+            # One unified Gold market-read evidence object. Pattern detectors
+            # do not choose a direction or compete for authority; the Brain
+            # interprets their factual observations alongside the actual chart.
+            if (
+                self._gold_market_source is not None
+                and str(ms.symbol or "").strip().upper() in {
+                    "XAUUSD", "XAUUSDM", "XAUUSD.M", "XAUUSD.PRO", "XAUUSD.A", "GOLD",
+                }
+            ):
+                attempted_sources += 1
+                try:
+                    payload = self._gold_market_source(ms.symbol)
+                    gold_evidence = evidence_from_gold_market(ms.symbol, payload)
+                    if gold_evidence:
+                        for e in gold_evidence:
+                            ms.add(e)
+                    else:
+                        _integrity("GOLD MARKET READ STALE OR UNAVAILABLE — verify broker feed")
+                        failed_sources.append("gold_market")
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[consolidator] Gold market source FAILED (%s): %s", symbol, exc)
+                    failed_sources.append("gold_market")
+                    _integrity("GOLD MARKET READ UNAVAILABLE — verify broker feed")
             # Violation #2 — inter-candle structural interactions (a swept pool,
             # a filled FVG, a broken/tested level) observed on the live tick
             # stream since the last close. Added right after the chart so the
@@ -627,6 +657,13 @@ class CognitionLoop:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[cognition-loop] set_price_source ignored a fault: %s", exc)
 
+    def set_gold_market_source(self, source: Optional[Callable[[str], Any]]) -> None:
+        """Wire Gold observations into the existing CognitiveBrain input."""
+        try:
+            self._consolidator.set_gold_market_source(source)
+        except Exception as exc:  # noqa: BLE001
+            logger.debug("[cognition-loop] Gold market source wiring failed: %s", exc)
+
     def set_structural_interaction_source(
         self, source: Optional[Callable[[str], Any]],
     ) -> None:
@@ -839,6 +876,46 @@ class CognitionLoop:
         self._event_reasons += made
         return made
 
+    def request_reason(
+        self,
+        symbol: str,
+        *,
+        reason: str = "explicit_market_observation",
+        now: Optional[float] = None,
+    ) -> bool:
+        """Queue one Brain read for an explicit, material market observation.
+
+        Unlike maybe_reason_on_change, this explicit request is not disabled
+        by the general event-driven toggle. The caller has already decided the
+        market observation changed materially (for example, a Gold price move
+        or a newly completed candle). Per-symbol throttling still applies, and
+        all reasoning runs on the CognitionLoop thread.
+        """
+        try:
+            sym = str(symbol or "").strip()
+            if not sym:
+                return False
+            current = self._clock() if now is None else float(now)
+            last = self._event_last_reason_at.get(sym)
+            if (
+                last is not None
+                and self.event_min_interval_seconds > 0.0
+                and current - last < self.event_min_interval_seconds
+            ):
+                self._event_throttled += 1
+                return False
+            self._event_last_reason_at[sym] = current
+            with self._pending_lock:
+                self._pending.add(sym)
+            self._wake.set()
+            logger.debug(
+                "[cognition-loop] queued explicit market observation for %s (%s)",
+                sym, str(reason or "explicit_market_observation")[:80],
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 — observation signals must never break the caller
+            logger.debug("[cognition-loop] request_reason(%s) failed: %s", symbol, exc)
+            return False
     def maybe_reason_on_change(
         self, symbol: str, change_magnitude: Any = None, *, now: Optional[float] = None,
     ) -> bool:

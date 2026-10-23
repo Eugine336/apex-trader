@@ -774,3 +774,89 @@ class TestPerInstrumentIsolation:
             "EURUSD modify was blocked by the NZDUSD modify breaker — "
             "per-instrument isolation failed"
         )
+
+
+def test_gold_only_execution_guard_rejects_non_gold_new_exposure():
+    broker = FakeBroker()
+    executor = ActionExecutor(
+        broker=broker,
+        config=ExecutorConfig(gold_only=True),
+    )
+
+    rejected = executor.execute(_open_intent("EURUSD"), {})
+    assert not rejected.success
+    assert rejected.rejected_by_gate
+    assert "gold_only_invariant" in rejected.gate_reason
+    assert broker.open_calls == []
+
+    # Exact broker aliases are allowed; prefix lookalikes are not.
+    xau = executor.execute(_open_intent("XAUUSDm"), {})
+    assert xau.success, xau.error
+    assert broker.open_calls[-1]["symbol"] == "XAUUSDm"
+
+    fake = executor.execute(_open_intent("XAUUSD_FAKE"), {})
+    assert not fake.success
+    assert fake.rejected_by_gate
+    assert len(broker.open_calls) == 1
+
+
+def test_gold_only_guard_does_not_block_risk_reducing_exit_on_legacy_position():
+    broker = FakeBroker()
+    executor = ActionExecutor(
+        broker=broker,
+        config=ExecutorConfig(
+            gold_only=True,
+            require_gold_feed_health=True,
+            gold_feed_health_check=lambda _symbol: False,
+        ),
+    )
+    # An unhealthy Gold feed blocks new entries, but must not stop reducing an
+    # already-open position; exits remain available during feed degradation.
+    result = executor.execute(_close_intent(), _positions())
+    assert result.success
+    assert broker.close_calls[0]["order_id"] == "12345"
+
+
+def test_gold_only_open_requires_fresh_feed_when_runtime_enables_health_gate():
+    broker = FakeBroker()
+    healthy = {"value": False}
+    executor = ActionExecutor(
+        broker=broker,
+        config=ExecutorConfig(
+            gold_only=True,
+            require_gold_feed_health=True,
+            gold_feed_health_check=lambda _symbol: healthy["value"],
+        ),
+    )
+
+    blocked = executor.execute(_open_intent("XAUUSD"), {})
+    assert not blocked.success
+    assert blocked.rejected_by_gate
+    assert "gold_feed_unhealthy" in blocked.gate_reason
+    assert broker.open_calls == []
+
+    healthy["value"] = True
+    allowed = executor.execute(_open_intent("XAUUSD"), {})
+    assert allowed.success, allowed.error
+    assert [call["symbol"] for call in broker.open_calls] == ["XAUUSD"]
+
+
+def test_gold_feed_health_callback_failure_fails_closed():
+    broker = FakeBroker()
+
+    def broken_health_check(_symbol):
+        raise RuntimeError("market-data cache unavailable")
+
+    executor = ActionExecutor(
+        broker=broker,
+        config=ExecutorConfig(
+            gold_only=True,
+            require_gold_feed_health=True,
+            gold_feed_health_check=broken_health_check,
+        ),
+    )
+    blocked = executor.execute(_open_intent("XAUUSD"), {})
+    assert not blocked.success
+    assert blocked.rejected_by_gate
+    assert "gold_feed_unhealthy" in blocked.gate_reason
+    assert broker.open_calls == []

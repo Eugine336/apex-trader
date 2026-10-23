@@ -154,7 +154,7 @@ class BrainHypothesis:
 _CONTRA_PATTERNS = frozenset({
     "momentum_divergence", "multi_tf_conflict", "liquidity_sweep_absorbed",
     "liquidity_sweep_with_momentum_exhaustion", "volatility_compression",
-    "execution_degraded", "portfolio_concentrated",
+    "statistical_displacement", "execution_degraded", "portfolio_concentrated",
 })
 
 # Patterns that reinforce a directional continuation thesis.
@@ -299,6 +299,11 @@ class BrainReasoner:
             "displacement": disp if disp is not None else 0.0,
             "order_flow": order_flow,
             "liquidity_sweep_side": sweep_side,
+            # Statistical displacement remains a measurement. It is not collapsed
+            # into a directional bias; the hypothesis generator below can form a
+            # mean-reversion counter-thesis from its signed z-score.
+            "statistical_zscore": numeric(mom, "rolling_zscore_30"),
+            "ema_spread_atr": numeric(mom, "ema_spread_atr"),
         }
 
     @staticmethod
@@ -408,6 +413,36 @@ class BrainReasoner:
                     direction=direction,
                     invalidation="Fresh flow breaks decisively beyond the swept level",
                     opportunity=f"{direction} reversal off the sweep" if direction in (LONG, SHORT) else "reversal",
+                ))
+
+            # 3) Statistical displacement / mean-reversion hypothesis.
+            # This can co-exist with a continuation thesis; the Brain compares both
+            # instead of allowing a detector to issue or rank a trade direction.
+            if "statistical_displacement" in names:
+                zscore = regime.get("statistical_zscore")
+                try:
+                    zvalue = float(zscore)
+                except (TypeError, ValueError):
+                    zvalue = 0.0
+                direction = SHORT if zvalue > 0.0 else (LONG if zvalue < 0.0 else FLAT)
+                hyps.append(self._make(
+                    statement=(
+                        f"{symbol} statistical displacement is {abs(zvalue):.2f} standard deviations "
+                        "from its rolling mean while the EMA spread is contained; a return toward "
+                        "the mean is a competing hypothesis, not an assumed outcome."
+                    ),
+                    support=["statistical_displacement"],
+                    against=[n for n in names if n in (
+                        "displacement_confirmed", "volume_confirmed_breakout",
+                        "structural_break", "momentum_acceleration",
+                    )],
+                    analysis=analysis,
+                    direction=direction,
+                    invalidation="Price continues extending away from the rolling mean and trend strength expands",
+                    opportunity=(
+                        f"{direction} mean-reversion hypothesis if displacement fails to extend"
+                        if direction in (LONG, SHORT) else "mean-reversion hypothesis"
+                    ),
                 ))
 
             # 3) Order-flow-at-structure thesis.
@@ -552,9 +587,14 @@ class BrainReasoner:
 
     @staticmethod
     def _required_domains(h: BrainHypothesis) -> "list[str]":
-        needs = {"structure"}
         sup = {pattern_name(p) for p in h.supporting_patterns}
-        if sup & {"momentum_acceleration", "liquidity_sweep_with_momentum_exhaustion"}:
+        # A pure statistical-displacement thesis is supported by its signed
+        # momentum z-score and contained EMA-spread measurement; requiring a
+        # structure module that was not part of that detector would penalise it
+        # for an unrelated missing domain.
+        needs = set() if sup and sup <= {"statistical_displacement"} else {"structure"}
+        if sup & {"momentum_acceleration", "liquidity_sweep_with_momentum_exhaustion",
+                  "statistical_displacement"}:
             needs.add("momentum")
         if sup & {"volume_confirmed_breakout", "displacement_confirmed"}:
             needs.add("volume")

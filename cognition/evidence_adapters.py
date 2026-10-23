@@ -21,6 +21,10 @@ Pure standard library.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import math
+import time
+
 from typing import Any
 
 from cognition.contracts import Evidence, EvidenceDomain
@@ -589,3 +593,266 @@ def evidence_from_portfolio(symbol: str, assessment: Any) -> "list[Evidence]":
     except Exception:  # noqa: BLE001 — consolidation must never raise
         return out
     return out
+
+
+
+def evidence_from_gold_market(symbol: str, payload: Any) -> list[Evidence]:
+    """Surface the live Gold desk's broker-backed observations to the single Brain.
+
+    This deliberately creates ONE neutral Evidence record for the whole Gold
+    desk read. Pattern modules are measurements, not strategy votes: this adapter
+    never exports LONG/SHORT direction, a chosen entry, stop, target, quality
+    score or executable order. The Brain combines these raw observations with
+    the broker-price picture, structural interactions, portfolio state and its
+    own analysis. Overlapping detector findings are retained as provenance, not
+    counted as independent confirmations.
+    """
+    try:
+        data = dict(payload or {})
+        accepted = {"XAUUSD", "XAUUSDM", "XAUUSD.M", "XAUUSD.PRO", "XAUUSD.A", "GOLD"}
+        payload_symbol = str(data.get("symbol", "") or "").strip().upper()
+        requested_symbol = str(symbol or "").strip().upper()
+        if payload_symbol not in accepted:
+            return []
+        observed_at = str(data.get("observed_at", "") or "")
+        try:
+            stamp = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+            if stamp.tzinfo is None or stamp.utcoffset() is None:
+                return []
+            observed_epoch = stamp.timestamp()
+        except (TypeError, ValueError, OverflowError, OSError):
+            return []
+        # Do not turn an old cache entry into fresh evidence merely because the
+        # CognitionLoop polled it again. Freshness follows the original market read.
+        age = time.time() - observed_epoch
+        if age < -1.0 or age > 15.0:
+            return []
+        if requested_symbol not in accepted:
+            return []
+        if payload_symbol not in accepted:
+            return []
+        patterns = data.get("pattern_observations")
+        patterns = patterns if isinstance(patterns, list) else []
+        clean_patterns: list[dict[str, Any]] = []
+        family_names: list[str] = []
+        for item in patterns[:12]:
+            if not isinstance(item, dict):
+                continue
+            family = str(item.get("family", "") or "").strip()[:80]
+            facts = item.get("facts", [])
+            if not family:
+                continue
+            if not isinstance(facts, (list, tuple)):
+                facts = []
+            clean_facts = [str(fact).strip()[:240] for fact in facts[:8] if str(fact).strip()]
+            raw_measurements = item.get("measurements", {})
+            if not isinstance(raw_measurements, dict):
+                raw_measurements = {}
+            clean_measurements: dict[str, Any] = {}
+            for key, value in list(raw_measurements.items())[:24]:
+                key_name = str(key).strip()[:80]
+                if not key_name or key_name.lower() in {
+                    "direction", "entry", "stop", "target", "quality_score",
+                    "reward_to_risk", "position_size", "risk_budget_pct",
+                }:
+                    continue
+                if isinstance(value, bool):
+                    clean_measurements[key_name] = value
+                elif isinstance(value, (int, float)) and math.isfinite(float(value)):
+                    clean_measurements[key_name] = float(value)
+                elif isinstance(value, str):
+                    clean_measurements[key_name] = value[:240]
+            clean_patterns.append({
+                "family": family,
+                "facts": clean_facts,
+                "measurements": clean_measurements,
+                "timeframe": str(item.get("timeframe", "") or "")[:12],
+                "source_bar_time": str(item.get("source_bar_time", "") or "")[:40],
+            })
+            if family not in family_names:
+                family_names.append(family)
+        quote = data.get("quote") if isinstance(data.get("quote"), dict) else {}
+        bars = data.get("completed_bars") if isinstance(data.get("completed_bars"), dict) else {}
+        raw_event = data.get("event_context")
+        event_context = None
+        if isinstance(raw_event, dict):
+            event_context = {
+                "name": str(raw_event.get("name", "") or "")[:240],
+                "impact": str(raw_event.get("impact", "") or "")[:24],
+                "starts_at": str(raw_event.get("starts_at", "") or "")[:40],
+                "ends_at": str(raw_event.get("ends_at", "") or "")[:40],
+                "pre_event_high": _safe_number(raw_event.get("pre_event_high")),
+                "pre_event_low": _safe_number(raw_event.get("pre_event_low")),
+            }
+        observation_parts = [
+            "Market-backed XAUUSD read from the selected broker feed.",
+            f"venue={str(data.get('venue', '') or 'unknown')}",
+            f"bid={quote.get('bid', 'unknown')}, ask={quote.get('ask', 'unknown')}, "
+            f"spread={quote.get('spread', 'unknown')}",
+            f"completed timeframes={','.join(sorted(str(k) for k in bars)) or 'none'}",
+            f"pattern observations={len(clean_patterns)} from {len(family_names)} detector family/families.",
+            "Patterns may overlap and are NOT independent votes; no trade direction or order is issued by this source.",
+        ]
+        if event_context is not None:
+            observation_parts.append(
+                "Verified news context: "
+                f"{event_context['name']} impact={event_context['impact']} "
+                f"window={event_context['starts_at']}..{event_context['ends_at']} "
+                f"pre-event range={event_context['pre_event_low']}..{event_context['pre_event_high']}."
+            )
+        for item in clean_patterns:
+            facts = "; ".join(item["facts"]) or "detector conditions not specified"
+            observation_parts.append(f"{item['family']}: {facts}")
+        measurements = {
+            "venue": str(data.get("venue", "") or ""),
+            "market_open": bool(data.get("market_open", False)),
+            "data_quality_ok": bool(data.get("data_quality_ok", False)),
+            "quote": {
+                "bid": _safe_number(quote.get("bid")),
+                "ask": _safe_number(quote.get("ask")),
+                "spread": _safe_number(quote.get("spread")),
+            },
+            "event_context": event_context,
+            "completed_bars": bars,
+            "pattern_observations": clean_patterns,
+            "pattern_families": family_names,
+            "detected_pattern_count": len(clean_patterns),
+            "overlap_policy": "single_brain_synthesis_no_vote_summing",
+            "orders_sent": False,
+        }
+        timestamp_iso = stamp.astimezone(timezone.utc).isoformat()
+        data_quality_ok = bool(data.get("data_quality_ok", False))
+        confidence = 0.95 if data_quality_ok else 0.0
+        uncertainty = 0.05 if data_quality_ok else 1.0
+        evidence: list[Evidence] = [Evidence(
+            source_module="gold_market_desk",
+            domain=EvidenceDomain.MULTI_TIMEFRAME,
+            symbol=requested_symbol,
+            observation=" ".join(observation_parts)[:4000],
+            confidence=confidence,
+            uncertainty=uncertainty,
+            polarity=0.0,
+            measurements=measurements,
+            relevance_horizon_seconds=15.0,
+            timestamp_iso=timestamp_iso,
+            timestamp_epoch=observed_epoch,
+        )]
+
+        # Give the SAME Brain the structured dimensions its native pattern rules
+        # require. These remain observations, not votes or strategies: polarity is
+        # zero, all records share the original tick timestamp, and no executable
+        # fields are created. The root record above retains the complete picture;
+        # domain records merely classify the facts so liquidity/structure/momentum
+        # rules can reason about them without an LLM.
+        primary_domains = {
+            "trend_continuation": EvidenceDomain.STRUCTURE,
+            "liquidity_sweep": EvidenceDomain.LIQUIDITY,
+            "volatility_expansion": EvidenceDomain.VOLATILITY,
+            "failed_breakout": EvidenceDomain.LIQUIDITY,
+            "statistical_displacement": EvidenceDomain.MOMENTUM,
+            "trend_exhaustion": EvidenceDomain.MOMENTUM,
+            "event_window_breakout": EvidenceDomain.MACRO,
+            "crt_range_observation": EvidenceDomain.LIQUIDITY,
+        }
+        structural_families = {
+            "volatility_expansion", "trend_exhaustion",
+            "event_window_breakout", "crt_range_observation",
+        }
+        forbidden = {
+            "direction", "entry", "stop", "target", "quality_score",
+            "reward_to_risk", "position_size", "risk_budget_pct",
+        }
+        for item in clean_patterns:
+            family = item["family"]
+            primary_domain = primary_domains.get(family)
+            if primary_domain is None:
+                continue
+            raw = dict(item.get("measurements") or {})
+            structured: dict[str, Any] = {
+                "gold_pattern_family": family,
+                "gold_pattern_facts": list(item.get("facts") or []),
+                "source_timeframe": str(item.get("timeframe", "") or ""),
+                "source_bar_time": str(item.get("source_bar_time", "") or ""),
+            }
+            for key, value in raw.items():
+                if str(key).strip().lower() in forbidden:
+                    continue
+                structured[str(key)] = value
+
+            if family in {"liquidity_sweep", "failed_breakout", "crt_range_observation"}:
+                if raw.get("sweep") is True:
+                    structured["sweep"] = True
+                if raw.get("absorption") is True:
+                    structured["absorption"] = True
+                side = str(raw.get("sweep_side", "") or "").lower()
+                if side in {"buy", "sell"}:
+                    structured["sweep_side"] = side
+            elif family == "trend_exhaustion":
+                if raw.get("divergence") is True:
+                    structured["divergence"] = True
+            elif family == "volatility_expansion":
+                structured["expansion"] = True
+                structured["volatility_state"] = "expanding"
+
+            facts_text = "; ".join(item.get("facts") or [])
+            evidence.append(Evidence(
+                source_module=f"gold_market_desk.pattern.{family}",
+                domain=primary_domain,
+                symbol=requested_symbol,
+                observation=f"Gold market fact ({family}): {facts_text}"[:1200],
+                confidence=confidence,
+                uncertainty=uncertainty,
+                polarity=0.0,
+                measurements=structured,
+                relevance_horizon_seconds=15.0,
+                timestamp_iso=timestamp_iso,
+                timestamp_epoch=observed_epoch,
+            ))
+
+            # Some detectors observe two separate facts at once (e.g. CRT =
+            # liquidity sweep/reclaim + a subsequent structure break). Surface
+            # the structure fact as its own domain reading so the Brain sees both
+            # dimensions, but do not create a second decision or score.
+            if family in structural_families and raw.get("bos") is True:
+                displacement = _safe_number(raw.get("displacement"))
+                structure_measurements = {
+                    "gold_pattern_family": family,
+                    "gold_pattern_facts": list(item.get("facts") or []),
+                    "bos": True,
+                    "source_timeframe": str(item.get("timeframe", "") or ""),
+                    "source_bar_time": str(item.get("source_bar_time", "") or ""),
+                }
+                if displacement is not None:
+                    structure_measurements["displacement"] = displacement
+                for key in ("anchor_high", "anchor_low", "previous_m5_high",
+                            "previous_m5_low", "prior_20bar_high", "prior_20bar_low",
+                            "prior_10bar_high", "prior_10bar_low", "pre_event_high",
+                            "pre_event_low", "current_close", "last_close"):
+                    value = raw.get(key)
+                    safe = _safe_number(value)
+                    if safe is not None:
+                        structure_measurements[key] = safe
+                evidence.append(Evidence(
+                    source_module=f"gold_market_desk.structure.{family}",
+                    domain=EvidenceDomain.STRUCTURE,
+                    symbol=requested_symbol,
+                    observation=f"Gold structural fact ({family}): {facts_text}"[:1200],
+                    confidence=confidence,
+                    uncertainty=uncertainty,
+                    polarity=0.0,
+                    measurements=structure_measurements,
+                    relevance_horizon_seconds=15.0,
+                    timestamp_iso=timestamp_iso,
+                    timestamp_epoch=observed_epoch,
+                ))
+        return evidence
+    except Exception:  # noqa: BLE001 — evidence conversion must never break cognition
+        return []
+
+
+def _safe_number(value: Any) -> float | None:
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (TypeError, ValueError, OverflowError):
+        return None

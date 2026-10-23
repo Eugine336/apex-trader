@@ -1151,6 +1151,28 @@ class EventDrivenSystem:
         self._live_candle_aggregator = LiveCandleAggregator(max_candles=200)
         self._tick_router.register_callback(self._live_candle_aggregator.on_tick)
 
+        # ── Gold specialist research observer (shadow-only) ───────────
+        # This observes only the explicitly selected venue and publishes
+        # structured hypotheses to EventBus. It has no order/execution API and
+        # never bypasses the campaign, portfolio, or execution risk path.
+        self._gold_desk_observer = None
+        _gold_shadow_enabled = os.getenv("APEX_GOLD_DESK_SHADOW_ENABLED", "1").strip().lower()
+        if _gold_shadow_enabled not in {"0", "false", "no", "off"}:
+            try:
+                from gold_desk.apex_observer import ApexGoldDeskShadowObserver
+                self._gold_desk_observer = ApexGoldDeskShadowObserver(
+                    symbols=list(getattr(self._config, "enabled_pairs", []) or []),
+                    venue=os.getenv("APEX_GOLD_DESK_VENUE", "MT5"),
+                    tick_router=self._tick_router,
+                    event_bus=self._event_bus,
+                    candle_fetcher=self._fetch_confirmed_gold_candles,
+                    venue_resolver=lambda symbol: type(self._pm.get_connector(symbol)).__name__,
+                    market_open=self._check_market_open,
+                    event_window_source=self._gold_event_window,
+                )
+            except Exception as exc:
+                logger.warning("[gold-desk] shadow observer construction failed: {}", exc)
+
         # ── Developing analysis store (Phase 2 — live/forming-bar view) ──
         # A SEPARATE WorldModelStore holding the continuously-evolving
         # developing analysis. The confirmed CandleCloseHandler reads it to
@@ -1451,7 +1473,19 @@ class EventDrivenSystem:
         self._aggregator = IntentAggregator(AggregatorConfig())
         self._executor = ActionExecutor(
             broker=self._pm,  # PlatformManager satisfies BrokerPort
-            config=ExecutorConfig(),
+            # This deployment is a Gold specialist. Enforce the symbol allowlist
+            # at the last common broker-entry boundary as defense in depth.
+            config=ExecutorConfig(
+                gold_only=True,
+                require_gold_feed_health=True,
+                gold_feed_health_check=lambda symbol: bool(
+                    getattr(
+                        getattr(self, "_gold_desk_observer", None),
+                        "is_feed_healthy",
+                        lambda _symbol: False,
+                    )(symbol)
+                ),
+            ),
         )
         # Single execution plane: ALL entries flow through the shared
         # ActionExecutor (RiskGate OPEN validation → CircuitBreaker →
@@ -2812,6 +2846,15 @@ class EventDrivenSystem:
                 exc,
             )
 
+        # Start after broker/candle warmup, but before the tick router and
+        # broker pollers. The observer's callback is non-blocking and its worker
+        # has no order API; provider/data faults cannot interrupt trading loops.
+        if self._gold_desk_observer is not None:
+            try:
+                self._gold_desk_observer.start()
+            except Exception as exc:
+                logger.warning("[gold-desk] shadow observer start failed: {}", exc)
+
         self._tick_router.start()
         self._candle_detector.start()
         self._mt5_poller.start()
@@ -2902,6 +2945,23 @@ class EventDrivenSystem:
                     _cog_loop.set_price_source(self._cognition_price_snapshot)
                 except Exception as exc:
                     logger.debug("[event-driven] price-source wiring failed: {}", exc)
+
+                # Single Brain architecture: the Gold desk contributes one
+                # neutral, broker-backed market evidence record. Pattern modules
+                # cannot originate independent trades or compete for direction.
+                try:
+                    gold_observer = getattr(self, "_gold_desk_observer", None)
+                    _cog_loop.set_gold_market_source(
+                        gold_observer.evidence_for if gold_observer is not None else None
+                    )
+                    if gold_observer is not None:
+                        gold_observer.set_evidence_change_callback(
+                            lambda symbol: _cog_loop.request_reason(
+                                symbol, reason="gold_market_evidence_changed"
+                            )
+                        )
+                except Exception as exc:
+                    logger.debug("[event-driven] Gold market evidence wiring failed: {}", exc)
                 # Violation #2 — wire the inter-candle structural interactions in
                 # as an evidence source, and give the detector the Brain-wake
                 # handle, then subscribe it to the tick stream. Now a swept pool
@@ -3188,6 +3248,11 @@ class EventDrivenSystem:
 
         self._tick_eval_loop.stop()
         self._flush_loop.stop()
+        if getattr(self, "_gold_desk_observer", None) is not None:
+            try:
+                self._gold_desk_observer.stop()
+            except Exception as exc:
+                logger.debug("[gold-desk] shadow observer stop failed: {}", exc)
         self._mt5_poller.stop()
         self._deriv_adapter.stop()
         # Stop the developing analysis loop before the tick router so it stops
@@ -3637,7 +3702,15 @@ class EventDrivenSystem:
             _time.sleep(10.0)
 
     def _run_news_planner_update(self) -> None:
-        """Drive the news pre-planner ~every 60s (staged breakouts + OCO)."""
+        """Drive legacy OCO staging only when Apex's single-Brain path is disabled.
+
+        On the normal single-path architecture the Brain owns trade origination.
+        NewsGuard still feeds verified event context to the Brain, but this legacy
+        planner must not stage a second, independent pair of broker orders.
+        """
+        cognition_cfg = getattr(self._config, "cognition", None)
+        if bool(getattr(cognition_cfg, "single_path", True)):
+            return
         planner = getattr(self, "_news_planner", None)
         if planner is None:
             return
@@ -4736,6 +4809,22 @@ class EventDrivenSystem:
                 mt5.append(sym)
         return mt5, deriv
 
+    def _fetch_confirmed_gold_candles(
+        self, symbol: str, timeframe: str, count: int,
+    ) -> Optional[pd.DataFrame]:
+        """Gold-desk history fetch: confirmed bars only, same connector as routing."""
+        try:
+            data = self._pm.fetch_market_data(
+                symbol, [timeframe], count, include_forming=False,
+            )
+            return data.get(timeframe)
+        except Exception as exc:
+            logger.debug(
+                "[gold-desk] confirmed candle fetch failed {}/{}: {}",
+                symbol, timeframe, exc,
+            )
+            return None
+
     def _fetch_candles(
         self, symbol: str, timeframe: str, count: int,
     ) -> Optional[pd.DataFrame]:
@@ -5806,7 +5895,21 @@ class EventDrivenSystem:
         comment: str = "",
         idempotency_key: str = "",
     ):
-        """Place a pending LIMIT via the per-symbol broker connector."""
+        """Place a pending LIMIT via the per-symbol broker connector.
+
+        Final Gold-only safeguard for the direct pending-order path. Pending
+        orders do not go through ActionExecutor, so keep this boundary guarded
+        even if an operator accidentally re-enables a retired staging component.
+        """
+        allowed_gold_symbols = {
+            "XAUUSD", "GOLD", "XAUUSDM", "XAUUSD.M", "XAUUSD.PRO", "XAUUSD.A",
+        }
+        if str(symbol or "").strip().upper() not in allowed_gold_symbols:
+            logger.warning(
+                "[gold-only] rejected pending order for non-Gold symbol {}",
+                symbol,
+            )
+            return None
         connector = self._pm.get_connector(symbol)
         if connector is None:
             return None
@@ -5880,6 +5983,17 @@ class EventDrivenSystem:
         except Exception as exc:  # noqa: BLE001
             logger.debug("[news-planner] upcoming events read failed for {}: {}", symbol, exc)
             return []
+
+    def _gold_event_window(self, symbol: str, observed_at: datetime, candles: dict) -> Optional[Any]:
+        """Adapt NewsGuard's verified event data into Gold evidence context."""
+        try:
+            from gold_desk.news_context import build_verified_event_window
+            ctx = self._ctx
+            guard = getattr(ctx, "news_guard", None) if ctx is not None else None
+            return build_verified_event_window(symbol, observed_at, candles, guard)
+        except Exception as exc:  # noqa: BLE001 — event context must not break observation
+            logger.debug("[gold-desk] verified event-window lookup failed: {}", exc)
+            return None
 
     def _news_range_candles(self, symbol: str, bars: int):
         """Last ``bars`` M5 candles for the pre-event breakout range."""

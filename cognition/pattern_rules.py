@@ -151,6 +151,24 @@ def rule_momentum_divergence(evidence: "list[Evidence]") -> Optional[str]:
     return None
 
 
+def rule_statistical_displacement(evidence: "list[Evidence]") -> Optional[str]:
+    """Detect large statistical displacement when the EMA trend spread is contained.
+
+    This reports a measured mean-reversion context, not a direction or a trade.
+    The Brain may infer a counter-move hypothesis from the signed z-score.
+    """
+    mom = in_domain(evidence, EvidenceDomain.MOMENTUM)
+    zscore = numeric(mom, "rolling_zscore_30")
+    spread_atr = numeric(mom, "ema_spread_atr")
+    if zscore is not None and abs(zscore) >= 2.0 and spread_atr is not None and spread_atr <= 1.5:
+        side = "above" if zscore > 0 else "below"
+        return (
+            "statistical_displacement: price is at least 2 rolling standard deviations "
+            f"{side} its mean while EMA spread is contained — possible mean-reversion context"
+        )
+    return None
+
+
 def rule_multi_tf_aligned(evidence: "list[Evidence]") -> Optional[str]:
     mtf = in_domain(evidence, EvidenceDomain.MULTI_TIMEFRAME)
     aligned = (has_flag(mtf, "alignment_agree", "aligned")
@@ -287,6 +305,7 @@ _PATTERN_RULES: "list[Callable[[list[Evidence]], Optional[str]]]" = [
     rule_liquidity_sweep_momentum_exhaustion,
     rule_displacement_confirmed,
     rule_momentum_divergence,
+    rule_statistical_displacement,
     rule_multi_tf_aligned,
     rule_multi_tf_conflict,
     rule_volatility_compression,
