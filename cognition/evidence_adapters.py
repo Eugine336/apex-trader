@@ -21,6 +21,10 @@ Pure standard library.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+import math
+import time
+
 from typing import Any
 
 from cognition.contracts import Evidence, EvidenceDomain
@@ -589,3 +593,113 @@ def evidence_from_portfolio(symbol: str, assessment: Any) -> "list[Evidence]":
     except Exception:  # noqa: BLE001 — consolidation must never raise
         return out
     return out
+
+
+
+def evidence_from_gold_market(symbol: str, payload: Any) -> list[Evidence]:
+    """Surface the live Gold desk's broker-backed observations to the single Brain.
+
+    This deliberately creates ONE neutral Evidence record for the whole Gold
+    desk read. Pattern modules are measurements, not strategy votes: this adapter
+    never exports LONG/SHORT direction, a chosen entry, stop, target, quality
+    score or executable order. The Brain combines these raw observations with
+    the broker-price picture, structural interactions, portfolio state and its
+    own analysis. Overlapping detector findings are retained as provenance, not
+    counted as independent confirmations.
+    """
+    try:
+        data = dict(payload or {})
+        accepted = {"XAUUSD", "XAUUSDM", "XAUUSD.M", "XAUUSD.PRO", "XAUUSD.A", "GOLD"}
+        payload_symbol = str(data.get("symbol", "") or "").strip().upper()
+        requested_symbol = str(symbol or "").strip().upper()
+        if payload_symbol not in accepted:
+            return []
+        observed_at = str(data.get("observed_at", "") or "")
+        try:
+            stamp = datetime.fromisoformat(observed_at.replace("Z", "+00:00"))
+            if stamp.tzinfo is None or stamp.utcoffset() is None:
+                return []
+            observed_epoch = stamp.timestamp()
+        except (TypeError, ValueError, OverflowError, OSError):
+            return []
+        # Do not turn an old cache entry into fresh evidence merely because the
+        # CognitionLoop polled it again. Freshness follows the original market read.
+        age = time.time() - observed_epoch
+        if age < -1.0 or age > 15.0:
+            return []
+        if requested_symbol != payload_symbol and not (
+            requested_symbol == "XAUUSD" and payload_symbol in accepted
+        ):
+            return []
+        patterns = data.get("pattern_observations")
+        patterns = patterns if isinstance(patterns, list) else []
+        clean_patterns: list[dict[str, Any]] = []
+        family_names: list[str] = []
+        for item in patterns[:12]:
+            if not isinstance(item, dict):
+                continue
+            family = str(item.get("family", "") or "").strip()[:80]
+            facts = item.get("facts", [])
+            if not family:
+                continue
+            if not isinstance(facts, (list, tuple)):
+                facts = []
+            clean_facts = [str(fact).strip()[:240] for fact in facts[:8] if str(fact).strip()]
+            clean_patterns.append({
+                "family": family,
+                "facts": clean_facts,
+                "source_bar_time": str(item.get("source_bar_time", "") or "")[:40],
+            })
+            if family not in family_names:
+                family_names.append(family)
+        quote = data.get("quote") if isinstance(data.get("quote"), dict) else {}
+        bars = data.get("completed_bars") if isinstance(data.get("completed_bars"), dict) else {}
+        observation_parts = [
+            "Market-backed XAUUSD read from the selected broker feed.",
+            f"venue={str(data.get('venue', '') or 'unknown')}",
+            f"bid={quote.get('bid', 'unknown')}, ask={quote.get('ask', 'unknown')}, "
+            f"spread={quote.get('spread', 'unknown')}",
+            f"completed timeframes={','.join(sorted(str(k) for k in bars)) or 'none'}",
+            f"pattern observations={len(clean_patterns)} from {len(family_names)} detector family/families.",
+            "Patterns may overlap and are NOT independent votes; no trade direction or order is issued by this source.",
+        ]
+        for item in clean_patterns:
+            facts = "; ".join(item["facts"]) or "detector conditions not specified"
+            observation_parts.append(f"{item['family']}: {facts}")
+        measurements = {
+            "venue": str(data.get("venue", "") or ""),
+            "quote": {
+                "bid": _safe_number(quote.get("bid")),
+                "ask": _safe_number(quote.get("ask")),
+                "spread": _safe_number(quote.get("spread")),
+            },
+            "completed_bars": bars,
+            "pattern_observations": clean_patterns,
+            "pattern_families": family_names,
+            "detected_pattern_count": len(clean_patterns),
+            "overlap_policy": "single_brain_synthesis_no_vote_summing",
+            "orders_sent": False,
+        }
+        return [Evidence(
+            source_module="gold_market_desk",
+            domain=EvidenceDomain.MULTI_TIMEFRAME,
+            symbol=requested_symbol,
+            observation=" ".join(observation_parts)[:4000],
+            confidence=0.95 if bool(data.get("data_quality_ok", False)) else 0.0,
+            uncertainty=0.05 if bool(data.get("data_quality_ok", False)) else 1.0,
+            polarity=0.0,
+            measurements=measurements,
+            relevance_horizon_seconds=15.0,
+            timestamp_iso=stamp.astimezone(timezone.utc).isoformat(),
+            timestamp_epoch=observed_epoch,
+        )]
+    except Exception:  # noqa: BLE001 — evidence conversion must never break cognition
+        return []
+
+
+def _safe_number(value: Any) -> float | None:
+    try:
+        number = float(value)
+        return number if math.isfinite(number) else None
+    except (TypeError, ValueError, OverflowError):
+        return None
