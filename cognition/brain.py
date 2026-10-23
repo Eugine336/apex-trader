@@ -171,7 +171,7 @@ class CognitiveBrain:
         *,
         min_confidence_to_act: float = 0.55,
         max_uncertainty_to_act: float = 0.6,
-        ev_primary_gate: bool = False,
+        ev_primary_gate: bool = True,
         ev_action_threshold_r: float = 0.0,
         reasoner_name: str = "ai_brain",
         allow_scale_in: bool = False,
@@ -204,16 +204,16 @@ class CognitiveBrain:
         self._reasoner = reasoner
         self.min_confidence_to_act = min(1.0, max(0.0, float(min_confidence_to_act)))
         self.max_uncertainty_to_act = min(1.0, max(0.0, float(max_uncertainty_to_act)))
-        # V-01 (§I direction is a CONSEQUENCE of cognition; §VI Q13/Q16/Q17;
-        # §VIII FLAT = "no exploitable opportunity after EV/risk/execution", NOT
-        # "the indicators disagree"). When ``ev_primary_gate`` is on, a campaign
-        # opens on a positive EXPECTED VALUE (net of cost, over flat) rather than
-        # a raw confidence floor — so a genuine positive-expectancy opportunity is
-        # no longer vetoed merely because mixed evidence pulled confidence below a
-        # threshold (the forbidden "conflicting evidence ⇒ FLAT" shortcut).
-        # Confidence/uncertainty still feed the EV and the position sizing either
-        # way. Default False ⇒ the legacy confidence-floor gate is unchanged.
-        self.ev_primary_gate = bool(ev_primary_gate)
+        # Apex identity invariant: exposure is qualified by net expected value,
+        # not a raw confidence-floor shortcut. Keep the argument for constructor
+        # compatibility, but an explicit False cannot restore the legacy gate.
+        # Mixed evidence is analysed through competing hypotheses; it is not a
+        # reason to disable net-EV qualification.
+        if not bool(ev_primary_gate):
+            logger.warning(
+                "[apex-identity] ignoring ev_primary_gate=False; net-EV qualification is mandatory"
+            )
+        self.ev_primary_gate = True
         self.ev_action_threshold_r = float(ev_action_threshold_r)
         self.reasoner_name = str(reasoner_name or "ai_brain")
         self.allow_scale_in = bool(allow_scale_in)
@@ -227,11 +227,12 @@ class CognitiveBrain:
         # A campaign must be backed by at least this many advisors that actually
         # contributed an opinion; a single advisor's read is insufficient
         # cognitive coverage for action.
-        self.min_advisors_for_action = max(0, int(min_advisors_for_action))
+        self.min_advisors_for_action = max(1, int(min_advisors_for_action))
         # Article XXXIV — minimum evidence domains: "cannot determine whether an
-        # opportunity exists" ≠ "no opportunity". The Brain refuses to act on too
-        # thin an evidence picture (fewer than this many domains present).
-        self.min_evidence_domains = max(0, int(min_evidence_domains))
+        # opportunity exists" ≠ "no opportunity". The Brain refuses to act on a
+        # thin evidence picture. Three is an identity floor, even for callers that
+        # instantiate CognitiveBrain directly instead of using CognitionConfig.
+        self.min_evidence_domains = max(3, int(min_evidence_domains))
         # Article XXI / V-013 — degraded cognition must be recognised AND
         # enforced. When the council under-delivers (most available advisors did
         # not respond) the Brain attenuates its effective conviction by this
