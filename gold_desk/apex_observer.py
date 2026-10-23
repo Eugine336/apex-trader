@@ -18,6 +18,7 @@ from typing import Any, Callable, Iterable, Sequence
 
 from loguru import logger
 
+from gold_desk.indicators import atr
 from gold_desk.models import Candle, MarketSnapshot
 
 
@@ -160,6 +161,8 @@ class ApexGoldDeskShadowObserver:
         self._selected_symbols: set[str] = set()
         self._latest_market_evidence: dict[str, dict[str, Any]] = {}
         self._last_emitted_signature: dict[str, str] = {}
+        self._last_brain_wake_state: dict[str, dict[str, float]] = {}
+        self._evidence_change_callback: Callable[[str], Any] | None = None
         self.ticks_received = 0
         self.snapshots_evaluated = 0
         self.evidence_events_emitted = 0
@@ -277,6 +280,14 @@ class ApexGoldDeskShadowObserver:
                 for item in payload.get("pattern_observations", [])
             ]
         return copied
+
+    def set_evidence_change_callback(self, callback: Callable[[str], Any] | None) -> None:
+        """Register the single-Brain wake callback for material Gold market changes.
+
+        The callback must enqueue work only. It runs on the observer worker thread;
+        market-data/tick routing is never blocked by Brain reasoning.
+        """
+        self._evidence_change_callback = callback
 
     def _on_tick(self, tick: Any) -> None:
         """Non-blocking callback; all analysis runs off the tick-routing thread."""
@@ -458,6 +469,9 @@ class ApexGoldDeskShadowObserver:
         signature = hashlib.sha256(
             json.dumps(signature_payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
+        m5_atr = atr(snapshot.bars("M5"), 14) or 0.0
+        current_mid = snapshot.mid
+        current_spread = snapshot.spread
 
         with self._lock:
             self._latest_market_evidence[symbol] = payload
@@ -467,6 +481,23 @@ class ApexGoldDeskShadowObserver:
                 should_publish = True
             else:
                 should_publish = False
+
+            prior_wake = self._last_brain_wake_state.get(symbol)
+            if prior_wake is None or should_publish:
+                should_wake = True
+            else:
+                price_threshold = max(0.25 * m5_atr, 3.0 * current_spread, 0.50)
+                moved_materially = abs(current_mid - prior_wake["mid"]) >= price_threshold
+                prior_spread = prior_wake["spread"]
+                spread_changed = abs(current_spread - prior_spread) >= max(0.10, 0.50 * prior_spread)
+                should_wake = moved_materially or spread_changed
+
+            if should_wake:
+                self._last_brain_wake_state[symbol] = {
+                    "mid": current_mid,
+                    "spread": current_spread,
+                }
+            wake_callback = self._evidence_change_callback
         self.ticks_received += 1
         self.snapshots_evaluated += 1
         self.last_result_summary = {
@@ -487,6 +518,13 @@ class ApexGoldDeskShadowObserver:
                 "authority=CognitiveBrain; no order/decision emitted",
                 self.venue, symbol, len(observations),
             )
+        if should_wake and wake_callback is not None:
+            try:
+                # CognitionLoop.request_reason only queues a symbol; it never
+                # runs the Brain or performs broker I/O on this worker thread.
+                wake_callback(symbol)
+            except Exception as exc:
+                logger.debug("[gold-desk] Brain wake callback failed: {}", exc)
 
     def stats(self) -> dict[str, Any]:
         return {
