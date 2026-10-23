@@ -673,6 +673,17 @@ def evidence_from_gold_market(symbol: str, payload: Any) -> list[Evidence]:
                 family_names.append(family)
         quote = data.get("quote") if isinstance(data.get("quote"), dict) else {}
         bars = data.get("completed_bars") if isinstance(data.get("completed_bars"), dict) else {}
+        raw_event = data.get("event_context")
+        event_context = None
+        if isinstance(raw_event, dict):
+            event_context = {
+                "name": str(raw_event.get("name", "") or "")[:240],
+                "impact": str(raw_event.get("impact", "") or "")[:24],
+                "starts_at": str(raw_event.get("starts_at", "") or "")[:40],
+                "ends_at": str(raw_event.get("ends_at", "") or "")[:40],
+                "pre_event_high": _safe_number(raw_event.get("pre_event_high")),
+                "pre_event_low": _safe_number(raw_event.get("pre_event_low")),
+            }
         observation_parts = [
             "Market-backed XAUUSD read from the selected broker feed.",
             f"venue={str(data.get('venue', '') or 'unknown')}",
@@ -682,6 +693,13 @@ def evidence_from_gold_market(symbol: str, payload: Any) -> list[Evidence]:
             f"pattern observations={len(clean_patterns)} from {len(family_names)} detector family/families.",
             "Patterns may overlap and are NOT independent votes; no trade direction or order is issued by this source.",
         ]
+        if event_context is not None:
+            observation_parts.append(
+                "Verified news context: "
+                f"{event_context['name']} impact={event_context['impact']} "
+                f"window={event_context['starts_at']}..{event_context['ends_at']} "
+                f"pre-event range={event_context['pre_event_low']}..{event_context['pre_event_high']}."
+            )
         for item in clean_patterns:
             facts = "; ".join(item["facts"]) or "detector conditions not specified"
             observation_parts.append(f"{item['family']}: {facts}")
@@ -694,6 +712,7 @@ def evidence_from_gold_market(symbol: str, payload: Any) -> list[Evidence]:
                 "ask": _safe_number(quote.get("ask")),
                 "spread": _safe_number(quote.get("spread")),
             },
+            "event_context": event_context,
             "completed_bars": bars,
             "pattern_observations": clean_patterns,
             "pattern_families": family_names,
