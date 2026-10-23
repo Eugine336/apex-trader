@@ -129,6 +129,27 @@ def test_v3_brain_declines_when_council_metadata_is_missing():
     assert out.decision.questions_answered["advisor_quorum"].startswith("UNCONFIRMED")
 
 
+def test_v3_brain_declines_when_evidence_domain_count_is_missing():
+    ms = _state_with_advisors(2, 2, 2, extra_domains=("structure", "momentum", "liquidity"))
+    base_consolidation = ms.consolidation
+
+    def omit_domain_count(now=None):
+        result = base_consolidation(now)
+        result.pop("domain_count", None)
+        return result
+
+    ms.consolidation = omit_domain_count
+    out = CognitiveBrain(
+        reasoner=_Reasoner(_Opinion("LONG", 0.8)),
+        min_advisors_for_action=2,
+        min_evidence_domains=2,
+    ).reason(ms)
+    assert out.decision.decision_type == DecisionType.CONTINUE_OBSERVING
+    assert out.campaign is None
+    assert "coverage" in out.decision.risk_rationale
+    assert out.decision.questions_answered["evidence_coverage"].startswith("UNCONFIRMED")
+
+
 # ── V4 — degraded-mode enforcement (V-013: partial council attenuates) ──────
 
 def test_v4_partial_council_penalises_confidence_when_less_than_half_responded():
