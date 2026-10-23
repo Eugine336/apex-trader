@@ -169,6 +169,24 @@ def analyze_market_frames(
         breaks_high = current["close"] > prior_high + buffer
         breaks_low = current["close"] < prior_low - buffer
         breakout_direction = "up" if breaks_high else ("down" if breaks_low else "none")
+        closes_for_trend = [bar["close"] for bar in bars]
+        trend_change = (
+            closes_for_trend[-1] - closes_for_trend[-6]
+            if len(closes_for_trend) >= 6 else candle_body
+        )
+        trend_strength = (
+            min(1.0, abs(trend_change) / (baseline_range * 5.0))
+            if baseline_range > 0 else 0.0
+        )
+        trend_state = (
+            "uptrend" if trend_change > baseline_range * 1.2 else
+            ("downtrend" if trend_change < -baseline_range * 1.2 else "range")
+        )
+        range_rotation = bool(
+            len(bars) >= 8
+            and not (breaks_high or breaks_low)
+            and abs(trend_change) <= baseline_range * 1.2
+        )
         measurements: dict[str, Any] = {
             "lookback_bars": lookback,
             "prior_range_high": prior_high,
@@ -183,6 +201,9 @@ def analyze_market_frames(
             "lower_wick": lower_wick,
             "bos": bool(breaks_high or breaks_low),
             "breakout_direction": breakout_direction,
+            "trend_state": trend_state,
+            "trend_strength": trend_strength,
+            "range_rotation": range_rotation,
         }
         if breaks_high:
             measurements["displacement"] = current["close"] - prior_high
