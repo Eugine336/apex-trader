@@ -901,12 +901,12 @@ class CognitiveBrain:
         # unactivated/absent opportunity is not an executable trade).
         ev_ok = (self.min_expected_value is None) or (expected_value >= self.min_expected_value)
         directional = direction in (LONG, SHORT)
-        # V-01 — actionability criterion. Legacy (default): a confidence floor +
-        # uncertainty ceiling. EV-primary (opt-in): a positive EXPECTED VALUE net
-        # of cost, so a genuine positive-expectancy opportunity is taken (and
-        # sized by confidence downstream) instead of being vetoed because mixed
-        # evidence pulled confidence below a threshold. Confidence still shapes EV
-        # and sizing in both modes.
+        # V-01 — net EV is the mandatory actionability criterion. Confidence
+        # and the weakest thesis/opportunity/timing/execution dimension shape EV
+        # and sizing, but positive EV alone is insufficient: a campaign also needs
+        # an activated first-class opportunity, verified advisor quorum, three
+        # independent market evidence domains, fresh execution costs, acceptable
+        # data quality and whole-book portfolio review.
         if self.ev_primary_gate:
             ev_ok = expected_value > self.ev_action_threshold_r
             directional_and_qualified = directional and ev_ok
@@ -1778,9 +1778,10 @@ class CognitiveBrain:
         that on each REASONING Evidence's measurements. Returns
         ``(responded, available, total)`` taken from the reasoning Evidence
         carrying the counts (the maximum ``responded`` seen), or ``(None, None,
-        None)`` when no advisor metadata is present — in which case the quorum /
-        degraded-cognition gates are left unenforced (fail-safe, preserves the
-        behaviour of a Brain wired without a council). Never raises.
+        None)`` when no advisor metadata is present. In that case the quorum is
+        unconfirmed and cannot authorize new exposure; unknown council coverage is
+        recorded as degraded but only confidence-penalized if explicitly configured.
+        Never raises.
         """
         resp: Optional[int] = None
         avail: Optional[int] = None
