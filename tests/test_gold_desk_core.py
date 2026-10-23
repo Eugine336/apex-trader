@@ -326,6 +326,13 @@ def test_observer_feed_health_requires_fresh_open_quote_and_completed_m5_data():
     observer._latest_market_evidence["XAUUSD"] = closed
     assert observer.is_feed_healthy("XAUUSD", now_epoch=now.timestamp()) is False
 
+    old_bars = _payload(observed_at=now)
+    old_bars["completed_bars"]["M5"][-1]["close_time"] = (
+        now - timedelta(minutes=11)
+    ).isoformat()
+    observer._latest_market_evidence["XAUUSD"] = old_bars
+    assert observer.is_feed_healthy("XAUUSD", now_epoch=now.timestamp()) is False
+
     bad_quote = _payload(observed_at=now)
     bad_quote["quote"] = {"bid": 2001.0, "ask": 2000.0, "spread": -1.0}
     observer._latest_market_evidence["XAUUSD"] = bad_quote
