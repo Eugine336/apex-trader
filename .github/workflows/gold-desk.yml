@@ -11,6 +11,7 @@ on:
       - "cognition/identity.py"
       - "cognition/strategy_knowledge.py"
       - "cognition/price_action_patterns.py"
+      - "cognition/market_lenses.py"
       - "cognition/pattern_rules.py"
       - "tests/test_persistence_recovery_history.py"
       - "persistence/recovery.py"
@@ -65,11 +66,11 @@ jobs:
           cognition/brain.py cognition/brain_reasoning.py cognition/evidence_adapters.py
           cognition/loop.py cognition/pattern_rules.py
           cognition/identity.py cognition/strategy_knowledge.py
-          cognition/price_action_patterns.py
+          cognition/price_action_patterns.py cognition/market_lenses.py
           tests/test_apex_identity_and_contextual_patterns.py
           persistence/recovery.py persistence/domain_events.py
           execution/action_executor.py event_driven_bootstrap.py
       - name: Test deterministic Gold desk kernel
         run: python -m pytest tests/test_gold_desk_core.py tests/test_action_executor.py tests/test_brain_native_reasoning.py tests/test_persistence_recovery_history.py tests/test_apex_identity_and_contextual_patterns.py -q
       - name: Lint new implementation
-        run: ruff check gold_desk cognition/identity.py cognition/strategy_knowledge.py cognition/price_action_patterns.py cognition/pattern_rules.py cognition/brain_reasoning.py cognition/brain.py event_driven_bootstrap.py tests/test_apex_identity_and_contextual_patterns.py --select E,F,W --ignore E501,E402,F401,E701,E731,E741
+        run: ruff check gold_desk cognition/identity.py cognition/strategy_knowledge.py cognition/price_action_patterns.py cognition/market_lenses.py cognition/pattern_rules.py cognition/brain_reasoning.py cognition/brain.py event_driven_bootstrap.py tests/test_apex_identity_and_contextual_patterns.py --select E,F,W --ignore E501,E402,F401,E701,E731,E741
