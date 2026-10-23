@@ -9,6 +9,10 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    # Ensure the repository's local packages (especially tick/) take precedence
+    # over similarly named namespace packages installed by dependencies.
+    env:
+      PYTHONPATH: ${{ github.workspace }}
     strategy:
       matrix:
         python-version: ["3.11", "3.12"]
