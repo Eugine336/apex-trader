@@ -75,6 +75,13 @@ def _ev(domain, measurements, *, conf=0.9, module=None):
 
 def _with_verified_council(ms, *, responded=2, available=2, total=2):
     ms.add(Evidence(
+        source_module="execution_cost.test_quote", domain="execution_quality",
+        symbol=ms.symbol, observation="fresh test cost estimate",
+        confidence=0.9, uncertainty=0.1,
+        measurements={"estimated_total_cost_r": 0.05},
+        relevance_horizon_seconds=60.0,
+    ))
+    ms.add(Evidence(
         source_module="reasoning_engine.test_council",
         domain="reasoning",
         symbol=ms.symbol,
@@ -246,6 +253,7 @@ def test_flat_brain_defers_without_changing_confidence():
     ms = MarketState(symbol="EURUSD")
     ms.add(_ev("momentum", {}, conf=0.9))
     ms.add(_ev("structure", {}, conf=0.9))
+    ms.add(_ev("liquidity", {}, conf=0.9))
     _with_verified_council(ms)
     brain = CognitiveBrain(reasoner=_Reasoner(_Opinion(LONG, 0.8)), reward_r_default=2.0)
     out = brain.reason(ms)
