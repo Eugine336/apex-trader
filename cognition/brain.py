@@ -1212,8 +1212,19 @@ class CognitiveBrain:
             # Return every output ranked by EV (demoted ones retain their EV).
             return sorted(outputs, key=self._output_ev, reverse=True)
         except Exception as exc:  # noqa: BLE001 — portfolio reasoning must never break a cycle
-            logger.debug("[brain] reason_portfolio ignored a fault: %s", exc)
-            return list(all_outputs or [])
+            logger.error(
+                "[brain] reason_portfolio FAILED — suppressing new campaigns rather than "
+                "assuming the book is safe: %s", exc,
+            )
+            outputs = [o for o in (all_outputs or []) if o is not None]
+            for output in outputs:
+                if self._is_open_output(output):
+                    self._demote_output(
+                        output,
+                        "portfolio reasoning failed — new campaign suppressed; "
+                        "live exposure could not be qualified",
+                    )
+            return outputs
 
     @staticmethod
     def _is_open_output(output: Any) -> bool:
