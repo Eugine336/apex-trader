@@ -1,24 +1,16 @@
-"""Immutable domain objects for the Gold trading desk.
+"""Market facts and evidence records for Apex's Gold-only observation layer.
 
-Contract:
-- Candle.timestamp is the *close time* of a completed candle.
-- Forming candles must not be passed to a strategy.
-- All datetimes must be timezone-aware.
-- Prices are broker quote prices; pip/tick assumptions belong in the broker adapter.
+There is intentionally no trade candidate, entry direction, stop/target, rank or
+strategy-voting model in this package. A pattern record contains only what was
+observed on completed bars; the existing CognitiveBrain interprets the facts.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from enum import Enum
-import hashlib
 import math
 from typing import Mapping, Sequence
-
-
-class Direction(str, Enum):
-    LONG = "LONG"
-    SHORT = "SHORT"
 
 
 class Venue(str, Enum):
@@ -38,6 +30,7 @@ def _finite_positive(value: float, label: str) -> None:
 
 @dataclass(frozen=True, slots=True)
 class Candle:
+    """One completed candle whose timestamp is its close time."""
     timestamp: datetime
     open: float
     high: float
@@ -61,11 +54,7 @@ class Candle:
 
 @dataclass(frozen=True, slots=True)
 class EventWindow:
-    """Pre-event range and verified event window supplied by a calendar adapter.
-
-    This model does not guess release times or event outcomes. The data adapter
-    must provide the real event window and the range measured before release.
-    """
+    """Verified pre-event range and event window supplied by a calendar adapter."""
     name: str
     starts_at: datetime
     ends_at: datetime
@@ -90,7 +79,7 @@ class EventWindow:
 
 @dataclass(frozen=True, slots=True)
 class MarketSnapshot:
-    """One coherent market read consumed by all strategy families."""
+    """One coherent quote and completed-candle read from one broker venue."""
     symbol: str
     venue: str | Venue
     observed_at: datetime
@@ -126,8 +115,6 @@ class MarketSnapshot:
             normalized[tf] = bars
         object.__setattr__(self, "candles", normalized)
         if self.event_window is not None and self.event_window.ends_at < self.observed_at - timedelta(days=2):
-            # Old event metadata is almost always an adapter bug; do not silently
-            # treat stale news as a current catalyst.
             raise ValueError("EventWindow is stale relative to the market snapshot")
 
     @property
@@ -147,61 +134,37 @@ class MarketSnapshot:
 
 
 @dataclass(frozen=True, slots=True)
-class TradeIdea:
-    """A research candidate, not an executable broker order."""
+class PatternObservation:
+    """Factual detector output: no trade direction, order geometry or vote score."""
     symbol: str
     venue: str
-    direction: Direction
-    strategy_id: str
-    entry: float
-    stop: float
-    target: float
-    created_at: datetime
-    expires_at: datetime
+    pattern_id: str
+    timeframe: str
+    observed_at: datetime
     source_bar_time: datetime
-    atr: float
-    quality_score: float
-    rationale: str
-    evidence: tuple[str, ...] = ()
-    supporting_strategies: tuple[str, ...] = ()
-    risk_budget_pct: float = 0.25
+    facts: tuple[str, ...]
+    measurements: Mapping[str, float | int | str | bool]
 
     def __post_init__(self) -> None:
-        _aware(self.created_at, "TradeIdea.created_at")
-        _aware(self.expires_at, "TradeIdea.expires_at")
-        _aware(self.source_bar_time, "TradeIdea.source_bar_time")
-        for name in ("entry", "stop", "target", "atr"):
-            _finite_positive(float(getattr(self, name)), f"TradeIdea.{name}")
-        if self.expires_at <= self.created_at:
-            raise ValueError("TradeIdea must expire after creation")
-        if not math.isfinite(self.quality_score) or not 0 <= self.quality_score <= 100:
-            raise ValueError("quality_score must be in [0, 100]")
-        if not math.isfinite(self.risk_budget_pct) or self.risk_budget_pct <= 0:
-            raise ValueError("risk_budget_pct must be finite and positive")
-        if self.direction is Direction.LONG:
-            if not self.stop < self.entry < self.target:
-                raise ValueError("LONG idea requires stop < entry < target")
-        elif self.direction is Direction.SHORT:
-            if not self.target < self.entry < self.stop:
-                raise ValueError("SHORT idea requires target < entry < stop")
-
-    @property
-    def risk_distance(self) -> float:
-        return abs(self.entry - self.stop)
-
-    @property
-    def reward_distance(self) -> float:
-        return abs(self.target - self.entry)
-
-    @property
-    def reward_to_risk(self) -> float:
-        return self.reward_distance / self.risk_distance if self.risk_distance > 0 else 0.0
-
-    @property
-    def signal_key(self) -> str:
-        """Stable per-bar deduplication key; deliberately independent of tick price."""
-        raw = "|".join((
-            self.symbol.upper(), self.venue.upper(), self.direction.value,
-            self.source_bar_time.isoformat(),
-        ))
-        return hashlib.sha256(raw.encode("utf-8")).hexdigest()[:20]
+        _aware(self.observed_at, "PatternObservation.observed_at")
+        _aware(self.source_bar_time, "PatternObservation.source_bar_time")
+        if not self.symbol or not self.pattern_id or not self.timeframe:
+            raise ValueError("PatternObservation requires symbol, pattern_id and timeframe")
+        facts = tuple(str(fact).strip()[:240] for fact in self.facts if str(fact).strip())
+        if not facts:
+            raise ValueError("PatternObservation requires at least one factual observation")
+        object.__setattr__(self, "facts", facts[:12])
+        safe: dict[str, float | int | str | bool] = {}
+        for key, value in dict(self.measurements).items():
+            name = str(key).strip()[:80]
+            if not name:
+                continue
+            if isinstance(value, bool):
+                safe[name] = value
+            elif isinstance(value, (int, float)):
+                number = float(value)
+                if math.isfinite(number):
+                    safe[name] = number
+            elif isinstance(value, str):
+                safe[name] = value[:240]
+        object.__setattr__(self, "measurements", safe)
