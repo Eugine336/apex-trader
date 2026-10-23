@@ -17,6 +17,7 @@ from cognition.price_action_patterns import (
     evidence_from_m1_candles,
 )
 from cognition.strategy_knowledge import STRATEGY_LENSES, assess_strategy_lenses
+from cognition.market_lenses import analyze_market_frames
 
 
 def _m1_frame(*, rejection: bool = True) -> pd.DataFrame:
@@ -123,3 +124,119 @@ def test_strategy_lenses_can_mark_missing_data_as_not_evaluable():
     assert assessments
     assert all(item["status"] == "not_evaluable" for item in assessments)
     assert all(item["limitation"] for item in assessments)
+
+
+def _frames_with_breakout() -> pd.DataFrame:
+    rows = []
+    for index in range(31):
+        rows.append({
+            "open": 100.0,
+            "high": 100.5,
+            "low": 99.5,
+            "close": 100.1 if index % 2 == 0 else 100.0,
+            "tick_volume": 100.0,
+        })
+    # This is the latest completed candle; a final forming row follows it.
+    rows[-1] = {
+        "open": 100.1,
+        "high": 101.8,
+        "low": 100.0,
+        "close": 101.6,
+        "tick_volume": 220.0,
+    }
+    rows.append({
+        "open": 101.6, "high": 102.0, "low": 101.3, "close": 101.8,
+        "tick_volume": 140.0,
+    })
+    return pd.DataFrame(rows)
+
+
+def _frames_with_liquidity_reclaim() -> pd.DataFrame:
+    rows = []
+    for index in range(31):
+        rows.append({
+            "open": 100.0,
+            "high": 100.5,
+            "low": 99.5,
+            "close": 100.1 if index % 2 == 0 else 100.0,
+            "volume": 100.0,
+        })
+    rows[-1] = {
+        "open": 99.9,
+        "high": 100.2,
+        "low": 98.6,
+        "close": 100.0,
+        "volume": 160.0,
+    }
+    rows.append({
+        "open": 100.0, "high": 100.2, "low": 99.8, "close": 100.05,
+        "volume": 120.0,
+    })
+    return pd.DataFrame(rows)
+
+
+def test_universal_market_lenses_emit_structured_facts_for_all_supported_timeframes():
+    frame = _frames_with_breakout()
+    evidence = analyze_market_frames(
+        "EURUSD",
+        {"M5": frame, "H1": frame},
+        source_includes_forming_bar=True,
+    )
+    assert evidence
+    assert {item.domain for item in evidence} >= {
+        EvidenceDomain.STRUCTURE,
+        EvidenceDomain.MOMENTUM,
+        EvidenceDomain.VOLATILITY,
+        EvidenceDomain.VOLUME,
+    }
+    structure = next(
+        item for item in evidence
+        if item.domain == EvidenceDomain.STRUCTURE
+        and item.measurements.get("timeframe") == "M5"
+    )
+    assert structure.measurements["bos"] is True
+    assert structure.measurements["provisional"] is False
+    assert structure.polarity == 0.0
+    assert "direction" not in structure.measurements
+    assert "entry" not in structure.measurements
+    assert "stop" not in structure.measurements
+    assert "target" not in structure.measurements
+    assert any(
+        item.domain == EvidenceDomain.VOLATILITY
+        and item.measurements.get("expansion") is True
+        for item in evidence
+    )
+
+
+def test_universal_market_lenses_report_sweep_reclaim_without_claiming_absorption():
+    frame = _frames_with_liquidity_reclaim()
+    evidence = analyze_market_frames(
+        "XAUUSD", {"M5": frame}, source_includes_forming_bar=True,
+    )
+    sweep = next(item for item in evidence if item.domain == EvidenceDomain.LIQUIDITY)
+    assert sweep.measurements["sweep"] is True
+    assert sweep.measurements["sweep_side"] == "sell"
+    assert sweep.measurements["reclaimed_boundary"] == "prior_range_low"
+    assert sweep.measurements["absorption_confirmed"] is False
+    assert sweep.polarity == 0.0
+
+
+def test_native_rules_create_multiple_market_hypotheses_from_completed_bar_evidence():
+    frames = _frames_with_breakout()
+    evidence = analyze_market_frames(
+        "XAUUSD",
+        {"M5": frames, "H1": frames},
+        source_includes_forming_bar=True,
+    )
+    state = MarketState(symbol="XAUUSD")
+    for item in evidence:
+        state.add(item)
+    reasoner = BrainReasoner()
+    analysis = reasoner.analyze_evidence(state, state.consolidation())
+    pattern_names = [pattern_name(item) for item in analysis.detected_patterns]
+    assert "structural_break" in pattern_names
+    assert "volatility_expansion_breakout" in pattern_names
+    hypotheses = reasoner.generate_hypotheses(analysis, "XAUUSD")
+    assert len(hypotheses) >= 2
+    assert any(h.direction_implication in {"LONG", "SHORT"} for h in hypotheses)
+    assert any("counter" in h.opportunity_implication.lower() for h in hypotheses)
